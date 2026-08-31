@@ -52,6 +52,12 @@ impl PlaybackStatus {
 /// A snapshot of everything MPRIS exposes about the player. The app builds one
 /// from its playback state and [`MprisHandle::publish`]es it on every change.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the five independent MPRIS Can* capability flags from the D-Bus spec by \
+              name; grouping them would rename, not reduce, the boolean surface, and this \
+              struct is constructed from app.rs"
+)]
 pub struct PlayerSnapshot {
     pub status: PlaybackStatus,
     /// Stable track id → the `mpris:trackid` object path. Empty ⇒ no track.
@@ -113,7 +119,7 @@ impl PlayerSnapshot {
     /// `Position`. Ignores sub-second position jitter to avoid signal spam.
     pub fn should_republish(&self, last: &Self) -> bool {
         self.status != last.status
-            || self.volume != last.volume
+            || (self.volume - last.volume).abs() > f64::EPSILON
             || self.can_next != last.can_next
             || self.can_prev != last.can_prev
             || self.can_play != last.can_play
@@ -311,6 +317,11 @@ mod imp {
     }
 
     #[interface(name = "org.mpris.MediaPlayer2")]
+    #[allow(
+        clippy::unused_self,
+        reason = "zbus's #[interface] macro requires &self on every interface method, including \
+                  the constant MediaPlayer2 properties below that don't read it"
+    )]
     impl RootIface {
         fn raise(&self) {
             let _ = self.cmd.send(MprisCommand::Raise);
@@ -377,9 +388,24 @@ mod imp {
         fn seek(&self, offset: i64) {
             let _ = self.cmd.send(MprisCommand::Seek(offset));
         }
+        #[allow(
+            clippy::used_underscore_binding,
+            reason = "zbus's #[interface] macro re-binds this parameter by its literal name in \
+                      generated dispatch code, which trips the lint even though this method \
+                      body never reads it; dropping the underscore would instead warn as an \
+                      unused variable here"
+        )]
         fn set_position(&self, _track_id: ObjectPath<'_>, position: i64) {
             let _ = self.cmd.send(MprisCommand::SetPosition(position));
         }
+        #[allow(
+            clippy::unused_self,
+            clippy::used_underscore_binding,
+            reason = "zbus's #[interface] macro requires &self even though there's no \
+                      external-URI enqueue surface yet, and re-binds `_uri` by name in \
+                      generated dispatch code, which trips used_underscore_binding even though \
+                      this body never reads it"
+        )]
         fn open_uri(&self, _uri: String) {
             // No external-URI enqueue surface yet.
         }
@@ -411,20 +437,47 @@ mod imp {
             let _ = self.cmd.send(MprisCommand::SetVolume(v));
         }
         #[zbus(property)]
+        #[allow(
+            clippy::unused_self,
+            reason = "zbus's #[interface] macro requires &self on every property getter, even \
+                      this fixed 1.0 MPRIS Rate"
+        )]
         fn rate(&self) -> f64 {
             1.0
         }
         #[zbus(property)]
+        #[allow(
+            clippy::unused_self,
+            clippy::needless_pass_by_ref_mut,
+            reason = "zbus's #[interface] macro requires &mut self on every property setter; \
+                      qOS Music doesn't support variable playback rate, so Rate is fixed and \
+                      this setter is a no-op"
+        )]
         fn set_rate(&mut self, _rate: f64) {}
         #[zbus(property)]
+        #[allow(
+            clippy::unused_self,
+            reason = "zbus's #[interface] macro requires &self on every property getter, even \
+                      this fixed 1.0 MPRIS MinimumRate"
+        )]
         fn minimum_rate(&self) -> f64 {
             1.0
         }
         #[zbus(property)]
+        #[allow(
+            clippy::unused_self,
+            reason = "zbus's #[interface] macro requires &self on every property getter, even \
+                      this fixed 1.0 MPRIS MaximumRate"
+        )]
         fn maximum_rate(&self) -> f64 {
             1.0
         }
         #[zbus(property)]
+        #[allow(
+            clippy::unused_self,
+            reason = "zbus's #[interface] macro requires &self on every property getter, even \
+                      this fixed true MPRIS CanControl"
+        )]
         fn can_control(&self) -> bool {
             true
         }
@@ -477,6 +530,13 @@ mod imp {
             .await?;
         let ctxt = iref.signal_context().clone();
         {
+            #[allow(
+                clippy::significant_drop_tightening,
+                reason = "the guard must stay held across the snap write and every conditional \
+                          *_changed() emission below so they observe one consistent snapshot; \
+                          it's already scoped to this block and dropped before the unrelated \
+                          `seeked` check that follows"
+            )]
             let mut guard = iref.get_mut().await;
             guard.snap = new.clone();
             if old.status != new.status {

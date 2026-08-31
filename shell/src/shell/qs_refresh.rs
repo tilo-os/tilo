@@ -15,22 +15,26 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::shell::qs_actions as qs;
 
+/// Each field independently optional: a missing daemon leaves that value
+/// alone rather than blanking the panel. Boxed in [`QsReading::Fast`] since
+/// it dwarfs the other variants' single-field payloads.
+#[derive(Debug)]
+pub struct FastReading {
+    pub brightness: Option<f32>,
+    pub volume: Option<f32>,
+    pub wifi: Option<bool>,
+    pub bluetooth: Option<bool>,
+    pub power: Option<qs::PowerProfile>,
+    pub wired: Option<qs::WiredInfo>,
+    pub battery: qs::BatteryInfo,
+    pub radios: Option<qs::RadioState>,
+    pub privacy: qs::PrivacyStatus,
+    pub vpns: Option<Vec<qs::VpnConnectionInfo>>,
+}
+
 #[derive(Debug)]
 pub enum QsReading {
-    /// Each field independently optional: a missing daemon leaves that
-    /// value alone rather than blanking the panel.
-    Fast {
-        brightness: Option<f32>,
-        volume: Option<f32>,
-        wifi: Option<bool>,
-        bluetooth: Option<bool>,
-        power: Option<qs::PowerProfile>,
-        wired: Option<qs::WiredInfo>,
-        battery: qs::BatteryInfo,
-        radios: Option<qs::RadioState>,
-        privacy: qs::PrivacyStatus,
-        vpns: Option<Vec<qs::VpnConnectionInfo>>,
-    },
+    Fast(Box<FastReading>),
     Firmware(Option<Vec<qs::FirmwareUpdate>>),
     WifiNetworks(Option<Vec<qs::WifiNetworkInfo>>),
     BtDevices(Option<Vec<qs::BtDeviceInfo>>),
@@ -102,17 +106,19 @@ impl QsRefresh {
     }
 
     pub fn kick_fast(&mut self) {
-        self.spawn(Tier::Fast, || QsReading::Fast {
-            brightness: qs::log_qs_get("get_brightness", qs::get_brightness()),
-            volume: qs::log_qs_get("get_volume", qs::get_volume()),
-            wifi: qs::log_qs_get("get_wifi", qs::get_wifi()),
-            bluetooth: qs::log_qs_get("get_bluetooth", qs::get_bluetooth()),
-            power: qs::log_qs_get("get_power_profile", qs::get_power_profile()),
-            wired: qs::log_qs_get("get_wired", qs::get_wired()),
-            battery: qs::BatteryInfo::from_system(),
-            radios: qs::log_qs_get("get_radio_state", qs::get_radio_state()),
-            privacy: qs::get_privacy_status(),
-            vpns: qs::log_qs_get("list_vpn_connections", qs::list_vpn_connections()),
+        self.spawn(Tier::Fast, || {
+            QsReading::Fast(Box::new(FastReading {
+                brightness: qs::log_qs_get("get_brightness", qs::get_brightness()),
+                volume: qs::log_qs_get("get_volume", qs::get_volume()),
+                wifi: qs::log_qs_get("get_wifi", qs::get_wifi()),
+                bluetooth: qs::log_qs_get("get_bluetooth", qs::get_bluetooth()),
+                power: qs::log_qs_get("get_power_profile", qs::get_power_profile()),
+                wired: qs::log_qs_get("get_wired", qs::get_wired()),
+                battery: qs::BatteryInfo::from_system(),
+                radios: qs::log_qs_get("get_radio_state", qs::get_radio_state()),
+                privacy: qs::get_privacy_status(),
+                vpns: qs::log_qs_get("list_vpn_connections", qs::list_vpn_connections()),
+            }))
         });
     }
 
@@ -145,7 +151,7 @@ impl QsRefresh {
         let mut out = Vec::new();
         while let Ok(reading) = self.rx.try_recv() {
             let tier = match &reading {
-                QsReading::Fast { .. } => Tier::Fast,
+                QsReading::Fast(_) => Tier::Fast,
                 QsReading::WifiNetworks(_) => Tier::Wifi,
                 QsReading::BtDevices(_) => Tier::Bt,
                 QsReading::Firmware(_) => Tier::Firmware,
@@ -177,7 +183,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn empty_fast() -> QsReading {
-        QsReading::Fast {
+        QsReading::Fast(Box::new(FastReading {
             brightness: None,
             volume: None,
             wifi: None,
@@ -188,7 +194,7 @@ mod tests {
             radios: None,
             privacy: qs::PrivacyStatus::default(),
             vpns: None,
-        }
+        }))
     }
 
     #[test]
@@ -215,17 +221,19 @@ mod tests {
     #[test]
     fn a_dispatched_reading_lands_and_clears_its_tier() {
         let mut r = QsRefresh::new();
-        r.kick_fast_with(|| QsReading::Fast {
-            brightness: Some(0.42),
-            volume: None,
-            wifi: Some(true),
-            bluetooth: None,
-            power: None,
-            wired: None,
-            battery: qs::BatteryInfo::from_root(std::path::Path::new("/nonexistent")),
-            radios: None,
-            privacy: qs::PrivacyStatus::default(),
-            vpns: None,
+        r.kick_fast_with(|| {
+            QsReading::Fast(Box::new(FastReading {
+                brightness: Some(0.42),
+                volume: None,
+                wifi: Some(true),
+                bluetooth: None,
+                power: None,
+                wired: None,
+                battery: qs::BatteryInfo::from_root(std::path::Path::new("/nonexistent")),
+                radios: None,
+                privacy: qs::PrivacyStatus::default(),
+                vpns: None,
+            }))
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut got = Vec::new();
@@ -235,11 +243,9 @@ mod tests {
         }
         assert_eq!(got.len(), 1, "the reading never arrived");
         match &got[0] {
-            QsReading::Fast {
-                brightness, wifi, ..
-            } => {
-                assert_eq!(*brightness, Some(0.42));
-                assert_eq!(*wifi, Some(true));
+            QsReading::Fast(reading) => {
+                assert_eq!(reading.brightness, Some(0.42));
+                assert_eq!(reading.wifi, Some(true));
             }
             other => panic!("wrong tier: {other:?}"),
         }
@@ -284,7 +290,7 @@ mod tests {
         let mut saw_fast = false;
         while !saw_fast && Instant::now() < deadline {
             for reading in r.drain() {
-                if matches!(reading, QsReading::Fast { .. }) {
+                if matches!(reading, QsReading::Fast(_)) {
                     saw_fast = true;
                 }
             }

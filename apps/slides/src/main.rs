@@ -26,6 +26,12 @@ use ui::widget::Widget;
 
 const NARROW_VIEWPORT: (u32, u32) = (820, 800);
 
+// The signature is fixed by `ui::launch::ShotFactory`: other apps' shot roots
+// genuinely can fail, so the alias is fallible even where this one isn't.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is dictated by ui::launch::ShotFactory, which other apps' fallible shot roots need"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let legacy = std::env::var("SLIDES_SHOT").ok();
     Ok(slides::app_root_demo(
@@ -70,5 +76,5 @@ pub fn main() {
                 "reorder",
             ])
             .configure_app(|app| slides::actions::register(app.action_registry_mut())),
-    )
+    );
 }

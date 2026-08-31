@@ -36,9 +36,11 @@ struct EncoderWorker {
 }
 
 impl EncoderWorker {
-    fn spawn(socket_path: PathBuf) -> Self {
+    /// Starts the encoder thread. Returns `None` — logging why — if the OS refuses to spawn
+    /// it, in which case capture stays unavailable rather than panicking the compositor.
+    fn spawn(socket_path: PathBuf) -> Option<Self> {
         let (tx, rx) = mpsc::sync_channel::<RawFrame>(1);
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("qos-projection-encoder".to_owned())
             .spawn(move || {
                 let mut stream: Option<UnixStream> = None;
@@ -82,18 +84,29 @@ impl EncoderWorker {
                         keyframe: stats.keyframe,
                         annex_b,
                     };
-                    if packet
-                        .write_to(stream.as_mut().expect("stream established above"))
-                        .is_err()
-                    {
+                    // The branch above either just set `stream` to `Some` or `continue`d, so
+                    // this is always populated; handled rather than asserted regardless.
+                    let Some(active_stream) = stream.as_mut() else {
+                        continue;
+                    };
+                    if packet.write_to(active_stream).is_err() {
                         stream = None;
                         encoder = None;
                         encoder_profile = None;
                     }
                 }
-            })
-            .expect("projection encoder worker should start");
-        Self { tx }
+            });
+        match spawned {
+            Ok(_handle) => Some(Self { tx }),
+            Err(e) => {
+                tracing::warn!(
+                    target: "shell::compositor::projection",
+                    error = %e,
+                    "could not start projection encoder worker; capture stays unavailable"
+                );
+                None
+            }
+        }
     }
 
     fn submit(&self, frame: RawFrame) -> bool {
@@ -128,7 +141,7 @@ impl ProjectionCapture {
     fn new(socket_path: Option<PathBuf>) -> Self {
         let profile = DisplayStreamPolicy::default().ceiling(None);
         Self {
-            worker: socket_path.map(EncoderWorker::spawn),
+            worker: socket_path.and_then(EncoderWorker::spawn),
             renderer: None,
             renderer_size: (0, 0),
             started: Instant::now(),
@@ -185,10 +198,10 @@ impl ProjectionCapture {
         let accepted = worker.submit(RawFrame {
             width,
             height,
-            presentation_time_us: now
-                .saturating_duration_since(self.started)
-                .as_micros()
-                .min(u128::from(u64::MAX)) as u64,
+            presentation_time_us: u64::try_from(
+                now.saturating_duration_since(self.started).as_micros(),
+            )
+            .unwrap_or(u64::MAX),
             rgba,
             fps: effective_profile.fps,
             bitrate_kbps: effective_profile.bitrate_kbps,
@@ -219,19 +232,19 @@ fn clamp_profile(value: CaptureProfile, ceiling: CaptureProfile) -> CaptureProfi
 
 fn lower_profile(value: CaptureProfile) -> CaptureProfile {
     CaptureProfile::new(
-        ((value.max_width * 3 / 4).max(640)) & !1,
-        ((value.max_height * 3 / 4).max(360)) & !1,
+        ((value.max_width.saturating_mul(3) / 4).max(640)) & !1,
+        ((value.max_height.saturating_mul(3) / 4).max(360)) & !1,
         value.fps,
-        (value.bitrate_kbps * 3 / 4).max(2_500),
+        (value.bitrate_kbps.saturating_mul(3) / 4).max(2_500),
     )
 }
 
 fn raise_profile(value: CaptureProfile, ceiling: CaptureProfile) -> CaptureProfile {
     CaptureProfile::new(
-        (value.max_width * 4 / 3).min(ceiling.max_width) & !1,
-        (value.max_height * 4 / 3).min(ceiling.max_height) & !1,
+        (value.max_width.saturating_mul(4) / 3).min(ceiling.max_width) & !1,
+        (value.max_height.saturating_mul(4) / 3).min(ceiling.max_height) & !1,
         ceiling.fps,
-        (value.bitrate_kbps * 4 / 3).min(ceiling.bitrate_kbps),
+        (value.bitrate_kbps.saturating_mul(4) / 3).min(ceiling.bitrate_kbps),
     )
 }
 
@@ -260,12 +273,22 @@ fn target_size(source: (u32, u32), profile: CaptureProfile) -> Option<(u32, u32,
     let scale = (f64::from(profile.max_width) / f64::from(source.0))
         .min(f64::from(profile.max_height) / f64::from(source.1))
         .min(1.0);
-    let even = |value: f64| ((value.floor() as u32).max(2)) & !1;
     Some((
-        even(f64::from(source.0) * scale),
-        even(f64::from(source.1) * scale),
+        even_u32(f64::from(source.0) * scale),
+        even_u32(f64::from(source.1) * scale),
         scale,
     ))
+}
+
+/// Round `value` down to the nearest even `u32`, floored at 2 — the encoder's minimum coded
+/// dimension in either axis.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to 0.0..=f64::from(u32::MAX) immediately above, so it always fits a non-negative u32"
+)]
+fn even_u32(value: f64) -> u32 {
+    ((value.floor().clamp(0.0, f64::from(u32::MAX)) as u32).max(2)) & !1
 }
 
 #[cfg(test)]
@@ -307,7 +330,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp runtime dir");
         let socket = dir.path().join("video.sock");
         let listener = UnixListener::bind(&socket).expect("fake broker socket");
-        let worker = EncoderWorker::spawn(socket);
+        let worker = EncoderWorker::spawn(socket).expect("encoder worker should start");
         assert!(worker.submit(RawFrame {
             width: 64,
             height: 64,

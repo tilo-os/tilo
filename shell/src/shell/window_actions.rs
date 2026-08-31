@@ -195,6 +195,12 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the borrow feeds a chain of derived references (strip -> window_groups -> \
+                  group -> tab) used through the assertions right after; ending it earlier \
+                  would mean cloning test fixture data for no real gain"
+    )]
     fn open_terminal_here_adds_a_tab_to_the_focused_group() {
         let chrome = chrome_with_default_tree();
         let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();

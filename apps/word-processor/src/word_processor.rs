@@ -240,9 +240,9 @@ impl WordProcessor {
             if self.caret.offset > len {
                 self.caret.offset = len;
             }
-        } else {
+        } else if let Some(first) = blocks.first() {
             self.caret = Caret {
-                block: blocks[0].clone(),
+                block: first.clone(),
                 offset: 0,
             };
             self.selection_anchor = None;
@@ -302,12 +302,12 @@ impl WordProcessor {
             return vec![];
         };
         (si..=ei)
-            .map(|i| {
-                let b = &blocks[i];
+            .filter_map(|i| {
+                let b = blocks.get(i)?;
                 let blen = self.block_len(state, b);
                 let s = if i == si { start.offset } else { 0 };
                 let e = if i == ei { end.offset } else { blen };
-                (b.clone(), s, e)
+                Some((b.clone(), s, e))
             })
             .collect()
     }
@@ -347,7 +347,9 @@ impl WordProcessor {
             };
             let chars: Vec<char> = b.text.chars().collect();
             let (s, e) = (s.min(chars.len()), e.min(chars.len()));
-            let text: String = chars[s..e].iter().collect();
+            let text: String = chars
+                .get(s..e)
+                .map_or_else(String::new, |c| c.iter().collect());
             plain.push(text.clone());
             let marks = b
                 .marks
@@ -849,7 +851,9 @@ impl WordProcessor {
         let Some((start, end)) = self.selection_span(state) else {
             return false;
         };
-        let containers = self.containers.clone().unwrap();
+        let Some(containers) = self.containers.clone() else {
+            return false;
+        };
         if start.block == end.block {
             if let Some(ids) = self.ids.as_mut() {
                 let mut dm = DocMut {
@@ -871,9 +875,18 @@ impl WordProcessor {
             let tail: String = end_text.chars().skip(end.offset).collect();
             let start_len = self.block_len(state, &start.block);
             let blocks = self.ordered_blocks(state);
-            let si = blocks.iter().position(|b| b == &start.block).unwrap();
-            let ei = blocks.iter().position(|b| b == &end.block).unwrap();
-            let to_remove: Vec<String> = blocks[si + 1..=ei].to_vec();
+            let (Some(si), Some(ei)) = (
+                blocks.iter().position(|b| b == &start.block),
+                blocks.iter().position(|b| b == &end.block),
+            ) else {
+                // Both endpoints came from `selection_span`, which only reports
+                // blocks still in `ordered_blocks`, so this should always resolve —
+                // but never leave a stale selection half-deleted over a desync.
+                return false;
+            };
+            let to_remove: Vec<String> = blocks
+                .get(si + 1..=ei)
+                .map_or_else(Vec::new, <[String]>::to_vec);
             if let Some(ids) = self.ids.as_mut() {
                 let mut dm = DocMut {
                     doc: state,
@@ -1043,7 +1056,7 @@ impl WordProcessor {
         &mut self,
         state: &mut AutoCommit,
         name: &str,
-        value: qdoc::document::MarkValue,
+        value: &qdoc::document::MarkValue,
     ) {
         let ranges = self.font_ranges(state);
         if self.containers.is_none() {
@@ -1060,7 +1073,7 @@ impl WordProcessor {
     /// Set the font size (pt) over the selection (per-run), or the caret block.
     /// Stored as a `size` Int run mark (the codec contract's character format).
     pub fn set_font_size(&mut self, state: &mut AutoCommit, size: i64) {
-        self.set_mark_value(state, "size", qdoc::document::MarkValue::Int(size));
+        self.set_mark_value(state, "size", &qdoc::document::MarkValue::Int(size));
     }
 
     /// Set the font family (`sans` | `serif` | `mono`) over the selection
@@ -1069,7 +1082,7 @@ impl WordProcessor {
         self.set_mark_value(
             state,
             "font",
-            qdoc::document::MarkValue::Str(family.to_string()),
+            &qdoc::document::MarkValue::Str(family.to_string()),
         );
     }
 
@@ -1079,7 +1092,7 @@ impl WordProcessor {
         self.set_mark_value(
             state,
             "color",
-            qdoc::document::MarkValue::Str(hex.to_string()),
+            &qdoc::document::MarkValue::Str(hex.to_string()),
         );
     }
 
@@ -1134,7 +1147,7 @@ impl WordProcessor {
         self.set_mark_value(
             state,
             "highlight",
-            qdoc::document::MarkValue::Str(hex.to_string()),
+            &qdoc::document::MarkValue::Str(hex.to_string()),
         );
     }
 
@@ -1764,7 +1777,7 @@ impl WordProcessor {
                 .min();
             first_idx.and_then(|i| {
                 if i > 0 {
-                    Some(order[i - 1].clone())
+                    order.get(i - 1).cloned()
                 } else {
                     None
                 }
@@ -1781,7 +1794,9 @@ impl WordProcessor {
             .filter(|(_, r, _)| *r >= new_row)
             .map(|(id, r, _)| (id.clone(), *r))
             .collect();
-        let containers = self.containers.clone().unwrap();
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
         let mut first_new = None;
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut {
@@ -1861,7 +1876,7 @@ impl WordProcessor {
                             .min();
                         first_idx.and_then(|i| {
                             if i > 0 {
-                                Some(order[i - 1].clone())
+                                order.get(i - 1).cloned()
                             } else {
                                 None
                             }
@@ -1881,7 +1896,9 @@ impl WordProcessor {
                 }
             })
             .collect();
-        let containers = self.containers.clone().unwrap();
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
         let mut caret_new = None;
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut {
@@ -1936,8 +1953,7 @@ impl WordProcessor {
             return false;
         };
         if forward {
-            if pos + 1 < ordered.len() {
-                let next = ordered[pos + 1].0.clone();
+            if let Some((next, ..)) = ordered.get(pos + 1).cloned() {
                 self.caret = Caret {
                     block: next,
                     offset: 0,
@@ -1947,8 +1963,7 @@ impl WordProcessor {
                 // Last cell: grow the table by a row and land in its first cell.
                 self.insert_row(state, true);
             }
-        } else if pos > 0 {
-            let prev = ordered[pos - 1].0.clone();
+        } else if let Some((prev, ..)) = pos.checked_sub(1).and_then(|i| ordered.get(i).cloned()) {
             // Land at the end of the previous cell's text (natural Shift-Tab feel).
             let off = self.block_len(state, &prev);
             self.caret = Caret {
@@ -2031,7 +2046,9 @@ impl WordProcessor {
             .iter()
             .find(|(_, r, c)| *r == target_row && *c == cur_col)
             .map(|(id, _, _)| id.clone());
-        let containers = self.containers.clone().unwrap();
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut {
                 doc: state,
@@ -2084,7 +2101,9 @@ impl WordProcessor {
             .iter()
             .find(|(_, r, c)| *r == cur_row && *c == target_col)
             .map(|(id, _, _)| id.clone());
-        let containers = self.containers.clone().unwrap();
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut {
                 doc: state,
@@ -2119,13 +2138,15 @@ impl WordProcessor {
             .min();
         let before = first_idx.and_then(|i| {
             if i > 0 {
-                Some(order[i - 1].clone())
+                order.get(i - 1).cloned()
             } else {
                 None
             }
         });
         let cell_ids: Vec<String> = cells.iter().map(|(id, _, _)| id.clone()).collect();
-        let containers = self.containers.clone().unwrap();
+        let Some(containers) = self.containers.clone() else {
+            return;
+        };
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut {
                 doc: state,
@@ -2181,18 +2202,21 @@ impl WordProcessor {
     /// Resolve the document model under `root` (initialising the schema if
     /// absent), guarantee at least one block, and keep the caret on a real block.
     pub fn bind(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.containers.is_none() {
-            let c =
-                qdoc::model::open(state, root).unwrap_or_else(|_| qdoc::model::init(state, root));
-            // Seed past existing block ids so editing a loaded/imported document
-            // never re-mints (and overwrites) an existing block.
-            self.ids = Some(qdoc::model::seeded_id_gen(state, &c));
-            self.containers = Some(c);
-            // Populate the styles container (built-in defaults, or migrate a
-            // legacy meta-JSON stylesheet) on first bind.
-            self.seed_styles(state);
-        }
-        let containers = self.containers.clone().unwrap();
+        let containers = match self.containers.clone() {
+            Some(c) => c,
+            None => {
+                let c = qdoc::model::open(state, root)
+                    .unwrap_or_else(|_| qdoc::model::init(state, root));
+                // Seed past existing block ids so editing a loaded/imported document
+                // never re-mints (and overwrites) an existing block.
+                self.ids = Some(qdoc::model::seeded_id_gen(state, &c));
+                self.containers = Some(c.clone());
+                // Populate the styles container (built-in defaults, or migrate a
+                // legacy meta-JSON stylesheet) on first bind.
+                self.seed_styles(state);
+                c
+            }
+        };
         // A document always has somewhere to write: an empty body gets its
         // first paragraph here. Header and footer stay empty until something
         // asks for them.
@@ -2712,11 +2736,11 @@ impl WordProcessor {
         let off = self.caret.offset.min(chars.len());
         let word = |c: char| !c.is_whitespace();
         let mut s = off;
-        while s > 0 && word(chars[s - 1]) {
+        while s > 0 && chars.get(s - 1).is_some_and(|c| word(*c)) {
             s -= 1;
         }
         let mut e = off;
-        while e < chars.len() && word(chars[e]) {
+        while chars.get(e).is_some_and(|c| word(*c)) {
             e += 1;
         }
         if s == e {
@@ -2845,7 +2869,9 @@ impl WordProcessor {
         if pos == 0 {
             return;
         }
-        let prev = blocks[pos - 1].clone();
+        let Some(prev) = blocks.get(pos - 1).cloned() else {
+            return;
+        };
         let prev_len = self.block_len(state, &prev);
         let cur_text = self.region_block_text(state, &block).unwrap_or_default();
         if !cur_text.is_empty() {
@@ -2883,7 +2909,9 @@ impl WordProcessor {
         if pos + 1 >= blocks.len() {
             return;
         }
-        let next = blocks[pos + 1].clone();
+        let Some(next) = blocks.get(pos + 1).cloned() else {
+            return;
+        };
         let next_text = self.region_block_text(state, &next).unwrap_or_default();
         if !next_text.is_empty() {
             self.region_splice(state, &block, len, 0, &next_text);
@@ -2902,8 +2930,8 @@ impl WordProcessor {
         let blocks = self.ordered_blocks(state);
         if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block)
             && pos > 0
+            && let Some(prev) = blocks.get(pos - 1).cloned()
         {
-            let prev = blocks[pos - 1].clone();
             let len = self.block_len(state, &prev);
             self.caret = Caret {
                 block: prev,
@@ -2921,9 +2949,10 @@ impl WordProcessor {
         let blocks = self.ordered_blocks(state);
         if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block)
             && pos + 1 < blocks.len()
+            && let Some(next) = blocks.get(pos + 1).cloned()
         {
             self.caret = Caret {
-                block: blocks[pos + 1].clone(),
+                block: next,
                 offset: 0,
             };
         }
@@ -2968,7 +2997,9 @@ impl WordProcessor {
             return;
         }
         let i = index.min(blocks.len() - 1);
-        let block = blocks[i].clone();
+        let Some(block) = blocks.get(i).cloned() else {
+            return;
+        };
         let len = self.block_len(state, &block);
         let offset = self.caret.offset.min(len);
         self.caret = Caret { block, offset };

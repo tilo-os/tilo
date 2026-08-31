@@ -344,8 +344,13 @@ impl FilePicker {
             // wrapping_add is exactly the right operator for cyclic index
             // arithmetic: even in the unreachable case where active_filter
             // is usize::MAX, wrapping to 0 before the modulo still yields a
-            // valid index rather than panicking.
-            self.active_filter = self.active_filter.wrapping_add(1) % self.filters.len();
+            // valid index rather than panicking. `filters.len() > 1` above
+            // guards the `checked_rem` divisor.
+            self.active_filter = self
+                .active_filter
+                .wrapping_add(1)
+                .checked_rem(self.filters.len())
+                .unwrap_or(0);
             self.selection.clear();
             self.first_visible = 0;
             self.refresh_entries();
@@ -604,7 +609,7 @@ impl FilePicker {
         let start = self.selection.primary().map_or(0, |i| i.saturating_add(1));
         let n = self.entries.len();
         for off in 0..n {
-            let i = start.saturating_add(off) % n;
+            let i = start.saturating_add(off).checked_rem(n).unwrap_or(0);
             let Some(entry) = self.entries.get(i) else {
                 continue;
             };
@@ -711,10 +716,10 @@ impl Widget for FilePicker {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_click(modifiers, handled);
+                self.on_left_click(*modifiers, handled);
             }
             WindowEvent::KeyboardInput { event: ke, .. } if ke.state == ElementState::Pressed => {
-                self.on_key_pressed(ke, modifiers, handled);
+                self.on_key_pressed(ke, *modifiers, handled);
             }
             _ => {}
         }
@@ -892,83 +897,10 @@ impl FilePicker {
         let tokens = &theme.tokens;
         let row_size = tokens.typography.scale.sm;
         if self.mode == FilePickerMode::Save {
-            let field_top = self.rect.y1 - FOOTER_HEIGHT - FILENAME_HEIGHT;
-            let field = Rect::new(
-                self.rect.x0 + PADDING,
-                field_top + 4.0,
-                self.rect.x1 - PADDING,
-                field_top + FILENAME_HEIGHT - 4.0,
-            );
-            let s = RoundedRect::from_rect(field, f64::from(tokens.radii.sm));
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                tokens.colors.surfaces.base,
-                None,
-                &s,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                tokens.colors.border_focus,
-                None,
-                &s,
-            );
-            let shown = if self.filename.is_empty() {
-                "Filename…"
-            } else {
-                &self.filename
-            };
-            let color = if self.filename.is_empty() {
-                tokens.colors.text_dim
-            } else {
-                tokens.colors.text_primary
-            };
-            text_renderer.draw_text(
-                scene,
-                shown,
-                row_size,
-                color,
-                transform.pre_translate(Vec2::new(
-                    field.x0 + 8.0,
-                    field.y0 + (field.height() - f64::from(row_size)) / 2.0,
-                )),
-                None,
-            );
+            self.draw_filename_field(scene, transform, text_renderer, theme, row_size);
         }
-
         if self.filters.len() > 1 {
-            let hovered = self.filter_rect.contains(self.last_cursor);
-            let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.sm));
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if hovered {
-                    theme.bg_hover
-                } else {
-                    tokens.colors.surfaces.base
-                },
-                None,
-                &s,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                tokens.colors.border_standard,
-                None,
-                &s,
-            );
-            text_renderer.draw_text(
-                scene,
-                self.active_filter_label(),
-                row_size,
-                tokens.colors.text_primary,
-                transform.pre_translate(Vec2::new(
-                    self.filter_rect.x0 + 8.0,
-                    self.filter_rect.y0 + (self.filter_rect.height() - f64::from(row_size)) / 2.0,
-                )),
-                None,
-            );
+            self.draw_filter_chip(scene, transform, text_renderer, theme, row_size);
         }
 
         draw_button(
@@ -994,6 +926,107 @@ impl FilePicker {
             open_label,
             self.hover_button == Some(1),
             true,
+        );
+    }
+
+    /// Save-mode filename text field. Split out of `draw_footer` to keep
+    /// that under the line cap.
+    fn draw_filename_field(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        row_size: f32,
+    ) {
+        let tokens = &theme.tokens;
+        let field_top = self.rect.y1 - FOOTER_HEIGHT - FILENAME_HEIGHT;
+        let field = Rect::new(
+            self.rect.x0 + PADDING,
+            field_top + 4.0,
+            self.rect.x1 - PADDING,
+            field_top + FILENAME_HEIGHT - 4.0,
+        );
+        let s = RoundedRect::from_rect(field, f64::from(tokens.radii.sm));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.base,
+            None,
+            &s,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tokens.colors.border_focus,
+            None,
+            &s,
+        );
+        let shown = if self.filename.is_empty() {
+            "Filename…"
+        } else {
+            &self.filename
+        };
+        let color = if self.filename.is_empty() {
+            tokens.colors.text_dim
+        } else {
+            tokens.colors.text_primary
+        };
+        text_renderer.draw_text(
+            scene,
+            shown,
+            row_size,
+            color,
+            transform.pre_translate(Vec2::new(
+                field.x0 + 8.0,
+                field.y0 + (field.height() - f64::from(row_size)) / 2.0,
+            )),
+            None,
+        );
+    }
+
+    /// Active-filter chip, shown only when there is more than one filter to
+    /// cycle through. Split out of `draw_footer` to keep that under the
+    /// line cap.
+    fn draw_filter_chip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        row_size: f32,
+    ) {
+        let tokens = &theme.tokens;
+        let hovered = self.filter_rect.contains(self.last_cursor);
+        let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.sm));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            if hovered {
+                theme.bg_hover
+            } else {
+                tokens.colors.surfaces.base
+            },
+            None,
+            &s,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tokens.colors.border_standard,
+            None,
+            &s,
+        );
+        text_renderer.draw_text(
+            scene,
+            self.active_filter_label(),
+            row_size,
+            tokens.colors.text_primary,
+            transform.pre_translate(Vec2::new(
+                self.filter_rect.x0 + 8.0,
+                self.filter_rect.y0 + (self.filter_rect.height() - f64::from(row_size)) / 2.0,
+            )),
+            None,
         );
     }
 
@@ -1068,7 +1101,7 @@ impl FilePicker {
 
     /// Left-button `WindowEvent::MouseInput` handling. Split out of
     /// `handle_event` to keep that function readable.
-    fn on_left_click(&mut self, modifiers: &winit::event::Modifiers, handled: &mut bool) {
+    fn on_left_click(&mut self, modifiers: winit::event::Modifiers, handled: &mut bool) {
         let p = self.last_cursor;
         if self.cancel_rect.contains(p) {
             self.click_cancel();
@@ -1113,7 +1146,7 @@ impl FilePicker {
     fn on_key_pressed(
         &mut self,
         ke: &winit::event::KeyEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) {
         use winit::keyboard::{Key, NamedKey};

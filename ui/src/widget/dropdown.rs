@@ -425,7 +425,7 @@ impl Dropdown {
         &mut self,
         event: &WindowEvent,
         ke: &KeyEvent,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
@@ -775,7 +775,7 @@ impl Widget for Dropdown {
                     },
                 ..
             } if self.is_focused => {
-                self.on_key(event, ke, modifiers, state, root, handled);
+                self.on_key(event, ke, *modifiers, state, root, handled);
             }
             _ => {}
         }

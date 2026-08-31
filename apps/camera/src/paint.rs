@@ -47,6 +47,12 @@ pub fn circle_stroke(scene: &mut Scene, t: Affine, cx: f64, cy: f64, r: f64, col
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a two-point line-segment primitive called from ~40 sites across paint.rs and \
+              app.rs; bundling the endpoints into Points would only add Point::new(..) \
+              boilerplate at every call site for no real readability gain"
+)]
 pub fn line(
     scene: &mut Scene,
     t: Affine,
@@ -194,7 +200,33 @@ pub fn text_in(
 // ---- icons -----------------------------------------------------------
 
 /// Draw a schematic line icon centered in `rect`, sized to fit.
+///
+/// Grouped into per-glyph-cluster helpers purely to stay under clippy's
+/// per-function line limit — the groups have no semantic meaning.
 pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, w: f64) {
+    match name {
+        "camera" | "scan" | "gallery" | "settings" => icon_screen(scene, t, name, rect, color, w),
+        "flash" | "timer" | "grid" => icon_capture_prefs(scene, t, name, rect, color, w),
+        "hdr" | "star" | "star_o" | "trash" | "copy" => {
+            icon_status(scene, t, name, rect, color, w);
+        }
+        "link" | "wifi" | "person" | "switch" => icon_connect(scene, t, name, rect, color, w),
+        "play" | "check" | "search" | "share" | "phone" => {
+            icon_media(scene, t, name, rect, color, w);
+        }
+        "map" | "plus" | "chevron" | "back" | "close" | "aperture" | "bolt" => {
+            icon_nav(scene, t, name, rect, color, w);
+        }
+        _ => {
+            let cx = rect.center().x;
+            let cy = rect.center().y;
+            let h = rect.width().min(rect.height()) * 0.5;
+            circle_stroke(scene, t, cx, cy, h * 0.7, color, w);
+        }
+    }
+}
+
+fn icon_screen(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, w: f64) {
     let cx = rect.center().x;
     let cy = rect.center().y;
     let s = rect.width().min(rect.height());
@@ -211,12 +243,12 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
             circle(scene, t, cx + h * 0.6, cy - h * 0.35, w * 0.7, color);
         }
         "scan" => {
-            let b = h * 0.92;
-            let len = b * 0.5;
+            let bracket = h * 0.92;
+            let len = bracket * 0.5;
             // four corner brackets
             for &(sx, sy) in &[(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                let ox = cx + sx * b;
-                let oy = cy + sy * b;
+                let ox = cx + sx * bracket;
+                let oy = cy + sy * bracket;
                 scene.stroke(
                     &stroke,
                     t,
@@ -232,7 +264,16 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
                     &Line::new(Point::new(ox, oy), Point::new(ox, oy - sy * len)),
                 );
             }
-            line(scene, t, cx - b * 0.78, cy, cx + b * 0.78, cy, color, w);
+            line(
+                scene,
+                t,
+                cx - bracket * 0.78,
+                cy,
+                cx + bracket * 0.78,
+                cy,
+                color,
+                w,
+            );
         }
         "gallery" => {
             let body = Rect::new(cx - h, cy - h * 0.78, cx + h, cy + h * 0.78);
@@ -240,33 +281,42 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
             // sun
             circle(scene, t, cx - h * 0.4, cy - h * 0.3, h * 0.18, color);
             // mountain
-            let mut p = BezPath::new();
-            p.move_to((cx - h * 0.85, cy + h * 0.6));
-            p.line_to((cx - h * 0.2, cy - h * 0.1));
-            p.line_to((cx + h * 0.2, cy + h * 0.25));
-            p.line_to((cx + h * 0.55, cy - h * 0.2));
-            p.line_to((cx + h * 0.85, cy + h * 0.6));
-            scene.stroke(&stroke, t, color, None, &p);
+            let mut path = BezPath::new();
+            path.move_to((cx - h * 0.85, cy + h * 0.6));
+            path.line_to((cx - h * 0.2, cy - h * 0.1));
+            path.line_to((cx + h * 0.2, cy + h * 0.25));
+            path.line_to((cx + h * 0.55, cy - h * 0.2));
+            path.line_to((cx + h * 0.85, cy + h * 0.6));
+            scene.stroke(&stroke, t, color, None, &path);
         }
         "settings" => {
             // three sliders
-            for (i, fx) in [0.30, 0.0, -0.30].iter().enumerate() {
+            for (idx, fx) in [0.30, 0.0, -0.30].iter().enumerate() {
                 let y = cy + (*fx) * s;
                 line(scene, t, cx - h, y, cx + h, y, color, w);
-                let knob_x = cx + (if i % 2 == 0 { 0.4 } else { -0.4 }) * h;
+                let knob_x = cx + (if idx % 2 == 0 { 0.4 } else { -0.4 }) * h;
                 circle(scene, t, knob_x, y, w * 1.6, color);
             }
         }
+        _ => {}
+    }
+}
+
+fn icon_capture_prefs(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, w: f64) {
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+    let h = rect.width().min(rect.height()) * 0.5;
+    match name {
         "flash" => {
-            let mut p = BezPath::new();
-            p.move_to((cx + h * 0.15, cy - h));
-            p.line_to((cx - h * 0.5, cy + h * 0.1));
-            p.line_to((cx, cy + h * 0.1));
-            p.line_to((cx - h * 0.15, cy + h));
-            p.line_to((cx + h * 0.5, cy - h * 0.1));
-            p.line_to((cx, cy - h * 0.1));
-            p.close_path();
-            scene.fill(Fill::NonZero, t, color, None, &p);
+            let mut path = BezPath::new();
+            path.move_to((cx + h * 0.15, cy - h));
+            path.line_to((cx - h * 0.5, cy + h * 0.1));
+            path.line_to((cx, cy + h * 0.1));
+            path.line_to((cx - h * 0.15, cy + h));
+            path.line_to((cx + h * 0.5, cy - h * 0.1));
+            path.line_to((cx, cy - h * 0.1));
+            path.close_path();
+            scene.fill(Fill::NonZero, t, color, None, &path);
         }
         "timer" => {
             circle_stroke(scene, t, cx, cy + h * 0.1, h * 0.78, color, w);
@@ -293,11 +343,11 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
             );
         }
         "grid" => {
-            let b = h * 0.92;
+            let box_h = h * 0.92;
             stroke_round(
                 scene,
                 t,
-                Rect::new(cx - b, cy - b, cx + b, cy + b),
+                Rect::new(cx - box_h, cy - box_h, cx + box_h, cy + box_h),
                 2.0,
                 color,
                 w,
@@ -305,44 +355,53 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
             line(
                 scene,
                 t,
-                cx - b / 3.0,
-                cy - b,
-                cx - b / 3.0,
-                cy + b,
+                cx - box_h / 3.0,
+                cy - box_h,
+                cx - box_h / 3.0,
+                cy + box_h,
                 color,
                 w * 0.8,
             );
             line(
                 scene,
                 t,
-                cx + b / 3.0,
-                cy - b,
-                cx + b / 3.0,
-                cy + b,
+                cx + box_h / 3.0,
+                cy - box_h,
+                cx + box_h / 3.0,
+                cy + box_h,
                 color,
                 w * 0.8,
             );
             line(
                 scene,
                 t,
-                cx - b,
-                cy - b / 3.0,
-                cx + b,
-                cy - b / 3.0,
+                cx - box_h,
+                cy - box_h / 3.0,
+                cx + box_h,
+                cy - box_h / 3.0,
                 color,
                 w * 0.8,
             );
             line(
                 scene,
                 t,
-                cx - b,
-                cy + b / 3.0,
-                cx + b,
-                cy + b / 3.0,
+                cx - box_h,
+                cy + box_h / 3.0,
+                cx + box_h,
+                cy + box_h / 3.0,
                 color,
                 w * 0.8,
             );
         }
+        _ => {}
+    }
+}
+
+fn icon_status(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, w: f64) {
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+    let h = rect.width().min(rect.height()) * 0.5;
+    match name {
         "hdr" => {
             stroke_round(
                 scene,
@@ -354,10 +413,10 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
             );
         }
         "star" => {
-            star(scene, t, cx, cy, h * 0.95, color, true, w);
+            star(scene, t, Point::new(cx, cy), h * 0.95, color, true, w);
         }
         "star_o" => {
-            star(scene, t, cx, cy, h * 0.95, color, false, w);
+            star(scene, t, Point::new(cx, cy), h * 0.95, color, false, w);
         }
         "trash" => {
             line(
@@ -407,32 +466,42 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
                 w,
             );
         }
+        _ => {}
+    }
+}
+
+fn icon_connect(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, w: f64) {
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+    let h = rect.width().min(rect.height()) * 0.5;
+    let stroke = Stroke::new(w);
+    match name {
         "link" => {
             circle_stroke(scene, t, cx - h * 0.35, cy + h * 0.35, h * 0.5, color, w);
             circle_stroke(scene, t, cx + h * 0.35, cy - h * 0.35, h * 0.5, color, w);
         }
         "wifi" => {
-            for (i, r) in [0.95f64, 0.62, 0.32].iter().enumerate() {
+            for (idx, radius) in [0.95f64, 0.62, 0.32].iter().enumerate() {
                 arc_up(
                     scene,
                     t,
                     cx,
                     cy + h * 0.55,
-                    h * r,
+                    h * radius,
                     color,
-                    w * (1.0 + i as f64 * 0.0),
+                    w * (1.0 + idx as f64 * 0.0),
                 );
             }
             circle(scene, t, cx, cy + h * 0.55, w, color);
         }
         "person" => {
             circle_stroke(scene, t, cx, cy - h * 0.35, h * 0.42, color, w);
-            let mut p = BezPath::new();
-            p.move_to((cx - h * 0.7, cy + h));
-            p.line_to((cx - h * 0.55, cy + h * 0.25));
-            p.line_to((cx + h * 0.55, cy + h * 0.25));
-            p.line_to((cx + h * 0.7, cy + h));
-            scene.stroke(&stroke, t, color, None, &p);
+            let mut path = BezPath::new();
+            path.move_to((cx - h * 0.7, cy + h));
+            path.line_to((cx - h * 0.55, cy + h * 0.25));
+            path.line_to((cx + h * 0.55, cy + h * 0.25));
+            path.line_to((cx + h * 0.7, cy + h));
+            scene.stroke(&stroke, t, color, None, &path);
         }
         "switch" => {
             // two curved arrows forming a flip
@@ -479,20 +548,30 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
                 w,
             );
         }
+        _ => {}
+    }
+}
+
+fn icon_media(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, w: f64) {
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+    let h = rect.width().min(rect.height()) * 0.5;
+    let stroke = Stroke::new(w);
+    match name {
         "play" => {
-            let mut p = BezPath::new();
-            p.move_to((cx - h * 0.5, cy - h * 0.7));
-            p.line_to((cx + h * 0.7, cy));
-            p.line_to((cx - h * 0.5, cy + h * 0.7));
-            p.close_path();
-            scene.fill(Fill::NonZero, t, color, None, &p);
+            let mut path = BezPath::new();
+            path.move_to((cx - h * 0.5, cy - h * 0.7));
+            path.line_to((cx + h * 0.7, cy));
+            path.line_to((cx - h * 0.5, cy + h * 0.7));
+            path.close_path();
+            scene.fill(Fill::NonZero, t, color, None, &path);
         }
         "check" => {
-            let mut p = BezPath::new();
-            p.move_to((cx - h * 0.6, cy));
-            p.line_to((cx - h * 0.1, cy + h * 0.55));
-            p.line_to((cx + h * 0.7, cy - h * 0.55));
-            scene.stroke(&Stroke::new(w * 1.2), t, color, None, &p);
+            let mut path = BezPath::new();
+            path.move_to((cx - h * 0.6, cy));
+            path.line_to((cx - h * 0.1, cy + h * 0.55));
+            path.line_to((cx + h * 0.7, cy - h * 0.55));
+            scene.stroke(&Stroke::new(w * 1.2), t, color, None, &path);
         }
         "search" => {
             circle_stroke(scene, t, cx - h * 0.15, cy - h * 0.15, h * 0.55, color, w);
@@ -533,44 +612,54 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
             );
         }
         "phone" => {
-            let mut p = BezPath::new();
-            p.move_to((cx - h * 0.7, cy - h * 0.7));
-            p.line_to((cx - h * 0.2, cy - h * 0.7));
-            p.line_to((cx, cy - h * 0.2));
-            p.line_to((cx - h * 0.25, cy + h * 0.05));
-            p.line_to((cx + h * 0.2, cy + h * 0.5));
-            p.line_to((cx + h * 0.45, cy + h * 0.25));
-            p.line_to((cx + h * 0.95, cy + h * 0.45));
-            p.line_to((cx + h * 0.95, cy + h * 0.9));
-            scene.stroke(&stroke, t, color, None, &p);
+            let mut path = BezPath::new();
+            path.move_to((cx - h * 0.7, cy - h * 0.7));
+            path.line_to((cx - h * 0.2, cy - h * 0.7));
+            path.line_to((cx, cy - h * 0.2));
+            path.line_to((cx - h * 0.25, cy + h * 0.05));
+            path.line_to((cx + h * 0.2, cy + h * 0.5));
+            path.line_to((cx + h * 0.45, cy + h * 0.25));
+            path.line_to((cx + h * 0.95, cy + h * 0.45));
+            path.line_to((cx + h * 0.95, cy + h * 0.9));
+            scene.stroke(&stroke, t, color, None, &path);
         }
+        _ => {}
+    }
+}
+
+fn icon_nav(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, w: f64) {
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+    let h = rect.width().min(rect.height()) * 0.5;
+    let stroke = Stroke::new(w);
+    match name {
         "map" => {
             circle_stroke(scene, t, cx, cy - h * 0.2, h * 0.6, color, w);
             circle(scene, t, cx, cy - h * 0.2, h * 0.18, color);
-            let mut p = BezPath::new();
-            p.move_to((cx - h * 0.6, cy + h * 0.1));
-            p.line_to((cx, cy + h));
-            p.line_to((cx + h * 0.6, cy + h * 0.1));
-            scene.stroke(&stroke, t, color, None, &p);
+            let mut path = BezPath::new();
+            path.move_to((cx - h * 0.6, cy + h * 0.1));
+            path.line_to((cx, cy + h));
+            path.line_to((cx + h * 0.6, cy + h * 0.1));
+            scene.stroke(&stroke, t, color, None, &path);
         }
         "plus" => {
             line(scene, t, cx - h * 0.7, cy, cx + h * 0.7, cy, color, w);
             line(scene, t, cx, cy - h * 0.7, cx, cy + h * 0.7, color, w);
         }
         "chevron" => {
-            let mut p = BezPath::new();
-            p.move_to((cx - h * 0.3, cy - h * 0.6));
-            p.line_to((cx + h * 0.4, cy));
-            p.line_to((cx - h * 0.3, cy + h * 0.6));
-            scene.stroke(&stroke, t, color, None, &p);
+            let mut path = BezPath::new();
+            path.move_to((cx - h * 0.3, cy - h * 0.6));
+            path.line_to((cx + h * 0.4, cy));
+            path.line_to((cx - h * 0.3, cy + h * 0.6));
+            scene.stroke(&stroke, t, color, None, &path);
         }
         "back" => {
             // Left-pointing chevron — the universal "go back" affordance.
-            let mut p = BezPath::new();
-            p.move_to((cx + h * 0.35, cy - h * 0.6));
-            p.line_to((cx - h * 0.35, cy));
-            p.line_to((cx + h * 0.35, cy + h * 0.6));
-            scene.stroke(&stroke, t, color, None, &p);
+            let mut path = BezPath::new();
+            path.move_to((cx + h * 0.35, cy - h * 0.6));
+            path.line_to((cx - h * 0.35, cy));
+            path.line_to((cx + h * 0.35, cy + h * 0.6));
+            scene.stroke(&stroke, t, color, None, &path);
         }
         "close" => {
             line(
@@ -597,79 +686,68 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
         "aperture" => {
             // Camera iris: a ring with six blade spokes struck from points on
             // the circle — the universally-legible "camera lens" brand glyph.
-            let r = h * 0.92;
-            circle_stroke(scene, t, cx, cy, r, color, w);
-            for k in 0..6 {
-                let a = f64::from(k) * std::f64::consts::PI / 3.0 + 0.35;
-                let a2 = a + 2.0 * std::f64::consts::PI / 3.0;
-                let x0 = cx + r * a.cos();
-                let y0 = cy + r * a.sin();
-                let x1 = cx + r * a2.cos();
-                let y1 = cy + r * a2.sin();
+            let radius = h * 0.92;
+            circle_stroke(scene, t, cx, cy, radius, color, w);
+            for spoke in 0..6 {
+                let angle = f64::from(spoke) * std::f64::consts::PI / 3.0 + 0.35;
+                let angle2 = angle + 2.0 * std::f64::consts::PI / 3.0;
+                let x0 = cx + radius * angle.cos();
+                let y0 = cy + radius * angle.sin();
+                let x1 = cx + radius * angle2.cos();
+                let y1 = cy + radius * angle2.sin();
                 line(scene, t, x0, y0, x1, y1, color, w * 0.72);
             }
         }
         "bolt" => {
-            let mut p = BezPath::new();
-            p.move_to((cx + h * 0.18, cy - h));
-            p.line_to((cx - h * 0.55, cy + h * 0.15));
-            p.line_to((cx - h * 0.02, cy + h * 0.15));
-            p.line_to((cx - h * 0.18, cy + h));
-            p.line_to((cx + h * 0.55, cy - h * 0.15));
-            p.line_to((cx + h * 0.02, cy - h * 0.15));
-            p.close_path();
-            scene.stroke(&stroke, t, color, None, &p);
+            let mut path = BezPath::new();
+            path.move_to((cx + h * 0.18, cy - h));
+            path.line_to((cx - h * 0.55, cy + h * 0.15));
+            path.line_to((cx - h * 0.02, cy + h * 0.15));
+            path.line_to((cx - h * 0.18, cy + h));
+            path.line_to((cx + h * 0.55, cy - h * 0.15));
+            path.line_to((cx + h * 0.02, cy - h * 0.15));
+            path.close_path();
+            scene.stroke(&stroke, t, color, None, &path);
         }
-        _ => {
-            circle_stroke(scene, t, cx, cy, h * 0.7, color, w);
-        }
+        _ => {}
     }
 }
 
 fn arc_up(scene: &mut Scene, t: Affine, cx: f64, cy: f64, r: f64, color: Color, w: f64) {
     // Approximate an upward arc with a polyline.
-    let mut p = BezPath::new();
+    let mut path = BezPath::new();
     let steps = 14;
-    for i in 0..=steps {
-        let frac = f64::from(i) / f64::from(steps);
+    for step in 0..=steps {
+        let frac = f64::from(step) / f64::from(steps);
         let ang = std::f64::consts::PI * (1.0 + frac); // pi..2pi (upper half)
-        let x = cx + r * ang.cos();
-        let y = cy + r * ang.sin();
-        if i == 0 {
-            p.move_to((x, y));
+        let px = cx + r * ang.cos();
+        let py = cy + r * ang.sin();
+        if step == 0 {
+            path.move_to((px, py));
         } else {
-            p.line_to((x, y));
+            path.line_to((px, py));
         }
     }
-    scene.stroke(&Stroke::new(w), t, color, None, &p);
+    scene.stroke(&Stroke::new(w), t, color, None, &path);
 }
 
-fn star(
-    scene: &mut Scene,
-    t: Affine,
-    cx: f64,
-    cy: f64,
-    r: f64,
-    color: Color,
-    filled: bool,
-    w: f64,
-) {
-    let mut p = BezPath::new();
-    for i in 0..10 {
-        let ang = -std::f64::consts::FRAC_PI_2 + f64::from(i) * std::f64::consts::PI / 5.0;
-        let rr = if i % 2 == 0 { r } else { r * 0.45 };
-        let x = cx + rr * ang.cos();
-        let y = cy + rr * ang.sin();
-        if i == 0 {
-            p.move_to((x, y));
+fn star(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color, filled: bool, w: f64) {
+    let mut path = BezPath::new();
+    for point in 0..10 {
+        let ang = -std::f64::consts::FRAC_PI_2 + f64::from(point) * std::f64::consts::PI / 5.0;
+        let radius = if point % 2 == 0 { r } else { r * 0.45 };
+        let px = center.x + radius * ang.cos();
+        let py = center.y + radius * ang.sin();
+        if point == 0 {
+            path.move_to((px, py));
         } else {
-            p.line_to((x, y));
+            path.line_to((px, py));
         }
     }
-    p.close_path();
+    path.close_path();
     if filled {
-        scene.fill(Fill::NonZero, t, color, None, &p);
+        scene.fill(Fill::NonZero, t, color, None, &path);
     } else {
-        scene.stroke(&Stroke::new(w), t, color, None, &p);
+        scene.stroke(&Stroke::new(w), t, color, None, &path);
     }
 }

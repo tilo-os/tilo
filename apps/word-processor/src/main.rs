@@ -83,7 +83,10 @@ use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 /// share, so only a function of its own arguments can be tested against it.
 fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
     let hex = have.to_hex_string();
-    format!("{prefix}-{}", &hex[..hex.len().min(12)])
+    // `to_hex_string` is pure ASCII hex digits, so any byte offset is also a
+    // char boundary; `.get` still keeps this panic-free rather than trusting it.
+    let short = hex.get(..hex.len().min(12)).unwrap_or(hex.as_str());
+    format!("{prefix}-{short}")
 }
 
 /// The name this replica is given, if anything has named it. `QUICK_APP_ID` is
@@ -105,26 +108,24 @@ fn named_actor(prefix: &str) -> Option<String> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = std::env::args().collect();
-
     let mut shots: Option<String> = None;
     let mut file: Option<PathBuf> = None;
     let mut history = false;
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
+    // An iterator over the args, rather than an index into a collected `Vec`,
+    // so `--shots`'s value is just "the next item" — no offset that could
+    // walk past the end.
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
             "--shots" => {
-                shots = args.get(i + 1).cloned();
-                i += 2;
+                shots = args.next();
             }
             "--history" => {
                 history = true;
-                i += 1;
             }
-            a if a.starts_with("--") => i += 1,
+            a if a.starts_with("--") => {}
             a => {
                 file = Some(PathBuf::from(a));
-                i += 1;
             }
         }
     }
@@ -135,7 +136,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // few authored revisions first, through the same editing path a user
         // takes, then open the strip.
         let (mut state, mut wp) = build_concrete(file.as_deref())?;
-        seed_revisions(&mut state, &mut wp);
+        seed_revisions(&mut state, &mut wp)?;
         // Pin the floating status readout visible so the shot captures it.
         wp.arm_status_bubble_for_shots();
         render_shot(state, Box::new(wp), (1000, 700), Path::new(out))?;
@@ -203,7 +204,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// shows a name somebody else wrote. Nothing here seeds the history *pane*: it
 /// seeds the document, and the pane derives its band from the resulting change
 /// graph exactly as for a document a user typed.
-fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
+///
+/// # Errors
+///
+/// Returns `Err` if the freshly-built demo document doesn't have the schema
+/// or the paragraph this seeding assumes, or if the collaborator fork fails
+/// to merge back — all of which would mean the widget/model plumbing above
+/// it is broken, not that the demo data itself is missing.
+fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(), Box<dyn Error>> {
     state
         .doc
         .set_actor(automerge::ActorId::from("alice".as_bytes()));
@@ -238,9 +246,11 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
     peer.set_actor(automerge::ActorId::from("Bob Chen".as_bytes()));
     let mut peer_first = None;
     for i in 0..4 {
-        let c = qdoc::model::open(&peer, &state.root).expect("qdoc schema");
+        let c = qdoc::model::open(&peer, &state.root)?;
         let blocks = qdoc::model::materialize(&peer, &c).blocks;
-        let last = blocks.last().expect("a paragraph to append to");
+        let last = blocks
+            .last()
+            .ok_or("seed_revisions: no paragraph to append to")?;
         let at = last.text.chars().count();
         let mut ids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
         let mut dm = qdoc::DocMut {
@@ -262,7 +272,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
         ui::history_groups::name_range(&mut peer, &start, Some(&end), "Costs section");
         qdoc::history::commit_stamped_at(&mut peer, base + 3600 + 150);
     }
-    state.doc.merge(&mut peer).expect("peers merge");
+    state.doc.merge(&mut peer)?;
 
     // Session three, three hours after that, back to the local author.
     wp.sync(&mut state.doc, &state.root);
@@ -286,6 +296,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
 
     wp.toggle_history(&mut state.doc);
     wp.sync(&mut state.doc, &state.root);
+    Ok(())
 }
 
 /// Like [`build`] but keeps the concrete widget type.

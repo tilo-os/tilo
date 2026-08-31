@@ -16,8 +16,8 @@
 use std::sync::mpsc::{Receiver, Sender};
 
 use crate::backend::{
-    AlbumPage, ArtistPage, HomeContent, PlaylistPage, ResolvedStream, SearchBundle, SearchKind,
-    preferred_backend,
+    AlbumPage, ArtistPage, HomeContent, MusicBackend, PlaylistPage, ResolvedStream, SearchBundle,
+    SearchKind, preferred_backend,
 };
 
 /// A unit of work for the background thread.
@@ -85,6 +85,95 @@ pub enum StreamUpdate {
     Note(String),
 }
 
+/// Run one request against `backend` and send its result(s) on `up_tx`. Split
+/// out of [`StreamWorker::spawn`]'s worker loop, which otherwise has to
+/// service every request kind inline.
+fn handle_request(backend: &dyn MusicBackend, req: StreamRequest, up_tx: &Sender<StreamUpdate>) {
+    match req {
+        StreamRequest::Search(query) => match backend.search_all(&query) {
+            Ok(bundle) => {
+                let _ = up_tx.send(StreamUpdate::SearchResults {
+                    query,
+                    bundle: Box::new(bundle),
+                });
+            }
+            Err(e) => {
+                let _ = up_tx.send(StreamUpdate::Note(format!("search: {e}")));
+            }
+        },
+        StreamRequest::SearchMore { query, kind } => match backend.search_more(&query, kind) {
+            Ok(bundle) => {
+                let _ = up_tx.send(StreamUpdate::SearchMore {
+                    query,
+                    kind,
+                    bundle: Box::new(bundle),
+                });
+            }
+            Err(e) => {
+                let _ = up_tx.send(StreamUpdate::Note(format!("search: {e}")));
+            }
+        },
+        StreamRequest::Resolve { track_id, video_id } => match backend.resolve_audio(&video_id) {
+            Ok(stream) => {
+                let _ = up_tx.send(StreamUpdate::Resolved {
+                    track_id,
+                    stream: Box::new(stream),
+                });
+            }
+            Err(e) => {
+                let _ = up_tx.send(StreamUpdate::ResolveFailed {
+                    track_id,
+                    error: e.to_string(),
+                });
+            }
+        },
+        StreamRequest::Home => match backend.home() {
+            Ok(content) => {
+                let _ = up_tx.send(StreamUpdate::Home {
+                    content: Box::new(content),
+                });
+            }
+            Err(e) => {
+                let _ = up_tx.send(StreamUpdate::Note(format!("home: {e}")));
+                let _ = up_tx.send(StreamUpdate::HomeUnavailable);
+            }
+        },
+        StreamRequest::Artist(id) => match backend.artist(&id) {
+            Ok(page) => {
+                let _ = up_tx.send(StreamUpdate::Artist {
+                    page: Box::new(page),
+                });
+            }
+            Err(e) => {
+                let _ = up_tx.send(StreamUpdate::Note(format!("artist: {e}")));
+                let _ = up_tx.send(StreamUpdate::PageUnavailable { id });
+            }
+        },
+        StreamRequest::Album(id) => match backend.album(&id) {
+            Ok(page) => {
+                let _ = up_tx.send(StreamUpdate::Album {
+                    page: Box::new(page),
+                });
+            }
+            Err(e) => {
+                let _ = up_tx.send(StreamUpdate::Note(format!("album: {e}")));
+                let _ = up_tx.send(StreamUpdate::PageUnavailable { id });
+            }
+        },
+        StreamRequest::Playlist(id) => match backend.playlist(&id) {
+            Ok(page) => {
+                let _ = up_tx.send(StreamUpdate::Playlist {
+                    page: Box::new(page),
+                });
+            }
+            Err(e) => {
+                let _ = up_tx.send(StreamUpdate::Note(format!("playlist: {e}")));
+                let _ = up_tx.send(StreamUpdate::PageUnavailable { id });
+            }
+        },
+    }
+}
+
 /// Handle to the background worker: a request sender + an update receiver.
 pub struct StreamWorker {
     tx: Sender<StreamRequest>,
@@ -93,12 +182,14 @@ pub struct StreamWorker {
 
 impl StreamWorker {
     /// Spawn the worker thread. Constructing the backend (live network init)
-    /// happens *inside* the thread, so this call never blocks the caller.
+    /// happens *inside* the thread, so this call never blocks the caller. If
+    /// the OS fails to spawn the thread, the worker silently behaves like a
+    /// dead one — [`Self::request`] already documents that as fire-and-forget.
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<StreamRequest>();
         let (up_tx, up_rx) = std::sync::mpsc::channel::<StreamUpdate>();
 
-        std::thread::Builder::new()
+        let _ = std::thread::Builder::new()
             .name("music-stream".into())
             .spawn(move || {
                 // Build the data source once. `preferred_backend` picks live
@@ -113,96 +204,9 @@ impl StreamWorker {
                 });
 
                 while let Ok(req) = req_rx.recv() {
-                    match req {
-                        StreamRequest::Search(query) => match backend.search_all(&query) {
-                            Ok(bundle) => {
-                                let _ = up_tx.send(StreamUpdate::SearchResults {
-                                    query,
-                                    bundle: Box::new(bundle),
-                                });
-                            }
-                            Err(e) => {
-                                let _ = up_tx.send(StreamUpdate::Note(format!("search: {e}")));
-                            }
-                        },
-                        StreamRequest::SearchMore { query, kind } => {
-                            match backend.search_more(&query, kind) {
-                                Ok(bundle) => {
-                                    let _ = up_tx.send(StreamUpdate::SearchMore {
-                                        query,
-                                        kind,
-                                        bundle: Box::new(bundle),
-                                    });
-                                }
-                                Err(e) => {
-                                    let _ = up_tx.send(StreamUpdate::Note(format!("search: {e}")));
-                                }
-                            }
-                        }
-                        StreamRequest::Resolve { track_id, video_id } => {
-                            match backend.resolve_audio(&video_id) {
-                                Ok(stream) => {
-                                    let _ = up_tx.send(StreamUpdate::Resolved {
-                                        track_id,
-                                        stream: Box::new(stream),
-                                    });
-                                }
-                                Err(e) => {
-                                    let _ = up_tx.send(StreamUpdate::ResolveFailed {
-                                        track_id,
-                                        error: e.to_string(),
-                                    });
-                                }
-                            }
-                        }
-                        StreamRequest::Home => match backend.home() {
-                            Ok(content) => {
-                                let _ = up_tx.send(StreamUpdate::Home {
-                                    content: Box::new(content),
-                                });
-                            }
-                            Err(e) => {
-                                let _ = up_tx.send(StreamUpdate::Note(format!("home: {e}")));
-                                let _ = up_tx.send(StreamUpdate::HomeUnavailable);
-                            }
-                        },
-                        StreamRequest::Artist(id) => match backend.artist(&id) {
-                            Ok(page) => {
-                                let _ = up_tx.send(StreamUpdate::Artist {
-                                    page: Box::new(page),
-                                });
-                            }
-                            Err(e) => {
-                                let _ = up_tx.send(StreamUpdate::Note(format!("artist: {e}")));
-                                let _ = up_tx.send(StreamUpdate::PageUnavailable { id });
-                            }
-                        },
-                        StreamRequest::Album(id) => match backend.album(&id) {
-                            Ok(page) => {
-                                let _ = up_tx.send(StreamUpdate::Album {
-                                    page: Box::new(page),
-                                });
-                            }
-                            Err(e) => {
-                                let _ = up_tx.send(StreamUpdate::Note(format!("album: {e}")));
-                                let _ = up_tx.send(StreamUpdate::PageUnavailable { id });
-                            }
-                        },
-                        StreamRequest::Playlist(id) => match backend.playlist(&id) {
-                            Ok(page) => {
-                                let _ = up_tx.send(StreamUpdate::Playlist {
-                                    page: Box::new(page),
-                                });
-                            }
-                            Err(e) => {
-                                let _ = up_tx.send(StreamUpdate::Note(format!("playlist: {e}")));
-                                let _ = up_tx.send(StreamUpdate::PageUnavailable { id });
-                            }
-                        },
-                    }
+                    handle_request(backend.as_ref(), req, &up_tx);
                 }
-            })
-            .expect("spawn music-stream worker");
+            });
 
         Self {
             tx: req_tx,

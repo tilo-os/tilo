@@ -624,12 +624,12 @@ impl SidebarWheelDisc {
         theme: &Theme,
         text_renderer: &mut TextRenderer,
     ) -> f64 {
+        const STEP: f64 = 2.0;
         let Some(spoke) = self.spokes.get(idx) else {
             return SECTOR_CHIP_H_ACTIVE;
         };
         let lead = ChipLead::Glyph(self.spoke_icon(idx));
         let mut chosen = SECTOR_CHIP_H;
-        const STEP: f64 = 2.0;
         // (SECTOR_CHIP_H_ACTIVE - SECTOR_CHIP_H) / STEP, spelled as a
         // plain integer bound so the loop counts steps instead of
         // comparing floats against an accumulating float.
@@ -922,6 +922,13 @@ impl Widget for SidebarWheelDisc {
         // and returns `Ok` unconditionally (taffy 0.10's implementation
         // has no failure path for a leaf with no child/parent refs) —
         // so this is a `let...else` rather than a real fallible call.
+        #[allow(
+            clippy::unreachable,
+            reason = "verified against taffy 0.10.1's own source \
+                      (tree/taffy_tree.rs): new_leaf unconditionally inserts \
+                      into its own slotmaps and returns Ok — there is no Err \
+                      path for a plain leaf, so this cannot fire"
+        )]
         let Ok(node) = taffy.new_leaf(Style {
             size: Size {
                 width: Dimension::length(f64_to_f32_lossy(self.visible_width_px())),
@@ -951,6 +958,14 @@ impl Widget for SidebarWheelDisc {
         // `node` would panic inside taffy's own slotmap index before this
         // Result is produced, so `unwrap` here wasn't guarding anything
         // this `let...else` doesn't already cover.
+        #[allow(
+            clippy::unreachable,
+            reason = "verified against taffy 0.10.1's own source \
+                      (tree/taffy_tree.rs): layout() always returns Ok in \
+                      both the rounded and unrounded branches; a bad NodeId \
+                      panics inside the slotmap index first, never through \
+                      this Result"
+        )]
         let Ok(l) = taffy.layout(node) else {
             unreachable!("TaffyTree::layout only errors on a config this compositor never sets")
         };
@@ -1011,26 +1026,11 @@ impl Widget for SidebarWheelDisc {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Cache fast-path: at rest nothing painted changes frame to frame, so
-        // fingerprint every input and replay on a hit (hit rects stay valid —
-        // the prior cache-miss draw populated them at the same rotation/rect).
-        // A pan-only change replays under a translation instead of re-encoding.
+        // Fingerprint every input that affects painted pixels, then try
+        // the cache before paying for a fresh encode.
         let fp = self.current_fingerprint();
-        if fp.is_populated() && self.cached_fp.is_populated() {
-            if fp == self.cached_fp {
-                out_scene.append(&self.cached_scene, Some(out_transform));
-                return;
-            }
-            if fp.content_eq(&self.cached_fp) {
-                let dx =
-                    i64_to_f64_lossy(fp.origin_px.0.saturating_sub(self.cached_fp.origin_px.0));
-                let dy =
-                    i64_to_f64_lossy(fp.origin_px.1.saturating_sub(self.cached_fp.origin_px.1));
-                let shift = Affine::translate((dx, dy));
-                out_scene.append(&self.cached_scene, Some(out_transform * shift));
-                self.retarget_hit_rects(fp.origin_px);
-                return;
-            }
+        if self.try_paint_from_cache(out_scene, out_transform, &fp) {
+            return;
         }
 
         // Cache miss — encode at IDENTITY, then splice with
@@ -1038,426 +1038,63 @@ impl Widget for SidebarWheelDisc {
         // exclusive `&mut Scene` without aliasing `self`.
         let mut local = std::mem::take(&mut self.cached_scene);
         local.reset();
-        let scene = &mut local;
-        let transform = Affine::IDENTITY;
 
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-
-        let radius = self.diameter_px / 2.0;
-        if radius <= 1.0 || self.rect.area() <= 0.0 {
+        let Some(geom) = self.disc_geometry(theme) else {
             // Restore the (empty) cache without recording a fingerprint
             // so a zero-width rect doesn't lock the cache.
             self.cached_scene = local;
             return;
-        }
-        let c = self.center();
-        let cx = c.x;
-        let cy = c.y;
-
-        // ---- Geometry ---------------------------------------------------
-        // The visible object is an annular BAND: constant-depth, as deep as
-        // it can be while the inner arc stays inside the footprint.
-        let half_h = self.rect.height() / 2.0;
-        let r_out = radius;
-        // `sqrt(d^2 + half_h^2)`: the radius whose arc passes exactly through
-        // the footprint's left corners — deepest the band can be on a curve.
-        let d_left = (self.rect.x0 - cx + BAND_LEFT_INSET).max(1.0);
-        // The body reaches centre, so `r_ref` is a layout reference only
-        // (labels, add button) — the solid fill doesn't move with it.
-        let tangent_dy = half_h * BAND_TANGENT_FRACTION;
-        let r_ref = (d_left * d_left + tangent_dy * tangent_dy)
-            .sqrt()
-            .clamp(4.0, r_out - 12.0);
-        // `atan(half_h / d_left)` is the angle whose radial passes
-        // exactly through the footprint's corner, plus slop so an
-        // entering divider is already drawn.
-        let sweep = (half_h / d_left).atan() + SWEEP_SLOP_DEG.to_radians();
+        };
+        let mut ctx = DrawCtx {
+            scene: &mut local,
+            transform: Affine::IDENTITY,
+            theme,
+            text_renderer,
+            presence,
+        };
 
         // ---- Pass 1: the band -------------------------------------------
         // Body, edges and drop shadow are ONE isolated group, faded top/bottom
-        // by a single mask, so the band reads as a slice, not a hard cut. The
-        // horizontal clip is load-bearing — unclipped, the ring would sweep
-        // back around off-screen; it runs past the right edge for the rim shadow.
-        // Flat fill — the theme's glass surface, same token as modal surfaces.
-        let body_hue = colors.surfaces.glass;
-        // Tracks the theme's foreground rather than a hardcoded white,
-        // which is a scratch under the light theme and near-invisible
-        // under high contrast.
-        let edge_hue = colors.text_primary;
-        let edge = |a: u8| Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), a);
-        let group_clip = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1 + RIM_SHADOW_REACH,
-            self.rect.y1,
-        );
-
-        // Vertical fade, used as the group's mask. White because only its
-        // alpha channel is read (`DestIn` keeps the backdrop where the
-        // mask is opaque); the colour never reaches the screen.
-        let vfade = Gradient::new_linear(
-            Point::new(self.rect.x0, self.rect.y0),
-            Point::new(self.rect.x0, self.rect.y1),
-        )
-        .with_extend(Extend::Pad)
-        .with_stops(
-            &[
-                ColorStop {
-                    offset: 0.0,
-                    color: Color::from_rgba8(255, 255, 255, 0).into(),
-                },
-                ColorStop {
-                    offset: FADE_IN_STOP,
-                    color: Color::WHITE.into(),
-                },
-                ColorStop {
-                    offset: 1.0 - FADE_IN_STOP,
-                    color: Color::WHITE.into(),
-                },
-                ColorStop {
-                    offset: 1.0,
-                    color: Color::from_rgba8(255, 255, 255, 0).into(),
-                },
-            ][..],
-        );
-
-        scene.push_layer(
+        // by a single mask below, so the band reads as a slice, not a hard
+        // cut. The horizontal clip is load-bearing — unclipped, the ring
+        // would sweep back around off-screen; it runs past the right edge
+        // for the rim shadow.
+        ctx.scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
             1.0,
-            transform,
-            &group_clip,
+            ctx.transform,
+            &geom.group_clip,
         );
+        self.draw_band_shadow_and_body(&mut ctx, &geom);
+        // ---- Pass 2: the sectors ------------------------------------
+        self.draw_sectors(&mut ctx, &geom);
+        // The rim, painted after the sectors so it sits on top of every
+        // wedge, still inside the layer pushed above.
+        self.draw_rim(&mut ctx, &geom);
 
-        // Same soft multi-ring falloff as the window-decoration pills,
-        // painted first so the band sits on top. Tinted from the
-        // theme's elevation token, not a literal black, so a
-        // shadow-suppressing theme (high contrast) gets its own answer.
-        let shadow_hue = tokens.elevation.glass_outer.color;
-        for &(offset, width, alpha) in &[(2.5_f64, 5.0_f64, 44u8), (7.5, 6.0, 20), (14.0, 9.0, 8)] {
-            scene.stroke(
-                &Stroke::new(width),
-                transform,
-                Color::from_rgba8(shadow_hue.r(), shadow_hue.g(), shadow_hue.b(), alpha),
-                None,
-                &Circle::new((cx, cy), radius + offset),
-            );
-        }
-
-        // The body itself: one flat fill, solid to the centre.
-        let band = disc_segment(c, r_out, -sweep, sweep);
-        scene.fill(Fill::NonZero, transform, body_hue, None, &band);
-
-        // ---- Pass 2: the sectors ----------------------------------------
-        // Display slots tile the sweep at a fixed step and CYCLE through the
-        // workspaces — indexing off the workspace list instead left bald
-        // unsegmented band whenever workspaces < slots.
-        self.spoke_hit_rects.clear();
-        self.spoke_hit_rects.resize(self.spokes.len(), Rect::ZERO);
-        // A workspace can appear more than once in the sweep when there
-        // are few of them; a click goes to the slot nearest the middle.
-        let mut hit_claim = vec![f64::INFINITY; self.spokes.len()];
-
-        // Settled before any sector is placed, so labels can be kept out
-        // of it. Placed by depth down the band rather than up from the
-        // floor — the floor is inside the vertical fade, which would
-        // leave the button hanging on bare wallpaper.
-        let add_cy = cy + half_h * ADD_BAND_FRACTION;
-        let add_dy = add_cy - cy;
-        // Tucked against the inner arc rather than mid-band, where a
-        // label sweeping past would collide with it.
-        let add_span_in = (r_ref * r_ref - add_dy * add_dy).max(0.0).sqrt();
-        let add_cx = cx + add_span_in + ADD_BUTTON_D / 2.0 + 8.0;
-        self.plus_rect =
-            Rect::from_center_size(Point::new(add_cx, add_cy), (ADD_BUTTON_D, ADD_BUTTON_D));
-
-        // Same curve the band is masked with, so a label dissolves where
-        // the surface beneath it does rather than ending up a crisp
-        // pill on bare wallpaper.
-        let row_fade = |y: f64| -> f32 {
-            let h = self.rect.height();
-            if h <= 0.0 {
-                return 0.0;
-            }
-            let t = f64_to_f32_lossy(((y - self.rect.y0) / h).clamp(0.0, 1.0));
-            if t < FADE_IN_STOP {
-                t / FADE_IN_STOP
-            } else if t > 1.0 - FADE_IN_STOP {
-                (1.0 - t) / FADE_IN_STOP
-            } else {
-                1.0
-            }
-        };
-
-        if !self.spokes.is_empty() {
-            let gap = f64::from(self.spoke_gap_deg());
-            let rot = f64::from(self.visual_residual_deg());
-            let slots = slot_reach(sweep, gap);
-            let body_opacity = body_hue.components[3].clamp(0.0, 1.0);
-            let wedge_alpha = ACTIVE_WEDGE_ALPHA
-                + (ACTIVE_WEDGE_ALPHA_ON_OPAQUE - ACTIVE_WEDGE_ALPHA) * body_opacity;
-
-            let slot_idx = self.slot_indices(slots);
-            // `slots` is always >= 0 (see `slot_reach`); `checked_neg`
-            // rather than `-slots` just keeps the negation from reading
-            // as raw arithmetic to clippy.
-            let neg_slots = slots.checked_neg().unwrap_or(i32::MIN);
-            for k in neg_slots..=slots {
-                let mid_deg = rot + f64::from(k) * gap;
-                let mid = mid_deg.to_radians();
-                let a0 = mid - (gap / 2.0).to_radians();
-                let a1 = mid + (gap / 2.0).to_radians();
-                // Wholly outside the sweep.
-                if a0 > sweep || a1 < -sweep {
-                    continue;
-                }
-                let Some(idx) = slot_at(&slot_idx, k, slots) else {
-                    continue;
-                };
-                let is_active = k == 0;
-                let base = Self::spoke_color(idx, colors);
-
-                // The wedge itself is lit in the workspace's colour —
-                // the thing that turns is also the thing that shows state.
-                if is_active {
-                    let wedge = disc_segment(c, r_out, a0, a1);
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        base.with_alpha_factor(wedge_alpha),
-                        None,
-                        &wedge,
-                    );
-                }
-
-                // Leading divider only, so adjacent sectors share one
-                // line rather than stacking two translucent strokes.
-                let div_a = if is_active { 96 } else { 40 };
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    edge(div_a),
-                    None,
-                    // From the centre: a divider stopping part-way would
-                    // leave the solid body tinted but undivided beyond it.
-                    &Line::new(c, polar(c, r_out, a0)),
-                );
-                // Active sector also owns its upper bound, bracketed by
-                // two bright lines instead of one.
-                if is_active {
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        edge(96),
-                        None,
-                        &Line::new(c, polar(c, r_out, a1)),
-                    );
-                }
-            }
-        }
-
-        // The rim is the body's one lit edge, carrying the silhouette on
-        // its own — full window-decoration language: soft wide stroke
-        // reading as light on a bevel, crisp hairline for a definite
-        // position, then an inset glow.
-        let rim = Circle::new((cx, cy), r_out);
-        scene.stroke(&Stroke::new(5.0), transform, edge(26), None, &rim);
-        scene.stroke(&Stroke::new(1.5), transform, edge(140), None, &rim);
-        // A 1-px-inset hairline just inside the rim, the disc's version of
-        // the active pill's inner glow.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            edge(46),
-            None,
-            &Circle::new((cx, cy), r_out - 2.5),
-        );
-
-        // Fade the whole surface out, top and bottom, in one pass.
-        scene.push_layer(
+        // Fade the whole surface out, top and bottom, in one pass, then
+        // close the isolated group.
+        let vfade = self.vfade_gradient();
+        ctx.scene.push_layer(
             Fill::NonZero,
             BlendMode::new(Mix::Normal, Compose::DestIn),
             1.0,
-            transform,
-            &group_clip,
+            ctx.transform,
+            &geom.group_clip,
         );
-        scene.fill(Fill::NonZero, transform, &vfade, None, &group_clip);
-        scene.pop_layer();
-        scene.pop_layer();
+        ctx.scene
+            .fill(Fill::NonZero, ctx.transform, &vfade, None, &geom.group_clip);
+        ctx.scene.pop_layer();
+        ctx.scene.pop_layer();
 
-        // ---- Pass 3: the sector labels ----------------------------------
-        // Each label is a chip built in the sector's own frame then
-        // rotated about the disc's centre, so every chip sits at the
-        // same radius and width — a ring of labels that tips with the
-        // wheel, reading as paint on the surface.
-        let chip_x1 = cx + r_out - LABEL_RIM_GAP;
-        let chip_x0 = cx + r_ref + LABEL_INNER_INSET;
-        let chip_w = chip_x1 - chip_x0;
-        // Too shallow to carry a name is a reason to drop the name, not
-        // the sector — it stays drawn and hit-tested with just its icon.
-        let names_fit = chip_w >= LABEL_MIN_W;
-        if !self.spokes.is_empty() {
-            let gap = f64::from(self.spoke_gap_deg());
-            let rot = f64::from(self.visual_residual_deg());
-            let slots = slot_reach(sweep, gap);
+        // ---- Pass 3 & 4: labels, then the add-workspace button ------
+        // Both painted outside the masked group above, so each fades
+        // along `row_fade` instead of the group mask.
+        self.position_add_button(&geom);
+        self.draw_labels(&mut ctx, &geom);
+        self.draw_add_button(&mut ctx, &geom);
 
-            let slot_idx = self.slot_indices(slots);
-            // `slots` is always >= 0 (see `slot_reach`); `checked_neg`
-            // rather than `-slots` just keeps the negation from reading
-            // as raw arithmetic to clippy.
-            let neg_slots = slots.checked_neg().unwrap_or(i32::MIN);
-            for k in neg_slots..=slots {
-                let mid_deg = rot + f64::from(k) * gap;
-                let mid = mid_deg.to_radians();
-                if mid.abs() > sweep {
-                    continue;
-                }
-                let Some(idx) = slot_at(&slot_idx, k, slots) else {
-                    continue;
-                };
-                let is_active = k == 0;
-                // Where the sector's centreline meets the rim — the
-                // label's y, and what the vertical fade is sampled at.
-                let anchor = polar(c, r_out, mid);
-                let fade_a = row_fade(anchor.y);
-                if fade_a <= 0.02 {
-                    continue;
-                }
-
-                let lead = ChipLead::Glyph(self.spoke_icon(idx));
-                let row_h = if is_active {
-                    self.active_chip_height(idx, chip_w, theme, text_renderer)
-                } else {
-                    SECTOR_CHIP_H
-                };
-                let chip = Rect::new(chip_x0, cy - row_h / 2.0, chip_x1, cy + row_h / 2.0);
-                let rotate = Affine::rotate_about(mid, c);
-
-                // Where the chip actually lands once rotated. Used for
-                // the click target and to keep labels off the add button.
-                let placed = rotate.transform_rect_bbox(chip);
-                // Clash test done in the label's OWN frame (button
-                // centre rotated back, against the unrotated chip) — the
-                // rotated chip's axis-aligned bbox is far bigger than
-                // the chip itself and would falsely clash with a button
-                // the label passes clear of.
-                let local = rotate.inverse() * self.plus_rect.center();
-                let reach = ADD_BUTTON_D / 2.0 + 4.0;
-                let clash = local.x >= chip.x0 - reach
-                    && local.x <= chip.x1 + reach
-                    && local.y >= chip.y0 - reach
-                    && local.y <= chip.y1 + reach;
-                if clash {
-                    continue;
-                }
-
-                // The sector is the container — no pill of its own,
-                // since a pill inside a lit wedge is a box inside a box.
-                // Active label colours as primary text: its own
-                // workspace hue would sit on a wedge of that same hue,
-                // where identity is already carried by the wedge.
-                let style = if is_active {
-                    ChipStyle::bare(None)
-                } else {
-                    // Dimming primary text by a fixed factor is wrong
-                    // under high contrast, where secondary copy is kept
-                    // near-white to clear AAA — so this is the palette's
-                    // own secondary token, not a derived alpha.
-                    ChipStyle::bare(Some(colors.text_dim))
-                }
-                .with_alpha(fade_a);
-                Chip::draw_at(
-                    scene,
-                    transform * rotate,
-                    chip,
-                    if names_fit {
-                        self.spokes.get(idx).map_or("", |s| s.text.as_str())
-                    } else {
-                        ""
-                    },
-                    lead,
-                    style,
-                    theme,
-                    text_renderer,
-                );
-
-                // Nearest slot wins the workspace's click target. `idx` is
-                // always in range here (both vecs are sized to
-                // `self.spokes.len()` above), but a `.get_mut()` fallback
-                // costs nothing and can't panic if that invariant ever
-                // slips.
-                if let Some(claim) = hit_claim.get_mut(idx) {
-                    if mid.abs() < *claim {
-                        *claim = mid.abs();
-                        if let Some(hit_rect) = self.spoke_hit_rects.get_mut(idx) {
-                            *hit_rect = placed;
-                        }
-                    }
-                }
-
-                // Presence dots seated just inside the rim so they ride
-                // the surface with the sector.
-                if let Some(ws_id) = self.spokes.get(idx).and_then(|s| s.workspace_id) {
-                    let key = PresenceKey::Workspace {
-                        id: format!("{ws_id}"),
-                    };
-                    let peers = presence.peers_on(&key);
-                    if !peers.is_empty() {
-                        let peer_count = peers.len().min(3);
-                        let dot_r = r_out - LABEL_RIM_GAP / 2.0;
-                        let spacing = 7.0_f64 / dot_r;
-                        let centre_bias = (usize_to_f64_lossy(peer_count) - 1.0) / 2.0;
-                        for (kk, user) in peers.iter().take(peer_count).enumerate() {
-                            let off = (usize_to_f64_lossy(kk) - centre_bias) * spacing;
-                            let (rr, gg, bb) = presence.color_for(user);
-                            // Empty-initials Avatar chip in the peer's
-                            // own colour, matching the cursor/avatar sites.
-                            let p = polar(c, dot_r, mid + off);
-                            let dot_rect = Rect::new(p.x - 3.0, p.y - 3.0, p.x + 3.0, p.y + 3.0);
-                            ui::widget::Avatar::draw_at(
-                                scene,
-                                transform,
-                                dot_rect,
-                                "",
-                                Color::from_rgb8(rr, gg, bb),
-                                theme,
-                                text_renderer,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // ---- Pass 4: the add-workspace button ---------------------------
-        // A round glass button in the rim's material. Does NOT rotate —
-        // it isn't a workspace, it's the control that makes one, so a
-        // spot on the wheel would carry it out of reach every turn.
-        let add_fade = row_fade(self.plus_rect.center().y).max(0.55);
-        let add_circle = Circle::new(self.plus_rect.center(), ADD_BUTTON_D / 2.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            body_hue.with_alpha_factor(add_fade),
-            None,
-            &add_circle,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            edge(f32_to_u8_saturating(74.0 * add_fade)),
-            None,
-            &add_circle,
-        );
-        let glyph = Rect::from_center_size(self.plus_rect.center(), (15.0, 15.0));
-        Icon::Plus.draw_with_stroke(
-            scene,
-            transform,
-            glyph,
-            colors.text_primary.with_alpha_factor(0.72 * add_fade),
-            1.6,
-        );
         // Splice the freshly-encoded scene into `out_scene`, then
         // restore `self.cached_scene` and record the fingerprint so
         // the next idle frame takes the fast path.
@@ -1519,8 +1156,14 @@ impl Widget for SidebarWheelDisc {
         // stays stable, and a long stall just resumes rather than
         // exploding.
         let now = std::time::Instant::now();
+        // `saturating_duration_since` rather than `now - prev`: `Instant`
+        // subtraction panics if `prev` is somehow later than `now` (not
+        // guaranteed impossible across every platform's clock), and a
+        // clamped zero dt for that one frame is a fine answer either way.
         let dt = self.last_update_at.map_or(1.0 / 60.0, |prev| {
-            (now - prev).as_secs_f32().clamp(0.0, 1.0 / 30.0)
+            now.saturating_duration_since(prev)
+                .as_secs_f32()
+                .clamp(0.0, 1.0 / 30.0)
         });
         self.last_update_at = Some(now);
         let mut keep = self.advance(dt);
@@ -1598,7 +1241,574 @@ impl Widget for SidebarWheelDisc {
     }
 }
 
+/// The mutable/borrowed painting context `draw`'s passes share: the scene
+/// to paint into, the (identity, during a cache-miss encode) transform,
+/// theme and text shaping, and the presence roster for peer dots. Bundled
+/// so each pass helper takes one argument instead of five.
+struct DrawCtx<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    theme: &'a Theme,
+    text_renderer: &'a mut TextRenderer,
+    presence: &'a PresenceCtx,
+}
+
+/// The disc's shape for one `draw` call, computed once from
+/// `rect`/`diameter_px` so every pass paints from the same numbers. See
+/// [`SidebarWheelDisc::disc_geometry`] for how each field is derived.
+struct DiscGeometry {
+    /// Logical centre, screen coordinates.
+    c: Point,
+    r_out: f64,
+    r_ref: f64,
+    sweep: f64,
+    half_h: f64,
+    group_clip: Rect,
+    body_hue: Color,
+}
+
+/// Sector-label chip geometry, constant across one call to
+/// [`SidebarWheelDisc::draw_labels`].
+struct LabelLayout {
+    chip_x0: f64,
+    chip_x1: f64,
+    chip_w: f64,
+    /// Too shallow to carry a name is a reason to drop the name, not
+    /// the sector — it stays drawn and hit-tested with just its icon.
+    names_fit: bool,
+}
+
+/// One resolved display slot in the sector loop — a `k` in
+/// `neg_slots..=slots` that survived the sweep/slot-index checks, ready
+/// to paint.
+struct SectorSlot {
+    idx: usize,
+    /// Angle in radians from due-east, matching [`polar`].
+    mid: f64,
+    is_active: bool,
+}
+
 impl SidebarWheelDisc {
+    /// Cache fast-path: at rest nothing painted changes frame to frame,
+    /// so a hit against `fp` lets `draw` replay `self.cached_scene`
+    /// instead of re-encoding (hit rects stay valid — the prior
+    /// cache-miss draw populated them at the same rotation/rect). A
+    /// pan-only change replays under a translation. Returns `true` when
+    /// it painted from the cache and `draw` should return without a
+    /// fresh encode.
+    fn try_paint_from_cache(
+        &mut self,
+        out_scene: &mut Scene,
+        out_transform: Affine,
+        fp: &WheelCacheFp,
+    ) -> bool {
+        if !fp.is_populated() || !self.cached_fp.is_populated() {
+            return false;
+        }
+        if *fp == self.cached_fp {
+            out_scene.append(&self.cached_scene, Some(out_transform));
+            return true;
+        }
+        if fp.content_eq(&self.cached_fp) {
+            let dx = i64_to_f64_lossy(fp.origin_px.0.saturating_sub(self.cached_fp.origin_px.0));
+            let dy = i64_to_f64_lossy(fp.origin_px.1.saturating_sub(self.cached_fp.origin_px.1));
+            let shift = Affine::translate((dx, dy));
+            // `Affine * Affine` is matrix composition — total, no
+            // overflow/panic path, unlike scalar arithmetic.
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "affine composition, not scalar arithmetic"
+            )]
+            let shifted = out_transform * shift;
+            out_scene.append(&self.cached_scene, Some(shifted));
+            self.retarget_hit_rects(fp.origin_px);
+            return true;
+        }
+        false
+    }
+
+    /// The disc's shape for this `draw` call — `None` when the footprint
+    /// is degenerate (zero-width slot, first layout pass), the signal
+    /// `draw` uses to bail without painting or touching the fingerprint.
+    fn disc_geometry(&self, theme: &Theme) -> Option<DiscGeometry> {
+        let radius = self.diameter_px / 2.0;
+        if radius <= 1.0 || self.rect.area() <= 0.0 {
+            return None;
+        }
+        let c = self.center();
+
+        // The visible object is an annular BAND: constant-depth, as deep as
+        // it can be while the inner arc stays inside the footprint.
+        let half_h = self.rect.height() / 2.0;
+        let r_out = radius;
+        // `sqrt(d^2 + half_h^2)`: the radius whose arc passes exactly through
+        // the footprint's left corners — deepest the band can be on a curve.
+        let d_left = (self.rect.x0 - c.x + BAND_LEFT_INSET).max(1.0);
+        // The body reaches centre, so `r_ref` is a layout reference only
+        // (labels, add button) — the solid fill doesn't move with it.
+        let tangent_dy = half_h * BAND_TANGENT_FRACTION;
+        let r_ref = (d_left * d_left + tangent_dy * tangent_dy)
+            .sqrt()
+            .clamp(4.0, r_out - 12.0);
+        // `atan(half_h / d_left)` is the angle whose radial passes
+        // exactly through the footprint's corner, plus slop so an
+        // entering divider is already drawn.
+        let sweep = (half_h / d_left).atan() + SWEEP_SLOP_DEG.to_radians();
+        let group_clip = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1 + RIM_SHADOW_REACH,
+            self.rect.y1,
+        );
+        // Flat fill — the theme's glass surface, same token as modal surfaces.
+        let body_hue = theme.tokens.colors.surfaces.glass;
+
+        Some(DiscGeometry {
+            c,
+            r_out,
+            r_ref,
+            sweep,
+            half_h,
+            group_clip,
+            body_hue,
+        })
+    }
+
+    /// Vertical fade used as the band's group mask (white — only its
+    /// alpha channel is read; `DestIn` keeps the backdrop where the mask
+    /// is opaque, so the colour never reaches the screen) and, via
+    /// [`Self::row_fade`], the same curve a label or the add button
+    /// dissolves along once painted outside that masked group.
+    fn vfade_gradient(&self) -> Gradient {
+        Gradient::new_linear(
+            Point::new(self.rect.x0, self.rect.y0),
+            Point::new(self.rect.x0, self.rect.y1),
+        )
+        .with_extend(Extend::Pad)
+        .with_stops(
+            &[
+                ColorStop {
+                    offset: 0.0,
+                    color: Color::from_rgba8(255, 255, 255, 0).into(),
+                },
+                ColorStop {
+                    offset: FADE_IN_STOP,
+                    color: Color::WHITE.into(),
+                },
+                ColorStop {
+                    offset: 1.0 - FADE_IN_STOP,
+                    color: Color::WHITE.into(),
+                },
+                ColorStop {
+                    offset: 1.0,
+                    color: Color::from_rgba8(255, 255, 255, 0).into(),
+                },
+            ][..],
+        )
+    }
+
+    /// Same curve [`Self::vfade_gradient`] masks the band with, so a
+    /// label or the add button — both painted outside that masked group —
+    /// dissolves where the surface beneath it does rather than ending up
+    /// crisp on bare wallpaper.
+    fn row_fade(&self, y: f64) -> f32 {
+        let h = self.rect.height();
+        if h <= 0.0 {
+            return 0.0;
+        }
+        let t = f64_to_f32_lossy(((y - self.rect.y0) / h).clamp(0.0, 1.0));
+        if t < FADE_IN_STOP {
+            t / FADE_IN_STOP
+        } else if t > 1.0 - FADE_IN_STOP {
+            (1.0 - t) / FADE_IN_STOP
+        } else {
+            1.0
+        }
+    }
+
+    /// Pass 1 — the band: soft multi-ring drop shadow (same falloff as
+    /// the window-decoration pills, tinted from the theme's elevation
+    /// token rather than a literal black, so a shadow-suppressing theme
+    /// gets its own answer), then one flat body fill solid to centre.
+    fn draw_band_shadow_and_body(&self, ctx: &mut DrawCtx<'_>, geom: &DiscGeometry) {
+        let shadow_hue = ctx.theme.tokens.elevation.glass_outer.color;
+        for &(offset, width, alpha) in &[(2.5_f64, 5.0_f64, 44u8), (7.5, 6.0, 20), (14.0, 9.0, 8)] {
+            ctx.scene.stroke(
+                &Stroke::new(width),
+                ctx.transform,
+                Color::from_rgba8(shadow_hue.r(), shadow_hue.g(), shadow_hue.b(), alpha),
+                None,
+                &Circle::new((geom.c.x, geom.c.y), geom.r_out + offset),
+            );
+        }
+        let band = disc_segment(geom.c, geom.r_out, -geom.sweep, geom.sweep);
+        ctx.scene
+            .fill(Fill::NonZero, ctx.transform, geom.body_hue, None, &band);
+    }
+
+    /// Pass 2 — the sectors: display slots tile the sweep at a fixed
+    /// step and CYCLE through the workspaces — indexing off the
+    /// workspace list instead would leave a bald, unsegmented band
+    /// whenever workspaces < slots. Wedge fill for the active sector,
+    /// leading-divider strokes for every sector.
+    fn draw_sectors(&self, ctx: &mut DrawCtx<'_>, geom: &DiscGeometry) {
+        if self.spokes.is_empty() {
+            return;
+        }
+        let colors = &ctx.theme.tokens.colors;
+        // Tracks the theme's foreground rather than a hardcoded white,
+        // which is a scratch under the light theme and near-invisible
+        // under high contrast.
+        let edge_hue = colors.text_primary;
+        let edge = |a: u8| Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), a);
+
+        let gap = f64::from(self.spoke_gap_deg());
+        let rot = f64::from(self.visual_residual_deg());
+        let slots = slot_reach(geom.sweep, gap);
+        let body_opacity = geom.body_hue.components[3].clamp(0.0, 1.0);
+        let wedge_alpha =
+            ACTIVE_WEDGE_ALPHA + (ACTIVE_WEDGE_ALPHA_ON_OPAQUE - ACTIVE_WEDGE_ALPHA) * body_opacity;
+
+        let slot_idx = self.slot_indices(slots);
+        // `slots` is always >= 0 (see `slot_reach`); `checked_neg`
+        // rather than `-slots` just keeps the negation from reading
+        // as raw arithmetic to clippy.
+        let neg_slots = slots.checked_neg().unwrap_or(i32::MIN);
+        for k in neg_slots..=slots {
+            let mid_deg = rot + f64::from(k) * gap;
+            let mid = mid_deg.to_radians();
+            let a0 = mid - (gap / 2.0).to_radians();
+            let a1 = mid + (gap / 2.0).to_radians();
+            // Wholly outside the sweep.
+            if a0 > geom.sweep || a1 < -geom.sweep {
+                continue;
+            }
+            let Some(idx) = slot_at(&slot_idx, k, slots) else {
+                continue;
+            };
+            let is_active = k == 0;
+            let base = Self::spoke_color(idx, colors);
+
+            // The wedge itself is lit in the workspace's colour —
+            // the thing that turns is also the thing that shows state.
+            if is_active {
+                let wedge = disc_segment(geom.c, geom.r_out, a0, a1);
+                ctx.scene.fill(
+                    Fill::NonZero,
+                    ctx.transform,
+                    base.with_alpha_factor(wedge_alpha),
+                    None,
+                    &wedge,
+                );
+            }
+
+            // Leading divider only, so adjacent sectors share one
+            // line rather than stacking two translucent strokes.
+            let div_a = if is_active { 96 } else { 40 };
+            ctx.scene.stroke(
+                &Stroke::new(1.0),
+                ctx.transform,
+                edge(div_a),
+                None,
+                // From the centre: a divider stopping part-way would
+                // leave the solid body tinted but undivided beyond it.
+                &Line::new(geom.c, polar(geom.c, geom.r_out, a0)),
+            );
+            // Active sector also owns its upper bound, bracketed by
+            // two bright lines instead of one.
+            if is_active {
+                ctx.scene.stroke(
+                    &Stroke::new(1.0),
+                    ctx.transform,
+                    edge(96),
+                    None,
+                    &Line::new(geom.c, polar(geom.c, geom.r_out, a1)),
+                );
+            }
+        }
+    }
+
+    /// The rim is the body's one lit edge, carrying the silhouette on
+    /// its own — full window-decoration language: soft wide stroke
+    /// reading as light on a bevel, crisp hairline for a definite
+    /// position, then an inset glow. Painted after [`Self::draw_sectors`]
+    /// so it sits on top of every wedge.
+    fn draw_rim(&self, ctx: &mut DrawCtx<'_>, geom: &DiscGeometry) {
+        let edge_hue = ctx.theme.tokens.colors.text_primary;
+        let edge = |a: u8| Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), a);
+        let rim = Circle::new((geom.c.x, geom.c.y), geom.r_out);
+        ctx.scene
+            .stroke(&Stroke::new(5.0), ctx.transform, edge(26), None, &rim);
+        ctx.scene
+            .stroke(&Stroke::new(1.5), ctx.transform, edge(140), None, &rim);
+        // A 1-px-inset hairline just inside the rim, the disc's version of
+        // the active pill's inner glow.
+        ctx.scene.stroke(
+            &Stroke::new(1.0),
+            ctx.transform,
+            edge(46),
+            None,
+            &Circle::new((geom.c.x, geom.c.y), geom.r_out - 2.5),
+        );
+    }
+
+    /// Add-button anchor: settled before any label is placed, so labels
+    /// can be kept clear of it. Placed by depth down the band rather
+    /// than up from the floor — the floor is inside the vertical fade,
+    /// which would leave the button hanging on bare wallpaper. Tucked
+    /// against the inner arc rather than mid-band, where a label
+    /// sweeping past would collide with it.
+    fn position_add_button(&mut self, geom: &DiscGeometry) {
+        let add_center_y = geom.c.y + geom.half_h * ADD_BAND_FRACTION;
+        let add_delta_y = add_center_y - geom.c.y;
+        let add_span_in = (geom.r_ref * geom.r_ref - add_delta_y * add_delta_y)
+            .max(0.0)
+            .sqrt();
+        let add_center_x = geom.c.x + add_span_in + ADD_BUTTON_D / 2.0 + 8.0;
+        self.plus_rect = Rect::from_center_size(
+            Point::new(add_center_x, add_center_y),
+            (ADD_BUTTON_D, ADD_BUTTON_D),
+        );
+    }
+
+    /// Pass 3 — the sector labels: each is a chip built in the sector's
+    /// own frame then rotated about the disc's centre, so every chip
+    /// sits at the same radius and width — a ring of labels that tips
+    /// with the wheel, reading as paint on the surface. Also claims
+    /// each spoke's click target (nearest slot to centre wins) and
+    /// draws presence dots for peers on that workspace — see
+    /// [`Self::draw_one_sector_label`].
+    fn draw_labels(&mut self, ctx: &mut DrawCtx<'_>, geom: &DiscGeometry) {
+        let chip_x0 = geom.c.x + geom.r_ref + LABEL_INNER_INSET;
+        let chip_x1 = geom.c.x + geom.r_out - LABEL_RIM_GAP;
+        let chip_w = chip_x1 - chip_x0;
+        let layout = LabelLayout {
+            chip_x0,
+            chip_x1,
+            chip_w,
+            names_fit: chip_w >= LABEL_MIN_W,
+        };
+
+        self.spoke_hit_rects.clear();
+        self.spoke_hit_rects.resize(self.spokes.len(), Rect::ZERO);
+        // A workspace can appear more than once in the sweep when there
+        // are few of them; a click goes to the slot nearest the middle.
+        let mut hit_claim = vec![f64::INFINITY; self.spokes.len()];
+
+        if self.spokes.is_empty() {
+            return;
+        }
+        let gap = f64::from(self.spoke_gap_deg());
+        let rot = f64::from(self.visual_residual_deg());
+        let slots = slot_reach(geom.sweep, gap);
+        let slot_idx = self.slot_indices(slots);
+        // `slots` is always >= 0 (see `slot_reach`); `checked_neg`
+        // rather than `-slots` just keeps the negation from reading
+        // as raw arithmetic to clippy.
+        let neg_slots = slots.checked_neg().unwrap_or(i32::MIN);
+        for k in neg_slots..=slots {
+            let mid_deg = rot + f64::from(k) * gap;
+            let mid = mid_deg.to_radians();
+            if mid.abs() > geom.sweep {
+                continue;
+            }
+            let Some(idx) = slot_at(&slot_idx, k, slots) else {
+                continue;
+            };
+            let slot = SectorSlot {
+                idx,
+                mid,
+                is_active: k == 0,
+            };
+            self.draw_one_sector_label(ctx, geom, &layout, &slot, &mut hit_claim);
+        }
+    }
+
+    /// One sector's label chip, plus its click-target claim and presence
+    /// dots — the per-`k` body factored out of [`Self::draw_labels`].
+    fn draw_one_sector_label(
+        &mut self,
+        ctx: &mut DrawCtx<'_>,
+        geom: &DiscGeometry,
+        layout: &LabelLayout,
+        slot: &SectorSlot,
+        hit_claim: &mut [f64],
+    ) {
+        // Where the sector's centreline meets the rim — the label's y,
+        // and what the vertical fade is sampled at.
+        let anchor = polar(geom.c, geom.r_out, slot.mid);
+        let fade_a = self.row_fade(anchor.y);
+        if fade_a <= 0.02 {
+            return;
+        }
+
+        let lead = ChipLead::Glyph(self.spoke_icon(slot.idx));
+        let row_h = if slot.is_active {
+            self.active_chip_height(slot.idx, layout.chip_w, ctx.theme, ctx.text_renderer)
+        } else {
+            SECTOR_CHIP_H
+        };
+        let chip = Rect::new(
+            layout.chip_x0,
+            geom.c.y - row_h / 2.0,
+            layout.chip_x1,
+            geom.c.y + row_h / 2.0,
+        );
+        let rotate = Affine::rotate_about(slot.mid, geom.c);
+
+        // Where the chip actually lands once rotated. Used for the
+        // click target and to keep labels off the add button.
+        let placed = rotate.transform_rect_bbox(chip);
+        if self.label_clashes_with_add_button(chip, rotate) {
+            return;
+        }
+
+        // The sector is the container — no pill of its own, since a
+        // pill inside a lit wedge is a box inside a box. Active label
+        // colours as primary text: its own workspace hue would sit on
+        // a wedge of that same hue, where identity is already carried
+        // by the wedge.
+        let style = if slot.is_active {
+            ChipStyle::bare(None)
+        } else {
+            // Dimming primary text by a fixed factor is wrong under
+            // high contrast, where secondary copy is kept near-white
+            // to clear AAA — so this is the palette's own secondary
+            // token, not a derived alpha.
+            ChipStyle::bare(Some(ctx.theme.tokens.colors.text_dim))
+        }
+        .with_alpha(fade_a);
+        // `Affine * Affine` is matrix composition — total, no
+        // overflow/panic path, unlike scalar arithmetic.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "affine composition, not scalar arithmetic"
+        )]
+        let chip_transform = ctx.transform * rotate;
+        Chip::draw_at(
+            ctx.scene,
+            chip_transform,
+            chip,
+            if layout.names_fit {
+                self.spokes.get(slot.idx).map_or("", |s| s.text.as_str())
+            } else {
+                ""
+            },
+            lead,
+            style,
+            ctx.theme,
+            ctx.text_renderer,
+        );
+
+        self.claim_hit_rect(hit_claim, slot, placed);
+        self.draw_presence_dots(ctx, geom, slot);
+    }
+
+    /// Whether `chip` — unrotated, in the sector's own frame — would
+    /// overlap the add button once `rotate` places it. Clash test done
+    /// in the label's OWN frame (button centre rotated back, against
+    /// the unrotated chip) — the rotated chip's axis-aligned bbox is
+    /// far bigger than the chip itself and would falsely clash with a
+    /// button the label passes clear of.
+    fn label_clashes_with_add_button(&self, chip: Rect, rotate: Affine) -> bool {
+        // `Affine * Point` applies the transform — total, no
+        // overflow/panic path, unlike scalar arithmetic.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "affine point transform, not scalar arithmetic"
+        )]
+        let local = rotate.inverse() * self.plus_rect.center();
+        let reach = ADD_BUTTON_D / 2.0 + 4.0;
+        local.x >= chip.x0 - reach
+            && local.x <= chip.x1 + reach
+            && local.y >= chip.y0 - reach
+            && local.y <= chip.y1 + reach
+    }
+
+    /// Nearest slot wins a workspace's click target. `slot.idx` is
+    /// always in range here (both vecs are sized to `self.spokes.len()`
+    /// in [`Self::draw_labels`]), but a `.get_mut()` fallback costs
+    /// nothing and can't panic if that invariant ever slips.
+    fn claim_hit_rect(&mut self, hit_claim: &mut [f64], slot: &SectorSlot, placed: Rect) {
+        if let Some(claim) = hit_claim.get_mut(slot.idx)
+            && slot.mid.abs() < *claim
+        {
+            *claim = slot.mid.abs();
+            if let Some(hit_rect) = self.spoke_hit_rects.get_mut(slot.idx) {
+                *hit_rect = placed;
+            }
+        }
+    }
+
+    /// Presence dots seated just inside the rim so they ride the
+    /// surface with the sector.
+    fn draw_presence_dots(&self, ctx: &mut DrawCtx<'_>, geom: &DiscGeometry, slot: &SectorSlot) {
+        let Some(ws_id) = self.spokes.get(slot.idx).and_then(|s| s.workspace_id) else {
+            return;
+        };
+        let key = PresenceKey::Workspace {
+            id: format!("{ws_id}"),
+        };
+        let peers = ctx.presence.peers_on(&key);
+        if peers.is_empty() {
+            return;
+        }
+        let peer_count = peers.len().min(3);
+        let dot_r = geom.r_out - LABEL_RIM_GAP / 2.0;
+        let spacing = 7.0_f64 / dot_r;
+        let centre_bias = (usize_to_f64_lossy(peer_count) - 1.0) / 2.0;
+        for (kk, user) in peers.iter().take(peer_count).enumerate() {
+            let off = (usize_to_f64_lossy(kk) - centre_bias) * spacing;
+            let (rr, gg, bb) = ctx.presence.color_for(user);
+            // Empty-initials Avatar chip in the peer's own colour,
+            // matching the cursor/avatar sites.
+            let p = polar(geom.c, dot_r, slot.mid + off);
+            let dot_rect = Rect::new(p.x - 3.0, p.y - 3.0, p.x + 3.0, p.y + 3.0);
+            ui::widget::Avatar::draw_at(
+                ctx.scene,
+                ctx.transform,
+                dot_rect,
+                "",
+                Color::from_rgb8(rr, gg, bb),
+                ctx.theme,
+                ctx.text_renderer,
+            );
+        }
+    }
+
+    /// Pass 4 — the add-workspace button: a round glass button in the
+    /// rim's material. Does NOT rotate — it isn't a workspace, it's the
+    /// control that makes one, so a spot on the wheel would carry it
+    /// out of reach every turn.
+    fn draw_add_button(&self, ctx: &mut DrawCtx<'_>, geom: &DiscGeometry) {
+        let edge_hue = ctx.theme.tokens.colors.text_primary;
+        let edge = |a: u8| Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), a);
+        let add_fade = self.row_fade(self.plus_rect.center().y).max(0.55);
+        let add_circle = Circle::new(self.plus_rect.center(), ADD_BUTTON_D / 2.0);
+        ctx.scene.fill(
+            Fill::NonZero,
+            ctx.transform,
+            geom.body_hue.with_alpha_factor(add_fade),
+            None,
+            &add_circle,
+        );
+        ctx.scene.stroke(
+            &Stroke::new(1.0),
+            ctx.transform,
+            edge(f32_to_u8_saturating(74.0 * add_fade)),
+            None,
+            &add_circle,
+        );
+        let glyph = Rect::from_center_size(self.plus_rect.center(), (15.0, 15.0));
+        Icon::Plus.draw_with_stroke(
+            ctx.scene,
+            ctx.transform,
+            glyph,
+            edge_hue.with_alpha_factor(0.72 * add_fade),
+            1.6,
+        );
+    }
+
     /// `MouseInput { Pressed, Left }`: the add-button, a click onto a
     /// non-active spoke, or the start of a rotation drag — whichever the
     /// press lands on first, in that priority order.
@@ -1745,7 +1955,7 @@ impl SidebarWheelDisc {
                 {
                     break;
                 }
-                guard += 1;
+                guard = guard.saturating_add(1);
                 let neg = self.wheel_accumulator < 0.0;
                 let dir: i32 = if neg { 1 } else { -1 };
                 // Exact for +-1; avoids a generic `dir as f32` cast.
@@ -1946,6 +2156,7 @@ impl SidebarWheelDisc {
         // step count, not a value that feeds rendering math elsewhere.
         #[allow(
             clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
             reason = "saturating cast of a non-negative step count"
         )]
         let steps = (elapsed.as_secs_f32() / dt).round().max(0.0) as u32;
@@ -2002,7 +2213,7 @@ impl SidebarWheelDisc {
             if peers.is_empty() {
                 continue;
             }
-            total += peers.len().min(3);
+            total = total.saturating_add(peers.len().min(3));
         }
         total
     }
@@ -2100,7 +2311,7 @@ mod tests {
         }
     }
 
-    fn pump(d: &mut SidebarWheelDisc, ev: WindowEvent) -> bool {
+    fn pump(d: &mut SidebarWheelDisc, ev: &WindowEvent) -> bool {
         use automerge::AutoCommit;
         let mut doc = AutoCommit::new();
         let path = automerge::ROOT.clone();
@@ -2111,7 +2322,7 @@ mod tests {
         // handle_event doesn't consult the node id.
         let dummy_node = unsafe { std::mem::transmute::<u64, NodeId>(0) };
         d.handle_event(
-            &ev,
+            ev,
             1.0,
             &mods,
             &mut doc,
@@ -2146,17 +2357,15 @@ mod tests {
         layout_into_slot(&mut d, live_slot());
         paint(&mut d);
 
-        let named: Vec<usize> = (0..d.spokes.len())
-            .filter(|i| {
-                *i != d.active_idx
-                    && d.spoke_hit_rects[*i]
-                        .width()
-                        .max(d.spoke_hit_rects[*i].height())
-                        >= LABEL_MIN_W
-            })
-            .collect();
+        let any_named = (0..d.spokes.len()).any(|i| {
+            i != d.active_idx
+                && d.spoke_hit_rects[i]
+                    .width()
+                    .max(d.spoke_hit_rects[i].height())
+                    >= LABEL_MIN_W
+        });
         assert!(
-            !named.is_empty(),
+            any_named,
             "no neighbour got a named sector: hit rects {:?}",
             d.spoke_hit_rects
         );
@@ -2222,7 +2431,7 @@ mod tests {
             );
             assert_eq!(
                 assigned.len(),
-                d.spokes.len().min((slots * 2 + 1) as usize),
+                d.spokes.len().min(usize::try_from(slots * 2 + 1).unwrap()),
                 "every workspace that fits should get a slot at reach {slots}"
             );
         }
@@ -2237,7 +2446,15 @@ mod tests {
         // Well past either end, so the rubber band is fully extended.
         let far = gap * 12.0;
         let mut rot = -far;
-        while rot <= far {
+        // `loop` + an explicit break, rather than `while rot <= far`
+        // (same reasoning as the wheel-drain loop below): a non-finite
+        // `gap` — should never happen, but isn't ruled out by the type —
+        // must still terminate the sweep instead of spinning forever on
+        // a float comparison that never resolves.
+        loop {
+            if rot > far {
+                break;
+            }
             d.rotation_deg = d.resist_past_ends(rot);
             d.rotation_spring = None;
             d.sync_active_from_visual();
@@ -2261,11 +2478,11 @@ mod tests {
         // The handler ignores wheel events not over the disc.
         let cx = drag_anchor_x(&d);
         let cy = f64::midpoint(d.rect.y0, d.rect.y1);
-        pump(&mut d, cursor_event(cx, cy));
+        pump(&mut d, &cursor_event(cx, cy));
 
         for dir in [-1.0_f32, 1.0] {
             for _ in 0..60 {
-                pump(&mut d, wheel_event(dir * 3.0));
+                pump(&mut d, &wheel_event(dir * 3.0));
                 frames(&mut d, 2);
                 paint(&mut d);
                 let named = d.spoke_hit_rects.iter().filter(|r| r.area() > 0.0).count();
@@ -2322,7 +2539,7 @@ mod tests {
         layout_into_slot(&mut d, live_slot());
 
         for step in 0..72 {
-            d.rotation_deg = step as f32 * 5.0;
+            d.rotation_deg = usize_to_f32_lossy(step) * 5.0;
             paint(&mut d);
             assert!(
                 d.plus_rect.area() > 0.0,
@@ -2332,9 +2549,9 @@ mod tests {
 
             let expected = before + step + 1;
             let p = d.plus_rect.center();
-            pump(&mut d, cursor_event(p.x, p.y));
+            pump(&mut d, &cursor_event(p.x, p.y));
             assert!(
-                pump(&mut d, press_event()),
+                pump(&mut d, &press_event()),
                 "a press on the add button at {}° was not handled — a label \
                  sweeping over it has taken the press",
                 d.rotation_deg
@@ -2345,7 +2562,7 @@ mod tests {
                 "the press at {}° did not create a workspace",
                 d.rotation_deg
             );
-            pump(&mut d, release_event());
+            pump(&mut d, &release_event());
         }
     }
 
@@ -2356,8 +2573,8 @@ mod tests {
         let mut d = mk(&["Home", "Research", "Design"]);
         layout_into_slot(&mut d, live_slot());
 
-        for step in 0..24 {
-            d.rotation_deg = step as f32 * 15.0;
+        for step in 0_usize..24 {
+            d.rotation_deg = usize_to_f32_lossy(step) * 15.0;
             paint(&mut d);
             let (r_in, r_out) = d.label_band_radii();
             let c = d.disc_centre();
@@ -2457,11 +2674,11 @@ mod tests {
             "a painted, untouched disc is clean — otherwise this test proves nothing"
         );
 
-        pump(&mut d, cursor_event(x, cy));
-        assert!(pump(&mut d, press_event()), "press inside the arc grabs");
+        pump(&mut d, &cursor_event(x, cy));
+        assert!(pump(&mut d, &press_event()), "press inside the arc grabs");
         let before = d.rotation_deg;
 
-        pump(&mut d, cursor_event(x, cy + 60.0));
+        pump(&mut d, &cursor_event(x, cy + 60.0));
         assert_ne!(
             d.rotation_deg, before,
             "the drag moved the rim, so the next frame would differ"
@@ -2609,8 +2826,8 @@ mod tests {
         let node = d.build_layout(&mut taffy, &theme, &mut node_map);
         let mut style = taffy.style(node).unwrap().clone();
         style.size = Size {
-            width: Dimension::length(slot.width() as f32),
-            height: Dimension::length(slot.height() as f32),
+            width: Dimension::length(f64_to_f32_lossy(slot.width())),
+            height: Dimension::length(f64_to_f32_lossy(slot.height())),
         };
         taffy.set_style(node, style).unwrap();
         taffy
@@ -2648,7 +2865,7 @@ mod tests {
         let mut d = mk(&["Home", "Research", "Design"]);
         let cy = d.diameter_px / 2.0;
         let cx = drag_anchor_x(&d);
-        pump(&mut d, cursor_event(cx, cy));
+        pump(&mut d, &cursor_event(cx, cy));
         assert!(
             d.drag_from.is_none(),
             "hover must not seed `drag_from`; got {:?}",
@@ -2670,13 +2887,13 @@ mod tests {
         let mut d = mk(&["Home", "Research", "Design"]);
         let cy = d.diameter_px / 2.0;
         let cx = drag_anchor_x(&d);
-        pump(&mut d, cursor_event(cx, cy));
-        assert!(pump(&mut d, press_event()));
+        pump(&mut d, &cursor_event(cx, cy));
+        assert!(pump(&mut d, &press_event()));
         assert!(
             d.wants_pointer_capture(),
             "press inside disc must capture pointer"
         );
-        assert!(pump(&mut d, release_event()));
+        assert!(pump(&mut d, &release_event()));
         assert!(
             d.drag_from.is_none(),
             "release must clear `drag_from`; got {:?}",
@@ -2709,8 +2926,8 @@ mod tests {
 
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
-        pump(&mut d, cursor_event(cx, start_y));
-        assert!(pump(&mut d, press_event()));
+        pump(&mut d, &cursor_event(cx, start_y));
+        assert!(pump(&mut d, &press_event()));
         assert!(d.drag_from.is_some(), "press inside disc must start drag");
         assert!(d.wants_pointer_capture());
 
@@ -2718,11 +2935,11 @@ mod tests {
         // Dragged UPWARD: workspace 0 is the first, so pulling down pulls
         // against the top end instead of reaching a neighbour.
         let drag_dy = f64::from(gap / DRAG_FACTOR) + 30.0;
-        pump(&mut d, cursor_event(cx, start_y - drag_dy));
+        pump(&mut d, &cursor_event(cx, start_y - drag_dy));
         assert!(d.rotation_deg < 0.0);
 
         let before_idx = d.active_idx;
-        assert!(pump(&mut d, release_event()));
+        assert!(pump(&mut d, &release_event()));
         assert!(d.drag_from.is_none());
         let ratio = d.rotation_deg / gap;
         assert!(
@@ -2756,12 +2973,12 @@ mod tests {
         let diameter = d.diameter_px;
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
-        pump(&mut d, cursor_event(cx, start_y));
-        assert!(pump(&mut d, press_event()));
+        pump(&mut d, &cursor_event(cx, start_y));
+        assert!(pump(&mut d, &press_event()));
 
         let idx_before = d.active_idx;
         // 37 px * DRAG_FACTOR = 5.55° — not a multiple of the 15° gap.
-        pump(&mut d, cursor_event(cx, start_y + 37.0));
+        pump(&mut d, &cursor_event(cx, start_y + 37.0));
         let gap = d.spoke_gap_deg();
         let ratio = d.rotation_deg / gap;
         assert!(
@@ -2782,17 +2999,17 @@ mod tests {
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
 
-        pump(&mut d, cursor_event(cx, start_y));
-        assert!(pump(&mut d, press_event()));
+        pump(&mut d, &cursor_event(cx, start_y));
+        assert!(pump(&mut d, &press_event()));
         // Drag a huge distance in either direction.
-        pump(&mut d, cursor_event(cx, start_y + 10_000.0));
-        assert!(pump(&mut d, release_event()));
+        pump(&mut d, &cursor_event(cx, start_y + 10_000.0));
+        assert!(pump(&mut d, &release_event()));
         assert_eq!(d.active_idx, 0);
 
-        pump(&mut d, cursor_event(cx, start_y));
-        assert!(pump(&mut d, press_event()));
-        pump(&mut d, cursor_event(cx, start_y - 10_000.0));
-        assert!(pump(&mut d, release_event()));
+        pump(&mut d, &cursor_event(cx, start_y));
+        assert!(pump(&mut d, &press_event()));
+        pump(&mut d, &cursor_event(cx, start_y - 10_000.0));
+        assert!(pump(&mut d, &release_event()));
         assert_eq!(d.active_idx, 0);
     }
 
@@ -2830,10 +3047,10 @@ mod tests {
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
         let drag_dy = f64::from(d.spoke_gap_deg() / DRAG_FACTOR) + 100.0;
-        pump(&mut d, cursor_event(cx, start_y));
-        assert!(pump(&mut d, press_event()));
-        pump(&mut d, cursor_event(cx, start_y - drag_dy));
-        assert!(pump(&mut d, release_event()));
+        pump(&mut d, &cursor_event(cx, start_y));
+        assert!(pump(&mut d, &press_event()));
+        pump(&mut d, &cursor_event(cx, start_y - drag_dy));
+        assert!(pump(&mut d, &release_event()));
 
         assert_ne!(
             d.selected_idx(),
@@ -2862,11 +3079,11 @@ mod tests {
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
         let drag_dy = f64::from(d.spoke_gap_deg() / DRAG_FACTOR) + 100.0;
-        pump(&mut d, cursor_event(cx, start_y));
-        assert!(pump(&mut d, press_event()));
+        pump(&mut d, &cursor_event(cx, start_y));
+        assert!(pump(&mut d, &press_event()));
         // Upward — workspace 0 is the top of a finite list.
-        pump(&mut d, cursor_event(cx, start_y - drag_dy));
-        assert!(pump(&mut d, release_event()));
+        pump(&mut d, &cursor_event(cx, start_y - drag_dy));
+        assert!(pump(&mut d, &release_event()));
         assert_ne!(d.selected_idx(), idx_before);
     }
 
@@ -2885,9 +3102,9 @@ mod tests {
         let start_y = diameter / 2.0;
         let cx = drag_anchor_x(&d);
 
-        pump(&mut d, cursor_event(cx, start_y));
-        assert!(pump(&mut d, press_event()));
-        pump(&mut d, cursor_event(cx, start_y - drag_px));
+        pump(&mut d, &cursor_event(cx, start_y));
+        assert!(pump(&mut d, &press_event()));
+        pump(&mut d, &cursor_event(cx, start_y - drag_px));
         let pre_snap_deg = d.rotation_deg;
         assert!(pre_snap_deg < 0.0);
         // Let the follow spring actually reach the drag target before
@@ -2902,7 +3119,7 @@ mod tests {
             (visual_at_release - pre_snap_deg).abs() < 1e-2,
             "follow spring should have caught up to the drag target {pre_snap_deg} (got {visual_at_release})"
         );
-        assert!(pump(&mut d, release_event()));
+        assert!(pump(&mut d, &release_event()));
 
         // Immediately after release: spring is live and unsettled.
         let spring = d
@@ -2994,14 +3211,14 @@ mod tests {
             d.plus_rect,
             d.rect
         );
-        let slot_cx = d.plus_rect.center().x;
-        let slot_cy = d.plus_rect.center().y;
+        let slot_center_x = d.plus_rect.center().x;
+        let slot_center_y = d.plus_rect.center().y;
 
         // The press handler hit-tests against the cached
         // `last_cursor_pos`, not the event (which has no position field).
-        pump(&mut d, cursor_event(slot_cx, slot_cy));
+        pump(&mut d, &cursor_event(slot_center_x, slot_center_y));
         assert!(
-            pump(&mut d, press_event()),
+            pump(&mut d, &press_event()),
             "press on plus slot must be handled"
         );
 
@@ -3137,14 +3354,14 @@ mod tests {
     fn disc_hit_test_rejects_clicks_left_of_viewport_edge() {
         let mut d = mk(&["Home", "Research", "Design"]);
         let c = d.center();
-        pump(&mut d, cursor_event(c.x, c.y));
+        pump(&mut d, &cursor_event(c.x, c.y));
         assert!(
             d.drag_from.is_none(),
             "off-screen cursor must not seed a drag anchor; drag_from={:?}",
             d.drag_from
         );
         assert!(
-            !pump(&mut d, press_event()),
+            !pump(&mut d, &press_event()),
             "press at off-screen-left location must NOT be handled by the disc"
         );
         assert!(
@@ -3194,7 +3411,7 @@ mod tests {
     /// Drag by `dy` px from the current origin without releasing, then
     /// let `settle_frames` of motion play so the rim catches up.
     fn drag_to(d: &mut SidebarWheelDisc, cx: f64, start_y: f64, dy: f64, settle_frames: usize) {
-        pump(d, cursor_event(cx, start_y + dy));
+        pump(d, &cursor_event(cx, start_y + dy));
         frames(d, settle_frames);
     }
 
@@ -3209,8 +3426,8 @@ mod tests {
         let start_y = d.diameter_px / 2.0;
         // Start in the middle so there's room to travel without
         // meeting an end.
-        pump(&mut d, cursor_event(cx, start_y));
-        assert!(pump(&mut d, press_event()));
+        pump(&mut d, &cursor_event(cx, start_y));
+        assert!(pump(&mut d, &press_event()));
 
         // One detent is `gap / DRAG_FACTOR` px; walk three in small
         // steps, sampling the indicator continuously.
@@ -3237,7 +3454,7 @@ mod tests {
         // Each hand-off happens as the wheel crosses the boundary
         // between the two, i.e. half a detent from either's home.
         for (idx, rot) in &steps_at {
-            let boundary = -(*idx as f32 - 0.5) * gap;
+            let boundary = -(usize_to_f32_lossy(*idx) - 0.5) * gap;
             assert!(
                 (rot - boundary).abs() < gap * 0.15,
                 "the indicator changed to {idx} at {rot:.2}°, but the boundary \
@@ -3254,8 +3471,8 @@ mod tests {
         let mut d = mk(&["A", "B", "C", "D"]);
         let cx = drag_anchor_x(&d);
         let start_y = d.diameter_px / 2.0;
-        pump(&mut d, cursor_event(cx, start_y));
-        assert!(pump(&mut d, press_event()));
+        pump(&mut d, &cursor_event(cx, start_y));
+        assert!(pump(&mut d, &press_event()));
         // Just past halfway, then release — a plain one-detent settle
         // with no fling. Stated as a fraction of the gap so retuning
         // the geometry can't turn "past halfway" into two detents.
@@ -3267,7 +3484,7 @@ mod tests {
             -(0.6 * gap / f64::from(DRAG_FACTOR)),
             40,
         );
-        assert!(pump(&mut d, release_event()));
+        assert!(pump(&mut d, &release_event()));
 
         let target = d.rotation_deg;
         let start = d.visual_rotation_deg();
@@ -3299,7 +3516,7 @@ mod tests {
             worst_overshoot * 100.0
         );
 
-        let ms = frames_taken as f32 * 1000.0 / 60.0;
+        let ms = usize_to_f32_lossy(frames_taken) * 1000.0 / 60.0;
         assert!(
             (250.0..900.0).contains(&ms),
             "the settle took {ms:.0} ms. Under ~250 ms it snaps and the weight is \
@@ -3319,13 +3536,13 @@ mod tests {
                 gaps_per_frame * f64::from(d.spoke_gap_deg()) / f64::from(DRAG_FACTOR);
             let cx = drag_anchor_x(&d);
             let start_y = d.diameter_px / 2.0;
-            pump(&mut d, cursor_event(cx, start_y));
-            assert!(pump(&mut d, press_event()));
+            pump(&mut d, &cursor_event(cx, start_y));
+            assert!(pump(&mut d, &press_event()));
             // Long enough for the follow spring to reach steady state.
             let mut dy = 0.0;
             for _ in 0..40 {
                 dy -= px_per_frame;
-                pump(&mut d, cursor_event(cx, start_y + dy));
+                pump(&mut d, &cursor_event(cx, start_y + dy));
                 d.advance(1.0 / 60.0);
             }
             (d.rotation_deg - d.visual_rotation_deg()).abs()
@@ -3360,18 +3577,18 @@ mod tests {
                 gaps_per_frame * f64::from(d.spoke_gap_deg()) / f64::from(DRAG_FACTOR);
             let cx = drag_anchor_x(&d);
             let start_y = d.diameter_px / 2.0;
-            pump(&mut d, cursor_event(cx, start_y));
-            assert!(pump(&mut d, press_event()));
+            pump(&mut d, &cursor_event(cx, start_y));
+            assert!(pump(&mut d, &press_event()));
             let mut dy = 0.0;
             for _ in 0..24 {
                 dy -= px_per_frame;
-                pump(&mut d, cursor_event(cx, start_y + dy));
+                pump(&mut d, &cursor_event(cx, start_y + dy));
                 d.advance(1.0 / 60.0);
             }
             // A pause before release bleeds the velocity off, which is
             // what separates "thrown" from "placed".
             frames(&mut d, pause_frames);
-            assert!(pump(&mut d, release_event()));
+            assert!(pump(&mut d, &release_event()));
             d.selected_idx()
         };
 
@@ -3392,8 +3609,8 @@ mod tests {
         let mut d = mk(&["A", "B", "C"]);
         let cx = drag_anchor_x(&d);
         let start_y = d.diameter_px / 2.0;
-        pump(&mut d, cursor_event(cx, start_y));
-        assert!(pump(&mut d, press_event()));
+        pump(&mut d, &cursor_event(cx, start_y));
+        assert!(pump(&mut d, &press_event()));
 
         // Pulls are evenly spaced so successive gains are directly
         // comparable — uneven steps wouldn't test "each extra 100 px
@@ -3414,7 +3631,7 @@ mod tests {
                 "overscroll reached {at:.1}°, past its {reach:.1}° ceiling — the \
                  wheel can be dragged somewhere it does not belong"
             );
-            let raw = (pull_px as f32) * DRAG_FACTOR;
+            let raw = f64_to_f32_lossy(pull_px) * DRAG_FACTOR;
             assert!(
                 at < raw,
                 "pulling {pull_px} px past the end moved the wheel {at:.1}° of the \
@@ -3438,7 +3655,7 @@ mod tests {
             d.rotation_deg
         );
 
-        assert!(pump(&mut d, release_event()));
+        assert!(pump(&mut d, &release_event()));
         assert_eq!(
             d.rotation_deg, 0.0,
             "release past an end must return to the end itself, not to a detent \
@@ -3458,14 +3675,14 @@ mod tests {
         let mut d = mk(&["A", "B", "C"]);
         let cx = drag_anchor_x(&d);
         let start_y = d.diameter_px / 2.0;
-        pump(&mut d, cursor_event(cx, start_y));
-        assert!(pump(&mut d, press_event()));
+        pump(&mut d, &cursor_event(cx, start_y));
+        assert!(pump(&mut d, &press_event()));
         drag_to(&mut d, cx, start_y, -10_000.0, 60);
         assert_eq!(
             d.active_idx, 2,
             "dragging past the last workspace wrapped round to the start"
         );
-        assert!(pump(&mut d, release_event()));
+        assert!(pump(&mut d, &release_event()));
         assert_eq!(d.selected_idx(), 2);
     }
 
@@ -3476,10 +3693,10 @@ mod tests {
         let mut d = mk(&["A", "B", "C"]);
         let cx = drag_anchor_x(&d);
         let mid_y = d.diameter_px / 2.0;
-        pump(&mut d, cursor_event(cx, mid_y));
+        pump(&mut d, &cursor_event(cx, mid_y));
 
         for _ in 0..6 {
-            pump(&mut d, wheel_event(4.0));
+            pump(&mut d, &wheel_event(4.0));
         }
         frames(&mut d, 20);
         assert_eq!(d.active_idx, 0, "there is no workspace above the first");
@@ -3515,10 +3732,10 @@ mod tests {
         let mut d = mk(&["A", "B", "C", "D", "E"]);
         let cx = drag_anchor_x(&d);
         let mid_y = d.diameter_px / 2.0;
-        pump(&mut d, cursor_event(cx, mid_y));
+        pump(&mut d, &cursor_event(cx, mid_y));
         // One wheel click is 16 px; the detent is 48.
         for click in 1..=3 {
-            pump(&mut d, wheel_event(-1.0));
+            pump(&mut d, &wheel_event(-1.0));
             let expected = usize::from(click == 3);
             assert_eq!(
                 d.selected_idx(),
@@ -3591,12 +3808,12 @@ mod tests {
         let before = chrome.borrow().revision;
         let cx = drag_anchor_x(&d);
         let start_y = d.diameter_px / 2.0;
-        pump(&mut d, cursor_event(cx, start_y));
-        assert!(pump(&mut d, press_event()));
+        pump(&mut d, &cursor_event(cx, start_y));
+        assert!(pump(&mut d, &press_event()));
         // A pull against the top end, which can only come back to where
         // it began.
         drag_to(&mut d, cx, start_y, 400.0, 30);
-        assert!(pump(&mut d, release_event()));
+        assert!(pump(&mut d, &release_event()));
         assert_eq!(
             d.selected_idx(),
             0,
@@ -3617,8 +3834,8 @@ mod tests {
             d.visual_rotation_deg().abs() < 0.1,
             "the bounce has not finished"
         );
-        pump(&mut d, cursor_event(cx, start_y));
-        assert!(pump(&mut d, press_event()));
+        pump(&mut d, &cursor_event(cx, start_y));
+        assert!(pump(&mut d, &press_event()));
         // A clear detent and a bit, in gaps rather than pixels — pixel
         // cost per detent depends on the layout geometry.
         let gap = f64::from(d.spoke_gap_deg());
@@ -3629,7 +3846,7 @@ mod tests {
             -(1.3 * gap / f64::from(DRAG_FACTOR)),
             30,
         );
-        assert!(pump(&mut d, release_event()));
+        assert!(pump(&mut d, &release_event()));
         assert_ne!(d.selected_idx(), 0);
         assert_ne!(
             chrome.borrow().revision,

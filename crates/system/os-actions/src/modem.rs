@@ -1,7 +1,7 @@
-//! Mobile-broadband SIM operations through ModemManager.
+//! Mobile-broadband SIM operations through `ModemManager`.
 //!
 //! The PIN is sent as a D-Bus message body. It never appears in argv, an
-//! environment variable, NetworkManager profile storage, or qOS settings.
+//! environment variable, `NetworkManager` profile storage, or qOS settings.
 
 use std::sync::OnceLock;
 
@@ -31,6 +31,12 @@ pub struct SimInfo {
     pub operator: Option<String>,
 }
 
+/// List every SIM known to `ModemManager`, across every present modem.
+///
+/// # Errors
+///
+/// Returns an error message if `mmcli` is not installed or a required `mmcli` invocation
+/// fails.
 pub fn list_mobile_sims() -> Result<Vec<SimInfo>, String> {
     let list = crate::process::run_capture("mmcli", &["--list-modems"])?;
     let mut out = Vec::new();
@@ -69,6 +75,12 @@ pub fn list_mobile_sims() -> Result<Vec<SimInfo>, String> {
     Ok(out)
 }
 
+/// Send `pin` to the given `ModemManager` SIM object path.
+///
+/// # Errors
+///
+/// Returns an error message if `pin` fails [`validate_pin`], `sim` is not a `ModemManager` SIM
+/// object path, the D-Bus connection or proxy cannot be established, or the unlock is rejected.
 pub fn unlock_mobile_sim_on(sim: &str, pin: &str) -> Result<(), String> {
     validate_pin(pin)?;
     if !sim.starts_with("/org/freedesktop/ModemManager1/SIM/")
@@ -100,6 +112,12 @@ pub fn unlock_mobile_sim_on(sim: &str, pin: &str) -> Result<(), String> {
     })
 }
 
+/// Unlock the sole present SIM with `pin`.
+///
+/// # Errors
+///
+/// Returns an error message if `pin` fails [`validate_pin`], [`list_mobile_sims`] fails, no SIM
+/// or more than one SIM is present, or [`unlock_mobile_sim_on`] fails.
 pub fn unlock_mobile_sim(pin: &str) -> Result<(), String> {
     validate_pin(pin)?;
     let sims = list_mobile_sims()?;

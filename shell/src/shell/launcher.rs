@@ -84,17 +84,17 @@ fn unregister_launched_process(pid: u32) {
 pub(crate) fn verified_package_for_descendant(mut pid: u32) -> Option<String> {
     const MAX_ANCESTORS: usize = 32;
     for _ in 0..MAX_ANCESTORS {
-        let (ppid, start_time) = proc_stat(pid)?;
+        let (parent_pid, start_time) = proc_stat(pid)?;
         if let Ok(map) = LAUNCHED_PROCESSES.lock()
             && let Some(known) = map.get(&pid)
             && known.start_time == start_time
         {
             return Some(known.package_id.clone());
         }
-        if ppid == 0 || ppid == pid {
+        if parent_pid == 0 || parent_pid == pid {
             return None;
         }
-        pid = ppid;
+        pid = parent_pid;
     }
     None
 }
@@ -674,11 +674,27 @@ pub fn build_launch_command(
         launcher_bin,
         wayland_socket,
         room,
-        capabilities_file,
-        render_node,
-        document,
-        None,
+        LaunchExtras {
+            capabilities_file,
+            render_node,
+            document,
+            uri: None,
+        },
     )
+}
+
+/// The launch-command inputs beyond core app identity, grouped so
+/// [`build_launch_command_for`] stays under clippy's argument-count
+/// budget. `capabilities_file` is `None` when nothing was granted (no
+/// `--capabilities` flag); `render_node` pins the app's EGL/Vulkan
+/// loaders to this compositor's GPU; `document` rides across as
+/// `--open <path>`; `uri` is the one opaque URI argument for
+/// [`launch_with_uri`].
+struct LaunchExtras<'a> {
+    capabilities_file: Option<&'a Path>,
+    render_node: Option<&'a Path>,
+    document: Option<&'a Path>,
+    uri: Option<&'a str>,
 }
 
 fn build_launch_command_for(
@@ -686,11 +702,14 @@ fn build_launch_command_for(
     launcher_bin: &Path,
     wayland_socket: &Path,
     room: RoomId,
-    capabilities_file: Option<&Path>,
-    render_node: Option<&Path>,
-    document: Option<&Path>,
-    uri: Option<&str>,
+    extras: LaunchExtras<'_>,
 ) -> LaunchCommand {
+    let LaunchExtras {
+        capabilities_file,
+        render_node,
+        document,
+        uri,
+    } = extras;
     let mut args = vec![
         "run".to_string(),
         "--manifest".to_string(),
@@ -773,6 +792,10 @@ pub fn launch_with_document(
 /// resource dispatcher must validate the scheme claim immediately before
 /// calling this; this layer only guarantees the value is not interpreted as a
 /// program or split into additional arguments.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`launch_with_document`].
 pub fn launch_with_uri(
     package_id: &str,
     room: RoomId,
@@ -784,6 +807,13 @@ pub fn launch_with_uri(
 /// Launch the only package owned by a typed tool intent and pass that exact
 /// context through the trusted launcher. The request format cannot smuggle an
 /// executable, package id, or extra arguments into this path.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`launch_with_document`],
+/// plus [`LaunchError::RegistryUnreadable`] if `intent` fails its own
+/// validation or cannot be serialised into the launched process's
+/// environment.
 pub fn launch_tool_intent(intent: &ToolIntent, room: RoomId) -> Result<InstalledApp, LaunchError> {
     launch_with_context(intent.package_id(), room, None, None, Some(intent))
 }
@@ -830,10 +860,12 @@ fn launch_with_context(
         &launcher_bin,
         &socket,
         room,
-        capabilities_file.as_deref(),
-        crate::compositor::render_node::resolved(),
-        document,
-        uri,
+        LaunchExtras {
+            capabilities_file: capabilities_file.as_deref(),
+            render_node: crate::compositor::render_node::resolved(),
+            document,
+            uri,
+        },
     );
     if let Some(intent) = tool_intent {
         // Validation happens at the service boundary too; repeat it here so
@@ -883,13 +915,36 @@ pub fn launch_document_in_workspace(
     launch_with_document(package_id, workspace.room, document)
 }
 
+/// [`launch_uri_in_workspace`] taking the room and capabilities directly
+/// rather than a borrowed [`Workspace`], so a caller reading them out of a
+/// lock guard can drop it before the launch's file I/O and process spawn
+/// rather than holding it through them.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`launch_with_document`]
+/// (via [`launch_with_uri`]).
+pub fn launch_uri_in_room(
+    package_id: &str,
+    room: RoomId,
+    capabilities: Vec<CapOverride>,
+    uri: &str,
+) -> Result<InstalledApp, LaunchError> {
+    set_workspace_capabilities(capabilities);
+    launch_with_uri(package_id, room, uri)
+}
+
 pub fn launch_uri_in_workspace(
     package_id: &str,
     workspace: &Workspace,
     uri: &str,
 ) -> Result<InstalledApp, LaunchError> {
-    set_workspace_capabilities(workspace.capabilities.clone());
-    launch_with_uri(package_id, workspace.room, uri)
+    launch_uri_in_room(
+        package_id,
+        workspace.room,
+        workspace.capabilities.clone(),
+        uri,
+    )
 }
 
 /// Run `command` on a worker thread and report the outcome through

@@ -43,7 +43,10 @@ pub struct FetchGuard {
 
 impl Drop for FetchGuard {
     fn drop(&mut self) {
-        self.set.lock().unwrap().remove(&self.hash);
+        self.set
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.hash);
     }
 }
 
@@ -61,13 +64,19 @@ impl Hydrator {
 
     /// Whether a fetch of blob `hash` is in flight right now.
     pub fn is_fetching(&self, hash: Hash) -> bool {
-        self.in_flight.lock().unwrap().contains(&hash)
+        self.in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&hash)
     }
 
     /// Mark `hash` as being fetched; the returned guard clears it on drop.
     /// Idempotent — a concurrent fetch of the same blob shares the mark.
     pub fn mark_fetching(&self, hash: Hash) -> FetchGuard {
-        self.in_flight.lock().unwrap().insert(hash);
+        self.in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(hash);
         FetchGuard {
             set: self.in_flight.clone(),
             hash,
@@ -108,14 +117,20 @@ impl Hydrator {
 
     /// Register a peer we can hydrate blobs from. Idempotent per endpoint id.
     pub fn add_peer(&self, addr: EndpointAddr) {
-        let mut peers = self.peers.write().unwrap();
+        let mut peers = self
+            .peers
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !peers.iter().any(|a| a.id == addr.id) {
             peers.push(addr);
         }
     }
 
     pub fn known_peers(&self) -> Vec<EndpointAddr> {
-        self.peers.read().unwrap().clone()
+        self.peers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Local residency and the exact physical blobs that comprise one file.
@@ -136,14 +151,18 @@ impl Hydrator {
         result.remote_only = false;
         result.hydrated_bytes = bytes.len() as u64;
         result.blobs.push(manifest_hash);
-        let sources = self.remote_sources.read().unwrap().clone();
+        let sources = self
+            .remote_sources
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         result.remotely_durable = sources.contains_key(&manifest_hash);
         result.remote_source = sources.get(&manifest_hash).cloned();
         for chunk in manifest.chunks {
             let hash = Hash::from(chunk.hash);
             result.in_flight |= self.is_fetching(hash);
             if self.store.has(hash).await {
-                result.hydrated_bytes += u64::from(chunk.len);
+                result.hydrated_bytes = result.hydrated_bytes.saturating_add(u64::from(chunk.len));
                 result.blobs.push(hash);
                 result.remotely_durable &= sources.contains_key(&hash);
                 if result.remote_source.as_ref().map(|p| p.id) != sources.get(&hash).map(|p| p.id) {
@@ -158,6 +177,10 @@ impl Hydrator {
 
     /// Revalidate that a peer still serves this exact, content-addressed blob.
     /// The bytes are discarded; this is the last online check before local GC.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection fails, the peer doesn't serve the blob, or the check times out.
     pub async fn verify_remote_copy(&self, hash: Hash, peer: EndpointAddr) -> Result<()> {
         tokio::time::timeout(Duration::from_secs(20), async {
             let conn = self
@@ -182,6 +205,9 @@ impl Hydrator {
         .map_err(|_| anyhow!("remote durability check timed out"))?
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `hash` is absent locally and no known peer can serve it.
     pub async fn read_blob(&self, hash: Hash, offset: u64, size: u64) -> Result<Vec<u8>> {
         if let Some(bytes) = self.store.local(hash).await {
             return Ok(slice(&bytes, offset, size));
@@ -201,6 +227,10 @@ impl Hydrator {
     }
 
     /// Read a byte range of a file given its manifest hash: fetch the manifest, then only the chunks overlapping `[offset, offset+size)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest or any overlapping chunk can't be loaded (locally or from a peer).
     pub async fn read(&self, manifest_hash: Hash, offset: u64, size: u64) -> Result<Vec<u8>> {
         let manifest = self.load_manifest(manifest_hash).await?;
         let end = offset.saturating_add(size);
@@ -208,7 +238,7 @@ impl Hydrator {
         let mut pos: u64 = 0;
         for c in &manifest.chunks {
             let cstart = pos;
-            let cend = pos + u64::from(c.len);
+            let cend = pos.saturating_add(u64::from(c.len));
             pos = cend;
             if cend <= offset {
                 continue; // entirely before the range
@@ -219,16 +249,27 @@ impl Hydrator {
             let chunk = self
                 .read_blob(Hash::from(c.hash), 0, u64::from(c.len))
                 .await?;
-            let from = offset.saturating_sub(cstart).min(chunk.len() as u64) as usize;
-            let to = (end - cstart).min(chunk.len() as u64) as usize;
-            if from < to {
-                out.extend_from_slice(&chunk[from..to]);
+            // `chunk.len()` widened back to `u64` is always exact; the range end
+            // is then clamped to it, so these `usize` conversions never truncate.
+            let chunk_len = chunk.len() as u64;
+            let from = usize::try_from(offset.saturating_sub(cstart).min(chunk_len))
+                .unwrap_or(chunk.len());
+            let to =
+                usize::try_from(end.saturating_sub(cstart).min(chunk_len)).unwrap_or(chunk.len());
+            if from < to
+                && let Some(range) = chunk.get(from..to)
+            {
+                out.extend_from_slice(range);
             }
         }
         Ok(out)
     }
 
     /// Total byte length of a file from its manifest (fetches only the manifest).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest can't be loaded.
     pub async fn content_len(&self, manifest_hash: Hash) -> Result<u64> {
         Ok(self.load_manifest(manifest_hash).await?.total_len())
     }
@@ -240,6 +281,10 @@ impl Hydrator {
 
     /// Fetch a whole blob from a specific peer, verify, persist, and return it.
     /// `get_blob` streams bao-verified content, so a corrupt/wrong blob fails the stream rather than returning bad bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection, transfer, or local persistence fails, or the fetch times out.
     pub async fn fetch_from(&self, hash: Hash, peer: EndpointAddr) -> Result<Bytes> {
         // Publish that this blob is downloading so `sync_state` reports it; the guard clears on completion or failure.
         let _guard = self.mark_fetching(hash);
@@ -253,7 +298,10 @@ impl Hydrator {
                 .bytes_and_stats()
                 .await?;
             self.store.store_fetched(hash, bytes.clone()).await?;
-            self.remote_sources.write().unwrap().insert(hash, peer);
+            self.remote_sources
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(hash, peer);
             Ok::<_, anyhow::Error>(bytes)
         })
         .await
@@ -272,9 +320,18 @@ pub struct ContentResidency {
 }
 
 fn slice(bytes: &[u8], offset: u64, size: u64) -> Vec<u8> {
-    let start = (offset as usize).min(bytes.len());
-    let end = start.saturating_add(size as usize).min(bytes.len());
-    bytes[start..end].to_vec()
+    // `offset`/`size` cross the FUSE boundary as untrusted request values, so
+    // clamp rather than trust them to fit `usize` before bounding against `bytes.len()`.
+    let start = usize::try_from(offset)
+        .unwrap_or(usize::MAX)
+        .min(bytes.len());
+    let end = start
+        .saturating_add(usize::try_from(size).unwrap_or(usize::MAX))
+        .min(bytes.len());
+    bytes
+        .get(start..end)
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -303,7 +360,7 @@ mod tests {
         let store = Arc::new(ContentStore::memory());
         // A multi-chunk buffer (well over MAX_CHUNK).
         let data: Vec<u8> = (0..300_000u32)
-            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .map(|i| u8::try_from((i.wrapping_mul(2_654_435_761) >> 13) & 0xff).unwrap())
             .collect();
         let mh = store.write_content(&data).await.unwrap().unwrap();
         assert!(store.local(mh).await.is_some(), "manifest stored");
@@ -341,7 +398,7 @@ mod tests {
         let store = Arc::new(ContentStore::memory());
         // A multi-chunk file so we exercise the per-chunk presence check.
         let data: Vec<u8> = (0..250_000u32)
-            .map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8)
+            .map(|i| u8::try_from((i.wrapping_mul(2_654_435_761) >> 11) & 0xff).unwrap())
             .collect();
         let mh = store.write_content(&data).await.unwrap().unwrap();
         let hyd = Hydrator::new(endpoint, store);
@@ -388,7 +445,10 @@ mod tests {
                 },
             ],
         };
-        let mh = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
+        let mh = store
+            .ingest(Bytes::from(manifest.encode().unwrap()))
+            .await
+            .unwrap();
         let hyd = Hydrator::new(endpoint, store);
         assert_eq!(
             hyd.sync_state(mh).await,
@@ -403,7 +463,7 @@ mod tests {
         let store = Arc::new(ContentStore::memory());
         // Ingest a real file (so absent state would otherwise be Local)...
         let data: Vec<u8> = (0..200_000u32)
-            .map(|i| (i.wrapping_mul(40_503) >> 9) as u8)
+            .map(|i| u8::try_from((i.wrapping_mul(40_503) >> 9) & 0xff).unwrap())
             .collect();
         let mh = store.write_content(&data).await.unwrap().unwrap();
         let hyd = Hydrator::new(endpoint, store);

@@ -1,14 +1,14 @@
 //! Offscreen renders of the shared `RichTextEditor` in light + dark, so the
 //! WYSIWYG rich-text widget can be self-inspected without opening a window.
-//! Drives the real five-pass pipeline (sync → build_layout → compute_layout →
-//! apply_layout → draw) on live CRDT documents seeded with Automerge native
+//! Drives the real five-pass pipeline (`sync` → `build_layout` → `compute_layout` →
+//! `apply_layout` → `draw`) on live CRDT documents seeded with Automerge native
 //! marks (bold / italic / underline) and block styles.
 //!
-//! Run:  cargo run -p ui --example ui-shots -- rich_text_editor_shots
-//! Out:  $RTE_SHOTS_OUT (default /tmp/rte_shots) — rte-dark.png, rte-light.png
+//! Run:  `cargo run -p ui --example ui-shots -- rich_text_editor_shots`
+//! Out:  `$RTE_SHOTS_OUT` (default `/tmp/rte_shots`) — rte-dark.png, rte-light.png
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use automerge::ObjType;
 use automerge::transaction::Transactable;
@@ -38,16 +38,25 @@ fn seeded(
     let field = state
         .doc
         .put_object(&state.root, key, ObjType::Map)
-        .unwrap();
-    let tid = state.doc.put_object(&field, "text", ObjType::Text).unwrap();
-    state.doc.splice_text(&tid, 0, 0, text).unwrap();
-    state.doc.put(&field, "style", style).unwrap();
+        .unwrap_or_else(|e| panic!("put_object({key}) failed: {e}"));
+    let tid = state
+        .doc
+        .put_object(&field, "text", ObjType::Text)
+        .unwrap_or_else(|e| panic!("put_object({key}.text) failed: {e}"));
+    state
+        .doc
+        .splice_text(&tid, 0, 0, text)
+        .unwrap_or_else(|e| panic!("splice_text({key}) failed: {e}"));
+    state
+        .doc
+        .put(&field, "style", style)
+        .unwrap_or_else(|e| panic!("put({key}.style) failed: {e}"));
     for (name, s, e) in marks {
         let m = automerge::marks::Mark::new(name.to_string(), true, *s, *e);
         state
             .doc
             .mark(&tid, m, automerge::marks::ExpandMark::None)
-            .unwrap();
+            .unwrap_or_else(|err| panic!("mark({key}, {name}) failed: {err}"));
     }
     let mut ed = RichTextEditor::new(key);
     ed.sync(&mut state.doc, &state.root);
@@ -68,27 +77,25 @@ fn place_and_draw(
     let mut taffy = TaffyTree::<()>::new();
     let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = ed.build_layout(&mut taffy, theme, &mut nm);
-    taffy
-        .compute_layout_with_measure(
-            node,
-            Size {
-                width: AvailableSpace::Definite(width),
-                height: AvailableSpace::MaxContent,
-            },
-            |known, available, nid, _, _| {
-                nm.get(&nid)
-                    .map(|&p| unsafe { (*p).measure(known, available, tr) })
-                    .unwrap_or(Size::ZERO)
-            },
-        )
-        .unwrap();
+    let _ = taffy.compute_layout_with_measure(
+        node,
+        Size {
+            width: AvailableSpace::Definite(width),
+            height: AvailableSpace::MaxContent,
+        },
+        |known, available, nid, _, _| {
+            nm.get(&nid).map_or(Size::ZERO, |&p| unsafe {
+                (*p).measure(known, available, tr)
+            })
+        },
+    );
     ed.apply_layout(&taffy, node, Point::new(x, y));
     let presence = PresenceCtx::default();
     ed.draw(scene, Affine::IDENTITY, tr, theme, &presence);
     ed.get_rect().height()
 }
 
-fn shoot(theme: &Theme, out: PathBuf) {
+fn shoot(theme: &Theme, out: &Path) {
     let mut state = State::new();
 
     let fox = "The quick brown fox jumps over the lazy dog.";
@@ -142,10 +149,17 @@ fn shoot(theme: &Theme, out: PathBuf) {
         Affine::IDENTITY,
         theme.bg_app,
         None,
-        &vello::kurbo::Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64),
+        &vello::kurbo::Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
     );
 
     let pad = 24.0;
+    // WIDTH is a small fixed logical-pixel constant, and pad a small fixed
+    // layout constant — both far below f32's exact-integer range.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "WIDTH and pad are small fixed layout constants, far below f32's exact-integer range"
+    )]
     let width = (WIDTH as f32) - 2.0 * pad as f32;
     let mut y = pad;
     for ed in [
@@ -162,13 +176,14 @@ fn shoot(theme: &Theme, out: PathBuf) {
     }
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.bg_app, &out);
+    r.render_png(&scene, theme.bg_app, out);
     println!("wrote {}", out.display());
 }
 
 pub fn run(_args: &[String]) {
     let dir = std::env::var("RTE_SHOTS_OUT").unwrap_or_else(|_| "/tmp/rte_shots".to_string());
-    std::fs::create_dir_all(&dir).unwrap();
-    shoot(&Theme::dark(), PathBuf::from(&dir).join("rte-dark.png"));
-    shoot(&Theme::light(), PathBuf::from(&dir).join("rte-light.png"));
+    std::fs::create_dir_all(&dir)
+        .unwrap_or_else(|e| panic!("failed to create output dir {dir}: {e}"));
+    shoot(&Theme::dark(), &PathBuf::from(&dir).join("rte-dark.png"));
+    shoot(&Theme::light(), &PathBuf::from(&dir).join("rte-light.png"));
 }

@@ -32,6 +32,12 @@ pub fn element_dest(dest: Rect, s: f64, e: &Element) -> Rect {
 
 /// Paint one slide into `dest`. `corner` is the slide-card corner radius
 /// in pixels (0 for present mode's full-bleed render).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the shared draw context (scene, transform, text renderer, theme, palette, image \
+              store) plus the slide-specific geometry every caller (canvas, thumbnail, present \
+              view) passes; bundling them would only re-create this list as a throwaway struct"
+)]
 pub fn draw_slide(
     scene: &mut Scene,
     transform: Affine,
@@ -86,6 +92,11 @@ fn draw_decor(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the shared draw context plus the element and its resolved destination rect; see \
+              `draw_slide` above"
+)]
 fn draw_element(
     scene: &mut Scene,
     transform: Affine,
@@ -156,6 +167,11 @@ fn draw_element(
 /// Paint an image element: the real decoded picture (object-fit *cover*,
 /// clipped to the element's rounded rect) once it has loaded, or a light
 /// loading / broken-file state until then.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the shared draw context plus the element and its resolved destination rect; see \
+              `draw_slide` above"
+)]
 fn draw_image_element(
     scene: &mut Scene,
     transform: Affine,

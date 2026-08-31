@@ -142,23 +142,24 @@ pub fn child_row(node: &Node, slot: Slot) -> Option<&Row> {
         (Node::Frac { num, .. }, Slot::Num) => Some(num),
         (Node::Frac { den, .. }, Slot::Den) => Some(den),
         (Node::Sup { exp }, Slot::Exp) => Some(exp),
-        (Node::Sub { sub }, Slot::Sub) => Some(sub),
-        (Node::SubSup { sub, .. }, Slot::Sub) => Some(sub),
+        (Node::Sub { sub }, Slot::Sub) | (Node::SubSup { sub, .. }, Slot::Sub) => Some(sub),
         (Node::SubSup { sup, .. }, Slot::Sup) => Some(sup),
         (Node::Sqrt { radicand, .. }, Slot::Radicand) => Some(radicand),
         (Node::Sqrt { index: Some(i), .. }, Slot::Index) => Some(i),
-        (Node::Paren { body }, Slot::Body) => Some(body),
-        (Node::Delimited { body, .. }, Slot::Body) => Some(body),
+        (Node::Paren { body }, Slot::Body) | (Node::Delimited { body, .. }, Slot::Body) => {
+            Some(body)
+        }
         (Node::Func { arg, .. }, Slot::Arg) => Some(arg),
-        (Node::Accent { base, .. }, Slot::Base) => Some(base),
-        (Node::UnderOver { base, .. }, Slot::Base) => Some(base),
+        (Node::Accent { base, .. }, Slot::Base) | (Node::UnderOver { base, .. }, Slot::Base) => {
+            Some(base)
+        }
         (
             Node::UnderOver {
                 under: Some(row), ..
             },
             Slot::Under,
-        ) => Some(row),
-        (
+        )
+        | (
             Node::UnderOver {
                 over: Some(row), ..
             },
@@ -176,23 +177,24 @@ pub fn child_row_mut(node: &mut Node, slot: Slot) -> Option<&mut Row> {
         (Node::Frac { num, .. }, Slot::Num) => Some(num),
         (Node::Frac { den, .. }, Slot::Den) => Some(den),
         (Node::Sup { exp }, Slot::Exp) => Some(exp),
-        (Node::Sub { sub }, Slot::Sub) => Some(sub),
-        (Node::SubSup { sub, .. }, Slot::Sub) => Some(sub),
+        (Node::Sub { sub }, Slot::Sub) | (Node::SubSup { sub, .. }, Slot::Sub) => Some(sub),
         (Node::SubSup { sup, .. }, Slot::Sup) => Some(sup),
         (Node::Sqrt { radicand, .. }, Slot::Radicand) => Some(radicand),
         (Node::Sqrt { index: Some(i), .. }, Slot::Index) => Some(i),
-        (Node::Paren { body }, Slot::Body) => Some(body),
-        (Node::Delimited { body, .. }, Slot::Body) => Some(body),
+        (Node::Paren { body }, Slot::Body) | (Node::Delimited { body, .. }, Slot::Body) => {
+            Some(body)
+        }
         (Node::Func { arg, .. }, Slot::Arg) => Some(arg),
-        (Node::Accent { base, .. }, Slot::Base) => Some(base),
-        (Node::UnderOver { base, .. }, Slot::Base) => Some(base),
+        (Node::Accent { base, .. }, Slot::Base) | (Node::UnderOver { base, .. }, Slot::Base) => {
+            Some(base)
+        }
         (
             Node::UnderOver {
                 under: Some(row), ..
             },
             Slot::Under,
-        ) => Some(row),
-        (
+        )
+        | (
             Node::UnderOver {
                 over: Some(row), ..
             },
@@ -214,8 +216,7 @@ pub fn node_slots(node: &Node) -> Vec<Slot> {
         Node::SubSup { .. } => vec![Slot::Sup, Slot::Sub],
         Node::Sqrt { index: Some(_), .. } => vec![Slot::Index, Slot::Radicand],
         Node::Sqrt { index: None, .. } => vec![Slot::Radicand],
-        Node::Paren { .. } => vec![Slot::Body],
-        Node::Delimited { .. } => vec![Slot::Body],
+        Node::Paren { .. } | Node::Delimited { .. } => vec![Slot::Body],
         Node::Func { .. } => vec![Slot::Arg],
         Node::Accent { .. } => vec![Slot::Base],
         Node::UnderOver { under, over, .. } => {
@@ -258,107 +259,93 @@ pub fn to_linear(expr: &MathExpr) -> String {
 }
 
 fn write_row(row: &Row, out: &mut String) {
-    let mut i = 0;
-    while i < row.len() {
-        match &row[i] {
-            Node::Char(c) => out.push(*c),
-            Node::Sup { exp } => {
-                out.push('^');
-                out.push('(');
-                write_row(exp, out);
+    for node in row {
+        write_node(node, out);
+    }
+}
+
+fn write_node(node: &Node, out: &mut String) {
+    match node {
+        Node::Char(c) => out.push(*c),
+        Node::Sup { exp } => write_bracketed('^', exp, out),
+        Node::Sub { sub } => write_bracketed('_', sub, out),
+        Node::SubSup { sub, sup } => {
+            write_bracketed('_', sub, out);
+            write_bracketed('^', sup, out);
+        }
+        Node::Frac { num, den } => {
+            write_paren(num, out);
+            out.push('/');
+            write_paren(den, out);
+        }
+        Node::Sqrt { index, radicand } => {
+            if let Some(idx) = index {
+                out.push_str("root(");
+                write_row(idx, out);
+                out.push(',');
+                write_row(radicand, out);
                 out.push(')');
-            }
-            Node::Sub { sub } => {
-                out.push('_');
-                out.push('(');
-                write_row(sub, out);
+            } else {
+                out.push_str("sqrt(");
+                write_row(radicand, out);
                 out.push(')');
-            }
-            Node::SubSup { sub, sup } => {
-                out.push('_');
-                out.push('(');
-                write_row(sub, out);
-                out.push(')');
-                out.push('^');
-                out.push('(');
-                write_row(sup, out);
-                out.push(')');
-            }
-            Node::Frac { num, den } => {
-                out.push('(');
-                write_row(num, out);
-                out.push(')');
-                out.push('/');
-                out.push('(');
-                write_row(den, out);
-                out.push(')');
-            }
-            Node::Sqrt { index, radicand } => {
-                if let Some(idx) = index {
-                    out.push_str("root(");
-                    write_row(idx, out);
-                    out.push(',');
-                    write_row(radicand, out);
-                    out.push(')');
-                } else {
-                    out.push_str("sqrt(");
-                    write_row(radicand, out);
-                    out.push(')');
-                }
-            }
-            Node::Paren { body } => {
-                out.push('(');
-                write_row(body, out);
-                out.push(')');
-            }
-            Node::Delimited { open, close, body } => {
-                if let Some(open) = open {
-                    out.push(*open);
-                }
-                write_row(body, out);
-                if let Some(close) = close {
-                    out.push(*close);
-                }
-            }
-            Node::Func { name, arg } => {
-                out.push_str(name);
-                out.push('(');
-                write_row(arg, out);
-                out.push(')');
-            }
-            Node::Text(text) => out.push_str(text),
-            Node::Accent { base, .. } => write_row(base, out),
-            Node::UnderOver { base, under, over } => {
-                write_row(base, out);
-                if let Some(under) = under {
-                    out.push_str("_(");
-                    write_row(under, out);
-                    out.push(')');
-                }
-                if let Some(over) = over {
-                    out.push_str("^(");
-                    write_row(over, out);
-                    out.push(')');
-                }
-            }
-            Node::Table { rows } => {
-                out.push('[');
-                for (row_index, row) in rows.iter().enumerate() {
-                    if row_index > 0 {
-                        out.push(';');
-                    }
-                    for (column, cell) in row.iter().enumerate() {
-                        if column > 0 {
-                            out.push(',');
-                        }
-                        write_row(cell, out);
-                    }
-                }
-                out.push(']');
             }
         }
-        i += 1;
+        Node::Paren { body } => write_paren(body, out),
+        Node::Delimited { open, close, body } => {
+            if let Some(open) = open {
+                out.push(*open);
+            }
+            write_row(body, out);
+            if let Some(close) = close {
+                out.push(*close);
+            }
+        }
+        Node::Func { name, arg } => {
+            out.push_str(name);
+            write_paren(arg, out);
+        }
+        Node::Text(text) => out.push_str(text),
+        Node::Accent { base, .. } => write_row(base, out),
+        Node::UnderOver { base, under, over } => {
+            write_row(base, out);
+            if let Some(under) = under {
+                write_bracketed('_', under, out);
+            }
+            if let Some(over) = over {
+                write_bracketed('^', over, out);
+            }
+        }
+        Node::Table { rows } => write_table(rows, out),
     }
+}
+
+/// Emits `prefix(row)`, e.g. `^(x+1)` for a superscript.
+fn write_bracketed(prefix: char, row: &Row, out: &mut String) {
+    out.push(prefix);
+    write_paren(row, out);
+}
+
+fn write_paren(row: &Row, out: &mut String) {
+    out.push('(');
+    write_row(row, out);
+    out.push(')');
+}
+
+fn write_table(rows: &[Vec<Row>], out: &mut String) {
+    out.push('[');
+    for (row_index, row) in rows.iter().enumerate() {
+        if row_index > 0 {
+            out.push(';');
+        }
+        for (column, cell) in row.iter().enumerate() {
+            if column > 0 {
+                out.push(',');
+            }
+            write_row(cell, out);
+        }
+    }
+    out.push(']');
 }
 
 /// Names rendered upright as function calls when reading a linear string.
@@ -406,12 +393,12 @@ impl LinParser {
             }
             match c {
                 '^' => {
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     let exp = self.parse_superscript();
                     row.push(Node::Sup { exp });
                 }
                 '/' => {
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     // Denominator is the next immediate operand; numerator is
                     // the operand already emitted (last node, unwrapping a
                     // redundant paren).
@@ -433,7 +420,7 @@ impl LinParser {
                     row.push(Node::Frac { num, den });
                 }
                 '(' => {
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     let body = self.parse_row(&[')']);
                     self.expect(')');
                     row.push(Node::Paren { body });
@@ -441,7 +428,7 @@ impl LinParser {
                 c if c.is_ascii_alphabetic() => {
                     let name = self.read_ident();
                     if self.peek() == Some('(') {
-                        self.pos += 1;
+                        self.pos = self.pos.saturating_add(1);
                         if name == "sqrt" {
                             let radicand = self.parse_row(&[')']);
                             self.expect(')');
@@ -452,7 +439,7 @@ impl LinParser {
                         } else if name == "root" {
                             let index = self.parse_row(&[',', ')']);
                             if self.peek() == Some(',') {
-                                self.pos += 1;
+                                self.pos = self.pos.saturating_add(1);
                                 let radicand = self.parse_row(&[')']);
                                 self.expect(')');
                                 row.push(Node::Sqrt {
@@ -486,7 +473,7 @@ impl LinParser {
                     }
                 }
                 _ => {
-                    self.pos += 1;
+                    self.pos = self.pos.saturating_add(1);
                     row.push(Node::Char(c));
                 }
             }
@@ -498,7 +485,7 @@ impl LinParser {
     /// bare `^2` / `^x` / `^sin(x)` takes a single operand.
     fn parse_superscript(&mut self) -> Row {
         if self.peek() == Some('(') {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
             let r = self.parse_row(&[')']);
             self.expect(')');
             r
@@ -512,13 +499,13 @@ impl LinParser {
     fn parse_operand_row(&mut self) -> Row {
         match self.peek() {
             Some('(') => {
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 let body = self.parse_row(&[')']);
                 self.expect(')');
                 vec![Node::Paren { body }]
             }
             Some('-') => {
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
                 let mut r = vec![Node::Char('-')];
                 r.extend(self.parse_operand_row());
                 r
@@ -528,7 +515,7 @@ impl LinParser {
                 while let Some(c) = self.peek() {
                     if c.is_ascii_digit() || c == '.' {
                         r.push(Node::Char(c));
-                        self.pos += 1;
+                        self.pos = self.pos.saturating_add(1);
                     } else {
                         break;
                     }
@@ -545,8 +532,10 @@ impl LinParser {
                     };
                     let nodes = sub.parse_row(&[]);
                     // advance self by what sub consumed past `name(`
-                    let consumed = sub.pos.saturating_sub(name.chars().count() + 1);
-                    self.pos += consumed;
+                    let consumed = sub
+                        .pos
+                        .saturating_sub(name.chars().count().saturating_add(1));
+                    self.pos = self.pos.saturating_add(consumed);
                     // Keep exactly the single produced call node. `next()`
                     // already yields only the first; the truncate that used to
                     // stand here computed 1.max(len.min(1)), which is always 1.
@@ -564,24 +553,28 @@ impl LinParser {
     }
 
     fn tail(&self) -> impl Iterator<Item = char> + '_ {
-        self.chars[self.pos..].iter().copied()
+        self.chars.get(self.pos..).unwrap_or(&[]).iter().copied()
     }
 
     fn read_ident(&mut self) -> String {
         let start = self.pos;
         while let Some(c) = self.peek() {
             if c.is_ascii_alphanumeric() || c == '_' {
-                self.pos += 1;
+                self.pos = self.pos.saturating_add(1);
             } else {
                 break;
             }
         }
-        self.chars[start..self.pos].iter().collect()
+        self.chars
+            .get(start..self.pos)
+            .unwrap_or(&[])
+            .iter()
+            .collect()
     }
 
     fn expect(&mut self, c: char) {
         if self.peek() == Some(c) {
-            self.pos += 1;
+            self.pos = self.pos.saturating_add(1);
         }
     }
 }

@@ -401,8 +401,9 @@ pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
     while lo < hi {
         // Never overflows: `hi - lo` can't underflow (loop invariant
         // `lo < hi`), and `lo + (hi - lo)` is exactly `hi`, already a
-        // valid `usize`.
-        let mid = lo + (hi - lo).div_ceil(2);
+        // valid `usize`. `saturating_*` states that to the lint rather
+        // than relying on the invariant holding at every call site.
+        let mid = lo.saturating_add(hi.saturating_sub(lo).div_ceil(2));
         let candidate: String = s.chars().take(mid).collect();
         if f64::from(tr.measure(&candidate, size, None).0) <= inner {
             lo = mid;

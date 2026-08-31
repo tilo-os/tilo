@@ -18,9 +18,8 @@ use crate::model::{Block, Span};
 /// numeric form first (XML, unlike HTML, only predefines five entities).
 pub fn parse_xhtml(src: &str) -> Vec<Block> {
     let sanitized = sanitize_entities(src);
-    let doc = match Document::parse(&sanitized) {
-        Ok(d) => d,
-        Err(_) => return Vec::new(),
+    let Ok(doc) = Document::parse(&sanitized) else {
+        return Vec::new();
     };
     let Some(body) = doc
         .descendants()
@@ -73,7 +72,14 @@ fn lower_block(node: Node, out: &mut Vec<Block>) {
     let tag = node.tag_name().name().to_ascii_lowercase();
     match tag.as_str() {
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-            let level = tag.as_bytes()[1] - b'0';
+            let level = match tag.as_str() {
+                "h1" => 1,
+                "h2" => 2,
+                "h3" => 3,
+                "h4" => 4,
+                "h5" => 5,
+                _ => 6,
+            };
             let spans = collect_inline(node);
             if !spans_empty(&spans) {
                 out.push(Block::Heading { level, spans });
@@ -137,20 +143,14 @@ fn lower_block(node: Node, out: &mut Vec<Block>) {
 }
 
 fn sole_math_child<'a, 'input>(node: Node<'a, 'input>) -> Option<Node<'a, 'input>> {
-    let meaningful: Vec<_> = node
-        .children()
-        .filter(|child| {
-            child.is_element() || child.text().is_some_and(|text| !text.trim().is_empty())
-        })
-        .collect();
-    if meaningful.len() == 1
-        && meaningful[0].is_element()
-        && meaningful[0].tag_name().name().eq_ignore_ascii_case("math")
-    {
-        Some(meaningful[0])
-    } else {
-        None
+    let mut meaningful = node.children().filter(|child| {
+        child.is_element() || child.text().is_some_and(|text| !text.trim().is_empty())
+    });
+    let only = meaningful.next()?;
+    if meaningful.next().is_some() {
+        return None; // more than one meaningful child
     }
+    (only.is_element() && only.tag_name().name().eq_ignore_ascii_case("math")).then_some(only)
 }
 
 fn push_math_block(node: Node, out: &mut Vec<Block>) {
@@ -170,7 +170,48 @@ fn push_math_block(node: Node, out: &mut Vec<Block>) {
     });
 }
 
-/// Lower the presentation subset used by EPUB MathML into the same semantic
+/// Concatenated text of `node`'s text-node descendants — MathML tokens
+/// (`<mi>`/`<mn>`/`<mo>`/`<mtext>`) carry their content as flat text
+/// regardless of nesting depth.
+fn node_text(node: Node) -> String {
+    node.descendants()
+        .filter(Node::is_text)
+        .filter_map(|child| child.text())
+        .collect()
+}
+
+/// The `<mtr>` rows of an `<mtable>`, each a row of `<mtd>` cell contents.
+fn mathml_table_rows(element_children: &[Node]) -> Vec<Vec<Row>> {
+    element_children
+        .iter()
+        .filter(|row| row.tag_name().name().eq_ignore_ascii_case("mtr"))
+        .map(|row| {
+            row.children()
+                .filter(|cell| {
+                    cell.is_element() && cell.tag_name().name().eq_ignore_ascii_case("mtd")
+                })
+                .map(mathml_children)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The first non-annotation child of a `<semantics>` wrapper — MathML's
+/// presentation form, skipping the parallel `<annotation>`/`<annotation-xml>`.
+fn mathml_semantics(element_children: Vec<Node>) -> Row {
+    element_children
+        .into_iter()
+        .find(|child| {
+            !matches!(
+                child.tag_name().name().to_ascii_lowercase().as_str(),
+                "annotation" | "annotation-xml"
+            )
+        })
+        .map(mathml_row)
+        .unwrap_or_default()
+}
+
+/// Lower the presentation subset used by EPUB `MathML` into the same semantic
 /// tree the calculator edits. Unsupported wrappers remain transparent, so an
 /// unfamiliar styling element never makes its mathematical children vanish.
 fn mathml_row(node: Node) -> Row {
@@ -187,7 +228,7 @@ fn mathml_row(node: Node) -> Row {
         return Vec::new();
     }
     let tag = node.tag_name().name().to_ascii_lowercase();
-    let element_children: Vec<_> = node.children().filter(|child| child.is_element()).collect();
+    let element_children: Vec<_> = node.children().filter(Node::is_element).collect();
     let child_row = |index: usize| {
         element_children
             .get(index)
@@ -196,11 +237,7 @@ fn mathml_row(node: Node) -> Row {
     };
     match tag.as_str() {
         "mi" | "mn" | "mo" => {
-            let text: String = node
-                .descendants()
-                .filter(|child| child.is_text())
-                .filter_map(|child| child.text())
-                .collect();
+            let text = node_text(node);
             let text = text.trim();
             if tag == "mi"
                 && (text.chars().count() > 1 || node.attribute("mathvariant") == Some("normal"))
@@ -210,14 +247,7 @@ fn mathml_row(node: Node) -> Row {
                 text.chars().map(MathNode::Char).collect()
             }
         }
-        "mtext" => {
-            let text: String = node
-                .descendants()
-                .filter(|child| child.is_text())
-                .filter_map(|child| child.text())
-                .collect();
-            vec![MathNode::Text(text.trim().to_string())]
-        }
+        "mtext" => vec![MathNode::Text(node_text(node).trim().to_string())],
         "mfrac" => vec![MathNode::Frac {
             num: child_row(0),
             den: child_row(1),
@@ -263,36 +293,15 @@ fn mathml_row(node: Node) -> Row {
             under: Some(child_row(1)),
             over: Some(child_row(2)),
         }],
-        "mtable" => {
-            let rows = element_children
-                .iter()
-                .filter(|row| row.tag_name().name().eq_ignore_ascii_case("mtr"))
-                .map(|row| {
-                    row.children()
-                        .filter(|cell| {
-                            cell.is_element() && cell.tag_name().name().eq_ignore_ascii_case("mtd")
-                        })
-                        .map(mathml_children)
-                        .collect::<Vec<_>>()
-                })
-                .collect();
-            vec![MathNode::Table { rows }]
-        }
+        "mtable" => vec![MathNode::Table {
+            rows: mathml_table_rows(&element_children),
+        }],
         "mfenced" => vec![MathNode::Delimited {
             open: mathml_delimiter(node.attribute("open"), '('),
             close: mathml_delimiter(node.attribute("close"), ')'),
             body: mathml_children(node),
         }],
-        "semantics" => element_children
-            .into_iter()
-            .find(|child| {
-                !matches!(
-                    child.tag_name().name().to_ascii_lowercase().as_str(),
-                    "annotation" | "annotation-xml"
-                )
-            })
-            .map(mathml_row)
-            .unwrap_or_default(),
+        "semantics" => mathml_semantics(element_children),
         "annotation" | "annotation-xml" => Vec::new(),
         _ => mathml_children(node),
     }
@@ -304,7 +313,7 @@ fn mathml_children(node: Node) -> Row {
 
 fn mathml_delimiter(value: Option<&str>, default: char) -> Option<char> {
     match value {
-        Some("") | Some(".") => None,
+        Some("" | ".") => None,
         Some(value) => value.chars().next(),
         None => Some(default),
     }
@@ -401,16 +410,15 @@ impl SpanBuilder {
                 }
                 continue;
             }
-            let same_style = self.spans.last().is_some_and(|l| {
+            let continues_last = self.spans.last_mut().filter(|l| {
                 l.math.is_none()
                     && l.bold == style.bold
                     && l.italic == style.italic
                     && l.code == style.code
             });
-            if same_style {
+            if let Some(last) = continues_last {
                 // Continuation of the current run: a pending break is an
                 // internal space (word separation within one style).
-                let last = self.spans.last_mut().unwrap();
                 if self.pending_space {
                     last.text.push(' ');
                     self.pending_space = false;
@@ -519,7 +527,7 @@ mod tests {
     #[test]
     fn mathml_subscripts_and_superscripts_share_one_script_node() {
         let src =
-            r#"<body><p><math><msubsup><mo>∑</mo><mi>i</mi><mi>n</mi></msubsup></math></p></body>"#;
+            r"<body><p><math><msubsup><mo>∑</mo><mi>i</mi><mi>n</mi></msubsup></math></p></body>";
         let blocks = parse_xhtml(src);
         let Block::Math { expr, .. } = &blocks[0] else {
             panic!("expected wrapped MathML to remain mathematical");
@@ -529,7 +537,7 @@ mod tests {
 
     #[test]
     fn inline_mathml_remains_structured_inside_prose() {
-        let src = r#"<body><p>Einstein wrote <math><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></math> in 1905.</p></body>"#;
+        let src = r"<body><p>Einstein wrote <math><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></math> in 1905.</p></body>";
         let blocks = parse_xhtml(src);
         let Block::Paragraph { spans } = &blocks[0] else {
             panic!("expected prose paragraph");

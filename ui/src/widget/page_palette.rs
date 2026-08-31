@@ -217,10 +217,10 @@ impl PageJumpPalette {
                 true
             }
             Key::Named(NamedKey::Enter) => {
-                if let Some(&idx) = self.visible.get(self.cursor) {
-                    if let Some(entry) = self.items.get(idx) {
-                        self.pending = Some(entry.clone());
-                    }
+                if let Some(&idx) = self.visible.get(self.cursor)
+                    && let Some(entry) = self.items.get(idx)
+                {
+                    self.pending = Some(entry.clone());
                 }
                 self.set_visible(false);
                 true

@@ -927,7 +927,7 @@ impl Table {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
@@ -949,7 +949,7 @@ impl Table {
             cell.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 &cells_obj,
                 handled,
@@ -963,7 +963,7 @@ impl Table {
             cell.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 &cells_obj,
                 handled,
@@ -1296,7 +1296,7 @@ impl Widget for Table {
         self.forward_to_cells(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             handled,
             focus_target,

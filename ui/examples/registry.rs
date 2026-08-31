@@ -171,6 +171,12 @@ pub fn validate(surface: Surface, scenarios: &[Scenario]) -> Result<(), String> 
     Ok(())
 }
 
+#[allow(
+    clippy::exit,
+    reason = "dispatch is the shared entry point every example's fn main calls directly; \
+              returning an exit code instead would mean threading it through every example \
+              binary's main for no behavioural difference"
+)]
 pub fn dispatch(surface: Surface, scenarios: &[Scenario], default: Option<&str>) {
     if let Err(error) = validate(surface, scenarios) {
         eprintln!("{}: invalid registry: {error}", surface.label());
@@ -205,6 +211,12 @@ pub fn dispatch(surface: Surface, scenarios: &[Scenario], default: Option<&str>)
     (scenario.run)(&remaining);
 }
 
+#[allow(
+    clippy::exit,
+    reason = "returns `!` for a bad CLI arg the caller cannot recover from; propagating an \
+              exit code instead would mean threading it through every example binary's main \
+              for no behavioural difference"
+)]
 fn usage_error(surface: Surface, scenarios: &[Scenario], message: &str) -> ! {
     eprintln!("{}: {message}", surface.label());
     print_usage(surface, scenarios);

@@ -180,7 +180,11 @@ impl SearchResultsView {
         if self.flat.is_empty() {
             return;
         }
-        self.cursor = self.cursor.saturating_add(1) % self.flat.len();
+        self.cursor = self
+            .cursor
+            .saturating_add(1)
+            .checked_rem(self.flat.len())
+            .unwrap_or(0);
     }
 
     /// Move the highlight up one row, wrapping to the bottom past the top.
@@ -192,7 +196,8 @@ impl SearchResultsView {
             .cursor
             .saturating_add(self.flat.len())
             .saturating_sub(1)
-            % self.flat.len();
+            .checked_rem(self.flat.len())
+            .unwrap_or(0);
     }
 
     /// No-op when there is no selection.

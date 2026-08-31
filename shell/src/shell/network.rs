@@ -241,7 +241,7 @@ pub struct InboundScrollbackRequest {
 pub struct InboundScrollbackResponse {
     pub responder: u64,
     pub artifact: collab_types::ArtifactId,
-    pub ops: Vec<Box<collab_types::SignedOp>>,
+    pub ops: Vec<collab_types::SignedOp>,
 }
 
 /// One received cursor-presence update, merged by the shell's
@@ -912,7 +912,7 @@ impl ShellNetwork {
         &self,
         responder: u64,
         artifact: collab_types::ArtifactId,
-        ops: Vec<Box<collab_types::SignedOp>>,
+        ops: Vec<collab_types::SignedOp>,
     ) {
         if let Ok(mut buf) = self.inbound_scrollback_response.lock() {
             buf.push(InboundScrollbackResponse {
@@ -1348,8 +1348,14 @@ impl ShellNetwork {
                 artifact,
                 ops,
                 responder,
-            } => self.dispatch_scrollback_response(responder, artifact, ops),
-            other => self.dispatch_to_replica(peer, other),
+            } => self.dispatch_scrollback_response(
+                responder,
+                artifact,
+                // Unbox at the wire boundary: nothing downstream needs
+                // per-op indirection once it's off the wire.
+                ops.into_iter().map(|op| *op).collect(),
+            ),
+            other => self.dispatch_to_replica(peer, &other),
         }
     }
 
@@ -1387,7 +1393,7 @@ impl ShellNetwork {
         &self,
         responder: u64,
         artifact: collab_types::ArtifactId,
-        ops: Vec<Box<collab_types::SignedOp>>,
+        ops: Vec<collab_types::SignedOp>,
     ) {
         if responder != self.local_peer_hash {
             self.handle_scrollback_response_message(responder, artifact, ops);
@@ -1454,8 +1460,8 @@ impl ShellNetwork {
     /// replicates through the shell-tree replica. `SyncReq`
     /// additionally names the peer redeeming an invite before the
     /// replica answers, so roster and reply land together.
-    fn dispatch_to_replica(&self, peer: iroh::EndpointId, msg: NeighbourMsg) {
-        if let NeighbourMsg::SyncReq { ref room, .. } = msg {
+    fn dispatch_to_replica(&self, peer: iroh::EndpointId, msg: &NeighbourMsg) {
+        if let NeighbourMsg::SyncReq { room, .. } = msg {
             self.name_invitee_on_arrival(&peer, room);
         }
         // A poisoned replica lock here just drops this one message
@@ -1466,7 +1472,7 @@ impl ShellNetwork {
         // The peer's own identity, not the liveness-handle
         // digest: this decides whether the payload may rewrite
         // a room's governance.
-        rep.handle_from(&crate::shell::state::PeerOrigin::peer(&peer), &msg);
+        rep.handle_from(&crate::shell::state::PeerOrigin::peer(&peer), msg);
         let outgoing = rep.drain_outgoing();
         drop(rep);
         for out_msg in outgoing {
@@ -2359,13 +2365,13 @@ mod tests {
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let handle = net.inbound_scrollback_response_handle();
         let artifact = ArtifactId::new();
-        let env = Box::new(make_envelope(11));
+        let env = make_envelope(11);
         net.handle_scrollback_response_message(99u64, artifact, vec![env.clone()]);
         let buf = handle.lock().unwrap().clone();
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].responder, 99u64);
         assert_eq!(buf[0].artifact, artifact);
         assert_eq!(buf[0].ops.len(), 1);
-        assert_eq!(*buf[0].ops[0], *env);
+        assert_eq!(buf[0].ops[0], env);
     }
 }

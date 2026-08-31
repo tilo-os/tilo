@@ -146,6 +146,13 @@ fn render_nodes() -> Vec<PathBuf> {
 }
 
 /// Pick the render node to advertise as the dmabuf main device; see the module docs for the selection rules. Called once at [`crate::compositor::state::State::new`].
+///
+/// # Errors
+///
+/// Returns [`ProbeError::OverrideUnusable`] when `QOS_DMABUF_DEVICE` is set
+/// but the node it names can't be stat'd or opened; [`ProbeError::NoRenderNodes`]
+/// when `/dev/dri` has no `renderD*` entries; [`ProbeError::NoneUsable`] when
+/// nodes exist but none has a driver on the CPU-mappable allow-list, or opening/stat'ing the ones that do fails.
 pub fn probe() -> Result<RenderNode, ProbeError> {
     if let Some(raw) = std::env::var_os(DEVICE_ENV) {
         let path = PathBuf::from(raw);

@@ -1276,30 +1276,8 @@ impl Widget for GroupRow {
         self.group_left_edges = edges;
         // First pass that knows how far each group actually moved; only
         // trust it when taffy has a node per group.
-        if self.node_ids.len() == self.groups.len() {
-            if std::mem::take(&mut self.shift_armed) {
-                let offsets: Vec<(u64, f64)> = self
-                    .groups
-                    .iter()
-                    .zip(local_x.iter())
-                    .filter_map(|(g, now)| {
-                        let was = *self.last_local_x.get(&g.id)?;
-                        let from = was - now;
-                        // Sub-pixel motion is not motion.
-                        (from.abs() > 0.5).then_some((g.id, from))
-                    })
-                    .collect();
-                self.shift_anim = (!offsets.is_empty()).then(|| ShiftAnim {
-                    started: Instant::now(),
-                    offsets,
-                });
-            }
-            self.last_local_x = self
-                .groups
-                .iter()
-                .zip(local_x.iter())
-                .map(|(g, x)| (g.id, *x))
-                .collect();
+        if spans_aligned {
+            self.record_shift_anim(&local_x);
         }
         if self.shift_hold.is_none() && self.shift_anim.is_some() && self.shift_anim_t() >= 1.0 {
             self.shift_anim = None;
@@ -1316,29 +1294,8 @@ impl Widget for GroupRow {
         if self.scroll_x < 0.0 {
             self.scroll_x = 0.0;
         }
-        // Re-frame when the strip's geometry moved under the pan (resize,
-        // open/close, output change): the shell's into-view pan only
-        // triggers on focus change, so an offset chosen for a layout that
-        // no longer exists would otherwise persist. Held off while
-        // dragging so the strip doesn't snap out from under the hand;
-        // corrected on release.
         if spans_aligned {
-            let geometry_moved = spans != self.laid_spans;
-            self.laid_spans = spans;
-            let steady = self.snap_anim.is_none()
-                && !self.group_drag_active()
-                && !self
-                    .handles
-                    .iter()
-                    .any(super::resize_handle::ResizeHandle::is_dragging);
-            if geometry_moved
-                && steady
-                && let Some(target) = self.strip_frame_target(&self.laid_spans)
-            {
-                self.scroll_x = target;
-                self.scroll_dirty = true;
-                self.last_wheel_at = None;
-            }
+            self.reframe_on_geometry_change(spans);
         }
         // Done AFTER the clamp so a structural mutation that snapped
         // scroll_x to max doesn't get re-eased.
@@ -1356,24 +1313,7 @@ impl Widget for GroupRow {
         for (g, child_id) in self.groups.iter_mut().zip(self.node_ids.iter()) {
             g.apply_layout(taffy, *child_id, child_origin);
         }
-        debug_assert_eq!(
-            self.handles.len(),
-            self.groups.len().saturating_sub(1),
-            "ResizeHandle pool must mirror inter-group gap count after build_layout",
-        );
-        for (i, h) in self.handles.iter_mut().enumerate() {
-            let Some(left) = self.groups.get(i).map(WindowGroup::get_rect) else {
-                continue;
-            };
-            let Some(right) = self
-                .groups
-                .get(i.saturating_add(1))
-                .map(WindowGroup::get_rect)
-            else {
-                continue;
-            };
-            h.set_neighbour_rects(left, right);
-        }
+        self.sync_handle_neighbours();
     }
 
     fn draw(
@@ -1415,24 +1355,6 @@ impl Widget for GroupRow {
 
         scene.pop_layer();
     }
-
-    /// Paints either the sole maximized group, or every group eased in
-    /// from its make-space-slide offset (see [`Self::shift_offset_for`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::draw's own signature"
-    )]
-
-    /// Painted after the groups so the accent rule sits on top. Skipped
-    /// during a tab-drag (drop-zone capsule takes priority) and while
-    /// any group is maximized (handle rects are stale). During a
-    /// make-space slide, each handle travels with the group on its
-    /// right — otherwise two adjacent white cards read as one wide
-    /// window mid-slide.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::draw's own signature"
-    )]
 
     fn handle_event(
         &mut self,
@@ -1502,7 +1424,7 @@ impl Widget for GroupRow {
         self.dispatch_to_handles(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             root,
             handled,
@@ -1513,7 +1435,7 @@ impl Widget for GroupRow {
         self.dispatch_to_groups(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             root,
             handled,
@@ -1523,25 +1445,6 @@ impl Widget for GroupRow {
         self.prune_closed_groups();
         self.resolve_tab_detaches(handled);
     }
-
-    /// Resize handles dispatch FIRST so a press in the gap claims the
-    /// event before adjacent groups see it. Skipped during any child's
-    /// tab-drag, which owns the gap itself.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own signature"
-    )]
-
-    /// Stop dispatch once a child claims the event, but the detach sweep
-    /// after this still runs regardless — that claim is for
-    /// pointer-capture/focus, a separate concern. `groups` can grow
-    /// mid-frame (detach sweep pushes a new `WindowGroup`), briefly
-    /// outrunning `node_ids`; `.get` skips the new one until its next
-    /// layout pass assigns a node_id.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own signature"
-    )]
 
     fn name(&self) -> &'static str {
         "GroupRow"
@@ -1651,6 +1554,87 @@ impl Widget for GroupRow {
 }
 
 impl GroupRow {
+    /// Records this frame's per-group local-x for the next `apply_layout`'s
+    /// shift-fade comparison, and — when `shift_armed` was set by a splice
+    /// this frame — starts a [`ShiftAnim`] for whichever groups actually
+    /// moved. Split out of `apply_layout` to keep that under the line cap.
+    fn record_shift_anim(&mut self, local_x: &[f64]) {
+        if std::mem::take(&mut self.shift_armed) {
+            let offsets: Vec<(u64, f64)> = self
+                .groups
+                .iter()
+                .zip(local_x.iter())
+                .filter_map(|(g, now)| {
+                    let was = *self.last_local_x.get(&g.id)?;
+                    let from = was - now;
+                    // Sub-pixel motion is not motion.
+                    (from.abs() > 0.5).then_some((g.id, from))
+                })
+                .collect();
+            self.shift_anim = (!offsets.is_empty()).then(|| ShiftAnim {
+                started: Instant::now(),
+                offsets,
+            });
+        }
+        self.last_local_x = self
+            .groups
+            .iter()
+            .zip(local_x.iter())
+            .map(|(g, x)| (g.id, *x))
+            .collect();
+    }
+
+    /// Re-frame when the strip's geometry moved under the pan (resize,
+    /// open/close, output change): the shell's into-view pan only
+    /// triggers on focus change, so an offset chosen for a layout that
+    /// no longer exists would otherwise persist. Held off while dragging
+    /// so the strip doesn't snap out from under the hand; corrected on
+    /// release. Split out of `apply_layout` to keep that under the line cap.
+    fn reframe_on_geometry_change(&mut self, spans: Vec<(u64, f64, f64)>) {
+        let geometry_moved = spans != self.laid_spans;
+        self.laid_spans = spans;
+        let steady = self.snap_anim.is_none()
+            && !self.group_drag_active()
+            && !self
+                .handles
+                .iter()
+                .any(super::resize_handle::ResizeHandle::is_dragging);
+        if geometry_moved
+            && steady
+            && let Some(target) = self.strip_frame_target(&self.laid_spans)
+        {
+            self.scroll_x = target;
+            self.scroll_dirty = true;
+            self.last_wheel_at = None;
+        }
+    }
+
+    /// Feeds each `ResizeHandle` the group rects flanking its gap, after
+    /// every group has its own new layout applied. Split out of
+    /// `apply_layout` to keep that under the line cap.
+    fn sync_handle_neighbours(&mut self) {
+        debug_assert_eq!(
+            self.handles.len(),
+            self.groups.len().saturating_sub(1),
+            "ResizeHandle pool must mirror inter-group gap count after build_layout",
+        );
+        for (i, h) in self.handles.iter_mut().enumerate() {
+            let Some(left) = self.groups.get(i).map(WindowGroup::get_rect) else {
+                continue;
+            };
+            let Some(right) = self
+                .groups
+                .get(i.saturating_add(1))
+                .map(WindowGroup::get_rect)
+            else {
+                continue;
+            };
+            h.set_neighbour_rects(left, right);
+        }
+    }
+
+    /// Paints either the sole maximized group, or every group eased in
+    /// from its make-space-slide offset (see [`Self::shift_offset_for`]).
     fn draw_groups(
         &mut self,
         scene: &mut Scene,
@@ -1692,6 +1676,12 @@ impl GroupRow {
         }
     }
 
+    /// Painted after the groups so the accent rule sits on top. Skipped
+    /// during a tab-drag (drop-zone capsule takes priority) and while
+    /// any group is maximized (handle rects are stale). During a
+    /// make-space slide, each handle travels with the group on its
+    /// right — otherwise two adjacent white cards read as one wide
+    /// window mid-slide.
     fn draw_handles(
         &mut self,
         scene: &mut Scene,
@@ -1785,11 +1775,18 @@ impl GroupRow {
         );
     }
 
+    /// Resize handles dispatch FIRST so a press in the gap claims the
+    /// event before adjacent groups see it. Skipped during any child's
+    /// tab-drag, which owns the gap itself.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event's own signature"
+    )]
     fn dispatch_to_handles(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
@@ -1810,7 +1807,7 @@ impl GroupRow {
             h.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 root,
                 handled,
@@ -1824,7 +1821,7 @@ impl GroupRow {
         }
     }
 
-    /// Applied before the group dispatch loop so a mid-drag CursorMoved
+    /// Applied before the group dispatch loop so a mid-drag `CursorMoved`
     /// sees the updated widths this same frame.
     fn apply_pending_handle_resizes(&mut self) {
         for (i, h) in self.handles.iter_mut().enumerate() {
@@ -1848,11 +1845,21 @@ impl GroupRow {
         }
     }
 
+    /// Stop dispatch once a child claims the event, but the detach sweep
+    /// after this still runs regardless — that claim is for
+    /// pointer-capture/focus, a separate concern. `groups` can grow
+    /// mid-frame (detach sweep pushes a new `WindowGroup`), briefly
+    /// outrunning `node_ids`; `.get` skips the new one until its next
+    /// layout pass assigns a `node_id`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event's own signature"
+    )]
     fn dispatch_to_groups(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
@@ -1866,7 +1873,7 @@ impl GroupRow {
             g.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 root,
                 handled,
@@ -1989,98 +1996,13 @@ impl GroupRow {
         release_point: Point,
         handled: &mut bool,
     ) {
-        // Closing groups excluded: `insert_detached_tab` doesn't clear
-        // `closing_at`, so a spliced tab would be pruned with it at
-        // fade-end. Falls through to the gap-based path instead.
-        let target_idx = self
-            .groups
-            .iter()
-            .enumerate()
-            .find(|(i, g)| *i != src_idx && !g.is_closing() && g.bar_rect().contains(release_point))
-            .map(|(i, _)| i);
-        if let Some(tgt_idx) = target_idx {
-            let Some(drop_idx) = self
-                .groups
-                .get(tgt_idx)
-                .map(|g| g.drop_index_for(release_point))
-            else {
-                return;
-            };
-            let Some(src_group) = self.groups.get_mut(src_idx) else {
-                return;
-            };
-            let moved_tab = src_group.detach_tab(tab_id);
-            if let Some((desc, host)) = moved_tab
-                && let Some(tgt) = self.groups.get_mut(tgt_idx)
-            {
-                tgt.insert_detached_tab(drop_idx, desc, host);
-                *handled = true;
-            }
+        if self.try_drop_on_sibling_bar(src_idx, tab_id, release_point, handled) {
             return;
         }
-        // Tile-area drop: three horizontal bands. Edge bands (25% of
-        // width, capped at 48px — the gap alone is too thin to hit)
-        // create a new group to that side; the centre band splices into
-        // the sibling's tab list.
-        let tile_target_idx = self
-            .groups
-            .iter()
-            .enumerate()
-            .find(|(i, g)| {
-                *i != src_idx
-                    && !g.is_closing()
-                    && g.get_rect().contains(release_point)
-                    && !g.bar_rect().contains(release_point)
-            })
-            .map(|(i, _)| i);
-        if let Some(tgt_idx) = tile_target_idx {
-            let Some(tgt_rect) = self.groups.get(tgt_idx).map(WindowGroup::get_rect) else {
-                return;
-            };
-            let edge_band = (tgt_rect.width() * 0.25).min(48.0);
-            let in_left_band = release_point.x < tgt_rect.x0 + edge_band;
-            let in_right_band = release_point.x > tgt_rect.x1 - edge_band;
-            if in_left_band || in_right_band {
-                let gap_idx = if in_left_band {
-                    tgt_idx
-                } else {
-                    tgt_idx.saturating_add(1)
-                };
-                if self.split_tab_into_new_group(src_idx, tab_id, gap_idx) {
-                    *handled = true;
-                }
-                return;
-            }
-            let drop_idx = if release_point.x < tgt_rect.center().x {
-                0
-            } else {
-                self.groups.get(tgt_idx).map_or(0, |g| g.tabs().len())
-            };
-            let Some(src_group) = self.groups.get_mut(src_idx) else {
-                return;
-            };
-            let moved_tab = src_group.detach_tab(tab_id);
-            if let Some((desc, host)) = moved_tab
-                && let Some(tgt) = self.groups.get_mut(tgt_idx)
-            {
-                tgt.insert_detached_tab(drop_idx, desc, host);
-                *handled = true;
-            }
+        if self.try_drop_in_tile_area(src_idx, tab_id, release_point, handled) {
             return;
         }
-        // A *closing* sibling's bar rect still exists geometrically, so
-        // `gap_index_for` returns `None`; fall back to the
-        // left-of-closing-group gap instead of dropping the tab.
-        let closing_target = self
-            .groups
-            .iter()
-            .enumerate()
-            .find(|(i, g)| *i != src_idx && g.is_closing() && g.bar_rect().contains(release_point))
-            .map(|(i, _)| i);
-        if let Some(tgt_idx) = closing_target {
-            if self.split_tab_into_new_group(src_idx, tab_id, tgt_idx) {
-                *handled = true;
-            }
+        if self.try_drop_on_closing_sibling_gap(src_idx, tab_id, release_point, handled) {
             return;
         }
         // Deliberately does NOT refuse a single-tab source dropped into
@@ -2110,6 +2032,138 @@ impl GroupRow {
                 src_group.insert_detached_tab(0, desc, host);
             }
         }
+    }
+
+    /// First [`Self::resolve_one_tab_detach`] landing spot: an existing
+    /// sibling's tab bar. Closing groups excluded: `insert_detached_tab`
+    /// doesn't clear `closing_at`, so a spliced tab would be pruned with it
+    /// at fade-end. Falls through (returns `false`) to the next path
+    /// instead. Returns `true` once a bar-rect target is found, whether or
+    /// not the drop itself completed — the caller commits to this path
+    /// either way.
+    fn try_drop_on_sibling_bar(
+        &mut self,
+        src_idx: usize,
+        tab_id: u64,
+        release_point: Point,
+        handled: &mut bool,
+    ) -> bool {
+        let target_idx = self
+            .groups
+            .iter()
+            .enumerate()
+            .find(|(i, g)| *i != src_idx && !g.is_closing() && g.bar_rect().contains(release_point))
+            .map(|(i, _)| i);
+        let Some(tgt_idx) = target_idx else {
+            return false;
+        };
+        let Some(drop_idx) = self
+            .groups
+            .get(tgt_idx)
+            .map(|g| g.drop_index_for(release_point))
+        else {
+            return true;
+        };
+        let Some(src_group) = self.groups.get_mut(src_idx) else {
+            return true;
+        };
+        let moved_tab = src_group.detach_tab(tab_id);
+        if let Some((desc, host)) = moved_tab
+            && let Some(tgt) = self.groups.get_mut(tgt_idx)
+        {
+            tgt.insert_detached_tab(drop_idx, desc, host);
+            *handled = true;
+        }
+        true
+    }
+
+    /// Second [`Self::resolve_one_tab_detach`] landing spot: three
+    /// horizontal bands across a sibling's tile area. Edge bands (25% of
+    /// width, capped at 48px — the gap alone is too thin to hit) create a
+    /// new group to that side; the centre band splices into the sibling's
+    /// tab list. Same "found means committed" return convention as
+    /// [`Self::try_drop_on_sibling_bar`].
+    fn try_drop_in_tile_area(
+        &mut self,
+        src_idx: usize,
+        tab_id: u64,
+        release_point: Point,
+        handled: &mut bool,
+    ) -> bool {
+        let tile_target_idx = self
+            .groups
+            .iter()
+            .enumerate()
+            .find(|(i, g)| {
+                *i != src_idx
+                    && !g.is_closing()
+                    && g.get_rect().contains(release_point)
+                    && !g.bar_rect().contains(release_point)
+            })
+            .map(|(i, _)| i);
+        let Some(tgt_idx) = tile_target_idx else {
+            return false;
+        };
+        let Some(tgt_rect) = self.groups.get(tgt_idx).map(WindowGroup::get_rect) else {
+            return true;
+        };
+        let edge_band = (tgt_rect.width() * 0.25).min(48.0);
+        let in_left_band = release_point.x < tgt_rect.x0 + edge_band;
+        let in_right_band = release_point.x > tgt_rect.x1 - edge_band;
+        if in_left_band || in_right_band {
+            let gap_idx = if in_left_band {
+                tgt_idx
+            } else {
+                tgt_idx.saturating_add(1)
+            };
+            if self.split_tab_into_new_group(src_idx, tab_id, gap_idx) {
+                *handled = true;
+            }
+            return true;
+        }
+        let drop_idx = if release_point.x < tgt_rect.center().x {
+            0
+        } else {
+            self.groups.get(tgt_idx).map_or(0, |g| g.tabs().len())
+        };
+        let Some(src_group) = self.groups.get_mut(src_idx) else {
+            return true;
+        };
+        let moved_tab = src_group.detach_tab(tab_id);
+        if let Some((desc, host)) = moved_tab
+            && let Some(tgt) = self.groups.get_mut(tgt_idx)
+        {
+            tgt.insert_detached_tab(drop_idx, desc, host);
+            *handled = true;
+        }
+        true
+    }
+
+    /// Third [`Self::resolve_one_tab_detach`] landing spot: a *closing*
+    /// sibling's bar rect still exists geometrically, so `gap_index_for`
+    /// returns `None`; this is the fallback to the left-of-closing-group
+    /// gap instead of dropping the tab. Same "found means committed"
+    /// return convention as [`Self::try_drop_on_sibling_bar`].
+    fn try_drop_on_closing_sibling_gap(
+        &mut self,
+        src_idx: usize,
+        tab_id: u64,
+        release_point: Point,
+        handled: &mut bool,
+    ) -> bool {
+        let closing_target = self
+            .groups
+            .iter()
+            .enumerate()
+            .find(|(i, g)| *i != src_idx && g.is_closing() && g.bar_rect().contains(release_point))
+            .map(|(i, _)| i);
+        let Some(tgt_idx) = closing_target else {
+            return false;
+        };
+        if self.split_tab_into_new_group(src_idx, tab_id, tgt_idx) {
+            *handled = true;
+        }
+        true
     }
 }
 

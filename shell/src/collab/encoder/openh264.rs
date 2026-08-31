@@ -24,6 +24,13 @@ impl OpenH264Backend {
     /// Construct the backend. Bitrate + keyframe interval are advisory
     /// on the openh264 path — the SVC encoder handles GOP structure
     /// internally.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EncoderError::Unavailable`] if `init` requests a non-H.264
+    /// codec or HDR (openh264 is 8-bit H.264 only), or
+    /// [`EncoderError::ConfigFailed`] if constructing the underlying SVC
+    /// encoder fails.
     pub fn new(init: EncoderInit) -> Result<Self, EncoderError> {
         // Openh264 is H.264 8-bit only; HDR / HEVC pipelines never reach
         // us because probe() reports unavailable, but be defensive.
@@ -174,7 +181,7 @@ mod tests {
                     plane_offsets: [0, 0, 0, 0],
                     plane_strides: [128, 0, 0, 0],
                     num_planes: 1,
-                    drm_fourcc: 0x34324152,
+                    drm_fourcc: 0x3432_4152,
                     drm_modifier: 0,
                     width: 32,
                     height: 32,

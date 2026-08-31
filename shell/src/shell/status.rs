@@ -31,10 +31,10 @@ pub struct SystemStatus {
     pub battery: Option<BatterySnapshot>,
     pub link: Option<LinkStatus>,
     pub volume: Option<VolumeState>,
-    /// Active capture streams, attributed from PipeWire's server security
+    /// Active capture streams, attributed from `PipeWire`'s server security
     /// PID to the kernel executable. Polled independently at one-second
     /// cadence so a privacy indicator appears promptly without running
-    /// NetworkManager queries every second.
+    /// `NetworkManager` queries every second.
     pub media: Vec<os_actions::ActiveMediaUse>,
 }
 
@@ -141,7 +141,7 @@ impl StatusBridge {
         if let Ok(mut g) = self.inner.lock() {
             // The slow poll owns battery/link/volume; the one-second media
             // poll owns this field. Never let one cadence erase the other.
-            status.media = g.media.clone();
+            status.media.clone_from(&g.media);
             *g = status;
         }
     }

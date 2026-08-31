@@ -233,6 +233,10 @@ pub fn parse_bootc_staged(json: &str) -> Option<String> {
 /// Side-effect interface for applying a staged update by rebooting. Tests
 /// inject a recorder so the assertion doesn't reboot the machine.
 pub trait Rebooter: Send + Sync {
+    /// # Errors
+    /// Returns an error if the reboot could not be issued — e.g. the
+    /// implementation's underlying reboot command is unavailable or reports
+    /// failure, with that failure's reason.
     fn reboot(&self) -> Result<(), String>;
 }
 
@@ -250,23 +254,43 @@ pub trait UpdateControl: Send + Sync {
     /// a state it did not read is the defect being fixed here.
     fn timer_enabled(&self) -> Option<bool>;
     /// Turn the update timer on or off, now and across reboots.
+    ///
+    /// # Errors
+    /// Returns an error if the timer could not be changed — e.g. the
+    /// underlying `systemctl` call is unavailable, refused by polkit, or
+    /// reports failure — with that failure's reason.
     fn set_timer(&self, on: bool) -> Result<(), String>;
     /// What this machine can go back to: `(entry label, image reference)`.
     fn rollback_target(&self) -> Option<String>;
     /// Make the next boot the previous deployment.
+    ///
+    /// # Errors
+    /// Returns an error if the rollback could not be started or reports
+    /// failure, with that failure's reason.
     fn roll_back(&self) -> Result<(), String>;
     fn schedule(&self) -> Option<String> {
         None
     }
+    /// # Errors
+    /// Returns an error if this machine has no download-schedule policy
+    /// service to ask (the default), or if that service refuses the
+    /// requested schedule.
     fn set_schedule(&self, _schedule: &str) -> Result<(), String> {
         Err("update scheduling is unavailable on this machine".into())
     }
     fn allow_metered(&self) -> Option<bool> {
         None
     }
+    /// # Errors
+    /// Returns an error if this machine has no metered-connection policy
+    /// service to ask (the default), or if that service refuses the request.
     fn set_allow_metered(&self, _allow: bool) -> Result<(), String> {
         Err("metered update policy is unavailable on this machine".into())
     }
+    /// # Errors
+    /// Returns an error if the update check could not be started or reports
+    /// failure (the default: this machine cannot check for updates from
+    /// here).
     fn check_now(&self) -> Result<(), String> {
         Err("checking for updates is unavailable on this machine".into())
     }
@@ -573,6 +597,12 @@ fn now_stamp() -> String {
     format!("{date} {time}").trim().to_string()
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent internal state flag on private pane \
+              state, not a call-site boolean-blindness hazard: none are \
+              constructor parameters"
+)]
 pub struct UpdatesPane {
     status: UpdateStatus,
     details: UpdateDetails,
@@ -792,7 +822,33 @@ impl UpdatesPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        // Status card — current + staged + the primary action.
+        let mut all = vec![
+            self.overview_card(),
+            self.status_card(),
+            self.firmware_card(),
+            self.firmware_history_card(),
+            self.detail_card(),
+            self.lifecycle_card(),
+            self.rollback_card(),
+            self.help_card(),
+        ];
+        if let Some(msg) = &self.notice {
+            // In front of everything, because it is about the thing the person
+            // just tried to do. A failed switch that only warns into the
+            // journal is a switch that failed silently.
+            all.insert(
+                0,
+                card(
+                    "That did not work",
+                    rows(vec![Box::new(Text::new(msg).with_size(13.0))]),
+                ),
+            );
+        }
+        crate::widgets::cards(all)
+    }
+
+    /// Status card — current + staged + the primary action.
+    fn status_card(&self) -> El {
         let action: El = match &self.status.staged_version {
             Some(staged) => Box::new(
                 Column::new()
@@ -818,9 +874,11 @@ impl UpdatesPane {
             ),
             None => Box::new(Text::new("Your system is up to date.").with_size(13.0)),
         };
-        let status_card = card("Software updates", action);
+        card("Software updates", action)
+    }
 
-        let overview = card(
+    fn overview_card(&self) -> El {
+        card(
             "Update overview",
             rows(vec![
                 value_row(
@@ -840,9 +898,11 @@ impl UpdatesPane {
                     },
                 ),
             ]),
-        );
+        )
+    }
 
-        let detail = card(
+    fn detail_card(&self) -> El {
+        card(
             "Details",
             rows(vec![
                 value_row("Current version", &self.status.current_version),
@@ -896,8 +956,10 @@ impl UpdatesPane {
                         .push(Box::new(Spacer::new())),
                 ),
             ]),
-        );
+        )
+    }
 
+    fn lifecycle_card(&self) -> El {
         let mut lifecycle_rows = vec![value_row(
             "Rollback health",
             self.details
@@ -919,30 +981,115 @@ impl UpdatesPane {
         } else {
             lifecycle_rows.extend(self.details.history.iter().map(|line| caption(line)));
         }
-        let lifecycle_card = card("History & recovery health", rows(lifecycle_rows));
+        card("History & recovery health", rows(lifecycle_rows))
+    }
 
-        let firmware_body: El = match &self.firmware_updates {
-            Err(error) => rows(vec![
-                value_row("Status", "Firmware inventory could not be queried"),
-                caption(&format!("fwupd reported: {error}")),
-                Box::new(
-                    Row::new()
-                        .push(Box::new(Button::new(
-                            "settings.updates.firmware.refresh",
-                            "Try again",
-                            Some(FIRMWARE_REFRESH_KEY),
-                        )))
-                        .push(Box::new(Spacer::new())),
-                ),
-            ]),
-            Ok(updates) if updates.is_empty() => {
-                let mut body = vec![value_row("Status", "Device firmware is up to date")];
-                if matches!(
-                    self.firmware_state,
-                    FirmwareUiState::Complete { needs_reboot: true }
-                ) {
-                    body.push(value_row("Activation", "Restart required"));
-                    body.push(Box::new(
+    fn firmware_card(&self) -> El {
+        let body = match &self.firmware_updates {
+            Err(error) => Self::firmware_card_error(error),
+            Ok(updates) if updates.is_empty() => self.firmware_card_up_to_date(),
+            Ok(updates) => self.firmware_card_available(updates),
+        };
+        card("Device firmware", body)
+    }
+
+    fn firmware_card_error(error: &str) -> El {
+        rows(vec![
+            value_row("Status", "Firmware inventory could not be queried"),
+            caption(&format!("fwupd reported: {error}")),
+            Box::new(
+                Row::new()
+                    .push(Box::new(Button::new(
+                        "settings.updates.firmware.refresh",
+                        "Try again",
+                        Some(FIRMWARE_REFRESH_KEY),
+                    )))
+                    .push(Box::new(Spacer::new())),
+            ),
+        ])
+    }
+
+    fn firmware_card_up_to_date(&self) -> El {
+        let mut body = vec![value_row("Status", "Device firmware is up to date")];
+        if matches!(
+            self.firmware_state,
+            FirmwareUiState::Complete { needs_reboot: true }
+        ) {
+            body.push(value_row("Activation", "Restart required"));
+            body.push(Box::new(
+                Row::new()
+                    .push(Box::new(Button::new(
+                        "settings.updates.firmware.restart",
+                        "Restart now",
+                        Some(RESTART_KEY),
+                    )))
+                    .push(Box::new(Spacer::new())),
+            ));
+        } else {
+            body.push(Box::new(
+                Row::new()
+                    .push(Box::new(Button::new(
+                        "settings.updates.firmware.refresh",
+                        "\u{f0450}  Check firmware",
+                        Some(FIRMWARE_REFRESH_KEY),
+                    )))
+                    .push(Box::new(Spacer::new())),
+            ));
+        }
+        rows(body)
+    }
+
+    fn firmware_card_available(&self, updates: &[os_actions::FirmwareUpdate]) -> El {
+        let mut items: Vec<El> = updates
+            .iter()
+            .map(|update| {
+                let version = match (&update.current_version, &update.new_version) {
+                    (Some(from), Some(to)) => format!("{from} → {to}"),
+                    (_, Some(to)) => format!("Update to {to}"),
+                    _ => "Update available".to_string(),
+                };
+                value_row(&update.device, &version)
+            })
+            .collect();
+        for update in updates {
+            if let Some(description) = &update.description {
+                items.push(caption(description));
+            }
+            if !update.problems.is_empty() {
+                items.push(caption(&format!(
+                    "Before installing: {}",
+                    update.problems.join(", ")
+                )));
+            }
+        }
+        items.push(caption(
+            "Firmware is verified and installed by fwupd. Keep the device connected and do not suspend it while installation is active.",
+        ));
+        match &self.firmware_state {
+            FirmwareUiState::Idle => items.push(Box::new(
+                Row::new()
+                    .push(Box::new(Button::new(
+                        "settings.updates.firmware.install",
+                        "Install firmware upgrades",
+                        Some(FIRMWARE_INSTALL_KEY),
+                    )))
+                    .push(Box::new(Spacer::new())),
+            )),
+            FirmwareUiState::Installing { percent, message } => {
+                items.push(Box::new(ProgressBar::new(f32::from(*percent) / 100.0)));
+                items.push(value_row("Installing", message));
+            }
+            FirmwareUiState::Complete { needs_reboot } => {
+                items.push(value_row(
+                    "Installation",
+                    if *needs_reboot {
+                        "Installed · restart required"
+                    } else {
+                        "Installed successfully"
+                    },
+                ));
+                if *needs_reboot {
+                    items.push(Box::new(
                         Row::new()
                             .push(Box::new(Button::new(
                                 "settings.updates.firmware.restart",
@@ -951,87 +1098,14 @@ impl UpdatesPane {
                             )))
                             .push(Box::new(Spacer::new())),
                     ));
-                } else {
-                    body.push(Box::new(
-                        Row::new()
-                            .push(Box::new(Button::new(
-                                "settings.updates.firmware.refresh",
-                                "\u{f0450}  Check firmware",
-                                Some(FIRMWARE_REFRESH_KEY),
-                            )))
-                            .push(Box::new(Spacer::new())),
-                    ));
                 }
-                rows(body)
             }
-            Ok(updates) => {
-                let mut items: Vec<El> = updates
-                    .iter()
-                    .map(|update| {
-                        let version = match (&update.current_version, &update.new_version) {
-                            (Some(from), Some(to)) => format!("{from} → {to}"),
-                            (_, Some(to)) => format!("Update to {to}"),
-                            _ => "Update available".to_string(),
-                        };
-                        value_row(&update.device, &version)
-                    })
-                    .collect();
-                for update in updates {
-                    if let Some(description) = &update.description {
-                        items.push(caption(description));
-                    }
-                    if !update.problems.is_empty() {
-                        items.push(caption(&format!(
-                            "Before installing: {}",
-                            update.problems.join(", ")
-                        )));
-                    }
-                }
-                items.push(caption(
-                    "Firmware is verified and installed by fwupd. Keep the device connected and do not suspend it while installation is active.",
-                ));
-                match &self.firmware_state {
-                    FirmwareUiState::Idle => items.push(Box::new(
-                        Row::new()
-                            .push(Box::new(Button::new(
-                                "settings.updates.firmware.install",
-                                "Install firmware upgrades",
-                                Some(FIRMWARE_INSTALL_KEY),
-                            )))
-                            .push(Box::new(Spacer::new())),
-                    )),
-                    FirmwareUiState::Installing { percent, message } => {
-                        items.push(Box::new(ProgressBar::new(f32::from(*percent) / 100.0)));
-                        items.push(value_row("Installing", message));
-                    }
-                    FirmwareUiState::Complete { needs_reboot } => {
-                        items.push(value_row(
-                            "Installation",
-                            if *needs_reboot {
-                                "Installed · restart required"
-                            } else {
-                                "Installed successfully"
-                            },
-                        ));
-                        if *needs_reboot {
-                            items.push(Box::new(
-                                Row::new()
-                                    .push(Box::new(Button::new(
-                                        "settings.updates.firmware.restart",
-                                        "Restart now",
-                                        Some(RESTART_KEY),
-                                    )))
-                                    .push(Box::new(Spacer::new())),
-                            ));
-                        }
-                    }
-                }
-                rows(items)
-            }
-        };
-        let firmware_card = card("Device firmware", firmware_body);
+        }
+        rows(items)
+    }
 
-        let firmware_history_card = match &self.firmware_history {
+    fn firmware_history_card(&self) -> El {
+        match &self.firmware_history {
             Ok(history) if history.is_empty() => card(
                 "Firmware history",
                 caption("fwupd has not recorded a firmware transaction on this device."),
@@ -1058,46 +1132,49 @@ impl UpdatesPane {
                     caption(&format!("fwupd reported: {error}")),
                 ]),
             ),
-        };
+        }
+    }
 
-        // The rollback card. Present whether or not there is anything to go
-        // back to, because "this machine has nothing to roll back to" is
-        // information a person looking for the control needs, and an absent
-        // card reads as an absent feature.
-        // Built from the same strings `rollback_card_lines` reports, so what a
-        // test asserts on and what a person reads cannot come apart.
+    /// The rollback card. Present whether or not there is anything to go
+    /// back to, because "this machine has nothing to roll back to" is
+    /// information a person looking for the control needs, and an absent
+    /// card reads as an absent feature.
+    /// Built from the same strings `rollback_card_lines` reports, so what a
+    /// test asserts on and what a person reads cannot come apart.
+    fn rollback_card(&self) -> El {
         let lines = self.rollback_card_lines();
-        let rollback_body: El = match (&self.rollback_target, self.rollback_armed) {
-            (None, _) => Box::new(
+        let rollback_body: El = match (&self.rollback_target, self.rollback_armed, lines.as_slice())
+        {
+            (None, _, [_, no_previous, no_previous_caption, ..]) => Box::new(
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(&lines[1]).with_size(13.0)))
-                    .push(caption(&lines[2])),
+                    .push(Box::new(Text::new(no_previous).with_size(13.0)))
+                    .push(caption(no_previous_caption)),
             ),
-            (Some(_), false) => Box::new(
+            (Some(_), false, [_, previous, intro, button_label, ..]) => Box::new(
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(&lines[1]).with_size(13.0)))
-                    .push(caption(&lines[2]))
+                    .push(Box::new(Text::new(previous).with_size(13.0)))
+                    .push(caption(intro))
                     .push(Box::new(
                         Row::new()
                             .push(Box::new(Button::new(
                                 "settings.updates.rollback",
-                                &format!("\u{f0450}  {}", lines[3]),
+                                &format!("\u{f0450}  {button_label}"),
                                 Some(ROLLBACK_KEY),
                             )))
                             .push(Box::new(Spacer::new())),
                     )),
             ),
             // Armed: what it does not undo, in front of the button that does it.
-            (Some(_), true) => {
+            (Some(_), true, [_, prompt, caveats @ .., confirm_label]) => {
                 let mut col = Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(&lines[1]).with_size(13.0)));
-                for c in &lines[2..2 + ROLLBACK_CAVEATS.len()] {
+                    .push(Box::new(Text::new(prompt).with_size(13.0)));
+                for c in caveats {
                     col = col.push(caption(c));
                 }
                 Box::new(
@@ -1105,44 +1182,27 @@ impl UpdatesPane {
                         Row::new()
                             .push(Box::new(Button::new(
                                 "settings.updates.rollback.confirm",
-                                &format!("\u{f0709}  {}", lines[lines.len() - 1]),
+                                &format!("\u{f0709}  {confirm_label}"),
                                 Some(ROLLBACK_CONFIRM_KEY),
                             )))
                             .push(Box::new(Spacer::new())),
                     )),
                 )
             }
+            // `rollback_card_lines` always returns a shape matching one of
+            // the arms above for the same `(rollback_target,
+            // rollback_armed)` state it was built from; render nothing
+            // sooner than panic if that invariant is ever broken.
+            _ => Box::new(Column::new()),
         };
-        let rollback_card = card(ROLLBACK_CARD_TITLE, rollback_body);
+        card(ROLLBACK_CARD_TITLE, rollback_body)
+    }
 
-        let note = card(
+    fn help_card(&self) -> El {
+        card(
             "How updates work",
             rows(self.help_lines().iter().map(|l| caption(l)).collect()),
-        );
-
-        let mut all = vec![
-            overview,
-            status_card,
-            firmware_card,
-            firmware_history_card,
-            detail,
-            lifecycle_card,
-            rollback_card,
-            note,
-        ];
-        if let Some(msg) = &self.notice {
-            // In front of everything, because it is about the thing the person
-            // just tried to do. A failed switch that only warns into the
-            // journal is a switch that failed silently.
-            all.insert(
-                0,
-                card(
-                    "That did not work",
-                    rows(vec![Box::new(Text::new(msg).with_size(13.0))]),
-                ),
-            );
-        }
-        crate::widgets::cards(all)
+        )
     }
 
     fn persist(&self) {
@@ -1152,14 +1212,10 @@ impl UpdatesPane {
             warn!(target: "qos::settings", op = "update_prefs_save", error = %e, "failed to persist update prefs");
         }
     }
-}
 
-pub fn build() -> Box<dyn Widget> {
-    Box::new(UpdatesPane::new())
-}
-
-impl Widget for UpdatesPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    /// Apply any pending firmware events from the background install, if one
+    /// is running.
+    fn drain_firmware_events(&mut self) {
         let mut finished = false;
         if let Some(events) = &self.firmware_events {
             while let Ok(event) = events.try_recv() {
@@ -1212,197 +1268,232 @@ impl Widget for UpdatesPane {
         if finished {
             self.firmware_events = None;
         }
-        if self.needs_seed {
-            let _ = state.put(
-                root,
-                AUTO_KEY,
-                automerge::ScalarValue::Boolean(self.prefs.auto),
-            );
-            let _ = state.put(root, CHECK_KEY, automerge::ScalarValue::Boolean(false));
-            let _ = state.put(root, RESTART_KEY, automerge::ScalarValue::Boolean(false));
-            let _ = state.put(root, ROLLBACK_KEY, automerge::ScalarValue::Boolean(false));
-            let _ = state.put(
-                root,
-                ROLLBACK_CONFIRM_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
-            let _ = state.put(
-                root,
-                FIRMWARE_REFRESH_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
-            let _ = state.put(
-                root,
-                FIRMWARE_INSTALL_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
-            if let Some(schedule) = &self.schedule {
-                let _ = state.put(root, SCHEDULE_KEY, schedule.as_str());
-            }
-            if let Some(allow) = self.allow_metered {
-                let _ = state.put(root, METERED_KEY, automerge::ScalarValue::Boolean(allow));
-            }
-            self.last_prefs = self.prefs.clone();
-            self.needs_seed = false;
-        }
+    }
 
-        // Check for updates → re-query the system + stamp the time + persist.
-        if read_bool(state, root, CHECK_KEY) {
-            let _ = state.put(root, CHECK_KEY, automerge::ScalarValue::Boolean(false));
-            match self.control.check_now() {
-                Ok(()) => {
-                    self.status = (self.status_provider)();
-                    self.rollback_target = self.control.rollback_target();
-                    self.details = UpdateDetails::from_system(self.rollback_target.as_deref());
-                    self.prefs.last_checked = (self.clock)();
-                    self.last_prefs.last_checked = self.prefs.last_checked.clone();
-                    self.notice = None;
-                    self.persist();
-                }
-                Err(error) => {
-                    self.notice = Some(format!("Updates could not be checked: {error}"));
-                }
+    /// First `sync`: seed every key this pane owns so the composed controls
+    /// have something to read.
+    fn seed(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !self.needs_seed {
+            return;
+        }
+        let _ = state.put(
+            root,
+            AUTO_KEY,
+            automerge::ScalarValue::Boolean(self.prefs.auto),
+        );
+        let _ = state.put(root, CHECK_KEY, automerge::ScalarValue::Boolean(false));
+        let _ = state.put(root, RESTART_KEY, automerge::ScalarValue::Boolean(false));
+        let _ = state.put(root, ROLLBACK_KEY, automerge::ScalarValue::Boolean(false));
+        let _ = state.put(
+            root,
+            ROLLBACK_CONFIRM_KEY,
+            automerge::ScalarValue::Boolean(false),
+        );
+        let _ = state.put(
+            root,
+            FIRMWARE_REFRESH_KEY,
+            automerge::ScalarValue::Boolean(false),
+        );
+        let _ = state.put(
+            root,
+            FIRMWARE_INSTALL_KEY,
+            automerge::ScalarValue::Boolean(false),
+        );
+        if let Some(schedule) = &self.schedule {
+            let _ = state.put(root, SCHEDULE_KEY, schedule.as_str());
+        }
+        if let Some(allow) = self.allow_metered {
+            let _ = state.put(root, METERED_KEY, automerge::ScalarValue::Boolean(allow));
+        }
+        self.last_prefs = self.prefs.clone();
+        self.needs_seed = false;
+    }
+
+    /// Check for updates → re-query the system + stamp the time + persist.
+    fn handle_check(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, CHECK_KEY) {
+            return;
+        }
+        let _ = state.put(root, CHECK_KEY, automerge::ScalarValue::Boolean(false));
+        match self.control.check_now() {
+            Ok(()) => {
+                self.status = (self.status_provider)();
+                self.rollback_target = self.control.rollback_target();
+                self.details = UpdateDetails::from_system(self.rollback_target.as_deref());
+                self.prefs.last_checked = (self.clock)();
+                self.last_prefs.last_checked = self.prefs.last_checked.clone();
+                self.notice = None;
+                self.persist();
             }
-            self.structure_dirty = true;
-        }
-
-        if read_bool(state, root, FIRMWARE_REFRESH_KEY) {
-            let _ = state.put(
-                root,
-                FIRMWARE_REFRESH_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
-            self.firmware_updates = match os_actions::refresh_firmware_metadata()
-                .and_then(|()| os_actions::get_firmware_updates())
-            {
-                Ok(updates) => {
-                    self.notice = None;
-                    self.firmware_history = os_actions::get_firmware_history();
-                    Ok(updates)
-                }
-                Err(e) => {
-                    self.notice = Some(format!("Firmware metadata could not be refreshed: {e}"));
-                    Err(e)
-                }
-            };
-            self.structure_dirty = true;
-        }
-
-        if read_bool(state, root, FIRMWARE_INSTALL_KEY) {
-            let _ = state.put(
-                root,
-                FIRMWARE_INSTALL_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
-            match self
-                .firmware_updates
-                .as_deref()
-                .map_err(Clone::clone)
-                .and_then(os_actions::start_firmware_install)
-            {
-                Ok(events) => {
-                    self.firmware_events = Some(events);
-                    self.firmware_state = FirmwareUiState::Installing {
-                        percent: 0,
-                        message: "Preparing firmware transaction…".into(),
-                    };
-                    self.notice = None;
-                }
-                Err(e) => {
-                    self.notice = Some(format!("Firmware upgrades could not be installed: {e}"));
-                }
-            }
-            self.structure_dirty = true;
-        }
-
-        // Restart & update → reboot into the staged image (dedup).
-        if read_bool(state, root, RESTART_KEY) {
-            let _ = state.put(root, RESTART_KEY, automerge::ScalarValue::Boolean(false));
-            if !self.dispatched_restart {
-                self.dispatched_restart = true;
-                if let Err(e) = self.rebooter.reboot() {
-                    warn!(target: "qos::settings", op = "reboot", error = %e, "restart & update failed");
-                }
+            Err(error) => {
+                self.notice = Some(format!("Updates could not be checked: {error}"));
             }
         }
+        self.structure_dirty = true;
+    }
 
-        // Automatic updates → drive the timer, then report what the timer
-        // actually says. Persisting the preference happens only once the
-        // machine agrees, so the stored value never claims a state the timer
-        // isn't actually in.
-        if let Some(b) = read_bool_opt(state, root, AUTO_KEY)
-            && b != self.last_prefs.auto
+    fn handle_firmware_refresh(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, FIRMWARE_REFRESH_KEY) {
+            return;
+        }
+        let _ = state.put(
+            root,
+            FIRMWARE_REFRESH_KEY,
+            automerge::ScalarValue::Boolean(false),
+        );
+        self.firmware_updates = match os_actions::refresh_firmware_metadata()
+            .and_then(|()| os_actions::get_firmware_updates())
         {
-            self.last_prefs.auto = b;
-            match self.control.set_timer(b) {
-                Ok(()) => {
-                    // Read it back rather than assuming. `systemctl enable`
-                    // can succeed on a unit that is masked or static, and
-                    // the switch has to show what the machine will do.
-                    self.timer_enabled = self.control.timer_enabled();
-                    let effective = self.timer_enabled.unwrap_or(b);
-                    self.prefs.auto = effective;
-                    self.notice = (effective != b).then(|| {
-                        format!(
-                            "Automatic updates are still {}. The system did \
-                             not accept the change.",
-                            if effective { "on" } else { "off" }
-                        )
-                    });
-                    self.persist();
-                }
-                Err(e) => {
-                    warn!(target: "qos::settings", op = "set_update_timer", error = %e, "automatic updates could not be changed");
-                    self.notice = Some(format!("Automatic updates could not be changed: {e}"));
-                    // Put the switch back where the machine actually is.
-                    self.timer_enabled = self.control.timer_enabled();
-                    let effective = self.timer_enabled.unwrap_or(self.prefs.auto);
-                    self.prefs.auto = effective;
-                    self.last_prefs.auto = effective;
-                    let _ = state.put(root, AUTO_KEY, automerge::ScalarValue::Boolean(effective));
-                }
+            Ok(updates) => {
+                self.notice = None;
+                self.firmware_history = os_actions::get_firmware_history();
+                Ok(updates)
             }
-            self.structure_dirty = true;
-        }
+            Err(e) => {
+                self.notice = Some(format!("Firmware metadata could not be refreshed: {e}"));
+                Err(e)
+            }
+        };
+        self.structure_dirty = true;
+    }
 
-        if let Some(current) = self.schedule.clone()
-            && let Some(requested) = read_str(state, root, SCHEDULE_KEY)
-            && requested != current
-            && UPDATE_SCHEDULES.contains(&requested.as_str())
+    fn handle_firmware_install(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, FIRMWARE_INSTALL_KEY) {
+            return;
+        }
+        let _ = state.put(
+            root,
+            FIRMWARE_INSTALL_KEY,
+            automerge::ScalarValue::Boolean(false),
+        );
+        match self
+            .firmware_updates
+            .as_deref()
+            .map_err(Clone::clone)
+            .and_then(os_actions::start_firmware_install)
         {
-            match self.control.set_schedule(&requested) {
-                Ok(()) => {
-                    self.schedule = self.control.schedule().or(Some(requested));
-                    self.notice = None;
-                }
-                Err(error) => {
-                    self.notice = Some(format!("Download schedule could not be changed: {error}"));
-                    let _ = state.put(root, SCHEDULE_KEY, current);
-                }
+            Ok(events) => {
+                self.firmware_events = Some(events);
+                self.firmware_state = FirmwareUiState::Installing {
+                    percent: 0,
+                    message: "Preparing firmware transaction…".into(),
+                };
+                self.notice = None;
             }
-            self.structure_dirty = true;
-        }
-
-        if let Some(current) = self.allow_metered
-            && let Some(requested) = read_bool_opt(state, root, METERED_KEY)
-            && requested != current
-        {
-            match self.control.set_allow_metered(requested) {
-                Ok(()) => {
-                    self.allow_metered = self.control.allow_metered().or(Some(requested));
-                    self.notice = None;
-                }
-                Err(error) => {
-                    self.notice = Some(format!(
-                        "Metered-network policy could not be changed: {error}"
-                    ));
-                    let _ = state.put(root, METERED_KEY, current);
-                }
+            Err(e) => {
+                self.notice = Some(format!("Firmware upgrades could not be installed: {e}"));
             }
-            self.structure_dirty = true;
         }
+        self.structure_dirty = true;
+    }
 
-        // Roll back, in two steps. The first only opens the explanation.
+    /// Restart & update → reboot into the staged image (dedup).
+    fn handle_restart(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, RESTART_KEY) {
+            return;
+        }
+        let _ = state.put(root, RESTART_KEY, automerge::ScalarValue::Boolean(false));
+        if !self.dispatched_restart {
+            self.dispatched_restart = true;
+            if let Err(e) = self.rebooter.reboot() {
+                warn!(target: "qos::settings", op = "reboot", error = %e, "restart & update failed");
+            }
+        }
+    }
+
+    /// Automatic updates → drive the timer, then report what the timer
+    /// actually says. Persisting the preference happens only once the
+    /// machine agrees, so the stored value never claims a state the timer
+    /// isn't actually in.
+    fn handle_auto_toggle(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let Some(b) = read_bool_opt(state, root, AUTO_KEY) else {
+            return;
+        };
+        if b == self.last_prefs.auto {
+            return;
+        }
+        self.last_prefs.auto = b;
+        match self.control.set_timer(b) {
+            Ok(()) => {
+                // Read it back rather than assuming. `systemctl enable`
+                // can succeed on a unit that is masked or static, and
+                // the switch has to show what the machine will do.
+                self.timer_enabled = self.control.timer_enabled();
+                let effective = self.timer_enabled.unwrap_or(b);
+                self.prefs.auto = effective;
+                self.notice = (effective != b).then(|| {
+                    format!(
+                        "Automatic updates are still {}. The system did \
+                         not accept the change.",
+                        if effective { "on" } else { "off" }
+                    )
+                });
+                self.persist();
+            }
+            Err(e) => {
+                warn!(target: "qos::settings", op = "set_update_timer", error = %e, "automatic updates could not be changed");
+                self.notice = Some(format!("Automatic updates could not be changed: {e}"));
+                // Put the switch back where the machine actually is.
+                self.timer_enabled = self.control.timer_enabled();
+                let effective = self.timer_enabled.unwrap_or(self.prefs.auto);
+                self.prefs.auto = effective;
+                self.last_prefs.auto = effective;
+                let _ = state.put(root, AUTO_KEY, automerge::ScalarValue::Boolean(effective));
+            }
+        }
+        self.structure_dirty = true;
+    }
+
+    fn handle_schedule(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let Some(current) = self.schedule.clone() else {
+            return;
+        };
+        let Some(requested) = read_str(state, root, SCHEDULE_KEY) else {
+            return;
+        };
+        if requested == current || !UPDATE_SCHEDULES.contains(&requested.as_str()) {
+            return;
+        }
+        match self.control.set_schedule(&requested) {
+            Ok(()) => {
+                self.schedule = self.control.schedule().or(Some(requested));
+                self.notice = None;
+            }
+            Err(error) => {
+                self.notice = Some(format!("Download schedule could not be changed: {error}"));
+                let _ = state.put(root, SCHEDULE_KEY, current);
+            }
+        }
+        self.structure_dirty = true;
+    }
+
+    fn handle_metered(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let Some(current) = self.allow_metered else {
+            return;
+        };
+        let Some(requested) = read_bool_opt(state, root, METERED_KEY) else {
+            return;
+        };
+        if requested == current {
+            return;
+        }
+        match self.control.set_allow_metered(requested) {
+            Ok(()) => {
+                self.allow_metered = self.control.allow_metered().or(Some(requested));
+                self.notice = None;
+            }
+            Err(error) => {
+                self.notice = Some(format!(
+                    "Metered-network policy could not be changed: {error}"
+                ));
+                let _ = state.put(root, METERED_KEY, current);
+            }
+        }
+        self.structure_dirty = true;
+    }
+
+    /// Roll back, in two steps. The first only opens the explanation.
+    fn handle_rollback(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if read_bool(state, root, ROLLBACK_KEY) {
             let _ = state.put(root, ROLLBACK_KEY, automerge::ScalarValue::Boolean(false));
             self.rollback_armed = true;
@@ -1435,6 +1526,25 @@ impl Widget for UpdatesPane {
             }
             self.structure_dirty = true;
         }
+    }
+}
+
+pub fn build() -> Box<dyn Widget> {
+    Box::new(UpdatesPane::new())
+}
+
+impl Widget for UpdatesPane {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.drain_firmware_events();
+        self.seed(state, root);
+        self.handle_check(state, root);
+        self.handle_firmware_refresh(state, root);
+        self.handle_firmware_install(state, root);
+        self.handle_restart(state, root);
+        self.handle_auto_toggle(state, root);
+        self.handle_schedule(state, root);
+        self.handle_metered(state, root);
+        self.handle_rollback(state, root);
 
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
@@ -1459,13 +1569,17 @@ impl Widget for UpdatesPane {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap();
+        // `child` was just created in this same `taffy` tree, so wrapping it
+        // cannot fail in practice; falling back to the child node itself
+        // (skipping the wrapper style) is a real degraded behaviour rather
+        // than a panic if that invariant is ever broken.
+        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

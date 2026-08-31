@@ -702,42 +702,7 @@ impl RichTextEditor {
                 self.insert_str(state, " ");
                 *handled = true;
             }
-            Key::Character(c) if ctrl => match c.as_str() {
-                "a" | "A" => {
-                    self.core.select_all(&self.text);
-                    self.redraw = true;
-                    *handled = true;
-                }
-                "c" | "C" => {
-                    self.copy_selection();
-                    *handled = true;
-                }
-                "x" | "X" => {
-                    self.copy_selection();
-                    let edit = self.core.delete_backward(&self.text, false);
-                    self.apply_edit(state, &edit);
-                    *handled = true;
-                }
-                "v" | "V" => {
-                    if let Some(clip) = clipboard_paste() {
-                        self.insert_str(state, &clip);
-                    }
-                    *handled = true;
-                }
-                "b" | "B" => {
-                    self.toggle_bold(state);
-                    *handled = true;
-                }
-                "i" | "I" => {
-                    self.toggle_italic(state);
-                    *handled = true;
-                }
-                "u" | "U" => {
-                    self.toggle_underline(state);
-                    *handled = true;
-                }
-                _ => {}
-            },
+            Key::Character(c) if ctrl => self.apply_ctrl_shortcut(c.as_str(), state, handled),
             Key::Character(c) if !ctrl => {
                 self.insert_str(state, c.as_str());
                 *handled = true;
@@ -754,6 +719,48 @@ impl RichTextEditor {
                     *handled = true;
                 }
             }
+        }
+    }
+
+    /// The `Key::Character` + Ctrl arm of [`Self::handle_key_press`], split
+    /// out to keep that under the line cap: select-all, copy/cut/paste, and
+    /// bold/italic/underline toggles.
+    fn apply_ctrl_shortcut(&mut self, c: &str, state: &mut AutoCommit, handled: &mut bool) {
+        match c {
+            "a" | "A" => {
+                self.core.select_all(&self.text);
+                self.redraw = true;
+                *handled = true;
+            }
+            "c" | "C" => {
+                self.copy_selection();
+                *handled = true;
+            }
+            "x" | "X" => {
+                self.copy_selection();
+                let edit = self.core.delete_backward(&self.text, false);
+                self.apply_edit(state, &edit);
+                *handled = true;
+            }
+            "v" | "V" => {
+                if let Some(clip) = clipboard_paste() {
+                    self.insert_str(state, &clip);
+                }
+                *handled = true;
+            }
+            "b" | "B" => {
+                self.toggle_bold(state);
+                *handled = true;
+            }
+            "i" | "I" => {
+                self.toggle_italic(state);
+                *handled = true;
+            }
+            "u" | "U" => {
+                self.toggle_underline(state);
+                *handled = true;
+            }
+            _ => {}
         }
     }
 }
