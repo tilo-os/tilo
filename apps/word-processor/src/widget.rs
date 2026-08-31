@@ -5319,9 +5319,10 @@ impl WordProcessorWidget {
                 scene,
                 transform,
                 text_renderer,
+                theme,
+                &PresenceCtx::empty(),
                 FindPalette {
                     bar: cc.bar,
-                    field: cc.field,
                     chip: cc.chip,
                     border: cc.border,
                     text: cc.text,
@@ -7961,7 +7962,7 @@ impl WordProcessorWidget {
         ctrl: bool,
         handled: &mut bool,
     ) {
-        if self.handle_key_press_guards(state, logical_key, text, shift, ctrl, handled) {
+        if self.handle_key_press_guards(state, logical_key, text, ctrl, handled) {
             return;
         }
         if ctrl && let Key::Character(s) = logical_key {
@@ -8065,7 +8066,6 @@ impl WordProcessorWidget {
         state: &mut AutoCommit,
         logical_key: &Key,
         text: Option<&str>,
-        shift: bool,
         ctrl: bool,
         handled: &mut bool,
     ) -> bool {
@@ -8121,14 +8121,6 @@ impl WordProcessorWidget {
                     self.apply_edit_buf_live();
                 }
             }
-            self.dirty = true;
-            *handled = true;
-            return true;
-        }
-        // While the Find bar is open, non-Ctrl keys edit its fields.
-        if self.find.is_open() && !ctrl {
-            let effect = self.find.key(logical_key, text, shift, &self.blocks);
-            self.apply_find_effect_mut(state, effect);
             self.dirty = true;
             *handled = true;
             return true;
@@ -8492,9 +8484,9 @@ impl Widget for WordProcessorWidget {
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key();
@@ -8517,6 +8509,36 @@ impl Widget for WordProcessorWidget {
         // The toolbar may have wrapped to several rows; hit-test against its
         // actual bottom (`tb_h`), matching `draw`.
         let tb_h = self.toolbar_height(self.rect.width());
+
+        // Find/replace embeds the shared TextInput rather than maintaining a
+        // second text editor. Feed it raw events first so IME, selection and
+        // clipboard shortcuts retain the toolkit's exact behavior. Ctrl+F is
+        // deliberately left for the editor-level toggle below.
+        if self.focused && self.find.is_open() {
+            let mut find_handled = false;
+            let effect = self.find.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                &mut find_handled,
+                focus_target,
+                node_id,
+                taffy,
+                &self.blocks,
+            );
+            self.apply_find_effect_mut(state, effect);
+            if find_handled {
+                self.dirty = true;
+                *handled = true;
+                // Cursor movement still feeds the editor below so its shared
+                // pointer coordinate remains current for subsequent clicks.
+                if !matches!(event, WindowEvent::CursorMoved { .. }) {
+                    return;
+                }
+            }
+        }
         match event {
             // Drag-and-drop a file onto the window inserts it as an image at the
             // drop point (see `handle_dropped_file`).
@@ -8601,6 +8623,10 @@ impl Widget for WordProcessorWidget {
                 presence,
             );
         }
+        if self.find.is_open() {
+            self.find
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
         let cc = self.chrome;
         self.color_picker.draw(
             crate::style_color_picker::DrawArgs {
@@ -8682,6 +8708,7 @@ impl Widget for WordProcessorWidget {
     }
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
+        self.find.set_host_focused(focused);
         if !focused {
             // Blur any in-progress numeric edit; the next sync reloads the
             // persisted style values.
@@ -8693,6 +8720,20 @@ impl Widget for WordProcessorWidget {
     }
     fn is_focused(&self) -> bool {
         self.focused
+    }
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if self.find.is_open() {
+            self.find.ime_cursor_rect()
+        } else {
+            None
+        }
+    }
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        if self.find.is_open() {
+            self.find.ime_purpose()
+        } else {
+            None
+        }
     }
     fn needs_commit(&self) -> bool {
         self.needs_commit

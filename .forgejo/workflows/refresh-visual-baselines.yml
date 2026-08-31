@@ -52,7 +52,11 @@ jobs:
             typography_visual_regression::multilingual_gallery_matches_scale_matrix -- --exact
           cargo test --locked -p ebook reader_matches
           cargo test --locked -p shell --test it e2e_shell_flows::
-          cargo test --locked -p shell --test it sidebar_wheel_disc_snapshot::
+          # Each wheel case creates a headless Vulkan renderer. Running six of
+          # those in one process concurrently can crash Mesa's software driver
+          # before Rust can report a test failure, so serialize this tiny set.
+          cargo test --locked -p shell --test it sidebar_wheel_disc_snapshot:: \
+            -- --test-threads=1
 
       - name: Commit reviewed baseline paths
         run: |

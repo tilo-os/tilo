@@ -136,21 +136,36 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // The portal must NOT bypass the existing sandbox / grant enforcement — `flow::resolve` is the
     // only entry point that mutates the workspace's `grants` map, consulting the same store the
     // chrome's permission-prompt pump uses. Failures downgrade to a warning so a broken session bus never wedges the shell.
-    let (_portal_runtime, _portal_handle) =
-        match bring_up_portal(enable_portals, tree_handle, portal_prompts, portal_pickers) {
-            PortalBringup::Disabled => (None, None),
-            PortalBringup::RuntimeUnavailable => {
-                app.run();
-                return;
-            }
-            PortalBringup::Started { runtime, handle } => (runtime, handle),
-        };
+    let (_portal_runtime, _portal_handle) = match bring_up_portal(
+        enable_portals,
+        tree_handle.clone(),
+        portal_prompts,
+        portal_pickers,
+    ) {
+        PortalBringup::Disabled => (None, None),
+        PortalBringup::RuntimeUnavailable => {
+            app.run();
+            return;
+        }
+        PortalBringup::Started { runtime, handle } => (runtime, handle),
+    };
 
     let _peer_sync = peer_sync.clone(); // keep alive for lifetime of `app.run()`
 
     // Local typed collaboration broker, held for the lifetime of `app.run()`.
     // When peer sync is enabled it also bridges app changes between machines.
     let _collab_broker = spawn_collab_broker(peer_sync.as_ref());
+
+    let identity_socket = launcher::services::identity_socket();
+    let _identity_broker = if std::os::unix::net::UnixStream::connect(&identity_socket).is_ok() {
+        tracing::warn!(path = %identity_socket.display(), "identity broker already running");
+        None
+    } else {
+        launcher::services::ensure_services_root()
+            .and_then(|_| crate::identity_broker::spawn(identity_socket, tree_handle.clone()))
+            .map_err(|error| tracing::warn!(%error, "identity broker unavailable"))
+            .ok()
+    };
 
     // Hosted-mode test-control socket: when QOS_TEST_CONTROL is set, bind it like the headless
     // backend and run the App with a proxy injecting clicks/hovers into the event loop — same code

@@ -2,7 +2,8 @@
 //!
 //! Trees are measured with `symlink_metadata`; symbolic links are counted but
 //! never followed. Cleanup can only target direct children of the configured
-//! cache root and revalidates device/inode/mtime immediately before removal.
+//! cache root and revalidates identity, metadata, and measured contents
+//! immediately before removal.
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
@@ -223,6 +224,7 @@ pub struct CleanupItem {
     device: u64,
     inode: u64,
     modified_ns: i128,
+    changed_ns: i128,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -300,6 +302,9 @@ pub fn preview_cache_cleanup(cache_root: &Path) -> Result<CleanupPreview, Cleanu
             modified_ns: i128::from(meta.mtime())
                 .saturating_mul(1_000_000_000)
                 .saturating_add(i128::from(meta.mtime_nsec())),
+            changed_ns: i128::from(meta.ctime())
+                .saturating_mul(1_000_000_000)
+                .saturating_add(i128::from(meta.ctime_nsec())),
         });
     }
     items.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.path.cmp(&b.path)));
@@ -345,10 +350,17 @@ pub fn apply_cleanup(
         let modified_ns = i128::from(meta.mtime())
             .saturating_mul(1_000_000_000)
             .saturating_add(i128::from(meta.mtime_nsec()));
+        let changed_ns = i128::from(meta.ctime())
+            .saturating_mul(1_000_000_000)
+            .saturating_add(i128::from(meta.ctime_nsec()));
+        let (bytes, files) = measure(&item.path);
         if meta.dev() != item.device
             || meta.ino() != item.inode
             || modified_ns != item.modified_ns
+            || changed_ns != item.changed_ns
             || (meta.is_dir()) != (item.kind == CleanupKind::Directory)
+            || bytes != item.bytes
+            || files != item.files
         {
             return Err(CleanupError::Changed(item.path.clone()));
         }
@@ -408,6 +420,42 @@ mod tests {
             apply_cleanup(&preview, &[0]),
             Err(CleanupError::Changed(_))
         ));
+    }
+
+    #[test]
+    fn cleanup_rejects_directory_payload_changed_after_preview() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let target = cache.join("dev.qos.notes");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("a"), b"cache").unwrap();
+        let preview = preview_cache_cleanup(&cache).unwrap();
+
+        std::fs::write(target.join("a"), b"larger cache payload").unwrap();
+
+        assert!(matches!(
+            apply_cleanup(&preview, &[0]),
+            Err(CleanupError::Changed(_))
+        ));
+        assert!(target.exists(), "changed cache must not be deleted");
+    }
+
+    #[test]
+    fn cleanup_rejects_directory_file_count_changed_after_preview() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let target = cache.join("dev.qos.notes");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("a"), b"cache").unwrap();
+        let preview = preview_cache_cleanup(&cache).unwrap();
+
+        std::fs::write(target.join("empty"), []).unwrap();
+
+        assert!(matches!(
+            apply_cleanup(&preview, &[0]),
+            Err(CleanupError::Changed(_))
+        ));
+        assert!(target.exists(), "changed cache must not be deleted");
     }
 
     #[test]

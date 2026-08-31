@@ -7,6 +7,7 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+use qos_user_identity::DeviceCert;
 use serde::{Deserialize, Serialize};
 
 use crate::shell::state::{
@@ -28,6 +29,10 @@ pub struct PeerInviteToken {
     /// inviter staying online. Absent from legacy v1 tokens.
     #[serde(default)]
     pub host_addrs: Vec<iroh::EndpointAddr>,
+    /// Root-signed binding from the inviter's person identity to the Iroh
+    /// endpoint/device key. Absent only on legacy invitations.
+    #[serde(default)]
+    pub owner_device_cert: Option<DeviceCert>,
     pub expiry_unix_seconds: u64,
     pub signature: Vec<u8>,
 }
@@ -39,6 +44,17 @@ struct InvitePayload<'a> {
     owner_peer_id: &'a str,
     owner_addr: &'a iroh::EndpointAddr,
     host_addrs: &'a [iroh::EndpointAddr],
+    expiry_unix_seconds: u64,
+}
+
+#[derive(Serialize)]
+struct InvitePayloadV2<'a> {
+    workspace_id: u64,
+    room_id: &'a str,
+    owner_peer_id: &'a str,
+    owner_addr: &'a iroh::EndpointAddr,
+    host_addrs: &'a [iroh::EndpointAddr],
+    owner_device_cert: &'a DeviceCert,
     expiry_unix_seconds: u64,
 }
 
@@ -105,6 +121,17 @@ fn legacy_libp2p_invite_error(json: &[u8]) -> Option<String> {
 }
 
 fn signing_payload(token: &PeerInviteToken) -> Result<Vec<u8>, postcard::Error> {
+    if let Some(cert) = &token.owner_device_cert {
+        return postcard::to_allocvec(&InvitePayloadV2 {
+            workspace_id: token.workspace_id,
+            room_id: &token.room_id,
+            owner_peer_id: &token.owner_peer_id,
+            owner_addr: &token.owner_addr,
+            host_addrs: &token.host_addrs,
+            owner_device_cert: cert,
+            expiry_unix_seconds: token.expiry_unix_seconds,
+        });
+    }
     postcard::to_allocvec(&InvitePayload {
         workspace_id: token.workspace_id,
         room_id: &token.room_id,
@@ -138,6 +165,24 @@ pub fn make_invite_token_with_hosts(
     host_addrs: &[iroh::EndpointAddr],
     expiry_seconds_from_now: u64,
 ) -> std::io::Result<String> {
+    make_invite_token_with_identity(
+        key,
+        workspace,
+        owner_addr,
+        host_addrs,
+        None,
+        expiry_seconds_from_now,
+    )
+}
+
+pub fn make_invite_token_with_identity(
+    key: &iroh::SecretKey,
+    workspace: &Workspace,
+    owner_addr: &iroh::EndpointAddr,
+    host_addrs: &[iroh::EndpointAddr],
+    owner_device_cert: Option<DeviceCert>,
+    expiry_seconds_from_now: u64,
+) -> std::io::Result<String> {
     if workspace.room.is_nil() {
         return Err(std::io::Error::other(
             "workspace has no room identity to invite into",
@@ -148,12 +193,21 @@ pub fn make_invite_token_with_hosts(
             "invite address does not belong to the signing device",
         ));
     }
+    if let Some(cert) = &owner_device_cert {
+        qos_user_identity::verify_device_cert(cert).map_err(std::io::Error::other)?;
+        if cert.device_public_key != *key.public().as_bytes() {
+            return Err(std::io::Error::other(
+                "invite certificate does not belong to the signing device",
+            ));
+        }
+    }
     let mut token = PeerInviteToken {
         workspace_id: workspace.id.raw(),
         room_id: workspace.room.to_string(),
         owner_peer_id: key.public().to_string(),
         owner_addr: owner_addr.clone(),
         host_addrs: host_addrs.to_vec(),
+        owner_device_cert,
         expiry_unix_seconds: now_unix_seconds().saturating_add(expiry_seconds_from_now),
         signature: Vec::new(),
     };
@@ -192,6 +246,13 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
         .map_err(|e| format!("endpoint id parse: {e}"))?;
     if endpoint != token.owner_addr.id {
         return Err("endpoint id does not match embedded address".into());
+    }
+    if let Some(cert) = &token.owner_device_cert {
+        qos_user_identity::verify_device_cert(cert)
+            .map_err(|error| format!("identity -> device certificate invalid: {error}"))?;
+        if cert.device_public_key != *endpoint.as_bytes() {
+            return Err("device certificate does not name the inviting endpoint".into());
+        }
     }
     let signature: [u8; 64] = token
         .signature
@@ -241,9 +302,17 @@ pub fn accept_invite_into(
         .map_err(|e| format!("endpoint id parse: {e}"))?;
     let session = crate::network::behaviour::peer_liveness_handle(&endpoint);
     let handle = crate::shell::state::session_handle(session);
+    let person = token.owner_device_cert.as_ref().map(|cert| {
+        match collab_types::caps::Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
+        ) {
+            collab_types::caps::Principal::Person(id) => id,
+            _ => handle.clone(),
+        }
+    });
     tree.admit_collaborator(
         local,
-        Collaborator::new(handle.clone(), handle).with_session(session),
+        Collaborator::new(person.unwrap_or_else(|| handle.clone()), handle).with_session(session),
     );
     Ok(room)
 }
@@ -292,6 +361,53 @@ mod tests {
     }
 
     #[test]
+    fn identity_certificate_binds_inviter_person_to_device_endpoint() {
+        use qos_user_identity::{DeviceCapabilities, sign_device_cert};
+
+        let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let device = iroh::SecretKey::from_bytes(&[42; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: *device.public().as_bytes(),
+            device_label: "Laptop".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).expect("cert");
+        let ws = workspace(17);
+        let encoded = make_invite_token_with_identity(
+            &device,
+            &ws,
+            &endpoint(&device, 1717),
+            &[],
+            Some(cert.clone()),
+            3600,
+        )
+        .expect("invite");
+        let decoded = validate_invite_token(&encoded).expect("valid");
+        assert_eq!(decoded.owner_device_cert, Some(cert));
+
+        let mut tree = WorkspaceTree::default();
+        let local = WorkspaceId(99);
+        tree.workspaces.push(workspace(99));
+        accept_invite_into(&mut tree, local, &encoded).expect("accept");
+        let person = match collab_types::caps::Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+        ) {
+            collab_types::caps::Principal::Person(id) => id,
+            _ => unreachable!(),
+        };
+        assert!(
+            tree.workspaces[0]
+                .collaborators
+                .iter()
+                .any(|member| member.id == person)
+        );
+    }
+
+    #[test]
     fn legacy_token_without_hosts_still_validates() {
         let key = iroh::SecretKey::from_bytes(&[15; 32]);
         let workspace = workspace(6);
@@ -302,6 +418,7 @@ mod tests {
             owner_peer_id: key.public().to_string(),
             owner_addr: addr,
             host_addrs: Vec::new(),
+            owner_device_cert: None,
             expiry_unix_seconds: now_unix_seconds() + 3600,
             signature: Vec::new(),
         };
