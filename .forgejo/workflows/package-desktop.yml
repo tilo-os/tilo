@@ -2,10 +2,11 @@ name: Package the qOS desktop session
 
 # Native builds are intentional: the compositor links the distribution's
 # graphics/input stack and cannot be safely produced by a generic cross image.
-# The existing `runner` pool supplies amd64; native ARM machines use the
-# `arm64` label (docs/packaging.md). Pull requests build and install-test the
-# affected release payload. Version tags additionally publish the verified
-# artifacts to Forgejo releases and its native package registries.
+# All work runs on the existing `runner` pool. amd64 containers execute
+# directly; docker/setup-qemu-action registers ARM64 user emulation before the
+# aarch64 containers start. Pull requests build and install-test the affected
+# release payload. Version tags additionally publish the verified artifacts to
+# Forgejo releases and its native package registries.
 on:
   pull_request:
     branches: [main]
@@ -50,202 +51,117 @@ jobs:
           dist/session/tests/dev-session-refusals.sh
           os/tests/portal_config_validity.sh
 
-  debian:
+  package:
     needs: validate
     name: ${{ matrix.distro }} / ${{ matrix.arch }}
-    env:
-      CARGO_HOME: /usr/local/cargo
-      RUSTUP_HOME: /usr/local/rustup
-      QOS_DEB_REVISION: ${{ matrix.revision }}
-      QOS_EXPECT_ARCH: ${{ matrix.arch }}
+    runs-on: runner
+    timeout-minutes: 180
     strategy:
       fail-fast: false
+      # Limit pressure on the shared runner pool while this branch is iterated.
+      max-parallel: 4
       matrix:
         include:
-          - arch: amd64
-            runner: runner
+          - id: ubuntu-24.04
             distro: ubuntu-24.04
-            image: ubuntu:24.04
+            image: docker.io/library/ubuntu:24.04
             revision: 1+ubuntu24.04
-          - arch: arm64
-            runner: arm64
+            arch: amd64
+          - id: ubuntu-24.04
             distro: ubuntu-24.04
-            image: ubuntu:24.04
+            image: docker.io/library/ubuntu:24.04
             revision: 1+ubuntu24.04
-          - arch: amd64
-            runner: runner
+            arch: arm64
+          - id: debian-13
             distro: debian-13
-            image: debian:13
+            image: docker.io/library/debian:13
             revision: 1+deb13
-          - arch: arm64
-            runner: arm64
+            arch: amd64
+          - id: debian-13
             distro: debian-13
-            image: debian:13
+            image: docker.io/library/debian:13
             revision: 1+deb13
-    runs-on: ${{ matrix.runner }}
-    container: ${{ matrix.image }}
+            arch: arm64
+          - id: fedora-42
+            distro: fedora-42
+            image: registry.fedoraproject.org/fedora:42
+            revision: ""
+            arch: amd64
+          - id: fedora-42
+            distro: fedora-42
+            image: registry.fedoraproject.org/fedora:42
+            revision: ""
+            arch: arm64
+          - id: arch
+            distro: arch
+            image: docker.io/menci/archlinuxarm@sha256:730b232affd3cf553c2e416824ea696b1f07ab8fc4e43190d0658a027f94fb22
+            revision: ""
+            arch: amd64
+          - id: arch
+            distro: arch
+            image: docker.io/menci/archlinuxarm@sha256:730b232affd3cf553c2e416824ea696b1f07ab8fc4e43190d0658a027f94fb22
+            revision: ""
+            arch: arm64
+          - id: nix
+            distro: nix
+            image: docker.io/nixos/nix:2.24.9
+            revision: ""
+            arch: amd64
+          - id: nix
+            distro: nix
+            image: docker.io/nixos/nix:2.24.9
+            revision: ""
+            arch: arm64
     steps:
-      - name: Install build dependencies
-        run: |
-          apt-get update
-          apt-get install -y nodejs git curl ca-certificates
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Assert runner architecture
-        run: dist/ci/assert-native-arch.sh "${{ matrix.arch }}"
-      - name: Install native desktop dependencies and Rust
-        run: dist/ci/install-build-deps.sh debian
-      - name: Build Debian packages
-        run: dist/debian/build-deb.sh
-      - name: Inspect and install-test packages
-        run: |
-          dpkg-deb --info dist/debian/build/qos-session_*.deb
-          dist/debian/test-package.sh dist/debian/build/qos-session_*.deb
-      - name: Flatten unique release artifacts
-        run: |
-          mkdir -p dist/debian/artifacts
-          cp dist/debian/build/qos-session_[0-9]*_${{ matrix.arch }}.deb dist/debian/artifacts/
-          if [[ "${{ matrix.arch }}" == amd64 ]]; then
-            cp dist/debian/build/qos-session-devel_*_all.deb dist/debian/artifacts/
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.distro }}-${{ matrix.arch }}
-          path: dist/debian/artifacts/*.deb
-          if-no-files-found: error
-
-  fedora:
-    needs: validate
-    name: fedora-42 / ${{ matrix.arch }}
-    env:
-      CARGO_HOME: /usr/local/cargo
-      RUSTUP_HOME: /usr/local/rustup
-      QOS_EXPECT_ARCH: ${{ matrix.arch }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: runner
-          - arch: arm64
-            runner: arm64
-    runs-on: ${{ matrix.runner }}
-    container: registry.fedoraproject.org/fedora:42
-    steps:
-      - name: Install checkout dependencies
-        run: dnf install -y nodejs git curl ca-certificates
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Assert runner architecture
-        run: dist/ci/assert-native-arch.sh "${{ matrix.arch }}"
-      - name: Install native desktop dependencies and Rust
-        run: dist/ci/install-build-deps.sh fedora
-      - name: Build RPM packages
-        run: dist/rpm/build-rpm.sh
-      - name: Inspect and install-test packages
-        run: |
-          rpm -qip dist/rpm/build/RPMS/*/qos-session-*.rpm
-          dist/rpm/test-package.sh dist/rpm/build/RPMS/*/qos-session-*.rpm
-      - name: Flatten release artifacts
-        run: |
-          mkdir -p dist/rpm/artifacts
-          cp dist/rpm/build/RPMS/*/*.rpm dist/rpm/artifacts/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: fedora-${{ matrix.arch }}
-          path: dist/rpm/artifacts/*.rpm
-          if-no-files-found: error
-
-  arch:
-    needs: validate
-    name: arch / ${{ matrix.arch }}
-    env:
-      QOS_EXPECT_ARCH: ${{ matrix.arch }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: runner
-          - arch: arm64
-            runner: arm64
-    runs-on: ${{ matrix.runner }}
-    # Arch itself is x86-64-only. This pinned multi-arch image uses Arch on
-    # amd64 and the matching Arch Linux ARM repositories on aarch64.
-    container: menci/archlinuxarm@sha256:730b232affd3cf553c2e416824ea696b1f07ab8fc4e43190d0658a027f94fb22
-    steps:
-      - name: Install checkout dependencies
-        run: pacman -Syu --noconfirm nodejs git
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
-      - name: Assert runner architecture
-        run: dist/ci/assert-native-arch.sh "${{ matrix.arch }}"
-      - name: Install native desktop dependencies
-        run: dist/ci/install-build-deps.sh arch
-      - name: Build Arch packages as an unprivileged user
-        run: |
-          useradd --create-home builder
-          chown -R builder:builder "$GITHUB_WORKSPACE"
-          su builder -c "cd '$GITHUB_WORKSPACE' && dist/arch/build-arch.sh"
-      - name: Inspect and install-test packages
-        run: |
-          pacman -Qip dist/arch/build/qos-session-*.pkg.tar.*
-          dist/arch/test-package.sh dist/arch/build/qos-session-*.pkg.tar.*
+      - name: Enable ARM64 containers on the CI runner
+        if: matrix.arch == 'arm64'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: Build and install-test in the target userspace
+        run: >-
+          dist/ci/run-package-job.sh
+          "${{ matrix.distro }}"
+          "${{ matrix.image }}"
+          "${{ matrix.arch }}"
+          "${{ matrix.revision }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: arch-${{ matrix.arch }}
-          path: dist/arch/build/*.pkg.tar.*
+          name: ${{ matrix.id }}-${{ matrix.arch }}
+          path: dist/ci-output/${{ matrix.id }}-${{ matrix.arch }}/*
           if-no-files-found: error
 
-  nix:
-    needs: validate
-    name: nix / ${{ matrix.arch }}
+  report-branch-result:
+    if: always() && github.ref == 'refs/heads/codex/package-desktop-release'
+    needs: [validate, package]
+    runs-on: runner
+    permissions:
+      contents: write
     env:
-      NIX_CONFIG: "experimental-features = nix-command flakes"
-      QOS_EXPECT_ARCH: ${{ matrix.arch }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            runner: runner
-          - arch: arm64
-            runner: arm64
-    runs-on: ${{ matrix.runner }}
-    container: nixos/nix:2.24.9
+      VALIDATE_RESULT: ${{ needs.validate.result }}
+      PACKAGE_RESULT: ${{ needs.package.result }}
     steps:
-      - name: Install checkout dependencies
-        run: nix-env -iA nixpkgs.nodejs nixpkgs.git nixpkgs.gzip nixpkgs.file
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Assert runner architecture
-        run: dist/ci/assert-native-arch.sh "${{ matrix.arch }}"
-      - name: Build and inspect the flake package
+          fetch-depth: 0
+      - name: Record an observable CI receipt without touching a branch
         run: |
-          nix build --print-build-logs .#qos-session
-          file result/bin/qos-shell | grep -Eq 'ELF 64-bit.*(x86-64|ARM aarch64)'
-          test -f result/share/wayland-sessions/qos.desktop
-          nix flake check --no-build
-      - name: Export the exact Nix store closure
-        run: |
-          mkdir -p dist/nix/build
-          mapfile -t requisites < <(nix-store --query --requisites result)
-          nix-store --export "${requisites[@]}" \
-            | gzip -9 > "dist/nix/build/qos-session-${{ matrix.arch }}.nar.gz"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nix-${{ matrix.arch }}
-          path: dist/nix/build/*.nar.gz
-          if-no-files-found: error
+          git config user.name 'qOS Forgejo CI'
+          git config user.email 'qos@noreply.code.podesta.ai'
+          git fetch origin refs/notes/qos-package-ci:refs/notes/qos-package-ci || true
+          git notes --ref=qos-package-ci add -f \
+            -m "validate=$VALIDATE_RESULT package=$PACKAGE_RESULT run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
+            "$GITHUB_SHA"
+          git push origin refs/notes/qos-package-ci
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [debian, fedora, arch, nix]
+    needs: package
     runs-on: runner
     permissions:
       contents: write
@@ -277,4 +193,4 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           release-dir: release
           override: true
-          release-notes: "qOS desktop session ${{ github.ref_name }}. Every attached package was built and install-tested natively on its target distribution and architecture."
+          release-notes: "qOS desktop session ${{ github.ref_name }}. Every attached package was built and install-tested inside its target distribution and architecture userspace."

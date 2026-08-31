@@ -173,3 +173,27 @@ jobs:
             /cargo-home/registry/cache
             /cargo-home/git/db
           key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+
+  report-packaging-branch-result:
+    if: always() && github.ref == 'refs/heads/codex/package-desktop-release'
+    needs: [select, affected]
+    runs-on: runner
+    permissions:
+      contents: write
+    env:
+      SELECT_RESULT: ${{ needs.select.result }}
+      AFFECTED_RESULT: ${{ needs.affected.result }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 0
+      - name: Record an observable CI receipt without touching a branch
+        run: |
+          git config user.name 'qOS Forgejo CI'
+          git config user.email 'qos@noreply.code.podesta.ai'
+          git fetch origin refs/notes/qos-check-ci:refs/notes/qos-check-ci || true
+          git notes --ref=qos-check-ci add -f \
+            -m "select=$SELECT_RESULT affected=$AFFECTED_RESULT run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
+            "$GITHUB_SHA"
+          git push origin refs/notes/qos-check-ci
