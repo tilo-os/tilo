@@ -82,7 +82,7 @@ pub fn remove(states: &[RoomState]) -> (usize, Vec<(PathBuf, std::io::Error)>) {
         match std::fs::remove_dir_all(&state.path) {
             Ok(()) => removed = removed.saturating_add(1),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                removed = removed.saturating_add(1)
+                removed = removed.saturating_add(1);
             }
             Err(e) => failures.push((state.path.clone(), e)),
         }

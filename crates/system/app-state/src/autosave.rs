@@ -137,8 +137,7 @@ impl Autosave {
         // Only used to decide compact-vs-append (see `request`); a length too big for
         // `usize` saturates rather than wrapping, which just biases toward compacting sooner.
         self.base = std::fs::metadata(&self.document)
-            .map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX))
-            .unwrap_or(0);
+            .map_or(0, |m| usize::try_from(m.len()).unwrap_or(usize::MAX));
         self.appended = 0;
     }
 
