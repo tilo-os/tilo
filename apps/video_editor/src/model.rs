@@ -1558,6 +1558,26 @@ pub struct Project {
     pub fps: f64,
     pub width: u32,
     pub height: u32,
+    /// Whether the frame size and rate above were *chosen* — by a person, or
+    /// by a project file that carried them — rather than being the blank
+    /// project's stand-in.
+    ///
+    /// A blank project has to start at some shape, and 1920×1080 at 30 is the
+    /// least surprising one; but a project that has never been told its
+    /// format is not the same thing as one that was told 16:9. Without this
+    /// flag the two are indistinguishable, and [`Self::adopt_format`] would
+    /// have to choose between never adopting a clip's shape (which is how
+    /// vertical footage ended up letterboxed with no way out) and overriding
+    /// a format the user had just set by hand.
+    #[serde(default)]
+    pub format_explicit: bool,
+    /// Timeline **in** mark, in absolute seconds: where a render of the
+    /// timeline starts. `None` is the head of the timeline.
+    #[serde(default)]
+    pub mark_in: Option<f64>,
+    /// Timeline **out** mark. `None` is the end of the timeline.
+    #[serde(default)]
+    pub mark_out: Option<f64>,
     pub media: Vec<MediaItem>,
     pub tracks: Vec<Track>,
     pub clips: Vec<Clip>,
@@ -1566,6 +1586,20 @@ pub struct Project {
     pub markers: Vec<Marker>,
 }
 
+/// The narrowest and widest frame dimension a project may be set to.
+///
+/// Not a guess: the low stop keeps a frame big enough for the even-dimension
+/// rounding every H.264 encoder needs, and the high stop is 8K, past which
+/// the compositor's readback buffer for one frame is measured in hundreds of
+/// megabytes. A value outside the pair is clamped rather than refused — "as
+/// big as it goes" is a legible intent.
+pub const MIN_FRAME: u32 = 16;
+pub const MAX_FRAME: u32 = 8192;
+/// The slowest and fastest project rate. One frame per second is a legitimate
+/// timelapse; 240 is the fastest rate any consumer camera shoots.
+pub const MIN_FPS: f64 = 1.0;
+pub const MAX_FPS: f64 = 240.0;
+
 impl Project {
     pub fn new(name: &str) -> Self {
         Self {
@@ -1573,11 +1607,120 @@ impl Project {
             fps: 30.0,
             width: 1920,
             height: 1080,
+            format_explicit: false,
+            mark_in: None,
+            mark_out: None,
             media: Vec::new(),
             tracks: Vec::new(),
             clips: Vec::new(),
             markers: Vec::new(),
         }
+    }
+
+    // --- format ----------------------------------------------------------
+
+    /// Set the frame size, clamped to what can be encoded and rendered, and
+    /// rounded to even dimensions (every H.264 encoder requires them, and
+    /// `output_dims` would otherwise round the aspect back off by half a
+    /// pixel). Marks the format as deliberately chosen.
+    pub fn set_frame_size(&mut self, width: u32, height: u32) {
+        let even = |v: u32| {
+            let v = v.clamp(MIN_FRAME, MAX_FRAME);
+            v - (v & 1)
+        };
+        self.width = even(width);
+        self.height = even(height);
+        self.format_explicit = true;
+    }
+
+    /// Set the project rate, clamped to a rate that can be played back.
+    pub fn set_fps(&mut self, fps: f64) {
+        self.fps = if fps.is_finite() {
+            fps.clamp(MIN_FPS, MAX_FPS)
+        } else {
+            self.fps
+        };
+        self.format_explicit = true;
+    }
+
+    /// The project's frame aspect, falling back to 16:9 for a degenerate
+    /// height rather than dividing by zero.
+    pub fn aspect(&self) -> f64 {
+        if self.height > 0 {
+            f64::from(self.width) / f64::from(self.height)
+        } else {
+            16.0 / 9.0
+        }
+    }
+
+    /// Take this media's shape as the project's own — what a blank project
+    /// does when its first clip lands, so footage that is vertical, square or
+    /// 4K does not have to be letterboxed into a 16:9 frame nobody chose.
+    ///
+    /// Refused once the format has been chosen deliberately, and refused for
+    /// a source that does not carry a shape (audio, a title, a container that
+    /// declared nothing) — adopting zeroes would leave the project with no
+    /// frame at all.
+    pub fn adopt_format(&mut self, m: &MediaItem) -> bool {
+        if self.format_explicit || m.width == 0 || m.height == 0 {
+            return false;
+        }
+        self.set_frame_size(m.width, m.height);
+        // A container that did not say what rate it was shot at leaves the
+        // project's own rate alone: 0 fps is not a timeline anyone can edit.
+        if m.fps > 0.0 {
+            self.set_fps(m.fps);
+        }
+        true
+    }
+
+    // --- in / out marks --------------------------------------------------
+
+    /// Mark **in** at `t`. An in mark at or past the out mark would describe
+    /// an empty render, so it drops the out mark rather than silently
+    /// producing a zero-frame file.
+    pub fn set_mark_in(&mut self, t: f64) {
+        let t = t.max(0.0);
+        self.mark_in = Some(t);
+        if self.mark_out.is_some_and(|o| o <= t) {
+            self.mark_out = None;
+        }
+    }
+
+    /// Mark **out** at `t`, on the same rule as [`Self::set_mark_in`].
+    pub fn set_mark_out(&mut self, t: f64) {
+        let t = t.max(0.0);
+        self.mark_out = Some(t);
+        if self.mark_in.is_some_and(|i| i >= t) {
+            self.mark_in = None;
+        }
+    }
+
+    pub fn clear_marks(&mut self) {
+        self.mark_in = None;
+        self.mark_out = None;
+    }
+
+    pub fn has_marks(&self) -> bool {
+        self.mark_in.is_some() || self.mark_out.is_some()
+    }
+
+    /// The span a render covers: the marks when they describe a real span,
+    /// and the whole timeline otherwise. One door, so the export, the
+    /// estimate and the on-screen band cannot disagree about what will be
+    /// rendered.
+    pub fn export_range(&self) -> (f64, f64) {
+        let dur = self.duration();
+        let a = self.mark_in.unwrap_or(0.0).clamp(0.0, dur);
+        let b = self.mark_out.map_or(dur, |o| o.clamp(0.0, dur));
+        if b > a { (a, b) } else { (0.0, dur) }
+    }
+
+    /// How long a render of this project runs — the marked span, or the whole
+    /// timeline when nothing is marked.
+    pub fn export_duration(&self) -> f64 {
+        let (a, b) = self.export_range();
+        (b - a).max(0.0)
     }
 
     // --- timeline markers ------------------------------------------------
