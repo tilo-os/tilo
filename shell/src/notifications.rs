@@ -17,6 +17,14 @@
 //! the same [`crate::portal::CallerMap`] the portal backend uses, riding
 //! along on [`IncomingNotification::caller`].
 
+#![allow(
+    clippy::used_underscore_binding,
+    reason = "the D-Bus `Notify` signature requires app_icon; the zbus `#[interface]` macro \
+              deserialises it into this named parameter and forwards it by identifier into its \
+              generated dispatcher even though this handler has no use for the value, so the \
+              lint fires on macro-generated code a per-function #[allow] cannot reach"
+)]
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -299,12 +307,6 @@ impl NotificationService {
     /// Args (freedesktop spec): `app_name s`, `replaces_id u`, `app_icon s`,
     /// `summary s`, `body s`, `actions as`, `hints a{sv}`, `expire_timeout i`. Returns the assigned id `u`.
     #[allow(clippy::too_many_arguments)]
-    #[allow(
-        clippy::used_underscore_binding,
-        reason = "the D-Bus `Notify` signature requires app_icon; the zbus `#[interface]` \
-                  macro deserialises it into this named parameter and forwards it into the \
-                  generated dispatcher even though this handler has no use for the value"
-    )]
     async fn notify(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,

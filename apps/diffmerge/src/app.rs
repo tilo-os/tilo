@@ -653,6 +653,12 @@ impl Widget for DiffMergeApp {
             Mode::Merge => merge_node,
         };
 
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; `content_child` and `content` were just built in this one.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "content_child was just created in this same tree"
+        )]
         let content = taffy
             .new_with_children(
                 Style {
@@ -667,6 +673,10 @@ impl Widget for DiffMergeApp {
             )
             .unwrap();
 
+        #[allow(
+            clippy::unwrap_used,
+            reason = "content was just created in this same tree"
+        )]
         let root = taffy
             .new_with_children(
                 Style {
@@ -686,7 +696,9 @@ impl Widget for DiffMergeApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

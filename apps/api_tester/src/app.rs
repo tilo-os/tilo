@@ -1336,8 +1336,13 @@ impl ApiTesterApp {
         let limit = start_x + max_w;
         while !rest.is_empty() && cx < limit {
             if let Some(open) = rest.find("{{") {
+                // `open` and `close` are byte offsets of an ASCII pattern
+                // match, always on a UTF-8 boundary — `.get()` still avoids
+                // asserting that rather than indexing blindly.
                 if open > 0 {
-                    let plain = &rest[..open];
+                    let Some(plain) = rest.get(..open) else {
+                        break;
+                    };
                     tr.draw_text(
                         scene,
                         plain,
@@ -1349,8 +1354,12 @@ impl ApiTesterApp {
                     let (w, _) = tr.measure(plain, size, None);
                     cx += f64::from(w);
                 }
-                if let Some(close) = rest[open..].find("}}") {
-                    let var = &rest[open..open + close + 2];
+                if let Some(after_open) = rest.get(open..)
+                    && let Some(close) = after_open.find("}}")
+                {
+                    let Some(var) = rest.get(open..open + close + 2) else {
+                        break;
+                    };
                     tr.draw_text_weighted(
                         scene,
                         var,
@@ -1362,7 +1371,7 @@ impl ApiTesterApp {
                     );
                     let (w, _) = tr.measure(var, size, None);
                     cx += f64::from(w);
-                    rest = &rest[open + close + 2..];
+                    rest = rest.get(open + close + 2..).unwrap_or_default();
                     continue;
                 }
             }
@@ -2097,6 +2106,12 @@ impl Widget for ApiTesterApp {
                 child_nodes.push(k.build_layout(taffy, theme, node_map));
             }
         }
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; every entry in `child_nodes` was just built in this one above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "every child node was just created in this same tree"
+        )]
         let node = taffy
             .new_with_children(
                 Style {
@@ -2115,7 +2130,9 @@ impl Widget for ApiTesterApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -2178,8 +2195,10 @@ impl Widget for ApiTesterApp {
         {
             let mut kids = self.children_mut_ref();
             if let Some(idx) = kids.iter().position(|k| k.wants_pointer_capture()) {
-                if let Some(&cnode) = child_nodes.get(idx) {
-                    kids[idx].handle_event(
+                if let Some(&cnode) = child_nodes.get(idx)
+                    && let Some(k) = kids.get_mut(idx)
+                {
+                    k.handle_event(
                         event,
                         scale_factor,
                         modifiers,

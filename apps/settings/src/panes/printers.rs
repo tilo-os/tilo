@@ -665,6 +665,12 @@ impl Widget for PrintersPane {
         let mut composed = self.build_composition();
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; `child` was just built in this one above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "child was just created in this same tree"
+        )]
         let node = taffy
             .new_with_children(
                 taffy::Style {
@@ -683,7 +689,9 @@ impl Widget for PrintersPane {
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

@@ -91,6 +91,14 @@ async fn bluez_side(unique: &str) -> Result<String, String> {
     }
 }
 
+// Not `Send`: `PairingPromptView` holds a `Box<dyn Widget>`, and `Widget`
+// is not `Send` (widgets are single-thread UI state). This binary only
+// ever `.await`s `run()` directly from `#[tokio::main]`'s `main`, never
+// spawns it as a task, so the runtime never needs the future to be `Send`.
+#[allow(
+    clippy::future_not_send,
+    reason = "Box<dyn Widget> is !Send by design; run() is only ever awaited in-place, never spawned"
+)]
 async fn run() -> Result<(), String> {
     // 1. The compositor's service, against the real daemon.
     let handle = PairingPromptHandle::new();
