@@ -46,6 +46,7 @@ use crate::model::{
 use crate::portal;
 use crate::presentation::{Blank, Command as PresentCommand, Presentation};
 use crate::render;
+use crate::toolbar_tools::{MenuPress, ToolbarTools, ToolbarToolsLayout};
 
 /// Logical pixels scrolled per mouse-wheel line notch.
 const WHEEL_LINE_PX: f64 = 48.0;
@@ -160,7 +161,7 @@ impl Drag {
 }
 
 #[derive(Clone)]
-enum Hit {
+pub(super) enum Hit {
     NewSlide,
     DuplicateSlide,
     DeleteSlide,
@@ -209,7 +210,7 @@ struct Label {
 }
 
 #[derive(Clone)]
-enum ButtonKind {
+pub(super) enum ButtonKind {
     Text {
         label: String,
         active: bool,
@@ -247,27 +248,17 @@ enum ButtonKind {
 /// Where a [`ButtonKind::Segment`] sits in its group, controlling corner
 /// rounding so only the outer ends are rounded.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SegPos {
+pub(super) enum SegPos {
     First,
     Mid,
     Last,
 }
 
 #[derive(Clone)]
-struct UiButton {
-    rect: Rect,
-    kind: ButtonKind,
-    hit: Hit,
-}
-
-/// One toolbar insert tool: its bar label, its overflow-menu label (used when
-/// it doesn't fit), an optional icon, and the action it dispatches. See
-/// [`SlidesApp::toolbar_tool_defs`].
-struct ToolbarTool {
-    bar: &'static str,
-    menu: &'static str,
-    icon: Option<Icon>,
-    hit: Hit,
+pub(super) struct UiButton {
+    pub(super) rect: Rect,
+    pub(super) kind: ButtonKind,
+    pub(super) hit: Hit,
 }
 
 /// Rects the inspector reserves for widgets it doesn't draw as `UiButton`s
@@ -312,12 +303,8 @@ struct Chrome {
     font_input_rect: Option<Rect>,
     /// Where the fill [`ColorPicker`] popover sits (only while it's open).
     fill_picker_rect: Option<Rect>,
-    /// Background panel of the open toolbar overflow menu (`None` when closed
-    /// or when every insert tool already fits on the toolbar).
-    menu_bg: Option<Rect>,
-    /// Rows of the open overflow menu — the insert tools that didn't fit on the
-    /// toolbar, each a pointer-reachable button. Empty unless the menu is open.
-    menu_buttons: Vec<UiButton>,
+    /// Responsive insert-tool layout, including the open overflow popover.
+    toolbar_tools: ToolbarToolsLayout,
     /// How the rail resolves at the current width (docked beside content, or
     /// an overlay flap over it).
     layout: SplitLayout,
@@ -468,11 +455,9 @@ pub struct SlidesApp {
     rail_scroll: f64,
     /// Vertical scroll offset (px) of the slide-sorter overview grid.
     overview_scroll: f64,
-    /// Whether the toolbar's insert-tool overflow menu is open. On a narrow
-    /// toolbar the insert tools that don't fit are moved behind a "More" (⋯)
-    /// button; this flag reveals them as a pointer-reachable dropdown so every
-    /// insert tool stays usable at any width. Transient (per-peer), not CRDT.
-    toolbar_menu_open: bool,
+    /// Responsive insert toolbar. Owns overflow state, layout, drawing, and
+    /// pointer policy; document actions returned by it are applied here.
+    toolbar_tools: ToolbarTools,
     /// An in-flight host image-open request. `Some(rx)` means the XDG portal's
     /// file chooser is open on a worker thread; the chosen path arrives over
     /// this channel and is drained each frame in [`SlidesApp::drain_portal`].
@@ -635,7 +620,7 @@ impl SlidesApp {
             images: ImageStore::new(),
             rail_scroll: 0.0,
             overview_scroll: 0.0,
-            toolbar_menu_open: false,
+            toolbar_tools: ToolbarTools::default(),
             portal_rx: None,
             doc_portal_rx: None,
             ctx_menu: ContextMenu::new(),
@@ -764,7 +749,7 @@ impl SlidesApp {
             // The toolbar overflow ("More") menu, opened — proves every insert
             // tool stays pointer-reachable even when the bar can't show them all.
             "toolbar_menu" => {
-                self.toolbar_menu_open = true;
+                self.toolbar_tools.set_open(true);
                 self.sel = None;
                 self.bootstrapped = true;
             }
@@ -1221,8 +1206,9 @@ impl SlidesApp {
         // a "More" (⋯) overflow button that opens a dropdown menu. Nothing is
         // ever silently dropped.
         let tools_right = right_edge - 12.0;
-        let (menu_bg, menu_buttons) =
-            self.layout_tools(&mut buttons, tools_x, tools_right, by, bh, toolbar);
+        let toolbar_tools =
+            self.toolbar_tools
+                .layout(&mut buttons, tools_x, tools_right, by, bh, toolbar);
 
         // Thumbnail rail ----------------------------------------------------
         let rail_viewport = self.build_rail_chrome(panels.rail, &mut buttons, &mut labels);
@@ -1249,8 +1235,7 @@ impl SlidesApp {
             notes_box,
             font_input_rect,
             fill_picker_rect,
-            menu_bg,
-            menu_buttons,
+            toolbar_tools,
             layout: panels.layout,
             inspector_layout: panels.insp_layout,
             scrim: panels.scrim,
@@ -1569,203 +1554,6 @@ impl SlidesApp {
             .min(r.y1 - FILL_PICKER_H - 8.0)
             .max(body_top + 8.0);
         Some(Rect::new(x, y, x + FILL_PICKER_W, y + FILL_PICKER_H))
-    }
-
-    /// Place the insert tools on the toolbar between `tools_x` and
-    /// `tools_right`. Tools that fit are pushed onto `buttons`; the ones that
-    /// don't move behind a "More" (⋯) overflow button (also pushed onto
-    /// `buttons`), and — when [`Self::toolbar_menu_open`] — are returned as the
-    /// dropdown's `(background, rows)`. This guarantees **every** insert tool is
-    /// pointer-reachable at every width: nothing is ever silently dropped.
-    fn layout_tools(
-        &self,
-        buttons: &mut Vec<UiButton>,
-        tools_x: f64,
-        tools_right: f64,
-        by: f64,
-        bh: f64,
-        toolbar: Rect,
-    ) -> (Option<Rect>, Vec<UiButton>) {
-        let tools = Self::toolbar_tool_defs();
-        let (bx, hidden) = Self::place_visible_tools(buttons, &tools, tools_x, tools_right, by, bh);
-        if hidden.is_empty() {
-            return (None, Vec::new());
-        }
-        self.toolbar_overflow_menu(buttons, &tools, &hidden, bx, by, bh, tools_right, toolbar)
-    }
-
-    /// Every insert tool, highest priority first, so the tools most reached
-    /// for stay on the bar and the rarer shape tools are the first to fall
-    /// into the overflow menu.
-    fn toolbar_tool_defs() -> [ToolbarTool; 6] {
-        [
-            ToolbarTool {
-                bar: "Slide",
-                menu: "New slide",
-                icon: Some(Icon::Plus),
-                hit: Hit::NewSlide,
-            },
-            ToolbarTool {
-                bar: "Text",
-                menu: "Text box",
-                icon: Some(Icon::FileText),
-                hit: Hit::Insert(ElementKind::Text),
-            },
-            ToolbarTool {
-                bar: "Rect",
-                menu: "Rectangle",
-                icon: None,
-                hit: Hit::Insert(ElementKind::Rect),
-            },
-            ToolbarTool {
-                bar: "Ellipse",
-                menu: "Ellipse",
-                icon: None,
-                hit: Hit::Insert(ElementKind::Ellipse),
-            },
-            ToolbarTool {
-                bar: "Line",
-                menu: "Line",
-                icon: None,
-                hit: Hit::Insert(ElementKind::Line),
-            },
-            ToolbarTool {
-                bar: "Image",
-                menu: "Image",
-                icon: None,
-                hit: Hit::Insert(ElementKind::Image),
-            },
-        ]
-    }
-
-    /// Place every tool that fits between `tools_x` and `tools_right` as a
-    /// bar button (pushed onto `buttons`). Returns the x just past the last
-    /// placed button and the indices of the tools that didn't fit.
-    fn place_visible_tools(
-        buttons: &mut Vec<UiButton>,
-        tools: &[ToolbarTool],
-        tools_x: f64,
-        tools_right: f64,
-        by: f64,
-        bh: f64,
-    ) -> (f64, Vec<usize>) {
-        let gap = 8.0;
-        let bar_w = |t: &ToolbarTool| -> f64 {
-            match t.icon {
-                Some(_) => 18.0 + 6.0 + chrome::est_width(t.bar, 13.0) + 22.0,
-                None => chrome::est_width(t.bar, 13.0) + 26.0,
-            }
-        };
-        let widths: Vec<f64> = tools.iter().map(bar_w).collect();
-        let total: f64 = widths.iter().sum::<f64>() + gap * (tools.len() as f64 - 1.0);
-        let fits_all = tools_x + total <= tools_right + 0.5;
-
-        // When something must overflow, reserve room for the ⋯ button on the
-        // right so it (and thus the hidden tools) is always reachable.
-        let ovf_w = 40.0;
-        let limit = if fits_all {
-            tools_right
-        } else {
-            tools_right - ovf_w - gap
-        };
-
-        let mut bx = tools_x;
-        let mut hidden: Vec<usize> = Vec::new();
-        for (i, (t, &w)) in tools.iter().zip(widths.iter()).enumerate() {
-            // Keep visible tools contiguous: once one tool overflows, all the
-            // rest go to the menu too (no gap-filling with a later, narrower one).
-            if hidden.is_empty() && bx + w <= limit + 0.5 {
-                let rect = Rect::new(bx, by, bx + w, by + bh);
-                let kind = match t.icon {
-                    Some(icon) => ButtonKind::IconText {
-                        icon,
-                        label: t.bar.to_string(),
-                        accent: false,
-                    },
-                    None => ButtonKind::Text {
-                        label: t.bar.to_string(),
-                        active: false,
-                        danger: false,
-                    },
-                };
-                buttons.push(UiButton {
-                    rect,
-                    kind,
-                    hit: t.hit.clone(),
-                });
-                bx += w + gap;
-            } else {
-                hidden.push(i);
-            }
-        }
-        (bx, hidden)
-    }
-
-    /// The "More" (⋯) overflow button past the last visible tool, plus — when
-    /// [`Self::toolbar_menu_open`] — its dropdown: one full-width row per
-    /// hidden tool, right-aligned to the button and clamped inside `toolbar`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the overflow button geometry plus every hidden tool it must lay out into \
-                  rows; bundling them would only re-create this argument list as a throwaway \
-                  struct"
-    )]
-    fn toolbar_overflow_menu(
-        &self,
-        buttons: &mut Vec<UiButton>,
-        tools: &[ToolbarTool],
-        hidden: &[usize],
-        bx: f64,
-        by: f64,
-        bh: f64,
-        tools_right: f64,
-        toolbar: Rect,
-    ) -> (Option<Rect>, Vec<UiButton>) {
-        // ⋯ overflow button, just past the last visible tool (clamped to fit).
-        let ovf_w = 40.0;
-        let ovf_x = bx.min(tools_right - ovf_w);
-        let ovf = Rect::new(ovf_x, by, ovf_x + ovf_w, by + bh);
-        buttons.push(UiButton {
-            rect: ovf,
-            kind: ButtonKind::IconOnly {
-                icon: Icon::MoreHorizontal,
-                active: self.toolbar_menu_open,
-            },
-            hit: Hit::ToggleToolbarMenu,
-        });
-        if !self.toolbar_menu_open {
-            return (None, Vec::new());
-        }
-        // Dropdown: a panel under the ⋯ button, right-aligned to it and clamped
-        // inside the toolbar, one full-width row per hidden tool.
-        let row_h = 34.0;
-        let pad = 6.0;
-        let menu_w = hidden
-            .iter()
-            .filter_map(|&i| tools.get(i))
-            .map(|t| chrome::est_width(t.menu, 13.0) + 52.0)
-            .fold(150.0_f64, f64::max)
-            .min(toolbar.width() - 16.0);
-        let mx1 = ovf.x1.clamp(toolbar.x0 + 8.0 + menu_w, toolbar.x1 - 8.0);
-        let mx0 = mx1 - menu_w;
-        let my0 = ovf.y1 + 6.0;
-        let my1 = my0 + pad * 2.0 + row_h * hidden.len() as f64;
-        let bg = Rect::new(mx0, my0, mx1, my1);
-        let mut rows = Vec::new();
-        for (r, &i) in hidden.iter().enumerate() {
-            let Some(tool) = tools.get(i) else { continue };
-            let ry = my0 + pad + r as f64 * row_h;
-            rows.push(UiButton {
-                rect: Rect::new(mx0 + pad, ry, mx1 - pad, ry + row_h - 4.0),
-                kind: ButtonKind::Text {
-                    label: tool.menu.to_string(),
-                    active: false,
-                    danger: false,
-                },
-                hit: tool.hit.clone(),
-            });
-        }
-        (Some(bg), rows)
     }
 
     /// Lay out the inspector contents; returns the speaker-notes box rect.
@@ -2299,10 +2087,10 @@ impl SlidesApp {
         // Any action other than toggling the overflow menu itself dismisses it
         // (picking a tool from it, or any other toolbar action).
         if !matches!(hit, Hit::ToggleToolbarMenu) {
-            self.toolbar_menu_open = false;
+            self.toolbar_tools.dismiss();
         }
         match hit {
-            Hit::ToggleToolbarMenu => self.toolbar_menu_open = !self.toolbar_menu_open,
+            Hit::ToggleToolbarMenu => self.toolbar_tools.toggle(),
             Hit::NewSlide => self.new_slide(doc),
             Hit::DuplicateSlide => self.duplicate_slide(doc),
             Hit::DeleteSlide => self.delete_slide(doc),
@@ -3222,28 +3010,9 @@ impl SlidesApp {
         self.draw_editor_inspector_layer(scene, t, tr, theme, chrome, &pal, insp_overlay, div);
 
         // Toolbar overflow menu — painted last so it floats above all chrome.
-        if let Some(bg) = chrome.menu_bg {
-            let shadow = bg + vello::kurbo::Vec2::new(0.0, 4.0);
-            chrome::fill_rrect(
-                scene,
-                t,
-                shadow.inflate(2.0, 2.0),
-                12.0,
-                render::with_alpha(Color::BLACK, 90),
-            );
-            chrome::fill_rrect(scene, t, bg, 10.0, c.surfaces.raised);
-            chrome::stroke_rrect(
-                scene,
-                t,
-                bg,
-                10.0,
-                render::with_alpha(c.text_primary, 48),
-                1.0,
-            );
-            for b in &chrome.menu_buttons {
-                self.draw_button(scene, t, tr, theme, &pal, b);
-            }
-        }
+        ToolbarTools::draw(scene, t, theme, &chrome.toolbar_tools, |scene, button| {
+            self.draw_button(scene, t, tr, theme, &pal, button);
+        });
     }
 
     /// Base-layer panel fills + divider lines (toolbar, rail, inspector).
@@ -6451,30 +6220,17 @@ impl SlidesApp {
             return true;
         }
 
-        // Toolbar overflow menu is modal-ish: while open, its rows and its
-        // click-away dismissal take precedence over everything beneath it.
-        if let Some(bg) = chrome.menu_bg {
-            for b in &chrome.menu_buttons {
-                if b.rect.contains(p) {
-                    let hit = b.hit.clone();
-                    self.apply_hit(doc, hit);
-                    *handled = true;
-                    return true;
-                }
-            }
-            if bg.contains(p) {
-                // A click in the menu's own chrome (padding) keeps it open.
+        match self
+            .toolbar_tools
+            .on_press(&chrome.toolbar_tools, &chrome.buttons, p)
+        {
+            MenuPress::PassThrough => {}
+            MenuPress::Consumed => {
                 *handled = true;
                 return true;
             }
-            // A click outside the menu dismisses it — unless it landed on the ⋯
-            // toggle itself, which we let fall through so the toggle closes it.
-            let on_toggle = chrome
-                .buttons
-                .iter()
-                .any(|b| matches!(b.hit, Hit::ToggleToolbarMenu) && b.rect.contains(p));
-            if !on_toggle {
-                self.toolbar_menu_open = false;
+            MenuPress::Action(hit) => {
+                self.apply_hit(doc, hit);
                 *handled = true;
                 return true;
             }
@@ -8344,117 +8100,17 @@ mod tests {
         doc
     }
 
-    /// Does any toolbar button or open-menu row carry a hit satisfying `want`?
-    fn insert_reachable(chrome: &Chrome, want: impl Fn(&Hit) -> bool) -> bool {
-        chrome
-            .buttons
-            .iter()
-            .chain(chrome.menu_buttons.iter())
-            .any(|b| want(&b.hit))
-    }
-
-    #[test]
-    fn narrow_toolbar_keeps_every_insert_tool_pointer_reachable() {
-        // At 560px the toolbar can't show every insert tool, so it must offer a
-        // ⋯ overflow button — and opening it must surface ALL of them. Nothing
-        // is ever silently dropped (the old bug).
-        let mut app = app_sized(560.0);
-        app.sel = None;
-        let mut doc = seeded_doc(&app);
-        app.reload(&doc);
-
-        let chrome = app.compute_chrome();
-        let ovf = chrome
-            .buttons
-            .iter()
-            .find(|b| matches!(b.hit, Hit::ToggleToolbarMenu))
-            .expect("a narrow toolbar offers a ⋯ overflow button");
-        let ovf_rect = ovf.rect;
-        assert!(
-            ovf_rect.width() > 1.0 && app.rect.contains(ovf_rect.center()),
-            "the ⋯ button is on-screen and clickable"
-        );
-
-        // Drive a real click on the ⋯ button — it opens the menu.
-        let mut handled = false;
-        app.last_mouse = ovf_rect.center();
-        app.on_press(&mut doc, ovf_rect.center(), &mut handled);
-        assert!(
-            handled && app.toolbar_menu_open,
-            "clicking ⋯ opens the overflow menu"
-        );
-
-        // With the menu open, bar + rows together cover every insert tool.
-        let chrome = app.compute_chrome();
-        assert!(chrome.menu_bg.is_some(), "the open menu has a panel");
-        assert!(
-            insert_reachable(&chrome, |h| matches!(h, Hit::NewSlide)),
-            "New slide reachable"
-        );
-        for k in [
-            ElementKind::Text,
-            ElementKind::Rect,
-            ElementKind::Ellipse,
-            ElementKind::Line,
-            ElementKind::Image,
-        ] {
-            assert!(
-                insert_reachable(&chrome, |h| matches!(h, Hit::Insert(kk) if *kk == k)),
-                "{k:?} insert tool stays reachable via bar or overflow menu"
-            );
-        }
-        // Every menu row is inside the window (a real pointer target).
-        for b in &chrome.menu_buttons {
-            assert!(
-                app.rect.contains(b.rect.center()),
-                "menu row is on-screen: {:?}",
-                b.rect
-            );
-        }
-    }
-
-    #[test]
-    fn wide_toolbar_shows_every_tool_without_an_overflow_button() {
-        // At the default width all six tools fit, so there is no ⋯ button and no
-        // menu — the overflow affordance appears only when it's actually needed.
-        let mut app = app_sized(1280.0);
-        app.sel = None;
-        let chrome = app.compute_chrome();
-        assert!(
-            !chrome
-                .buttons
-                .iter()
-                .any(|b| matches!(b.hit, Hit::ToggleToolbarMenu)),
-            "no ⋯ button when every tool fits"
-        );
-        assert!(chrome.menu_bg.is_none(), "no menu when nothing overflows");
-        for k in [
-            ElementKind::Text,
-            ElementKind::Rect,
-            ElementKind::Ellipse,
-            ElementKind::Line,
-            ElementKind::Image,
-        ] {
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|b| matches!(&b.hit, Hit::Insert(kk) if *kk == k)),
-                "{k:?} sits directly on the wide toolbar"
-            );
-        }
-    }
-
     #[test]
     fn clicking_an_overflow_menu_row_inserts_that_element() {
         let mut app = app_sized(560.0);
         let mut doc = seeded_doc(&app);
         app.reload(&doc);
-        app.toolbar_menu_open = true;
+        app.toolbar_tools.set_open(true);
         let before = app.slide().unwrap().elements.len();
 
         let chrome = app.compute_chrome();
         let row = chrome
+            .toolbar_tools
             .menu_buttons
             .iter()
             .find(|b| matches!(b.hit, Hit::Insert(ElementKind::Rect)))
@@ -8464,28 +8120,14 @@ mod tests {
         app.last_mouse = p;
         app.on_press(&mut doc, p, &mut handled);
         assert!(handled, "clicking a menu row is handled");
-        assert!(!app.toolbar_menu_open, "picking a tool closes the menu");
+        assert!(
+            !app.toolbar_tools.is_open(),
+            "picking a tool closes the menu"
+        );
         assert_eq!(
             app.slide().unwrap().elements.len(),
             before + 1,
             "the chosen shape was actually inserted"
-        );
-    }
-
-    #[test]
-    fn clicking_outside_the_open_menu_dismisses_it() {
-        let mut app = app_sized(560.0);
-        let mut doc = seeded_doc(&app);
-        app.reload(&doc);
-        app.toolbar_menu_open = true;
-        // A click well below the toolbar (on the empty canvas) closes the menu.
-        let p = Point::new(app.rect.center().x, app.rect.y1 - 20.0);
-        let mut handled = false;
-        app.last_mouse = p;
-        app.on_press(&mut doc, p, &mut handled);
-        assert!(
-            handled && !app.toolbar_menu_open,
-            "a click-away dismisses the overflow menu"
         );
     }
 

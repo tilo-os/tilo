@@ -1,0 +1,509 @@
+//! Local registry of identities available to this login session.
+//!
+//! Private identity selection is deliberately not replicated. The registry
+//! maps a durable room id to the local identity record this device presents
+//! there; workspace ownership remains a shared cryptographic principal.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+use serde::{Deserialize, Serialize};
+
+const REGISTRY_SCHEMA_VERSION: u32 = 1;
+const REGISTRY_FILE: &str = "registry.json";
+#[cfg(test)]
+const LEGACY_PRIMARY_FILE: &str = "primary.json";
+
+/// Public metadata for one locally available signing identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityProfile {
+    /// Lowercase Ed25519 public-key hex. Also the stable registry key.
+    pub id: String,
+    /// User-selected label. Empty records receive a fingerprint label.
+    pub display_name: String,
+    /// Absolute path to the private identity record. Never replicated.
+    pub record_path: PathBuf,
+    /// The person principal represented by this identity.
+    pub user_public_key: [u8; 32],
+}
+
+impl IdentityProfile {
+    /// Capability-model person id for this identity.
+    pub fn principal_id(&self) -> String {
+        match collab_types::caps::Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(self.user_public_key),
+        ) {
+            collab_types::caps::Principal::Person(id) => id,
+            _ => self.id.clone(),
+        }
+    }
+}
+
+/// Versioned local identity index plus per-workspace selections.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityRegistry {
+    pub schema_version: u32,
+    /// Identity used for new and unbound workspaces.
+    pub default_identity: Option<String>,
+    pub identities: BTreeMap<String, IdentityProfile>,
+    /// Durable room-id string to [`IdentityProfile::id`].
+    pub workspace_identities: BTreeMap<String, String>,
+}
+
+impl Default for IdentityRegistry {
+    fn default() -> Self {
+        Self {
+            schema_version: REGISTRY_SCHEMA_VERSION,
+            default_identity: None,
+            identities: BTreeMap::new(),
+            workspace_identities: BTreeMap::new(),
+        }
+    }
+}
+
+impl IdentityRegistry {
+    /// Register a validated record already stored at `record_path`.
+    pub fn register_record(&mut self, record_path: &Path) -> io::Result<&IdentityProfile> {
+        let record = runtime_identity::load_from_path(record_path.to_path_buf())
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        let public_key = record.group_public_key();
+        let id = hex_encode(&public_key);
+        let display_name = if record.display_name().trim().is_empty() {
+            format!("Identity {}", short_fingerprint(&id))
+        } else {
+            record.display_name().trim().to_string()
+        };
+        let profile = IdentityProfile {
+            id: id.clone(),
+            display_name,
+            record_path: absolute_path(record_path)?,
+            user_public_key: public_key,
+        };
+        self.identities.insert(id.clone(), profile);
+        if self.default_identity.is_none() {
+            self.default_identity = Some(id.clone());
+        }
+        self.identities
+            .get(&id)
+            .ok_or_else(|| io::Error::other("identity disappeared immediately after registration"))
+    }
+
+    /// Import an existing record into the managed identity directory.
+    pub fn import_record(
+        &mut self,
+        source: &Path,
+        identity_dir: &Path,
+    ) -> io::Result<&IdentityProfile> {
+        let bytes = fs::read(source)?;
+        let record = runtime_identity::load_from_bytes(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        let id = hex_encode(&record.group_public_key());
+        // Runtime store ids are capped at 64 characters and must begin with a
+        // letter. Keep 220 fingerprint bits; the full key remains the registry
+        // id and is rechecked before accepting an existing destination.
+        let store_id = format!("identity-{}", &id[..55]);
+        fs::create_dir_all(identity_dir)?;
+        set_private_dir_mode(identity_dir)?;
+        if let Some(existing) = runtime_identity::list_identities(identity_dir)?
+            .into_iter()
+            .find(|summary| summary.public_key == record.group_public_key())
+        {
+            runtime_identity::secure_identity(identity_dir, &existing.id)?;
+            return self.register_record(&identity_dir.join(format!("{}.json", existing.id)));
+        }
+        let destination = identity_dir.join(format!("{store_id}.json"));
+        if destination.exists() {
+            let existing = runtime_identity::load_from_path(destination.clone())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+            if existing.group_public_key() != record.group_public_key() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "identity id is already used by another record",
+                ));
+            }
+        } else {
+            runtime_identity::import_identity(identity_dir, &store_id, &bytes)?;
+        }
+        self.register_record(&destination)
+    }
+
+    /// Select an identity for a durable workspace room.
+    pub fn bind_workspace(&mut self, room: impl Into<String>, identity_id: &str) -> io::Result<()> {
+        if !self.identities.contains_key(identity_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("identity {identity_id} is not registered"),
+            ));
+        }
+        self.workspace_identities
+            .insert(room.into(), identity_id.to_string());
+        Ok(())
+    }
+
+    /// Identity selected for `room`, falling back to the default.
+    pub fn selected_for_workspace(&self, room: &str) -> Option<&IdentityProfile> {
+        self.workspace_identities
+            .get(room)
+            .and_then(|id| self.identities.get(id))
+            .or_else(|| {
+                self.default_identity
+                    .as_ref()
+                    .and_then(|id| self.identities.get(id))
+            })
+    }
+
+    /// Change the default identity after validating it exists.
+    pub fn set_default(&mut self, identity_id: &str) -> io::Result<()> {
+        if !self.identities.contains_key(identity_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("identity {identity_id} is not registered"),
+            ));
+        }
+        self.default_identity = Some(identity_id.to_string());
+        Ok(())
+    }
+}
+
+/// Disk owner for the registry.
+#[derive(Clone, Debug)]
+pub struct IdentityRegistryStore {
+    identity_dir: PathBuf,
+    registry_path: PathBuf,
+}
+
+impl IdentityRegistryStore {
+    pub fn from_env() -> io::Result<Self> {
+        Ok(Self::at(resolve_identity_dir()?))
+    }
+
+    pub fn at(identity_dir: impl Into<PathBuf>) -> Self {
+        let identity_dir = identity_dir.into();
+        let registry_path = identity_dir.join(REGISTRY_FILE);
+        Self {
+            identity_dir,
+            registry_path,
+        }
+    }
+
+    pub fn identity_dir(&self) -> &Path {
+        &self.identity_dir
+    }
+
+    pub fn registry_path(&self) -> &Path {
+        &self.registry_path
+    }
+
+    pub fn load(&self) -> io::Result<IdentityRegistry> {
+        if !self.registry_path.exists() {
+            return Ok(IdentityRegistry::default());
+        }
+        let bytes = fs::read(&self.registry_path)?;
+        let registry: IdentityRegistry = serde_json::from_slice(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if registry.schema_version != REGISTRY_SCHEMA_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported identity registry schema {}",
+                    registry.schema_version
+                ),
+            ));
+        }
+        Ok(registry)
+    }
+
+    pub fn save(&self, registry: &IdentityRegistry) -> io::Result<()> {
+        fs::create_dir_all(&self.identity_dir)?;
+        set_private_dir_mode(&self.identity_dir)?;
+        let bytes = serde_json::to_vec_pretty(registry)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        atomic_file::write_with_mode(&self.registry_path, &bytes, 0o600)
+    }
+
+    /// Register the old single-record layout on first load. Idempotent.
+    pub fn migrate_legacy_primary(&self) -> io::Result<IdentityRegistry> {
+        let mut registry = self.load()?;
+        fs::create_dir_all(&self.identity_dir)?;
+        set_private_dir_mode(&self.identity_dir)?;
+        let mut changed = false;
+        for summary in runtime_identity::list_identities(&self.identity_dir)? {
+            let id = hex_encode(&summary.public_key);
+            let path = self.identity_dir.join(format!("{}.json", summary.id));
+            let profile = IdentityProfile {
+                id: id.clone(),
+                display_name: if summary.display_name.trim().is_empty() {
+                    format!("Identity {}", short_fingerprint(&id))
+                } else {
+                    summary.display_name.trim().to_string()
+                },
+                record_path: absolute_path(&path)?,
+                user_public_key: summary.public_key,
+            };
+            if registry.identities.get(&id) != Some(&profile) {
+                registry.identities.insert(id.clone(), profile);
+                changed = true;
+            }
+            if summary.active && registry.default_identity.as_deref() != Some(id.as_str()) {
+                registry.default_identity = Some(id);
+                changed = true;
+            }
+        }
+        if registry.default_identity.is_none()
+            && let Some(id) = registry.identities.keys().next().cloned()
+        {
+            registry.default_identity = Some(id);
+            changed = true;
+        }
+        if changed {
+            self.save(&registry)?;
+        }
+        Ok(registry)
+    }
+
+    pub fn import(&self, source: &Path) -> io::Result<IdentityProfile> {
+        let mut registry = self.migrate_legacy_primary()?;
+        let profile = registry.import_record(source, &self.identity_dir)?.clone();
+        self.save(&registry)?;
+        Ok(profile)
+    }
+
+    pub fn bind_workspace(&self, room: &str, identity_id: &str) -> io::Result<()> {
+        let mut registry = self.migrate_legacy_primary()?;
+        registry.bind_workspace(room, identity_id)?;
+        self.save(&registry)
+    }
+}
+
+/// Resolve the selected private record for a room. Registry failure is an
+/// error rather than a silent fallback to another person's identity.
+pub fn selected_identity_path(room: &str) -> io::Result<Option<PathBuf>> {
+    let store = IdentityRegistryStore::from_env()?;
+    let registry = store.migrate_legacy_primary()?;
+    Ok(registry
+        .selected_for_workspace(room)
+        .map(|profile| profile.record_path.clone()))
+}
+
+/// Resolve the selected person principal for a room.
+pub fn selected_principal_id(room: &str) -> io::Result<Option<String>> {
+    let store = IdentityRegistryStore::from_env()?;
+    let registry = store.migrate_legacy_primary()?;
+    Ok(registry
+        .selected_for_workspace(room)
+        .map(IdentityProfile::principal_id))
+}
+
+/// Public profile selected for a room, for shell chrome/settings.
+pub fn selected_identity_profile(room: &str) -> io::Result<Option<IdentityProfile>> {
+    let store = IdentityRegistryStore::from_env()?;
+    let registry = store.migrate_legacy_primary()?;
+    Ok(registry.selected_for_workspace(room).cloned())
+}
+
+/// Select the next registered identity for `room`. This small operation is
+/// used by workspace settings; importing a new record remains a deliberate
+/// identity ceremony.
+pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile>> {
+    let store = IdentityRegistryStore::from_env()?;
+    let mut registry = store.migrate_legacy_primary()?;
+    if registry.identities.is_empty() {
+        return Ok(None);
+    }
+    let ids: Vec<String> = registry.identities.keys().cloned().collect();
+    let current = registry
+        .selected_for_workspace(room)
+        .map(|profile| profile.id.as_str());
+    let next_index = current
+        .and_then(|id| ids.iter().position(|candidate| candidate == id))
+        .map_or(0, |index| (index + 1) % ids.len());
+    let next_id = &ids[next_index];
+    registry.bind_workspace(room.to_string(), next_id)?;
+    let profile = registry.identities.get(next_id).cloned();
+    store.save(&registry)?;
+    Ok(profile)
+}
+
+fn resolve_identity_dir() -> io::Result<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
+        && !xdg.is_empty()
+    {
+        return Ok(PathBuf::from(xdg).join("qos").join("identity"));
+    }
+    if let Some(home) = std::env::var_os("HOME")
+        && !home.is_empty()
+    {
+        return Ok(PathBuf::from(home)
+            .join(".config")
+            .join("qos")
+            .join("identity"));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "neither XDG_CONFIG_HOME nor HOME is set",
+    ))
+}
+
+fn absolute_path(path: &Path) -> io::Result<PathBuf> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    Ok(std::env::current_dir()?.join(path))
+}
+
+fn set_private_dir_mode(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+fn short_fingerprint(hex: &str) -> String {
+    hex.get(..8).unwrap_or(hex).to_string()
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use threshold_identity::ThresholdIdentity;
+    use ui::widget::identity_flow::IdentityRecord;
+
+    fn record(name: &str, seed: u8) -> IdentityRecord {
+        let identity = ThresholdIdentity::from_single_device_seed(&[seed; 32]);
+        IdentityRecord::from_threshold_identity(
+            &identity,
+            name,
+            [10, 20, 30],
+            std::time::SystemTime::UNIX_EPOCH,
+        )
+        .expect("record")
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "qos-identity-registry-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("temp dir");
+        path
+    }
+
+    fn write_record(path: &Path, record: &IdentityRecord) {
+        fs::write(path, record.to_json_bytes().expect("encode")).expect("write");
+        #[cfg(unix)]
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("private record");
+    }
+
+    #[test]
+    fn migrates_legacy_primary_and_selects_it_by_default() {
+        let dir = temp_dir("legacy");
+        write_record(&dir.join(LEGACY_PRIMARY_FILE), &record("Alice", 7));
+        let store = IdentityRegistryStore::at(&dir);
+        let registry = store.migrate_legacy_primary().expect("migrate");
+        let selected = registry.selected_for_workspace("room-a").expect("default");
+        assert_eq!(selected.display_name, "Alice");
+        assert_eq!(selected.record_path, dir.join(LEGACY_PRIMARY_FILE));
+        assert!(store.registry_path().exists());
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn one_identity_can_be_selected_per_workspace() {
+        let dir = temp_dir("binding");
+        let alice_path = dir.join("alice-source.json");
+        let bob_path = dir.join("bob-source.json");
+        write_record(&alice_path, &record("Alice", 11));
+        write_record(&bob_path, &record("Bob", 12));
+        let store = IdentityRegistryStore::at(&dir);
+        let alice = store.import(&alice_path).expect("import alice");
+        let bob = store.import(&bob_path).expect("import bob");
+        store
+            .bind_workspace("room-a", &alice.id)
+            .expect("bind alice");
+        store.bind_workspace("room-b", &bob.id).expect("bind bob");
+        let registry = store.load().expect("load");
+        assert_eq!(
+            registry
+                .selected_for_workspace("room-a")
+                .map(|profile| profile.id.as_str()),
+            Some(alice.id.as_str())
+        );
+        assert_eq!(
+            registry
+                .selected_for_workspace("room-b")
+                .map(|profile| profile.id.as_str()),
+            Some(bob.id.as_str())
+        );
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn unknown_identity_cannot_be_bound() {
+        let mut registry = IdentityRegistry::default();
+        let error = registry
+            .bind_workspace("room-a", "missing")
+            .expect_err("must reject unknown identity");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn workspace_selector_cycles_registered_identities() {
+        let dir = temp_dir("cycle");
+        let alice_path = dir.join("alice-source.json");
+        let bob_path = dir.join("bob-source.json");
+        write_record(&alice_path, &record("Alice", 21));
+        write_record(&bob_path, &record("Bob", 22));
+        let store = IdentityRegistryStore::at(&dir);
+        let alice = store.import(&alice_path).expect("alice");
+        let bob = store.import(&bob_path).expect("bob");
+        store
+            .bind_workspace("room-cycle", &alice.id)
+            .expect("bind alice");
+
+        let mut registry = store.load().expect("load");
+        let ids: Vec<_> = registry.identities.keys().cloned().collect();
+        let current = registry
+            .selected_for_workspace("room-cycle")
+            .expect("current")
+            .id
+            .clone();
+        let next = ids
+            .iter()
+            .cycle()
+            .skip_while(|id| **id != current)
+            .nth(1)
+            .expect("next")
+            .clone();
+        registry
+            .bind_workspace("room-cycle", &next)
+            .expect("cycle bind");
+        assert_eq!(
+            registry
+                .selected_for_workspace("room-cycle")
+                .map(|profile| profile.id.as_str()),
+            Some(next.as_str())
+        );
+        assert!(next == alice.id || next == bob.id);
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+}

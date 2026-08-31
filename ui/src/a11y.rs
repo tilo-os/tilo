@@ -94,6 +94,12 @@ pub enum Role {
 /// existing fields at `accessibility()` time, so it can never drift from
 /// what `draw` paints.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field mirrors one independent ARIA state attribute; they're set \
+              by name through builder methods below, never positionally, so there's \
+              no risk of two flags being swapped by accident"
+)]
 pub struct AccessState {
     pub focused: bool,
     pub focusable: bool,
@@ -124,48 +130,60 @@ impl AccessState {
         Self::default()
     }
 
+    #[must_use]
+
     pub fn focused(mut self, v: bool) -> Self {
         self.focused = v;
         self
     }
+    #[must_use]
     pub fn focusable(mut self, v: bool) -> Self {
         self.focusable = v;
         self
     }
+    #[must_use]
     pub fn selected(mut self, v: bool) -> Self {
         self.selected = v;
         self
     }
     /// Sets [`checked`](Self::checked) to `Some(v)`.
+    #[must_use]
     pub fn checked(mut self, v: bool) -> Self {
         self.checked = Some(v);
         self
     }
     /// Sets [`expanded`](Self::expanded) to `Some(v)`.
+    #[must_use]
     pub fn expanded(mut self, v: bool) -> Self {
         self.expanded = Some(v);
         self
     }
+    #[must_use]
     pub fn disabled(mut self, v: bool) -> Self {
         self.disabled = v;
         self
     }
+    #[must_use]
     pub fn read_only(mut self, v: bool) -> Self {
         self.read_only = v;
         self
     }
+    #[must_use]
     pub fn multiline(mut self, v: bool) -> Self {
         self.multiline = v;
         self
     }
+    #[must_use]
     pub fn protected(mut self, v: bool) -> Self {
         self.protected = v;
         self
     }
+    #[must_use]
     pub fn modal(mut self, v: bool) -> Self {
         self.modal = v;
         self
     }
+    #[must_use]
     pub fn busy(mut self, v: bool) -> Self {
         self.busy = v;
         self
@@ -189,7 +207,7 @@ pub enum Action {
     Collapse,
     /// Text field, spin button.
     SetValue(String),
-    /// Extended-grapheme indices into the accessible TextRun, matching
+    /// Extended-grapheme indices into the accessible `TextRun`, matching
     /// AccessKit's selectable-character model rather than Unicode scalars.
     SetSelection {
         /// Where the selection started.
@@ -225,7 +243,7 @@ pub struct AccessNode {
     /// Never populated for [`protected`](AccessState::protected) elements.
     pub value: Option<String>,
     /// Direction-preserving UTF-8 byte endpoints for editable text. The
-    /// AccessKit bridge converts these to grapheme indices in a TextRun.
+    /// AccessKit bridge converts these to grapheme indices in a `TextRun`.
     pub text_selection: Option<AccessibleTextSelection>,
     pub state: AccessState,
     /// The `App` watches its spoken text each frame and announces changes at
@@ -260,26 +278,35 @@ impl AccessNode {
         }
     }
 
+    #[must_use]
+
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
     }
 
     /// Handy when an empty label should collapse to `None`.
+    #[must_use]
     pub fn with_optional_name(mut self, name: Option<String>) -> Self {
         self.name = name;
         self
     }
+
+    #[must_use]
 
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
 
+    #[must_use]
+
     pub fn with_value(mut self, value: impl Into<String>) -> Self {
         self.value = Some(value.into());
         self
     }
+
+    #[must_use]
 
     pub fn with_optional_value(mut self, value: Option<String>) -> Self {
         self.value = value;
@@ -289,15 +316,20 @@ impl AccessNode {
     /// Publish an editable caret (`anchor == focus`) or selection. Endpoints
     /// are UTF-8 bytes and are clamped to extended grapheme boundaries by the
     /// bridge, matching the toolkit editing contract.
+    #[must_use]
     pub fn with_text_selection(mut self, anchor: usize, focus: usize) -> Self {
         self.text_selection = Some(AccessibleTextSelection { anchor, focus });
         self
     }
 
+    #[must_use]
+
     pub fn with_state(mut self, state: AccessState) -> Self {
         self.state = state;
         self
     }
+
+    #[must_use]
 
     pub fn with_live(mut self, politeness: Politeness) -> Self {
         self.live = Some(politeness);
@@ -305,16 +337,21 @@ impl AccessNode {
     }
 
     /// `pos_in_set` is 1-based within a total of `set_size`. Read out as "N of M".
+    #[must_use]
     pub fn with_position(mut self, pos_in_set: usize, set_size: usize) -> Self {
         self.pos_in_set = Some(pos_in_set);
         self.set_size = Some(set_size);
         self
     }
 
+    #[must_use]
+
     pub fn with_level(mut self, level: usize) -> Self {
         self.level = Some(level);
         self
     }
+
+    #[must_use]
 
     pub fn with_children(mut self, children: Vec<AccessNode>) -> Self {
         self.children = children;

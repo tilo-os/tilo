@@ -39,6 +39,7 @@
 //! to dial the broker instead of opening the socket directly.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -61,6 +62,7 @@ pub const EXIT_REQUIRED_SERVICE_MISSING: i32 = 70;
 /// `collab_service_socket_is_the_path_the_compositor_binds` in the
 /// compositor for the test that fails if they drift apart again.
 pub const COLLAB_SERVICE: &str = "collab";
+pub const IDENTITY_SERVICE: &str = "identity";
 
 /// One resolved service handoff: the launcher's own end of the
 /// connection, plus the in-sandbox fd number the app should find it at.
@@ -127,6 +129,61 @@ pub fn socket_for(name: &str) -> PathBuf {
 /// function rather than spelling the path out — see [`COLLAB_SERVICE`].
 pub fn collab_socket() -> PathBuf {
     socket_for(COLLAB_SERVICE)
+}
+
+pub fn identity_socket() -> PathBuf {
+    socket_for(IDENTITY_SERVICE)
+}
+
+/// Connect the per-session identity broker and authenticate the launch
+/// context before the sandboxed app can write to the stream.
+pub fn resolve_identity_bind(
+    app_id: &str,
+    workspace_id: Option<&str>,
+    no_services: bool,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    let Some(workspace_id) = workspace_id else {
+        return Ok(None);
+    };
+    if no_services {
+        return Ok(None);
+    }
+    let path = identity_socket();
+    if !path.exists() {
+        tracing::warn!("identity service is unavailable; app receives public metadata only");
+        return Ok(None);
+    }
+    let mut stream = match UnixStream::connect(&path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "identity service refused connection");
+            return Ok(None);
+        }
+    };
+    let handshake = serde_json::json!({
+        "workspace_id": workspace_id,
+        "app_id": app_id,
+    });
+    let bytes = serde_json::to_vec(&handshake).map_err(|error| ServiceError::OpenFailed {
+        path: path.clone(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+    })?;
+    let len = u32::try_from(bytes.len()).map_err(|_| ServiceError::OpenFailed {
+        path: path.clone(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "handshake too large"),
+    })?;
+    stream
+        .write_all(&len.to_le_bytes())
+        .and_then(|()| stream.write_all(&bytes))
+        .and_then(|()| stream.flush())
+        .map_err(|source| ServiceError::OpenFailed { path, source })?;
+    Ok(Some(ResolvedService {
+        name: IDENTITY_SERVICE.to_string(),
+        host: OwnedFd::from(stream),
+        // Normal manifest services start at 17. Keep the automatic service in
+        // a reserved slot so it cannot collide as the manifest evolves.
+        child_fd: 31,
+    }))
 }
 
 /// Create `$XDG_RUNTIME_DIR/qos/services/` if it does not exist.
@@ -229,6 +286,9 @@ pub fn resolve_service_binds(
         // proxy and the egress gate.
         let host = OwnedFd::from(stream);
 
+        if next_child_fd == 31 {
+            next_child_fd += 1;
+        }
         let child_fd = next_child_fd;
         next_child_fd = next_child_fd.saturating_add(1);
 
@@ -273,6 +333,42 @@ mod tests {
             "the fixture must actually refuse connections, or it proves nothing"
         );
         path
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn identity_handoff_is_bound_to_launcher_app_and_workspace_context() {
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().expect("runtime");
+        let previous = std::env::var_os("XDG_RUNTIME_DIR");
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let root = ensure_services_root().expect("services root");
+        let path = root.join("identity.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
+        let reader = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut len = [0_u8; 4];
+            stream.read_exact(&mut len).expect("length");
+            let mut bytes = vec![0_u8; u32::from_le_bytes(len) as usize];
+            stream.read_exact(&mut bytes).expect("payload");
+            serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+        });
+        let bind = resolve_identity_bind("dev.qos.notes", Some("room-7"), false)
+            .expect("resolve")
+            .expect("identity bind");
+        assert_eq!(bind.name, IDENTITY_SERVICE);
+        assert_eq!(bind.child_fd, 31);
+        let handshake = reader.join().expect("reader");
+        assert_eq!(handshake["app_id"], "dev.qos.notes");
+        assert_eq!(handshake["workspace_id"], "room-7");
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+            }
+        }
     }
 
     #[test]

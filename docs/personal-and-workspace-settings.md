@@ -5,6 +5,14 @@ app owns device and personal preferences. The shell owns contextual Workspace
 Settings because it already knows the active workspace, authenticated local
 identity, and role grants. Both surfaces call shared domain services.
 
+Workspace Settings is presented as a docked shell lens, not another app. The
+workspace stays visible beside it and the lens names both the workspace and the
+person's effective role. Personal Settings and global search can request one of
+four typed destinations (General, Members, Privacy & Security, Apps & Files),
+but cannot supply an executable or arbitrary workspace. A stale link is refused
+if its launch workspace is no longer active, preventing an invisible context
+switch before a policy change.
+
 ## Default applications
 
 `desktop-policy` is the only resolver. A resource is namespaced (`ext:pdf`,

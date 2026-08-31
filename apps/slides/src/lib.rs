@@ -46,6 +46,7 @@ pub mod portal;
 mod presentation;
 pub mod render;
 pub mod search_provider;
+mod toolbar_tools;
 
 pub use app::{PresentSurface, SlidesApp};
 
