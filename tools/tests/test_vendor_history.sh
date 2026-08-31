@@ -15,7 +15,7 @@ git init --quiet "$isolated_repo"
 source_objects=$(git -C "$repo_root" rev-parse --path-format=absolute --git-path objects)
 printf '%s\n' "$source_objects" >"$isolated_repo/.git/objects/info/alternates"
 
-vello_tip=cc8bb71173fc746f340aa36f0da580b7a8f95b1c
+vello_tip=108405981ee51fd9b2c3ee7ef9c3b8b1c6a9d223
 winit_tip=b4ea19a1c6cccfe268ae2fb30f098629d926e5da
 git -C "$isolated_repo" update-ref \
     refs/remotes/origin/vendor-upstream/vello-0.9 "$vello_tip"
