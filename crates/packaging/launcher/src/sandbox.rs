@@ -1368,11 +1368,10 @@ mod tests {
         );
     }
 
-    // A read-only participant is handed no identity, so it holds no
-    // signing key and can't originate an authored change — the absence
-    // *is* the mechanism.
+    // A read-only participant gets public identity metadata for attribution,
+    // but the launcher has already stripped the signing key.
     #[test]
-    fn a_read_only_participant_is_given_no_identity() {
+    fn a_read_only_participant_keeps_only_the_public_identity_projection() {
         use crate::capabilities::Participation;
 
         let m = mk_manifest("off");

@@ -152,6 +152,17 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // When peer sync is enabled it also bridges app changes between machines.
     let _collab_broker = spawn_collab_broker(&peer_sync);
 
+    let identity_socket = launcher::services::identity_socket();
+    let _identity_broker = if std::os::unix::net::UnixStream::connect(&identity_socket).is_ok() {
+        tracing::warn!(path = %identity_socket.display(), "identity broker already running");
+        None
+    } else {
+        launcher::services::ensure_services_root()
+            .and_then(|_| crate::identity_broker::spawn(identity_socket, tree_handle.clone()))
+            .map_err(|error| tracing::warn!(%error, "identity broker unavailable"))
+            .ok()
+    };
+
     // Hosted-mode test-control socket: when QOS_TEST_CONTROL is set, bind it like the headless
     // backend and run the App with a proxy injecting clicks/hovers into the event loop — same code
     // path, gate, and redraw as hardware events.

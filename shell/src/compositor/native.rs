@@ -48,7 +48,8 @@ fn with_action_gate<R>(
     let workspace = tree
         .active_workspace()
         .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?;
-    let actor = workspace.actor_for_person(&chrome.local_user_id);
+    let actor_id = chrome.local_user_for_room(&workspace.room);
+    let actor = workspace.actor_for_person(&actor_id);
     let gate = CapabilityVisibility::new(workspace, actor);
     Ok(f(&chrome, &gate))
 }
@@ -612,11 +613,11 @@ impl ControlState for FrameBuilderControlState<'_> {
             "session_locked": chrome.session_locked(),
             // Who this session is, and whether they may administer the room they're
             // in — read straight off the production helpers, not guessed from `owner`.
-            "local_user_id": chrome.local_user_id,
+            "local_user_id": chrome.active_local_user(),
             "may_administer_active": chrome
                 .tree()
                 .active_workspace()
-                .is_some_and(|ws| ws.may_administer(&chrome.local_user_id)),
+                .is_some_and(|ws| ws.may_administer(&chrome.local_user_for_room(&ws.room))),
             // The peer-sync card's contents — the invite token, exposed for scripts as it is on screen.
             "peer_sync": {
                 "invite_token": chrome.peer_sync_invite_token,
@@ -1638,11 +1639,10 @@ fn load_session_tree(
             roomless.len()
         );
     }
-    let local_user = crate::shell::state::local_user_id();
-    let adopted = tree.adopt_ownerless_workspaces(&local_user);
+    let adopted = tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
     if !adopted.is_empty() {
         tracing::info!(
-            "capabilities: {} workspace(s) adopted by {local_user}",
+            "capabilities: {} workspace(s) adopted by their selected identities",
             adopted.len()
         );
     }
@@ -1709,6 +1709,31 @@ fn spawn_session_collab_broker(
             chrome
                 .borrow_mut()
                 .set_collab_unavailable(format!("The broker could not start: {e}"));
+            None
+        }
+    }
+}
+
+fn spawn_session_identity_broker(
+    chrome: &crate::shell::chrome_state::Chrome,
+) -> Option<crate::identity_broker::IdentityBrokerHandle> {
+    if let Err(error) = launcher::services::ensure_services_root() {
+        tracing::error!(%error, "identity: cannot create service directory");
+        return None;
+    }
+    let path = launcher::services::identity_socket();
+    if collab_socket_is_live(&path) {
+        tracing::error!(path = %path.display(), "identity: another session owns the socket");
+        return None;
+    }
+    let tree = chrome.borrow().tree_handle();
+    match crate::identity_broker::spawn(path.clone(), tree) {
+        Ok(handle) => {
+            tracing::info!(path = %path.display(), "identity: broker ready");
+            Some(handle)
+        }
+        Err(error) => {
+            tracing::error!(%error, path = %path.display(), "identity: broker failed to start");
             None
         }
     }

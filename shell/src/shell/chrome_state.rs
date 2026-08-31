@@ -504,6 +504,23 @@ impl ChromeState {
         self.tree_handle.read()
     }
 
+    /// Person principal this session presents inside `room`.
+    pub fn local_user_for_room(
+        &self,
+        room: &crate::shell::state::RoomId,
+    ) -> crate::shell::state::UserId {
+        crate::shell::state::local_user_id_for_room(room)
+    }
+
+    /// Person principal selected for the active workspace, or the session
+    /// fallback when no workspace is active.
+    pub fn active_local_user(&self) -> crate::shell::state::UserId {
+        self.tree()
+            .active_workspace()
+            .map(|workspace| self.local_user_for_room(&workspace.room))
+            .unwrap_or_else(|| self.local_user_id.clone())
+    }
+
     pub fn records(&self) -> &RecordStore {
         &self.records
     }
@@ -689,7 +706,7 @@ impl ChromeState {
             tree.set_active(id);
             // A room with no owner has no administrators, so nobody can
             // grant anything in it, including the person who just made it.
-            tree.adopt_ownerless_workspaces(&self.local_user_id);
+            tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
             id
         };
         self.bump();

@@ -4,6 +4,7 @@
 //! `pre_exec` installing Landlock (best-effort) and the seccomp fd; wait
 //! and relay the exit code.
 
+use std::io::Write;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -16,7 +17,8 @@ use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindKind, DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
-    EXIT_REQUIRED_SERVICE_MISSING, ServiceError, resolve_service_binds, to_service_binds,
+    EXIT_REQUIRED_SERVICE_MISSING, ServiceError, resolve_identity_bind, resolve_service_binds,
+    to_service_binds,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -248,15 +250,23 @@ mod resource_claim_tests {
 /// Resolve the capability plan: read the compositor's file, evaluate it
 /// for this app now. Split out so [`run_with_captured`] and tests share it.
 pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> CapabilityPlan {
-    let Some(path) = opts.capabilities_path.as_deref() else {
-        return CapabilityPlan::empty();
-    };
     let app_id = opts
         .app_id
         .clone()
         .unwrap_or_else(|| manifest.package_id.clone());
-    let records = load_capability_file(path);
-    let plan = CapabilityPlan::for_app(&app_id, &records, Some(now_unix()));
+    let records = opts
+        .capabilities_path
+        .as_deref()
+        .map(load_capability_file)
+        .unwrap_or_default();
+    let mut plan = CapabilityPlan::for_app(&app_id, &records, Some(now_unix()));
+    // A workspace launch with no explicit author grant is a viewer. Treating
+    // missing/malformed policy as authorship made every failure permissive.
+    if opts.workspace_id.is_some()
+        && plan.participation == crate::capabilities::Participation::Unscoped
+    {
+        plan.participation = crate::capabilities::Participation::ReadOnly;
+    }
     tracing::info!(
         target: "qos_launcher::capabilities",
         app = %app_id,
@@ -349,6 +359,41 @@ fn stop_identity_broker(control: Option<UnixStream>, thread: Option<std::thread:
     if let Some(thread) = thread {
         let _ = thread.join();
     }
+}
+
+/// Stage the non-secret portion of an identity record for an app sandbox.
+///
+/// Apps need stable attribution metadata, not the user's root signing seed.
+/// Authored operations are mediated by qOS services; handing every app the
+/// root would let one compromised package impersonate the user everywhere.
+fn stage_identity_projection(source: &Path) -> Result<tempfile::NamedTempFile, RunError> {
+    let bytes = std::fs::read(source)?;
+    let mut record: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let threshold = record
+        .get_mut("threshold_identity")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "identity record has no threshold_identity object",
+            )
+        })?;
+    threshold.insert("secret_bytes".to_string(), serde_json::json!([]));
+    record
+        .as_object_mut()
+        .expect("identity record with an object child is an object")
+        .insert(
+            "signing_available".to_string(),
+            serde_json::Value::Bool(false),
+        );
+    let mut projected = tempfile::NamedTempFile::new()?;
+    projected.write_all(
+        &serde_json::to_vec_pretty(&record)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
+    )?;
+    projected.flush()?;
+    Ok(projected)
 }
 
 /// Derive GPU pinning, or `None` when nothing to pin. Every decline is
@@ -682,7 +727,15 @@ pub fn run_with(
     crate::manifest::enforce_fs_policy(manifest)?;
 
     // 1. Service sockets.
-    let resolved = resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
+    let mut resolved = resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
+    let launch_app_id = opts.app_id.as_deref().unwrap_or(&manifest.package_id);
+    if let Some(identity) = resolve_identity_bind(
+        launch_app_id,
+        opts.workspace_id.as_deref(),
+        opts.no_services,
+    )? {
+        resolved.push(identity);
+    }
     let binds = to_service_binds(&resolved);
 
     // 2. Seccomp baseline → tmpfile → fd. The manifest *asks* for a profile;
@@ -1173,7 +1226,15 @@ pub fn run_with_captured(
     crate::manifest::enforce_fs_policy(manifest)?;
 
     // Service sockets.
-    let resolved = resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
+    let mut resolved = resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
+    let launch_app_id = opts.app_id.as_deref().unwrap_or(&manifest.package_id);
+    if let Some(identity) = resolve_identity_bind(
+        launch_app_id,
+        opts.workspace_id.as_deref(),
+        opts.no_services,
+    )? {
+        resolved.push(identity);
+    }
     let binds = to_service_binds(&resolved);
 
     // Seccomp baseline resolved identically to `run_with` — two paths
@@ -1645,6 +1706,52 @@ mod identity_resolution_tests {
 }
 
 #[cfg(test)]
+mod identity_projection_tests {
+    use super::*;
+
+    #[test]
+    fn app_projection_contains_identity_metadata_but_no_root_secret() {
+        let source = tempfile::NamedTempFile::new().expect("source");
+        let secret = vec![37_u8; 32];
+        std::fs::write(
+            source.path(),
+            serde_json::to_vec(&serde_json::json!({
+                "display_name": "Alice",
+                "avatar_color": [1, 2, 3],
+                "threshold_identity": {
+                    "single_device": true,
+                    "group_public_key": vec![9_u8; 32],
+                    "threshold": 1,
+                    "total_shares": 1,
+                    "share_index": 1,
+                    "secret_bytes": secret,
+                },
+                "schema_version": 1,
+            }))
+            .expect("encode"),
+        )
+        .expect("write");
+
+        let projection = stage_identity_projection(source.path()).expect("projection");
+        let projected: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(projection.path()).expect("read"))
+                .expect("decode");
+        assert_eq!(projected["display_name"], "Alice");
+        assert_eq!(
+            projected["threshold_identity"]["secret_bytes"],
+            serde_json::json!([])
+        );
+        assert_eq!(projected["signing_available"], false);
+        assert!(
+            !std::fs::read(projection.path())
+                .expect("bytes")
+                .windows(32)
+                .any(|window| window == [37_u8; 32])
+        );
+    }
+}
+
+#[cfg(test)]
 mod app_dir_tests {
     use super::*;
 
@@ -1660,6 +1767,22 @@ mod app_dir_tests {
             workspace_id: room.map(str::to_string),
             ..RunOptions::default()
         }
+    }
+
+    #[test]
+    fn workspace_launch_without_an_author_grant_is_read_only() {
+        let m = manifest("dev.qos.fixture");
+        let workspace = resolve_capabilities(&m, &opts_in(Some("room-a")));
+        assert_eq!(
+            workspace.participation,
+            crate::capabilities::Participation::ReadOnly
+        );
+
+        let personal = resolve_capabilities(&m, &opts_in(None));
+        assert_eq!(
+            personal.participation,
+            crate::capabilities::Participation::Unscoped
+        );
     }
 
     /// The launch path resolves the directory rather than the manifest

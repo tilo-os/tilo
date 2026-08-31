@@ -89,6 +89,10 @@ enum Cmd {
         /// package id. Capabilities naming another app are ignored.
         #[arg(long)]
         app_id: Option<String>,
+        /// Exact host identity record selected for this workspace. The shell
+        /// resolves this from its private identity registry.
+        #[arg(long)]
+        identity: Option<PathBuf>,
         /// The DRM render node the compositor renders on. The app is pinned to
         /// the same GPU — only that node and its matching loaders are visible.
         /// Omit when no compositor is involved.
@@ -206,6 +210,7 @@ fn main() -> ExitCode {
             workspace_id,
             capabilities,
             app_id,
+            identity,
             render_node,
             open,
             open_uri,
@@ -227,7 +232,7 @@ fn main() -> ExitCode {
                 allow_missing_runtime,
                 allow_unsigned_runtime,
                 require_runtime_publisher,
-                identity_host_path: None,
+                identity_host_path: identity,
                 wayland_socket,
                 workspace_id,
                 capabilities_path: capabilities,
