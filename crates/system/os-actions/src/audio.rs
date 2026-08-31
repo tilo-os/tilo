@@ -11,18 +11,19 @@ use crate::process::{run, run_capture};
 pub fn set_volume(pct: f32) -> Result<(), String> {
     // wpctl takes a fraction like `0.50` or `50%`. We use the fraction
     // form to avoid locale-dependent `%` handling in shells.
-    let arg = format!("{:.2}", volume_fraction(pct));
+    let arg = volume_arg(pct);
     run("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &arg])
 }
 
-/// Clamp a percentage to the `0.0..=1.0` fraction `wpctl` accepts.
+/// The clamped `0.0..=1.0` fraction, formatted as `wpctl` expects it.
 ///
 /// Named rather than inlined so the clamping can be asserted on its own: the
 /// shell-out around it succeeds, fails, or reports a missing binary depending
 /// on whether the machine has `wpctl` and a live audio session, none of which
 /// says anything about the arithmetic.
-fn volume_fraction(pct: f32) -> f32 {
-    (pct.clamp(0.0, 100.0) / 100.0).clamp(0.0, 1.0)
+fn volume_arg(pct: f32) -> String {
+    let clamped = (pct.clamp(0.0, 100.0) / 100.0).clamp(0.0, 1.0);
+    format!("{clamped:.2}")
 }
 
 /// Read the default audio sink volume, returned as a `0.0..=1.0`
@@ -180,17 +181,8 @@ mod tests {
     /// otherwise reject it or read it as a different level.
     #[test]
     fn set_volume_clamps_out_of_range() {
-        assert!(
-            (volume_fraction(150.0) - 1.0).abs() < 1e-6,
-            "above range clamps to full"
-        );
-        assert!(
-            volume_fraction(-25.0).abs() < 1e-6,
-            "below range clamps to silent"
-        );
-        assert!(
-            (volume_fraction(50.0) - 0.5).abs() < 1e-6,
-            "in range converts to a fraction"
-        );
+        assert_eq!(volume_arg(150.0), "1.00", "above range clamps to full");
+        assert_eq!(volume_arg(-25.0), "0.00", "below range clamps to silent");
+        assert_eq!(volume_arg(50.0), "0.50", "in range converts to a fraction");
     }
 }
