@@ -60,21 +60,40 @@ fn soloing(project: &Project, kind: TrackKind) -> bool {
     project.tracks.iter().any(|t| t.kind == kind && t.solo)
 }
 
-/// Whether this clip contributes sound: it is on an audio track, or it is a
-/// picture whose own file carries a sound track.
+/// Whether this clip contributes sound.
 ///
-/// The second half is the one that was missing. A video file lands on a video
-/// track, and the mixer read audio only from audio tracks — so a talking-head
-/// clip was silent in the preview and silent in the exported file, and
-/// nothing anywhere said so. `has_audio` comes from the container, read at
-/// import, so this asks the file rather than guessing from the track.
+/// Three cases, and the third is the one that is easy to get wrong:
+///
+///  * A clip on an **audio** lane always contributes. That is what the lane is.
+///  * A clip on a **picture** lane contributes its source's own sound, because
+///    a video file lands on a video track and the mixer used to read only from
+///    audio tracks — so a talking-head clip was silent in the preview and
+///    silent in the exported file, with nothing anywhere admitting it.
+///    `has_audio` comes from the container, read at import, so this asks the
+///    file rather than guessing from the track.
+///  * …**unless** that sound has been split off onto an audio clip of its own
+///    ([`Clip::sound_split`]). Reading it from both would play the shot twice,
+///    at double level, and — the moment the two are slid apart — as an echo of
+///    itself.
+///
+/// The third test asks the picture clip, not the link, and that distinction is
+/// load-bearing. Unlinking a pair must not make the sound double, and linking a
+/// music bed to a shot must not silence the shot; only *splitting the sound
+/// off* moves where the sound comes from. `sound_split` is false in every
+/// project written before linked audio existed, which is why those still play:
+/// they have no audio clip, so their picture clip still carries the sound.
 fn carries_sound(project: &Project, clip: &crate::model::Clip, track_kind: TrackKind) -> bool {
-    track_kind == TrackKind::Audio
-        || project
-            .media
-            .iter()
-            .find(|m| m.id == clip.media)
-            .is_some_and(|m| m.has_audio)
+    if track_kind == TrackKind::Audio {
+        return true;
+    }
+    if clip.sound_split {
+        return false;
+    }
+    project
+        .media
+        .iter()
+        .find(|m| m.id == clip.media)
+        .is_some_and(|m| m.has_audio)
 }
 
 /// The audio clips audible at timeline time `t`.
@@ -1680,6 +1699,205 @@ mod tests {
         assert!(
             (l.source_time - 7.0).abs() < 1e-9,
             "2s into a clip cut at 5s reads 7s of source: {l:?}",
+        );
+    }
+
+    /// Once a shot's sound has a clip of its own, exactly one of the two
+    /// halves may be mixed. This is the correctness trap of the whole feature:
+    /// mix both and the shot is heard twice, at double level, and — the moment
+    /// the two are slid apart — as an echo of itself.
+    #[test]
+    fn a_shot_whose_sound_was_split_off_is_heard_once_not_twice() {
+        use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
+
+        let mut p = Project::new("interview");
+        let media = uuid::Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: media,
+            name: "interview.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 30.0,
+            has_audio: true,
+            ..Default::default()
+        });
+        let v1 = uuid::Uuid::new_v4();
+        p.tracks.push(Track {
+            id: v1,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            ..Default::default()
+        });
+        let a1 = uuid::Uuid::new_v4();
+        p.tracks.push(Track {
+            id: a1,
+            name: "A1".into(),
+            kind: TrackKind::Audio,
+            index: 1,
+            ..Default::default()
+        });
+        let picture = p.add_clip(v1, media, 0.0).expect("place the picture");
+        p.clip_mut(picture).expect("picture").out_point = 30.0;
+
+        // Before the split: the picture carries the sound, and is mixed at
+        // full level. This is what every project saved before links existed
+        // still does, and it must not change.
+        let mut src = constant(&[(media, 0.5)]);
+        let before = mix_block(&p, 2.0, 8, &mut src);
+        assert!(
+            (before[0] - 0.5).abs() < 1e-6,
+            "a picture that carries sound is mixed: {}",
+            before[0],
+        );
+
+        let sound = p
+            .add_linked_audio(picture, a1)
+            .expect("split the sound off");
+        let layers = plan_audio(&p, 2.0);
+        assert_eq!(
+            layers.len(),
+            1,
+            "exactly one half of a split shot may be mixed: {layers:?}",
+        );
+        assert_eq!(
+            layers[0].clip, sound,
+            "and it is the audio clip, which is the one a person can slide,              level and fade",
+        );
+        let mut src = constant(&[(media, 0.5)]);
+        let after = mix_block(&p, 2.0, 8, &mut src);
+        assert!(
+            (after[0] - 0.5).abs() < 1e-6,
+            "splitting the sound off must not change how loud the shot is;              mixing both halves would give 1.0 here, and 0.5 is one of them: {}",
+            after[0],
+        );
+        assert!(has_audio(&p), "the export still finds sound to mux");
+
+        // Levelling the sound half alone is the whole point of it existing.
+        p.clip_mut(sound).expect("sound").volume = 0.25;
+        let mut src = constant(&[(media, 0.5)]);
+        let quiet = mix_block(&p, 2.0, 8, &mut src);
+        assert!(
+            (quiet[0] - 0.125).abs() < 1e-6,
+            "the sound half's own level has to reach the mix: {}",
+            quiet[0],
+        );
+    }
+
+    /// Unlinking is explicit and reversible, and it must not make the shot
+    /// louder. The picture stopped carrying its own sound when the sound was
+    /// split off, not when the two happened to be linked.
+    #[test]
+    fn unlinking_a_split_shot_does_not_double_it() {
+        use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
+
+        let mut p = Project::new("interview");
+        let media = uuid::Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: media,
+            name: "interview.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 30.0,
+            has_audio: true,
+            ..Default::default()
+        });
+        let v1 = uuid::Uuid::new_v4();
+        p.tracks.push(Track {
+            id: v1,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            ..Default::default()
+        });
+        let a1 = uuid::Uuid::new_v4();
+        p.tracks.push(Track {
+            id: a1,
+            name: "A1".into(),
+            kind: TrackKind::Audio,
+            index: 1,
+            ..Default::default()
+        });
+        let picture = p.add_clip(v1, media, 0.0).expect("place the picture");
+        p.clip_mut(picture).expect("picture").out_point = 30.0;
+        let sound = p
+            .add_linked_audio(picture, a1)
+            .expect("split the sound off");
+
+        p.unlink_clips(&[picture, sound]);
+        let layers = plan_audio(&p, 2.0);
+        assert_eq!(
+            layers.len(),
+            1,
+            "the picture must not start carrying sound the audio clip already              has just because the two were separated: {layers:?}",
+        );
+        assert_eq!(layers[0].clip, sound);
+        let mut src = constant(&[(media, 0.5)]);
+        let after = mix_block(&p, 2.0, 8, &mut src);
+        assert!(
+            (after[0] - 0.5).abs() < 1e-6,
+            "still one shot: {}",
+            after[0]
+        );
+    }
+
+    /// A link is a general "these move together". Tying a music bed to a shot
+    /// must not silence the shot.
+    #[test]
+    fn linking_a_bed_to_a_shot_leaves_the_shots_own_sound_alone() {
+        use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
+
+        let mut p = Project::new("interview");
+        let footage = uuid::Uuid::new_v4();
+        let music = uuid::Uuid::new_v4();
+        for (id, name, kind) in [
+            (footage, "interview.mp4", MediaKind::Video),
+            (music, "bed.wav", MediaKind::Audio),
+        ] {
+            p.media.push(MediaItem {
+                id,
+                name: name.into(),
+                kind,
+                duration: 30.0,
+                // The picture's container carries sound; so, obviously, does
+                // the music.
+                has_audio: kind == MediaKind::Video,
+                ..Default::default()
+            });
+        }
+        let v1 = uuid::Uuid::new_v4();
+        p.tracks.push(Track {
+            id: v1,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            ..Default::default()
+        });
+        let a1 = uuid::Uuid::new_v4();
+        p.tracks.push(Track {
+            id: a1,
+            name: "A1".into(),
+            kind: TrackKind::Audio,
+            index: 1,
+            ..Default::default()
+        });
+        let picture = p.add_clip(v1, footage, 0.0).expect("place the picture");
+        p.clip_mut(picture).expect("picture").out_point = 30.0;
+        let bed = p.add_clip(a1, music, 0.0).expect("place the bed");
+        p.clip_mut(bed).expect("bed").out_point = 30.0;
+
+        // Tie them together so the bed travels with the shot.
+        p.link_clips(&[picture, bed]);
+        let layers = plan_audio(&p, 1.0);
+        assert!(
+            layers.iter().any(|l| l.clip == picture),
+            "a link is 'these move together'; only splitting the sound off              moves where the sound comes from: {layers:?}",
+        );
+        assert!(layers.iter().any(|l| l.clip == bed));
+        let mut src = constant(&[(footage, 0.25), (music, 0.5)]);
+        let block = mix_block(&p, 1.0, 8, &mut src);
+        assert!(
+            (block[0] - 0.75).abs() < 1e-6,
+            "both are heard: {}",
+            block[0],
         );
     }
 
