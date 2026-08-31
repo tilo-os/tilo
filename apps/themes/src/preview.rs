@@ -32,10 +32,7 @@ use crate::model::{self, ThemeSpec};
 /// `NodeId` (not a `Result`) across every implementor, so surfacing a
 /// theoretical error here would mean threading a `Result` through the whole
 /// toolkit for a branch that can't be taken.
-#[allow(
-    clippy::unwrap_used,
-    reason = "new_leaf cannot fail; see doc comment"
-)]
+#[allow(clippy::unwrap_used, reason = "new_leaf cannot fail; see doc comment")]
 fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
     taffy.new_leaf(style).unwrap()
 }
@@ -70,7 +67,17 @@ fn draw_section_label(
     label: &str,
     th: &Theme,
 ) {
-    draw::text_w(tr, scene, t, label, 11.0, th.text_dim, cx, y, TextWeight::Semibold);
+    draw::text_w(
+        tr,
+        scene,
+        t,
+        label,
+        11.0,
+        th.text_dim,
+        cx,
+        y,
+        TextWeight::Semibold,
+    );
 }
 
 pub struct PreviewPane {
