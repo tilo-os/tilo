@@ -32,11 +32,39 @@ use std::path::{Path, PathBuf};
 /// Replace `path`'s contents with `bytes`, durably. On success the file holds exactly
 /// `bytes`, and a crash at any point leaves either the previous contents or the new ones.
 /// The parent directory must already exist — see [`write_creating_parent`].
+///
+/// # Errors
+///
+/// Returns the first `io::Error` of the write sequence. On any of them `path` still holds
+/// its previous contents — that is the guarantee the temp-and-rename dance buys. A failure
+/// *before* the rename does leave the temp file beside the target; only a failed rename
+/// cleans up after itself.
+///
+/// - creating the temp file: [`NotFound`](io::ErrorKind::NotFound) when the parent
+///   directory does not exist, [`PermissionDenied`](io::ErrorKind::PermissionDenied) when
+///   the parent is not writable, or [`IsADirectory`](io::ErrorKind::IsADirectory) if
+///   something already occupies the temp path;
+/// - writing the bytes: a full filesystem, an exceeded quota, or a device error;
+/// - `fsync` of the temp file: a device error surfacing writeback that failed;
+/// - renaming it over `path`: typically
+///   [`PermissionDenied`](io::ErrorKind::PermissionDenied) on the directory, or
+///   [`IsADirectory`](io::ErrorKind::IsADirectory) when `path` is itself a directory.
+///
+/// The final `fsync` of the containing directory is best-effort and its failure is never
+/// reported: the bytes are already durable and the new directory entry is already visible,
+/// and some filesystems refuse to open a directory for writing at all.
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_inner(path, bytes, None)
 }
 
 /// [`write`], creating the parent directory first when it is missing.
+///
+/// # Errors
+///
+/// Everything [`write`] returns, minus the missing-parent case, plus the errors of creating
+/// that parent: [`PermissionDenied`](io::ErrorKind::PermissionDenied) when some ancestor is
+/// not writable, or [`NotADirectory`](io::ErrorKind::NotADirectory) when a component of the
+/// path exists as a file.
 pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent()
         && !dir.as_os_str().is_empty()
@@ -50,6 +78,13 @@ pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// into place, so the file is never visible at its final path with wider permissions than
 /// intended — what a secret needs, since creating then `chmod`ing leaves a window where
 /// another user can open it.
+///
+/// # Errors
+///
+/// Everything [`write`] returns, plus the failure to apply `mode` to the temp file — which
+/// on unix is a `chmod` the caller's process may not be permitted to make. That error aborts
+/// the write rather than continuing, so a secret is never renamed into place with the
+/// default permissions. On platforms other than unix `mode` is ignored and cannot fail.
 pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     write_inner(path, bytes, Some(mode))
 }
@@ -140,7 +175,7 @@ mod tests {
             .unwrap()
             .filter_map(std::result::Result::ok)
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.ends_with(".tmp"))
+            .filter(|n| Path::new(n).extension().is_some_and(|ext| ext == "tmp"))
             .collect();
         assert!(left.is_empty(), "left {left:?}");
     }
