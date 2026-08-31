@@ -106,7 +106,7 @@ cmd_boot() {
       msg "boot (2D headless, ${QOS_XRES}x${QOS_YRES}) disk=$disk" ;;
   esac
 
-  local args="$(machine_args) -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
+  local args="$(machine_args) $(qemu_accel_args) -m $QOS_MEM -smp $QOS_SMP \
     $(pflash_args "$varstore") \
     -drive file=$disk,format=qcow2,if=virtio $attach_arg \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
@@ -151,7 +151,7 @@ cmd_boot_installer() {
   esac
   msg "boot-installer ($mode, ${QOS_XRES}x${QOS_YRES}) disk=$disk target=$target (/dev/vdb)"
   # First virtio disk = installer (/dev/vda); second = blank target (/dev/vdb).
-  local args="$(machine_args) -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
+  local args="$(machine_args) $(qemu_accel_args) -m $QOS_MEM -smp $QOS_SMP \
     $(pflash_args "$varstore") \
     -drive file=$disk,format=qcow2,if=virtio \
     -drive file=$target,format=qcow2,if=virtio \
@@ -187,7 +187,7 @@ cmd_boot_target() {
     *) display="-device virtio-vga,$res -display none";;
   esac
   msg "boot-target ($mode, ${QOS_XRES}x${QOS_YRES}) disk=$disk (installed system)"
-  local args="$(machine_args) -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
+  local args="$(machine_args) $(qemu_accel_args) -m $QOS_MEM -smp $QOS_SMP \
     $(pflash_args "$varstore") \
     -drive file=$disk,format=qcow2,if=virtio \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
@@ -203,7 +203,7 @@ cmd_boot_target() {
 cmd_wait() {
   msg "waiting for greeter (greetd) ..."
   local i
-  for i in $(seq 1 90); do
+  for i in $(seq 1 "$QOS_BOOT_WAIT_ATTEMPTS"); do
     if tr -d '\000' < "$QOS_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
       msg "greeter up (~$((i*2))s)"; return 0
     fi
@@ -248,7 +248,14 @@ cmd_shot() {
 
 cmd_type() {
   local s="$*" i c
-  for ((i=0; i<${#s}; i++)); do c="${s:$i:1}"; hmp "sendkey $(char_key "$c")" >/dev/null; sleep 0.05; done
+  # QEMU holds a sendkey for 100 ms by default. Sending the next character
+  # sooner makes adjacent keys overlap and the graphical greeter drops input;
+  # use an explicit short hold and leave a small release gap.
+  for ((i=0; i<${#s}; i++)); do
+    c="${s:$i:1}"
+    hmp "sendkey $(char_key "$c") 20" >/dev/null
+    sleep 0.04
+  done
 }
 
 cmd_keys() { local k; for k in "$@"; do hmp "sendkey $k" >/dev/null; sleep 0.12; done; }
@@ -256,9 +263,17 @@ cmd_keys() { local k; for k in "$@"; do hmp "sendkey $k" >/dev/null; sleep 0.12;
 cmd_login() {
   local u="${1:-$QOS_USER}" p="${2:-$QOS_PASS}"
   msg "logging in as $u"
-  local i; for i in $(seq 1 24); do hmp "sendkey backspace" >/dev/null; done  # clear remembered user
-  cmd_type "$u"; cmd_keys ret; sleep 2
-  cmd_type "$p"; cmd_keys ret
+  # qos-greeter is a single form: Enter submits the whole form, it does not
+  # advance from username to password. The old tuigreet sequence pressed Enter
+  # between fields, which repeatedly submitted an empty password and never
+  # started the desktop. Follow the widget's actual focus order instead.
+  local i
+  for i in $(seq 1 64); do hmp "sendkey backspace 20" >/dev/null; sleep 0.03; done
+  cmd_type "$u"
+  cmd_keys tab
+  for i in $(seq 1 64); do hmp "sendkey backspace 20" >/dev/null; sleep 0.03; done
+  cmd_type "$p"
+  cmd_keys ret
   msg "credentials sent"
 }
 
