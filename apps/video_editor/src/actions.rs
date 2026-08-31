@@ -580,7 +580,9 @@ fn immediate(id: &str, label: &str, action: &VideoEditorAction) -> ActionSpec {
 /// placeholder narrated: "greyscale" and "negative" have always been accepted,
 /// and declaring a type must not quietly take away a name that worked. What it
 /// does take away is the guess — an unknown name is now refused by name
-/// instead of adding nothing and reporting success.
+/// instead of adding nothing and reporting success. Case folding goes with it:
+/// binding matches exactly, so these are the spellings, and a caller reads
+/// them rather than guessing at capitalisation.
 const EFFECT_CHOICES: [&str; 11] = [
     "grayscale",
     "greyscale",
@@ -988,7 +990,9 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     // for 100× is a legible "as fast as it goes". Unreadable
                     // is no longer 1×: a word cannot bind to a number, so a
                     // slowed clip stays slowed instead of silently snapping
-                    // back to normal speed.
+                    // back to normal speed. The `2x` spelling goes with it —
+                    // the suffix was prose wrapped around the number, and the
+                    // number is what is declared.
                     let rate = args.number("rate").unwrap_or(next.speed.rate());
                     next.set_speed(rate, next.speed.reverse);
                     encode(&upsert_clip_action(&next))
