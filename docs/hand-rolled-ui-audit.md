@@ -186,7 +186,8 @@ gaining real hover/press feedback and one consistent button look. Converted:
 **db_client** (connect-modal Cancel/Save), **video-player** (floating Open
 pill), **monitor** (detail Stop/Kill, incl. the danger style), **diffmerge**
 (toolbar Open/Load/Next/Prev), **store** cards/actions, and ordinary **disks**/
-**vpn** controls. Keyboard/AT activation and per-button a11y nodes
+**vpn** controls, plus the **backups** restore footer. Keyboard/AT activation
+and per-button a11y nodes
 remain bounded by these apps' monolithic immediate-mode architecture (a separate
 retained-tree refactor), not by the button primitive.
 
@@ -232,7 +233,7 @@ widget, tracked separately).
 | `apps/logs/src/app.rs:873` `draw_back_button` | logs | narrow-mode nav back | `Button` | S | MED |
 | `apps/word-processor/src/widget.rs:2463` `find_buttons`, `:5685` `recovery_buttons` | word-processor | find/replace + recovery-banner painted rects | `Button` | M | MED |
 | `apps/snippets/src/app.rs:1545` `toolbar_button`, `expand.rs:249` copy/cancel | snippets ✅ | painted rect + hover-only hit-test | `Button` | S | MED |
-| `apps/backups/src/app.rs:384` `Hit::BackupNow` | backups | "Backup now" painted button | `Button` | S | MED |
+| `apps/backups/src/app.rs` restore footer + `Hit::BackupNow` | backups ✅ | **DONE where ordinary** — Restore/Cancel use shared faces; Backup Now retains its progress sliver and custom compact glyph | `ButtonFace` | S | MED |
 | `apps/notes/src/sidebar.rs:672` button chip | notes | one hand-drawn hover chip (otherwise a model app) | `Button` | S | MED |
 | `apps/containers/src/panels.rs:1280` `draw_confirm` action rects | containers | create/confirm/prompt buttons hit-tested | `Button` | M | MED |
 | `apps/video-player/src/app.rs:375` `open_button_rect` | video-player ✅ | floating "Open" pill (only leftover) | `Button` | S | MED |
@@ -557,9 +558,9 @@ themed, clipboard-correct version — do **not** keep forking.
 The broad mechanical waves are complete enough that a shorter, contextual
 queue is safer than old app counts:
 
-1. **Exact button faces:** containers Create/Cancel and backups Restore/Cancel
-   fit `ButtonFace` without semantic loss. Do not fold progress, ghost, keypad,
-   canvas, or media controls into an ordinary button merely to lower a count.
+1. **Exact button faces:** containers Create/Cancel fit `ButtonFace` without
+   semantic loss. Do not fold progress, ghost, keypad, canvas, or media controls
+   into an ordinary button merely to lower a count.
 2. **Component boundaries:** continue extracting cohesive surfaces from large
    app modules. The component must own its state, layout/drawing, hit-testing,
    event routing, and focused tests; domain persistence stays in the host.
