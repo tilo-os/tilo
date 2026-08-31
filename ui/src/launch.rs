@@ -19,6 +19,7 @@ type ShotFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
 type ShotHandler = fn(&LaunchArgs) -> Result<(), LaunchError>;
 type ViewportFactory = fn(&LaunchArgs) -> (u32, u32);
 type ConfigureApp = fn(&mut App);
+type OpenState = fn(&'static str) -> (State, crate::persist::Autosave);
 
 /// Parsed common launch arguments. Extra flags are retained for an app's
 /// screenshot factory after being explicitly allow-listed by [`LaunchSpec`].
@@ -55,6 +56,7 @@ pub struct LaunchSpec {
     shot_handler: Option<ShotHandler>,
     shot_viewport: ViewportFactory,
     configure_app: Option<ConfigureApp>,
+    open_state: OpenState,
     allowed_flags: &'static [&'static str],
     allowed_options: &'static [&'static str],
     scenarios: &'static [&'static str],
@@ -69,6 +71,7 @@ impl LaunchSpec {
             shot_handler: None,
             shot_viewport: |_| DEFAULT_VIEWPORT,
             configure_app: None,
+            open_state: crate::persist::open,
             allowed_flags: &[],
             allowed_options: &[],
             scenarios: &[],
@@ -101,6 +104,16 @@ impl LaunchSpec {
     #[must_use]
     pub fn configure_app(mut self, configure: ConfigureApp) -> Self {
         self.configure_app = Some(configure);
+        self
+    }
+
+    /// Override how the live app opens its persisted state. This is primarily
+    /// for apps importing an older on-disk document through
+    /// [`crate::persist::open_migrating`]; the runner still owns autosave and
+    /// the live event loop.
+    #[must_use]
+    pub fn open_state(mut self, open: OpenState) -> Self {
+        self.open_state = open;
         self
     }
 
@@ -235,7 +248,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         std::process::exit(headless::run(&headless, (spec.live_root)(), spec.app_id));
     }
 
-    let (state, autosave) = crate::persist::open(spec.app_id);
+    let (state, autosave) = (spec.open_state)(spec.app_id);
     let mut app = App::new(state, (spec.live_root)()).with_autosave(autosave);
     if let Some(configure) = spec.configure_app {
         configure(&mut app);
@@ -536,6 +549,23 @@ mod tests {
         let spec = LaunchSpec::new("dev.qos.test", dummy_root).shot_handler(custom_shot);
         run_with_args(&spec, &strings(&["app", "--shots", "/tmp/custom.png"])).unwrap();
         assert!(CUSTOM_SHOT_RAN.load(Ordering::SeqCst));
+    }
+
+    fn custom_open_state(app_id: &'static str) -> (State, crate::persist::Autosave) {
+        crate::persist::open(app_id)
+    }
+
+    #[test]
+    fn app_can_replace_only_the_persistence_loader() {
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root).open_state(custom_open_state);
+        assert!(std::ptr::fn_addr_eq(
+            spec.open_state,
+            custom_open_state as OpenState
+        ));
+        assert!(std::ptr::fn_addr_eq(
+            spec.live_root,
+            dummy_root as RootFactory
+        ));
     }
 
     #[test]
