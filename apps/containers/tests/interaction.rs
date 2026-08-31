@@ -431,6 +431,35 @@ fn tab_keeps_dynamic_form_order_and_image_combo_policy() {
     );
 }
 
+#[test]
+fn create_footer_preserves_click_validation_and_keyboard_policy() {
+    // Exercise Containers' existing hit/action policy; only paint is shared.
+    let mut d = Driver::offline();
+    d.frame();
+    d.app.open_create_with_combo();
+    d.frame();
+
+    // Button centres for the 520×540 modal in this 1280×800 driver.
+    d.click(828.0, 636.0);
+    assert!(d.app.is_create_open());
+
+    ViewDoc::set_create_field(&mut d.doc, CreateField::Image, "nginx:latest");
+    d.frame();
+    d.key(winit::keyboard::NamedKey::Enter);
+    assert!(!d.app.is_create_open());
+
+    d.app.open_create_with_combo();
+    d.frame();
+    d.click(722.0, 636.0);
+    assert!(!d.app.is_create_open());
+
+    d.app.open_create_with_combo();
+    d.key(winit::keyboard::NamedKey::Escape);
+    assert!(d.app.is_create_open() && !d.app.is_combo_open());
+    d.key(winit::keyboard::NamedKey::Escape);
+    assert!(!d.app.is_create_open());
+}
+
 // =====================================================================
 // Interaction: create assembles the right podman args
 // =====================================================================
