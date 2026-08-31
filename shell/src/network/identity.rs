@@ -107,10 +107,6 @@ impl PeerIdentityStore {
     ///
     /// Returns `DeviceCertError` if the certificate signature does not verify,
     /// the embedded public key is invalid, or the certificate has expired.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal `RwLock` has been poisoned.
     pub fn insert(
         &self,
         peer: PeerOrigin,
@@ -118,38 +114,38 @@ impl PeerIdentityStore {
         now_ns: u64,
     ) -> Result<PeerIdentity, DeviceCertError> {
         let identity = PeerIdentity::from_cert(cert, now_ns)?;
-        let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.by_peer.insert(peer, identity.clone());
         Ok(identity)
     }
 
     /// Drop a peer's cached identity — used on disconnect. Idempotent.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal `RwLock` has been poisoned.
     pub fn remove(&self, peer: &PeerOrigin) {
-        let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.by_peer.remove(peer);
     }
 
     /// Look up a peer by its [`PeerOrigin`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal `RwLock` has been poisoned.
     pub fn get(&self, peer: &PeerOrigin) -> Option<PeerIdentity> {
-        let inner = self.inner.read().expect("PeerIdentityStore lock poisoned");
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.by_peer.get(peer).cloned()
     }
 
     /// Merge a user's revocation list — additive, see [`RevocationList::insert`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal `RwLock` has been poisoned.
     pub fn set_revocations(&self, user_pubkey: [u8; 32], list: RevocationList) {
-        let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let current = inner.revocations.entry(user_pubkey).or_default();
         for entry in list.iter().cloned() {
             // Never let a later handshake erase or postpone a revocation that
@@ -159,12 +155,11 @@ impl PeerIdentityStore {
     }
 
     /// True if `device_pubkey` has been revoked under `user_pubkey` at or before `at_ns`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the internal `RwLock` has been poisoned.
     pub fn is_revoked(&self, user_pubkey: &[u8; 32], device_pubkey: &[u8; 32], at_ns: u64) -> bool {
-        let inner = self.inner.read().expect("PeerIdentityStore lock poisoned");
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner
             .revocations
             .get(user_pubkey)

@@ -55,7 +55,8 @@ fn test_wayland_handshake_fixed() {
             .expect("Failed to insert socket into loop");
 
         started_tx.send(env_name).unwrap();
-        let mut server_state = WaylandServer::new(&display.handle(), tx);
+        let mut server_state =
+            WaylandServer::new(&display.handle(), tx).expect("WaylandServer::new");
 
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(10) {

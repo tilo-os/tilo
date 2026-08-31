@@ -20,6 +20,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -29,6 +30,15 @@ use git_client::app::GitClientApp;
 use git_client::model::ChangeArea;
 use git_client::panels::BranchAction;
 use git_client::repo;
+
+/// 40 lines of `"line N\n"`, used as fixture content across several
+/// hunk-boundary tests.
+fn numbered_lines() -> String {
+    (1..=40).fold(String::new(), |mut s, n| {
+        let _ = writeln!(s, "line {n}");
+        s
+    })
+}
 
 /// Create a fresh repo in a tempdir with a configured identity and an
 /// initial commit containing `file.txt`. Returns the tempdir (kept alive)
@@ -224,11 +234,7 @@ fn delete_branch_removes_ref_and_refuses_head() {
 fn stage_hunk_stages_only_the_selected_hunk() {
     let (_d, path) = init_repo();
     // A file with two well-separated change regions so the diff has 2 hunks.
-    fs::write(
-        path.join("multi.txt"),
-        (1..=40).map(|n| format!("line {n}\n")).collect::<String>(),
-    )
-    .unwrap();
+    fs::write(path.join("multi.txt"), numbered_lines()).unwrap();
     repo::stage_file(&path, "multi.txt").unwrap();
     repo::commit(&path, "add multi").unwrap();
 
@@ -287,11 +293,7 @@ fn stage_hunk_stages_only_the_selected_hunk() {
 #[test]
 fn unstage_hunk_reverses_a_staged_hunk() {
     let (_d, path) = init_repo();
-    fs::write(
-        path.join("multi.txt"),
-        (1..=40).map(|n| format!("line {n}\n")).collect::<String>(),
-    )
-    .unwrap();
+    fs::write(path.join("multi.txt"), numbered_lines()).unwrap();
     repo::stage_file(&path, "multi.txt").unwrap();
     repo::commit(&path, "add multi").unwrap();
 
@@ -545,11 +547,7 @@ fn app_create_branch_through_production_action() {
 #[test]
 fn app_stage_hunk_through_production_action() {
     let (_d, path) = init_repo();
-    fs::write(
-        path.join("multi.txt"),
-        (1..=40).map(|n| format!("line {n}\n")).collect::<String>(),
-    )
-    .unwrap();
+    fs::write(path.join("multi.txt"), numbered_lines()).unwrap();
     repo::stage_file(&path, "multi.txt").unwrap();
     repo::commit(&path, "add multi").unwrap();
     let mut lines: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
@@ -644,11 +642,7 @@ fn discard_file_deletes_untracked_file() {
 #[test]
 fn discard_hunk_reverts_only_the_selected_worktree_hunk() {
     let (_d, path) = init_repo();
-    fs::write(
-        path.join("multi.txt"),
-        (1..=40).map(|n| format!("line {n}\n")).collect::<String>(),
-    )
-    .unwrap();
+    fs::write(path.join("multi.txt"), numbered_lines()).unwrap();
     repo::stage_file(&path, "multi.txt").unwrap();
     repo::commit(&path, "add multi").unwrap();
     // Two well-separated edits → two worktree hunks.
@@ -673,11 +667,7 @@ fn discard_hunk_reverts_only_the_selected_worktree_hunk() {
 fn partially_staged_file_keeps_distinct_staged_and_worktree_diffs() {
     use git_client::model::DiffKey;
     let (_d, path) = init_repo();
-    fs::write(
-        path.join("multi.txt"),
-        (1..=40).map(|n| format!("line {n}\n")).collect::<String>(),
-    )
-    .unwrap();
+    fs::write(path.join("multi.txt"), numbered_lines()).unwrap();
     repo::stage_file(&path, "multi.txt").unwrap();
     repo::commit(&path, "add multi").unwrap();
     // Edit + stage line 2, then edit line 38 without staging: the file is now

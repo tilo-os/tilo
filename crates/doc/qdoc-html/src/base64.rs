@@ -8,26 +8,40 @@ const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 
 /// Encode `input` to a standard, padded base64 string.
 pub fn encode(input: &[u8]) -> String {
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    // Every 3 input bytes become 4 output chars; bounded by the input
+    // blob's length, nowhere near `usize::MAX`.
+    let mut out = String::with_capacity(input.len().div_ceil(3).saturating_mul(4));
     for chunk in input.chunks(3) {
-        let b0 = u32::from(chunk[0]);
+        // `chunks(3)` never yields an empty chunk, so `first()` is always
+        // `Some`; `.get()`/`.first()` just spell that out instead of `[]`.
+        let b0 = u32::from(chunk.first().copied().unwrap_or(0));
         let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
         let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
         let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
-        out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+        out.push(sextet_char(n >> 18));
+        out.push(sextet_char(n >> 12));
         if chunk.len() > 1 {
-            out.push(ALPHABET[((n >> 6) & 0x3f) as usize] as char);
+            out.push(sextet_char(n >> 6));
         } else {
             out.push('=');
         }
         if chunk.len() > 2 {
-            out.push(ALPHABET[(n & 0x3f) as usize] as char);
+            out.push(sextet_char(n));
         } else {
             out.push('=');
         }
     }
     out
+}
+
+/// One base64 output character for the low 6 bits of `packed`.
+/// `& 0x3f` always yields `0..64`, exactly `ALPHABET`'s length, and every
+/// entry in `ALPHABET` is ASCII, so `as char` cannot corrupt anything —
+/// but `.get()` spells the bound out instead of indexing, and this is the
+/// one place that needs to.
+fn sextet_char(packed: u32) -> char {
+    let sextet = (packed & 0x3f) as usize;
+    ALPHABET.get(sextet).copied().unwrap_or(b'?') as char
 }
 
 #[cfg(test)]

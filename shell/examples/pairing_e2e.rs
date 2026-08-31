@@ -65,7 +65,7 @@ fn arg(flag: &str) -> Option<String> {
     let a: Vec<String> = std::env::args().collect();
     a.iter()
         .position(|x| x == flag)
-        .and_then(|i| a.get(i + 1).cloned())
+        .and_then(|i| a.get(i.saturating_add(1)).cloned())
 }
 
 /// The root half — stands in for `bluetoothd`.
@@ -191,6 +191,18 @@ async fn run() -> Result<(), String> {
 fn render(view: &mut PairingPromptView, out: &PathBuf) -> Result<(), String> {
     const W: u32 = 720;
     const H: u32 = 480;
+    // `as f32` on compile-time canvas-size literals: 720/480 are exactly
+    // representable, well under f32's 24-bit mantissa headroom.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "W/H are small compile-time constants, exactly representable in f32"
+    )]
+    const W_F32: f32 = W as f32;
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "W/H are small compile-time constants, exactly representable in f32"
+    )]
+    const H_F32: f32 = H as f32;
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
     let mut taffy = TaffyTree::<()>::new();
@@ -200,8 +212,8 @@ fn render(view: &mut PairingPromptView, out: &PathBuf) -> Result<(), String> {
         .compute_layout_with_measure(
             node,
             Size {
-                width: AvailableSpace::Definite(W as f32),
-                height: AvailableSpace::Definite(H as f32),
+                width: AvailableSpace::Definite(W_F32),
+                height: AvailableSpace::Definite(H_F32),
             },
             |known, available, node_id, _, _| {
                 node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {

@@ -230,7 +230,12 @@ fn parse_contact_endpoint(hints: &HashMap<String, OwnedValue>) -> Option<String>
 fn pair_actions(actions: &[String]) -> Vec<(String, String)> {
     actions
         .chunks_exact(2)
-        .map(|c| (c[0].clone(), c[1].clone()))
+        .filter_map(|c| {
+            let [key, label] = c else {
+                return None; // chunks_exact(2) guarantees len == 2
+            };
+            Some((key.clone(), label.clone()))
+        })
         .collect()
 }
 
@@ -357,7 +362,7 @@ impl NotificationService {
             .collect();
         self.priority_contacts
             .replace_verified(contacts)
-            .map(|count| count as u32)
+            .map(|count| u32::try_from(count).unwrap_or(u32::MAX))
             .map_err(zbus::fdo::Error::Failed)
     }
 
