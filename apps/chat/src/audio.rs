@@ -86,12 +86,35 @@ pub fn test_tone(rate: i32, channels: i32, ms: u64) -> Vec<i16> {
     out
 }
 
-/// Pull every currently-available sample from an appsink into byte buffers,
-/// stopping when the sink signals end-of-stream or no sample arrives within the
-/// timeout. Never blocks longer than `per_pull` per empty poll.
-fn drain_appsink(sink: &gst_app::AppSink, per_pull: gst::ClockTime) -> Vec<Vec<u8>> {
+/// Pull every sample an appsink will produce into byte buffers, stopping when
+/// the sink signals end-of-stream. Never blocks longer than `per_pull` per
+/// empty poll, and gives up after `deadline` so a wedged pipeline cannot hang
+/// the caller.
+///
+/// An empty pull is **not** the end. Every caller here drains after pushing
+/// end-of-stream, so the encoder still has frames in flight, and on a loaded
+/// machine it can easily take longer than one poll to hand the next one over —
+/// which would silently truncate the packets, or return none at all. `is_eos`
+/// is the sink saying it has finished; until it does, "nothing arrived" is a
+/// statement about the clock rather than about the stream.
+///
+/// The same mistake in the video editor's audio decoder made a test report
+/// "no audio in this file" for a file full of it, passing on an idle machine
+/// and failing beside a build.
+fn drain_appsink(
+    sink: &gst_app::AppSink,
+    per_pull: gst::ClockTime,
+    deadline: std::time::Duration,
+) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
+    let give_up = std::time::Instant::now() + deadline;
     loop {
+        if sink.is_eos() {
+            break;
+        }
+        if std::time::Instant::now() >= give_up {
+            break;
+        }
         match sink.try_pull_sample(per_pull) {
             Some(sample) => {
                 if let Some(buffer) = sample.buffer()
@@ -100,11 +123,9 @@ fn drain_appsink(sink: &gst_app::AppSink, per_pull: gst::ClockTime) -> Vec<Vec<u
                     out.push(map.as_slice().to_vec());
                 }
             }
-            None => {
-                // No sample within the timeout: either the stream has ended and
-                // fully drained, or nothing more is coming — either way, done.
-                break;
-            }
+            // Nothing yet, and the sink has not said it is finished: keep
+            // waiting until it does or the deadline passes.
+            None => continue,
         }
     }
     out
@@ -183,7 +204,11 @@ impl OpusEncoder {
         }
         let _ = src.end_of_stream();
 
-        let packets = drain_appsink(&sink, gst::ClockTime::from_mseconds(300));
+        let packets = drain_appsink(
+            &sink,
+            gst::ClockTime::from_mseconds(300),
+            std::time::Duration::from_secs(10),
+        );
         let _ = pipeline.set_state(gst::State::Null);
         Some(packets)
     }
@@ -239,7 +264,11 @@ impl OpusDecoder {
         let _ = src.end_of_stream();
 
         let mut pcm = Vec::new();
-        for raw in drain_appsink(&sink, gst::ClockTime::from_mseconds(300)) {
+        for raw in drain_appsink(
+            &sink,
+            gst::ClockTime::from_mseconds(300),
+            std::time::Duration::from_secs(10),
+        ) {
             pcm.extend(bytes_to_pcm(&raw));
         }
         let _ = pipeline.set_state(gst::State::Null);
