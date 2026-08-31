@@ -52,6 +52,8 @@ use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
 
 // ---- layout constants ----------------------------------------------------
 const TOPBAR_H: f64 = 48.0;
+/// Width of the export progress / outcome chip under the topbar.
+const EXPORT_CHIP_W: f64 = 176.0;
 const TIMELINE_H: f64 = 304.0;
 const BIN_W: f64 = 268.0;
 const INSPECTOR_W: f64 = 300.0;
@@ -212,6 +214,12 @@ struct Regions {
     /// is only reachable by keyboard, and Ctrl+O / Ctrl+S still work.
     project_btn: Rect,
     export_btn: Rect,
+    /// The render's progress / outcome chip, in the strip under the topbar and
+    /// anchored to the Export button above it. A render outlives the dialog
+    /// that starts it, so its state needs a home in the chrome that does not
+    /// depend on the dialog being up. Painted and hit-tested only while
+    /// [`ExportStatus`] is not `Idle`.
+    export_chip: Rect,
     split_btn: Rect,
     import_btn: Rect,
     bin: Rect,
@@ -231,6 +239,128 @@ struct Regions {
     /// `true` when the inspector is collapsed to an overlay flap. It slides
     /// from the right and paints no scrim — see [`INSPECTOR_BREAKPOINT`].
     inspector_overlay: bool,
+}
+
+/// How a standing notice reads: an ordinary outcome, a partial one, or a
+/// failure.
+///
+/// The severity travels with the message from the place that knows the truth.
+/// It used to be re-derived downstream by looking for `"could not"` /
+/// `"couldn't"` / `"is not"` in the prose, which had two consequences: a
+/// portal refusal (`"the file picker needs the real-desktop build"`) matched
+/// none of them and so painted in the *success* tint, and the colour of a
+/// message depended on the language it happened to be written in — which the
+/// fleet's translated strings cannot honour.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NoticeLevel {
+    /// It happened, and there is nothing left over.
+    Ok,
+    /// It happened, but not wholly — neither a success nor a failure, and it
+    /// must not be dressed as either.
+    Warning,
+    /// It did not happen.
+    Failed,
+}
+
+impl NoticeLevel {
+    /// The tint this level paints in, read from the theme like every other
+    /// colour in the app.
+    fn tint(self, theme: &Theme) -> Color {
+        let c = &theme.tokens.colors;
+        match self {
+            Self::Ok => c.accent[5],
+            Self::Warning => c.semantic.warning,
+            Self::Failed => c.semantic.danger,
+        }
+    }
+}
+
+/// How many refused files a batch names before it starts counting the rest.
+/// The bin's notice strip is one line; naming every refusal in a fifty-file
+/// batch would elide the reasons away again.
+const IMPORT_REFUSALS_NAMED: usize = 2;
+
+/// What one batch import actually did: how many files became clips, and — for
+/// every file that did not — its name and the probe's own reason.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+struct ImportReport {
+    added: usize,
+    refused: Vec<(String, String)>,
+}
+
+impl ImportReport {
+    fn total(&self) -> usize {
+        self.added + self.refused.len()
+    }
+}
+
+/// The export chip's painted text, cached against everything that produced it.
+///
+/// The chip is repainted on every animation frame for as long as a render
+/// runs, and its words only move when the whole-percent figure does. Without
+/// this, each of those frames reformatted a string and re-measured an
+/// elision that was already known.
+struct ExportChipText {
+    /// The render status the words were built from.
+    from: ExportStatus,
+    /// The chip width the elision was measured against.
+    width: f64,
+    /// The severity the chip paints at.
+    level: NoticeLevel,
+    /// The string as painted, already elided to the chip.
+    shown: String,
+}
+
+/// Whether two render statuses would paint the same chip.
+///
+/// Progress is shown to the whole percent, so two encoded frames inside one
+/// percent are the same picture and must not cost a reformat.
+fn chip_text_matches(a: &ExportStatus, b: &ExportStatus) -> bool {
+    match (a, b) {
+        (ExportStatus::Rendering { progress: x }, ExportStatus::Rendering { progress: y }) => {
+            chip_percent(*x) == chip_percent(*y)
+        }
+        _ => a == b,
+    }
+}
+
+/// The whole-percent figure the chip shows for `progress`.
+fn chip_percent(progress: f64) -> i64 {
+    (progress.clamp(0.0, 1.0) * 100.0).round() as i64
+}
+
+/// One line of standing feedback, carrying the severity it was created with.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Notice {
+    level: NoticeLevel,
+    text: String,
+}
+
+impl Notice {
+    fn ok(text: impl Into<String>) -> Self {
+        Self {
+            level: NoticeLevel::Ok,
+            text: text.into(),
+        }
+    }
+
+    fn warning(text: impl Into<String>) -> Self {
+        Self {
+            level: NoticeLevel::Warning,
+            text: text.into(),
+        }
+    }
+
+    fn failed(text: impl Into<String>) -> Self {
+        Self {
+            level: NoticeLevel::Failed,
+            text: text.into(),
+        }
+    }
+
+    fn is_failure(&self) -> bool {
+        self.level == NoticeLevel::Failed
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -782,6 +912,13 @@ pub enum ShotScenario {
     /// in their colours -- next to this participant's own selection, so the
     /// capture shows the two reading as different people.
     Collaborators,
+    /// A render in flight with its dialog already dismissed: the editor is
+    /// fully usable and the export still reports itself, from the chip under
+    /// the Export button.
+    ExportRunning,
+    /// The render after it failed, with the reason it gives, so the failing
+    /// half of the chip can be reviewed as well as the working half.
+    ExportFailed,
 }
 
 impl ShotScenario {
@@ -843,6 +980,8 @@ impl ShotScenario {
             "saved" => ShotScenario::SavedProject,
             "curves" => ShotScenario::Curves,
             "collaborators" => ShotScenario::Collaborators,
+            "exporting" => ShotScenario::ExportRunning,
+            "exportfailed" => ShotScenario::ExportFailed,
             _ => return None,
         })
     }
@@ -890,8 +1029,10 @@ pub struct VideoEditorApp {
     /// A media-import portal request in flight, drained each `sync`.
     import_rx: Option<ImportChannel>,
     /// A short, honest status line shown after an import attempt (how many
-    /// clips landed, or why the portal round-trip failed). Never a fake success.
-    import_notice: Option<String>,
+    /// clips landed, which files were refused and why, or why the portal
+    /// round-trip failed). Never a fake success, and it carries its own
+    /// severity rather than leaving the tint to be guessed from its prose.
+    import_notice: Option<Notice>,
     /// A file queued to import on the next `sync` (deterministic `--shots` /
     /// tests seed a real clip here instead of opening the portal).
     pending_imports: Vec<PathBuf>,
@@ -1114,6 +1255,20 @@ pub struct VideoEditorApp {
     /// destination, or why the round-trip failed. Distinct from
     /// [`ExportStatus`], which reports the *render*.
     export_notice: Option<String>,
+    /// Render cache for the topbar export chip. A render holds animation
+    /// frames open for its whole duration, so the chip's words are formatted
+    /// and elided when they change rather than once a frame.
+    export_chip_text: Option<ExportChipText>,
+    /// Whether [`VideoDoc::load_project`] still owes this widget a rebuild.
+    ///
+    /// Set when the document's heads move and cleared by the reload it asks
+    /// for. Starting `true` is what makes the first `sync` load, without
+    /// having to infer "first" from heads that are legitimately empty for a
+    /// document nobody has written to yet. It also survives a drag: an edit
+    /// that arrives while one is in flight cannot be applied then (the live
+    /// preview lives only in the in-memory project), and this is what
+    /// remembers that it is owed.
+    project_reload_pending: bool,
     // --- project files ----------------------------------------------------
     /// The file this project is saved in, once it has one. `None` means the
     /// project has never been saved: the work is still safe (the autosave
@@ -1131,8 +1286,9 @@ pub struct VideoEditorApp {
     project_rx: Option<portal::ProjectChannel>,
     /// A short, honest line about the last project-file operation. Never a
     /// fake success: a save that failed says why, and a project opened with
-    /// sources this device cannot read says which.
-    project_notice: Option<String>,
+    /// sources this device cannot read says which. Carries its own severity —
+    /// see [`NoticeLevel`].
+    project_notice: Option<Notice>,
     /// The project menu (Open / Save / Save As / recents), on the shared
     /// [`ContextMenu`] every other menu in the app uses.
     project_menu: ContextMenu,
@@ -1311,6 +1467,8 @@ impl VideoEditorApp {
             export_job: None,
             export_dest_rx: None,
             export_notice: None,
+            export_chip_text: None,
+            project_reload_pending: true,
             project_path: None,
             saved_heads: None,
             project_rx: None,
@@ -1487,6 +1645,15 @@ impl VideoEditorApp {
         let overlay = layout == SplitLayout::Overlay;
         let topbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOPBAR_H);
         let export_btn = Rect::new(r.x1 - 124.0, r.y0 + 9.0, r.x1 - 14.0, r.y0 + 39.0);
+        // Directly beneath Export, in the same strip the project notice uses,
+        // so the two never share a pixel — see `project_notice_limit`.
+        let chip_w = EXPORT_CHIP_W.min((r.width() - 24.0).max(0.0));
+        let export_chip = Rect::new(
+            export_btn.x1 - chip_w,
+            topbar.y1 + 6.0,
+            export_btn.x1,
+            topbar.y1 + 32.0,
+        );
         let split_btn = Rect::new(r.x1 - 244.0, r.y0 + 9.0, r.x1 - 134.0, r.y0 + 39.0);
         let import_btn = Rect::new(r.x1 - 366.0, r.y0 + 9.0, r.x1 - 254.0, r.y0 + 39.0);
         // The hamburger replaces the static app glyph slot when the bin is an
@@ -1609,6 +1776,7 @@ impl VideoEditorApp {
             inspector_btn,
             project_btn,
             export_btn,
+            export_chip,
             split_btn,
             import_btn,
             bin,
@@ -3749,7 +3917,7 @@ impl VideoEditorApp {
     /// (`ui::portal`). The picker is a pure-Rust round-trip compiled into every
     /// build; the chosen files are drained each frame in [`Self::drain_import`].
     fn trigger_import(&mut self) {
-        self.import_notice = Some("Choose media to import…".to_string());
+        self.import_notice = Some(Notice::ok("Choose media to import…"));
         self.import_rx = Some(portal::request_import());
     }
 
@@ -3758,10 +3926,8 @@ impl VideoEditorApp {
     fn drain_import(&mut self, doc: &mut AutoCommit) {
         if !self.pending_imports.is_empty() {
             let paths = std::mem::take(&mut self.pending_imports);
-            let n = self.import_files(doc, &paths);
-            if n > 0 || !self.has_import_reason() {
-                self.import_notice = Some(import_summary(n, paths.len()));
-            }
+            let report = self.import_files(doc, &paths);
+            self.import_notice = Some(import_report_notice(&report));
             if self.auto_place_imports {
                 if let Some(mid) = self.selected_media {
                     self.ensure_track_and_place(doc, mid);
@@ -3785,46 +3951,51 @@ impl VideoEditorApp {
         }
         match outcome {
             Some(ImportOutcome::Selected(paths)) => {
-                let n = self.import_files(doc, &paths);
-                if n > 0 || !self.has_import_reason() {
-                    self.import_notice = Some(import_summary(n, paths.len()));
-                }
+                let report = self.import_files(doc, &paths);
+                self.import_notice = Some(import_report_notice(&report));
             }
             Some(ImportOutcome::Cancelled) => self.import_notice = None,
-            Some(ImportOutcome::Failed(reason)) => self.import_notice = Some(reason),
+            // The picker itself refused. Its wording ("the file picker needs
+            // the real-desktop build") is nothing like a probe's, which is
+            // exactly why the tint cannot be read back out of the words.
+            Some(ImportOutcome::Failed(reason)) => {
+                self.import_notice = Some(Notice::failed(reason));
+            }
             None => {}
         }
     }
 
-    /// Import a batch of files, returning how many became real clips. Each
-    /// refusal leaves the probe's own reason in `import_notice`; a batch that
-    /// imported nothing keeps the last one, because "No media could be
-    /// imported" on its own tells the user nothing they can act on.
-    fn import_files(&mut self, doc: &mut AutoCommit, paths: &[PathBuf]) -> usize {
+    /// Import a batch of files, reporting what landed *and* what did not.
+    ///
+    /// Every refusal is kept with the probe's own reason. The batch used to
+    /// return only a count, so a partly-failed import collapsed to "Imported
+    /// 3 of 5 files" — which names neither of the two files that were
+    /// refused nor why, even though the probe knew exactly.
+    fn import_files(&mut self, doc: &mut AutoCommit, paths: &[PathBuf]) -> ImportReport {
         self.import_notice = None;
-        paths.iter().filter(|p| self.import_one(doc, p)).count()
-    }
-
-    /// Whether the last import batch left a specific per-file reason worth
-    /// keeping instead of overwriting with a batch summary.
-    fn has_import_reason(&self) -> bool {
-        self.import_notice.is_some()
+        let mut report = ImportReport::default();
+        for path in paths {
+            match self.try_import_one(doc, path) {
+                Ok(()) => report.added += 1,
+                Err(reason) => report.refused.push((display_name(path), reason)),
+            }
+        }
+        report
     }
 
     /// Import one file: probe **real** metadata from the container and add it to
     /// the media bin as a real [`MediaItem`], replicated through the CRDT. The
     /// stored path is workspace-relative for a file under the FUSE mount (so it
     /// replicates to peers) or absolute for an imported local file.
-    fn import_one(&mut self, doc: &mut AutoCommit, path: &Path) -> bool {
+    ///
+    /// A refusal hands back the probe's own reason ("is not a media file - it
+    /// is HTML document") rather than writing a notice itself, so the batch
+    /// above can keep *every* refusal instead of whichever one happened to be
+    /// written last.
+    fn try_import_one(&mut self, doc: &mut AutoCommit, path: &Path) -> Result<(), String> {
         let probed = match probe::probe_file(path) {
             Ok(p) => p,
-            Err(e) => {
-                // Say *why* it was refused. The probe knows ("is not a media
-                // file - it is an HTML page"); a bare "couldn't be imported"
-                // throws that away and leaves the user guessing.
-                self.import_notice = Some(format!("{}: {e}", display_name(path)));
-                return false;
-            }
+            Err(e) => return Err(e.to_string()),
         };
         let resolved = crate::media::resolve(&path.to_string_lossy());
         let stored = crate::media::stored_path_for_import(&resolved.abs_path);
@@ -3858,7 +4029,7 @@ impl VideoEditorApp {
         self.actions
             .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&item));
         self.selected_media = Some(id);
-        true
+        Ok(())
     }
 
     /// Drop `media_id` onto the timeline (creating a track of the right kind if
@@ -4809,9 +4980,21 @@ impl VideoEditorApp {
                     losing: self.project.name.clone(),
                 });
             }
+            ShotScenario::ExportRunning => {
+                // Part-way through a real encode, with the dialog dismissed:
+                // the state the editor used to have nowhere to show.
+                self.show_export = false;
+                self.export_status = ExportStatus::Rendering { progress: 0.62 };
+            }
+            ShotScenario::ExportFailed => {
+                self.show_export = false;
+                self.export_status = ExportStatus::Failed {
+                    reason: "no encoder for H.264 on this machine".to_string(),
+                };
+            }
             ShotScenario::SavedProject => {
                 let path = PathBuf::from("/home/you/Videos/Coastline_Doc_v3.qvp");
-                self.project_notice = Some(format!("Saved to {}", path.display()));
+                self.project_notice = Some(Notice::ok(format!("Saved to {}", path.display())));
                 self.project_path = Some(path);
                 // Saved *as it stands*, so the badge is off — which is the
                 // half of the button this scenario exists to show.
@@ -5549,22 +5732,33 @@ impl Widget for VideoEditorApp {
             }
             self.seeded = true;
         }
-        // While a clip-editing drag is in flight, the live preview lives only in
-        // the in-memory project — the CRDT isn't written until the drag commits
-        // — so don't clobber it by reloading a stale document mid-drag.
-        if !self.drag_is_editing() {
-            self.project = VideoDoc::load_project(state);
-        }
         // The document's heads are the cheap "something actually changed"
         // signal. Reloading the model every frame says nothing; a new head
         // means a real edit, local or from a peer.
         let heads = state.get_heads();
         if heads != self.doc_heads {
             self.doc_heads = heads;
+            self.project_reload_pending = true;
             #[cfg(any(feature = "gst", feature = "decode"))]
             {
                 self.monitor_stale = true;
             }
+        }
+        // Rebuilding the whole model from the CRDT is the most expensive thing
+        // in this pass — measured at ~1.1ms on the sample project, roughly a
+        // third of the frame budget, and it grows with the project while
+        // `get_heads` does not. `sync` runs every frame for as long as
+        // anything animates (playback, a running render, an open flap), so
+        // this used to re-derive an unchanged model sixty times a second.
+        //
+        // While a clip-editing drag is in flight, the live preview lives only
+        // in the in-memory project — the CRDT isn't written until the drag
+        // commits — so don't clobber it by reloading a stale document
+        // mid-drag. The reload stays owed and lands the moment the drag lets
+        // go, so an edit that arrived meanwhile is not lost.
+        if self.project_reload_pending && !self.drag_is_editing() {
+            self.project = VideoDoc::load_project(state);
+            self.project_reload_pending = false;
         }
         // Bring in any pending / portal-picked media as real clips (this pushes
         // straight into `self.project.media` and the CRDT).
@@ -5875,6 +6069,9 @@ impl Widget for VideoEditorApp {
         }
         self.draw_file_drop_invite(scene, transform, tr, theme);
         self.draw_project_notice(scene, transform, tr, theme, &r);
+        // Above the dialog's own scrim: a render that is still going is
+        // reported whether or not the dialog that started it is up.
+        self.draw_export_chip(scene, transform, tr, theme, &r);
         if self.pending_open.is_some() {
             self.draw_discard_dialog(scene, transform, tr, theme);
         }
@@ -6185,13 +6382,10 @@ impl Widget for VideoEditorApp {
             // media, exactly like the portal pick — the whole editor accepts it.
             WindowEvent::DroppedFile(path) => {
                 self.file_hovering = false;
-                if self.import_one(state, path) {
-                    self.import_notice = Some(import_summary(1, 1));
-                } else if self.import_notice.is_none() {
-                    // `import_one` normally leaves the probe's own reason here;
-                    // only fall back when it somehow did not.
-                    self.import_notice = Some("That file couldn't be imported".to_string());
-                }
+                // A drop is a batch of one, and reports like one: a refusal
+                // still names the file and carries the probe's own reason.
+                let report = self.import_files(state, std::slice::from_ref(path));
+                self.import_notice = Some(import_report_notice(&report));
                 *handled = true;
             }
             WindowEvent::HoveredFile(_) => {
@@ -6299,10 +6493,11 @@ impl Widget for VideoEditorApp {
                 }
             }
         }
-        // Topbar buttons.
+        // Topbar buttons, and the export chip that hangs below them.
         if [r.import_btn, r.split_btn, r.export_btn, r.menu_btn]
             .iter()
             .any(|b| b.contains(point))
+            || (self.export_chip_is_shown() && r.export_chip.contains(point))
         {
             return Some(CursorIcon::Pointer);
         }
@@ -6596,6 +6791,12 @@ impl Widget for VideoEditorApp {
         if self.show_export {
             kids.push(self.a11y_export_dialog());
         }
+        // A render that outlived its dialog. Gated on the *render*, never on
+        // the dialog — a dismissed export used to vanish from the tree
+        // entirely while it was still encoding.
+        if let Some(status) = self.a11y_export_status() {
+            kids.push(status);
+        }
         if self.pending_open.is_some() {
             kids.push(self.a11y_discard_dialog());
         }
@@ -6647,6 +6848,17 @@ impl Widget for VideoEditorApp {
             // Not a pane: the export dialog or the help sheet.
             if pane_key == hash_key(&"export") {
                 return self.a11y_export_action(action, &key_path[1..]);
+            }
+            if pane_key == hash_key(&"export-status") {
+                // Activating the chip does what clicking it does: opens the
+                // dialog it is reporting for. With nothing to report there is
+                // nothing to open, and it says so rather than claiming a
+                // success.
+                if matches!(action, Action::Activate) && self.export_chip_is_shown() {
+                    self.show_export = true;
+                    return true;
+                }
+                return false;
             }
             if pane_key == hash_key(&"project") {
                 // Activating it does what clicking it does: opens the menu.
@@ -7429,6 +7641,63 @@ impl VideoEditorApp {
             .with_children(kids)
     }
 
+    /// The render's state as a node of its own, outside the dialog's subtree.
+    ///
+    /// `export_status` was read in exactly two places and both were inside the
+    /// `show_export` gate, so an assistive technology whose user had dismissed
+    /// the dialog was told nothing at all about a render that was still going:
+    /// no progress, no outcome, no failure. This is the same live region in
+    /// the tree whenever the dialog is not there to carry it — so a running
+    /// export is announced exactly once at any moment, and never zero times.
+    fn a11y_export_status(&self) -> Option<AccessNode> {
+        if self.show_export {
+            // The dialog carries its own progress node; two live regions
+            // reporting one render would narrate it twice.
+            return None;
+        }
+        let key = ui::a11y::hash_key(&"export-status");
+        match &self.export_status {
+            ExportStatus::Idle => None,
+            ExportStatus::Rendering { progress } => Some(
+                AccessNode::new(Role::ProgressBar)
+                    .with_name("Export progress")
+                    .with_value(format!("{}%", (progress * 100.0).round() as i32))
+                    .with_key(key)
+                    .with_live(ui::a11y::Politeness::Polite)
+                    .with_state(AccessState {
+                        busy: true,
+                        ..Default::default()
+                    }),
+            ),
+            // Finished: operable, because activating it opens the dialog that
+            // holds the whole path and the settings that produced it.
+            ExportStatus::Done { path } => Some(
+                AccessNode::new(Role::Button)
+                    .with_name("Export finished")
+                    .with_value(path.clone())
+                    .with_key(key)
+                    .with_live(ui::a11y::Politeness::Polite)
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    }),
+            ),
+            // A render that did not happen interrupts: the user is very
+            // likely to act on the next thing believing a file exists.
+            ExportStatus::Failed { reason } => Some(
+                AccessNode::new(Role::Button)
+                    .with_name("Export failed")
+                    .with_value(reason.clone())
+                    .with_key(key)
+                    .with_live(ui::a11y::Politeness::Assertive)
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    }),
+            ),
+        }
+    }
+
     fn a11y_export_dialog(&self) -> AccessNode {
         let mut kids = vec![
             // The same honest size line the dialog paints. On a box whose
@@ -7799,7 +8068,7 @@ impl VideoEditorApp {
 
     /// The hover label for whatever icon-only control sits under `p`, or
     /// `None` over anything that already carries its own words.
-    fn tooltip_at(&self, p: Point) -> Option<&'static str> {
+    fn tooltip_at(&self, p: Point) -> Option<&str> {
         let r = self.regions();
         for (action, rect) in self.transport_buttons(&r) {
             if rect.contains(p) {
@@ -7825,6 +8094,17 @@ impl VideoEditorApp {
         }
         if r.export_btn.contains(p) {
             return Some("Export video (Ctrl+E)");
+        }
+        if self.export_chip_is_shown() && r.export_chip.contains(p) {
+            // The chip is 176px wide, so a long failure is elided in it. The
+            // hover carries the whole thing rather than making the reason
+            // something only the dialog knows — and the accessible node
+            // carries it too, for a reader who cannot hover.
+            return match &self.export_status {
+                ExportStatus::Failed { reason } => Some(reason.as_str()),
+                ExportStatus::Done { path } => Some(path.as_str()),
+                _ => Some("Export in progress — press to show it"),
+            };
         }
         if r.import_btn.contains(p) {
             return Some("Import media (Ctrl+Shift+O)");
@@ -8131,12 +8411,21 @@ impl VideoEditorApp {
             return false;
         };
         match (key, action) {
+            // A disabled node that answers `true` tells an assistive
+            // technology the action succeeded when nothing happened — the
+            // node is correctly marked `disabled`, and this used to claim the
+            // press worked anyway. The undo path above already refuses
+            // properly; this now matches it.
             (1, Action::Activate) => {
                 if self.export_is_offered() {
                     self.request_export();
+                    true
+                } else {
+                    false
                 }
-                true
             }
+            // Closing is safe now that the render reports from the chip and
+            // its own live region whether or not this dialog is up.
             (2, Action::Activate) => {
                 self.show_export = false;
                 true
@@ -8206,6 +8495,8 @@ impl VideoEditorApp {
         }
         if self.show_export {
             if matches!(key, Key::Named(NamedKey::Escape)) {
+                // Esc closes the dialog, not the render: the chip under the
+                // Export button carries the job on.
                 self.show_export = false;
                 return true;
             }
@@ -8545,6 +8836,13 @@ impl VideoEditorApp {
         // Scrollbars float over their panes, so they are hit-tested before any
         // content underneath them.
         if self.press_scrollbars(r, p) {
+            return;
+        }
+        // The export chip floats over whatever pane is under it, so it is hit
+        // first. It is the way back into the render it is reporting: the full
+        // path, the failure's own words and Cancel all live in the dialog.
+        if self.export_chip_is_shown() && r.export_chip.contains(p) {
+            self.show_export = true;
             return;
         }
         // Hamburger toggle (overlay layout only).
@@ -9250,7 +9548,9 @@ impl VideoEditorApp {
     fn press_export(&mut self, state: &mut AutoCommit, r: &Regions, p: Point) {
         let l = self.export_layout(r);
         if !l.card.contains(p) {
-            // Click outside the card dismisses.
+            // Click outside the card dismisses. A render in flight is not
+            // abandoned by that: it keeps reporting from the topbar chip and
+            // its own live region, and the chip is the way back in here.
             self.show_export = false;
             return;
         }
@@ -9275,7 +9575,8 @@ impl VideoEditorApp {
         if l.cancel.contains(p) {
             if self.export_running() {
                 // A render in flight: this is Cancel, not Close. Stop it and
-                // leave the dialog up so the outcome is visible.
+                // leave the dialog up so the outcome is visible here as well
+                // as in the chip.
                 if let Some(job) = self.export_job.as_ref() {
                     job.cancel();
                 }
@@ -9380,7 +9681,7 @@ impl VideoEditorApp {
             return; // one chooser at a time
         }
         let suggested = crate::project_file::with_extension(&self.project_label());
-        self.project_notice = Some("Choose where to save…".to_string());
+        self.project_notice = Some(Notice::ok("Choose where to save…"));
         self.project_rx = Some(portal::request_save_project(&suggested));
     }
 
@@ -9402,7 +9703,7 @@ impl VideoEditorApp {
         match crate::project_file::save(&path, &self.project) {
             Ok(()) => {
                 self.recents = crate::project_file::recents::remember(&self.recents, &path);
-                self.project_notice = Some(format!("Saved to {}", path.display()));
+                self.project_notice = Some(Notice::ok(format!("Saved to {}", path.display())));
                 // Save As can move the project; relative media follows it.
                 crate::media::set_project_anchor(path.parent().map(|p| p.to_path_buf()));
                 self.project_path = Some(path);
@@ -9422,7 +9723,7 @@ impl VideoEditorApp {
             }
             Err(e) => {
                 self.save_then_open = None;
-                self.project_notice = Some(e.to_string());
+                self.project_notice = Some(Notice::failed(e.to_string()));
             }
         }
     }
@@ -9450,7 +9751,7 @@ impl VideoEditorApp {
         let mut project = match crate::project_file::load(&path) {
             Ok(p) => p,
             Err(e) => {
-                self.project_notice = Some(e.to_string());
+                self.project_notice = Some(Notice::failed(e.to_string()));
                 return;
             }
         };
@@ -9475,7 +9776,7 @@ impl VideoEditorApp {
         let replaced = !self.project_is_empty();
         let mut notice = Self::opened_notice(&path, &project);
         if replaced {
-            notice.push_str(" · Undo to go back");
+            notice.text.push_str(" · Undo to go back");
         }
         self.project_notice = Some(notice);
 
@@ -9506,11 +9807,11 @@ impl VideoEditorApp {
     /// What to say after an open: how much arrived, and — if any of it cannot
     /// be read here — which sources, in the same words the bin and the
     /// timeline use for the same states.
-    fn opened_notice(path: &Path, project: &crate::model::Project) -> String {
+    fn opened_notice(path: &Path, project: &crate::model::Project) -> Notice {
         let name = crate::project_file::recents::label(path);
         let missing = crate::project_file::missing_sources(project);
         if missing.is_empty() {
-            return format!("Opened {name}");
+            return Notice::ok(format!("Opened {name}"));
         }
         // Split on the distinction the app already draws everywhere else:
         // bytes that are not here yet, versus bytes that are here and are not
@@ -9524,7 +9825,9 @@ impl VideoEditorApp {
         } else {
             listed
         };
-        format!("Opened {name} — {MEDIA_NOT_LOCAL}: {tail}")
+        // Opened, but not everything came with it: a warning, not a success
+        // and not a failure.
+        Notice::warning(format!("Opened {name} — {MEDIA_NOT_LOCAL}: {tail}"))
     }
 
     /// Drain an in-flight project chooser. Mirrors [`Self::poll_export`].
@@ -9552,8 +9855,12 @@ impl VideoEditorApp {
                 self.project_notice = None;
             }
             Some(portal::ProjectOutcome::Failed(reason)) => {
+                // A portal that refused is a failure, tinted as one. Its own
+                // wording ("the file picker needs the real-desktop build")
+                // names no English the old substring test looked for, so this
+                // used to paint in the success tint.
                 self.save_then_open = None;
-                self.project_notice = Some(reason);
+                self.project_notice = Some(Notice::failed(reason));
             }
             None => {}
         }
@@ -10319,15 +10626,9 @@ impl VideoEditorApp {
             return;
         };
         let c = &theme.tokens.colors;
-        let tint = if self.project_notice_is_error() {
-            c.semantic.danger
-        } else if notice.contains(MEDIA_NOT_LOCAL) {
-            // Opened, but not everything came with it. Neither a success nor a
-            // failure, and it must not be dressed as either.
-            c.semantic.warning
-        } else {
-            c.accent[5]
-        };
+        // The severity was decided where the outcome was known and travels
+        // with the message, so a notice in any language is tinted correctly.
+        let tint = notice.level.tint(theme);
         // A floating plate, not a full-width band. A translucent band across
         // the whole window let the media bin's own header show through it, so
         // "Saved to …" and "MEDIA BIN · 7 clips" were painted on top of each
@@ -10338,13 +10639,13 @@ impl VideoEditorApp {
         } else {
             r.topbar.x0 + 12.0
         };
-        let room = (r.topbar.x1 - 12.0 - x0).max(80.0);
-        let shown = elide_at(notice, (room - 24.0) as f32, 11.5, tr);
+        let room = (self.project_notice_limit(r) - x0).max(80.0);
+        let shown = elide_at(&notice.text, (room - 24.0) as f32, 11.5, tr);
         let (w, _) = tr.measure(&shown, 11.5, None);
         let plate = Rect::new(
             x0,
             r.topbar.y1 + 6.0,
-            (x0 + w as f64 + 24.0).min(r.topbar.x1 - 12.0),
+            (x0 + f64::from(w) + 24.0).min(self.project_notice_limit(r)),
             r.topbar.y1 + 32.0,
         );
         fill_rrect(scene, tf, c.surfaces.raised, plate, 7.0);
@@ -10363,20 +10664,144 @@ impl VideoEditorApp {
         );
     }
 
-    /// Whether the standing project notice reports a failure, so it is tinted
-    /// as one. Every failure path here goes through
-    /// [`crate::project_file::ProjectFileError`]'s wording, so the test is
-    /// against that vocabulary rather than against arbitrary prose.
-    fn project_notice_is_error(&self) -> bool {
-        self.project_notice
-            .as_deref()
-            .map(|n| {
-                n.starts_with("Not a video project")
-                    || n.starts_with("Project file is")
-                    || n.starts_with("Project needs")
-                    || n.starts_with("Could not")
-            })
-            .unwrap_or(false)
+    /// Whether a render has anything to report right now. A job that is still
+    /// encoding, and the outcome of the one that just finished, both stand —
+    /// the outcome until the next export replaces it, exactly like the
+    /// project notice above it.
+    fn export_chip_is_shown(&self) -> bool {
+        !matches!(self.export_status, ExportStatus::Idle)
+    }
+
+    /// The words the export chip carries and the severity they read at.
+    ///
+    /// This is the whole point of the chip: `export_status` used to be read in
+    /// two places and both were gated on the dialog being open, so dismissing
+    /// the dialog while a render was in flight left the render with nowhere at
+    /// all to report — no bar, no outcome, no failure, and nothing in the
+    /// accessibility tree. The only evidence was a file appearing on disk.
+    fn export_chip_notice(&self) -> Option<Notice> {
+        match &self.export_status {
+            ExportStatus::Idle => None,
+            ExportStatus::Rendering { progress } => Some(Notice::ok(format!(
+                "Exporting… {}%",
+                (progress * 100.0).round() as i64
+            ))),
+            ExportStatus::Done { path } => Some(Notice::ok(format!(
+                "Exported {}",
+                display_name(Path::new(path))
+            ))),
+            ExportStatus::Failed { reason } => Some(Notice::failed(reason.clone())),
+        }
+    }
+
+    /// The chip's words and severity, formatted and elided only when they
+    /// have actually changed.
+    ///
+    /// A render keeps animation frames coming for its whole duration, so this
+    /// is on the hot path: the text is rebuilt when the whole-percent figure
+    /// moves (or the window width does), not on every encoded frame.
+    fn export_chip_text(&mut self, chip: Rect, tr: &mut TextRenderer) -> Option<&ExportChipText> {
+        if !self.export_chip_is_shown() {
+            self.export_chip_text = None;
+            return None;
+        }
+        let fresh = self.export_chip_text.as_ref().is_some_and(|c| {
+            (c.width - chip.width()).abs() < 0.5 && chip_text_matches(&c.from, &self.export_status)
+        });
+        if !fresh {
+            // Only on a real change: the format and the elision both live
+            // behind this branch, so a steady render costs neither.
+            let notice = self.export_chip_notice()?;
+            self.export_chip_text = Some(ExportChipText {
+                from: self.export_status.clone(),
+                width: chip.width(),
+                level: notice.level,
+                shown: elide_at(&notice.text, (chip.width() - 20.0) as f32, 11.0, tr),
+            });
+        }
+        self.export_chip_text.as_ref()
+    }
+
+    /// Paint the render's own state into the window chrome.
+    ///
+    /// The worker was built to run while the editor stays editable — it clones
+    /// the project precisely so the UI thread can keep working — so closing
+    /// the dialog is a reasonable thing to do mid-render, and the render has
+    /// to keep reporting somewhere when it happens.
+    fn draw_export_chip(
+        &mut self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
+        let chip = r.export_chip;
+        if chip.width() <= 0.0 {
+            self.export_chip_text = None;
+            return;
+        }
+        let progress = match self.export_status {
+            ExportStatus::Rendering { progress } => Some(progress.clamp(0.0, 1.0)),
+            _ => None,
+        };
+        let Some(cached) = self.export_chip_text(chip, tr) else {
+            return;
+        };
+        let level = cached.level;
+        // Cloned off the cache so the scene draws below can borrow `tr` again;
+        // one short string, and only while a render has something to say.
+        let shown = cached.shown.clone();
+        let c = &theme.tokens.colors;
+        let tint = level.tint(theme);
+        fill_rrect(scene, tf, c.surfaces.raised, chip, 7.0);
+        fill_rrect(scene, tf, with_alpha(tint, 0.18), chip, 7.0);
+        // A render in flight fills the chip as it encodes: the progress bar
+        // the dialog used to hold alone, in a place that survives the dialog.
+        // Clipped to the chip's own shape so the fill's leading edge is a
+        // straight line rather than a second pill nested inside the first.
+        if let Some(p) = progress {
+            let done = chip.width() * p;
+            if done > 0.5 {
+                scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    tf,
+                    &RoundedRect::from_rect(chip, 7.0),
+                );
+                fill_rect(
+                    scene,
+                    tf,
+                    with_alpha(tint, 0.34),
+                    Rect::new(chip.x0, chip.y0, chip.x0 + done, chip.y1),
+                );
+                scene.pop_layer();
+            }
+        }
+        stroke_rrect(scene, tf, with_alpha(tint, 0.55), chip, 7.0, 1.0);
+        let baseline = text_baseline(chip, 11.0, tr);
+        text(
+            scene,
+            tr,
+            tf,
+            &shown,
+            11.0,
+            c.text_primary,
+            chip.x0 + 10.0,
+            baseline,
+        );
+    }
+
+    /// How far right the project-notice plate may run. It shares the strip
+    /// under the topbar with the export chip, which is anchored to the right;
+    /// a plate that ran to the window edge would be drawn straight through it.
+    fn project_notice_limit(&self, r: &Regions) -> f64 {
+        if self.export_chip_is_shown() {
+            r.export_chip.x0 - 8.0
+        } else {
+            r.topbar.x1 - 12.0
+        }
     }
 
     /// Card and buttons for the unsaved-work question.
@@ -10812,13 +11237,12 @@ impl VideoEditorApp {
         // anything at all every import error was silent — six sites wrote it
         // and one read it. Errors tint danger; a plain count stays quiet.
         if let Some(notice) = &self.import_notice {
-            let failed = self.import_notice_is_error();
+            let failed = notice.is_failure();
             let strip = Rect::new(r.bin.x0, r.bin.y1 - 34.0, r.bin.x1, r.bin.y1);
-            let tint = if failed {
-                c.semantic.danger
-            } else {
-                c.accent[5]
-            };
+            // The severity came with the message from the place that knew the
+            // outcome — a portal refusal is tinted as a refusal even though
+            // its wording looks nothing like a probe's.
+            let tint = notice.level.tint(theme);
             fill_rect(scene, tf, with_alpha(tint, 0.16), strip);
             stroke_line(
                 scene,
@@ -10835,26 +11259,10 @@ impl VideoEditorApp {
             } else {
                 c.text_primary
             };
-            let shown = elide_w(notice, (strip.width() - 24.0) as f32, tr);
+            let shown = elide_w(&notice.text, (strip.width() - 24.0) as f32, tr);
             let baseline = text_baseline(strip, 11.0, tr);
             text(scene, tr, tf, &shown, 11.0, col, strip.x0 + 12.0, baseline);
         }
-    }
-
-    /// Whether the standing import notice reports a failure (so it is tinted
-    /// as one). A refusal always names the file and carries the probe's
-    /// reason; the success and progress lines never contain "not" / "n't".
-    fn import_notice_is_error(&self) -> bool {
-        self.import_notice
-            .as_deref()
-            .map(|n| {
-                n.contains("could not")
-                    || n.contains("couldn't")
-                    || n.contains("is not")
-                    || n.contains("No media")
-                    || n.contains("is empty")
-            })
-            .unwrap_or(false)
     }
 
     /// Draw feedback for a live bin→timeline drag: highlight the drop lane, mark
@@ -13869,15 +14277,39 @@ fn display_name(path: &Path) -> String {
 }
 
 /// Honest, human-readable summary of an import batch. Never claims a success
-/// that did not happen.
-fn import_summary(added: usize, total: usize) -> String {
-    if added == 0 {
-        "No media could be imported".to_string()
-    } else if added == total {
-        format!("Imported {added} clip{}", if added == 1 { "" } else { "s" })
-    } else {
-        format!("Imported {added} of {total} files")
+/// that did not happen — and never throws away *why* a file was refused.
+///
+/// A batch with any refusal in it reads as a failure, because it is one for
+/// the files that did not make it. It used to collapse to "Imported 3 of 5
+/// files": the two refusals and the probe's reasons for them were dropped on
+/// the floor, and the line was painted in the success tint on top of that.
+fn import_report_notice(report: &ImportReport) -> Notice {
+    if report.refused.is_empty() {
+        return Notice::ok(format!(
+            "Imported {} clip{}",
+            report.added,
+            if report.added == 1 { "" } else { "s" },
+        ));
     }
+    // Name the files and quote the probe. Two fit a one-line strip; the rest
+    // are counted rather than silently dropped.
+    let listed: Vec<String> = report
+        .refused
+        .iter()
+        .take(IMPORT_REFUSALS_NAMED)
+        .map(|(name, reason)| format!("{name}: {reason}"))
+        .collect();
+    let mut why = listed.join("; ");
+    let hidden = report.refused.len() - listed.len();
+    if hidden > 0 {
+        why = format!("{why} and {hidden} more");
+    }
+    let head = if report.added == 0 {
+        "No media could be imported".to_string()
+    } else {
+        format!("Imported {} of {}", report.added, report.total())
+    };
+    Notice::failed(format!("{head} — {why}"))
 }
 
 /// Blit an RGBA frame into `canvas`, scaled to fit (letterboxed), centred.
@@ -16051,10 +16483,11 @@ mod tests {
             .project_notice
             .clone()
             .expect("the failure is on screen");
-        assert!(notice.starts_with("Could not save"), "{notice}");
-        assert!(
-            app.project_notice_is_error(),
-            "and it is tinted as a failure"
+        assert!(notice.text.starts_with("Could not save"), "{}", notice.text);
+        assert_eq!(
+            notice.level,
+            NoticeLevel::Failed,
+            "and it is tinted as a failure",
         );
     }
 
@@ -16074,8 +16507,8 @@ mod tests {
             "the open project is untouched"
         );
         let notice = app.project_notice.clone().expect("it says what went wrong");
-        assert_eq!(notice, "Not a video project file");
-        assert!(app.project_notice_is_error());
+        assert_eq!(notice.text, "Not a video project file");
+        assert_eq!(notice.level, NoticeLevel::Failed);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -16108,14 +16541,16 @@ mod tests {
             .project_notice
             .clone()
             .expect("the open reported something");
-        assert!(notice.contains("Opened Moved"), "{notice}");
+        assert!(notice.text.contains("Opened Moved"), "{}", notice.text);
         assert!(
-            notice.contains(MEDIA_NOT_LOCAL) && notice.contains("Drone.mov"),
-            "it names the shared vocabulary and the source: {notice}",
+            notice.text.contains(MEDIA_NOT_LOCAL) && notice.text.contains("Drone.mov"),
+            "it names the shared vocabulary and the source: {}",
+            notice.text,
         );
-        assert!(
-            !app.project_notice_is_error(),
-            "an absent source is not a failed open"
+        assert_eq!(
+            notice.level,
+            NoticeLevel::Warning,
+            "an absent source is neither a failed open nor a clean one",
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -16353,7 +16788,7 @@ mod tests {
     fn a_cancelled_chooser_clears_the_notice_and_abandons_a_queued_open() {
         let (mut app, mut doc) = app_and_doc();
         app.save_then_open = Some(PathBuf::from("/p/Q.qvp"));
-        app.project_notice = Some("Choose where to save…".into());
+        app.project_notice = Some(Notice::ok("Choose where to save…"));
         app.project_rx = Some(portal::inject_project_for_test(
             portal::ProjectOutcome::Cancelled,
         ));
@@ -17803,6 +18238,454 @@ mod tests {
         }
     }
 
+    /// A render outlives the dialog that started it — `start_export` clones
+    /// the project precisely so the UI thread can keep editing while the
+    /// worker encodes. But `export_status` was read in exactly two places and
+    /// **both** were gated on `show_export`, so every way of dismissing the
+    /// dialog took the render off the accessibility tree with it: no progress,
+    /// no outcome, no failure. The only evidence was a file appearing on disk.
+    ///
+    /// Driven through `ui::headless::Driver`, so this is the AccessKit tree a
+    /// screen reader actually receives, dismissed the ways a user actually
+    /// dismisses it — including by pressing the exported Close button itself.
+    #[test]
+    fn a_dismissed_render_is_still_announced_to_a_screen_reader() {
+        type Dismiss = fn(&mut ui::headless::Driver);
+        let dismissals: [(&str, Dismiss); 3] = [
+            // Outside the card: the card is centred, so the far left is clear
+            // of it at this size.
+            ("a click outside the card", |d| d.click_at(24.0, 400.0)),
+            ("Escape", |d| d.key("Escape")),
+            ("the exported Close export button", |d| {
+                let close = d
+                    .a11y_node_named("Close export")
+                    .expect("the dialog offers a Close button to a reader");
+                d.perform_a11y_action(close, &ui::a11y::Action::Activate)
+                    .expect("and it is operable");
+            }),
+        ];
+        for (how, dismiss) in dismissals {
+            let mut doc = AutoCommit::new();
+            VideoDoc::seed_sample(&mut doc);
+            let mut state = ui::State::new();
+            state.doc = doc;
+            let mut app = VideoEditorApp::new();
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            // A render in flight, with the dialog that started it up.
+            app.show_export = true;
+            app.export_status = ExportStatus::Rendering { progress: 0.42 };
+            let mut d = ui::headless::Driver::new(state, Box::new(app), (1280, 800));
+            assert!(
+                d.a11y_node_named("Close export").is_some(),
+                "{how}: the dialog is up to begin with",
+            );
+
+            dismiss(&mut d);
+
+            assert!(
+                d.a11y_node_named("Close export").is_none(),
+                "{how}: the dialog is gone",
+            );
+            let bars: Vec<_> = d
+                .a11y_nodes()
+                .into_iter()
+                .filter(|(_, n)| n.label().as_deref() == Some("Export progress"))
+                .collect();
+            assert_eq!(
+                bars.len(),
+                1,
+                "{how}: a render in flight is announced exactly once — not zero times",
+            );
+            assert_eq!(
+                bars[0].1.value().as_deref(),
+                Some("42%"),
+                "{how}: and it says how far the render has got",
+            );
+        }
+    }
+
+    /// The pixel half of the same defect, plus the way back: the chip under
+    /// the Export button paints a dismissed render's progress and its outcome,
+    /// and pressing it reopens the dialog it is reporting for.
+    #[test]
+    fn a_render_outside_its_dialog_is_painted_and_leads_back_to_it() {
+        let theme = Theme::dark();
+        let states = [
+            ExportStatus::Rendering { progress: 0.42 },
+            ExportStatus::Done {
+                path: "/home/you/Videos/Reel.mp4".into(),
+            },
+            ExportStatus::Failed {
+                reason: "the file picker needs the real-desktop build".into(),
+            },
+        ];
+        for status in states {
+            let (mut app, mut doc) = app_sized(1280.0, 800.0);
+            app.export_status = status.clone();
+            let painted = render_pixels(&mut app, 1280, 800, &theme);
+            let chip = app.regions().export_chip;
+            // The same frame with nothing to report: whatever the chip draws
+            // has to be the difference between these two.
+            app.export_status = ExportStatus::Idle;
+            let quiet = render_pixels(&mut app, 1280, 800, &theme);
+            assert!(
+                region_diff(&painted, &quiet, 1280, 800, chip) > 400,
+                "{status:?} is not painted anywhere outside the dialog",
+            );
+
+            // A 176px chip elides a long reason, so the hover has to carry
+            // the whole of it rather than leaving it to the dialog alone.
+            app.export_status = status.clone();
+            let hover = app
+                .tooltip_at(chip.center())
+                .map(std::string::ToString::to_string)
+                .expect("the chip names itself on hover");
+            match &status {
+                ExportStatus::Failed { reason } => assert_eq!(
+                    &hover, reason,
+                    "the hover carries the failure's whole reason",
+                ),
+                ExportStatus::Done { path } => {
+                    assert_eq!(&hover, path, "and a finished render's whole path")
+                }
+                _ => assert!(
+                    hover.contains("Export"),
+                    "and says what is going on: {hover}"
+                ),
+            }
+
+            // And it is a control, not a decoration.
+            render(&mut app);
+            click(&mut app, &mut doc, chip.center().x, chip.center().y);
+            assert!(
+                app.show_export,
+                "{status:?}: the chip must lead back to the render it reports",
+            );
+        }
+    }
+
+    /// A render holds animation frames open for its whole duration, so the
+    /// chip is on the hot path: its words must be formatted and elided when
+    /// they change, not once per encoded frame. The cache that buys that must
+    /// not be able to go stale, which is the half worth asserting.
+    #[test]
+    fn the_export_chip_caches_its_words_without_ever_showing_stale_ones() {
+        // Two encoded frames inside the same whole percent paint the same
+        // chip, so they must not cost a reformat.
+        assert!(
+            chip_text_matches(
+                &ExportStatus::Rendering { progress: 0.420_1 },
+                &ExportStatus::Rendering { progress: 0.420_4 },
+            ),
+            "the same painted percentage is the same picture",
+        );
+        // A percent that moved, or any other change, is not.
+        assert!(
+            !chip_text_matches(
+                &ExportStatus::Rendering { progress: 0.42 },
+                &ExportStatus::Rendering { progress: 0.43 },
+            ),
+            "a percentage that moved must be repainted",
+        );
+        assert!(
+            !chip_text_matches(
+                &ExportStatus::Done {
+                    path: "/a.mp4".into()
+                },
+                &ExportStatus::Done {
+                    path: "/b.mp4".into()
+                },
+            ),
+            "a different file is a different outcome",
+        );
+        assert!(!chip_text_matches(
+            &ExportStatus::Rendering { progress: 1.0 },
+            &ExportStatus::Done {
+                path: "/a.mp4".into()
+            },
+        ));
+
+        // …and the painted pixels really do follow the render, cache or not.
+        let theme = Theme::dark();
+        let (mut app, _doc) = app_sized(1280.0, 800.0);
+        app.export_status = ExportStatus::Rendering { progress: 0.10 };
+        let early = render_pixels(&mut app, 1280, 800, &theme);
+        let chip = app.regions().export_chip;
+        app.export_status = ExportStatus::Rendering { progress: 0.90 };
+        let late = render_pixels(&mut app, 1280, 800, &theme);
+        assert!(
+            region_diff(&early, &late, 1280, 800, chip) > 400,
+            "the chip must repaint when the render moves on",
+        );
+        app.export_status = ExportStatus::Done {
+            path: "/home/you/Videos/Reel.mp4".into(),
+        };
+        let finished = render_pixels(&mut app, 1280, 800, &theme);
+        assert!(
+            region_diff(&late, &finished, 1280, 800, chip) > 400,
+            "and when it finishes",
+        );
+        // Nothing to say leaves nothing behind, so the words cannot outlive
+        // the render they described.
+        app.export_status = ExportStatus::Idle;
+        render(&mut app);
+        assert!(
+            app.export_chip_text.is_none(),
+            "an idle editor holds no chip text at all",
+        );
+    }
+
+    /// A finished render's outcome has to reach a reader too, with the words
+    /// that make it actionable — the path it wrote, or why it did not.
+    #[test]
+    fn a_finished_render_tells_a_reader_what_became_of_it() {
+        let cases = [
+            (
+                ExportStatus::Done {
+                    path: "/home/you/Videos/Reel.mp4".into(),
+                },
+                "Export finished",
+                "/home/you/Videos/Reel.mp4",
+            ),
+            (
+                ExportStatus::Failed {
+                    reason: "no encoder for H.264 on this machine".into(),
+                },
+                "Export failed",
+                "no encoder for H.264 on this machine",
+            ),
+        ];
+        for (status, name, spoken) in cases {
+            let (mut app, _doc) = app_sized(1280.0, 800.0);
+            app.export_status = status;
+            let tree = app
+                .accessibility()
+                .expect("the editor describes its contents");
+            let found = a11y_find(&tree, name);
+            assert_eq!(found.len(), 1, "{name} must reach the tree exactly once");
+            assert_eq!(
+                found[0].value.as_deref(),
+                Some(spoken),
+                "{name} carries the outcome itself, not just its mood",
+            );
+            assert!(
+                found[0].state.focusable,
+                "{name} is reachable, so a reader can act on it",
+            );
+        }
+    }
+
+    /// A batch where some files were refused used to collapse to "Imported 3
+    /// of 5 files": the refusals and the probe's reasons for them were thrown
+    /// away, and — containing none of the English the tint was matched
+    /// against — the line was painted in the *success* colour on top of that.
+    #[test]
+    fn a_partly_failed_import_names_the_files_it_refused_and_why() {
+        let (mut app, mut doc) = app_and_doc();
+        let dir = scratch("partial-import");
+        let mut batch: Vec<PathBuf> = Vec::new();
+        let mut refused: Vec<String> = Vec::new();
+        for (i, name) in ["holiday.mp4", "notes.mov"].iter().enumerate() {
+            let good = write_real_png(40 + i as u32, 12);
+            let bad = dir.join(name);
+            std::fs::write(&bad, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
+            batch.push(good);
+            batch.push(bad);
+            refused.push((*name).to_string());
+        }
+        let before = app.project.media.len();
+
+        app.pending_imports = batch.clone();
+        app.drain_import(&mut doc);
+
+        let notice = app.import_notice.clone().expect("the batch reports itself");
+        assert_eq!(
+            app.project.media.len() - before,
+            2,
+            "the two real stills did land"
+        );
+        assert!(
+            notice.text.contains("Imported 2 of 4"),
+            "it says how much of the batch made it: {}",
+            notice.text,
+        );
+        for name in &refused {
+            assert!(
+                notice.text.contains(name.as_str()),
+                "it names {name}, which was refused: {}",
+                notice.text,
+            );
+        }
+        assert!(
+            notice.text.contains("not a media file"),
+            "and carries the probe's own reason rather than a shrug: {}",
+            notice.text,
+        );
+        assert_eq!(
+            notice.level,
+            NoticeLevel::Failed,
+            "a batch that refused files is not a success: {}",
+            notice.text,
+        );
+        for f in batch {
+            std::fs::remove_file(f).ok();
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Severity is data, not prose. A portal refusal ("the file picker needs
+    /// the real-desktop build") matches none of `"could not"` / `"couldn't"` /
+    /// `"is not"`, so the old substring rule painted a *failure* in the
+    /// success tint — in the import strip and the project strip alike. It also
+    /// made the colour of a message depend on the language it was written in.
+    #[test]
+    fn a_refusal_reads_as_one_whatever_words_it_happens_to_use() {
+        // The real wording `ui::portal` hands back on a box with no portal.
+        const REFUSAL: &str = "the file picker needs the real-desktop build (`--features portal`)";
+        let theme = Theme::dark();
+        let danger = theme.tokens.colors.semantic.danger;
+
+        // Import side.
+        let (mut app, mut doc) = app_and_doc();
+        app.import_rx = Some(portal::inject_for_test(ImportOutcome::Failed(
+            REFUSAL.to_string(),
+        )));
+        app.sync(&mut doc, &automerge::ROOT);
+        let notice = app.import_notice.clone().expect("the refusal is on screen");
+        assert_eq!(notice.text, REFUSAL, "in the picker's own words");
+        assert_eq!(
+            notice.level.tint(&theme),
+            danger,
+            "and tinted as the refusal it is",
+        );
+
+        // …and the strip really paints that, rather than the sentence.
+        let failed_px = render_pixels(&mut app, 1280, 800, &theme);
+        let strip = {
+            let r = app.regions();
+            Rect::new(r.bin.x0, r.bin.y1 - 34.0, r.bin.x1, r.bin.y1)
+        };
+        app.import_notice = Some(Notice::ok(REFUSAL));
+        let ok_px = render_pixels(&mut app, 1280, 800, &theme);
+        assert!(
+            region_diff(&failed_px, &ok_px, 1280, 800, strip) > 400,
+            "the same sentence at two severities must not paint the same",
+        );
+
+        // Project side: the same picker, the same refusal, the same rule.
+        let (mut app, mut doc) = app_and_doc();
+        app.project_rx = Some(portal::inject_project_for_test(
+            portal::ProjectOutcome::Failed(REFUSAL.to_string()),
+        ));
+        app.sync(&mut doc, &automerge::ROOT);
+        let notice = app
+            .project_notice
+            .clone()
+            .expect("a project chooser that refused says so");
+        assert_eq!(notice.text, REFUSAL);
+        assert_eq!(notice.level.tint(&theme), danger);
+    }
+
+    /// The exported Export button is marked `disabled` when export cannot run,
+    /// and its action used to answer `true` anyway — telling an assistive
+    /// technology the press succeeded while nothing at all happened. The undo
+    /// path in this file already refuses properly; this now matches it.
+    ///
+    /// The refusal is provoked by a render already in flight rather than by a
+    /// build with no encoder, so the disabled node exists to be pressed
+    /// however this crate's features were resolved.
+    #[test]
+    fn the_accessible_export_button_reports_a_press_that_did_nothing() {
+        let (mut app, _doc) = app_and_doc();
+        app.show_export = true;
+        // A timeline whose only footage cannot be read: the worker refuses it
+        // by name before it reaches an encoder, so this starts a real job
+        // without starting a real encode.
+        app.project = unexportable_project();
+        assert!(
+            !crate::export::unreadable_sources(&app.project).is_empty(),
+            "the fixture's footage is unreadable, so no encoder can run",
+        );
+        let dest = scratch("a11y-export").join("never-written.mp4");
+        app.begin_export_to(dest);
+        assert!(app.export_running(), "a render is in flight");
+        assert!(
+            !app.export_is_offered(),
+            "so a second Export is out of reach"
+        );
+
+        let tree = app
+            .accessibility()
+            .expect("the editor describes its contents");
+        let btn = a11y_find(&tree, "Start export");
+        assert_eq!(btn.len(), 1, "the dialog offers exactly one Export button");
+        assert!(
+            btn[0].state.disabled,
+            "and the node says it cannot be pressed",
+        );
+
+        let before = app.export_status.clone();
+        let acted = app.a11y_export_action(&ui::a11y::Action::Activate, &[1]);
+        assert!(
+            !acted,
+            "activating a disabled node must report that nothing happened",
+        );
+        assert_eq!(
+            app.export_status, before,
+            "a refused press does not move the render's status",
+        );
+        assert!(
+            app.export_dest_rx.is_none(),
+            "and opens no destination chooser",
+        );
+
+        // The enabled half of the same contract: with nothing in flight, the
+        // press is answered as the action it really performed.
+        app.export_job = None;
+        app.export_status = ExportStatus::Idle;
+        if app.export_is_offered() {
+            assert!(
+                app.a11y_export_action(&ui::a11y::Action::Activate, &[1]),
+                "an offered Export reports that it acted",
+            );
+        }
+    }
+
+    /// A one-clip timeline whose footage is not on this machine. `render`
+    /// refuses an unreadable source before it touches GStreamer, in every
+    /// build, so a job started on this finishes at once and encodes nothing.
+    fn unexportable_project() -> Project {
+        let mut p = Project::new("Unreadable");
+        let track = crate::model::Track {
+            id: Uuid::new_v4(),
+            name: "V1".to_string(),
+            kind: TrackKind::Video,
+            index: 1,
+            ..Default::default()
+        };
+        let media = MediaItem {
+            id: Uuid::new_v4(),
+            name: "Drone.mov".to_string(),
+            kind: MediaKind::Video,
+            duration: 5.0,
+            width: 1920,
+            height: 1080,
+            path: "/definitely/not/here-xyz.mov".to_string(),
+            ..Default::default()
+        };
+        p.clips.push(Clip {
+            id: Uuid::new_v4(),
+            track: track.id,
+            media: media.id,
+            start: 0.0,
+            out_point: 5.0,
+            ..Default::default()
+        });
+        p.tracks.push(track);
+        p.media.push(media);
+        p
+    }
+
     /// Same defect as the media bin's scrim, one token over: the modal painted
     /// `surfaces.overlay` — the opaque deep-menu surface — as its backdrop, so
     /// the editor vanished behind the dialog instead of dimming.
@@ -17913,6 +18796,26 @@ mod tests {
             &PresenceCtx::empty(),
         );
         ui::offscreen::OffscreenRenderer::new(w, h).render_rgba(&scene)
+    }
+
+    /// How many pixels of `rect` differ between two frames of the same size.
+    /// Two renders of one scene are deterministic here, so any difference at
+    /// all is something one frame painted and the other did not.
+    fn region_diff(a: &[u8], b: &[u8], fw: u32, fh: u32, rect: Rect) -> usize {
+        let x0 = rect.x0.max(0.0) as u32;
+        let y0 = rect.y0.max(0.0) as u32;
+        let x1 = (rect.x1.max(0.0) as u32).min(fw);
+        let y1 = (rect.y1.max(0.0) as u32).min(fh);
+        let mut n = 0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = ((y * fw + x) * 4) as usize;
+                if i + 3 < a.len() && i + 3 < b.len() && a[i..i + 4] != b[i..i + 4] {
+                    n += 1;
+                }
+            }
+        }
+        n
     }
 
     /// How many visually distinct colours a rect of a rendered frame contains,
@@ -18309,7 +19212,8 @@ mod tests {
         // Import enough stills to overflow the bin.
         for i in 0..14 {
             let png = write_real_png(16 + i, 16);
-            app.import_one(&mut doc, &png);
+            app.try_import_one(&mut doc, &png)
+                .expect("a real PNG imports");
             std::fs::remove_file(&png).ok();
         }
         render(&mut app);
@@ -18364,7 +19268,8 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         for i in 0..14 {
             let png = write_real_png(16 + i, 16);
-            app.import_one(&mut doc, &png);
+            app.try_import_one(&mut doc, &png)
+                .expect("a real PNG imports");
             std::fs::remove_file(&png).ok();
         }
         render(&mut app);
@@ -18478,18 +19383,26 @@ mod tests {
         let path = dir.join("not-a-video.mp4");
         std::fs::write(&path, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
         let before = app.project.media.len();
-        assert!(!app.import_one(&mut doc, &path), "an HTML page is refused");
+        // The path a dropped file takes: a batch of one through `import_files`.
+        app.pending_imports.push(path);
+        app.drain_import(&mut doc);
         let notice = app
             .import_notice
             .clone()
             .expect("a refusal explains itself");
         assert!(
-            notice.contains("not-a-video.mp4"),
-            "the notice names the file: {notice}",
+            notice.text.contains("not-a-video.mp4"),
+            "the notice names the file: {}",
+            notice.text,
         );
         assert!(
-            notice.contains("not a media file"),
-            "and carries the probe's own reason: {notice}",
+            notice.text.contains("not a media file"),
+            "and carries the probe's own reason: {}",
+            notice.text,
+        );
+        assert!(
+            notice.is_failure(),
+            "and it reads as the refusal it is: {notice:?}",
         );
         assert_eq!(
             app.project.media.len(),
@@ -18506,7 +19419,8 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let png = write_real_png(24, 16);
         let want = png.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(app.import_one(&mut doc, &png), "a real PNG imports");
+        app.try_import_one(&mut doc, &png)
+            .expect("a real PNG imports");
         let added = app
             .project
             .media
