@@ -216,8 +216,20 @@ COPY . /build
 # any sorted/formatted output is stable. SOURCE_DATE_EPOCH (passed by the build
 # scripts as a build-arg, default 0) is honoured by tools that timestamp output.
 ARG SOURCE_DATE_EPOCH=0
+ARG SCCACHE_BUCKET=""
+ARG SCCACHE_ENDPOINT=""
+ARG SCCACHE_REGION="auto"
+ARG SCCACHE_S3_KEY_PREFIX="quickdesktop/image/v1"
+ARG SCCACHE_S3_USE_SSL="false"
 ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache \
+    SCCACHE_BUCKET=${SCCACHE_BUCKET} \
+    SCCACHE_ENDPOINT=${SCCACHE_ENDPOINT} \
+    SCCACHE_REGION=${SCCACHE_REGION} \
+    SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX} \
+    SCCACHE_S3_USE_SSL=${SCCACHE_S3_USE_SSL} \
+    SCCACHE_IGNORE_SERVER_IO_ERROR=1 \
+    RUSTC_WRAPPER=sccache \
     CARGO_INCREMENTAL=0 \
     SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     LC_ALL=C.UTF-8 \
@@ -286,18 +298,30 @@ COPY --from=wpe-builder /wpe/ /
 # "none of the selected packages contains these features", which fails the image
 # build after the package install and the cold Rust compile have already run.
 # os/tests/app_store.sh checks each pair against cargo metadata for that reason.
+#
+# Fat LTO with one codegen unit serialized the final links for roughly fifty
+# binaries and made a warm image rebuild spend over an hour in this step.
+# The image-only Cargo overrides below use thin LTO, retaining cross-crate
+# optimization while allowing LLVM to use the runner cores. Other release
+# artifacts keep the workspace's stricter profile unchanged.
 ARG QOS_WITH_BROWSER
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
-    if [ "${QOS_WITH_BROWSER}" = "0" ]; then BROWSER_PKG=""; \
+    --mount=type=secret,id=aws_access_key_id \
+    --mount=type=secret,id=aws_secret_access_key \
+    export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
+    && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)" \
+    && if [ "${QOS_WITH_BROWSER}" = "0" ]; then BROWSER_PKG=""; \
     else BROWSER_PKG="-p browser --features browser/wpe"; fi \
     && APP_PKGS="$(sed -n 's|^ *"apps/\([A-Za-z0-9_-]*\)",.*|\1|p' Cargo.toml \
                      | grep -vx browser | sed 's/^/-p /' | tr '\n' ' ')" \
     && [ -n "${APP_PKGS}" ] \
         || { echo "no apps/* workspace members matched — the members list moved" >&2; exit 1; } \
     && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
-    && cargo build --release \
+    && CARGO_PROFILE_RELEASE_LTO=thin \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+       cargo build --release \
         --features "${APP_FEATURES}" \
         -p shell -p fs -p terminal -p file-explorer -p settings \
         -p greeter -p installer \
