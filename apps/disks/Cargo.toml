@@ -35,7 +35,6 @@ live = ["dep:zbus"]
 ui = { path = "../../ui" }
 serde.workspace = true
 serde_json.workspace = true
-tracing-subscriber.workspace = true
 # Pinned to match `apps/chat` so a single zbus copy resolves from the lock.
 zbus = { workspace = true, optional = true, default-features = true }
 
