@@ -1066,7 +1066,7 @@ impl TerminalWidget {
             // A poisoned lock means some other thread already panicked while
             // holding it; skip the PTY resize rather than propagate that
             // panic here too — the grid dimensions above are updated either way.
-            if let Ok(mut master) = self.pty_master.lock() {
+            if let Ok(master) = self.pty_master.lock() {
                 let _ = master.resize(PtySize {
                     rows: self.height as u16,
                     cols: self.width as u16,

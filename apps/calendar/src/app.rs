@@ -1003,7 +1003,8 @@ impl CalendarApp {
     pub(crate) fn calendar_resource_ctx(&self) -> crate::actions::CalendarResourceCtx {
         let start = self
             .anchor
-            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap());
+            // 12:00:00 is always a valid `NaiveTime`; the fallback never runs.
+            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap_or(NaiveTime::MIN));
         let template = Event {
             id: Uuid::nil(),
             title: String::new(),
@@ -1198,7 +1199,8 @@ impl CalendarApp {
     fn new_event(&mut self, doc: &mut AutoCommit) {
         let start = self
             .anchor
-            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap());
+            // 12:00:00 is always a valid `NaiveTime`; the fallback never runs.
+            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap_or(NaiveTime::MIN));
         let ev = Event {
             // Empty title: the form's title field shows its "New event"
             // placeholder rather than literal text the user has to clear. The
@@ -1638,14 +1640,16 @@ impl CalendarApp {
         // event by dragging.
         if p.x >= area.x0 + g.gutter {
             let col = TimelineViewport::column_at(area, days.len(), g, p.x);
-            self.timeline_drag = Some(TimelineDrag::Create {
-                day: days[col],
-                origin: p,
-                current: p,
-                active: false,
-            });
-            self.dirty = true;
-            return true;
+            if let Some(&day) = days.get(col) {
+                self.timeline_drag = Some(TimelineDrag::Create {
+                    day,
+                    origin: p,
+                    current: p,
+                    active: false,
+                });
+                self.dirty = true;
+                return true;
+            }
         }
         false
     }
@@ -1950,8 +1954,7 @@ impl CalendarApp {
 
     /// Apply a clock spinner's current value to the start or end time.
     fn set_event_time(&mut self, which: FormPopover, h: u8, m: u8, doc: &mut AutoCommit) {
-        let time = NaiveTime::from_hms_opt(u32::from(h), u32::from(m), 0)
-            .unwrap_or_else(|| NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+        let time = NaiveTime::from_hms_opt(u32::from(h), u32::from(m), 0).unwrap_or(NaiveTime::MIN);
         self.cycle_event(doc, |e| match which {
             FormPopover::StartTime => {
                 e.start = e.start.date().and_time(time);
@@ -3288,7 +3291,7 @@ impl CalendarApp {
             return None;
         }
         let col = TimelineViewport::column_at(area, days.len(), g, p.x);
-        let day = days[col];
+        let day = *days.get(col)?;
         let spans: Vec<(Id, i64, i64)> = self
             .visible_events_on(day)
             .iter()
@@ -3368,7 +3371,7 @@ impl CalendarApp {
         let col = TimelineViewport::column_at(area, days.len(), g, current.x);
         let cursor_min = self.timeline.minute_at(g, current.y);
         let start = snap_minute(cursor_min - grab_off_min).clamp(0, (24 * 60 - dur_min).max(0));
-        Some((days[col], start, *dur_min, *id))
+        Some((*days.get(col)?, start, *dur_min, *id))
     }
 
     fn draw_timeline(
@@ -3453,7 +3456,10 @@ impl CalendarApp {
             }
             tr.draw_text(
                 scene,
-                date::WEEKDAY_SHORT[day.weekday().num_days_from_monday() as usize],
+                date::WEEKDAY_SHORT
+                    .get(day.weekday().num_days_from_monday() as usize)
+                    .copied()
+                    .unwrap_or(""),
                 11.0,
                 if weekend { c.text_dim } else { c.neutral[7] },
                 t * Affine::translate((x0 + 10.0, area.y0 + 8.0)),
@@ -3484,8 +3490,7 @@ impl CalendarApp {
                 x0 + col_w - 2.0,
                 area.y0 + TIMELINE_HEAD_H + TIMELINE_ALLDAY_H - 2.0,
             );
-            if !allday.is_empty() {
-                let (id, title, color) = &allday[0];
+            if let Some((id, title, color)) = allday.first() {
                 fill_round(scene, t, color.color(theme), strip, 4.0);
                 let line = elide_to_width(tr, title, 10.0, strip.width() - 12.0);
                 tr.draw_text(
@@ -5084,6 +5089,17 @@ impl Widget for CalendarApp {
         }
         self.editor_node = Some(editor_node);
 
+        // `new_with_children` is typed `-> TaffyResult<NodeId>` for API
+        // generality but only fails for a child `NodeId` belonging to a
+        // different tree, which cannot happen here — `editor_node` was just
+        // built in this same tree above (see `ui::widget::TaffyTreeExt`'s doc
+        // comment) — and `Widget::build_layout` returns a bare `NodeId`
+        // across every implementor, so there is nowhere to surface a
+        // theoretical error.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "child was just built in this tree; see ui::widget::TaffyTreeExt"
+        )]
         let root = taffy
             .new_with_children(
                 Style {
@@ -5101,7 +5117,7 @@ impl Widget for CalendarApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let new_rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -5752,7 +5768,9 @@ fn fmt_min(min: i64) -> String {
 /// A minute-of-day (0..=1439) as a wall-clock time.
 fn min_to_time(min: i64) -> NaiveTime {
     let m = min.clamp(0, 24 * 60 - 1);
-    NaiveTime::from_hms_opt((m / 60) as u32, (m % 60) as u32, 0).unwrap()
+    // `m` is clamped to 0..=1439, so hour/minute are always in-range and this
+    // is always `Some`; the fallback is unreachable.
+    NaiveTime::from_hms_opt((m / 60) as u32, (m % 60) as u32, 0).unwrap_or(NaiveTime::MIN)
 }
 
 #[allow(
@@ -6004,14 +6022,19 @@ fn elide_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_px: f64) -> 
     let mut hi = chars.len().saturating_sub(1);
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        let candidate: String = chars[..mid].iter().chain(std::iter::once(&'…')).collect();
+        let candidate: String = chars
+            .get(..mid)
+            .unwrap_or(&[])
+            .iter()
+            .chain(std::iter::once(&'…'))
+            .collect();
         if f64::from(tr.measure(&candidate, size, None).0) <= max_px {
             lo = mid;
         } else {
             hi = mid - 1;
         }
     }
-    let mut out: String = chars[..lo].iter().collect();
+    let mut out: String = chars.get(..lo).unwrap_or(&[]).iter().collect();
     out.push('…');
     out
 }
