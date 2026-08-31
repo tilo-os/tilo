@@ -32,7 +32,6 @@ ui = { path = "../../ui" }
 media = { path = "../../crates/media" }
 automerge.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
