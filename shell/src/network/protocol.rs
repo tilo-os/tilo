@@ -126,6 +126,16 @@ pub enum NeighbourMsg {
     /// 5s; direct peers are evicted after 15s without any traffic. `peer` is the hashed Iroh
     /// `PeerId`; `ts` is unix-millis.
     Heartbeat { peer: PeerId, ts: u64 },
+    /// Authenticated identity chain for the transport peer on this workspace.
+    ///
+    /// The certificate binds the Iroh endpoint/device key to a user root. The
+    /// additive, root-signed revocations let receivers reject a lost device
+    /// before any of its collaboration payload reaches an app or replica.
+    IdentityHello {
+        cert: Box<qos_user_identity::DeviceCert>,
+        #[serde(default)]
+        revocations: Vec<qos_user_identity::RevocationEntry>,
+    },
     /// App-level CRDT incremental — bridges app-side Automerge change blobs from
     /// the local collaboration service across hosts, opaque to the shell.
     /// Distinct from [`NeighbourMsg::SyncResp`] (shell-side `WorkspaceTree`
@@ -432,6 +442,22 @@ mod tests {
         round_trip(NeighbourMsg::Heartbeat {
             peer: 0xDEADBEEF,
             ts: 1_700_000_002,
+        });
+    }
+
+    #[test]
+    fn identity_hello_round_trips() {
+        round_trip(NeighbourMsg::IdentityHello {
+            cert: Box::new(qos_user_identity::DeviceCert {
+                user_public_key: [1; 32],
+                device_public_key: [2; 32],
+                device_label: "Laptop".into(),
+                capabilities: qos_user_identity::DeviceCapabilities::member(),
+                issued_at_ns: 10,
+                expires_at_ns: None,
+                signature: [3; 64],
+            }),
+            revocations: Vec::new(),
         });
     }
 

@@ -334,20 +334,9 @@ impl Scope {
             }
             (Scope::Action { .. }, _) => false,
 
-            // KNOWN HOLE — a room-scoped capability authorises nothing a person *does*
-            // in the room, and does not survive replication. Two live defects:
-            //
-            // 1. `Scope::Room` pairs only with `ResourceRef::Room`; every chrome
-            //    action is `ResourceRef::Action`, so granting `Write` "on the room"
-            //    permits nothing — the only scope that actually confers ability
-            //    across a room is `Scope::Workspace`.
-            //
-            // 2. The key is the **local workspace id** (`grant_capability` writes
-            //    `ws_id.raw().to_string()`; `Workspace::role_of` compares against its
-            //    own). Two peers in one room have different local ids for it, so a
-            //    replicated room-scoped capability matches nobody on the receiving
-            //    machine. Keying by `RoomId` would fix it, but is a migration of
-            //    persisted state, not a one-line change.
+            // Room membership is converted into an actor role by `Workspace`
+            // before an action is checked. Direct scope matching remains narrow:
+            // a room grant cannot masquerade as a filesystem/app/action grant.
             (Scope::Room(r), ResourceRef::Room(s)) => r == s,
             (Scope::Room(_), _) => false,
         }
