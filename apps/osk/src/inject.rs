@@ -391,7 +391,7 @@ mod wayland {
 
         /// Write `keymap_str` to an anonymous, sealed-ish memfd and hand it to
         /// the compositor via `keymap(xkb_v1, fd, size)`.
-        fn upload_keymap(&mut self, keymap_str: &str) -> Option<()> {
+        fn upload_keymap(&self, keymap_str: &str) -> Option<()> {
             use std::io::{Seek, SeekFrom, Write};
 
             let name = c"qos-osk-keymap";

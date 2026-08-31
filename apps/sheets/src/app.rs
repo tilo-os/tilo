@@ -2214,43 +2214,12 @@ impl SheetsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let colors = &theme.tokens.colors;
-        tr.draw_text_styled(
-            scene,
-            "fx",
-            theme.tokens.typography.scale.base,
-            colors.text_dim,
-            transform
-                * Affine::translate((
-                    self.formula_rect.x0 + NAME_BOX_W + 8.0,
-                    self.formula_rect.y0 + 8.0,
-                )),
-            None,
-            TextWeight::Regular,
-            true,
-            false,
-        );
+        self.draw_formula_fx_label(scene, transform, tr, theme);
         let ff_shape =
             RoundedRect::from_rect(self.formula_field_rect, f64::from(theme.tokens.radii.sm));
         let editing = self.grid.is_editing();
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.base,
-            None,
-            &ff_shape,
-        );
-        scene.stroke(
-            &Stroke::new(if editing { 2.0 } else { 1.0 }),
-            transform,
-            if editing {
-                colors.accent[5]
-            } else {
-                colors.border_standard
-            },
-            None,
-            &ff_shape,
-        );
+        Self::draw_formula_field_chrome(scene, transform, theme, ff_shape, editing);
+
         let content = self.grid.active_display_raw();
         let base = theme.tokens.typography.scale.base;
         let text_x0 = self.formula_field_rect.x0 + 8.0;
@@ -2270,7 +2239,75 @@ impl SheetsApp {
             transform,
             &ff_shape,
         );
-        // Selection highlight behind the text (drawn whenever editing).
+        self.draw_formula_selection(scene, transform, theme, editing, text_x0);
+        Self::draw_formula_content(scene, transform, tr, theme, &content, base, origin);
+        self.draw_formula_caret(scene, transform, theme, editing, text_x0);
+        scene.pop_layer();
+    }
+
+    fn draw_formula_fx_label(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let colors = &theme.tokens.colors;
+        tr.draw_text_styled(
+            scene,
+            "fx",
+            theme.tokens.typography.scale.base,
+            colors.text_dim,
+            transform
+                * Affine::translate((
+                    self.formula_rect.x0 + NAME_BOX_W + 8.0,
+                    self.formula_rect.y0 + 8.0,
+                )),
+            None,
+            TextWeight::Regular,
+            true,
+            false,
+        );
+    }
+
+    fn draw_formula_field_chrome(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        ff_shape: RoundedRect,
+        editing: bool,
+    ) {
+        let colors = &theme.tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.base,
+            None,
+            &ff_shape,
+        );
+        scene.stroke(
+            &Stroke::new(if editing { 2.0 } else { 1.0 }),
+            transform,
+            if editing {
+                colors.accent[5]
+            } else {
+                colors.border_standard
+            },
+            None,
+            &ff_shape,
+        );
+    }
+
+    /// Selection highlight behind the text (drawn whenever editing).
+    fn draw_formula_selection(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        editing: bool,
+        text_x0: f64,
+    ) {
+        let colors = &theme.tokens.colors;
         if editing && let Some((s, e)) = self.grid.edit_selection() {
             let x0 = self.formula_char_x.get(s).copied().unwrap_or(text_x0);
             let x1 = self.formula_char_x.get(e).copied().unwrap_or(x0);
@@ -2288,15 +2325,28 @@ impl SheetsApp {
                 &sel_rect,
             );
         }
-        // Formulas (whether being edited OR merely selected) tint each cell
-        // reference to match the coloured outlines on the grid; plain values
-        // draw in the body colour.
+    }
+
+    /// Formulas (whether being edited OR merely selected) tint each cell
+    /// reference to match the coloured outlines on the grid; plain values
+    /// draw in the body colour.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_formula_content(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: &str,
+        base: f32,
+        origin: Point,
+    ) {
+        let colors = &theme.tokens.colors;
         if content.starts_with('=') {
             crate::grid::draw_formula_line(
                 scene,
                 transform,
                 tr,
-                &content,
+                content,
                 base,
                 colors.text_primary,
                 origin,
@@ -2305,14 +2355,25 @@ impl SheetsApp {
         } else if !content.is_empty() {
             tr.draw_text(
                 scene,
-                &content,
+                content,
                 base,
                 colors.text_primary,
                 transform * Affine::translate((origin.x, origin.y)),
                 None,
             );
         }
-        // Caret in the formula bar while editing.
+    }
+
+    /// Caret in the formula bar while editing.
+    fn draw_formula_caret(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        editing: bool,
+        text_x0: f64,
+    ) {
+        let colors = &theme.tokens.colors;
         if editing && let Some(caret) = self.grid.edit_caret() {
             let cx = self.formula_char_x.get(caret).copied().unwrap_or(text_x0);
             scene.stroke(
@@ -2326,7 +2387,6 @@ impl SheetsApp {
                 ),
             );
         }
-        scene.pop_layer();
     }
 
     /// Bottom strip: sheet-tab switcher + the "+" add-sheet button. The

@@ -2676,7 +2676,7 @@ impl CameraApp {
 
     /// The gallery's empty state, matching the active filter.
     fn draw_gallery_empty(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,

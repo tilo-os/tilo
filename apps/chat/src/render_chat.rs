@@ -42,6 +42,16 @@ const MENTION_SELF_BAND_MIX: f64 = 0.78;
 pub(crate) const MENTION_TEXT_CONTRAST: f64 = 4.5;
 pub(crate) const MENTION_BAND_CONTRAST: f64 = 3.0;
 
+/// Geometry + model bundle shared by a channel row's drawing helpers, so each
+/// one takes a handful of arguments instead of the whole row's context.
+struct ChannelRowCtx<'a> {
+    row: Rect,
+    side: Rect,
+    y: f64,
+    is_active: bool,
+    ch: &'a crate::model::Channel,
+}
+
 /// How a mention of `user` is painted on `ground`: an optional filled band, and
 /// the ink for the run.
 ///
@@ -507,115 +517,144 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let bar = Rect::new(side.x0, side.y1 - 56.0, side.x1, side.y1);
         fill_rect(scene, tf, bar, c.neutral[0]);
-        if let Some(me) = self.user(&self.me.id) {
-            draw_avatar(
-                scene,
-                tf,
-                tr,
-                theme,
-                Point::new(bar.x0 + 28.0, bar.center().y),
-                16.0,
-                &me.initials,
-                me.color_idx,
-                Some(me.status),
-            );
-            label(
-                scene,
-                tr,
-                tf,
-                &me.name,
-                13.0,
-                c.text_primary,
-                bar.x0 + 50.0,
-                bar.center().y - 14.0,
-            );
-            let sub = if self.call.active {
-                "In voice"
-            } else {
-                "Available"
-            };
-            label(
-                scene,
-                tr,
-                tf,
-                sub,
-                11.0,
-                c.text_dim,
-                bar.x0 + 50.0,
-                bar.center().y + 2.0,
-            );
-        }
+        self.draw_identity_row(scene, tf, tr, theme, bar);
         // Deafen + mute toggles — only while in a call, where they write
         // through to the shared voice membership (`sync_local_voice`). Outside
         // a call there is no mic stream to gate, so the controls are hidden
         // rather than presented as toggling something they don't.
         if self.call.active {
-            let deaf = Rect::new(
-                bar.x1 - 80.0,
-                bar.center().y - 16.0,
-                bar.x1 - 48.0,
-                bar.center().y + 16.0,
-            );
-            fill_round(
-                scene,
-                tf,
-                deaf,
-                8.0,
-                if self.call.deafened {
-                    c.semantic.danger
-                } else {
-                    c.surface_white_10
-                },
-            );
-            let dglyph = if self.call.deafened { "🔕" } else { "🎧" };
-            let (dw, dh) = tr.measure(dglyph, 14.0, None);
-            text(
-                scene,
-                tr,
-                tf,
-                dglyph,
-                14.0,
-                c.text_primary,
-                deaf.center().x - f64::from(dw) / 2.0,
-                deaf.center().y - f64::from(dh) / 2.0,
-                TextWeight::Regular,
-                None,
-            );
-            ChatApp::push_hit(hits, deaf, Hit::CallDeafen);
-
-            let mute = Rect::new(
-                bar.x1 - 44.0,
-                bar.center().y - 16.0,
-                bar.x1 - 12.0,
-                bar.center().y + 16.0,
-            );
-            fill_round(
-                scene,
-                tf,
-                mute,
-                8.0,
-                if self.call.muted {
-                    c.semantic.danger
-                } else {
-                    c.surface_white_10
-                },
-            );
-            let mglyph = if self.call.muted { "🔇" } else { "🎤" };
-            let (mw, mh) = tr.measure(mglyph, 14.0, None);
-            text(
-                scene,
-                tr,
-                tf,
-                mglyph,
-                14.0,
-                c.text_primary,
-                mute.center().x - f64::from(mw) / 2.0,
-                mute.center().y - f64::from(mh) / 2.0,
-                TextWeight::Regular,
-                None,
-            );
-            ChatApp::push_hit(hits, mute, Hit::CallMute);
+            self.draw_call_controls(scene, tf, tr, theme, bar, hits);
         }
+    }
+
+    /// The avatar + name + status line on the left of the identity bar.
+    fn draw_identity_row(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        bar: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        let Some(me) = self.user(&self.me.id) else {
+            return;
+        };
+        draw_avatar(
+            scene,
+            tf,
+            tr,
+            theme,
+            Point::new(bar.x0 + 28.0, bar.center().y),
+            16.0,
+            &me.initials,
+            me.color_idx,
+            Some(me.status),
+        );
+        label(
+            scene,
+            tr,
+            tf,
+            &me.name,
+            13.0,
+            c.text_primary,
+            bar.x0 + 50.0,
+            bar.center().y - 14.0,
+        );
+        let sub = if self.call.active {
+            "In voice"
+        } else {
+            "Available"
+        };
+        label(
+            scene,
+            tr,
+            tf,
+            sub,
+            11.0,
+            c.text_dim,
+            bar.x0 + 50.0,
+            bar.center().y + 2.0,
+        );
+    }
+
+    /// The deafen + mute toggle buttons on the right of the identity bar,
+    /// shown only while a call is active.
+    fn draw_call_controls(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        bar: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let c = &theme.tokens.colors;
+        let deaf = Rect::new(
+            bar.x1 - 80.0,
+            bar.center().y - 16.0,
+            bar.x1 - 48.0,
+            bar.center().y + 16.0,
+        );
+        fill_round(
+            scene,
+            tf,
+            deaf,
+            8.0,
+            if self.call.deafened {
+                c.semantic.danger
+            } else {
+                c.surface_white_10
+            },
+        );
+        let dglyph = if self.call.deafened { "🔕" } else { "🎧" };
+        let (dw, dh) = tr.measure(dglyph, 14.0, None);
+        text(
+            scene,
+            tr,
+            tf,
+            dglyph,
+            14.0,
+            c.text_primary,
+            deaf.center().x - f64::from(dw) / 2.0,
+            deaf.center().y - f64::from(dh) / 2.0,
+            TextWeight::Regular,
+            None,
+        );
+        ChatApp::push_hit(hits, deaf, Hit::CallDeafen);
+
+        let mute = Rect::new(
+            bar.x1 - 44.0,
+            bar.center().y - 16.0,
+            bar.x1 - 12.0,
+            bar.center().y + 16.0,
+        );
+        fill_round(
+            scene,
+            tf,
+            mute,
+            8.0,
+            if self.call.muted {
+                c.semantic.danger
+            } else {
+                c.surface_white_10
+            },
+        );
+        let mglyph = if self.call.muted { "🔇" } else { "🎤" };
+        let (mw, mh) = tr.measure(mglyph, 14.0, None);
+        text(
+            scene,
+            tr,
+            tf,
+            mglyph,
+            14.0,
+            c.text_primary,
+            mute.center().x - f64::from(mw) / 2.0,
+            mute.center().y - f64::from(mh) / 2.0,
+            TextWeight::Regular,
+            None,
+        );
+        ChatApp::push_hit(hits, mute, Hit::CallMute);
     }
 
     /// Draw the channels of one group (a category id, or `None` for the
@@ -678,45 +717,117 @@ impl ChatApp {
         swipe_dx: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
-        let c = &theme.tokens.colors;
         let row = Rect::new(
             side.x0 + 8.0 - swipe_dx,
             y,
             side.x1 - 8.0 - swipe_dx,
             y + 32.0,
         );
-        if swipe_dx > 1.0 {
-            fill_round(
-                scene,
-                tf,
-                Rect::new(side.x0 + 8.0, y, side.x1 - 8.0, y + 32.0),
-                8.0,
-                c.semantic.danger.with_alpha_factor(0.9),
-            );
-            label(
-                scene,
-                tr,
-                tf,
-                "🗑",
-                14.0,
-                Color::WHITE,
-                side.x1 - 30.0,
-                y + 8.0,
-            );
-        }
         let is_active = ch.id == self.active_channel && ch.kind == ChannelKind::Text;
-        let is_live = self.call.active && self.call.channel == ch.id;
-        if is_active {
-            fill_round(scene, tf, row, 8.0, c.surface_white_10);
-            let bar = Rect::new(side.x0, y + 6.0, side.x0 + 4.0, y + 26.0);
+        let ctx = ChannelRowCtx {
+            row,
+            side,
+            y,
+            is_active,
+            ch,
+        };
+
+        Self::draw_channel_row_swipe_delete(scene, tf, tr, theme, &ctx, swipe_dx);
+        Self::draw_channel_row_glyph(scene, tf, tr, theme, &ctx);
+        self.draw_channel_row_label(scene, tf, tr, theme, &ctx, hits);
+        self.draw_channel_row_status(scene, tf, tr, theme, &ctx);
+
+        // Click joins/opens; right-click (resolved against this row's
+        // click hit in `on_right_click`) opens the channel context menu.
+        let click_hit = if ch.kind == ChannelKind::Voice {
+            Hit::VoiceChannel(ch.id.clone())
+        } else {
+            Hit::Channel(ch.id.clone())
+        };
+        ChatApp::push_hit(hits, row, click_hit);
+        y + 34.0
+    }
+
+    /// The swipe-to-delete red background + trash glyph revealed behind a
+    /// channel row while it is being swiped.
+    fn draw_channel_row_swipe_delete(
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        ctx: &ChannelRowCtx<'_>,
+        swipe_dx: f64,
+    ) {
+        if swipe_dx <= 1.0 {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        fill_round(
+            scene,
+            tf,
+            Rect::new(ctx.side.x0 + 8.0, ctx.y, ctx.side.x1 - 8.0, ctx.y + 32.0),
+            8.0,
+            c.semantic.danger.with_alpha_factor(0.9),
+        );
+        label(
+            scene,
+            tr,
+            tf,
+            "🗑",
+            14.0,
+            Color::WHITE,
+            ctx.side.x1 - 30.0,
+            ctx.y + 8.0,
+        );
+    }
+
+    /// The active-row highlight + left accent bar, and the channel-kind
+    /// glyph.
+    fn draw_channel_row_glyph(
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        ctx: &ChannelRowCtx<'_>,
+    ) {
+        let c = &theme.tokens.colors;
+        if ctx.is_active {
+            fill_round(scene, tf, ctx.row, 8.0, c.surface_white_10);
+            let bar = Rect::new(ctx.side.x0, ctx.y + 6.0, ctx.side.x0 + 4.0, ctx.y + 26.0);
             fill_round(scene, tf, bar, 2.0, c.accent[5]);
         }
-        let glyph = ch.kind.glyph();
-        let gcol = if is_active { c.accent[6] } else { c.text_dim };
-        label(scene, tr, tf, glyph, 14.0, gcol, row.x0 + 10.0, y + 8.0);
+        let glyph = ctx.ch.kind.glyph();
+        let gcol = if ctx.is_active {
+            c.accent[6]
+        } else {
+            c.text_dim
+        };
+        label(
+            scene,
+            tr,
+            tf,
+            glyph,
+            14.0,
+            gcol,
+            ctx.row.x0 + 10.0,
+            ctx.y + 8.0,
+        );
+    }
 
-        // Inline rename for a channel, else its name.
-        let renaming = matches!(&self.rename, Some((MenuTarget::Channel(id), _)) if id == &ch.id);
+    /// The channel's inline rename editor when it is the rename target,
+    /// otherwise its (possibly truncated) name.
+    fn draw_channel_row_label(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        ctx: &ChannelRowCtx<'_>,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let c = &theme.tokens.colors;
+        let renaming =
+            matches!(&self.rename, Some((MenuTarget::Channel(id), _)) if id == &ctx.ch.id);
         if renaming {
             if let Some((_, txt)) = &self.rename {
                 Self::draw_inline_rename(
@@ -724,55 +835,67 @@ impl ChatApp {
                     tf,
                     tr,
                     theme,
-                    row.x0 + 32.0,
-                    y + 6.0,
-                    row.width() - 80.0,
+                    ctx.row.x0 + 32.0,
+                    ctx.y + 6.0,
+                    ctx.row.width() - 80.0,
                     txt,
                     hits,
                 );
             }
-        } else {
-            let name_col = if is_active || ch.unread > 0 {
-                c.text_primary
-            } else {
-                c.text_dim
-            };
-            let weight = if ch.unread > 0 {
-                TextWeight::Semibold
-            } else {
-                TextWeight::Regular
-            };
-            let name = truncate_to(tr, &ch.name, 14.0, row.width() - 80.0);
-            text(
-                scene,
-                tr,
-                tf,
-                &name,
-                14.0,
-                name_col,
-                row.x0 + 32.0,
-                y + 8.0,
-                weight,
-                None,
-            );
+            return;
         }
+        let name_col = if ctx.is_active || ctx.ch.unread > 0 {
+            c.text_primary
+        } else {
+            c.text_dim
+        };
+        let weight = if ctx.ch.unread > 0 {
+            TextWeight::Semibold
+        } else {
+            TextWeight::Regular
+        };
+        let name = truncate_to(tr, &ctx.ch.name, 14.0, ctx.row.width() - 80.0);
+        text(
+            scene,
+            tr,
+            tf,
+            &name,
+            14.0,
+            name_col,
+            ctx.row.x0 + 32.0,
+            ctx.y + 8.0,
+            weight,
+            None,
+        );
+    }
 
+    /// The live-call presence dot, or the unread-count badge.
+    fn draw_channel_row_status(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        ctx: &ChannelRowCtx<'_>,
+    ) {
+        let c = &theme.tokens.colors;
+        let is_live = self.call.active && self.call.channel == ctx.ch.id;
         if is_live {
             fill_circle(
                 scene,
                 tf,
-                Point::new(row.x1 - 16.0, row.center().y),
+                Point::new(ctx.row.x1 - 16.0, ctx.row.center().y),
                 4.0,
                 c.semantic.success,
             );
-        } else if ch.unread > 0 {
-            let txt = ch.unread.to_string();
+        } else if ctx.ch.unread > 0 {
+            let txt = ctx.ch.unread.to_string();
             let (bw, _) = tr.measure(&txt, 11.0, None);
             let badge = Rect::new(
-                row.x1 - f64::from(bw) - 22.0,
-                y + 7.0,
-                row.x1 - 8.0,
-                y + 25.0,
+                ctx.row.x1 - f64::from(bw) - 22.0,
+                ctx.y + 7.0,
+                ctx.row.x1 - 8.0,
+                ctx.y + 25.0,
             );
             fill_round(scene, tf, badge, 9.0, c.accent[5]);
             label(
@@ -786,20 +909,12 @@ impl ChatApp {
                 badge.center().y - 7.0,
             );
         }
-        // Click joins/opens; right-click (resolved against this row's
-        // click hit in `on_right_click`) opens the channel context menu.
-        let click_hit = if ch.kind == ChannelKind::Voice {
-            Hit::VoiceChannel(ch.id.clone())
-        } else {
-            Hit::Channel(ch.id.clone())
-        };
-        ChatApp::push_hit(hits, row, click_hit);
-        y + 34.0
     }
 
     /// Connected members listed under a voice channel, Discord-style: an
     /// avatar with a speaking ring, their name, and a mic/audio-only glyph.
     /// Returns the cursor `y` after the last member row.
+    #[allow(clippy::too_many_arguments)]
     fn draw_voice_presence_rows(
         &self,
         scene: &mut Scene,
@@ -949,7 +1064,7 @@ impl ChatApp {
         // know exactly where they must stop — they truncate before the button
         // cluster and can never overlap it, even on a very narrow header.
         let cluster_left = self.draw_header_action_buttons(scene, tf, tr, theme, h, hits);
-        self.draw_header_title(
+        Self::draw_header_title(
             scene,
             tf,
             tr,
@@ -1043,7 +1158,6 @@ impl ChatApp {
         reason = "draw-context bundle, not real parameter coupling"
     )]
     fn draw_header_title(
-        &self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
@@ -1984,10 +2098,12 @@ impl ChatApp {
             Attachment::Video {
                 name, w, h, size, ..
             } => {
-                self.draw_video_attachment(scene, tf, tr, theme, name, *w, *h, *size, x, y, text_w);
+                Self::draw_video_attachment(
+                    scene, tf, tr, theme, name, *w, *h, *size, x, y, text_w,
+                );
             }
             Attachment::File { name, size, .. } => {
-                self.draw_file_attachment(scene, tf, tr, theme, name, *size, x, y, text_w);
+                Self::draw_file_attachment(scene, tf, tr, theme, name, *size, x, y, text_w);
             }
         }
     }
@@ -2080,7 +2196,6 @@ impl ChatApp {
         reason = "draw-context bundle, not real parameter coupling"
     )]
     fn draw_video_attachment(
-        &self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
@@ -2168,7 +2283,6 @@ impl ChatApp {
         reason = "draw-context bundle, not real parameter coupling"
     )]
     fn draw_file_attachment(
-        &self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
@@ -2972,7 +3086,7 @@ impl ChatApp {
         self.draw_attach_picker_header(scene, tf, tr, theme, panel, head_h);
 
         if self.attach_entries.is_empty() {
-            self.draw_attach_picker_empty(scene, tf, tr, theme, panel, head_h);
+            Self::draw_attach_picker_empty(scene, tf, tr, theme, panel, head_h);
             return;
         }
         self.draw_attach_picker_rows(scene, tf, tr, theme, panel, head_h, hits);
@@ -3054,7 +3168,6 @@ impl ChatApp {
     /// The "no media found" message shown in place of the row list when the
     /// workspace has nothing shareable.
     fn draw_attach_picker_empty(
-        &self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,

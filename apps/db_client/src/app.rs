@@ -1444,7 +1444,6 @@ impl DbClientApp {
         theme: &Theme,
         bar: Rect,
     ) {
-        let p = theme.db();
         let body = Rect::new(
             self.main_rect.x0,
             bar.y1,
@@ -1460,6 +1459,13 @@ impl DbClientApp {
             cx + card_w / 2.0,
             body.center().y + card_h / 2.0,
         );
+        Self::draw_empty_state_card_bg(scene, t, theme, card);
+        Self::draw_empty_state_db_icon(scene, t, theme, cx, card);
+        Self::draw_empty_state_text(scene, t, tr, theme, cx, card, card_w);
+        self.draw_empty_state_button(scene, t, tr, theme, cx, card);
+    }
+
+    fn draw_empty_state_card_bg(scene: &mut Scene, t: Affine, theme: &Theme, card: Rect) {
         scene.fill(
             Fill::NonZero,
             t,
@@ -1474,8 +1480,11 @@ impl DbClientApp {
             None,
             &card.to_rounded_rect(14.0),
         );
+    }
 
-        // Database-cylinder mark, drawn from the accent so it re-tints.
+    /// Database-cylinder mark, drawn from the accent so it re-tints.
+    fn draw_empty_state_db_icon(scene: &mut Scene, t: Affine, theme: &Theme, cx: f64, card: Rect) {
+        let p = theme.db();
         let accent = theme.accent_primary;
         let icx = cx;
         let icy = card.y0 + 34.0;
@@ -1524,7 +1533,18 @@ impl DbClientApp {
             None,
             &vello::kurbo::Ellipse::new((icx, icy), (rx, ry), 0.0),
         );
+    }
 
+    #[allow(clippy::too_many_arguments)]
+    fn draw_empty_state_text(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cx: f64,
+        card: Rect,
+        card_w: f64,
+    ) {
         let title = "No connection yet";
         let hint = "Connect to a PostgreSQL, MySQL or SQLite database to browse its schema and run queries.";
         let (tw, _) = tr.measure(title, 17.0, None);
@@ -1544,8 +1564,17 @@ impl DbClientApp {
             t * Affine::translate((card.x0 + 26.0, card.y0 + 120.0)),
             Some((card_w - 52.0) as f32),
         );
+    }
 
-        // Primary action.
+    fn draw_empty_state_button(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cx: f64,
+        card: Rect,
+    ) {
         let btn_w = 188.0;
         let btn = Rect::new(
             cx - btn_w / 2.0,

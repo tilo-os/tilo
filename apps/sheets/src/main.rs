@@ -125,6 +125,10 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .map_err(|error| LaunchError::Operation(format!("Sheets screenshot failed: {error}")))
 }
 
+/// One-shot hook run after `sync` seeds the demo document, before the first
+/// layout/draw pass — used to stage a `--shots` scenario's extra state.
+type ShotSetup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>;
+
 /// Run one offscreen frame against `app` and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 ///
@@ -135,7 +139,7 @@ fn render_shot_to_png(
     mut app: sheets::SheetsApp,
     viewport: (u32, u32),
     out: &std::path::Path,
-    setup: Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>,
+    setup: ShotSetup,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so

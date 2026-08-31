@@ -365,7 +365,7 @@ fn iter_boxes(data: &[u8]) -> Vec<BoxRef<'_>> {
 }
 
 /// First child box of `typ` within `data`.
-fn child<'a>(data: &'a [u8], typ: [u8; 4]) -> Option<&'a [u8]> {
+fn child(data: &[u8], typ: [u8; 4]) -> Option<&[u8]> {
     iter_boxes(data)
         .into_iter()
         .find(|b| b.typ == typ)

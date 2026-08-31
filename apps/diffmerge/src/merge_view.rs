@@ -256,6 +256,298 @@ impl MergeView {
             y += height;
         }
     }
+
+    /// Column headers (base / ours / theirs) above the source band.
+    fn draw_column_headers(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
+        let r = self.rect;
+        let col_w = r.width() / 3.0;
+        let base_col = Rect::new(r.x0, r.y0, r.x0 + col_w, r.y0 + HEADER_H);
+        let ours_col = Rect::new(r.x0 + col_w, r.y0, r.x0 + 2.0 * col_w, r.y0 + HEADER_H);
+        let theirs_col = Rect::new(r.x0 + 2.0 * col_w, r.y0, r.x1, r.y0 + HEADER_H);
+
+        draw_header(
+            scene,
+            transform,
+            tr,
+            theme,
+            base_col,
+            &self.base_label,
+            c.text_dim,
+        );
+        draw_header(
+            scene,
+            transform,
+            tr,
+            theme,
+            ours_col,
+            &self.ours_label,
+            c.semantic.success,
+        );
+        draw_header(
+            scene,
+            transform,
+            tr,
+            theme,
+            theirs_col,
+            &self.theirs_label,
+            c.semantic.info,
+        );
+    }
+
+    /// Vertical separators between the three source columns.
+    fn draw_band_separators(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let c = &theme.tokens.colors;
+        let r = self.rect;
+        let col_w = r.width() / 3.0;
+        let band_top = r.y0 + HEADER_H;
+        let band_bot = band_top + self.source_band_height();
+        for k in 1..3 {
+            let x = r.x0 + f64::from(k) * col_w;
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                c.border_standard,
+                None,
+                &Line::new(Point::new(x, band_top), Point::new(x, band_bot)),
+            );
+        }
+    }
+
+    /// Draw every hunk row in the source band: side tints, the active-hunk
+    /// ring, the three code columns and (for change hunks) the resolution
+    /// chips. Populates `self.action_hits` for the next click hit-test.
+    fn draw_hunks(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
+        let r = self.rect;
+        let col_w = r.width() / 3.0;
+        let band_top = r.y0 + HEADER_H;
+        let band_bot = band_top + self.source_band_height();
+
+        for (hi, h) in self.model.hunks.iter().enumerate() {
+            let (top, _bot) = self.hunk_spans[hi];
+            let y = band_top + top - self.scroll_y;
+            let rows = h.base.len().max(h.ours.len()).max(h.theirs.len()).max(1);
+            let block_h = rows as f64 * ROW_H;
+
+            // Cull off-screen hunks cheaply.
+            if y + block_h + ACTION_H < band_top || y > band_bot {
+                continue;
+            }
+
+            // Hunk tint per side.
+            let (ours_tint, theirs_tint) = match h.resolution {
+                Resolution::Unchanged => (None, None),
+                Resolution::Conflict => (
+                    Some(with_alpha(c.semantic.danger, 34)),
+                    Some(with_alpha(c.semantic.danger, 34)),
+                ),
+                Resolution::Ours | Resolution::TookOurs => {
+                    (Some(with_alpha(c.semantic.success, 40)), None)
+                }
+                Resolution::Theirs | Resolution::TookTheirs => {
+                    (None, Some(with_alpha(c.semantic.info, 40)))
+                }
+                Resolution::TookBoth => (
+                    Some(with_alpha(c.semantic.success, 36)),
+                    Some(with_alpha(c.semantic.info, 36)),
+                ),
+            };
+
+            if let Some(t) = ours_tint {
+                let rect = Rect::new(r.x0 + col_w, y, r.x0 + 2.0 * col_w, y + block_h);
+                scene.fill(Fill::NonZero, transform, t, None, &rect);
+            }
+            if let Some(t) = theirs_tint {
+                let rect = Rect::new(r.x0 + 2.0 * col_w, y, r.x1, y + block_h);
+                scene.fill(Fill::NonZero, transform, t, None, &rect);
+            }
+
+            // Active hunk highlight ring.
+            if Some(hi) == self.active_hunk && h.is_change {
+                let ring =
+                    RoundedRect::new(r.x0 + 1.0, y - 1.0, r.x1 - 1.0, y + block_h + 1.0, 3.0);
+                scene.stroke(&Stroke::new(1.5), transform, c.accent[5], None, &ring);
+            }
+
+            // Lines for each column.
+            draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base);
+            draw_lines(
+                scene,
+                transform,
+                tr,
+                theme,
+                r.x0 + col_w + PAD_X,
+                y,
+                &h.ours,
+            );
+            draw_lines(
+                scene,
+                transform,
+                tr,
+                theme,
+                r.x0 + 2.0 * col_w + PAD_X,
+                y,
+                &h.theirs,
+            );
+
+            // Action chips for change hunks.
+            if h.is_change {
+                let ay = y + block_h + 2.0;
+                // Chip hues track the theme so a palette / high-contrast swap
+                // keeps the resolution controls coherent: ours = success (green),
+                // theirs = info (blue), both = the neutral dim tone — mirroring
+                // the status label's own `ColorClass` mapping.
+                let chips: &[(&str, HunkChoice, Color)] = if h.resolution.is_conflict() {
+                    &[
+                        ("Take ours", HunkChoice::Ours, c.semantic.success),
+                        ("Take theirs", HunkChoice::Theirs, c.semantic.info),
+                        ("Take both", HunkChoice::Both, c.text_dim),
+                    ]
+                } else {
+                    // Auto-resolved — still allow flipping.
+                    &[
+                        ("Ours", HunkChoice::Ours, c.semantic.success),
+                        ("Theirs", HunkChoice::Theirs, c.semantic.info),
+                        ("Both", HunkChoice::Both, c.text_dim),
+                    ]
+                };
+                // Status label on the left.
+                let status = resolution_label(h.resolution);
+                tr.draw_text(
+                    scene,
+                    status.0,
+                    11.5,
+                    status.1.color(c),
+                    transform * Affine::translate((r.x0 + col_w + PAD_X, ay + 5.0)),
+                    None,
+                );
+
+                let mut cx = r.x0 + 2.0 * col_w + PAD_X;
+                for (label, choice, col) in chips {
+                    let w = label.len() as f64 * 7.2 + 16.0;
+                    let chip = Rect::new(cx, ay, cx + w, ay + ACTION_H - 6.0);
+                    let selected = chip_is_selected(h.resolution, *choice);
+                    let bg = if selected {
+                        with_alpha(*col, 220)
+                    } else {
+                        with_alpha(*col, 50)
+                    };
+                    let rr = RoundedRect::from_rect(chip, 5.0);
+                    scene.fill(Fill::NonZero, transform, bg, None, &rr);
+                    scene.stroke(
+                        &Stroke::new(1.0),
+                        transform,
+                        with_alpha(*col, 160),
+                        None,
+                        &rr,
+                    );
+                    let text_col = if selected {
+                        Color::from_rgb8(10, 14, 22)
+                    } else {
+                        *col
+                    };
+                    tr.draw_text(
+                        scene,
+                        label,
+                        11.5,
+                        text_col,
+                        transform * Affine::translate((cx + 8.0, ay + 4.0)),
+                        None,
+                    );
+                    self.action_hits.push(ActionHit {
+                        rect: chip,
+                        hunk: hi,
+                        choice: *choice,
+                    });
+                    cx += w + 6.0;
+                }
+            }
+        }
+    }
+
+    /// The merged-result band: header (with conflict count) and the scrolled
+    /// merged buffer body.
+    fn draw_merged_band(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
+        let merged = self.merged_band_rect();
+        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &merged);
+        // Merged header.
+        let mh = Rect::new(merged.x0, merged.y0, merged.x1, merged.y0 + HEADER_H);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            with_alpha(c.accent[5], 40),
+            None,
+            &mh,
+        );
+        let conflicts = self.model.conflict_count();
+        let header_label = if conflicts == 0 {
+            "Merged result · all conflicts resolved".to_string()
+        } else {
+            format!("Merged result · {conflicts} conflict(s) remaining")
+        };
+        let hc = if conflicts == 0 {
+            c.semantic.success
+        } else {
+            c.semantic.danger
+        };
+        tr.draw_text(
+            scene,
+            &header_label,
+            13.0,
+            hc,
+            transform * Affine::translate((merged.x0 + PAD_X + 4.0, merged.y0 + 7.0)),
+            None,
+        );
+
+        // Merged buffer body.
+        let merged_body = Rect::new(merged.x0, merged.y0 + HEADER_H, merged.x1, merged.y1);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &merged_body,
+        );
+        let lines: Vec<String> = self.model.merged_lines();
+        for (i, line) in lines.iter().enumerate() {
+            let ly = merged_body.y0 + 4.0 + i as f64 * ROW_H;
+            if ly > merged_body.y1 {
+                break;
+            }
+            // Line number gutter.
+            let no = (i + 1).to_string();
+            tr.draw_text(
+                scene,
+                &no,
+                11.0,
+                c.text_dim,
+                transform * Affine::translate((merged_body.x0 + 6.0, ly + 2.0)),
+                None,
+            );
+            draw_code_segments(scene, transform, tr, theme, merged_body.x0 + 44.0, ly, line);
+        }
+        scene.pop_layer();
+    }
 }
 
 impl Widget for MergeView {
@@ -336,56 +628,11 @@ impl Widget for MergeView {
         let r = self.rect;
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &r);
 
-        let col_w = (r.width()) / 3.0;
-        let base_col = Rect::new(r.x0, r.y0, r.x0 + col_w, r.y0 + HEADER_H);
-        let ours_col = Rect::new(r.x0 + col_w, r.y0, r.x0 + 2.0 * col_w, r.y0 + HEADER_H);
-        let theirs_col = Rect::new(r.x0 + 2.0 * col_w, r.y0, r.x1, r.y0 + HEADER_H);
+        self.draw_column_headers(scene, transform, tr, theme);
+        self.draw_band_separators(scene, transform, theme);
 
-        // Column headers (base / ours / theirs).
-        draw_header(
-            scene,
-            transform,
-            tr,
-            theme,
-            base_col,
-            &self.base_label,
-            c.text_dim,
-        );
-        draw_header(
-            scene,
-            transform,
-            tr,
-            theme,
-            ours_col,
-            &self.ours_label,
-            c.semantic.success,
-        );
-        draw_header(
-            scene,
-            transform,
-            tr,
-            theme,
-            theirs_col,
-            &self.theirs_label,
-            c.semantic.info,
-        );
-
-        // Vertical separators across the source band.
         let band_top = r.y0 + HEADER_H;
-        let band_h = self.source_band_height();
-        let band_bot = band_top + band_h;
-        for k in 1..3 {
-            let x = r.x0 + f64::from(k) * col_w;
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                c.border_standard,
-                None,
-                &Line::new(Point::new(x, band_top), Point::new(x, band_bot)),
-            );
-        }
-
-        // --- Source band, clipped + scrolled ---
+        let band_bot = band_top + self.source_band_height();
         let band_clip = Rect::new(r.x0, band_top, r.x1, band_bot);
         scene.push_layer(
             Fill::NonZero,
@@ -394,159 +641,7 @@ impl Widget for MergeView {
             transform,
             &band_clip,
         );
-
-        for (hi, h) in self.model.hunks.iter().enumerate() {
-            let (top, _bot) = self.hunk_spans[hi];
-            let y = band_top + top - self.scroll_y;
-            let rows = h.base.len().max(h.ours.len()).max(h.theirs.len()).max(1);
-            let block_h = rows as f64 * ROW_H;
-
-            // Cull off-screen hunks cheaply.
-            if y + block_h + ACTION_H < band_top || y > band_bot {
-                continue;
-            }
-
-            // Hunk tint per side.
-            let (ours_tint, theirs_tint) = match h.resolution {
-                Resolution::Unchanged => (None, None),
-                Resolution::Conflict => (
-                    Some(with_alpha(c.semantic.danger, 34)),
-                    Some(with_alpha(c.semantic.danger, 34)),
-                ),
-                Resolution::Ours | Resolution::TookOurs => {
-                    (Some(with_alpha(c.semantic.success, 40)), None)
-                }
-                Resolution::Theirs | Resolution::TookTheirs => {
-                    (None, Some(with_alpha(c.semantic.info, 40)))
-                }
-                Resolution::TookBoth => (
-                    Some(with_alpha(c.semantic.success, 36)),
-                    Some(with_alpha(c.semantic.info, 36)),
-                ),
-            };
-
-            if let Some(t) = ours_tint {
-                let rect = Rect::new(r.x0 + col_w, y, r.x0 + 2.0 * col_w, y + block_h);
-                scene.fill(Fill::NonZero, transform, t, None, &rect);
-            }
-            if let Some(t) = theirs_tint {
-                let rect = Rect::new(r.x0 + 2.0 * col_w, y, r.x1, y + block_h);
-                scene.fill(Fill::NonZero, transform, t, None, &rect);
-            }
-
-            // Active hunk highlight ring.
-            if Some(hi) == self.active_hunk && h.is_change {
-                let ring =
-                    RoundedRect::new(r.x0 + 1.0, y - 1.0, r.x1 - 1.0, y + block_h + 1.0, 3.0);
-                scene.stroke(&Stroke::new(1.5), transform, c.accent[5], None, &ring);
-            }
-
-            // Lines for each column.
-            draw_lines(
-                scene,
-                transform,
-                tr,
-                theme,
-                r.x0 + PAD_X,
-                y,
-                &h.base,
-                col_w - 2.0 * PAD_X,
-            );
-            draw_lines(
-                scene,
-                transform,
-                tr,
-                theme,
-                r.x0 + col_w + PAD_X,
-                y,
-                &h.ours,
-                col_w - 2.0 * PAD_X,
-            );
-            draw_lines(
-                scene,
-                transform,
-                tr,
-                theme,
-                r.x0 + 2.0 * col_w + PAD_X,
-                y,
-                &h.theirs,
-                col_w - 2.0 * PAD_X,
-            );
-
-            // Action chips for change hunks.
-            if h.is_change {
-                let ay = y + block_h + 2.0;
-                // Chip hues track the theme so a palette / high-contrast swap
-                // keeps the resolution controls coherent: ours = success (green),
-                // theirs = info (blue), both = the neutral dim tone — mirroring
-                // the status label's own `ColorClass` mapping.
-                let chips: &[(&str, HunkChoice, Color)] = if h.resolution.is_conflict() {
-                    &[
-                        ("Take ours", HunkChoice::Ours, c.semantic.success),
-                        ("Take theirs", HunkChoice::Theirs, c.semantic.info),
-                        ("Take both", HunkChoice::Both, c.text_dim),
-                    ]
-                } else {
-                    // Auto-resolved — still allow flipping.
-                    &[
-                        ("Ours", HunkChoice::Ours, c.semantic.success),
-                        ("Theirs", HunkChoice::Theirs, c.semantic.info),
-                        ("Both", HunkChoice::Both, c.text_dim),
-                    ]
-                };
-                // Status label on the left.
-                let status = resolution_label(h.resolution);
-                tr.draw_text(
-                    scene,
-                    status.0,
-                    11.5,
-                    status.1.color(c),
-                    transform * Affine::translate((r.x0 + col_w + PAD_X, ay + 5.0)),
-                    None,
-                );
-
-                let mut cx = r.x0 + 2.0 * col_w + PAD_X;
-                for (label, choice, col) in chips {
-                    let w = label.len() as f64 * 7.2 + 16.0;
-                    let chip = Rect::new(cx, ay, cx + w, ay + ACTION_H - 6.0);
-                    let selected = chip_is_selected(h.resolution, *choice);
-                    let bg = if selected {
-                        with_alpha(*col, 220)
-                    } else {
-                        with_alpha(*col, 50)
-                    };
-                    let rr = RoundedRect::from_rect(chip, 5.0);
-                    scene.fill(Fill::NonZero, transform, bg, None, &rr);
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        with_alpha(*col, 160),
-                        None,
-                        &rr,
-                    );
-                    let text_col = if selected {
-                        Color::from_rgb8(10, 14, 22)
-                    } else {
-                        *col
-                    };
-                    tr.draw_text(
-                        scene,
-                        label,
-                        11.5,
-                        text_col,
-                        transform * Affine::translate((cx + 8.0, ay + 4.0)),
-                        None,
-                    );
-                    self.action_hits.push(ActionHit {
-                        rect: chip,
-                        hunk: hi,
-                        choice: *choice,
-                    });
-                    cx += w + 6.0;
-                }
-            }
-        }
-
+        self.draw_hunks(scene, transform, tr, theme);
         scene.pop_layer();
 
         // Divider between source band and merged band.
@@ -558,67 +653,7 @@ impl Widget for MergeView {
             &Line::new(Point::new(r.x0, band_bot), Point::new(r.x1, band_bot)),
         );
 
-        // --- Merged result band ---
-        let merged = self.merged_band_rect();
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &merged);
-        // Merged header.
-        let mh = Rect::new(merged.x0, merged.y0, merged.x1, merged.y0 + HEADER_H);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            with_alpha(c.accent[5], 40),
-            None,
-            &mh,
-        );
-        let conflicts = self.model.conflict_count();
-        let header_label = if conflicts == 0 {
-            "Merged result · all conflicts resolved".to_string()
-        } else {
-            format!("Merged result · {conflicts} conflict(s) remaining")
-        };
-        let hc = if conflicts == 0 {
-            c.semantic.success
-        } else {
-            c.semantic.danger
-        };
-        tr.draw_text(
-            scene,
-            &header_label,
-            13.0,
-            hc,
-            transform * Affine::translate((merged.x0 + PAD_X + 4.0, merged.y0 + 7.0)),
-            None,
-        );
-
-        // Merged buffer body.
-        let merged_body = Rect::new(merged.x0, merged.y0 + HEADER_H, merged.x1, merged.y1);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &merged_body,
-        );
-        let lines: Vec<String> = self.model.merged_lines();
-        for (i, line) in lines.iter().enumerate() {
-            let ly = merged_body.y0 + 4.0 + i as f64 * ROW_H;
-            if ly > merged_body.y1 {
-                break;
-            }
-            // Line number gutter.
-            let no = (i + 1).to_string();
-            tr.draw_text(
-                scene,
-                &no,
-                11.0,
-                c.text_dim,
-                transform * Affine::translate((merged_body.x0 + 6.0, ly + 2.0)),
-                None,
-            );
-            draw_code_segments(scene, transform, tr, theme, merged_body.x0 + 44.0, ly, line);
-        }
-        scene.pop_layer();
-
+        self.draw_merged_band(scene, transform, tr, theme);
         self.dirty = false;
     }
 
@@ -766,7 +801,6 @@ fn draw_lines(
     x0: f64,
     y0: f64,
     lines: &[String],
-    _max_w: f64,
 ) {
     for (i, line) in lines.iter().enumerate() {
         let y = y0 + i as f64 * ROW_H;
