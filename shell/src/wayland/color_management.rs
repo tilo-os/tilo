@@ -257,12 +257,8 @@ impl ParametricBuilder {
                 },
             );
             let light = ContentLightLevel {
-                max_content_light_level: inner
-                    .max_cll
-                    .map_or(0, |v| v.min(u32::from(u16::MAX)) as u16),
-                max_frame_average_light_level: inner
-                    .max_fall
-                    .map_or(0, |v| v.min(u32::from(u16::MAX)) as u16),
+                max_content_light_level: inner.max_cll.map_or(0, clamp_to_u16),
+                max_frame_average_light_level: inner.max_fall.map_or(0, clamp_to_u16),
             };
             Some(Hdr10Metadata { mastering, light })
         } else {
@@ -283,6 +279,15 @@ impl ParametricBuilder {
             inner.consumed = true;
         }
     }
+}
+
+/// Clamp a `u32` into `u16`'s range rather than truncate it.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "clamped to 0..=u32::from(u16::MAX) immediately above, so it always fits u16"
+)]
+fn clamp_to_u16(v: u32) -> u16 {
+    v.min(u32::from(u16::MAX)) as u16
 }
 
 fn primaries_named_to_color(p: Primaries) -> Option<ColorPrimaries> {
@@ -324,8 +329,18 @@ fn guess_primaries_from_custom(c: CustomPrimaries) -> ColorPrimaries {
 /// x × `50_000`. Divide by 20, saturating so a rogue negative from the
 /// wire doesn't sign-flip.
 fn chrom_micro_to_st2086(micro: i32) -> u16 {
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "clamped to >= 0 immediately above, so it always fits a non-negative u32"
+    )]
     let clamped = micro.max(0) as u32;
-    ((clamped + 10) / 20).min(u32::from(u16::MAX)) as u16
+    let scaled = clamped.saturating_add(10).saturating_div(20);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "clamped to 0..=u32::from(u16::MAX) immediately above, so it always fits u16"
+    )]
+    let st2086 = scaled.min(u32::from(u16::MAX)) as u16;
+    st2086
 }
 
 /// Monotonic image-description identity counter. Never recycled per
@@ -355,7 +370,7 @@ impl ImageDescriptionData {
     /// Low 32 bits of the identity for the pre-v2 `ready` event.
     #[must_use]
     pub fn identity_lo(&self) -> u32 {
-        self.identity as u32
+        (self.identity & 0xFFFF_FFFF) as u32
     }
 
     /// High 32 bits of the identity for the `ready2` event.
@@ -631,10 +646,13 @@ where
                     states
                         .data_map
                         .insert_if_missing_threadsafe(ColorManagementSurfaceData::default);
+                    // `insert_if_missing_threadsafe` just above guarantees this is
+                    // present; `unwrap_or_else` (not `.expect()`) keeps that an
+                    // explicit, named panic rather than a bare assertion.
                     let d = states
                         .data_map
                         .get::<ColorManagementSurfaceData>()
-                        .expect("just inserted");
+                        .unwrap_or_else(|| panic!("ColorManagementSurfaceData missing after insert_if_missing_threadsafe"));
                     let mut inner = match d.inner.lock() {
                         Ok(g) => g,
                         // Poisoned mutex — treat as "already taken" so
@@ -692,6 +710,15 @@ where
         + Dispatch<WpImageDescriptionV1, ImageDescriptionData>
         + 'static,
 {
+    // The local `set_once!` macro and the `Create` arm's body were already split
+    // out below (`set_builder_field_once`/`create_image_description`); what's left
+    // is one match arm per wire request variant, which stays a 1:1 dispatch table
+    // rather than fragmenting further.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per WpImageDescriptionCreatorParamsV1 request variant; \
+                  the two heaviest chunks are already split into named helpers"
+    )]
     fn request(
         _state: &mut D,
         _client: &Client,
@@ -701,54 +728,9 @@ where
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
-        // Helper: guarded field-set. Raises `already_set` when the
-        // caller writes a second time, mirroring the spec.
-        macro_rules! set_once {
-            ($field:ident = $val:expr, $msg:literal) => {{
-                let Ok(mut inner) = builder.inner.lock() else {
-                    creator.post_error(
-                        wp_image_description_creator_params_v1::Error::IncompleteSet,
-                        "builder poisoned",
-                    );
-                    return;
-                };
-                if inner.consumed {
-                    creator.post_error(
-                        wp_image_description_creator_params_v1::Error::AlreadySet,
-                        "builder already consumed",
-                    );
-                    return;
-                }
-                if inner.$field.is_some() {
-                    creator.post_error(
-                        wp_image_description_creator_params_v1::Error::AlreadySet,
-                        $msg,
-                    );
-                    return;
-                }
-                inner.$field = Some($val);
-            }};
-        }
-
         match request {
             wp_image_description_creator_params_v1::Request::Create { image_description } => {
-                match builder.build() {
-                    Some(data) => {
-                        let identity = data.identity;
-                        let obj = data_init.init(image_description, data);
-                        // Advertise the modern `ready2` identity + the
-                        // legacy `ready` identity so v1 clients also
-                        // observe the object as usable.
-                        let () = obj.ready2((identity >> 32) as u32, identity as u32);
-                        builder.mark_consumed();
-                    }
-                    None => {
-                        creator.post_error(
-                            wp_image_description_creator_params_v1::Error::IncompleteSet,
-                            "primaries + transfer are required before create",
-                        );
-                    }
-                }
+                create_image_description(creator, builder, image_description, data_init);
             }
             wp_image_description_creator_params_v1::Request::SetTfNamed { tf } => {
                 let Ok(tf) = tf.into_result() else {
@@ -758,10 +740,14 @@ where
                     );
                     return;
                 };
-                set_once!(tf_named = tf, "transfer function already set");
+                set_builder_field_once(builder, creator, "transfer function already set", |i| {
+                    set_if_none(&mut i.tf_named, tf)
+                });
             }
             wp_image_description_creator_params_v1::Request::SetTfPower { eexp } => {
-                set_once!(tf_power_eexp = eexp, "transfer function already set");
+                set_builder_field_once(builder, creator, "transfer function already set", |i| {
+                    set_if_none(&mut i.tf_power_eexp, eexp)
+                });
             }
             wp_image_description_creator_params_v1::Request::SetPrimariesNamed { primaries } => {
                 let Ok(primaries) = primaries.into_result() else {
@@ -771,7 +757,9 @@ where
                     );
                     return;
                 };
-                set_once!(primaries_named = primaries, "primaries already set");
+                set_builder_field_once(builder, creator, "primaries already set", |i| {
+                    set_if_none(&mut i.primaries_named, primaries)
+                });
             }
             wp_image_description_creator_params_v1::Request::SetPrimaries {
                 r_x,
@@ -783,15 +771,15 @@ where
                 w_x,
                 w_y,
             } => {
-                set_once!(
-                    primaries_custom = CustomPrimaries {
-                        r: (r_x, r_y),
-                        g: (g_x, g_y),
-                        b: (b_x, b_y),
-                        w: (w_x, w_y),
-                    },
-                    "primaries already set"
-                );
+                let custom = CustomPrimaries {
+                    r: (r_x, r_y),
+                    g: (g_x, g_y),
+                    b: (b_x, b_y),
+                    w: (w_x, w_y),
+                };
+                set_builder_field_once(builder, creator, "primaries already set", |i| {
+                    set_if_none(&mut i.primaries_custom, custom)
+                });
             }
             wp_image_description_creator_params_v1::Request::SetLuminances {
                 min_lum,
@@ -802,10 +790,9 @@ where
                     // Loose validation — spec's tighter check is left
                     // to the wire; we accept anything sensible.
                 }
-                set_once!(
-                    luminances = (min_lum, max_lum, reference_lum),
-                    "luminances already set"
-                );
+                set_builder_field_once(builder, creator, "luminances already set", |i| {
+                    set_if_none(&mut i.luminances, (min_lum, max_lum, reference_lum))
+                });
             }
             wp_image_description_creator_params_v1::Request::SetMasteringDisplayPrimaries {
                 r_x,
@@ -817,32 +804,115 @@ where
                 w_x,
                 w_y,
             } => {
-                set_once!(
-                    mastering_primaries = CustomPrimaries {
-                        r: (r_x, r_y),
-                        g: (g_x, g_y),
-                        b: (b_x, b_y),
-                        w: (w_x, w_y),
-                    },
-                    "mastering display primaries already set"
+                let custom = CustomPrimaries {
+                    r: (r_x, r_y),
+                    g: (g_x, g_y),
+                    b: (b_x, b_y),
+                    w: (w_x, w_y),
+                };
+                set_builder_field_once(
+                    builder,
+                    creator,
+                    "mastering display primaries already set",
+                    |i| set_if_none(&mut i.mastering_primaries, custom),
                 );
             }
             wp_image_description_creator_params_v1::Request::SetMasteringLuminance {
                 min_lum,
                 max_lum,
             } => {
-                set_once!(
-                    mastering_luminance = (min_lum, max_lum),
-                    "mastering luminance already set"
-                );
+                set_builder_field_once(builder, creator, "mastering luminance already set", |i| {
+                    set_if_none(&mut i.mastering_luminance, (min_lum, max_lum))
+                });
             }
             wp_image_description_creator_params_v1::Request::SetMaxCll { max_cll } => {
-                set_once!(max_cll = max_cll, "max_cll already set");
+                set_builder_field_once(builder, creator, "max_cll already set", |i| {
+                    set_if_none(&mut i.max_cll, max_cll)
+                });
             }
             wp_image_description_creator_params_v1::Request::SetMaxFall { max_fall } => {
-                set_once!(max_fall = max_fall, "max_fall already set");
+                set_builder_field_once(builder, creator, "max_fall already set", |i| {
+                    set_if_none(&mut i.max_fall, max_fall)
+                });
             }
             _ => {}
+        }
+    }
+}
+
+/// `true` and sets `*slot` if it was `None`; `false` (no write) if the
+/// caller had already set it. The `bool` is what
+/// [`set_builder_field_once`] uses to decide whether to post `AlreadySet`.
+fn set_if_none<T>(slot: &mut Option<T>, val: T) -> bool {
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(val);
+    true
+}
+
+/// Guarded field-set for `ParametricBuilder`: `set` reports via its `bool`
+/// return whether the field was free to take. Posts the matching protocol
+/// error — `IncompleteSet` if the mutex is poisoned, `AlreadySet` for a
+/// consumed builder or a field already written — instead of overwriting
+/// what the client set first, mirroring the spec. Split out of the
+/// `WpImageDescriptionCreatorParamsV1` dispatch (formerly a
+/// `macro_rules!` defined inline) to keep that match short.
+fn set_builder_field_once(
+    builder: &ParametricBuilder,
+    creator: &WpImageDescriptionCreatorParamsV1,
+    msg: &str,
+    set: impl FnOnce(&mut ParametricBuilderInner) -> bool,
+) {
+    let Ok(mut inner) = builder.inner.lock() else {
+        creator.post_error(
+            wp_image_description_creator_params_v1::Error::IncompleteSet,
+            "builder poisoned",
+        );
+        return;
+    };
+    if inner.consumed {
+        creator.post_error(
+            wp_image_description_creator_params_v1::Error::AlreadySet,
+            "builder already consumed",
+        );
+        return;
+    }
+    if !set(&mut inner) {
+        creator.post_error(
+            wp_image_description_creator_params_v1::Error::AlreadySet,
+            msg,
+        );
+    }
+}
+
+/// `Create` request: builds the final [`ImageDescriptionData`] and
+/// advertises it via `ready2`/`ready`, or posts `IncompleteSet` when a
+/// required field is still missing. Split out of the
+/// `WpImageDescriptionCreatorParamsV1` dispatch to keep that match short.
+fn create_image_description<D>(
+    creator: &WpImageDescriptionCreatorParamsV1,
+    builder: &Arc<ParametricBuilder>,
+    image_description: New<WpImageDescriptionV1>,
+    data_init: &mut DataInit<'_, D>,
+) where
+    D: Dispatch<WpImageDescriptionV1, ImageDescriptionData> + 'static,
+{
+    match builder.build() {
+        Some(data) => {
+            let identity = data.identity;
+            let obj = data_init.init(image_description, data);
+            // Advertise the modern `ready2` identity + the
+            // legacy `ready` identity so v1 clients also
+            // observe the object as usable.
+            let () = obj.ready2((identity >> 32) as u32, (identity & 0xFFFF_FFFF) as u32);
+            builder.mark_consumed();
+        }
+        None => {
+            creator.post_error(
+                wp_image_description_creator_params_v1::Error::IncompleteSet,
+                "primaries + transfer are required before create",
+            );
         }
     }
 }

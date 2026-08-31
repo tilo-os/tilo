@@ -47,11 +47,12 @@ impl RemoteInputSink for EventRecorder {
 /// Deterministic RGBA gradient, matching the encoder tests' fixture so
 /// PSNR + decoder behaviour is predictable.
 fn gradient_frame(width: u32, height: u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity((width * height * 4) as usize);
+    let mut out = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4) as usize);
     for y in 0..height {
         for x in 0..width {
-            let r = ((x * 255) / width.max(1)) as u8;
-            let g = ((y * 255) / height.max(1)) as u8;
+            let r = u8::try_from(x.saturating_mul(255).saturating_div(width.max(1))).unwrap_or(255);
+            let g =
+                u8::try_from(y.saturating_mul(255).saturating_div(height.max(1))).unwrap_or(255);
             out.push(r);
             out.push(g);
             out.push(128);
@@ -74,21 +75,18 @@ const HOST_PEER: PeerId = 0xAAAA;
 const VIEWER_PEER: PeerId = 0xBBBB;
 const SURFACE: SurfaceId = 42;
 
-/// Headless, no GPU: the encoder is openh264 SW, which runs cleanly in CI.
-#[test]
-fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
-    const W: u32 = 320;
-    const H: u32 = 240;
-
-    let session = SharedFlatpakSession::start(
-        HOST_PEER,
-        "org.libreoffice.LibreOffice",
-        SURFACE,
-        W,
-        H,
-        config(),
-    )
-    .expect("session construction");
+/// Start the session, consume its `SurfaceStreamStart` handshake (asserting
+/// its fields match `app_id`/`w`/`h`), and learn the sender/receiver clock
+/// offset. Split out of
+/// [`session_delivers_30_frames_in_3_seconds_at_bounded_latency`] to keep
+/// that test short.
+fn start_session_and_learn_offset(
+    app_id: &str,
+    w: u32,
+    h: u32,
+) -> (SharedFlatpakSession, PeerSurfaceMetrics, PeerView, Instant) {
+    let session = SharedFlatpakSession::start(HOST_PEER, app_id, SURFACE, w, h, config())
+        .expect("session construction");
     session.add_viewer(VIEWER_PEER, false);
 
     // The sender-side monotonic-ns feeds the receiver's clock-offset handshake.
@@ -106,8 +104,8 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
         } => {
             assert_eq!(surface, SURFACE);
             assert_eq!(source_peer, HOST_PEER);
-            assert_eq!(width, W);
-            assert_eq!(height, H);
+            assert_eq!(width, w);
+            assert_eq!(height, h);
             assert_eq!(codec, "h264");
             assert!(
                 sender_monotonic_ns_at_send > 0,
@@ -119,13 +117,13 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
     }
 
     let metrics = PeerSurfaceMetrics::default();
-    let mut view = PeerView::new_with_metrics(SURFACE, VIEWER_PEER, metrics.clone());
+    let view = PeerView::new_with_metrics(SURFACE, VIEWER_PEER, metrics.clone());
 
     // Both sides are in-process and share `origin` (the reference the wire ts
     // is measured from), so the clock-offset handshake is trivially near-zero.
     let origin = session.origin();
 
-    let receiver_ns_at_recv = origin.elapsed().as_nanos() as u64;
+    let receiver_ns_at_recv = u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX);
     metrics.set_clock_offset(sender_ns_at_send, receiver_ns_at_recv);
     assert!(
         metrics.clock_offset_ns().is_some(),
@@ -136,18 +134,27 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
         learned_offset.abs() < 10_000_000,
         "loopback clock offset should be < 10 ms, got {learned_offset} ns"
     );
-    let frame_bytes = gradient_frame(W, H);
+    (session, metrics, view, origin)
+}
 
-    // `mark_drawn` per accepted frame keeps this on the happy path; the
-    // backpressure test below drives the drop-oldest path.
-    let deadline = origin + Duration::from_secs(3);
+/// Deposit + encode frames until `deadline` or 90 frames, decoding each on
+/// `view` and returning `(sent, received)`. Split out of
+/// [`session_delivers_30_frames_in_3_seconds_at_bounded_latency`] to keep
+/// that test short.
+fn pump_frames_until(
+    session: &SharedFlatpakSession,
+    view: &mut PeerView,
+    frame_bytes: &[u8],
+    origin: Instant,
+    deadline: Instant,
+) -> (u32, u32) {
     let mut sent = 0u32;
     let mut received = 0u32;
     while Instant::now() < deadline && sent < 90 {
-        session.deposit_captured_rgba(frame_bytes.clone());
+        session.deposit_captured_rgba(frame_bytes.to_vec());
         let tick_at = Instant::now();
         if let Some(frame) = session.encode_next_frame(tick_at) {
-            sent += 1;
+            sent = sent.saturating_add(1);
             let msg = frame.clone().into_neighbour_msg();
             match msg {
                 NeighbourMsg::SurfaceFrame {
@@ -155,14 +162,14 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
                 } => {
                     // Sender+receiver share `origin`, so subtraction against the wire ts is a
                     // direct motion-to-photon delta.
-                    let now_ns = origin.elapsed().as_nanos() as u64;
+                    let now_ns = u64::try_from(origin.elapsed().as_nanos()).unwrap_or(u64::MAX);
                     let latency_ns = now_ns.saturating_sub(ts);
                     let outcome = view.push_encoded_with_latency(&encoded_h264, Some(latency_ns));
                     assert!(
                         matches!(outcome, PushOutcome::Decoded | PushOutcome::DroppedOldest),
                         "decode failed on frame {sent}",
                     );
-                    received += 1;
+                    received = received.saturating_add(1);
                     view.mark_drawn();
                 }
                 other => panic!("unexpected msg {other:?}"),
@@ -170,6 +177,23 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
         }
         std::thread::sleep(Duration::from_millis(33));
     }
+    (sent, received)
+}
+
+/// Headless, no GPU: the encoder is openh264 SW, which runs cleanly in CI.
+#[test]
+fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
+    const W: u32 = 320;
+    const H: u32 = 240;
+
+    let (session, metrics, mut view, origin) =
+        start_session_and_learn_offset("org.libreoffice.LibreOffice", W, H);
+    let frame_bytes = gradient_frame(W, H);
+
+    // `mark_drawn` per accepted frame keeps this on the happy path; the
+    // backpressure test below drives the drop-oldest path.
+    let deadline = origin + Duration::from_secs(3);
+    let (sent, received) = pump_frames_until(&session, &mut view, &frame_bytes, origin, deadline);
 
     let snap = metrics.snapshot();
     assert!(
@@ -179,7 +203,8 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
         session.snapshot_config().target_fps,
     );
     assert_eq!(
-        snap.frames_received as u32, received,
+        snap.frames_received,
+        u64::from(received),
         "metrics counter must match the loop's observed decodes"
     );
 
@@ -246,9 +271,12 @@ fn backpressure_drops_frames_but_input_stream_still_delivers() {
 
     let mut input_dispatched = 0u32;
     for (i, frame) in encoded_frames.iter().enumerate() {
+        // `i` is a tiny loop index (< 10 encoded frames); widening it losslessly
+        // to f64 is what `try_from`+fallback documents.
+        let i_f64 = f64::from(u32::try_from(i).unwrap_or(u32::MAX));
         let ev = InputEvent::PointerMotion {
-            x: i as f64,
-            y: (i * 2) as f64,
+            x: i_f64,
+            y: i_f64 * 2.0,
         };
         assert!(
             session.route_input(VIEWER_PEER, ev, &mut input_sink),
@@ -276,8 +304,8 @@ fn backpressure_drops_frames_but_input_stream_still_delivers() {
         snap.frames_dropped,
     );
     assert_eq!(
-        input_sink.events.len() as u32,
-        input_dispatched,
+        u64::try_from(input_sink.events.len()).unwrap_or(u64::MAX),
+        u64::from(input_dispatched),
         "input stream lost events under video-side backpressure — \
          streams must be independent",
     );

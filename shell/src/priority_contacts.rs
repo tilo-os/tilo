@@ -204,7 +204,7 @@ fn read_record(path: &Path) -> std::io::Result<DiskRecord> {
             "priority-contact registry has unsafe ownership or mode",
         ));
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
     file.take(MAX_RECORD_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_RECORD_BYTES {
         return Err(std::io::Error::new(

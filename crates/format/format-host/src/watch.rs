@@ -36,8 +36,6 @@ pub fn spawn_watcher(router: Router, registry_path: PathBuf) -> anyhow::Result<(
         .to_os_string();
 
     let mut watcher: RecommendedWatcher = {
-        let tx = tx;
-        let registry_name = registry_name;
         notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(ev) = res
                 && ev

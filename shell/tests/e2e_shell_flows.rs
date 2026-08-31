@@ -59,6 +59,21 @@ fn goldens_dir() -> PathBuf {
 
 const W: f32 = 1600.0;
 const H: f32 = 900.0;
+// `as u32` on a compile-time canvas-size literal: 1600/900 are exactly
+// representable, well under f32's 24-bit mantissa headroom, and both are
+// already non-negative.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "W/H are small compile-time constants, exactly representable as u32"
+)]
+const W_U32: u32 = W as u32;
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "W/H are small compile-time constants, exactly representable as u32"
+)]
+const H_U32: u32 = H as u32;
 
 /// PNG output root, under `target/nirios-screenshots/` so it's gitignored.
 fn screenshots_dir() -> PathBuf {
@@ -282,7 +297,7 @@ fn e2e_open_close_overview() {
     let tree = WorkspaceTree::bootstrap_demo();
 
     let theme = Theme::dark();
-    let mut renderer_opt = try_new_renderer(W as u32, H as u32);
+    let mut renderer_opt = try_new_renderer(W_U32, H_U32);
     let out_dir = screenshots_dir();
 
     let mut h = Harness::new(&tree);
@@ -459,20 +474,18 @@ fn probe_topbar(
 
 // Test 2: tab drag-to-reorder (Files -> after Browser)
 
-#[test]
-fn e2e_tab_drag_reorder() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // Standalone WindowGroup with four Stub tabs, avoiding full-root plumbing.
-    // Tab 1 (Files) is the drag source; tab 3 (Browser) the drop target.
+/// The `WindowGroup` + layout tree for [`e2e_tab_drag_reorder`], split out to
+/// keep that test short. Standalone with four stub tabs, avoiding
+/// full-root plumbing; tab 1 (Files) is the drag source, tab 3 (Browser)
+/// the drop target, and tab 2 is active so the reorder can't also change
+/// the active id.
+fn setup_drag_reorder_group() -> (Box<dyn Widget>, TaffyTree<()>, NodeId, TextRenderer, Theme) {
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![
         tab_stub(1, "Notes", AppKind::Editor, "notes"),
         tab_stub(2, "Files", AppKind::Files, "files"),
         tab_stub(3, "Terminal", AppKind::Terminal, "terminal"),
         tab_stub(4, "Browser", AppKind::Browser, "browser"),
     ];
-    // Active tab = Notes so the reorder can't also change the active id.
     let mut standalone = WindowGroup::new(100, tabs, /* active_id */ 1, WindowWidth::Normal);
     // A width is a fraction of its strip; with no `GroupRow`, tell the group the
     // 960 px capture surface *is* its strip, or it uses the toolkit fallback.
@@ -515,22 +528,104 @@ fn e2e_tab_drag_reorder() {
         )
         .expect("compute_layout");
     group.apply_layout(&taffy, child, Point::ORIGIN);
+    (group, taffy, child, tr, theme)
+}
 
+/// Bundles the widget/layout/doc plumbing [`pump`] needs, so
+/// [`e2e_tab_drag_reorder`]'s drag-gesture helpers don't each need eight
+/// parameters of their own.
+struct DragCtx<'a> {
+    group: &'a mut Box<dyn Widget>,
+    taffy: &'a TaffyTree<()>,
+    child: NodeId,
+    doc: &'a mut AutoCommit,
+    doc_root: &'a ObjId,
+    modifiers: &'a Modifiers,
+    focus: &'a mut Option<NodeId>,
+}
+
+impl DragCtx<'_> {
+    fn pump_event(&mut self, event: WindowEvent) {
+        pump(
+            self.group,
+            self.taffy,
+            self.child,
+            self.doc,
+            self.doc_root,
+            self.modifiers,
+            self.focus,
+            event,
+        );
+    }
+
+    fn move_to(&mut self, p: Point) {
+        self.pump_event(WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(p.x, p.y),
+        });
+    }
+
+    fn button(&mut self, state: ElementState) {
+        self.pump_event(WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state,
+            button: MouseButton::Left,
+        });
+    }
+}
+
+/// Press on `from` and drag to `to` in three steps, crossing the 8 px
+/// `DRAG_START` threshold — everything [`e2e_tab_drag_reorder`]'s gesture
+/// needs before its midway screenshot. Split out to keep that test short.
+fn press_and_drag_to(ctx: &mut DragCtx<'_>, from: Point, to: Point) {
+    ctx.move_to(from);
+    ctx.button(ElementState::Pressed);
+    for step in [0.33_f64, 0.66, 1.0] {
+        ctx.move_to(Point::new(
+            from.x + (to.x - from.x) * step,
+            from.y + (to.y - from.y) * step,
+        ));
+    }
+}
+
+/// Draw `group`'s current state and save it as a PNG, when an offscreen
+/// renderer is available. Split out of [`e2e_tab_drag_reorder`] to keep
+/// that test short — its three capture points are otherwise identical.
+fn render_frame_to(
+    group: &mut dyn Widget,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    renderer_opt: &mut Option<OffscreenRenderer>,
+    path: &Path,
+) {
+    if let Some(r) = renderer_opt.as_mut() {
+        let mut s = Scene::new();
+        group.draw(&mut s, Affine::IDENTITY, tr, theme, presence);
+        r.render_png(&s, Color::from_rgb8(0x02, 0x06, 0x14), path);
+    }
+}
+
+#[test]
+fn e2e_tab_drag_reorder() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut group, taffy, child, mut tr, theme) = setup_drag_reorder_group();
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
     group.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let mut renderer_opt = try_new_renderer(960, 540);
     let out_dir = screenshots_dir();
-    if let Some(r) = renderer_opt.as_mut() {
-        let mut s = Scene::new();
-        group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
-        r.render_png(
-            &s,
-            Color::from_rgb8(0x02, 0x06, 0x14),
-            out_dir.join("e2e-04-tabs-initial.png"),
-        );
-    }
+    render_frame_to(
+        &mut *group,
+        &mut tr,
+        &theme,
+        &presence,
+        &mut renderer_opt,
+        &out_dir.join("e2e-04-tabs-initial.png"),
+    );
 
     // `bar` isn't exposed, so read tab geometry from a parallel TabBar.
     let tab_centers = probe_tab_centers();
@@ -542,84 +637,45 @@ fn e2e_tab_drag_reorder() {
     let modifiers = Modifiers::default();
     let mut focus: Option<NodeId> = None;
 
-    pump(
-        &mut group,
-        &taffy,
-        child,
-        &mut doc,
-        &doc_root,
-        &modifiers,
-        &mut focus,
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(from.x, from.y),
-        },
-    );
-    pump(
-        &mut group,
-        &taffy,
-        child,
-        &mut doc,
-        &doc_root,
-        &modifiers,
-        &mut focus,
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-    );
-
     // Cross the 8 px DRAG_START threshold in steps, capturing one mid-drag
-    // frame so the drop-zone highlight is visible.
-    let midway = Point::new(f64::midpoint(from.x, to.x), from.y);
-    for step in [0.33_f64, 0.66, 1.0] {
-        let p = Point::new(
-            from.x + (to.x - from.x) * step,
-            from.y + (to.y - from.y) * step,
-        );
-        pump(
-            &mut group,
-            &taffy,
+    // frame so the drop-zone highlight is visible. Each `DragCtx` below is a
+    // temporary borrowing `group`/`doc`/`focus`, so it releases them again
+    // before the render call in between needs its own borrow of `group`.
+    press_and_drag_to(
+        &mut DragCtx {
+            group: &mut group,
+            taffy: &taffy,
             child,
-            &mut doc,
-            &doc_root,
-            &modifiers,
-            &mut focus,
-            WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: PhysicalPosition::new(p.x, p.y),
-            },
-        );
-    }
-    let _ = midway;
-
-    if let Some(r) = renderer_opt.as_mut() {
-        let mut s = Scene::new();
-        group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
-        r.render_png(
-            &s,
-            Color::from_rgb8(0x02, 0x06, 0x14),
-            out_dir.join("e2e-05-tab-drag-midway.png"),
-        );
-    }
-
-    // `MouseInput::Released` reads the cached `last_cursor`, so the final step
-    // must already be at `to`.
-    pump(
-        &mut group,
-        &taffy,
-        child,
-        &mut doc,
-        &doc_root,
-        &modifiers,
-        &mut focus,
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
+            doc: &mut doc,
+            doc_root: &doc_root,
+            modifiers: &modifiers,
+            focus: &mut focus,
         },
+        from,
+        to,
     );
+
+    render_frame_to(
+        &mut *group,
+        &mut tr,
+        &theme,
+        &presence,
+        &mut renderer_opt,
+        &out_dir.join("e2e-05-tab-drag-midway.png"),
+    );
+
+    // `MouseInput::Released` reads the cached `last_cursor`, so the drag-to
+    // step above must already have landed on `to`.
+    DragCtx {
+        group: &mut group,
+        taffy: &taffy,
+        child,
+        doc: &mut doc,
+        doc_root: &doc_root,
+        modifiers: &modifiers,
+        focus: &mut focus,
+    }
+    .button(ElementState::Released);
 
     // WindowGroup drains `bar.take_reorder()` and permutes its hosts, but
     // `WindowGroup::tabs()` still returns descriptor order (visible labels stay
@@ -644,16 +700,22 @@ fn e2e_tab_drag_reorder() {
         group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
-    if let Some(r) = renderer_opt.as_mut() {
-        let mut s = Scene::new();
-        group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
-        r.render_png(
-            &s,
-            Color::from_rgb8(0x02, 0x06, 0x14),
-            out_dir.join("e2e-06-tabs-reordered.png"),
-        );
-    }
+    render_frame_to(
+        &mut *group,
+        &mut tr,
+        &theme,
+        &presence,
+        &mut renderer_opt,
+        &out_dir.join("e2e-06-tabs-reordered.png"),
+    );
 
+    assert_drag_reorder_goldens(&renderer_opt, &out_dir);
+}
+
+/// The three captures' non-emptiness plus the settled-frame golden, or a
+/// skip notice with no wgpu adapter. Split out of [`e2e_tab_drag_reorder`]
+/// to keep that test short.
+fn assert_drag_reorder_goldens(renderer_opt: &Option<OffscreenRenderer>, out_dir: &Path) {
     if renderer_opt.is_some() {
         for name in [
             "e2e-04-tabs-initial.png",
@@ -691,34 +753,13 @@ fn tab_stub(id: u64, title: &str, kind: AppKind, label: &str) -> (TabDescriptor,
 
 /// Each tab pill's centre, via a parallel `TabBar` run through the same
 /// build/compute/apply/draw the real `WindowGroup` uses.
-fn probe_tab_centers() -> [Point; 4] {
-    let descs = vec![
-        TabDescriptor {
-            id: 1,
-            title: "Notes".into(),
-            app_kind: Some(AppKind::Editor),
-        },
-        TabDescriptor {
-            id: 2,
-            title: "Files".into(),
-            app_kind: Some(AppKind::Files),
-        },
-        TabDescriptor {
-            id: 3,
-            title: "Terminal".into(),
-            app_kind: Some(AppKind::Terminal),
-        },
-        TabDescriptor {
-            id: 4,
-            title: "Browser".into(),
-            app_kind: Some(AppKind::Browser),
-        },
-    ];
-    let mut bar: Box<dyn Widget> = Box::new(TabBar::new("g100", descs, 1));
-    let theme = Theme::dark();
+/// Build layout, measure, apply, and draw once — the boilerplate shared by
+/// both tab-bar probes in [`probe_tab_centers`]. Split out to keep that
+/// function short.
+fn build_measure_and_draw(widget: &mut dyn Widget, theme: &Theme, presence: &PresenceCtx) {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = bar.build_layout(&mut taffy, &theme, &mut map);
+    let child = widget.build_layout(&mut taffy, theme, &mut map);
     let vp = taffy
         .new_with_children(
             Style {
@@ -749,77 +790,51 @@ fn probe_tab_centers() -> [Point; 4] {
             },
         )
         .expect("compute_layout");
-    bar.apply_layout(&taffy, child, Point::ORIGIN);
+    widget.apply_layout(&taffy, child, Point::ORIGIN);
     let mut scene = Scene::new();
+    widget.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, presence);
+}
+
+fn probe_tab_centers() -> [Point; 4] {
+    let descs = vec![
+        TabDescriptor {
+            id: 1,
+            title: "Notes".into(),
+            app_kind: Some(AppKind::Editor),
+        },
+        TabDescriptor {
+            id: 2,
+            title: "Files".into(),
+            app_kind: Some(AppKind::Files),
+        },
+        TabDescriptor {
+            id: 3,
+            title: "Terminal".into(),
+            app_kind: Some(AppKind::Terminal),
+        },
+        TabDescriptor {
+            id: 4,
+            title: "Browser".into(),
+            app_kind: Some(AppKind::Browser),
+        },
+    ];
+    let theme = Theme::dark();
     let presence = PresenceCtx::default();
-    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    let mut bar: Box<dyn Widget> = Box::new(TabBar::new("g100", descs.clone(), 1));
+    build_measure_and_draw(&mut *bar, &theme, &presence);
 
     // `tab_rects` isn't reachable through `Box<dyn Widget>`; rebuild as concrete.
-    let mut concrete = TabBar::new(
-        "g100",
-        vec![
-            TabDescriptor {
-                id: 1,
-                title: "Notes".into(),
-                app_kind: Some(AppKind::Editor),
-            },
-            TabDescriptor {
-                id: 2,
-                title: "Files".into(),
-                app_kind: Some(AppKind::Files),
-            },
-            TabDescriptor {
-                id: 3,
-                title: "Terminal".into(),
-                app_kind: Some(AppKind::Terminal),
-            },
-            TabDescriptor {
-                id: 4,
-                title: "Browser".into(),
-                app_kind: Some(AppKind::Browser),
-            },
-        ],
-        1,
-    );
-    let mut taffy2: TaffyTree<()> = TaffyTree::new();
-    let mut map2: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child2 = concrete.build_layout(&mut taffy2, &theme, &mut map2);
-    let vp2 = taffy2
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(960.0),
-                    height: Dimension::length(40.0),
-                },
-                ..Default::default()
-            },
-            &[child2],
-        )
-        .unwrap();
-    let mut tr2 = TextRenderer::new();
-    let map2_copy = map2.clone();
-    taffy2
-        .compute_layout_with_measure(
-            vp2,
-            Size {
-                width: AvailableSpace::Definite(960.0),
-                height: AvailableSpace::Definite(40.0),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = map2_copy.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr2) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    concrete.apply_layout(&taffy2, child2, Point::ORIGIN);
-    let mut s2 = Scene::new();
-    concrete.draw(&mut s2, Affine::IDENTITY, &mut tr2, &theme, &presence);
+    let mut concrete = TabBar::new("g100", descs, 1);
+    build_measure_and_draw(&mut concrete, &theme, &presence);
     let rs = concrete.tab_rects();
     // Fall back to evenly-spaced guesses if layout returned fewer than 4 rects,
     // so a failure reports usefully instead of panicking on an index.
+    // `i` is only ever one of the literal 0..=3 below, never large enough to
+    // make the widening-to-narrowing round trip lossy.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "i is one of the literal tab indices 0..=3 below, never large"
+    )]
     let pick = |i: usize| {
         rs.get(i).copied().unwrap_or_else(|| {
             let gap = 960.0 / 4.0;
@@ -858,7 +873,7 @@ fn e2e_open_quick_settings() {
     let tree = WorkspaceTree::bootstrap_demo();
     let theme = Theme::dark();
 
-    let mut renderer_opt = try_new_renderer(W as u32, H as u32);
+    let mut renderer_opt = try_new_renderer(W_U32, H_U32);
     let out_dir = screenshots_dir();
 
     let mut h = Harness::new(&tree);
@@ -911,11 +926,10 @@ fn e2e_open_quick_settings() {
 // through the shell's `Box<dyn Widget>` tree. This still exercises the
 // full click pipeline (max_rects hit-test -> pending_max -> take_max ->
 // flip maximized -> floating-controls draw).
-#[test]
-fn e2e_maximized_tile_floating_controls() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+/// The `WindowGroup` + layout tree for
+/// [`e2e_maximized_tile_floating_controls`], split out to keep that test
+/// short.
+fn setup_maximize_test_group() -> (WindowGroup, TaffyTree<()>, NodeId, TextRenderer, Theme) {
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![
         tab_stub(1, "Notes", AppKind::Editor, "notes"),
         tab_stub(2, "Files", AppKind::Files, "files"),
@@ -962,14 +976,13 @@ fn e2e_maximized_tile_floating_controls() {
         )
         .expect("compute_layout");
     group.apply_layout(&taffy, child, Point::ORIGIN);
+    (group, taffy, child, tr, theme)
+}
 
-    // Prime the bar — max_rect coordinates derive from the active pill's rect.
-    let presence = PresenceCtx::default();
-    {
-        let mut s = Scene::new();
-        group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
-    }
-
+/// Hover the active pill, wait out its chip-reveal curve, then click its
+/// Maximize2 chip — leaving `group.maximized == true`. Split out of
+/// [`e2e_maximized_tile_floating_controls`] to keep that test short.
+fn hover_and_click_maximize_chip(group: &mut WindowGroup, taffy: &TaffyTree<()>, child: NodeId) {
     // Hover the active pill so its chip cluster is offered at all.
     let pill = group
         .bar_for_tests()
@@ -987,7 +1000,6 @@ fn e2e_maximized_tile_floating_controls() {
     let mut focus: Option<NodeId> = None;
     // Direct `group.handle_event` (not the boxed `pump`) keeps `.maximized`
     // reachable on the concrete type.
-    let root_node = child;
     let mut pump_ev = |group: &mut WindowGroup, event: WindowEvent| {
         let mut handled = false;
         group.handle_event(
@@ -998,12 +1010,12 @@ fn e2e_maximized_tile_floating_controls() {
             &doc_root,
             &mut handled,
             &mut focus,
-            root_node,
-            &taffy,
+            child,
+            taffy,
         );
     };
     pump_ev(
-        &mut group,
+        group,
         WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(pill.x, pill.y),
@@ -1016,14 +1028,14 @@ fn e2e_maximized_tile_floating_controls() {
     // past the end, lay out again. Reading the rect straight back — or deriving
     // it from the pill with the chip offsets copied out of `TabBar` — clicks
     // nothing, which is what this test was doing.
-    group.apply_layout(&taffy, child, Point::ORIGIN);
+    group.apply_layout(taffy, child, Point::ORIGIN);
     assert!(
         group
             .bar_mut_for_tests()
             .hold_reveal_at(std::time::Duration::from_secs(1)),
         "hovering the pill started no chip reveal",
     );
-    group.apply_layout(&taffy, child, Point::ORIGIN);
+    group.apply_layout(taffy, child, Point::ORIGIN);
     let max_center = group
         .bar_for_tests()
         .max_rects()
@@ -1033,14 +1045,14 @@ fn e2e_maximized_tile_floating_controls() {
         .expect("the active tab offers a Maximize2 chip once its reveal has run")
         .center();
     pump_ev(
-        &mut group,
+        group,
         WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(max_center.x, max_center.y),
         },
     );
     pump_ev(
-        &mut group,
+        group,
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
@@ -1050,7 +1062,7 @@ fn e2e_maximized_tile_floating_controls() {
     // Release isn't required (Pressed publishes pending_max, drained same event)
     // but keeps the event stream realistic.
     pump_ev(
-        &mut group,
+        group,
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
@@ -1062,19 +1074,22 @@ fn e2e_maximized_tile_floating_controls() {
         group.maximized,
         "clicking the active tab's Maximize2 glyph should toggle `maximized = true`"
     );
+}
 
-    // Defensive: settle any spawn-fade timers still pumping.
-    std::thread::sleep(Duration::from_millis(50));
-    {
-        let mut s = Scene::new();
-        group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
-    }
-
-    let mut renderer_opt = try_new_renderer(960, 540);
-    let out_dir = screenshots_dir();
+/// Render `group`, save the PNG, and check it against the golden (or note
+/// the offscreen skip). Split out of
+/// [`e2e_maximized_tile_floating_controls`] to keep that test short.
+fn assert_maximized_tile_golden(
+    group: &mut WindowGroup,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    renderer_opt: &mut Option<OffscreenRenderer>,
+    out_dir: &Path,
+) {
     if let Some(r) = renderer_opt.as_mut() {
         let mut s = Scene::new();
-        group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
+        group.draw(&mut s, Affine::IDENTITY, tr, theme, presence);
         r.render_png(
             &s,
             Color::from_rgb8(0x02, 0x06, 0x14),
@@ -1093,6 +1108,41 @@ fn e2e_maximized_tile_floating_controls() {
             "offscreen: no wgpu adapter — e2e_maximized_tile_floating_controls asserted state only"
         );
     }
+}
+
+#[test]
+fn e2e_maximized_tile_floating_controls() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (mut group, taffy, child, mut tr, theme) = setup_maximize_test_group();
+
+    // Prime the bar — max_rect coordinates derive from the active pill's rect.
+    let presence = PresenceCtx::default();
+    {
+        let mut s = Scene::new();
+        group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    hover_and_click_maximize_chip(&mut group, &taffy, child);
+
+    // Defensive: settle any spawn-fade timers still pumping.
+    std::thread::sleep(Duration::from_millis(50));
+    {
+        let mut s = Scene::new();
+        group.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    let mut renderer_opt = try_new_renderer(960, 540);
+    let out_dir = screenshots_dir();
+    assert_maximized_tile_golden(
+        &mut group,
+        &mut tr,
+        &theme,
+        &presence,
+        &mut renderer_opt,
+        &out_dir,
+    );
 }
 
 /// Sibling `TabBar` returning full `tab_rects` (unlike `probe_tab_centers`),
@@ -1585,52 +1635,8 @@ fn e2e_undo_redo_round_trip_restores_golden() {
 
     // Confirms the tab-close undo gap noted above; this test passes via the
     // editor-character path below.
-    {
-        let before = h.state.peek_last_undo().is_some();
-        // Close-rect geometry from TabBar offsets (close_w=18, close_inset=4); with
-        // one tab, probe_tab_rects()[0].x1 is close enough to the live pill's edge.
-        let probe = probe_tab_rects();
-        if let Some(pill) = probe.first() {
-            let close_cx = pill.x1 - 13.0; // x0 = x1 - 22 + 9 for centre
-            let close_cy = f64::midpoint(pill.y0, pill.y1);
-            let mods = Modifiers::default();
-            h.pump_event(
-                WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: PhysicalPosition::new(close_cx, close_cy),
-                },
-                &mods,
-            );
-            h.pump_event(
-                WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-                &mods,
-            );
-            h.pump_event(
-                WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
-                &mods,
-            );
-            h.state.commit_action(None, None);
-        }
-        let after = h.state.peek_last_undo().is_some();
-        if before == after && !after {
-            eprintln!(
-                "critical finding: tab-close gesture left state.undo_stack \
-                 empty (before={before}, after={after}). Tab list is widget-\
-                 only, not CRDT-persisted — Ctrl+Z cannot roll it back. Test \
-                 falls through to editor-character gesture to exercise the \
-                 undo plumbing end-to-end."
-            );
-        }
-        // Rebuild a fresh editor — the tab list may already have been clobbered.
-    }
+    probe_tab_close_undo_gap(&mut h);
+    // Rebuild a fresh editor — the tab list may already have been clobbered.
     let mut h = UndoHarness::new();
     h.render_to(
         renderer_opt.as_mut(),
@@ -1673,6 +1679,63 @@ fn e2e_undo_redo_round_trip_restores_golden() {
         &out_dir.join("e2e-undo-restored.png"),
     );
 
+    assert_undo_redo_goldens(&renderer_opt, &out_dir);
+}
+
+/// Click the (possibly nonexistent) tab's close button and report whether
+/// that pushed an undo entry — the CRDT-vs-widget-only tab list gap this
+/// test falls through past. Split out of
+/// [`e2e_undo_redo_round_trip_restores_golden`] to keep that test short.
+fn probe_tab_close_undo_gap(h: &mut UndoHarness) {
+    let before = h.state.peek_last_undo().is_some();
+    // Close-rect geometry from TabBar offsets (close_w=18, close_inset=4); with
+    // one tab, probe_tab_rects()[0].x1 is close enough to the live pill's edge.
+    let probe = probe_tab_rects();
+    if let Some(pill) = probe.first() {
+        let close_cx = pill.x1 - 13.0; // x0 = x1 - 22 + 9 for centre
+        let close_cy = f64::midpoint(pill.y0, pill.y1);
+        let mods = Modifiers::default();
+        h.pump_event(
+            WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: PhysicalPosition::new(close_cx, close_cy),
+            },
+            &mods,
+        );
+        h.pump_event(
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            &mods,
+        );
+        h.pump_event(
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+            &mods,
+        );
+        h.state.commit_action(None, None);
+    }
+    let after = h.state.peek_last_undo().is_some();
+    if before == after && !after {
+        eprintln!(
+            "critical finding: tab-close gesture left state.undo_stack \
+             empty (before={before}, after={after}). Tab list is widget-\
+             only, not CRDT-persisted — Ctrl+Z cannot roll it back. Test \
+             falls through to editor-character gesture to exercise the \
+             undo plumbing end-to-end."
+        );
+    }
+}
+
+/// The three-PNG non-emptiness, diff, and golden checks for the undo
+/// round trip, or a skip notice with no wgpu adapter. Split out of
+/// [`e2e_undo_redo_round_trip_restores_golden`] to keep that test short.
+fn assert_undo_redo_goldens(renderer_opt: &Option<OffscreenRenderer>, out_dir: &Path) {
     if renderer_opt.is_some() {
         let baseline = out_dir.join("e2e-undo-baseline.png");
         let after = out_dir.join("e2e-undo-after-mutation.png");

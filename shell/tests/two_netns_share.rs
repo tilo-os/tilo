@@ -89,11 +89,15 @@ fn cfg() -> FlatpakShareConfig {
 }
 
 fn gradient() -> Vec<u8> {
-    let mut v = Vec::with_capacity((FRAME_W * FRAME_H * 4) as usize);
+    let mut v = Vec::with_capacity(FRAME_W.saturating_mul(FRAME_H).saturating_mul(4) as usize);
     for y in 0..FRAME_H {
         for x in 0..FRAME_W {
-            v.push(((x * 255) / FRAME_W.max(1)) as u8);
-            v.push(((y * 255) / FRAME_H.max(1)) as u8);
+            v.push(
+                u8::try_from(x.saturating_mul(255).saturating_div(FRAME_W.max(1))).unwrap_or(255),
+            );
+            v.push(
+                u8::try_from(y.saturating_mul(255).saturating_div(FRAME_H.max(1))).unwrap_or(255),
+            );
             v.push(0x80);
             v.push(0xFF);
         }
@@ -109,9 +113,132 @@ struct HostInputRecorder {
 
 impl RemoteInputSink for HostInputRecorder {
     fn apply(&mut self, _peer: PeerId, _surface: SurfaceId, _event: InputEvent) {
-        let ts_ns = self.origin.elapsed().as_nanos() as u64;
+        let ts_ns = (self.origin.elapsed().as_nanos() & u128::from(u64::MAX)) as u64;
         self.received_ns.lock().expect("host input log").push(ts_ns);
     }
+}
+
+/// Host role for
+/// [`in_process_udp_pipeline_sustains_10_fps_and_bounded_latency`]: push
+/// encoded frames on `video_addr`, receive input echoes on
+/// `input_sock_host`. Split out to keep that test short.
+fn run_host_thread(
+    host_session: &SharedFlatpakSession,
+    host_stop: &AtomicBool,
+    input_sock_host: UdpSocket,
+    video_addr: std::net::SocketAddr,
+    host_input_ts_c: Arc<std::sync::Mutex<Vec<u64>>>,
+) {
+    let video_send = UdpSocket::bind("127.0.0.1:0").expect("host video-send socket");
+    video_send
+        .set_nonblocking(true)
+        .expect("nonblocking video-send");
+
+    input_sock_host
+        .set_nonblocking(true)
+        .expect("nonblocking input-in");
+
+    let origin = host_session.origin();
+    let mut recorder = HostInputRecorder {
+        received_ns: host_input_ts_c,
+        origin,
+    };
+
+    while !host_stop.load(Ordering::Acquire) {
+        host_session.deposit_captured_rgba(gradient());
+        let now = Instant::now();
+        let _ = host_session.encode_next_frame(now);
+        while let Some(frame) = host_session.poll_stream_frame(VIEWER_PEER) {
+            let bytes = frame.encode();
+            // UDP is bounded per packet — fragment into chunks that fit inside a
+            // common MTU (1400 bytes, avoiding IP fragmentation) and frame *inside*
+            // the UDP payload so `SurfaceStreamReceiver` re-assembles them; packet
+            // boundaries are irrelevant to the framing.
+            for chunk in bytes.chunks(1400) {
+                let _ = video_send.send_to(chunk, video_addr);
+            }
+        }
+
+        let mut buf = [0u8; 512];
+        while let Ok((n, _from)) = input_sock_host.recv_from(&mut buf) {
+            if let Ok(ev) = serde_json::from_slice::<InputEvent>(&buf[..n]) {
+                // Route through the session so the read-only gate and origin-tagging
+                // match production.
+                let _ = host_session.route_input(VIEWER_PEER, ev, &mut recorder);
+            }
+        }
+
+        // 30 fps target -> ~33 ms per tick. The session's own throttle clamps to
+        // 30 anyway; sleeping keeps CPU down and matches the render-loop cadence.
+        thread::sleep(Duration::from_millis(33));
+    }
+}
+
+/// Viewer role for
+/// [`in_process_udp_pipeline_sustains_10_fps_and_bounded_latency`]: read the
+/// video socket, re-frame, decode, count frames and measure latency,
+/// sending input packets back on `input_addr`. Split out to keep that test
+/// short.
+fn run_viewer_thread(
+    video_sock_viewer: UdpSocket,
+    viewer_stop: &AtomicBool,
+    recv_count: &AtomicU32,
+    origin: Instant,
+    input_addr: std::net::SocketAddr,
+) -> (Vec<u64>, u32) {
+    video_sock_viewer
+        .set_nonblocking(true)
+        .expect("nonblocking video-in");
+    let input_send = UdpSocket::bind("127.0.0.1:0").expect("viewer input-send socket");
+
+    let mut rx = SurfaceStreamReceiver::new();
+    let mut decoder = H264Decoder::new();
+    let mut latency_samples: Vec<u64> = Vec::new();
+    let mut recv_buf = [0u8; 2048];
+
+    let mut next_input_at = Instant::now() + Duration::from_millis(200);
+    let mut input_count = 0u32;
+
+    while !viewer_stop.load(Ordering::Acquire) {
+        while let Ok((n, _from)) = video_sock_viewer.recv_from(&mut recv_buf) {
+            rx.push_bytes(&recv_buf[..n]);
+        }
+
+        let events = match rx.drain() {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for ev in events {
+            if let ReceiverEvent::Frame(frame) = ev {
+                let _decoded: Option<_> = decoder.decode(&frame.payload);
+                recv_count.fetch_add(1, Ordering::AcqRel);
+                // The frame carries no host capture timestamp (SurfaceStream has only
+                // sequence/keyframe), so latency is measured against the session's shared
+                // origin — valid in-process where both sides share `session.origin()`;
+                // real hosts would need a clock-sync handshake.
+                let now_ns = (origin.elapsed().as_nanos() & u128::from(u64::MAX)) as u64;
+                let elapsed_since_start_ns = now_ns;
+                // Diagnostic only — not currently asserted on.
+                latency_samples.push(elapsed_since_start_ns);
+            }
+        }
+
+        let now = Instant::now();
+        if now >= next_input_at {
+            let ev = InputEvent::PointerMotion {
+                x: f64::from(input_count),
+                y: f64::from(input_count) * 2.0,
+            };
+            let bytes = serde_json::to_vec(&ev).expect("input serde");
+            let _ = input_send.send_to(&bytes, input_addr);
+            input_count += 1;
+            next_input_at = now + Duration::from_millis(200);
+        }
+
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    (latency_samples, input_count)
 }
 
 /// Host and viewer as threads in one process over real UDP loopback
@@ -150,111 +277,28 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
     let host_stop = stop.clone();
     let host_input_ts_c = host_input_ts.clone();
     let host_thread = thread::spawn(move || {
-        let video_send = UdpSocket::bind("127.0.0.1:0").expect("host video-send socket");
-        video_send
-            .set_nonblocking(true)
-            .expect("nonblocking video-send");
-
-        input_sock_host
-            .set_nonblocking(true)
-            .expect("nonblocking input-in");
-
-        let origin = host_session.origin();
-        let mut recorder = HostInputRecorder {
-            received_ns: host_input_ts_c,
-            origin,
-        };
-
-        while !host_stop.load(Ordering::Acquire) {
-            host_session.deposit_captured_rgba(gradient());
-            let now = Instant::now();
-            let _ = host_session.encode_next_frame(now);
-            while let Some(frame) = host_session.poll_stream_frame(VIEWER_PEER) {
-                let bytes = frame.encode();
-                // UDP is bounded per packet — fragment into chunks that fit inside a
-                // common MTU (1400 bytes, avoiding IP fragmentation) and frame *inside*
-                // the UDP payload so `SurfaceStreamReceiver` re-assembles them; packet
-                // boundaries are irrelevant to the framing.
-                for chunk in bytes.chunks(1400) {
-                    let _ = video_send.send_to(chunk, video_addr);
-                }
-            }
-
-            let mut buf = [0u8; 512];
-            while let Ok((n, _from)) = input_sock_host.recv_from(&mut buf) {
-                if let Ok(ev) = serde_json::from_slice::<InputEvent>(&buf[..n]) {
-                    // Route through the session so the read-only gate and origin-tagging
-                    // match production.
-                    let _ = host_session.route_input(VIEWER_PEER, ev, &mut recorder);
-                }
-            }
-
-            // 30 fps target -> ~33 ms per tick. The session's own throttle clamps to
-            // 30 anyway; sleeping keeps CPU down and matches the render-loop cadence.
-            thread::sleep(Duration::from_millis(33));
-        }
+        run_host_thread(
+            &host_session,
+            &host_stop,
+            input_sock_host,
+            video_addr,
+            host_input_ts_c,
+        );
     });
 
     // Viewer thread: read the video socket, re-frame, decode, count frames
     // and measure latency, sending input packets back.
     let viewer_stop = stop.clone();
     let recv_count = received_count.clone();
-    let session_for_origin = session;
+    let origin = session.origin();
     let viewer_thread = thread::spawn(move || {
-        video_sock_viewer
-            .set_nonblocking(true)
-            .expect("nonblocking video-in");
-        let input_send = UdpSocket::bind("127.0.0.1:0").expect("viewer input-send socket");
-        let origin = session_for_origin.origin();
-
-        let mut rx = SurfaceStreamReceiver::new();
-        let mut decoder = H264Decoder::new();
-        let mut latency_samples: Vec<u64> = Vec::new();
-        let mut recv_buf = [0u8; 2048];
-
-        let mut next_input_at = Instant::now() + Duration::from_millis(200);
-        let mut input_count = 0u32;
-
-        while !viewer_stop.load(Ordering::Acquire) {
-            while let Ok((n, _from)) = video_sock_viewer.recv_from(&mut recv_buf) {
-                rx.push_bytes(&recv_buf[..n]);
-            }
-
-            let events = match rx.drain() {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            for ev in events {
-                if let ReceiverEvent::Frame(frame) = ev {
-                    let _decoded: Option<_> = decoder.decode(&frame.payload);
-                    recv_count.fetch_add(1, Ordering::AcqRel);
-                    // The frame carries no host capture timestamp (SurfaceStream has only
-                    // sequence/keyframe), so latency is measured against the session's shared
-                    // origin — valid in-process where both sides share `session.origin()`;
-                    // real hosts would need a clock-sync handshake.
-                    let now_ns = origin.elapsed().as_nanos() as u64;
-                    let elapsed_since_start_ns = now_ns;
-                    // Diagnostic only — not currently asserted on.
-                    latency_samples.push(elapsed_since_start_ns);
-                }
-            }
-
-            let now = Instant::now();
-            if now >= next_input_at {
-                let ev = InputEvent::PointerMotion {
-                    x: f64::from(input_count),
-                    y: f64::from(input_count) * 2.0,
-                };
-                let bytes = serde_json::to_vec(&ev).expect("input serde");
-                let _ = input_send.send_to(&bytes, input_addr);
-                input_count += 1;
-                next_input_at = now + Duration::from_millis(200);
-            }
-
-            thread::sleep(Duration::from_millis(5));
-        }
-
-        (latency_samples, input_count)
+        run_viewer_thread(
+            video_sock_viewer,
+            &viewer_stop,
+            &recv_count,
+            origin,
+            input_addr,
+        )
     });
 
     thread::sleep(Duration::from_secs(3));
