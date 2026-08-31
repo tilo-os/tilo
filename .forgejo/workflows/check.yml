@@ -125,6 +125,16 @@ jobs:
       # Build and run tests first. The resulting rlibs/rmeta are then reusable
       # by the all-target check; doing this in the opposite order makes rustc
       # perform metadata-only work before doing codegen for the same crates.
+      # app-catalogue's registry integration tests execute the real installer;
+      # it is deliberately not a Rust dependency, so an affected-only Cargo
+      # invocation does not otherwise produce that binary.
+      - name: Build installer used by app-catalogue integration tests
+        if: contains(matrix.packages, '-p app-catalogue')
+        run: >-
+          bash tools/ci-measure.sh "build qos-install test fixture" --
+          bash scripts/ci-run.sh "cargo build (qos-install test fixture)" --
+          cargo build --locked -p install
+
       - name: Test shard ${{ matrix.shard }}
         env:
           XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
