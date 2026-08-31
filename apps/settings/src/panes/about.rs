@@ -102,9 +102,11 @@ impl AboutInfo {
         }
     }
 
-    /// A short, stable identity fingerprint derived from the hostname.
-    /// In a real deployment this is the device's P2P public-key handle;
-    /// derived deterministically here so the panel always shows one.
+    /// A short, stable workspace identity fingerprint.
+    ///
+    /// Connected workspaces use the public group key that identifies the
+    /// person. The hostname-derived value is only a fallback for workspaces
+    /// without an identity.
     pub fn fingerprint(&self) -> String {
         // The workspace identity is the real thing to fingerprint; the
         // hostname hash is only a stand-in until one has been provisioned.
