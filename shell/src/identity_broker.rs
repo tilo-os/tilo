@@ -91,6 +91,9 @@ fn serve(mut stream: UnixStream, tree: &WorkspaceTreeHandle) {
             Request::Sign { action, message } => {
                 sign(tree, &room, &handshake.app_id, &action, &message)
             }
+            Request::CollaborationJoin { workspace_id } => {
+                sign_collaboration_join(&room, &workspace_id)
+            }
         };
         if write_frame(&mut stream, &response).is_err() {
             return;
@@ -175,6 +178,28 @@ fn sign(
     };
     match require_trusted_current_device(&profile) {
         Ok((device, _)) => Response::Signature(device.sign(message).to_bytes().to_vec()),
+        Err(error) => Response::Denied(error.to_string()),
+    }
+}
+
+fn sign_collaboration_join(bound_room: &RoomId, workspace_id: &str) -> Response {
+    if workspace_id != bound_room.to_string() {
+        return Response::Denied("collaboration join requested for a different workspace".into());
+    }
+    let profile = match crate::identity_registry::selected_identity_profile(workspace_id) {
+        Ok(Some(profile)) => profile,
+        Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
+        Err(error) => return Response::Error(error.to_string()),
+    };
+    match require_trusted_current_device(&profile) {
+        Ok((device, _)) => Response::Signature(
+            device
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    workspace_id,
+                ))
+                .to_bytes()
+                .to_vec(),
+        ),
         Err(error) => Response::Denied(error.to_string()),
     }
 }
@@ -414,6 +439,22 @@ mod tests {
             .expect("key")
             .verify(b"saved", &Signature::from_bytes(&signature))
             .expect("signature");
+        let join_proof = identity
+            .sign_collaboration_join(&room.to_string())
+            .expect("the launcher-bound workspace may request a join proof");
+        VerifyingKey::from_bytes(&identity.signing_public_key())
+            .expect("device key")
+            .verify(
+                &runtime_identity::collaboration_join_signing_bytes(&room.to_string()),
+                &Signature::from_bytes(&join_proof),
+            )
+            .expect("workspace-scoped device proof");
+        assert!(
+            identity
+                .sign_collaboration_join(&RoomId::new().to_string())
+                .is_err(),
+            "the identity broker must not sign a join for another workspace"
+        );
         assert!(identity.sign_for("document.delete", b"no").is_err());
         drop(identity);
 

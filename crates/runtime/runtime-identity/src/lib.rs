@@ -70,6 +70,20 @@ pub use runtime_portal::NotAvailable;
 /// [`broker::BROKER_ENV_VAR`] and never sets this for packaged apps.
 pub const IDENTITY_ENV_VAR: &str = "QOS_USER_IDENTITY";
 pub const IDENTITY_SERVICE: &str = "identity";
+const COLLABORATION_JOIN_TAG: &[u8] = b"qos-collaboration-join-v1\0";
+
+/// Domain-separated bytes signed by an enrolled device when joining one
+/// collaboration workspace. The NUL-terminated domain tag and the remaining
+/// workspace bytes make the single-field encoding unambiguous; this exact
+/// concatenation is fixed wire ABI for peer verification.
+#[must_use]
+pub fn collaboration_join_signing_bytes(workspace_id: &str) -> Vec<u8> {
+    let workspace = workspace_id.as_bytes();
+    let mut message = Vec::new();
+    message.extend_from_slice(COLLABORATION_JOIN_TAG);
+    message.extend_from_slice(workspace);
+    message
+}
 
 /// Small synchronous wire protocol used over the launcher-inherited identity
 /// service fd. The launcher writes `Handshake` before the sandbox starts, so
@@ -86,7 +100,17 @@ pub mod wire {
     #[derive(Debug, Serialize, Deserialize)]
     pub enum Request {
         Metadata,
-        Sign { action: String, message: Vec<u8> },
+        Sign {
+            action: String,
+            message: Vec<u8>,
+        },
+        /// Prove possession of the enrolled device key for the workspace the
+        /// launcher bound into the handshake. The broker constructs the
+        /// domain-separated message; callers cannot use this as a generic
+        /// signing escape hatch.
+        CollaborationJoin {
+            workspace_id: String,
+        },
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -953,6 +977,26 @@ impl SigningIdentity {
         }
     }
 
+    /// Prove that this process can ask the workspace-bound identity broker to
+    /// use the certified device key. Unlike [`Self::sign_for`], this is not an
+    /// application action grant: the launcher has already bound the broker
+    /// connection to exactly one workspace, and the broker rejects any other
+    /// workspace id before signing the fixed collaboration-join domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::ConnectionFailed`] when the requested
+    /// workspace differs from the launcher's handshake, the device is no
+    /// longer enrolled, or the signing service is unavailable.
+    pub fn sign_collaboration_join(&self, workspace_id: &str) -> Result<[u8; 64], NotAvailable> {
+        match &self.source {
+            SigningSource::ActionBroker(stream) => {
+                sign_collaboration_join_via_broker(stream, workspace_id)
+            }
+            _ => self.sign(&collaboration_join_signing_bytes(workspace_id)),
+        }
+    }
+
     fn sign_local(&self, message: &[u8]) -> io::Result<[u8; 64]> {
         match &self.source {
             SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),
@@ -1067,7 +1111,27 @@ fn sign_via_action_broker(
             message: message.to_vec(),
         },
     )?;
-    match read_frame::<wire::Response>(&mut stream)? {
+    read_signature_response(&mut stream)
+}
+
+fn sign_collaboration_join_via_broker(
+    stream: &Mutex<UnixStream>,
+    workspace_id: &str,
+) -> Result<[u8; 64], NotAvailable> {
+    let mut stream = stream.lock().map_err(|_| {
+        NotAvailable::ConnectionFailed(io::Error::other("identity broker lock poisoned"))
+    })?;
+    write_frame(
+        &mut stream,
+        &wire::Request::CollaborationJoin {
+            workspace_id: workspace_id.to_string(),
+        },
+    )?;
+    read_signature_response(&mut stream)
+}
+
+fn read_signature_response(stream: &mut UnixStream) -> Result<[u8; 64], NotAvailable> {
+    match read_frame::<wire::Response>(stream)? {
         wire::Response::Signature(bytes) if bytes.len() == 64 => {
             let mut signature = [0_u8; 64];
             signature.copy_from_slice(&bytes);

@@ -28,6 +28,8 @@ capnp.workspace = true
 capnp-rpc.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
 tokio-util.workspace = true
+serde.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
