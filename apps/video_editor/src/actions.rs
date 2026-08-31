@@ -1057,6 +1057,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 ("set-saturation", "Set saturation", FilterAxis::Saturation),
             ] {
                 let base = clip.clone();
+                let at = ctx.playhead;
                 // Typed rather than prompted: `parse_unit` answered 0.5 for
                 // anything it could not read, so `set-brightness banana`
                 // silently made a real, plausible-looking edit instead of
@@ -1079,11 +1080,14 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         // word, which now never reaches here.
                         let v = args.number("value").unwrap_or(0.5).clamp(0.0, 1.0);
                         let mut next = base.clone();
-                        match field {
-                            FilterAxis::Brightness => next.filters.brightness = v,
-                            FilterAxis::Contrast => next.filters.contrast = v,
-                            FilterAxis::Saturation => next.filters.saturation = v,
-                        }
+                        // Through `set_param_at`, as the inspector's own
+                        // slider does. Writing the constant is invisible on a
+                        // clip whose grade is keyframed, because the curve
+                        // wins at every instant — so the action reported
+                        // success and changed nothing, while the identical
+                        // drag worked. An action and a click must not
+                        // disagree about what they did.
+                        next.set_param_at(field.param(), at, v);
                         encode(&upsert_clip_action(&next))
                     },
                 ));
@@ -1098,6 +1102,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 ("set-volume", "Set volume", LevelAxis::Volume),
             ] {
                 let base = clip.clone();
+                let at = ctx.playhead;
                 cr = cr.with_action(ActionSpec::typed(
                     id,
                     label,
@@ -1110,15 +1115,15 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     )],
                     move |args: &ActionArgs| {
                         let mut next = base.clone();
-                        let current = match axis {
-                            LevelAxis::Opacity => next.opacity,
-                            LevelAxis::Volume => next.volume,
-                        };
+                        // The level *now*, which is the curve's value on a
+                        // keyframed clip. Reading the constant would make an
+                        // omitted argument snap an animated level back to
+                        // whatever rest happened to be.
+                        let current = next.param_at(axis.param(), at);
                         let v = args.number("value").unwrap_or(current).clamp(0.0, 1.0);
-                        match axis {
-                            LevelAxis::Opacity => next.opacity = v,
-                            LevelAxis::Volume => next.volume = v,
-                        }
+                        // As the inspector's slider does — see the grade
+                        // actions above for why the constant is not enough.
+                        next.set_param_at(axis.param(), at, v);
                         encode(&upsert_clip_action(&next))
                     },
                 ));
@@ -1793,6 +1798,18 @@ enum FilterAxis {
     Saturation,
 }
 
+impl FilterAxis {
+    /// The animatable parameter this axis drives, so an action writes through
+    /// the same door the inspector's slider does.
+    fn param(self) -> crate::param::Param {
+        match self {
+            FilterAxis::Brightness => crate::param::Param::Brightness,
+            FilterAxis::Contrast => crate::param::Param::Contrast,
+            FilterAxis::Saturation => crate::param::Param::Saturation,
+        }
+    }
+}
+
 /// Which `0..1` level a prompted action drives. Not a `FilterAxis`: neither
 /// is a grade — one is how much of the picture is composited, the other how
 /// loud it is.
@@ -1800,6 +1817,17 @@ enum FilterAxis {
 enum LevelAxis {
     Opacity,
     Volume,
+}
+
+impl LevelAxis {
+    /// The animatable parameter this level drives, so an action writes
+    /// through the same door the inspector's slider does.
+    fn param(self) -> crate::param::Param {
+        match self {
+            LevelAxis::Opacity => crate::param::Param::Opacity,
+            LevelAxis::Volume => crate::param::Param::Volume,
+        }
+    }
 }
 
 /// Which geometric channel a prompted transform action drives.
@@ -2624,6 +2652,87 @@ mod tests {
     /// reported success. A caller had no way to learn the type either: "Value
     /// 0–1" was prose in a placeholder. Declaring the parameter makes the type
     /// readable and makes a bad value an error rather than an edit.
+    /// An action on a keyframed clip changes what the clip is playing.
+    ///
+    /// The grade and level actions wrote the constant field. `param_at`
+    /// prefers the curve and only falls back to the constant, so on a clip
+    /// whose brightness is keyframed the write was invisible — the action
+    /// reported success and the picture did not move. The identical drag in
+    /// the inspector worked, because it goes through `set_param_at`. An
+    /// action and a click disagreeing about what they did is the one thing
+    /// this surface exists to prevent.
+    #[test]
+    fn an_action_on_a_keyframed_clip_moves_what_it_plays() {
+        use crate::param::{Interp, Param};
+        use qos_actions::params::ArgValue;
+
+        // Built straight from a project, so this needs no widget.
+        let mut project = crate::doc::sample_project();
+        let cid = project
+            .clips
+            .iter()
+            .find(|c| {
+                project
+                    .track(c.track)
+                    .is_some_and(|t| t.kind == crate::model::TrackKind::Video)
+            })
+            .expect("a video clip")
+            .id;
+        let at = {
+            let c = project.clip(cid).expect("clip");
+            c.start + (c.end() - c.start) * 0.5
+        };
+        project
+            .clip_mut(cid)
+            .expect("clip")
+            .set_key_at(Param::Brightness, at, 0.2, Interp::Linear);
+
+        let before = project
+            .clip(cid)
+            .expect("clip")
+            .param_at(Param::Brightness, at);
+        assert!(
+            (before - 0.2).abs() < 1e-6,
+            "the fixture is not actually keyframed: {before}",
+        );
+
+        let resources = provide_resources(&VideoResourceCtx {
+            project: project.clone(),
+            playhead: at,
+        });
+        let clip_res = resources
+            .iter()
+            .flat_map(|r| r.children.iter())
+            .flat_map(|t| t.children.iter())
+            .find(|c| c.kind == "video.clip" && c.id.0.ends_with(&cid.to_string()))
+            .expect("the keyed clip is published");
+        let spec = clip_res
+            .actions
+            .iter()
+            .find(|a| a.id == "set-brightness")
+            .expect("set-brightness is offered");
+
+        let encoded = spec
+            .build_args([("value".to_string(), ArgValue::Number(0.9))])
+            .expect("a number binds");
+        let action: VideoEditorAction =
+            serde_json::from_slice(&encoded.payload).expect("payload decodes");
+
+        let mut doc = automerge::AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &project);
+        action.apply(&mut doc).expect("the action applies");
+
+        let after = VideoDoc::load_project(&doc)
+            .clip(cid)
+            .expect("clip survives")
+            .param_at(Param::Brightness, at);
+        assert!(
+            (after - 0.9).abs() < 0.05,
+            "set-brightness 0.9 on a keyframed clip left it playing {after} \
+             (was {before}) — the action wrote the constant the curve hides",
+        );
+    }
+
     #[test]
     fn a_word_is_refused_where_the_grade_declares_a_number() {
         use qos_actions::params::ArgValue;
