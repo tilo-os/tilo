@@ -40,6 +40,7 @@ pub mod actions;
 mod find_bar;
 pub mod history_panel;
 pub mod i18n;
+mod outline_pane;
 mod recovery_banner;
 mod ruler;
 mod style_color_picker;
