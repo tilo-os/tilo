@@ -21,7 +21,18 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     output=$repo_root/dist/ci-output/$distro-$arch
     [[ ! -e $output ]] || { echo "output path already exists: $output" >&2; exit 1; }
     mkdir -p "$output"
+    log_dir=$(mktemp -d)
+    container=
+    cleanup_container() {
+        if [[ -n $container ]]; then
+            docker rm --force "$container" >/dev/null 2>&1 || true
+        fi
+        rm -rf -- "$log_dir"
+    }
+    trap cleanup_container EXIT
 
+    create_log=$log_dir/create.log
+    set +e
     container=$(docker create --platform "linux/$arch" \
         --entrypoint /bin/sh \
         --env QOS_IN_PACKAGE_CONTAINER=1 \
@@ -35,19 +46,56 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             mkdir /artifacts
             cd /workspace
             exec dist/ci/run-package-job.sh
-        ')
-    cleanup_container() {
-        docker rm --force "$container" >/dev/null 2>&1 || true
-    }
-    trap cleanup_container EXIT
-    # docker cp works with Docker-in-Docker and socket-mounted runners where a
-    # bind path inside the runner is not a real path from the daemon's view.
-    docker cp "$repo_root/." "$container:/workspace"
-    set +e
-    docker start --attach "$container"
+        ' 2> >(tee "$create_log" >&2))
     container_status=$?
     set -e
-    docker cp "$container:/artifacts/." "$output/" || true
+    if (( container_status != 0 )); then
+        {
+            printf 'stage=create-container status=%s\n' "$container_status"
+            tail -n 8 "$create_log"
+        } > "$output/CI_FAILURE"
+        exit "$container_status"
+    fi
+    # docker cp works with Docker-in-Docker and socket-mounted runners where a
+    # bind path inside the runner is not a real path from the daemon's view.
+    copy_in_log=$log_dir/copy-in.log
+    set +e
+    docker cp "$repo_root/." "$container:/workspace" 2>&1 | tee "$copy_in_log"
+    container_status=${PIPESTATUS[0]}
+    set -e
+    if (( container_status != 0 )); then
+        {
+            printf 'stage=copy-source status=%s\n' "$container_status"
+            tail -n 8 "$copy_in_log"
+        } > "$output/CI_FAILURE"
+        exit "$container_status"
+    fi
+    start_log=$log_dir/start.log
+    set +e
+    docker start --attach "$container" 2>&1 | tee "$start_log"
+    container_status=${PIPESTATUS[0]}
+    set -e
+    copy_out_log=$log_dir/copy-out.log
+    set +e
+    docker cp "$container:/artifacts/." "$output/" 2>&1 | tee "$copy_out_log"
+    copy_status=${PIPESTATUS[0]}
+    set -e
+    if (( copy_status != 0 )); then
+        {
+            printf 'stage=copy-artifacts status=%s\n' "$copy_status"
+            tail -n 8 "$copy_out_log"
+        } >> "$output/CI_FAILURE"
+        if (( container_status == 0 )); then
+            container_status=$copy_status
+        fi
+    fi
+    if (( container_status != 0 )); then
+        if [[ ! -f $output/CI_FAILURE ]]; then
+            printf 'stage=start-container status=%s\n' "$container_status" \
+                > "$output/CI_FAILURE"
+        fi
+        tail -n 8 "$start_log" >> "$output/CI_FAILURE"
+    fi
     exit "$container_status"
 fi
 
@@ -72,6 +120,7 @@ dist/ci/assert-native-arch.sh "$arch"
 case "$distro" in
 ubuntu-24.04|debian-13)
     export CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup
+    export PATH=$CARGO_HOME/bin:$PATH
     export QOS_DEB_REVISION=${QOS_DEB_REVISION:?missing QOS_DEB_REVISION}
     stage=install-dependencies
     dist/ci/install-build-deps.sh debian
@@ -89,6 +138,7 @@ ubuntu-24.04|debian-13)
     ;;
 fedora-42)
     export CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup
+    export PATH=$CARGO_HOME/bin:$PATH
     stage=install-dependencies
     dist/ci/install-build-deps.sh fedora
     stage=build-rpm
