@@ -240,14 +240,11 @@ pub fn resolve(text: &str, participants: &[Participant]) -> Vec<Mention> {
 
     let mut out: Vec<Mention> = Vec::new();
     let mut cursor = 0usize;
-    loop {
-        // `cursor` is always a byte offset this loop itself produced from a
-        // prior valid boundary, but a caller-adjacent edit is exactly the
-        // kind of thing this scan must never trust blindly — a miss here
-        // just stops resolving further mentions rather than panicking.
-        let Some(tail) = text.get(cursor..) else {
-            break;
-        };
+    // `cursor` is always a byte offset this loop itself produced from a prior
+    // valid boundary, but a caller-adjacent edit is exactly the kind of thing
+    // this scan must never trust blindly — a miss here just stops resolving
+    // further mentions rather than panicking.
+    while let Some(tail) = text.get(cursor..) {
         let Some(rel) = tail.find('@') else {
             break;
         };
