@@ -42,6 +42,7 @@ pub mod history_panel;
 pub mod i18n;
 mod outline_pane;
 mod recovery_banner;
+mod review_overlay;
 mod ruler;
 mod style_color_picker;
 mod zoom_control;
