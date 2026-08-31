@@ -36,6 +36,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -44,11 +45,22 @@ use ui::widget::TextInput;
 use crate::doc::HexDoc;
 use crate::inspector::{self, Interpretation};
 use crate::model::{Column, EditMode, HexModel};
-use crate::portal::{self, PortalChannel, PortalOutcome};
 use crate::search::{self, SearchKind};
 
 /// How long a transient status message (Saved / open error) stays up.
 const FLASH_MS: u128 = 3500;
+
+fn file_open_request() -> PickRequest {
+    PickRequest::open("Open file", "Open")
+        .thread_name("hex-portal-open")
+        .filter(FileFilter::all_files())
+}
+
+fn file_save_request(suggested_name: &str) -> PickRequest {
+    PickRequest::save("Save file", "Save", suggested_name)
+        .thread_name("hex-portal-save")
+        .filter(FileFilter::all_files())
+}
 
 /// Which transient prompt, if any, is capturing keystrokes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,7 +262,7 @@ impl HexView {
     /// path, exactly as the worker thread would deliver it. Lets the e2e suite
     /// exercise the production open flow without a live host file chooser.
     pub fn inject_open_outcome_for_test(&mut self, outcome: PortalOutcome) {
-        self.open_rx = Some(portal::inject_for_test(outcome));
+        self.open_rx = Some(ui::portal::inject_for_test(outcome));
     }
 
     /// Place the initial cursor at `offset`. Useful for opening a file
@@ -316,7 +328,7 @@ impl HexView {
     /// flight. The pick arrives over `open_rx`, drained in `sync`.
     fn begin_open(&mut self) {
         if self.open_rx.is_none() {
-            self.open_rx = Some(portal::request_open());
+            self.open_rx = Some(file_open_request().send());
         }
     }
 
@@ -326,7 +338,7 @@ impl HexView {
         if let Some(path) = self.path.clone() {
             self.write_to(&path);
         } else if self.save_rx.is_none() {
-            self.save_rx = Some(portal::request_save(&self.suggested_name()));
+            self.save_rx = Some(file_save_request(&self.suggested_name()).send());
         }
     }
 

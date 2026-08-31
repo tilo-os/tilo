@@ -322,13 +322,6 @@ pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 /// This is an assumption which is known to be limiting, and is planned to change.
 #[cfg(feature = "wgpu")]
 pub struct Renderer {
-    #[cfg_attr(
-        not(feature = "hot_reload"),
-        expect(
-            dead_code,
-            reason = "Options are only used to reinitialise on a hot reload"
-        )
-    )]
     options: RendererOptions,
     engine: WgpuEngine,
     resolver: Resolver,
@@ -494,7 +487,11 @@ impl Renderer {
         if self.budget.collect(device, &mut self.engine) {
             self.engine.clear_pool();
         }
-        let measure = self.budget.wants_readback();
+        // Downloads inside a recording are not supported by the CPU-dispatch
+        // engine. The CPU path still uses the GPU for the fine pass, but its
+        // coarse buffers are host allocations and do not need GPU-side bump
+        // measurement.
+        let measure = !self.options.use_cpu && self.budget.wants_readback();
         let (recording, target, bump_buf) = render::render_full(
             scene,
             &mut self.resolver,
@@ -751,7 +748,8 @@ impl Renderer {
         // next frame comes from this one, exactly as in the sync path.
         // (Upstream gated this on `debug_layers`, when the counters were
         // only ever used for debug visualisation.)
-        let robust = true;
+        let measure_bump = true;
+        let capture_debug = cfg!(feature = "debug_layers");
         let recording = render.render_encoding_coarse(
             encoding,
             &mut self.resolver,
@@ -759,7 +757,8 @@ impl Renderer {
             &mut self.image_atlas,
             params,
             self.budget.budget(),
-            robust,
+            measure_bump,
+            capture_debug,
         );
         let target = render.out_image();
         let bump_buf = render.bump_buf();

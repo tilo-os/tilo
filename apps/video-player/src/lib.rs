@@ -35,8 +35,6 @@
 
 pub mod app;
 pub mod collab;
-pub mod portal;
-
 pub use app::{PlayerApp, source_for_path};
 
 use std::path::PathBuf;

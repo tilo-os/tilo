@@ -165,7 +165,7 @@ filed down in follow-up phases.
   plus the page title.
 - `status_bar.rs` — `StatusBar`; bottom strip with save indicator,
   page path, page count + word count.
-- `shortcuts_overlay.rs` — `ShortcutsOverlay`; fullscreen modal
-  listing every shortcut.
+- `shortcuts_overlay.rs` — `ShortcutsOverlay`; Notes' shortcut grid inside the
+  shared `ui::ModalFrame` chrome.
 - `app.rs` — `NotesApp`; wires it all together, owns the workspace
   and the Cmd-K palette, drives the savers.

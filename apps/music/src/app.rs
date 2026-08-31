@@ -23,6 +23,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use ui::ImageStore;
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -44,7 +45,6 @@ use crate::model::{
     Album, Artist, CacheState, Library, Playback, RepeatMode, SearchResults, Track,
 };
 use crate::mpris::{MprisCommand, MprisHandle, PlaybackStatus, PlayerSnapshot};
-use crate::portal::{self, CoverOutcome};
 use crate::seed;
 use crate::source::Source;
 use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
@@ -52,6 +52,22 @@ use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
 const SIDEBAR_W: f64 = 236.0;
 const NOWPLAYING_H: f64 = 92.0;
 const HEADER_H: f64 = 72.0;
+
+fn cover_request() -> PickRequest {
+    PickRequest::open("Choose a playlist cover", "Set cover")
+        .thread_name("music-portal-cover")
+        .filter(
+            FileFilter::new("Images")
+                .mimetype("image/png")
+                .mimetype("image/jpeg")
+                .mimetype("image/webp")
+                .glob("*.png")
+                .glob("*.jpg")
+                .glob("*.jpeg")
+                .glob("*.webp"),
+        )
+        .all_files()
+}
 
 /// Below this allocated width (logical px) the navigation sidebar stops
 /// sitting permanently beside the content and becomes an overlay flap that
@@ -305,7 +321,7 @@ pub struct MusicApp {
 
     /// A playlist-cover file-portal pick in flight: the receiver the frame loop
     /// drains, plus the playlist it targets. `None` when no picker is open.
-    cover_pick: Option<portal::CoverChannel>,
+    cover_pick: Option<PortalChannel>,
     /// Which playlist an in-flight cover pick belongs to. The portal only ever
     /// answers "which file", so the app remembers "for what".
     cover_pick_for: Option<String>,
@@ -1127,7 +1143,7 @@ impl MusicApp {
         self.cover_pick = None;
         let playlist_id = self.cover_pick_for.take();
         match outcome {
-            CoverOutcome::Opened(path) => {
+            PortalOutcome::Opened(path) => {
                 let Some(playlist_id) = playlist_id else {
                     return;
                 };
@@ -1144,8 +1160,8 @@ impl MusicApp {
                 self.art_urls.insert(playlist_id, url);
                 self.toast = Some(("Playlist cover updated".to_string(), Instant::now()));
             }
-            CoverOutcome::Cancelled => {}
-            CoverOutcome::Failed(reason) => {
+            PortalOutcome::Cancelled => {}
+            PortalOutcome::Failed(reason) => {
                 self.toast = Some((
                     format!("Couldn\u{2019}t set cover: {reason}"),
                     Instant::now(),
@@ -1906,7 +1922,7 @@ impl MusicApp {
         // in-app picker). The pick is async; the frame loop drains the
         // outcome and applies the cover.
         self.cover_pick_for = Some(playlist_id);
-        self.cover_pick = Some(portal::request_cover());
+        self.cover_pick = Some(cover_request().send());
         self.toast = Some(("Choose a cover image\u{2026}".to_string(), Instant::now()));
     }
 
@@ -4710,7 +4726,7 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
         let first = live_search_top_result(&mut app);
-        let url = live_play_and_resolve_stream(&mut app, &mut doc, &first);
+        let _url = live_play_and_resolve_stream(&mut app, &mut doc, &first);
 
         // …and, when this build can actually reach a sound sink, prove the real
         // stream *renders* — decoded PCM buffers reach a real audio sink and the
@@ -4719,9 +4735,7 @@ mod tests {
         // (rangeable) source to a temp file with bounded reqwest ranges and plays
         // that.
         #[cfg(feature = "audio")]
-        live_audio_render_proof(&mut app, &url);
-        #[cfg(not(feature = "audio"))]
-        let _ = url;
+        live_audio_render_proof(&mut app);
     }
 
     /// Submit a real YouTube-Music search, pump the worker until real hits
@@ -4819,7 +4833,7 @@ mod tests {
         let url = loaded_url.expect("app resolved + loaded a rangeable audio URL");
         assert!(
             is_streamable(&url),
-            "resolved a rangeable, itag-bearing audio URL: {url}"
+            "resolved a rangeable, itag-bearing audio URL"
         );
         url
     }
@@ -4829,7 +4843,7 @@ mod tests {
     /// and the transport advances off the stream clock. Part of
     /// [`live_search_and_stream_resolve_through_the_app`].
     #[cfg(all(feature = "live", feature = "audio"))]
-    fn live_audio_render_proof(app: &mut MusicApp, url: &str) {
+    fn live_audio_render_proof(app: &mut MusicApp) {
         use std::time::Duration;
 
         if audio_server_present() && decode_plugins_present() {
@@ -4860,10 +4874,9 @@ mod tests {
                 "the playhead advanced with real playback"
             );
             eprintln!(
-                "[live audio] PLAYING: sink={:?} frames={frames} playhead={:.0}ms url={}",
+                "[live audio] PLAYING: sink={:?} frames={frames} playhead={:.0}ms",
                 app.audio.actual_audio_sink_name(),
-                app.playhead_ms,
-                url
+                app.playhead_ms
             );
 
             // …and it keeps *advancing*: sample the transport clock over the next

@@ -55,8 +55,9 @@ extern crate runtime_dylib;
 
 use std::collections::HashMap;
 use std::error::Error;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::text_render::TextRenderer;
@@ -107,53 +108,66 @@ fn named_actor(prefix: &str) -> Option<String> {
     }
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let mut shots: Option<String> = None;
-    let mut file: Option<PathBuf> = None;
-    let mut history = false;
-    // An iterator over the args, rather than an index into a collected `Vec`,
-    // so `--shots`'s value is just "the next item" — no offset that could
-    // walk past the end.
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--shots" => {
-                shots = args.next();
-            }
-            "--history" => {
-                history = true;
-            }
-            a if a.starts_with("--") => {}
-            a => {
-                file = Some(PathBuf::from(a));
-            }
-        }
-    }
+fn main() {
+    ui::launch::run_or_exit(
+        LaunchSpec::new_with_args("dev.qos.word-processor", live_root)
+            .max_positionals(1)
+            .allowed_flags(&["--history"])
+            .shot_handler(run_shot)
+            .live_handler(run_live),
+    );
+}
 
-    if let (Some(out), true) = (shots.as_deref(), history) {
+fn file_arg(args: &LaunchArgs) -> Option<&Path> {
+    args.positionals().first().map(Path::new)
+}
+
+fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    build(file_arg(args))
+        .map(|(_, widget)| widget)
+        .map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    render_requested_shot(args).map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
+    let out = args.shots.as_deref().ok_or("missing screenshot output")?;
+    let file = file_arg(args);
+    if args.has("--history") {
         // The strip renders the document's own change graph, so a shot of it is
         // only worth anything over a document that has one. Give the document a
         // few authored revisions first, through the same editing path a user
         // takes, then open the strip.
-        let (mut state, mut wp) = build_concrete(file.as_deref())?;
+        let (mut state, mut wp) = build_concrete(file)?;
         seed_revisions(&mut state, &mut wp)?;
         // Pin the floating status readout visible so the shot captures it.
         wp.arm_status_bubble_for_shots();
-        render_shot(state, Box::new(wp), (1000, 700), Path::new(out))?;
+        render_shot(state, Box::new(wp), (1000, 700), out)?;
         return Ok(());
     }
 
     // Plain `--shots`: build the concrete widget so the transient status bubble
     // (which replaced the bottom strip) can be armed — pinned fully visible — for
     // the single headless frame, then render.
-    if let Some(out) = shots.as_deref() {
-        let (state, mut wp) = build_concrete(file.as_deref())?;
-        wp.arm_status_bubble_for_shots();
-        render_shot(state, Box::new(wp), (1000, 700), Path::new(out))?;
-        return Ok(());
-    }
+    let (state, mut wp) = build_concrete(file)?;
+    wp.arm_status_bubble_for_shots();
+    render_shot(
+        state,
+        Box::new(wp),
+        args.viewport.unwrap_or((1000, 700)),
+        out,
+    )?;
+    Ok(())
+}
 
-    let (mut state, widget) = build(file.as_deref())?;
+fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
+    start_live(args).map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+fn start_live(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
+    let (mut state, widget) = build(file_arg(args))?;
     {
         // Give this instance a distinct CRDT actor so two editors are
         // distinguishable authors. Nothing else is wired here: the `App`
