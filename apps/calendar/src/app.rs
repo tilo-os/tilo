@@ -5139,6 +5139,12 @@ impl Widget for CalendarApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "107 lines of straight-line paint order: chrome, then the view body, \
+                  then overlays. Splitting it hides the order in which layers are drawn, \
+                  which is the one thing a reader of a draw method needs to see"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,

@@ -4023,49 +4023,61 @@ impl BackupsApp {
                     *handled = true;
                 }
             }
-            Key::Character(s) => match s.as_str() {
-                "1" => {
-                    BackupsDoc::set_view(doc, root, View::Timeline);
+            Key::Character(s) => self.handle_character_key(s, doc, root, handled),
+            _ => {}
+        }
+    }
+
+    /// The character-key half of [`Self::handle_key`], split out to keep
+    /// that dispatcher under the line limit. Same arms, same order.
+    fn handle_character_key(
+        &mut self,
+        s: &str,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+    ) {
+        match s {
+            "1" => {
+                BackupsDoc::set_view(doc, root, View::Timeline);
+                self.load_cache(doc, root);
+                *handled = true;
+            }
+            "2" => {
+                BackupsDoc::set_view(doc, root, View::Sources);
+                self.load_cache(doc, root);
+                *handled = true;
+            }
+            "3" => {
+                BackupsDoc::set_view(doc, root, View::Destinations);
+                self.load_cache(doc, root);
+                *handled = true;
+            }
+            "4" => {
+                BackupsDoc::set_view(doc, root, View::Schedules);
+                self.load_cache(doc, root);
+                *handled = true;
+            }
+            "n" | "N" => {
+                self.start_job();
+                *handled = true;
+            }
+            "+" | "=" if self.ui.view == View::Schedules => {
+                // `policy_focus` is always kept `% PolicyField::ALL.len()`.
+                if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
+                    self.bump_retention(doc, root, f, 1);
                     self.load_cache(doc, root);
-                    *handled = true;
                 }
-                "2" => {
-                    BackupsDoc::set_view(doc, root, View::Sources);
+                *handled = true;
+            }
+            "-" | "_" if self.ui.view == View::Schedules => {
+                // `policy_focus` is always kept `% PolicyField::ALL.len()`.
+                if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
+                    self.bump_retention(doc, root, f, -1);
                     self.load_cache(doc, root);
-                    *handled = true;
                 }
-                "3" => {
-                    BackupsDoc::set_view(doc, root, View::Destinations);
-                    self.load_cache(doc, root);
-                    *handled = true;
-                }
-                "4" => {
-                    BackupsDoc::set_view(doc, root, View::Schedules);
-                    self.load_cache(doc, root);
-                    *handled = true;
-                }
-                "n" | "N" => {
-                    self.start_job();
-                    *handled = true;
-                }
-                "+" | "=" if self.ui.view == View::Schedules => {
-                    // `policy_focus` is always kept `% PolicyField::ALL.len()`.
-                    if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
-                        self.bump_retention(doc, root, f, 1);
-                        self.load_cache(doc, root);
-                    }
-                    *handled = true;
-                }
-                "-" | "_" if self.ui.view == View::Schedules => {
-                    // `policy_focus` is always kept `% PolicyField::ALL.len()`.
-                    if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
-                        self.bump_retention(doc, root, f, -1);
-                        self.load_cache(doc, root);
-                    }
-                    *handled = true;
-                }
-                _ => {}
-            },
+                *handled = true;
+            }
             _ => {}
         }
     }

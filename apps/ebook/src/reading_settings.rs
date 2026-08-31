@@ -68,6 +68,10 @@ pub(crate) struct ReadingSettings {
     numbers: NumberControls,
 }
 
+/// One font pill as laid out: `(id, label, width, selected)`. Named because
+/// the four-tuple appears in both the layout's return type and the draw pass.
+type FontPill = (String, String, f64, bool);
+
 impl ReadingSettings {
     pub(crate) fn is_open(&self) -> bool {
         self.open
@@ -355,7 +359,7 @@ impl ReadingSettings {
         fonts: &[FontEntry],
         settings: &Settings,
         default_font_id: &str,
-    ) -> (Vec<(String, String, f64, bool)>, Vec<f64>) {
+    ) -> (Vec<FontPill>, Vec<f64>) {
         let shown: Vec<&FontEntry> = {
             let enabled: Vec<_> = fonts.iter().filter(|font| font.shown).collect();
             if enabled.is_empty() {
