@@ -156,6 +156,12 @@ fn main() -> anyhow::Result<()> {
         ("keyframes", ShotScenario::Keyframes),
         ("effects", ShotScenario::Effects),
         ("geometry", ShotScenario::Geometry),
+        // The keyboard cursor is the one state that costs the draw pass
+        // anything extra: placing its ring resolves the inspector's row list
+        // and its layout, which no unfocused frame has to do. It is a state a
+        // keyboard user is in for their whole session, so it is measured
+        // rather than assumed cheap.
+        ("focused inspector", ShotScenario::FocusInspector),
     ];
 
     let theme = ui::Theme::dark();
