@@ -9296,6 +9296,11 @@ impl ShellOverlayHost {
     /// so the caller knows to stop. Returns `false` on `General`, whose
     /// clearing happens here too, but whose body the caller continues
     /// painting below.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, plus the state/tree the tab \
+                  bodies read from; matching every other draw_ws_settings_* helper in this impl"
+    )]
     fn draw_ws_settings_dispatch_tab(
         &mut self,
         scene: &mut Scene,
@@ -9356,6 +9361,11 @@ impl ShellOverlayHost {
     }
 
     /// The Members tab body: roster rows, then the shared close hint.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, plus the state/tree the tab \
+                  body reads from; matching every other draw_ws_settings_* helper in this impl"
+    )]
     fn draw_ws_settings_members_tab(
         &mut self,
         scene: &mut Scene,
@@ -9392,6 +9402,11 @@ impl ShellOverlayHost {
 
     /// The Permissions tab body: the grant/revoke pane, then the shared
     /// close hint.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, plus the state/tree the tab \
+                  body reads from; matching every other draw_ws_settings_* helper in this impl"
+    )]
     fn draw_ws_settings_permissions_tab(
         &mut self,
         scene: &mut Scene,
@@ -9435,6 +9450,11 @@ impl ShellOverlayHost {
     }
 
     /// The Apps tab body: default-app rows, then the shared close hint.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, plus the state/tree the tab \
+                  body reads from; matching every other draw_ws_settings_* helper in this impl"
+    )]
     fn draw_ws_settings_apps_tab(
         &mut self,
         scene: &mut Scene,
@@ -9476,6 +9496,11 @@ impl ShellOverlayHost {
     /// Name input — edits fall through to `editing_workspace_name`.
     /// Returns whether the name is currently being edited, so the
     /// caller's footer hint can match.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, plus the state it's read \
+                  from; matching every other draw_ws_settings_* helper in this impl"
+    )]
     fn draw_ws_settings_name_input(
         &self,
         scene: &mut Scene,
@@ -9566,6 +9591,12 @@ impl ShellOverlayHost {
     }
 
     /// Sharing card with the workspace's stable invitation URI.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, plus the tree the invite \
+                  URL is derived from; matching every other draw_ws_settings_* helper \
+                  in this impl"
+    )]
     fn draw_ws_settings_invite_link(
         &self,
         scene: &mut Scene,
@@ -9579,59 +9610,8 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let body = self.ws_settings_body_rect(rect);
-        let sharing_card = Rect::new(body.x0, body.y0 + 128.0, body.x1, body.y0 + 252.0);
-        let sharing_rr = RoundedRect::from_rect(sharing_card, f64::from(tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &sharing_rr,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &sharing_rr,
-        );
-        let share_icon = Rect::new(
-            sharing_card.x0 + 16.0,
-            sharing_card.y0 + 14.0,
-            sharing_card.x0 + 48.0,
-            sharing_card.y0 + 46.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.accent[5].with_alpha_factor(0.16),
-            None,
-            &RoundedRect::from_rect(share_icon, f64::from(tokens.radii.md)),
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            share_icon.inset(8.0),
-            ui::icons::Icon::Copy,
-            colors.accent[4],
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        text_renderer.draw_text(
-            scene,
-            "Invite people",
-            tokens.typography.scale.base,
-            colors.text_primary,
-            transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 13.0).into()),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            "Anyone with this link must still pass the workspace's secure join flow.",
-            tokens.typography.scale.xs,
-            colors.text_dim,
-            transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 36.0).into()),
-            None,
-        );
+        let sharing_card =
+            self.draw_ws_settings_invite_link_card(scene, transform, theme, text_renderer, body);
         let invite_y = body.y0 + 202.0;
         let url_pill = Rect::new(
             sharing_card.x0 + 16.0,
@@ -9704,6 +9684,76 @@ impl ShellOverlayHost {
             None,
         );
         invite_y
+    }
+
+    /// The sharing card's background, icon and title/subtitle — split out
+    /// of [`Self::draw_ws_settings_invite_link`] to keep that under
+    /// `too_many_lines`. Returns the card's rect, since the caller's URL
+    /// pill and copy button are placed relative to it.
+    fn draw_ws_settings_invite_link_card(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        body: Rect,
+    ) -> Rect {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let sharing_card = Rect::new(body.x0, body.y0 + 128.0, body.x1, body.y0 + 252.0);
+        let sharing_rr = RoundedRect::from_rect(sharing_card, f64::from(tokens.radii.lg));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &sharing_rr,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &sharing_rr,
+        );
+        let share_icon = Rect::new(
+            sharing_card.x0 + 16.0,
+            sharing_card.y0 + 14.0,
+            sharing_card.x0 + 48.0,
+            sharing_card.y0 + 46.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.accent[5].with_alpha_factor(0.16),
+            None,
+            &RoundedRect::from_rect(share_icon, f64::from(tokens.radii.md)),
+        );
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            share_icon.inset(8.0),
+            ui::icons::Icon::Copy,
+            colors.accent[4],
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Invite people",
+            tokens.typography.scale.base,
+            colors.text_primary,
+            transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 13.0).into()),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Anyone with this link must still pass the workspace's secure join flow.",
+            tokens.typography.scale.xs,
+            colors.text_dim,
+            transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 36.0).into()),
+            None,
+        );
+        sharing_card
     }
 
     /// Live workspace summary. Detailed member management belongs to the
@@ -10518,10 +10568,10 @@ impl ShellOverlayHost {
                 card.x0 + 12.0 + 20.0,
                 card.y0 + 12.0 + 20.0,
             );
-            // Slot 4 (Hotspot) reuses the Wifi glyph, same as the
-            // catch-all for anything past slot 7 (e.g. Mobile data).
+            // Slot 0 (Wifi) and slot 4 (Hotspot) both fall to the
+            // catch-all Wifi glyph below, same as anything past slot 7
+            // (e.g. Mobile data).
             let icon = match i {
-                0 | 4 => ui::icons::Icon::Wifi,
                 1 => ui::icons::Icon::Bluetooth,
                 2 => ui::icons::Icon::EthernetPort,
                 3 => ui::icons::Icon::WifiOff,
@@ -14370,8 +14420,9 @@ mod tests {
     #[test]
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the `records` borrow feeds the `ids` closure used through the assertions right \
-                  after; ending it earlier would mean cloning the record store for no real gain"
+        reason = "the `records` borrow feeds the `record_ids` closure used through the \
+                  assertions right after; ending it earlier would mean cloning the record \
+                  store for no real gain"
     )]
     fn super_k_finds_a_record_from_another_room_and_enter_brings_it_here() {
         use crate::shell::chrome_state::SearchScope;
@@ -14469,12 +14520,12 @@ mod tests {
             "and leave it in the room it came from: this is a reference, \
              not a move"
         );
-        let ids = |room| -> Vec<RecordId> {
+        let record_ids = |room| -> Vec<RecordId> {
             records.records_in(room).into_iter().map(|c| c.id).collect()
         };
         assert_eq!(
-            ids(here),
-            ids(there),
+            record_ids(here),
+            record_ids(there),
             "both rooms must name the same record id — a copy would have \
              minted a new one, and the two would diverge from the next \
              edit onward"

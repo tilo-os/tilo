@@ -31,9 +31,9 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 
 /// A year back — comfortably before any test's "now".
-const WIDE_PAST: Duration = Duration::from_secs(31536000);
+const WIDE_PAST: Duration = Duration::from_secs(31_536_000);
 /// A decade forward — comfortably after it.
-const WIDE_FUTURE: Duration = Duration::from_secs(315360000);
+const WIDE_FUTURE: Duration = Duration::from_secs(315_360_000);
 
 /// Mints a signed [`RoleAttestation`] with an explicit validity window and
 /// claim set — use when the window/claims are what the test is about;

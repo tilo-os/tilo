@@ -247,6 +247,12 @@ pub fn valid_hostname(h: &str) -> bool {
 
 /// Guard for advancing out of `step`. `Ok(())` means it's valid to move
 /// forward; `Err(msg)` is a user-facing reason it isn't yet.
+///
+/// # Errors
+///
+/// Returns a user-facing message when `step` is `Disk` with no disk
+/// selected, `Account` with a blank `username`, or `Options` with a
+/// `hostname` that fails [`valid_hostname`].
 pub fn validate_step(
     step: Step,
     selected_disk: Option<usize>,
