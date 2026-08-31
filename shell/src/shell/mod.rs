@@ -58,6 +58,7 @@ pub mod persist;
 pub mod placement;
 mod power_menu;
 pub mod projection;
+mod projection_overlay;
 pub mod qs_actions;
 pub mod qs_refresh;
 pub mod quick_settings;
