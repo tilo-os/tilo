@@ -43,6 +43,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -54,6 +55,23 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+const SHOT_SCENARIOS: &[&str] = &[
+    "sidebar",
+    "collapsed",
+    "context",
+    "new-playlist",
+    "search-focus",
+    "skeleton",
+    "nowplaying",
+    "queue",
+    "lyrics",
+    "downloading",
+    "search-tabs",
+    "search-songs",
+    "search-artists",
+    "artist-page",
+    "album-page",
+];
 
 /// # Errors
 ///
@@ -112,42 +130,43 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    if let Some(out) = parse_shots_arg(&args) {
-        let scenario = parse_value_arg(&args, "--scenario").unwrap_or_default();
-        let viewport = parse_value_arg(&args, "--viewport")
-            .and_then(|s| parse_viewport(&s))
-            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        // `--theme light|dark` (or `QOS_MUSIC_THEME`) picks the OS theme the frame
-        // renders in — the shot proves the app looks right in both. Default dark.
-        let theme = pick_shot_theme(&args);
-        // `--live` captures the real screen: fetch live Home/album/artist content
-        // + real cover art off-thread, wait for it to settle, then render.
-        let live = args.iter().any(|a| a == "--live")
-            || std::env::var("QOS_MUSIC_LIVE").is_ok_and(|v| !v.is_empty());
-        if live {
-            let play = parse_value_arg(&args, "--play")
-                .or_else(|| std::env::var("QOS_MUSIC_PLAY").ok())
-                .filter(|s| !s.is_empty());
-            render_live_shot_to_png(viewport, &out, play.as_deref(), &theme);
-        } else {
-            render_shot_to_png(music::app_root_for_shot(&scenario), viewport, &out, &theme);
-        }
-        return Ok(());
-    }
+    // The ordinary GUI, screenshots, and headless driver share the standard
+    // lifecycle. Probe/relay/benchmark remain explicit command modes above:
+    // they do not construct a GUI and therefore are not launch lifecycle.
+    ui::launch::run(
+        &LaunchSpec::new("dev.qos.music", music::app_root)
+            .shot_handler(render_shot)
+            .allowed_flags(&["--live"])
+            .allowed_options(&["--theme", "--play"])
+            .scenarios(SHOT_SCENARIOS)
+            .configure_app(configure_app),
+    )?;
+    Ok(())
+}
 
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(&spec, music::app_root(), "dev.qos.music"));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.music");
-    let mut app = ui::App::new(state, music::app_root()).with_autosave(autosave);
-    // Register Music's actions so the shell's Ctrl+K palette can decode + replay
-    // the same library edits the on-screen affordances dispatch.
+fn configure_app(app: &mut ui::App) {
     music::actions::register(app.action_registry_mut());
-    app.run();
+}
+
+fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or_else(|| {
+        LaunchError::Operation("music screenshot handler was called without --shots".into())
+    })?;
+    let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+    let scenario = args.scenario.as_deref().unwrap_or_default();
+    let theme = pick_shot_theme(args);
+    let live =
+        args.has("--live") || std::env::var("QOS_MUSIC_LIVE").is_ok_and(|value| !value.is_empty());
+    if live {
+        let play = args
+            .value("--play")
+            .map(str::to_owned)
+            .or_else(|| std::env::var("QOS_MUSIC_PLAY").ok())
+            .filter(|value| !value.is_empty());
+        render_live_shot_to_png(viewport, out, play.as_deref(), &theme);
+    } else {
+        render_shot_to_png(music::app_root_for_shot(scenario), viewport, out, &theme);
+    }
     Ok(())
 }
 
@@ -216,7 +235,9 @@ fn probe_stream(
         "   API content-length: {} bytes ({mib:.2} MiB)",
         stream.size_bytes
     );
-    println!("   URL: {}", stream.url);
+    // Signed media URLs contain short-lived query credentials. Keep them out of
+    // local and CI logs while still verifying the exact URL below.
+    println!("   source URL resolved (redacted)");
 
     // Independent proof the URL actually serves audio bytes.
     verify_stream_http(&stream.url)?;
@@ -444,19 +465,6 @@ fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     std::process::exit(2);
 }
 
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
-}
-
 /// Parse a `--flag VALUE` or `--flag=VALUE` pair out of argv.
 fn parse_value_arg(args: &[String], flag: &str) -> Option<String> {
     let mut iter = args.iter().skip(1);
@@ -481,8 +489,10 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 /// The OS theme a `--shots` frame renders in: `--theme light|dark` (or the
 /// `QOS_MUSIC_THEME` env), defaulting to dark. Lets the same scenario be
 /// captured in both themes to prove the app looks right either way.
-fn pick_shot_theme(args: &[String]) -> Theme {
-    let sel = parse_value_arg(args, "--theme")
+fn pick_shot_theme(args: &LaunchArgs) -> Theme {
+    let sel = args
+        .value("--theme")
+        .map(str::to_owned)
         .or_else(|| std::env::var("QOS_MUSIC_THEME").ok())
         .unwrap_or_default();
     match sel.to_lowercase().as_str() {

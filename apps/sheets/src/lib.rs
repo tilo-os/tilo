@@ -65,7 +65,6 @@ pub mod grid;
 pub mod infer;
 pub mod model;
 pub mod ods;
-pub mod portal;
 pub mod search_provider;
 pub mod settings;
 pub mod xlsx;

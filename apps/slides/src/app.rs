@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::mpsc::TryRecvError;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
@@ -22,6 +23,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::text_selection::{
@@ -39,17 +41,97 @@ use crate::actions;
 use crate::assets::ImageStore;
 use crate::chrome;
 use crate::doc::SlidesDoc;
+use crate::help_overlay::HelpOverlay;
 use crate::model::{
     Background, Deck, Element, ElementKind, FILL_ROLES, Id, Layout, Palette, PaletteKind, SLIDE_H,
     SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, seed_deck, starter_deck,
 };
-use crate::portal;
+use crate::overview_grid::{OverviewGrid, scroll_from_thumb_drag, scrollbar_rects};
 use crate::presentation::{Blank, Command as PresentCommand, Presentation};
 use crate::render;
 use crate::toolbar_tools::{MenuPress, ToolbarTools, ToolbarToolsLayout};
 
 /// Logical pixels scrolled per mouse-wheel line notch.
 const WHEEL_LINE_PX: f64 = 48.0;
+
+fn image_open_request() -> PickRequest {
+    PickRequest::open("Insert image", "Insert")
+        .thread_name("slides-portal-open")
+        .filter(
+            FileFilter::new("Images")
+                .glob("*.png")
+                .glob("*.jpg")
+                .glob("*.jpeg")
+                .glob("*.gif")
+                .glob("*.webp")
+                .glob("*.bmp")
+                .glob("*.svg"),
+        )
+        .all_files()
+}
+
+fn presentation_filter() -> FileFilter {
+    FileFilter::new("Presentations").glob("*.odp")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DocOutcome {
+    Open(PathBuf),
+    Save(PathBuf),
+    Cancelled,
+    Failed(String),
+}
+
+struct DocPortalChannel {
+    rx: PortalChannel,
+    save: bool,
+}
+
+impl DocPortalChannel {
+    fn try_recv(&self) -> Result<DocOutcome, TryRecvError> {
+        self.rx.try_recv().map(|outcome| match outcome {
+            PortalOutcome::Opened(path) if self.save => DocOutcome::Save(path),
+            PortalOutcome::Opened(path) => DocOutcome::Open(path),
+            PortalOutcome::Cancelled => DocOutcome::Cancelled,
+            PortalOutcome::Failed(error) => DocOutcome::Failed(error),
+        })
+    }
+}
+
+fn open_document_request() -> DocPortalChannel {
+    DocPortalChannel {
+        rx: PickRequest::open("Open presentation", "Open")
+            .thread_name("slides-portal-open-doc")
+            .filter(presentation_filter())
+            .all_files()
+            .send(),
+        save: false,
+    }
+}
+
+fn save_document_request(suggested_name: &str) -> DocPortalChannel {
+    DocPortalChannel {
+        rx: PickRequest::save("Save presentation", "Save", suggested_name)
+            .thread_name("slides-portal-save-doc")
+            .filter(presentation_filter())
+            .send(),
+        save: true,
+    }
+}
+
+#[cfg(test)]
+fn inject_doc_for_test(outcome: DocOutcome) -> DocPortalChannel {
+    let (outcome, save) = match outcome {
+        DocOutcome::Open(path) => (PortalOutcome::Opened(path), false),
+        DocOutcome::Save(path) => (PortalOutcome::Opened(path), true),
+        DocOutcome::Cancelled => (PortalOutcome::Cancelled, false),
+        DocOutcome::Failed(error) => (PortalOutcome::Failed(error), false),
+    };
+    DocPortalChannel {
+        rx: ui::portal::inject_for_test(outcome),
+        save,
+    }
+}
 
 const TOOLBAR_H: f64 = 56.0;
 const RAIL_W: f64 = 212.0;
@@ -367,8 +449,9 @@ pub struct SlidesApp {
     /// Transient state and input policy for a running talk.
     presentation: Presentation,
 
-    /// Keyboard-shortcuts overlay visibility (toggled with `?`).
-    show_help: bool,
+    /// Modal keyboard-shortcuts overlay. Owns its visibility, drawing, and
+    /// pointer/keyboard capture policy in every editor and presentation mode.
+    help_overlay: HelpOverlay,
     /// Snap-to-guides toggle (G in edit mode would clash with overview, so
     /// snapping is always on, but the active guide lines computed during the
     /// current drag live here so `draw` can paint them).
@@ -454,7 +537,7 @@ pub struct SlidesApp {
     /// slides the deck has.
     rail_scroll: f64,
     /// Vertical scroll offset (px) of the slide-sorter overview grid.
-    overview_scroll: f64,
+    overview: OverviewGrid,
     /// Responsive insert toolbar. Owns overflow state, layout, drawing, and
     /// pointer policy; document actions returned by it are applied here.
     toolbar_tools: ToolbarTools,
@@ -462,11 +545,11 @@ pub struct SlidesApp {
     /// file chooser is open on a worker thread; the chosen path arrives over
     /// this channel and is drained each frame in [`SlidesApp::drain_portal`].
     /// `None` when idle. Per-peer/transient (not CRDT).
-    portal_rx: Option<portal::PortalChannel>,
+    portal_rx: Option<PortalChannel>,
     /// An in-flight host file open/save for `.odp` documents. Same
     /// worker-thread/channel contract as [`Self::portal_rx`]; `save` carries
     /// the deck bytes to write once the user names a destination.
-    doc_portal_rx: Option<portal::DocPortalChannel>,
+    doc_portal_rx: Option<DocPortalChannel>,
 
     /// Right-click context menu (element / slide actions) — the shared
     /// [`ui::widget::ContextMenu`] primitive, driven standalone. `ctx_hits`
@@ -598,7 +681,7 @@ impl SlidesApp {
             editing_title: false,
             title_caret: 0,
             presentation: Presentation::default(),
-            show_help: false,
+            help_overlay: HelpOverlay::default(),
             active_guides: Vec::new(),
             last_mouse: Point::ZERO,
             drag: Drag::None,
@@ -619,7 +702,7 @@ impl SlidesApp {
             deck_rev: 0,
             images: ImageStore::new(),
             rail_scroll: 0.0,
-            overview_scroll: 0.0,
+            overview: OverviewGrid::new(),
             toolbar_tools: ToolbarTools::default(),
             portal_rx: None,
             doc_portal_rx: None,
@@ -679,7 +762,7 @@ impl SlidesApp {
                 self.presentation.start();
                 self.presentation.set_blank(Blank::White);
             }
-            "help" => self.show_help = true,
+            "help" => self.help_overlay.show(),
             // A long deck so the rail overflows its viewport — proves the rail
             // scrolls (scrolled to the end here) and the pinned Add/Dup/Del row
             // is never overlapped by thumbnails.
@@ -693,7 +776,7 @@ impl SlidesApp {
             // Overview scrolled to its end, proving the last slide is reachable.
             "overview_end" => {
                 self.mode = Mode::Overview;
-                self.overview_scroll = 1.0e6;
+                self.overview.set_scroll(1.0e6);
             }
             // Narrow-layout captures (rendered at a phone-ish viewport, so the
             // panels resolve to overlay flaps from the width). We only record a
@@ -2273,7 +2356,7 @@ impl SlidesApp {
 
     /// Ask the host desktop's file chooser to pick an image, via the XDG
     /// Desktop Portal. Per HIG §5 the app never draws its own picker: the
-    /// portal round-trip runs on a worker thread ([`portal::request_open`]) and
+    /// portal round-trip runs on a worker thread ([`ui::portal::PickRequest`]) and
     /// the chosen path comes back over a channel drained each frame in
     /// [`Self::drain_portal`]. A second request while one is in flight is
     /// ignored, so a double-click can't stack two host dialogs.
@@ -2281,7 +2364,7 @@ impl SlidesApp {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(portal::request_open());
+        self.portal_rx = Some(image_open_request().send());
     }
 
     /// Ask the host to pick a `.odp` presentation to open (Ctrl+O). The chosen
@@ -2291,7 +2374,7 @@ impl SlidesApp {
         if self.doc_portal_rx.is_some() {
             return;
         }
-        self.doc_portal_rx = Some(portal::request_open_document());
+        self.doc_portal_rx = Some(open_document_request());
     }
 
     /// Ask the host where to save the current deck as a `.odp` (Ctrl+S).
@@ -2300,7 +2383,7 @@ impl SlidesApp {
             return;
         }
         let name = format!("{}.odp", sanitize_filename(&self.deck.title));
-        self.doc_portal_rx = Some(portal::request_save_document(&name));
+        self.doc_portal_rx = Some(save_document_request(&name));
     }
 
     /// Drain a completed `.odp` open/save request, loading or writing the deck.
@@ -2313,13 +2396,13 @@ impl SlidesApp {
             Ok(outcome) => {
                 self.doc_portal_rx = None;
                 match outcome {
-                    portal::DocOutcome::Open(path) => {
+                    DocOutcome::Open(path) => {
                         self.load_odp(doc, &path);
                     }
-                    portal::DocOutcome::Save(path) => {
+                    DocOutcome::Save(path) => {
                         self.save_odp(&path);
                     }
-                    portal::DocOutcome::Cancelled | portal::DocOutcome::Failed(_) => {}
+                    DocOutcome::Cancelled | DocOutcome::Failed(_) => {}
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -2373,10 +2456,10 @@ impl SlidesApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    portal::PortalOutcome::Opened(path) => self.insert_image_from_path(doc, &path),
+                    PortalOutcome::Opened(path) => self.insert_image_from_path(doc, &path),
                     // A cancel or a portal failure is not a bug — leave the deck
                     // untouched (we never fabricate a placeholder element).
-                    portal::PortalOutcome::Cancelled | portal::PortalOutcome::Failed(_) => {}
+                    PortalOutcome::Cancelled | PortalOutcome::Failed(_) => {}
                 }
             }
             // Still waiting on the host dialog, or the worker vanished.
@@ -4923,284 +5006,23 @@ impl SlidesApp {
 
     // --- overview (slide-sorter) -------------------------------------------
 
-    /// Lay out the slide grid: as many columns as fit, returning the scroll
-    /// viewport, each slide's index + destination rect (already offset by the
-    /// clamped vertical scroll), and the maximum scroll. Shared by draw,
-    /// hit-test and the wheel/scrollbar handlers so they always agree.
     fn compute_overview(&self) -> (Rect, Vec<(usize, Rect)>, f64) {
-        let header_h = 64.0;
-        let area = Rect::new(
-            self.rect.x0,
-            self.rect.y0 + header_h,
-            self.rect.x1,
-            self.rect.y1,
-        );
-        let pad = 36.0;
-        let gap = 26.0;
-        let avail_w = (area.width() - 2.0 * pad).max(200.0);
-        // Aim for a thumbnail ~250px wide, then fit an integer column count.
-        let target = 260.0;
-        let cols = ((avail_w + gap) / (target + gap)).floor().max(1.0) as usize;
-        let tw = (avail_w - (cols as f64 - 1.0) * gap) / cols as f64;
-        let th = tw * SLIDE_H / SLIDE_W;
-        let n = self.deck.slides.len();
-        // Each cell is the slide card plus a caption row beneath it.
-        let cell_h = th + 30.0;
-        let row_stride = cell_h + gap;
-        let rows = if n == 0 { 0 } else { n.div_ceil(cols) };
-        // Content height from the top of `area`: top pad + all rows + bottom pad.
-        let content_h = if rows == 0 {
-            0.0
-        } else {
-            pad + rows as f64 * cell_h + (rows as f64 - 1.0) * gap + pad
-        };
-        let max_scroll = (content_h - area.height()).max(0.0);
-        let scroll = self.overview_scroll.clamp(0.0, max_scroll);
-        let mut out = Vec::new();
-        for i in 0..n {
-            let col = i % cols;
-            let row = i / cols;
-            let x = area.x0 + pad + col as f64 * (tw + gap);
-            let y = area.y0 + pad + row as f64 * row_stride - scroll;
-            out.push((i, Rect::new(x, y, x + tw, y + th)));
-        }
-        (area, out, max_scroll)
+        self.overview.geometry(self.rect, self.deck.slides.len())
     }
 
     fn draw_overview(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let pal = self.palette(theme);
-        let c = &theme.tokens.colors;
-        chrome::fill_rect(scene, t, self.rect, c.surfaces.base);
-
-        // Header row.
-        tr.draw_text_weighted(
-            scene,
-            &self.deck.title,
-            18.0,
-            c.text_primary,
-            t * Affine::translate((self.rect.x0 + 36.0, self.rect.y0 + 16.0)),
-            None,
-            TextWeight::Bold,
-        );
-        tr.draw_text_weighted(
-            scene,
-            &format!(
-                "{} slides  ·  click to open  ·  Esc / G to return",
-                self.deck.slides.len()
-            ),
-            12.0,
-            c.text_dim,
-            t * Affine::translate((self.rect.x0 + 36.0, self.rect.y0 + 38.0)),
-            None,
-            TextWeight::Regular,
-        );
-        stroke_line(
+        let palette = self.palette(theme);
+        self.overview.draw(
             scene,
             t,
-            self.rect.x0,
-            self.rect.y0 + 60.0,
-            self.rect.x1,
-            self.rect.y0 + 60.0,
-            c.border_standard,
+            tr,
+            theme,
+            self.rect,
+            &self.deck,
+            self.cur_slide,
+            &palette,
+            &self.images,
         );
-
-        let (area, thumbs, max_scroll) = self.compute_overview();
-        // Clip the scrolling grid to the area below the header so cards never
-        // paint over the title row as they scroll past.
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &area);
-        for (i, rect) in thumbs {
-            if let Some(slide) = self.deck.slides.get(i) {
-                // Drop shadow + card.
-                let sh = rect + vello::kurbo::Vec2::new(0.0, 4.0);
-                chrome::fill_rrect(
-                    scene,
-                    t,
-                    sh.inflate(1.0, 1.0),
-                    8.0,
-                    render::with_alpha(Color::BLACK, 60),
-                );
-                render::draw_slide(scene, t, tr, theme, &pal, slide, rect, 8.0, &self.images);
-                let (ring, w) = if i == self.cur_slide {
-                    (pal.accent, 2.5)
-                } else {
-                    (render::with_alpha(c.text_primary, 30), 1.0)
-                };
-                chrome::stroke_rrect(scene, t, rect, 8.0, ring, w);
-                // Caption row *beneath* the card: a slide-number chip then the
-                // layout name. Kept below the card so it never collides with the
-                // slide's own title/content (an on-card badge overlapped it).
-                let cap_y = rect.y1 + 7.0;
-                let num = format!("{}", i + 1);
-                let num_col = if i == self.cur_slide {
-                    pal.accent
-                } else {
-                    c.text_primary
-                };
-                tr.draw_text_weighted(
-                    scene,
-                    &num,
-                    12.0,
-                    num_col,
-                    t * Affine::translate((rect.x0 + 2.0, cap_y)),
-                    None,
-                    TextWeight::Bold,
-                );
-                let (num_w, _) = tr.measure_weighted(&num, 12.0, None, TextWeight::Bold);
-                tr.draw_text_weighted(
-                    scene,
-                    slide.layout.label(),
-                    11.5,
-                    c.text_dim,
-                    t * Affine::translate((rect.x0 + f64::from(num_w) + 12.0, cap_y + 0.5)),
-                    None,
-                    TextWeight::Regular,
-                );
-            }
-        }
-        scene.pop_layer();
-        // Scrollbar when the grid overflows the viewport.
-        if let Some((track, thumb)) = scrollbar_rects(
-            area,
-            self.overview_scroll.clamp(0.0, max_scroll),
-            max_scroll,
-        ) {
-            chrome::fill_rrect(scene, t, track, 3.0, render::with_alpha(c.text_primary, 18));
-            chrome::fill_rrect(scene, t, thumb, 3.0, render::with_alpha(c.text_primary, 90));
-        }
-    }
-
-    // --- keyboard-shortcuts overlay ----------------------------------------
-
-    /// Whether the keyboard-shortcuts overlay should paint this frame. It is
-    /// shown in **every** mode (including Present): suppressing it in Present
-    /// while `on_key` still routed keys to it would soft-lock navigation.
-    fn help_overlay_visible(&self) -> bool {
-        self.show_help
-    }
-
-    fn draw_help(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let c = &theme.tokens.colors;
-        let pal = self.palette(theme);
-        // Scrim.
-        chrome::fill_rect(scene, t, self.rect, render::with_alpha(Color::BLACK, 150));
-        // Centered card.
-        let cw = 580.0_f64.min(self.rect.width() - 80.0);
-        let ch = 588.0_f64.min(self.rect.height() - 60.0);
-        let cx = self.rect.x0 + (self.rect.width() - cw) / 2.0;
-        let cy = self.rect.y0 + (self.rect.height() - ch) / 2.0;
-        let card = Rect::new(cx, cy, cx + cw, cy + ch);
-        chrome::fill_rrect(scene, t, card, 16.0, c.surfaces.raised);
-        chrome::stroke_rrect(
-            scene,
-            t,
-            card,
-            16.0,
-            render::with_alpha(c.text_primary, 30),
-            1.0,
-        );
-
-        let px = card.x0 + 32.0;
-        tr.draw_text_weighted(
-            scene,
-            "Keyboard shortcuts",
-            20.0,
-            c.text_primary,
-            t * Affine::translate((px, card.y0 + 24.0)),
-            None,
-            TextWeight::Bold,
-        );
-        tr.draw_text_weighted(
-            scene,
-            "Press ?  or Esc to close",
-            12.0,
-            c.text_dim,
-            t * Affine::translate((px, card.y0 + 50.0)),
-            None,
-            TextWeight::Regular,
-        );
-
-        Self::draw_help_rows(scene, t, tr, c, &pal, card, px);
-    }
-
-    /// The keyboard-shortcut rows (key(s) → description), including the
-    /// "Present mode" section divider. An empty description renders the row
-    /// as a dim small-caps section header instead of a key/description pair.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the help card's own geometry; bundling them \
-                  would only re-create this argument list as a throwaway struct"
-    )]
-    fn draw_help_rows(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
-        card: Rect,
-        px: f64,
-    ) {
-        let rows: [(&str, &str); 20] = [
-            ("N", "New slide"),
-            ("Click title", "Rename the deck"),
-            ("P", "Present from current slide"),
-            ("G", "Slide-sorter overview"),
-            ("T / R / O / L", "Insert text · rect · ellipse · line"),
-            ("Tab", "Cycle selection on the slide"),
-            ("Enter", "Edit selected text box"),
-            ("Drag", "Move · resize (snaps to guides)"),
-            ("Arrows", "Nudge selection (Shift = 1px)"),
-            ("[  /  ]", "Send back · bring to front"),
-            ("Ctrl-D", "Duplicate element"),
-            ("Del / Backspace", "Delete element"),
-            ("Ctrl-Z / Ctrl-Y", "Undo · redo"),
-            ("Present mode", ""),
-            ("← → / Space / click", "Previous · next slide"),
-            ("Home / End / 1-9", "First · last · jump to slide N"),
-            ("P", "Toggle presenter dashboard"),
-            ("S  ·  B / W", "Speaker notes · black / white out"),
-            ("K  ·  0", "Pause timer · reset timer"),
-            ("?", "Toggle this help"),
-        ];
-        let cw = card.width();
-        let mut y = card.y0 + 84.0;
-        let key_w = 186.0;
-        for (k, d) in rows {
-            // A row with an empty description is a section divider (e.g.
-            // "Present mode") — render it as a dim small-caps header.
-            if d.is_empty() {
-                y += 6.0;
-                tr.draw_text_weighted(
-                    scene,
-                    &k.to_uppercase(),
-                    11.0,
-                    c.text_dim,
-                    t * Affine::translate((px, y + 2.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
-                y += 22.0;
-                continue;
-            }
-            tr.draw_text_weighted(
-                scene,
-                k,
-                13.0,
-                pal.accent,
-                t * Affine::translate((px, y)),
-                Some(key_w as f32),
-                TextWeight::Semibold,
-            );
-            tr.draw_text_weighted(
-                scene,
-                d,
-                13.0,
-                c.text_primary,
-                t * Affine::translate((px + key_w, y)),
-                Some((cw - key_w - 64.0) as f32),
-                TextWeight::Regular,
-            );
-            y += 25.0;
-        }
     }
 }
 
@@ -5251,55 +5073,6 @@ fn stroke_line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64,
     scene.stroke(&Stroke::new(1.0), t, color, None, &line);
 }
 
-/// `(track, thumb)` rects for a vertical scrollbar over `viewport`, or `None`
-/// when the content fits (`max_scroll <= 0`). The thumb height is proportional
-/// to the visible fraction and its position to the scroll offset.
-fn scrollbar_rects(viewport: Rect, scroll: f64, max_scroll: f64) -> Option<(Rect, Rect)> {
-    if max_scroll <= 0.5 || viewport.height() <= 8.0 {
-        return None;
-    }
-    let sw = 6.0;
-    let track = Rect::new(
-        viewport.x1 - sw - 3.0,
-        viewport.y0,
-        viewport.x1 - 3.0,
-        viewport.y1,
-    );
-    let content_h = viewport.height() + max_scroll;
-    let visible_frac = (viewport.height() / content_h).clamp(0.06, 1.0);
-    let thumb_h = (track.height() * visible_frac).max(28.0);
-    let travel = track.height() - thumb_h;
-    let t = if max_scroll > 0.0 {
-        (scroll / max_scroll).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let ty = track.y0 + travel * t;
-    let thumb = Rect::new(track.x0, ty, track.x1, ty + thumb_h);
-    Some((track, thumb))
-}
-
-/// Map a vertical scrollbar-thumb drag (`dy` px) to a content scroll offset.
-/// The thumb travels `track.height - thumb.height`; the content travels
-/// `max_scroll` over that same span, so one thumb pixel is `max_scroll/travel`
-/// content pixels. Result is clamped to `0..=max_scroll`.
-fn scroll_from_thumb_drag(viewport: Rect, orig_scroll: f64, max_scroll: f64, dy: f64) -> f64 {
-    if max_scroll <= 0.0 {
-        return 0.0;
-    }
-    let orig = orig_scroll.clamp(0.0, max_scroll);
-    match scrollbar_rects(viewport, orig, max_scroll) {
-        Some((track, thumb)) => {
-            let travel = (track.height() - thumb.height()).max(1.0);
-            (orig + dy * (max_scroll / travel)).clamp(0.0, max_scroll)
-        }
-        None => 0.0,
-    }
-}
-
-/// Truncate `label` with a trailing ellipsis so its estimated width fits
-/// `max_w`. Uses the same [`chrome::est_width`] metric that drives the toolbar
-/// layout, so the clip lands where the layout expects it.
 /// Line starts (char index of the first char of every `\n`-delimited line).
 fn line_starts(chars: &[char]) -> Vec<usize> {
     let mut starts = vec![0usize];
@@ -5547,9 +5320,9 @@ impl Widget for SlidesApp {
         // The help overlay draws over every mode — including Present, where it
         // must appear (and be dismissable), otherwise a `?` press would set the
         // flag, suppress the overlay, and swallow all later navigation keys.
-        if self.help_overlay_visible() {
-            self.draw_help(scene, transform, text_renderer, theme);
-        }
+        let palette = self.palette(theme);
+        self.help_overlay
+            .draw(scene, transform, text_renderer, theme, self.rect, &palette);
         // Right-click context menu floats above everything else.
         self.ctx_menu
             .draw(scene, transform, text_renderer, theme, presence);
@@ -5842,8 +5615,7 @@ impl SlidesApp {
                 self.sync_page_rail();
             }
             Mode::Overview => {
-                let (_, _, ov_max) = self.compute_overview();
-                self.overview_scroll = self.overview_scroll.clamp(0.0, ov_max);
+                self.overview.clamp(self.rect, self.deck.slides.len());
             }
             Mode::Present => {}
         }
@@ -5991,8 +5763,12 @@ impl SlidesApp {
         } = self.drag.clone()
         {
             let (area, _, max_scroll) = self.compute_overview();
-            self.overview_scroll =
-                scroll_from_thumb_drag(area, orig_scroll, max_scroll, p.y - start_y);
+            self.overview.set_scroll(scroll_from_thumb_drag(
+                area,
+                orig_scroll,
+                max_scroll,
+                p.y - start_y,
+            ));
             return;
         }
         let chrome = self.compute_chrome();
@@ -6075,8 +5851,7 @@ impl SlidesApp {
 
     fn on_press(&mut self, doc: &mut AutoCommit, p: Point, handled: &mut bool) {
         // The help overlay swallows the next click (to dismiss).
-        if self.show_help {
-            self.show_help = false;
+        if self.help_overlay.on_pointer_press(p, self.rect) {
             *handled = true;
             return;
         }
@@ -6088,27 +5863,25 @@ impl SlidesApp {
             return;
         }
         if self.mode == Mode::Overview {
-            let (area, thumbs, max_scroll) = self.compute_overview();
+            let (area, _, max_scroll) = self.compute_overview();
             // Scrollbar thumb → start a scroll drag.
             if let Some((_, thumb)) = scrollbar_rects(
                 area,
-                self.overview_scroll.clamp(0.0, max_scroll),
+                self.overview.scroll().clamp(0.0, max_scroll),
                 max_scroll,
             ) && thumb.contains(p)
             {
                 self.drag = Drag::ScrollOverview {
                     start_y: p.y,
-                    orig_scroll: self.overview_scroll.clamp(0.0, max_scroll),
+                    orig_scroll: self.overview.scroll().clamp(0.0, max_scroll),
                 };
                 *handled = true;
                 return;
             }
-            for (i, rect) in thumbs {
-                if rect.contains(p) {
-                    self.apply_hit(doc, Hit::OpenSlide(i));
-                    *handled = true;
-                    return;
-                }
+            if let Some(index) = self.overview.slide_at(self.rect, self.deck.slides.len(), p) {
+                self.apply_hit(doc, Hit::OpenSlide(index));
+                *handled = true;
+                return;
             }
             *handled = true;
             return;
@@ -6816,9 +6589,7 @@ impl SlidesApp {
                 }
             }
             Mode::Overview => {
-                let (_, _, max_scroll) = self.compute_overview();
-                if max_scroll > 0.0 {
-                    self.overview_scroll = (self.overview_scroll - dy).clamp(0.0, max_scroll);
+                if self.overview.wheel(self.rect, self.deck.slides.len(), dy) {
                     *handled = true;
                 }
             }
@@ -6849,24 +6620,10 @@ impl SlidesApp {
             return;
         }
 
-        // Help overlay owns all keys while open.
-        if self.show_help {
-            match key {
-                Key::Named(NamedKey::Escape) => self.show_help = false,
-                Key::Character(c) if c == "?" => self.show_help = false,
-                _ => {}
-            }
-            *handled = true;
-            return;
-        }
-        // `?` opens help from any non-text context.
-        if !self.editing_text
-            && !self.editing_notes
-            && !self.editing_title
-            && let Key::Character(c) = key
-            && c.as_str() == "?"
-        {
-            self.show_help = true;
+        // The help overlay owns every key while visible. It can be opened from
+        // any non-text context; active editors reserve `?` for typing.
+        let allow_help = !self.editing_text && !self.editing_notes && !self.editing_title;
+        if self.help_overlay.on_key(key, allow_help) {
             *handled = true;
             return;
         }
@@ -8027,7 +7784,7 @@ mod tests {
         let mut handled = false;
         app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
         assert!(
-            handled && app.overview_scroll > 0.0,
+            handled && app.overview.scroll() > 0.0,
             "wheel scrolls the overview"
         );
 
@@ -8037,7 +7794,7 @@ mod tests {
             app.on_wheel(MouseScrollDelta::LineDelta(0.0, -20.0), 1.0, &mut h);
         }
         assert!(
-            (app.overview_scroll - max_scroll).abs() < 1.0,
+            (app.overview.scroll() - max_scroll).abs() < 1.0,
             "overview scroll clamps to max"
         );
         let (area, thumbs, _) = app.compute_overview();
@@ -8064,7 +7821,7 @@ mod tests {
         };
         app.drag_move(Point::new(thumb.center().x, thumb.center().y + 120.0));
         assert!(
-            app.overview_scroll > 0.0,
+            app.overview.scroll() > 0.0,
             "dragging the thumb down scrolls the grid"
         );
     }
@@ -8275,9 +8032,9 @@ mod tests {
         // Feed the exact per-frame drain path a chosen-file outcome and confirm
         // it lands a real image element (with its src) in the CRDT.
         let path = write_png("slides-unit-insert.png", 12, 8);
-        app.portal_rx = Some(crate::portal::inject_for_test(
-            crate::portal::PortalOutcome::Opened(path.clone()),
-        ));
+        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
+            path.clone(),
+        )));
         app.drain_portal(&mut doc);
         assert!(
             app.portal_rx.is_none(),
@@ -8315,9 +8072,7 @@ mod tests {
         app.reload(&doc);
         let before = app.slide().map_or(0, |s| s.elements.len());
 
-        app.portal_rx = Some(crate::portal::inject_for_test(
-            crate::portal::PortalOutcome::Cancelled,
-        ));
+        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
         app.drain_portal(&mut doc);
         assert!(
             app.portal_rx.is_none(),
@@ -8569,9 +8324,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
         app.reload(&doc);
-        app.doc_portal_rx = Some(crate::portal::inject_doc_for_test(
-            crate::portal::DocOutcome::Open(path),
-        ));
+        app.doc_portal_rx = Some(inject_doc_for_test(DocOutcome::Open(path)));
         app.drain_doc_portal(&mut doc);
         assert!(
             app.doc_portal_rx.is_none(),
@@ -8872,7 +8625,7 @@ mod tests {
         app_dispatch(&mut app, &mut doc, &char_ev("!"));
         app_dispatch(&mut app, &mut doc, &char_ev("?"));
         assert!(
-            !app.show_help,
+            !app.help_overlay.is_visible(),
             "'?' while renaming types into the title, not the help overlay"
         );
         // Enter commits the rename.
@@ -8946,18 +8699,26 @@ mod tests {
     fn help_overlay_is_visible_and_dismissable_in_present_mode() {
         let mut app = presenting_app();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
-        assert!(!app.help_overlay_visible());
+        assert!(!app.help_overlay.is_visible());
         // '?' opens the overlay even while presenting.
         assert!(press_char(&mut app, "?"));
         assert!(
-            app.help_overlay_visible(),
+            app.help_overlay.is_visible(),
             "the help overlay is shown in Present mode (the exact gate `draw` uses)"
         );
         // And it actually paints over the present surface without panicking.
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        app.draw_help(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let palette = app.palette(&theme);
+        app.help_overlay.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            app.rect,
+            &palette,
+        );
 
         // While open it is modal (a nav key is swallowed, does not advance).
         let before = app.cur_slide;
@@ -8968,7 +8729,7 @@ mod tests {
         );
         // Dismiss with '?', and navigation resumes — no soft-lock.
         assert!(press_char(&mut app, "?"));
-        assert!(!app.help_overlay_visible(), "'?' dismisses the overlay");
+        assert!(!app.help_overlay.is_visible(), "'?' dismisses the overlay");
         assert!(press_named(&mut app, NamedKey::ArrowRight));
         assert_eq!(
             app.cur_slide,

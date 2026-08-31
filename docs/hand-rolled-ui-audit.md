@@ -90,6 +90,14 @@ rectangular chrome, search grammar, clear button, live preview and
 Tab/Enter/Escape modal flow remain app policy; the transient values still
 create no CRDT changes, while selection, clipboard, Unicode-safe editing,
 context menus and IME come from the toolkit.
+**db_client** now binds the shared `CodeEditor` directly to its Automerge SQL
+`Text` with `Language::Sql`; query execution, snippets, result/status coupling,
+and global run shortcuts remain app policy, while selection, clipboard, undo,
+IME, shaped hit-testing, scrolling, gutter and a11y come from the toolkit. Its
+hand-rolled editor, approximate column geometry, SQL lexer, and editor-only
+document splice helpers were deleted. The built-in SQL highlighter was extended
+generically with SQL functions/types, operators and doubled-quote escaping so
+the adoption does not regress highlighting quality.
 
 ### Pure non-adoption — a fitting widget already exists (do these first)
 
@@ -125,7 +133,7 @@ context menus and IME come from the toolkit.
 | `apps/slides/src/app.rs:2310` `insert_text`, `:5742` backspace | slides | canvas text elements + speaker-notes box, hand-rolled caret/selection/splice | multiline canvas text editor | M | HIGH |
 | `apps/sheets/src/grid.rs:48` `EditState{chars,caret,sel}` | sheets | cell/formula body editor fully reimplements caret+selection; formula bar is a 2nd view | formula-aware single-line editor | L | HIGH |
 | `apps/code_editor/src/editor_view.rs` (1999 LOC) | code_editor | full multiline editor (caret/selection/completion). **Palette DONE** — the app-specific painter was replaced by a thin typed adapter over `ui::CommandPalette`, including shared IME/selection/clipboard and direct go-to-line arguments | `ui::CodeEditor` (gap 2, **built**) | L | HIGH |
-| `apps/db_client/src/editor.rs:310` SQL editor | db_client | own `caret`+`buffer`, `EditorDoc::insert`, pixel-approx column math | `ui::CodeEditor` (gap 2, **built**) w/ `Language::Sql` | L | HIGH |
+| ~~`apps/db_client/src/editor.rs` SQL editor~~ | db_client ✅ | **DONE** — CRDT-bound `ui::CodeEditor` with `Language::Sql`; app-local editor + lexer deleted, while query/snippet/results policy stays in the app | `ui::CodeEditor` (gap 2, **built**) | L | HIGH |
 | ~~`apps/typst_editor/src/editor.rs` (1198 LOC)~~ typst_editor | typst_editor ✅ | **DONE** — migrated onto `ui::CodeEditor` (`Language::Typst`); hand-rolled caret/anchor/selection/gutter/highlight + the per-line lexer deleted (~1100 LOC), thin shell keeps only the diagnostics overlay | `ui::CodeEditor` (gap 2, **built**) | L | HIGH |
 | `apps/calculator/src/model.rs:467` `expr`, `mathfield/mod.rs` | calculator | expression `String` spliced by keypad; `mathfield` is a legit **2D structured** editor | shared `MathField` (mathfield is CRDT-clean already) | M | MED |
 
@@ -244,7 +252,7 @@ also use the widget elsewhere.
 | `apps/snippets/src/expand.rs` `ExpandModal` | snippets | **DEFER** — multiple per-variable text fields; belongs with the text-input wave |
 | `apps/git_client/src/app.rs:149` `armed_discard` | git_client | **DEFER** — an inline two-click "arm then confirm" affordance, not an overlay; converting to a dialog is a behaviour change, not a drop-in |
 | `apps/sheets/src/app.rs:2582` own scrim | sheets | **LEAVE** — scrim-only behind the already-shared command palette; low value, and wrapping the palette would fight its own layout |
-| `apps/notes/src/shortcuts_overlay.rs:172` | notes | **REMAINING (LOW)** — info card that already mirrors `ModalDialog`'s backdrop; structured shortcut-row content needs a small custom body |
+| `apps/notes/src/shortcuts_overlay.rs` | notes ✅ | **DONE** — the Notes-specific two-column shortcut body is preserved, while shared `ModalFrame` now owns the scrim, elevated card, title, visible close button and exact close/card/scrim hit geometry; the overlay also exposes modal a11y semantics and traps focus |
 
 ---
 
@@ -465,10 +473,12 @@ themed, clipboard-correct version — do **not** keep forking.
    (gutter markers, squiggles, hover tooltip), positioned from the widget's
    public geometry (`caret_rect` / `selection_rects` / `gutter_width`). ~1100 LOC
    of duplicated editor/highlighter code removed; real selection/clipboard/undo
-   now for free. **Remaining adopters to migrate:** `code_editor/editor_view.rs`
-   (1999 LOC, + its command palette → reuse `ui` `command_palette`) and
-   `db_client/editor.rs` (SQL editor — use the built-in `Language::Sql`
-   highlighter).
+   now for free. **Adopter:** `db_client` — its CRDT-bound SQL editor now uses
+   `Language::Sql`; the app-local caret/buffer painter, approximate hit-testing,
+   lexer, and editor-only splice helpers are deleted. Query execution, snippet
+   loading, result/status interaction and Ctrl/Cmd+Enter remain host policy.
+   **Remaining adopter to migrate:** `code_editor/editor_view.rs` (1999 LOC; its
+   command palette already reuses `ui::CommandPalette`).
 
 3. **Reusable rich-text document editor.** `BlockEditor` exists (block-structured)
    but is not drop-in for a paged document with running headers
@@ -552,12 +562,13 @@ them (`ui/HIG.md` §6).
 ### Wave 3 — Modals (MED)
 Migrate app-drawn confirm/prompt/sheet overlays to `ModalDialog`. **Done:**
 monitor, containers (confirm + prompt), vpn (confirm), store (reference
-sheet), music (name prompt); feeds landed earlier. Snippets' dynamic expansion
-form now uses shared `TextInput`s without changing its custom preview layout.
+sheet), music (name prompt), notes (shortcut help); feeds landed earlier.
+Notes keeps its richer two-column shortcut body while `ModalFrame` owns the
+generic chrome and hit-testing. Snippets' dynamic expansion form now uses
+shared `TextInput`s without changing its custom preview layout.
 The widget was extended
 additively — `with_destructive` (danger primary) and a shared `PromptBody`
-text-entry body. **Remaining:** imager (config info sheet), notes (shortcuts
-overlay); **deferred to other waves:** db_client, disks
+text-entry body. **Remaining:** imager (config info sheet); **deferred to other waves:** db_client, disks
 (needs a gated-primary capability), video_editor (controls wave — segmented
 controls inside), git_client (arm-twice → dialog is a behaviour change), sheets
 (scrim-only behind the shared palette). The multi-field forms left hand-rolled
@@ -617,8 +628,8 @@ palettes, and test-only literals alone.
 
 ### Wave 7 — Larger widget builds, then adopt (MED/HIGH)
 The multi-day widget work: gap **2** (code editor) **built** as `ui::CodeEditor`
-and adopted by **typst_editor** (its editor + lexer deleted); remaining adopters
-**code_editor** and **db_client** SQL. Gap **3** (rich-text document editor) →
+and adopted by **typst_editor** and **db_client** (their app-local editor/lexer
+forks deleted); remaining adopter **code_editor**. Gap **3** (rich-text document editor) →
 word-processor, mail, slides; gap
 **4** (formula cell editor) → sheets; gap **12** (Chart/Gauge + virtualized
 DataTable) → monitor, logs; gap **10** (TreeView inline-rename) → notes; gap

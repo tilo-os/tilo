@@ -28,6 +28,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -46,6 +47,20 @@ const ADD_BTN_H: f64 = 40.0;
 const SEARCH_H: f64 = 44.0;
 const HEADER_H: f64 = 150.0;
 const TOAST_TTL: Duration = Duration::from_millis(1800);
+
+fn qr_image_request() -> PickRequest {
+    PickRequest::open("Choose a QR image", "Open")
+        .thread_name("totp-portal-open")
+        .filter(
+            FileFilter::new("QR images")
+                .mimetype("image/png")
+                .mimetype("image/jpeg")
+                .glob("*.png")
+                .glob("*.jpg")
+                .glob("*.jpeg"),
+        )
+        .all_files()
+}
 
 /// How the initial vault is populated.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -70,7 +85,7 @@ pub struct AuthenticatorApp {
     /// and hands the chosen path back over this channel, drained once per
     /// frame in [`Widget::sync`]. `None` when no picker is in flight — the app
     /// never draws its own picker (HIG §5).
-    portal_rx: Option<crate::portal::PortalChannel>,
+    portal_rx: Option<PortalChannel>,
 
     rect: Rect,
     root_node: Option<NodeId>,
@@ -422,7 +437,7 @@ impl AuthenticatorApp {
     /// Import a QR code from an image file into the open add panel.
     ///
     /// Choosing the screenshot/photo goes through the **host** file chooser
-    /// (the XDG Desktop Portal, [`crate::portal`]) — the app never draws its
+    /// (the XDG Desktop Portal, [`ui::portal`]) — the app never draws its
     /// own picker (HIG §5). The portal round-trip runs on a worker thread and
     /// the chosen path is drained each frame and decoded by the pure-Rust,
     /// offline QR reader in [`crate::qr`]. A `TOTP_QR_IMAGE` environment
@@ -438,7 +453,7 @@ impl AuthenticatorApp {
 
     /// Ask the host desktop's file chooser for a QR image. Per HIG §5 the app
     /// never draws its own picker: the portal round-trip runs on a worker
-    /// thread ([`crate::portal::request_open`]) and the chosen path comes back
+    /// thread ([`ui::portal::PickRequest`]) and the chosen path comes back
     /// over a channel drained each frame in [`Self::drain_portal`]. A second
     /// request while one is in flight is ignored, so a double-tap can't stack
     /// two host dialogs.
@@ -446,7 +461,7 @@ impl AuthenticatorApp {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(crate::portal::request_open());
+        self.portal_rx = Some(qr_image_request().send());
     }
 
     /// Drain a completed portal request, if any. Called once per frame from
@@ -462,10 +477,10 @@ impl AuthenticatorApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    crate::portal::PortalOutcome::Opened(path) => self.decode_qr_path(&path),
+                    PortalOutcome::Opened(path) => self.decode_qr_path(&path),
                     // A cancel is a no-op — the add panel is left as it was.
-                    crate::portal::PortalOutcome::Cancelled => {}
-                    crate::portal::PortalOutcome::Failed(reason) => {
+                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Failed(reason) => {
                         self.toast(format!("Couldn't open the file chooser: {reason}"));
                     }
                 }
@@ -1167,7 +1182,7 @@ mod tests {
     /// dialog; the in-flight guard must preserve it.
     #[test]
     fn qr_cta_routes_to_the_host_portal() {
-        use crate::portal::{PortalOutcome, inject_for_test};
+        use ui::portal::inject_for_test;
         let (mut app, _state) = app_with_state();
         app.rect = Rect::new(0.0, 0.0, 1000.0, 800.0);
         app.add_panel.open();
@@ -1184,7 +1199,7 @@ mod tests {
     /// portal result is injected (no real dialog) and the next `sync` loads it.
     #[test]
     fn portal_chosen_qr_image_fills_the_add_panel_via_frame_drain() {
-        use crate::portal::{PortalOutcome, inject_for_test};
+        use ui::portal::inject_for_test;
         let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
         let dir = std::env::temp_dir().join(format!("totp-portal-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1214,7 +1229,7 @@ mod tests {
     /// left exactly as they were and the channel clears.
     #[test]
     fn portal_cancel_leaves_the_add_panel_untouched() {
-        use crate::portal::{PortalOutcome, inject_for_test};
+        use ui::portal::inject_for_test;
         let (mut app, mut state) = app_with_state();
         app.add_panel.open();
         let before = app.add_panel.field_snapshot();

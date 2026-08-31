@@ -33,6 +33,7 @@ use crate::doc::MapsDoc;
 use crate::draw;
 use crate::geo::{self, Projection};
 use crate::location::{self, LocationChannel, LocationOutcome};
+use crate::map_controls::{MapControlAction, MapControls};
 use crate::model::{Category, LatLon, MapModel, Panel, TransitMode, TransitTimeMode, TravelMode};
 use crate::net::{self, NetMsg};
 use crate::offline_panel::{OfflineAction, OfflineFrame, OfflinePanel};
@@ -94,7 +95,7 @@ const SEARCH_H: f64 = 48.0;
 const GAP: f64 = 10.0;
 /// Height of the side panel's header bar (back / title / collapse toggle).
 const PANEL_HEADER_H: f64 = 40.0;
-const CTRL_SIZE: f64 = 40.0;
+const CTRL_SIZE: f64 = crate::map_controls::SIZE;
 const ROW_H: f64 = 56.0;
 /// Below this window width the side panel stops being docked and becomes a
 /// closed overlay drawer that the user opens over the map (Adwaita flap).
@@ -148,9 +149,6 @@ enum Hit {
     /// Route to the POI whose info card is open.
     PoiDirections,
     Recent(String),
-    ZoomIn,
-    ZoomOut,
-    Locate,
     /// Toggle the overlay drawer (narrow layouts only).
     ToggleNav,
     /// Dismiss the overlay drawer (scrim tap).
@@ -177,8 +175,6 @@ enum Hit {
     /// Reset the Transit time anchor to "leave now".
     TransitTimeNow,
     Journey(usize),
-    /// Toggle the real-time traffic overlay on/off.
-    ToggleTraffic,
     /// Toggle the bottom-right ⋯ overflow menu (attribution / offline / licenses).
     ToggleOverflow,
     /// Dismiss the open map-data info sheet.
@@ -204,10 +200,9 @@ pub struct MapsApp {
 
     // interaction state (render/UI caches only — app state lives in `model`)
     last_mouse: Point,
-    /// Hover tooltips for the immediate-mode map controls (zoom / locate /
-    /// traffic / menu / overflow). Reuses the toolkit's shared controller — no
-    /// bespoke per-app timer — driven by this app's own control hit-testing.
-    tooltip_host: ui::widget::TooltipHost,
+    /// Floating zoom/location/traffic stack. Owns geometry, drawing,
+    /// hit-testing, traffic UI state, and shared tooltip timing.
+    map_controls: MapControls,
     search_focused: bool,
     /// The top search field — a shared single-line [`TextInput`] (Enter runs
     /// the search) so it gets real caret, selection, clipboard, focus ring,
@@ -309,8 +304,6 @@ pub struct MapsApp {
     /// layout; the narrow layout hides/shows the whole drawer instead.
     panel_collapsed: bool,
 
-    /// Whether the real-time traffic overlay is toggled on.
-    traffic_on: bool,
     /// The current traffic-congestion picture. Empty until real peer reports
     /// arrive — the honest live state (see [`crate::traffic`]).
     traffic: TrafficData,
@@ -371,7 +364,7 @@ impl MapsApp {
             node: None,
             actions: ui::ActionHost::new(),
             last_mouse: Point::ZERO,
-            tooltip_host: ui::widget::TooltipHost::new(),
+            map_controls: MapControls::default(),
             search_focused: false,
             search_input: {
                 let mut t = TextInput::local()
@@ -440,7 +433,6 @@ impl MapsApp {
             poi_fetched_bounds: None,
             poi_generation: 0,
             panel_collapsed: false,
-            traffic_on: false,
             traffic: TrafficData::default(),
         }
     }
@@ -722,57 +714,12 @@ impl MapsApp {
         Rect::new(x0, top, x0 + self.panel_w(), self.rect.y1 - MARGIN)
     }
 
-    fn zoom_in_rect(&self) -> Rect {
-        let x1 = self.rect.x1 - MARGIN;
-        let y0 = self.rect.y0 + MARGIN;
-        Rect::new(x1 - CTRL_SIZE, y0, x1, y0 + CTRL_SIZE)
-    }
-    fn zoom_out_rect(&self) -> Rect {
-        let r = self.zoom_in_rect();
-        Rect::new(r.x0, r.y1, r.x1, r.y1 + CTRL_SIZE)
-    }
-    fn locate_rect(&self) -> Rect {
-        let r = self.zoom_out_rect();
-        Rect::new(r.x0, r.y1 + GAP, r.x1, r.y1 + GAP + CTRL_SIZE)
-    }
-    fn traffic_rect(&self) -> Rect {
-        let r = self.locate_rect();
-        Rect::new(r.x0, r.y1 + GAP, r.x1, r.y1 + GAP + CTRL_SIZE)
-    }
-
     /// The bottom-right ⋯ overflow button (attribution / offline maps / licenses).
     /// Downloads and the credit line moved off the map into this menu.
     fn overflow_rect(&self) -> Rect {
         let x1 = self.rect.x1 - MARGIN;
         let y1 = self.rect.y1 - MARGIN;
         Rect::new(x1 - 40.0, y1 - 30.0, x1, y1)
-    }
-
-    /// The hover tooltip `(anchor_rect, label)` for the map control under `p`,
-    /// or `None`. The controls are painted immediate-mode, so this app owns
-    /// their hit-testing; the shared [`ui::widget::TooltipHost`] then handles the
-    /// dwell + rendering, so there is no bespoke per-app tooltip timer.
-    fn control_tooltip_at(&self, p: Point) -> Option<(Rect, &'static str)> {
-        for (r, label) in [
-            (self.zoom_in_rect(), "Zoom in"),
-            (self.zoom_out_rect(), "Zoom out"),
-            (self.locate_rect(), "My location"),
-            (self.traffic_rect(), "Traffic"),
-        ] {
-            if r.contains(p) {
-                return Some((r, label));
-            }
-        }
-        if let Some(mr) = self.menu_rect()
-            && mr.contains(p)
-        {
-            return Some((mr, "Menu"));
-        }
-        let of = self.overflow_rect();
-        if of.contains(p) {
-            return Some((of, "More"));
-        }
-        None
     }
 
     /// The geographic bounds currently visible in the map viewport.
@@ -896,7 +843,7 @@ impl MapsApp {
     /// Toggle the traffic overlay. Turning it on triggers a refresh so the
     /// current congestion picture is loaded (or the honest empty state is set).
     fn set_traffic(&mut self, on: bool) {
-        self.traffic_on = on;
+        self.map_controls.set_traffic_enabled(on);
         if on {
             self.refresh_traffic();
         }
@@ -2044,15 +1991,6 @@ impl MapsApp {
                 q.clone_into(&mut self.model.query);
                 self.run_search();
             }
-            Hit::ZoomIn => self.zoom_by(1.0, self.view_center()),
-            Hit::ZoomOut => self.zoom_by(-1.0, self.view_center()),
-            Hit::Locate => {
-                // Fetch the device's real position (portal / GeoClue) off the UI
-                // thread. `drain_location` recentres on the fix, or reports it
-                // unavailable — we never invent a location.
-                self.use_my_location();
-            }
-            Hit::ToggleTraffic => self.set_traffic(!self.traffic_on),
             Hit::ToggleNav => {
                 self.nav_open = !self.nav_open;
                 self.mark_dirty();
@@ -2108,6 +2046,17 @@ impl MapsApp {
             }
             Hit::CloseMapInfo => {
                 self.map_info = None;
+            }
+        }
+    }
+
+    fn dispatch_map_control(&mut self, action: MapControlAction) {
+        match action {
+            MapControlAction::ZoomIn => self.zoom_by(1.0, self.view_center()),
+            MapControlAction::ZoomOut => self.zoom_by(-1.0, self.view_center()),
+            MapControlAction::Locate => self.use_my_location(),
+            MapControlAction::ToggleTraffic => {
+                self.set_traffic(!self.map_controls.traffic_enabled());
             }
         }
     }
@@ -2205,6 +2154,7 @@ fn fmt_bytes(n: u64) -> String {
 impl MapsApp {
     fn draw_app(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.click_targets.clear();
+        self.map_controls.set_viewport(self.rect);
         // Point the raster layer at the basemap style for the active theme (dark
         // tiles under a dark theme, light under light) before any tile is drawn,
         // so imagery and the drawn cartography never mix tones. A no-op on the
@@ -2277,7 +2227,7 @@ impl MapsApp {
         // route + markers so navigation stays legible. Empty data draws
         // nothing here — the honest "No traffic data" pill is drawn with the
         // chrome below.
-        if self.traffic_on {
+        if self.map_controls.traffic_enabled() {
             canvas::draw_traffic(scene, t, &proj, &self.traffic, &pal);
         }
         if let Some(route) = &self.model.route {
@@ -2368,7 +2318,7 @@ impl MapsApp {
     /// panel, the overflow menu + info sheet, and the hover tooltip on top.
     fn draw_chrome(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         // Chrome on top of the scrim so it stays bright and usable.
-        self.draw_controls(scene, t, tr, theme);
+        self.map_controls.draw(scene, t, tr, theme);
         self.draw_traffic_status(scene, t, tr, theme);
         self.draw_menu(scene, t, tr, theme);
         self.draw_search(scene, t, tr, theme);
@@ -2408,16 +2358,7 @@ impl MapsApp {
             self.overflow
                 .draw(scene, t, tr, theme, &PresenceCtx::empty());
         }
-
-        // Hover tooltip for the map controls — painted last so the single chip
-        // sits above all chrome. The shared controller measures, positions
-        // (flip/clamp into the window) and paints it; this app only fed it the
-        // control under the pointer.
-        self.tooltip_host.tick(Instant::now());
-        if let Some((text, anchor)) = self.tooltip_host.visible().map(|(l, a)| (l.to_string(), a)) {
-            let vp = self.rect;
-            ui::widget::tooltip::draw_hover_tooltip(scene, t, tr, theme, anchor, &text, vp);
-        }
+        self.map_controls.draw_tooltip(scene, t, tr, theme);
     }
 
     /// The bottom-right ⋯ button. When the overflow menu is open (or a download
@@ -3040,119 +2981,6 @@ impl MapsApp {
         self.click_targets.push((btn, Hit::PoiDirections));
     }
 
-    fn draw_controls(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let c = &theme.tokens.colors;
-        // Zoom in/out as one stacked card.
-        let zi = self.zoom_in_rect();
-        let zo = self.zoom_out_rect();
-        let combined = Rect::new(zi.x0, zi.y0, zi.x1, zo.y1);
-        draw::card(
-            scene,
-            t,
-            combined,
-            10.0,
-            c.surfaces.raised,
-            c.border_standard,
-        );
-        draw::line(
-            scene,
-            t,
-            Point::new(zi.x0 + 8.0, zi.y1),
-            Point::new(zi.x1 - 8.0, zi.y1),
-            1.0,
-            c.border_standard,
-        );
-        draw::text_center(
-            scene,
-            tr,
-            t,
-            "+",
-            zi.x0,
-            zi.x1,
-            vmid(zi.y0, zi.height(), 22.0),
-            22.0,
-            theme.text_primary,
-        );
-        draw::text_center(
-            scene,
-            tr,
-            t,
-            "–",
-            zo.x0,
-            zo.x1,
-            vmid(zo.y0, zo.height(), 22.0),
-            22.0,
-            theme.text_primary,
-        );
-        self.click_targets.push((zi, Hit::ZoomIn));
-        self.click_targets.push((zo, Hit::ZoomOut));
-
-        // Locate button.
-        let lc = self.locate_rect();
-        draw::card(scene, t, lc, 10.0, c.surfaces.raised, c.border_standard);
-        let ctr = lc.center();
-        draw::stroke_circle(scene, t, ctr, 6.0, 2.0, theme.accent_primary);
-        draw::fill_circle(scene, t, ctr, 2.0, theme.accent_primary);
-        for (dx, dy) in [(0.0, -9.0), (0.0, 9.0), (-9.0, 0.0), (9.0, 0.0)] {
-            draw::line(
-                scene,
-                t,
-                Point::new(ctr.x + dx * 0.7, ctr.y + dy * 0.7),
-                Point::new(ctr.x + dx, ctr.y + dy),
-                2.0,
-                theme.accent_primary,
-            );
-        }
-        self.click_targets.push((lc, Hit::Locate));
-
-        // Traffic overlay toggle: a traffic-light glyph (three stacked signal
-        // dots). Accent border + full-colour dots when on; dimmed when off, so
-        // the button's state is visible at a glance.
-        let tf = self.traffic_rect();
-        let tf_border = if self.traffic_on {
-            theme.accent_primary
-        } else {
-            c.border_standard
-        };
-        draw::card(scene, t, tf, 10.0, c.surfaces.raised, tf_border);
-        let tc = tf.center();
-        let dot = |col: Color| {
-            if self.traffic_on {
-                col
-            } else {
-                draw::mix(col, c.surfaces.raised, 0.55)
-            }
-        };
-        draw::fill_circle(
-            scene,
-            t,
-            Point::new(tc.x, tc.y - 8.0),
-            3.2,
-            dot(c.semantic.danger),
-        );
-        draw::fill_circle(
-            scene,
-            t,
-            Point::new(tc.x, tc.y),
-            3.2,
-            dot(c.semantic.warning),
-        );
-        draw::fill_circle(
-            scene,
-            t,
-            Point::new(tc.x, tc.y + 8.0),
-            3.2,
-            dot(c.semantic.success),
-        );
-        self.click_targets.push((tf, Hit::ToggleTraffic));
-    }
-
     /// The traffic legend / status, bottom-left of the map area (clear of the
     /// docked panel and the bottom-right scale bar). With data it's a colour
     /// key with per-level counts + provenance; with none it's the honest
@@ -3175,7 +3003,7 @@ impl MapsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if !self.traffic_on {
+        if !self.map_controls.traffic_enabled() {
             return;
         }
         // While the narrow drawer is open the map is dimmed and the drawer is
@@ -4940,7 +4768,7 @@ impl Widget for MapsApp {
             } | WindowEvent::MouseWheel { .. }
                 | WindowEvent::KeyboardInput { .. }
         ) {
-            self.tooltip_host.dismiss();
+            self.map_controls.dismiss_tooltip();
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -4982,12 +4810,15 @@ impl Widget for MapsApp {
                 // (the pointer is panning, not resting on a control). A state
                 // change marks the move handled so the `ui` App repaints it,
                 // clearing or updating the chip promptly.
-                let target = if self.left_down {
-                    None
-                } else {
-                    self.control_tooltip_at(p).map(|(r, l)| (r, l.to_string()))
-                };
-                if self.tooltip_host.on_pointer(target, Instant::now()) {
+                let extra_targets = self
+                    .menu_rect()
+                    .map(|menu| (menu, "Menu"))
+                    .into_iter()
+                    .chain(std::iter::once((self.overflow_rect(), "More")));
+                if self
+                    .map_controls
+                    .on_pointer(p, self.left_down, extra_targets, Instant::now())
+                {
                     *handled = true;
                 }
             }
@@ -5062,8 +4893,13 @@ impl Widget for MapsApp {
                 if !consumed {
                     self.search_focused = false;
                     self.edit_field = None;
-                    // Map interaction: marker select, POI select, or begin pan.
-                    if let Some(id) = self.marker_at(p) {
+                    // The standalone control stack is below modal/panel targets
+                    // above, but above the actual map surface.
+                    if let Some(action) = self.map_controls.hit_test(p) {
+                        self.dispatch_map_control(action);
+                        *handled = true;
+                    } else if let Some(id) = self.marker_at(p) {
+                        // Map interaction: marker select, POI select, or begin pan.
                         self.select_place(&id);
                         *handled = true;
                     } else if let Some(pid) = self.poi_at(p) {
@@ -5221,7 +5057,7 @@ impl Widget for MapsApp {
             || self.tiles.progress().is_active()
             // Keep pumping frames while a control tooltip counts toward its
             // reveal, so the dwell elapses even when the map is otherwise idle.
-            || self.tooltip_host.needs_frame()
+            || self.map_controls.needs_frame()
     }
 
     fn draw_with_presence(
@@ -5493,6 +5329,7 @@ mod tests {
         // hermetic and never touch the wire.
         let mut a = MapsApp::offline();
         a.rect = Rect::new(0.0, 0.0, w, h);
+        a.map_controls.set_viewport(a.rect);
         a
     }
 
@@ -5510,6 +5347,10 @@ mod tests {
     fn tap_offline(a: &mut MapsApp, action: OfflineAction) {
         let mut doc = AutoCommit::new();
         a.dispatch_offline(action, &mut doc);
+    }
+
+    fn tap_control(a: &mut MapsApp, action: MapControlAction) {
+        a.dispatch_map_control(action);
     }
 
     #[test]
@@ -5750,11 +5591,14 @@ mod tests {
         // on colours its arterials — the demonstrable overlay.
         let mut a = app_at(1280.0, 800.0);
         assert!(
-            !a.traffic_on && a.traffic.is_empty(),
+            !a.map_controls.traffic_enabled() && a.traffic.is_empty(),
             "off + empty at start"
         );
-        tap(&mut a, &Hit::ToggleTraffic);
-        assert!(a.traffic_on, "the control toggles the overlay on");
+        tap_control(&mut a, MapControlAction::ToggleTraffic);
+        assert!(
+            a.map_controls.traffic_enabled(),
+            "the control toggles the overlay on"
+        );
         assert!(
             !a.traffic.is_empty(),
             "sample cartography yields congestion segments"
@@ -5765,8 +5609,11 @@ mod tests {
             "provenance is honest"
         );
         // Toggling again turns it off.
-        tap(&mut a, &Hit::ToggleTraffic);
-        assert!(!a.traffic_on, "the control toggles the overlay back off");
+        tap_control(&mut a, MapControlAction::ToggleTraffic);
+        assert!(
+            !a.map_controls.traffic_enabled(),
+            "the control toggles the overlay back off"
+        );
     }
 
     #[test]
@@ -5779,82 +5626,11 @@ mod tests {
         a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         assert!(a.basemap.is_empty(), "live/empty cartography");
         a.set_traffic(true);
-        assert!(a.traffic_on, "overlay is on");
+        assert!(a.map_controls.traffic_enabled(), "overlay is on");
         assert!(a.traffic.is_empty(), "no data is invented on the live path");
         assert!(
             a.traffic.source.is_none(),
             "no provenance when there is nothing to show"
-        );
-    }
-
-    #[test]
-    fn map_controls_expose_hover_tooltips() {
-        use std::time::{Duration, Instant};
-        let a = app_at(1280.0, 800.0);
-        // Each immediate-mode control resolves to its label at its own rect —
-        // the app-owned hit-test the shared TooltipHost is fed from.
-        assert_eq!(
-            a.control_tooltip_at(a.zoom_in_rect().center())
-                .map(|(_, l)| l),
-            Some("Zoom in")
-        );
-        assert_eq!(
-            a.control_tooltip_at(a.zoom_out_rect().center())
-                .map(|(_, l)| l),
-            Some("Zoom out")
-        );
-        assert_eq!(
-            a.control_tooltip_at(a.locate_rect().center())
-                .map(|(_, l)| l),
-            Some("My location")
-        );
-        assert_eq!(
-            a.control_tooltip_at(a.traffic_rect().center())
-                .map(|(_, l)| l),
-            Some("Traffic")
-        );
-        // The open map has no control tooltip (the pointer is over the map).
-        assert!(a.control_tooltip_at(Point::new(640.0, 400.0)).is_none());
-
-        // Feeding the shared host reveals after the dwell, anchored to the
-        // hovered control's own rect.
-        let mut a = a;
-        let zi = a.zoom_in_rect();
-        let target = a
-            .control_tooltip_at(zi.center())
-            .map(|(r, l)| (r, l.to_string()));
-        let t0 = Instant::now();
-        a.tooltip_host.on_pointer(target, t0);
-        assert!(
-            a.tooltip_host.visible().is_none(),
-            "hidden before the dwell elapses"
-        );
-        a.tooltip_host.tick(t0 + Duration::from_millis(600));
-        assert_eq!(
-            a.tooltip_host.visible().map(|(l, r)| (l.to_string(), r)),
-            Some(("Zoom in".to_string(), zi)),
-            "revealed after the dwell, anchored to the zoom-in control",
-        );
-    }
-
-    #[test]
-    fn traffic_control_button_is_a_real_click_target() {
-        // The traffic toggle is wired on the production draw → hit-test path:
-        // the drawn control registers a ToggleTraffic target at its rect.
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut a = app_at(1280.0, 800.0);
-        let mut scene = Scene::new();
-        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-        let hit = a
-            .click_targets
-            .iter()
-            .find(|(_, h)| matches!(h, Hit::ToggleTraffic))
-            .map(|(r, _)| *r);
-        assert_eq!(
-            hit,
-            Some(a.traffic_rect()),
-            "the traffic control targets its own rect"
         );
     }
 
@@ -5872,7 +5648,7 @@ mod tests {
         let mut scene2 = Scene::new();
         a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
         assert!(
-            a.traffic_on && !a.traffic.is_empty(),
+            a.map_controls.traffic_enabled() && !a.traffic.is_empty(),
             "overlay on with data → legend drawn"
         );
     }
@@ -7103,6 +6879,28 @@ mod tests {
                 button: MouseButton::Left,
             },
         )
+    }
+
+    #[test]
+    fn map_info_sheet_stays_modal_over_extracted_controls() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut app = app_at(1280.0, 720.0);
+        app.map_info = Some(MapInfo::Attribution);
+        let mut scene = Scene::new();
+        app.draw_app(&mut scene, Affine::IDENTITY, &mut text, &theme);
+
+        let traffic = app
+            .map_controls
+            .rect(MapControlAction::ToggleTraffic)
+            .center();
+        move_to(&mut app, traffic.x, traffic.y);
+        assert!(press_left(&mut app));
+        assert_eq!(app.map_info, None, "the modal sheet consumed the press");
+        assert!(
+            !app.map_controls.traffic_enabled(),
+            "the covered traffic control did not activate"
+        );
     }
 
     /// A scroll over open map area must zoom the view (not scroll a panel),
