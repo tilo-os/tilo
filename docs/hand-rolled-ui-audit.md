@@ -252,7 +252,7 @@ also use the widget elsewhere.
 | `apps/snippets/src/expand.rs` `ExpandModal` | snippets | **DEFER** — multiple per-variable text fields; belongs with the text-input wave |
 | `apps/git_client/src/app.rs:149` `armed_discard` | git_client | **DEFER** — an inline two-click "arm then confirm" affordance, not an overlay; converting to a dialog is a behaviour change, not a drop-in |
 | `apps/sheets/src/app.rs:2582` own scrim | sheets | **LEAVE** — scrim-only behind the already-shared command palette; low value, and wrapping the palette would fight its own layout |
-| `apps/notes/src/shortcuts_overlay.rs:172` | notes | **REMAINING (LOW)** — info card that already mirrors `ModalDialog`'s backdrop; structured shortcut-row content needs a small custom body |
+| `apps/notes/src/shortcuts_overlay.rs` | notes ✅ | **DONE** — the Notes-specific two-column shortcut body is preserved, while shared `ModalFrame` now owns the scrim, elevated card, title, visible close button and exact close/card/scrim hit geometry; the overlay also exposes modal a11y semantics and traps focus |
 
 ---
 
@@ -562,12 +562,13 @@ them (`ui/HIG.md` §6).
 ### Wave 3 — Modals (MED)
 Migrate app-drawn confirm/prompt/sheet overlays to `ModalDialog`. **Done:**
 monitor, containers (confirm + prompt), vpn (confirm), store (reference
-sheet), music (name prompt); feeds landed earlier. Snippets' dynamic expansion
-form now uses shared `TextInput`s without changing its custom preview layout.
+sheet), music (name prompt), notes (shortcut help); feeds landed earlier.
+Notes keeps its richer two-column shortcut body while `ModalFrame` owns the
+generic chrome and hit-testing. Snippets' dynamic expansion form now uses
+shared `TextInput`s without changing its custom preview layout.
 The widget was extended
 additively — `with_destructive` (danger primary) and a shared `PromptBody`
-text-entry body. **Remaining:** imager (config info sheet), notes (shortcuts
-overlay); **deferred to other waves:** db_client, disks
+text-entry body. **Remaining:** imager (config info sheet); **deferred to other waves:** db_client, disks
 (needs a gated-primary capability), video_editor (controls wave — segmented
 controls inside), git_client (arm-twice → dialog is a behaviour change), sheets
 (scrim-only behind the shared palette). The multi-field forms left hand-rolled
