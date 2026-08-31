@@ -66,10 +66,10 @@ impl FrameTiming {
     /// between passes.
     fn pass_sum(&self) -> u64 {
         self.sync_us
-            + self.build_layout_us
-            + self.apply_layout_us
-            + self.draw_us
-            + self.handle_event_us
+            .saturating_add(self.build_layout_us)
+            .saturating_add(self.apply_layout_us)
+            .saturating_add(self.draw_us)
+            .saturating_add(self.handle_event_us)
     }
 
     pub fn over_budget(&self) -> bool {
@@ -170,6 +170,68 @@ pub struct FrameProfiler {
     capture: Option<Vec<FrameTiming>>,
 }
 
+/// `Duration::as_micros` returns `u128`; frame passes and elapsed profiler
+/// time never approach `u64::MAX` microseconds (~584,942 years), so this
+/// saturates rather than truncates in practice.
+fn saturating_u64(value: u128) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+/// Frame counts and microsecond timings graphed and reported here are
+/// always far below 2^53, so this conversion never loses precision in
+/// practice.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "microsecond timings never approach 2^53; lossless in practice"
+)]
+fn lossy_f64(value: u64) -> f64 {
+    value as f64
+}
+
+/// Sample/bar counts here are always tiny (at most [`HISTORY_CAP`]), far
+/// below 2^53.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "sample counts never approach 2^53; lossless in practice"
+)]
+fn count_f64(value: usize) -> f64 {
+    value as f64
+}
+
+/// Percentile ranks are always small non-negative counts; Rust's
+/// float-to-int `as` cast saturates rather than panicking or wrapping.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "percentile ranks are tiny non-negative counts, always in range"
+)]
+fn saturating_usize(value: f64) -> usize {
+    value as usize
+}
+
+/// Narrows a computed HUD panel width to `f32` for the text renderer. HUD
+/// panel dimensions are a few hundred logical px, far below `f32::MAX`, so
+/// the truncation the lint warns about can't occur.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "HUD panel widths are tiny compared to f32::MAX"
+)]
+fn narrow_f32(value: f64) -> f32 {
+    value as f32
+}
+
+/// Fixed geometry for one [`FrameProfiler::draw_hud`] call, computed once
+/// and shared by the text and graph sections.
+struct HudLayout {
+    x0: f64,
+    y0: f64,
+    pad: f64,
+    panel_w: f64,
+    panel_h: f64,
+    graph_h: f64,
+    line_h: f64,
+}
+
 impl FrameProfiler {
     fn new(hud: bool, dump: Option<DumpWriter>) -> Self {
         Self {
@@ -212,15 +274,21 @@ impl FrameProfiler {
 
     #[inline]
     pub fn record(&mut self, pass: Pass, dur: Duration) {
-        let us = dur.as_micros() as u64;
+        let us = saturating_u64(dur.as_micros());
         match pass {
-            Pass::Sync => self.cur.sync_us += us,
-            Pass::BuildLayout => self.cur.build_layout_us += us,
-            Pass::ApplyLayout => self.cur.apply_layout_us += us,
-            Pass::Draw => self.cur.draw_us += us,
+            Pass::Sync => self.cur.sync_us = self.cur.sync_us.saturating_add(us),
+            Pass::BuildLayout => {
+                self.cur.build_layout_us = self.cur.build_layout_us.saturating_add(us);
+            }
+            Pass::ApplyLayout => {
+                self.cur.apply_layout_us = self.cur.apply_layout_us.saturating_add(us);
+            }
+            Pass::Draw => self.cur.draw_us = self.cur.draw_us.saturating_add(us),
             // Input can arrive between frames, so it is banked and folded
             // into the next committed frame.
-            Pass::HandleEvent => self.pending_handle_event_us += us,
+            Pass::HandleEvent => {
+                self.pending_handle_event_us = self.pending_handle_event_us.saturating_add(us);
+            }
         }
     }
 
@@ -238,9 +306,9 @@ impl FrameProfiler {
     pub fn commit_frame(&mut self, total_us: u64) {
         self.cur.handle_event_us = std::mem::take(&mut self.pending_handle_event_us);
         self.cur.frame = self.frame_index;
-        self.cur.t_us = self.origin.elapsed().as_micros() as u64;
+        self.cur.t_us = saturating_u64(self.origin.elapsed().as_micros());
         self.cur.total_us = total_us;
-        self.frame_index += 1;
+        self.frame_index = self.frame_index.saturating_add(1);
 
         let sample = self.cur;
         self.history.push_back(sample);
@@ -273,7 +341,10 @@ impl FrameProfiler {
     /// their sum *is* the frame cost.
     pub fn commit_frame_summed(&mut self) {
         // Fold pending input in before summing, so it is counted.
-        let total = self.cur.pass_sum() + self.pending_handle_event_us;
+        let total = self
+            .cur
+            .pass_sum()
+            .saturating_add(self.pending_handle_event_us);
         self.commit_frame(total);
     }
 
@@ -310,9 +381,9 @@ impl FrameProfiler {
         theme: &Theme,
         viewport: (f64, f64),
     ) {
-        if self.history.is_empty() {
+        let Some(last) = self.history.back().copied() else {
             return;
-        }
+        };
         let (vw, _vh) = viewport;
 
         // Logical px, pinned to the top-right corner.
@@ -321,11 +392,22 @@ impl FrameProfiler {
         let graph_h = 56.0_f64;
         let line_h = 14.0_f64;
         let text_rows = 6.0;
-        let panel_h = text_rows * line_h + graph_h + pad * 3.0;
-        let x0 = (vw - panel_w - 12.0).max(12.0);
-        let y0 = 12.0_f64;
+        let layout = HudLayout {
+            x0: (vw - panel_w - 12.0).max(12.0),
+            y0: 12.0_f64,
+            pad,
+            panel_w,
+            panel_h: text_rows * line_h + graph_h + pad * 3.0,
+            graph_h,
+            line_h,
+        };
 
-        let panel = Rect::new(x0, y0, x0 + panel_w, y0 + panel_h);
+        let panel = Rect::new(
+            layout.x0,
+            layout.y0,
+            layout.x0 + layout.panel_w,
+            layout.y0 + layout.panel_h,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -341,35 +423,58 @@ impl FrameProfiler {
             &panel,
         );
 
+        self.draw_hud_text(scene, transform, text, theme, &layout, last);
+        self.draw_hud_graph(scene, transform, theme, &layout);
+    }
+
+    /// The text readout above the bar graph: current frame, rolling
+    /// mean/max/over-budget count, and a per-pass breakdown of the last
+    /// frame.
+    fn draw_hud_text(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        layout: &HudLayout,
+        last: FrameTiming,
+    ) {
         let n = self.history.len() as u64;
-        let last = *self.history.back().unwrap();
         let sum: u64 = self.history.iter().map(|f| f.total_us).sum();
-        let mean = sum / n.max(1);
+        let mean = sum.checked_div(n.max(1)).unwrap_or(0);
         let max = self.history.iter().map(|f| f.total_us).max().unwrap_or(0);
         let over = self.history.iter().filter(|f| f.over_budget()).count();
         let fps = if last.total_us > 0 {
-            1_000_000.0 / last.total_us as f64
+            1_000_000.0 / lossy_f64(last.total_us)
         } else {
             0.0
         };
 
-        let ms = |us: u64| us as f64 / 1000.0;
-        let mut ty = y0 + pad + 10.0;
-        let tx = x0 + pad;
+        let ms = |us: u64| lossy_f64(us) / 1000.0;
+        let mut ty = layout.y0 + layout.pad + 10.0;
+        let tx = layout.x0 + layout.pad;
         // Passed in per call rather than captured, so this closure holds no
         // borrow across calls and the graph below can reuse `scene` freely.
-        let draw_line =
-            |scene: &mut Scene, text: &mut TextRenderer, s: &str, color: Color, ty: &mut f64| {
-                text.draw_text(
-                    scene,
-                    s,
-                    11.0,
-                    color,
-                    transform * Affine::translate((tx, *ty)),
-                    Some((panel_w - pad * 2.0) as f32),
-                );
-                *ty += line_h;
-            };
+        let draw_line = |scene: &mut Scene,
+                         text: &mut TextRenderer,
+                         s: &str,
+                         color: Color,
+                         ty: &mut f64| {
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine composition is a pure geometric transform with no overflow or side effects"
+            )]
+            let origin = transform * Affine::translate((tx, *ty));
+            text.draw_text(
+                scene,
+                s,
+                11.0,
+                color,
+                origin,
+                Some(narrow_f32(layout.panel_w - layout.pad * 2.0)),
+            );
+            *ty += layout.line_h;
+        };
 
         let head_color = if last.over_budget() {
             Color::from_rgba8(255, 90, 90, 255)
@@ -430,10 +535,20 @@ impl FrameProfiler {
             theme.text_dim,
             &mut ty,
         );
+    }
 
-        let gx0 = x0 + pad;
-        let gx1 = x0 + panel_w - pad;
-        let gy1 = y0 + panel_h - pad;
+    /// The rolling bar graph: one bar per recent frame, a budget line, and
+    /// over-budget bars painted red.
+    fn draw_hud_graph(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        layout: &HudLayout,
+    ) {
+        let gx0 = layout.x0 + layout.pad;
+        let gx1 = layout.x0 + layout.panel_w - layout.pad;
+        let gy1 = layout.y0 + layout.panel_h - layout.pad;
         let gw = gx1 - gx0;
 
         // Scale to at least 2x budget (so the budget line sits mid-graph)
@@ -444,8 +559,8 @@ impl FrameProfiler {
         let mut totals: Vec<u64> = self.history.iter().map(|f| f.total_us).collect();
         totals.sort_unstable();
         let p95 = percentile(&totals, 95.0);
-        let scale_top = (FRAME_BUDGET_US * 2).max(p95) as f64;
-        let y_of = |us: u64| gy1 - (us as f64 / scale_top).min(1.0) * graph_h;
+        let scale_top = lossy_f64((FRAME_BUDGET_US * 2).max(p95));
+        let y_of = |us: u64| gy1 - (lossy_f64(us) / scale_top).min(1.0) * layout.graph_h;
 
         let budget_y = y_of(FRAME_BUDGET_US);
         let mut bl = vello::kurbo::BezPath::new();
@@ -460,9 +575,9 @@ impl FrameProfiler {
         );
 
         let shown = self.history.len().min(HISTORY_CAP);
-        let bar_w = (gw / shown as f64).max(1.0);
+        let bar_w = (gw / count_f64(shown)).max(1.0);
         for (i, f) in self.history.iter().rev().take(shown).enumerate() {
-            let bx1 = gx1 - i as f64 * bar_w;
+            let bx1 = gx1 - count_f64(i) * bar_w;
             let bx0 = (bx1 - bar_w + 0.5).max(gx0);
             let by0 = y_of(f.total_us);
             let bar = Rect::new(bx0, by0, bx1, gy1);
@@ -502,14 +617,14 @@ impl StatSummary {
         v.sort_unstable();
         let count = v.len();
         let sum: u128 = v.iter().map(|&x| u128::from(x)).sum();
-        let mean_us = (sum / count as u128) as u64;
+        let mean_us = saturating_u64(sum.checked_div(count as u128).unwrap_or(0));
         Self {
             count,
             mean_us,
             p50_us: percentile(&v, 50.0),
             p95_us: percentile(&v, 95.0),
-            min_us: v[0],
-            max_us: v[count - 1],
+            min_us: v.first().copied().unwrap_or(0),
+            max_us: v.last().copied().unwrap_or(0),
         }
     }
 }
@@ -521,9 +636,9 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
         return 0;
     }
     let n = sorted.len();
-    let rank = ((p / 100.0) * n as f64).ceil() as usize;
-    let idx = rank.saturating_sub(1).min(n - 1);
-    sorted[idx]
+    let rank = saturating_usize(((p / 100.0) * count_f64(n)).ceil());
+    let idx = rank.saturating_sub(1).min(n.saturating_sub(1));
+    sorted.get(idx).copied().unwrap_or(0)
 }
 
 /// Per-pass and total statistics over every frame a [`PerfScenario`]
@@ -556,7 +671,7 @@ impl PerfReport {
         };
         let over_budget = samples.iter().filter(|f| f.total_us > budget_us).count();
         let over_budget_pct = if frames > 0 {
-            over_budget as f64 * 100.0 / frames as f64
+            count_f64(over_budget) * 100.0 / count_f64(frames)
         } else {
             0.0
         };
@@ -579,7 +694,7 @@ impl PerfReport {
     /// Microseconds shown as milliseconds.
     pub fn to_table(&self) -> String {
         use std::fmt::Write;
-        let ms = |us: u64| us as f64 / 1000.0;
+        let ms = |us: u64| lossy_f64(us) / 1000.0;
         let mut s = String::new();
         let _ = writeln!(
             s,
@@ -686,6 +801,7 @@ impl PerfScenario {
         }
     }
 
+    #[must_use]
     pub fn with_viewport(mut self, w: u32, h: u32) -> Self {
         self.viewport = (w, h);
         self

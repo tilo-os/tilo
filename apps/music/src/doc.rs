@@ -108,73 +108,79 @@ pub fn is_seeded(doc: &AutoCommit) -> bool {
     get_map(doc, &ROOT, "library").is_some()
 }
 
-/// Write the full library + playback into a fresh document.
+/// Write the full library + playback into a fresh document. A failure to
+/// create one of the top-level containers aborts the rest of that container's
+/// seeding (an existing document from a corrupt or pathological state); a
+/// failure on a single item within a container (an artist, an album) skips
+/// just that item and continues with its siblings.
 pub fn seed(doc: &mut AutoCommit, lib: &Library, playback: &Playback) {
-    let library = doc
-        .put_object(&ROOT, "library", ObjType::Map)
-        .expect("put library");
+    let Ok(library) = doc.put_object(&ROOT, "library", ObjType::Map) else {
+        return;
+    };
 
-    let artists = doc
-        .put_object(&library, "artists", ObjType::Map)
-        .expect("artists");
+    let Ok(artists) = doc.put_object(&library, "artists", ObjType::Map) else {
+        return;
+    };
     for a in lib.artists.values() {
-        let m = doc
-            .put_object(&artists, a.id.as_str(), ObjType::Map)
-            .expect("artist");
+        let Ok(m) = doc.put_object(&artists, a.id.as_str(), ObjType::Map) else {
+            continue;
+        };
         let _ = doc.put(&m, "name", a.name.as_str());
         let _ = doc.put(&m, "genre", a.genre.as_str());
         let _ = doc.put(&m, "monthly_listeners", a.monthly_listeners as i64);
     }
 
-    let albums = doc
-        .put_object(&library, "albums", ObjType::Map)
-        .expect("albums");
+    let Ok(albums) = doc.put_object(&library, "albums", ObjType::Map) else {
+        return;
+    };
     for al in lib.albums.values() {
-        let m = doc
-            .put_object(&albums, al.id.as_str(), ObjType::Map)
-            .expect("album");
+        let Ok(m) = doc.put_object(&albums, al.id.as_str(), ObjType::Map) else {
+            continue;
+        };
         let _ = doc.put(&m, "title", al.title.as_str());
         let _ = doc.put(&m, "artist_id", al.artist_id.as_str());
         let _ = doc.put(&m, "year", i64::from(al.year));
     }
 
-    let tracks = doc
-        .put_object(&library, "tracks", ObjType::Map)
-        .expect("tracks");
+    let Ok(tracks) = doc.put_object(&library, "tracks", ObjType::Map) else {
+        return;
+    };
     for t in lib.tracks.values() {
         write_track(doc, &tracks, t);
     }
 
     // Playlists.
-    let playlists = doc
-        .put_object(&ROOT, "playlists", ObjType::List)
-        .expect("playlists");
+    let Ok(playlists) = doc.put_object(&ROOT, "playlists", ObjType::List) else {
+        return;
+    };
     for (i, p) in lib.playlists.iter().enumerate() {
         write_playlist(doc, &playlists, i, p);
     }
 
     // Cache state.
-    let cache = doc.put_object(&ROOT, "cache", ObjType::Map).expect("cache");
+    let Ok(cache) = doc.put_object(&ROOT, "cache", ObjType::Map) else {
+        return;
+    };
     for (id, st) in &lib.cache {
         let _ = doc.put(&cache, id.as_str(), cache_to_str(*st));
     }
 
     // Liked songs + saved albums.
-    let liked = doc
-        .put_object(&ROOT, "liked", ObjType::List)
-        .expect("liked");
+    let Ok(liked) = doc.put_object(&ROOT, "liked", ObjType::List) else {
+        return;
+    };
     for (i, id) in lib.liked.iter().enumerate() {
         let _ = doc.insert(&liked, i, id.as_str());
     }
-    let saved = doc
-        .put_object(&ROOT, "saved_albums", ObjType::List)
-        .expect("saved_albums");
+    let Ok(saved) = doc.put_object(&ROOT, "saved_albums", ObjType::List) else {
+        return;
+    };
     for (i, id) in lib.saved_albums.iter().enumerate() {
         let _ = doc.insert(&saved, i, id.as_str());
     }
-    let followed = doc
-        .put_object(&ROOT, "followed_artists", ObjType::List)
-        .expect("followed_artists");
+    let Ok(followed) = doc.put_object(&ROOT, "followed_artists", ObjType::List) else {
+        return;
+    };
     for (i, id) in lib.followed_artists.iter().enumerate() {
         let _ = doc.insert(&followed, i, id.as_str());
     }
@@ -183,9 +189,9 @@ pub fn seed(doc: &mut AutoCommit, lib: &Library, playback: &Playback) {
 }
 
 fn write_track(doc: &mut AutoCommit, tracks: &ObjId, t: &Track) {
-    let m = doc
-        .put_object(tracks, t.id.as_str(), ObjType::Map)
-        .expect("track");
+    let Ok(m) = doc.put_object(tracks, t.id.as_str(), ObjType::Map) else {
+        return;
+    };
     let _ = doc.put(&m, "title", t.title.as_str());
     let _ = doc.put(&m, "album_id", t.album_id.as_str());
     let _ = doc.put(&m, "artist_id", t.artist_id.as_str());
@@ -196,16 +202,16 @@ fn write_track(doc: &mut AutoCommit, tracks: &ObjId, t: &Track) {
 }
 
 fn write_playlist(doc: &mut AutoCommit, playlists: &ObjId, index: usize, p: &Playlist) {
-    let m = doc
-        .insert_object(playlists, index, ObjType::Map)
-        .expect("playlist map");
+    let Ok(m) = doc.insert_object(playlists, index, ObjType::Map) else {
+        return;
+    };
     let _ = doc.put(&m, "id", p.id.as_str());
     let _ = doc.put(&m, "name", p.name.as_str());
     let _ = doc.put(&m, "description", p.description.as_str());
     let _ = doc.put(&m, "cover", p.cover.as_str());
-    let list = doc
-        .put_object(&m, "tracks", ObjType::List)
-        .expect("pl tracks");
+    let Ok(list) = doc.put_object(&m, "tracks", ObjType::List) else {
+        return;
+    };
     for (i, tid) in p.track_ids.iter().enumerate() {
         let _ = doc.insert(&list, i, tid.as_str());
     }
@@ -214,9 +220,9 @@ fn write_playlist(doc: &mut AutoCommit, playlists: &ObjId, index: usize, p: &Pla
 /// Overwrite the whole `playback` map. Cheap (a dozen scalars) and avoids
 /// having to diff individual fields.
 pub fn write_playback(doc: &mut AutoCommit, pb: &Playback) {
-    let m = doc
-        .put_object(&ROOT, "playback", ObjType::Map)
-        .expect("playback");
+    let Ok(m) = doc.put_object(&ROOT, "playback", ObjType::Map) else {
+        return;
+    };
     match &pb.current {
         Some(c) => {
             let _ = doc.put(&m, "current", c.as_str());
@@ -225,7 +231,9 @@ pub fn write_playback(doc: &mut AutoCommit, pb: &Playback) {
             let _ = doc.put(&m, "current", "");
         }
     }
-    let q = doc.put_object(&m, "queue", ObjType::List).expect("queue");
+    let Ok(q) = doc.put_object(&m, "queue", ObjType::List) else {
+        return;
+    };
     for (i, tid) in pb.queue.iter().enumerate() {
         let _ = doc.insert(&q, i, tid.as_str());
     }
@@ -254,11 +262,8 @@ pub struct LiveTrack {
     pub yt_id: String,
 }
 
-fn get_or_create_map(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
-    match get_map(doc, parent, key) {
-        Some(m) => m,
-        None => doc.put_object(parent, key, ObjType::Map).expect("map"),
-    }
+fn get_or_create_map(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
+    get_map(doc, parent, key).or_else(|| doc.put_object(parent, key, ObjType::Map).ok())
 }
 
 /// Merge a live search result — its artist, album and the track itself — into
@@ -267,29 +272,35 @@ fn get_or_create_map(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
 /// existing artist / album / track with the same id is left as-is, so repeated
 /// searches don't churn the document.
 pub fn upsert_live_track(doc: &mut AutoCommit, t: &LiveTrack) {
-    let library = get_or_create_map(doc, &ROOT, "library");
+    let Some(library) = get_or_create_map(doc, &ROOT, "library") else {
+        return;
+    };
 
-    let artists = get_or_create_map(doc, &library, "artists");
-    if get_map(doc, &artists, &t.artist_id).is_none() {
-        let m = doc
-            .put_object(&artists, t.artist_id.as_str(), ObjType::Map)
-            .expect("artist");
+    let Some(artists) = get_or_create_map(doc, &library, "artists") else {
+        return;
+    };
+    if get_map(doc, &artists, &t.artist_id).is_none()
+        && let Ok(m) = doc.put_object(&artists, t.artist_id.as_str(), ObjType::Map)
+    {
         let _ = doc.put(&m, "name", t.artist_name.as_str());
         let _ = doc.put(&m, "genre", "");
         let _ = doc.put(&m, "monthly_listeners", 0i64);
     }
 
-    let albums = get_or_create_map(doc, &library, "albums");
-    if get_map(doc, &albums, &t.album_id).is_none() {
-        let m = doc
-            .put_object(&albums, t.album_id.as_str(), ObjType::Map)
-            .expect("album");
+    let Some(albums) = get_or_create_map(doc, &library, "albums") else {
+        return;
+    };
+    if get_map(doc, &albums, &t.album_id).is_none()
+        && let Ok(m) = doc.put_object(&albums, t.album_id.as_str(), ObjType::Map)
+    {
         let _ = doc.put(&m, "title", t.album_title.as_str());
         let _ = doc.put(&m, "artist_id", t.artist_id.as_str());
         let _ = doc.put(&m, "year", 0i64);
     }
 
-    let tracks = get_or_create_map(doc, &library, "tracks");
+    let Some(tracks) = get_or_create_map(doc, &library, "tracks") else {
+        return;
+    };
     if get_map(doc, &tracks, &t.track_id).is_none() {
         write_track(
             doc,
@@ -310,9 +321,10 @@ pub fn upsert_live_track(doc: &mut AutoCommit, t: &LiveTrack) {
 
 /// Set the cache/download state of a single track.
 pub fn set_cache(doc: &mut AutoCommit, track_id: &str, state: CacheState) {
-    let cache = match get_map(doc, &ROOT, "cache") {
-        Some(c) => c,
-        None => doc.put_object(&ROOT, "cache", ObjType::Map).expect("cache"),
+    let Some(cache) =
+        get_map(doc, &ROOT, "cache").or_else(|| doc.put_object(&ROOT, "cache", ObjType::Map).ok())
+    else {
+        return;
     };
     let _ = doc.put(&cache, track_id, cache_to_str(state));
 }
@@ -369,11 +381,13 @@ pub fn move_track_in_playlist(doc: &mut AutoCommit, playlist_id: &str, from: usi
         return;
     };
     let ids = list_strings(doc, &list);
-    if from >= ids.len() || from == to {
+    if from == to {
         return;
     }
+    let Some(moved) = ids.get(from).cloned() else {
+        return;
+    };
     let to = to.min(ids.len().saturating_sub(1));
-    let moved = ids[from].clone();
     let _ = doc.delete(&list, from);
     let _ = doc.insert(&list, to, moved.as_str());
 }
@@ -403,16 +417,15 @@ pub fn delete_playlist(doc: &mut AutoCommit, playlist_id: &str) {
 
 // ---- liked songs + saved albums ------------------------------------------
 
-fn ensure_str_list(doc: &mut AutoCommit, key: &str) -> ObjId {
-    match get_list(doc, &ROOT, key) {
-        Some(l) => l,
-        None => doc.put_object(&ROOT, key, ObjType::List).expect("str list"),
-    }
+fn ensure_str_list(doc: &mut AutoCommit, key: &str) -> Option<ObjId> {
+    get_list(doc, &ROOT, key).or_else(|| doc.put_object(&ROOT, key, ObjType::List).ok())
 }
 
 /// Toggle a track's membership in "Liked Songs". Returns the new liked state.
 pub fn toggle_liked(doc: &mut AutoCommit, track_id: &str) -> bool {
-    let list = ensure_str_list(doc, "liked");
+    let Some(list) = ensure_str_list(doc, "liked") else {
+        return false;
+    };
     let ids = list_strings(doc, &list);
     if let Some(pos) = ids.iter().position(|t| t == track_id) {
         let _ = doc.delete(&list, pos);
@@ -427,7 +440,9 @@ pub fn toggle_liked(doc: &mut AutoCommit, track_id: &str) -> bool {
 /// Force a track liked (idempotent). Used by the context-menu "Like" /
 /// "Add to library" entries which are one-way affordances.
 pub fn set_liked(doc: &mut AutoCommit, track_id: &str, liked: bool) {
-    let list = ensure_str_list(doc, "liked");
+    let Some(list) = ensure_str_list(doc, "liked") else {
+        return;
+    };
     let ids = list_strings(doc, &list);
     let present = ids.iter().any(|t| t == track_id);
     if liked && !present {
@@ -444,7 +459,9 @@ pub fn set_liked(doc: &mut AutoCommit, track_id: &str, liked: bool) {
 /// Toggle an album's membership in the saved-albums set. Returns the new
 /// saved state.
 pub fn toggle_saved_album(doc: &mut AutoCommit, album_id: &str) -> bool {
-    let list = ensure_str_list(doc, "saved_albums");
+    let Some(list) = ensure_str_list(doc, "saved_albums") else {
+        return false;
+    };
     let ids = list_strings(doc, &list);
     if let Some(pos) = ids.iter().position(|t| t == album_id) {
         let _ = doc.delete(&list, pos);
@@ -458,7 +475,9 @@ pub fn toggle_saved_album(doc: &mut AutoCommit, album_id: &str) -> bool {
 
 /// Toggle whether the user follows an artist. Returns the new followed state.
 pub fn toggle_followed_artist(doc: &mut AutoCommit, artist_id: &str) -> bool {
-    let list = ensure_str_list(doc, "followed_artists");
+    let Some(list) = ensure_str_list(doc, "followed_artists") else {
+        return false;
+    };
     let ids = list_strings(doc, &list);
     if let Some(pos) = ids.iter().position(|t| t == artist_id) {
         let _ = doc.delete(&list, pos);
@@ -486,11 +505,10 @@ pub fn create_playlist_with_id(doc: &mut AutoCommit, id: &str, name: &str) {
     if find_playlist_obj(doc, id).is_some() {
         return;
     }
-    let playlists = match get_list(doc, &ROOT, "playlists") {
-        Some(p) => p,
-        None => doc
-            .put_object(&ROOT, "playlists", ObjType::List)
-            .expect("playlists"),
+    let Some(playlists) = get_list(doc, &ROOT, "playlists")
+        .or_else(|| doc.put_object(&ROOT, "playlists", ObjType::List).ok())
+    else {
+        return;
     };
     let idx = doc.length(&playlists);
     write_playlist(

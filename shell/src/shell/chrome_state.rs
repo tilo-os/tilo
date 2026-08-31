@@ -82,6 +82,10 @@ impl std::fmt::Debug for PendingPrompt {
 
 /// Snapshot of which shell overlays are currently on screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent, non-exclusive overlay visibility toggle (any subset can be on screen at once), and the struct is read/written across ~170 call sites in 14 files under shell/src and shell/tests — a flags-enum refactor would ripple invasively for no behavioural gain"
+)]
 pub struct OverlayFlags {
     pub overview: bool,
     pub quick_settings: bool,
@@ -164,7 +168,7 @@ pub struct QuickSettingsState {
     pub volume: f32,
     pub wifi: bool,
     pub bluetooth: bool,
-    /// Primary NetworkManager Ethernet interface. `None` means no adapter.
+    /// Primary `NetworkManager` Ethernet interface. `None` means no adapter.
     pub wired: Option<os_actions::WiredInfo>,
     /// Read-only kernel battery snapshot for the quick status row.
     pub battery: os_actions::BatteryInfo,
@@ -826,7 +830,7 @@ impl ChromeState {
         }
         if visual_notification_alerts_enabled() {
             self.visual_alert_until =
-                Some(std::time::Instant::now() + std::time::Duration::from_millis(450));
+                std::time::Instant::now().checked_add(std::time::Duration::from_millis(450));
         }
         self.notifications.push(n);
         // Cap-evicted entries retire to history rather than dropping.
@@ -1120,8 +1124,9 @@ impl ChromeState {
                 verified_app_id.as_deref(),
                 verified_priority_contact,
                 now.timestamp(),
-                (now.hour() * 60 + now.minute()) as u16,
-                now.weekday().num_days_from_monday() as u8,
+                u16::try_from(now.hour().saturating_mul(60).saturating_add(now.minute()))
+                    .unwrap_or(u16::MAX),
+                u8::try_from(now.weekday().num_days_from_monday()).unwrap_or(u8::MAX),
             );
             let mut notification = Notification::from_incoming(inc);
             notification.show_preview = effective.previews;
@@ -1138,7 +1143,10 @@ impl ChromeState {
                 }
             }
             if effective.sounds {
-                let _ = self.notification_sound.as_ref().map(|sound| sound.play());
+                let _ = self
+                    .notification_sound
+                    .as_ref()
+                    .map(media::notification_sound::NotificationSoundPlayer::play);
             }
             if effective.banners {
                 self.push_notification_full(notification);

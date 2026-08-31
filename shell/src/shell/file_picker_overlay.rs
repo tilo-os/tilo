@@ -50,13 +50,17 @@ impl FilePickerOverlay {
         if let Some(active) = self.active.as_mut()
             && let Some(outcome) = active.widget.take_outcome()
         {
-            let mut active = self.active.take().expect("active picker just checked");
-            let picked = match outcome {
-                ui::widget::FilePickerOutcome::Selected(paths) => Some(paths),
-                ui::widget::FilePickerOutcome::Cancelled => None,
-            };
-            active.answer(picked);
-            dirty = true;
+            // `self.active` was confirmed `Some` just above; `take()` can
+            // only observe that same state, but a real fallback keeps this
+            // panic-free regardless.
+            if let Some(mut active) = self.active.take() {
+                let picked = match outcome {
+                    ui::widget::FilePickerOutcome::Selected(paths) => Some(paths),
+                    ui::widget::FilePickerOutcome::Cancelled => None,
+                };
+                active.answer(picked);
+                dirty = true;
+            }
         }
 
         let Some(queue) = self.queue.as_ref() else {
@@ -108,7 +112,7 @@ impl FilePickerOverlay {
         viewport: Rect,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -119,11 +123,16 @@ impl FilePickerOverlay {
         };
         active.widget.set_rect(file_picker_rect(viewport));
         let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.new_leaf(Default::default()).unwrap();
+        // This tree exists only to hand `handle_event` a valid node id; a
+        // failure here means we can't dispatch at all, so decline the
+        // event instead of unwrapping into a panic.
+        let Ok(node) = taffy.new_leaf(taffy::Style::default()) else {
+            return false;
+        };
         active.widget.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             handled,
@@ -162,23 +171,28 @@ fn picker_scope_for(
     let Some(chrome) = chrome else {
         return base;
     };
-    let state = chrome.borrow();
-    let tree = state.tree();
-    let Some(workspace) = tree
-        .workspaces
-        .iter()
-        .find(|workspace| workspace.id == caller.workspace_id)
-    else {
-        return base;
+    // Scoped so the `RefCell` borrow guard drops before
+    // `with_granted_paths` runs, rather than lingering to the end of the
+    // function for data it no longer needs.
+    let granted: Vec<std::path::PathBuf> = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let Some(workspace) = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == caller.workspace_id)
+        else {
+            return base;
+        };
+        workspace
+            .app_capabilities(&caller.app_id)
+            .into_iter()
+            .filter_map(|capability| match &capability.scope {
+                collab_types::caps::Scope::FsPath(path) => Some(std::path::PathBuf::from(path)),
+                _ => None,
+            })
+            .collect()
     };
-    let granted: Vec<std::path::PathBuf> = workspace
-        .app_capabilities(&caller.app_id)
-        .into_iter()
-        .filter_map(|capability| match &capability.scope {
-            collab_types::caps::Scope::FsPath(path) => Some(std::path::PathBuf::from(path)),
-            _ => None,
-        })
-        .collect();
     base.with_granted_paths(granted)
 }
 

@@ -83,7 +83,9 @@ impl IdentityStore for DiskIdentityStore {
                 "identity record must be a private user-owned regular file",
             )));
         }
-        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        // `metadata.len()` was already checked <= 1 MiB above; this cast is a
+        // capacity hint, so a lossy fallback on exotic 32-bit targets is harmless.
+        let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
         (&mut file)
             .take(1024 * 1024 + 1)
             .read_to_end(&mut bytes)

@@ -99,7 +99,11 @@ pub(crate) fn run_capture(binary: &str, args: &[&str]) -> Result<String, String>
         buf
     });
 
-    let deadline = Instant::now() + DEFAULT_TIMEOUT;
+    // `Instant + Duration` panics on overflow; a deadline this near can never overflow in
+    // practice, but fall back to "already due" rather than let the operator panic.
+    let deadline = Instant::now()
+        .checked_add(DEFAULT_TIMEOUT)
+        .unwrap_or_else(Instant::now);
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break Some(s),
@@ -142,7 +146,7 @@ pub(crate) fn run(binary: &str, args: &[&str]) -> Result<(), String> {
 }
 
 /// Run a client with bounded stdin, keeping secrets out of argv and the
-/// process list. Used for NetworkManager's `--ask` flow.
+/// process list. Used for `NetworkManager`'s `--ask` flow.
 pub(crate) fn run_with_input(
     binary: &str,
     args: &[&str],

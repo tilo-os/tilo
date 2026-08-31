@@ -37,8 +37,8 @@ use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider,
 };
 
 use crate::prefs::{AppearancePrefs, SystemPrefs};
@@ -79,7 +79,7 @@ impl SettingValue {
                 matches!(s.as_ref(), ScalarValue::Int(v) if v == i)
             }
             (SettingValue::Float(f), Ok(Some((Value::Scalar(s), _)))) => {
-                matches!(s.as_ref(), ScalarValue::F64(v) if v == f)
+                matches!(s.as_ref(), ScalarValue::F64(v) if (v - f).abs() < f64::EPSILON)
             }
             (SettingValue::Text(t), Ok(Some((Value::Scalar(s), _)))) => {
                 matches!(s.as_ref(), ScalarValue::Str(v) if v.as_str() == t.as_str())
@@ -131,9 +131,17 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`SettingsAction`] into the wire form the palette and the
 /// on-screen controls both dispatch. The single point that turns a settings
 /// action into a replayable envelope.
+///
+/// # Panics
+///
+/// Never panics: a `SettingsAction` that fails to serialize (it never should —
+/// every field is a plain string, bool, int or finite float) falls back to an
+/// empty-payload envelope rather than crashing the caller.
 pub fn encode(action: &SettingsAction) -> EncodedAction {
-    EncodedAction::encode(SETTINGS_ACTION_TYPE, action)
-        .expect("SettingsAction is always serializable")
+    EncodedAction::encode(SETTINGS_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
+        type_id: SETTINGS_ACTION_TYPE.to_string(),
+        payload: Vec::new(),
+    })
 }
 
 // ===========================================================================
@@ -207,13 +215,16 @@ fn bool_flip_spec(id: &str, key: &str, on_now: bool, noun: &str) -> ActionSpec {
     } else {
         format!("Turn on {noun}")
     };
-    ActionSpec::immediate(
-        id,
-        label,
-        SETTINGS_ACTION_TYPE,
-        &set_bool_action(key, !on_now),
-    )
-    .expect("encode settings action")
+    let action = set_bool_action(key, !on_now);
+    ActionSpec::immediate(id, label.clone(), SETTINGS_ACTION_TYPE, &action).unwrap_or_else(|_| {
+        ActionSpec {
+            id: id.to_string(),
+            label,
+            description: None,
+            locus: action.locus(),
+            input: ActionInput::Immediate(encode(&action)),
+        }
+    })
 }
 
 fn float_prompt_spec(
@@ -286,395 +297,414 @@ fn match_option(raw: &str, options: &[&str]) -> Option<String> {
 /// back to the shipped defaults for a section whose pane hasn't seeded its keys
 /// yet), so a bool's flip target and an enum's fallback reflect what is set.
 pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    use crate::panes;
     let d = SystemPrefs::default();
+    let mut root = Resource::new("settings.root", "settings.root", "Settings");
+    root = root.with_child(notifications_section(doc, &d));
+    root = root.with_child(appearance_section(doc, &d));
+    root = root.with_child(sound_section(doc));
+    root = root.with_child(displays_section(doc, &d));
+    root = root.with_child(input_section(doc, &d));
+    root = root.with_child(power_section(doc, &d));
+    root = root.with_child(accessibility_section(doc, &d));
+    root = root.with_child(updates_section(doc, &d));
+    root = root.with_child(network_section(doc));
+    root = root.with_child(bluetooth_section(doc));
+    vec![root]
+}
 
+fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
+    use crate::panes;
+    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+    let mut sec = Resource::new(
+        "settings.section:notifications",
+        "settings.section",
+        "Notifications",
+    );
+    sec = sec.with_action(bool_flip_spec(
+        "dnd",
+        panes::notifications::DND_KEY,
+        b(
+            panes::notifications::DND_KEY,
+            d.notifications.do_not_disturb,
+        ),
+        "Do Not Disturb",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "banners",
+        panes::notifications::BANNERS_KEY,
+        b(
+            panes::notifications::BANNERS_KEY,
+            d.notifications.show_banners,
+        ),
+        "notification banners",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "previews",
+        panes::notifications::PREVIEWS_KEY,
+        b(
+            panes::notifications::PREVIEWS_KEY,
+            d.notifications.show_previews,
+        ),
+        "message previews",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "sounds",
+        panes::notifications::SOUNDS_KEY,
+        b(
+            panes::notifications::SOUNDS_KEY,
+            d.notifications.play_sounds,
+        ),
+        "notification sounds",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "lock_screen",
+        panes::notifications::LOCK_SCREEN_KEY,
+        b(
+            panes::notifications::LOCK_SCREEN_KEY,
+            d.notifications.show_on_lock_screen,
+        ),
+        "lock-screen notifications",
+    ));
+    sec
+}
+
+fn appearance_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
+    use crate::panes;
     let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
     let s = |key: &str, default: &str| doc_str(doc, key).unwrap_or_else(|| default.to_string());
-
-    let mut root = Resource::new("settings.root", "settings.root", "Settings");
-
-    // --- Notifications ----------------------------------------------------
-    {
-        let mut sec = Resource::new(
-            "settings.section:notifications",
-            "settings.section",
-            "Notifications",
-        );
-        sec = sec.with_action(bool_flip_spec(
-            "dnd",
-            panes::notifications::DND_KEY,
-            b(
-                panes::notifications::DND_KEY,
-                d.notifications.do_not_disturb,
-            ),
-            "Do Not Disturb",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "banners",
-            panes::notifications::BANNERS_KEY,
-            b(
-                panes::notifications::BANNERS_KEY,
-                d.notifications.show_banners,
-            ),
-            "notification banners",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "previews",
-            panes::notifications::PREVIEWS_KEY,
-            b(
-                panes::notifications::PREVIEWS_KEY,
-                d.notifications.show_previews,
-            ),
-            "message previews",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "sounds",
-            panes::notifications::SOUNDS_KEY,
-            b(
-                panes::notifications::SOUNDS_KEY,
-                d.notifications.play_sounds,
-            ),
-            "notification sounds",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "lock_screen",
-            panes::notifications::LOCK_SCREEN_KEY,
-            b(
-                panes::notifications::LOCK_SCREEN_KEY,
-                d.notifications.show_on_lock_screen,
-            ),
-            "lock-screen notifications",
-        ));
-        root = root.with_child(sec);
-    }
-
-    // --- Appearance -------------------------------------------------------
-    {
-        let mut sec = Resource::new(
-            "settings.section:appearance",
-            "settings.section",
-            "Appearance",
-        );
-        let cur_theme = s(panes::appearance::THEME_KEY, &d.appearance.theme);
-        sec = sec.with_action(choice_prompt_spec(
-            "theme",
-            "Set theme",
-            panes::appearance::THEME_KEY,
-            "Dark, Light, Dracula, Nord, Gruvbox, Solarized",
-            AppearancePrefs::THEMES,
-            cur_theme,
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "high_contrast",
+    let mut sec = Resource::new(
+        "settings.section:appearance",
+        "settings.section",
+        "Appearance",
+    );
+    let cur_theme = s(panes::appearance::THEME_KEY, &d.appearance.theme);
+    sec = sec.with_action(choice_prompt_spec(
+        "theme",
+        "Set theme",
+        panes::appearance::THEME_KEY,
+        "Dark, Light, Dracula, Nord, Gruvbox, Solarized",
+        AppearancePrefs::THEMES,
+        cur_theme,
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "high_contrast",
+        panes::appearance::HIGH_CONTRAST_KEY,
+        b(
             panes::appearance::HIGH_CONTRAST_KEY,
-            b(
-                panes::appearance::HIGH_CONTRAST_KEY,
-                d.appearance.high_contrast,
-            ),
-            "high contrast",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "reduce_motion",
+            d.appearance.high_contrast,
+        ),
+        "high contrast",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "reduce_motion",
+        panes::appearance::REDUCE_MOTION_KEY,
+        b(
             panes::appearance::REDUCE_MOTION_KEY,
-            b(
-                panes::appearance::REDUCE_MOTION_KEY,
-                d.appearance.reduce_motion,
-            ),
-            "reduced motion",
-        ));
-        sec = sec.with_action(float_prompt_spec(
-            "text_size",
-            "Set text size",
-            panes::appearance::TEXT_SIZE_KEY,
-            "0.8 – 1.5",
-            0.8,
-            1.5,
-        ));
-        sec = sec.with_action(float_prompt_spec(
-            "ui_scale",
-            "Set UI scale",
-            panes::appearance::UI_SCALE_KEY,
-            "0.8 – 2.0",
-            0.8,
-            2.0,
-        ));
-        root = root.with_child(sec);
-    }
+            d.appearance.reduce_motion,
+        ),
+        "reduced motion",
+    ));
+    sec = sec.with_action(float_prompt_spec(
+        "text_size",
+        "Set text size",
+        panes::appearance::TEXT_SIZE_KEY,
+        "0.8 – 1.5",
+        0.8,
+        1.5,
+    ));
+    sec = sec.with_action(float_prompt_spec(
+        "ui_scale",
+        "Set UI scale",
+        panes::appearance::UI_SCALE_KEY,
+        "0.8 – 2.0",
+        0.8,
+        2.0,
+    ));
+    sec
+}
 
-    // --- Sound ------------------------------------------------------------
-    {
-        let mut sec = Resource::new("settings.section:sound", "settings.section", "Sound");
-        sec = sec.with_action(bool_flip_spec(
-            "muted",
-            panes::audio::MUTED_KEY,
-            b(panes::audio::MUTED_KEY, false),
-            "output mute",
-        ));
-        sec = sec.with_action(float_prompt_spec(
-            "volume",
-            "Set output volume",
-            panes::audio::VOLUME_KEY,
-            "0.0 – 1.0",
-            0.0,
-            1.0,
-        ));
-        root = root.with_child(sec);
-    }
+fn sound_section(doc: &AutoCommit) -> Resource {
+    use crate::panes;
+    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+    let mut sec = Resource::new("settings.section:sound", "settings.section", "Sound");
+    sec = sec.with_action(bool_flip_spec(
+        "muted",
+        panes::audio::MUTED_KEY,
+        b(panes::audio::MUTED_KEY, false),
+        "output mute",
+    ));
+    sec = sec.with_action(float_prompt_spec(
+        "volume",
+        "Set output volume",
+        panes::audio::VOLUME_KEY,
+        "0.0 – 1.0",
+        0.0,
+        1.0,
+    ));
+    sec
+}
 
-    // --- Displays ---------------------------------------------------------
-    {
-        let mut sec = Resource::new("settings.section:display", "settings.section", "Displays");
-        sec = sec.with_action(bool_flip_spec(
-            "auto_brightness",
+fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
+    use crate::panes;
+    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+    let mut sec = Resource::new("settings.section:display", "settings.section", "Displays");
+    sec = sec.with_action(bool_flip_spec(
+        "auto_brightness",
+        panes::display::AUTO_BRIGHTNESS_KEY,
+        b(
             panes::display::AUTO_BRIGHTNESS_KEY,
-            b(
-                panes::display::AUTO_BRIGHTNESS_KEY,
-                d.display.auto_brightness,
-            ),
-            "automatic brightness",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "night_light",
-            panes::display::NIGHT_LIGHT_KEY,
-            b(panes::display::NIGHT_LIGHT_KEY, d.display.night_light),
-            "Night Light",
-        ));
-        sec = sec.with_action(float_prompt_spec(
-            "brightness",
-            "Set brightness",
-            panes::display::BRIGHTNESS_KEY,
-            "0.0 – 1.0",
-            0.0,
-            1.0,
-        ));
-        sec = sec.with_action(float_prompt_spec(
-            "scale",
-            "Set display scale",
-            panes::display::DISPLAY_SCALE_KEY,
-            "1.0, 1.25, 1.5, 2.0",
-            1.0,
-            3.0,
-        ));
-        root = root.with_child(sec);
-    }
+            d.display.auto_brightness,
+        ),
+        "automatic brightness",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "night_light",
+        panes::display::NIGHT_LIGHT_KEY,
+        b(panes::display::NIGHT_LIGHT_KEY, d.display.night_light),
+        "Night Light",
+    ));
+    sec = sec.with_action(float_prompt_spec(
+        "brightness",
+        "Set brightness",
+        panes::display::BRIGHTNESS_KEY,
+        "0.0 – 1.0",
+        0.0,
+        1.0,
+    ));
+    sec = sec.with_action(float_prompt_spec(
+        "scale",
+        "Set display scale",
+        panes::display::DISPLAY_SCALE_KEY,
+        "1.0, 1.25, 1.5, 2.0",
+        1.0,
+        3.0,
+    ));
+    sec
+}
 
-    // --- Mouse & Keyboard -------------------------------------------------
-    {
-        let mut sec = Resource::new(
-            "settings.section:input",
-            "settings.section",
-            "Mouse & Keyboard",
-        );
-        sec = sec.with_action(bool_flip_spec(
-            "natural_scroll",
+fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
+    use crate::panes;
+    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+    let mut sec = Resource::new(
+        "settings.section:input",
+        "settings.section",
+        "Mouse & Keyboard",
+    );
+    sec = sec.with_action(bool_flip_spec(
+        "natural_scroll",
+        panes::mouse_keyboard::NATURAL_SCROLL_KEY,
+        b(
             panes::mouse_keyboard::NATURAL_SCROLL_KEY,
-            b(
-                panes::mouse_keyboard::NATURAL_SCROLL_KEY,
-                d.input.natural_scroll,
-            ),
-            "natural scrolling",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "tap_to_click",
-            panes::mouse_keyboard::TAP_CLICK_KEY,
-            b(panes::mouse_keyboard::TAP_CLICK_KEY, d.input.tap_to_click),
-            "tap to click",
-        ));
-        sec = sec.with_action(float_prompt_spec(
-            "pointer_speed",
-            "Set pointer speed",
-            panes::mouse_keyboard::POINTER_SPEED_KEY,
-            "0.0 – 1.0",
-            0.0,
-            1.0,
-        ));
-        sec = sec.with_action(float_prompt_spec(
-            "key_repeat",
-            "Set key-repeat rate",
-            panes::mouse_keyboard::KEY_REPEAT_KEY,
-            "0.0 – 1.0",
-            0.0,
-            1.0,
-        ));
-        root = root.with_child(sec);
-    }
+            d.input.natural_scroll,
+        ),
+        "natural scrolling",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "tap_to_click",
+        panes::mouse_keyboard::TAP_CLICK_KEY,
+        b(panes::mouse_keyboard::TAP_CLICK_KEY, d.input.tap_to_click),
+        "tap to click",
+    ));
+    sec = sec.with_action(float_prompt_spec(
+        "pointer_speed",
+        "Set pointer speed",
+        panes::mouse_keyboard::POINTER_SPEED_KEY,
+        "0.0 – 1.0",
+        0.0,
+        1.0,
+    ));
+    sec = sec.with_action(float_prompt_spec(
+        "key_repeat",
+        "Set key-repeat rate",
+        panes::mouse_keyboard::KEY_REPEAT_KEY,
+        "0.0 – 1.0",
+        0.0,
+        1.0,
+    ));
+    sec
+}
 
-    // --- Power ------------------------------------------------------------
-    {
-        let mut sec = Resource::new("settings.section:power", "settings.section", "Power");
-        sec = sec.with_action(bool_flip_spec(
-            "auto_suspend",
-            panes::power::AUTO_SUSPEND_KEY,
-            b(panes::power::AUTO_SUSPEND_KEY, d.power.auto_suspend),
-            "automatic suspend",
-        ));
-        let power_actions = &["Suspend", "Lock screen", "Do nothing"];
-        let cur_lid = s(panes::power::LID_KEY, d.power.lid_close_action.display());
-        sec = sec.with_action(choice_prompt_spec(
-            "lid",
-            "Set lid-close action",
-            panes::power::LID_KEY,
-            "Suspend, Lock screen, Do nothing",
-            power_actions,
-            cur_lid,
-        ));
-        let cur_key = s(
-            panes::power::POWER_KEY_KEY,
-            d.power.power_key_action.display(),
-        );
-        sec = sec.with_action(choice_prompt_spec(
-            "power_key",
-            "Set power-key action",
-            panes::power::POWER_KEY_KEY,
-            "Suspend, Lock screen, Do nothing",
-            power_actions,
-            cur_key,
-        ));
-        let cur_crit = s(
-            panes::power::CRITICAL_KEY,
-            d.power.critical_action.display(),
-        );
-        sec = sec.with_action(choice_prompt_spec(
-            "critical",
-            "Set critical-battery action",
-            panes::power::CRITICAL_KEY,
-            "Suspend, Lock screen, Do nothing",
-            power_actions,
-            cur_crit,
-        ));
-        root = root.with_child(sec);
-    }
+fn power_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
+    use crate::panes;
+    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+    let s = |key: &str, default: &str| doc_str(doc, key).unwrap_or_else(|| default.to_string());
+    let mut sec = Resource::new("settings.section:power", "settings.section", "Power");
+    sec = sec.with_action(bool_flip_spec(
+        "auto_suspend",
+        panes::power::AUTO_SUSPEND_KEY,
+        b(panes::power::AUTO_SUSPEND_KEY, d.power.auto_suspend),
+        "automatic suspend",
+    ));
+    let power_actions = &["Suspend", "Lock screen", "Do nothing"];
+    let cur_lid = s(panes::power::LID_KEY, d.power.lid_close_action.display());
+    sec = sec.with_action(choice_prompt_spec(
+        "lid",
+        "Set lid-close action",
+        panes::power::LID_KEY,
+        "Suspend, Lock screen, Do nothing",
+        power_actions,
+        cur_lid,
+    ));
+    let cur_key = s(
+        panes::power::POWER_KEY_KEY,
+        d.power.power_key_action.display(),
+    );
+    sec = sec.with_action(choice_prompt_spec(
+        "power_key",
+        "Set power-key action",
+        panes::power::POWER_KEY_KEY,
+        "Suspend, Lock screen, Do nothing",
+        power_actions,
+        cur_key,
+    ));
+    let cur_crit = s(
+        panes::power::CRITICAL_KEY,
+        d.power.critical_action.display(),
+    );
+    sec = sec.with_action(choice_prompt_spec(
+        "critical",
+        "Set critical-battery action",
+        panes::power::CRITICAL_KEY,
+        "Suspend, Lock screen, Do nothing",
+        power_actions,
+        cur_crit,
+    ));
+    sec
+}
 
-    // --- Accessibility ----------------------------------------------------
-    {
-        let mut sec = Resource::new(
-            "settings.section:accessibility",
-            "settings.section",
-            "Accessibility",
-        );
-        sec = sec.with_action(bool_flip_spec(
-            "large_cursor",
+fn accessibility_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
+    use crate::panes;
+    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+    let mut sec = Resource::new(
+        "settings.section:accessibility",
+        "settings.section",
+        "Accessibility",
+    );
+    sec = sec.with_action(bool_flip_spec(
+        "large_cursor",
+        panes::accessibility::LARGE_CURSOR_KEY,
+        b(
             panes::accessibility::LARGE_CURSOR_KEY,
-            b(
-                panes::accessibility::LARGE_CURSOR_KEY,
-                d.accessibility.large_cursor,
-            ),
-            "the large cursor",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "screen_reader",
+            d.accessibility.large_cursor,
+        ),
+        "the large cursor",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "screen_reader",
+        panes::accessibility::SCREEN_READER_KEY,
+        b(
             panes::accessibility::SCREEN_READER_KEY,
-            b(
-                panes::accessibility::SCREEN_READER_KEY,
-                d.accessibility.screen_reader,
-            ),
-            "the screen reader",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "osk",
+            d.accessibility.screen_reader,
+        ),
+        "the screen reader",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "osk",
+        panes::accessibility::OSK_KEY,
+        b(
             panes::accessibility::OSK_KEY,
-            b(
-                panes::accessibility::OSK_KEY,
-                d.accessibility.on_screen_keyboard,
-            ),
-            "the on-screen keyboard",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "sticky_keys",
+            d.accessibility.on_screen_keyboard,
+        ),
+        "the on-screen keyboard",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "sticky_keys",
+        panes::accessibility::STICKY_KEYS_KEY,
+        b(
             panes::accessibility::STICKY_KEYS_KEY,
-            b(
-                panes::accessibility::STICKY_KEYS_KEY,
-                d.accessibility.sticky_keys,
-            ),
-            "sticky keys",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "slow_keys",
+            d.accessibility.sticky_keys,
+        ),
+        "sticky keys",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "slow_keys",
+        panes::accessibility::SLOW_KEYS_KEY,
+        b(
             panes::accessibility::SLOW_KEYS_KEY,
-            b(
-                panes::accessibility::SLOW_KEYS_KEY,
-                d.accessibility.slow_keys,
-            ),
-            "slow keys",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "visual_alerts",
+            d.accessibility.slow_keys,
+        ),
+        "slow keys",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "visual_alerts",
+        panes::accessibility::VISUAL_ALERTS_KEY,
+        b(
             panes::accessibility::VISUAL_ALERTS_KEY,
-            b(
-                panes::accessibility::VISUAL_ALERTS_KEY,
-                d.accessibility.visual_alerts,
-            ),
-            "visual alerts",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "cursor_crosshair",
+            d.accessibility.visual_alerts,
+        ),
+        "visual alerts",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "cursor_crosshair",
+        panes::accessibility::CURSOR_CROSSHAIR_KEY,
+        b(
             panes::accessibility::CURSOR_CROSSHAIR_KEY,
-            b(
-                panes::accessibility::CURSOR_CROSSHAIR_KEY,
-                d.accessibility.cursor_crosshair,
-            ),
-            "the pointer crosshair",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "thick_text_caret",
+            d.accessibility.cursor_crosshair,
+        ),
+        "the pointer crosshair",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "thick_text_caret",
+        panes::accessibility::THICK_CARET_KEY,
+        b(
             panes::accessibility::THICK_CARET_KEY,
-            b(
-                panes::accessibility::THICK_CARET_KEY,
-                d.accessibility.thick_text_caret,
-            ),
-            "the thicker text cursor",
-        ));
-        sec = sec.with_action(bool_flip_spec(
-            "switch_control",
+            d.accessibility.thick_text_caret,
+        ),
+        "the thicker text cursor",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "switch_control",
+        panes::accessibility::SWITCH_CONTROL_KEY,
+        b(
             panes::accessibility::SWITCH_CONTROL_KEY,
-            b(
-                panes::accessibility::SWITCH_CONTROL_KEY,
-                d.accessibility.switch_control,
-            ),
-            "switch control",
-        ));
-        root = root.with_child(sec);
-    }
+            d.accessibility.switch_control,
+        ),
+        "switch control",
+    ));
+    sec
+}
 
-    // --- Updates ----------------------------------------------------------
-    {
-        let mut sec = Resource::new("settings.section:updates", "settings.section", "Updates");
-        sec = sec.with_action(bool_flip_spec(
-            "auto",
-            panes::updates::AUTO_KEY,
-            b(panes::updates::AUTO_KEY, d.updates.auto),
-            "automatic updates",
-        ));
-        root = root.with_child(sec);
-    }
+fn updates_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
+    use crate::panes;
+    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+    let mut sec = Resource::new("settings.section:updates", "settings.section", "Updates");
+    sec = sec.with_action(bool_flip_spec(
+        "auto",
+        panes::updates::AUTO_KEY,
+        b(panes::updates::AUTO_KEY, d.updates.auto),
+        "automatic updates",
+    ));
+    sec
+}
 
-    // --- Network / Bluetooth radios --------------------------------------
-    {
-        let mut sec = Resource::new("settings.section:network", "settings.section", "Network");
-        sec = sec.with_action(bool_flip_spec(
-            "wifi",
-            panes::network::WIFI_ENABLED_KEY,
-            b(panes::network::WIFI_ENABLED_KEY, true),
-            "Wi-Fi",
-        ));
-        root = root.with_child(sec);
+fn network_section(doc: &AutoCommit) -> Resource {
+    use crate::panes;
+    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+    let mut sec = Resource::new("settings.section:network", "settings.section", "Network");
+    sec = sec.with_action(bool_flip_spec(
+        "wifi",
+        panes::network::WIFI_ENABLED_KEY,
+        b(panes::network::WIFI_ENABLED_KEY, true),
+        "Wi-Fi",
+    ));
+    sec
+}
 
-        let mut bt = Resource::new(
-            "settings.section:bluetooth",
-            "settings.section",
-            "Bluetooth",
-        );
-        bt = bt.with_action(bool_flip_spec(
-            "bluetooth",
-            panes::bluetooth::BT_ENABLED_KEY,
-            b(panes::bluetooth::BT_ENABLED_KEY, true),
-            "Bluetooth",
-        ));
-        root = root.with_child(bt);
-    }
-
-    vec![root]
+fn bluetooth_section(doc: &AutoCommit) -> Resource {
+    use crate::panes;
+    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+    let mut bt = Resource::new(
+        "settings.section:bluetooth",
+        "settings.section",
+        "Bluetooth",
+    );
+    bt = bt.with_action(bool_flip_spec(
+        "bluetooth",
+        panes::bluetooth::BT_ENABLED_KEY,
+        b(panes::bluetooth::BT_ENABLED_KEY, true),
+        "Bluetooth",
+    ));
+    bt
 }
 
 impl ResourceProvider for crate::SettingsApp {
@@ -702,14 +732,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 

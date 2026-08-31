@@ -75,13 +75,20 @@ impl Output {
 /// the single-output path is unchanged. Returns `(0, 0)` for an empty
 /// list (the caller falls back to a default viewport).
 pub fn combined_geometry(outputs: &[Output]) -> (u32, u32) {
-    let mut w: i32 = 0;
-    let mut h: i32 = 0;
+    // Widen to `i64` up front: `i32::from` / `i64::from` on an `i32`
+    // position or a `u32` size are lossless, so the running max can never
+    // wrap or need a sign-losing cast, no matter what the backend reports.
+    let mut w: i64 = 0;
+    let mut h: i64 = 0;
     for o in outputs {
-        w = w.max(o.position.0 + o.size.0 as i32);
-        h = h.max(o.position.1 + o.size.1 as i32);
+        let right = i64::from(o.position.0).saturating_add(i64::from(o.size.0));
+        let bottom = i64::from(o.position.1).saturating_add(i64::from(o.size.1));
+        w = w.max(right);
+        h = h.max(bottom);
     }
-    (w.max(0) as u32, h.max(0) as u32)
+    let w = u32::try_from(w.max(0)).unwrap_or(u32::MAX);
+    let h = u32::try_from(h.max(0)).unwrap_or(u32::MAX);
+    (w, h)
 }
 
 /// A touchpad gesture, in the shape `zwp_pointer_gestures_v1` carries.

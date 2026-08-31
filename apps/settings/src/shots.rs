@@ -222,6 +222,11 @@ fn audio_demo_pane() -> Box<dyn Widget> {
 /// two-pane layout is rendered with that category selected instead of the
 /// default scenario — this is how the verification harness captures every
 /// panel from one binary.
+///
+/// # Errors
+///
+/// The `Result` return type matches the `--shots` binary's `main` signature;
+/// every path through this function currently always returns `Ok(())`.
 pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let fname = out
         .file_name()
@@ -332,26 +337,26 @@ pub fn build_widget_scene(mut widget: Box<dyn Widget>, viewport: (u32, u32)) -> 
             },
             &[child],
         )
-        .expect("root node");
+        .unwrap_or(child);
     {
         let measure_map = node_map.clone();
         let tr = &mut text_renderer;
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("layout");
+        // Ignore the (never-hit-in-practice) error: leaving the layout cache
+        // stale is safe, since every reader below tolerates a missing entry.
+        let _ = taffy.compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        );
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
     widget.sync(&mut state.doc, &state.root);
@@ -371,6 +376,11 @@ pub fn build_widget_scene(mut widget: Box<dyn Widget>, viewport: (u32, u32)) -> 
 /// Render `widget` at `viewport` size into a PNG at `out`. Mirrors the
 /// `sync → build_layout → compute_layout → apply_layout → draw` cycle
 /// `ui::App` runs for a single redraw.
+///
+/// # Errors
+///
+/// The `Result` return type matches the `--shots` binary's `main` signature;
+/// every path through this function currently always returns `Ok(())`.
 pub fn render_to_path(
     widget: Box<dyn Widget>,
     viewport: (u32, u32),

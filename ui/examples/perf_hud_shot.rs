@@ -9,8 +9,8 @@
 //! HUD you see here is pixel-for-pixel the one the live app paints; only the
 //! surface is offscreen.
 //!
-//! Run:  cargo run -p ui --example ui-shots -- perf_hud_shot
-//! Out:  $PERF_HUD_OUT (default /tmp/perf_hud/hud.png)
+//! Run:  `cargo run -p ui --example ui-shots -- perf_hud_shot`
+//! Out:  `$PERF_HUD_OUT` (default `/tmp/perf_hud/hud.png`)
 //!
 //! `PERF_HUD_FRAMES=N` sets how many real frames feed the rolling graph.
 
@@ -72,21 +72,24 @@ pub fn run(_args: &[String]) {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = root.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout_with_measure(
-                node,
-                Size {
-                    width: AvailableSpace::Definite(WIDTH as f32),
-                    height: AvailableSpace::Definite(HEIGHT as f32),
-                },
-                |known, available, node_id, _, _| {
-                    node_map
-                        .get(&node_id)
-                        .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
-                        .unwrap_or(Size::ZERO)
-                },
-            )
-            .unwrap();
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "WIDTH/HEIGHT are small fixed pixel constants, exact in f32"
+        )]
+        let viewport = Size {
+            width: AvailableSpace::Definite(WIDTH as f32),
+            height: AvailableSpace::Definite(HEIGHT as f32),
+        };
+        let layout_result =
+            taffy.compute_layout_with_measure(node, viewport, |known, available, node_id, _, _| {
+                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, &mut tr)
+                })
+            });
+        if let Err(e) = layout_result {
+            eprintln!("layout failed: {e}");
+            return;
+        }
         prof.record(Pass::BuildLayout, t.elapsed());
 
         let t = Instant::now();
@@ -107,7 +110,7 @@ pub fn run(_args: &[String]) {
         Affine::IDENTITY,
         &mut tr,
         &theme,
-        (WIDTH as f64, HEIGHT as f64),
+        (f64::from(WIDTH), f64::from(HEIGHT)),
     );
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
     r.render_png(&scene, theme.bg_app, &out);

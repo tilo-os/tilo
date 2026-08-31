@@ -42,7 +42,9 @@ const MODE_SYNC: u8 = b'S';
 const MAX_FRAME: usize = 64 * 1024 * 1024;
 
 async fn write_frame(send: &mut SendStream, data: &[u8]) -> std::io::Result<()> {
-    send.write_all(&(data.len() as u32).to_le_bytes())
+    let len = u32::try_from(data.len())
+        .map_err(|_| std::io::Error::other("sync frame too large to length-prefix"))?;
+    send.write_all(&len.to_le_bytes())
         .await
         .map_err(std::io::Error::other)?;
     if !data.is_empty() {
@@ -79,10 +81,16 @@ pub struct Ticket {
 }
 
 impl Ticket {
-    pub fn encode(&self) -> String {
-        hex::encode(postcard::to_allocvec(self).expect("serialize ticket"))
+    /// # Errors
+    ///
+    /// Returns an error if postcard serialization fails.
+    pub fn encode(&self) -> Result<String> {
+        Ok(hex::encode(postcard::to_allocvec(self)?))
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `s` is not valid hex, or the decoded bytes are not a valid postcard-encoded [`Ticket`].
     pub fn decode(s: &str) -> Result<Self> {
         let raw = hex::decode(s.trim())?;
         Ok(postcard::from_bytes(&raw)?)
@@ -97,6 +105,10 @@ impl Ticket {
 /// iroh's secret key and the device key are the same 32 bytes, which is
 /// what makes the node id a *name* that still means the same thing after
 /// a restart.
+///
+/// # Errors
+///
+/// Returns an error if the endpoint fails to bind.
 pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint, MemoryLookup)> {
     let lookup = MemoryLookup::new();
     let endpoint = Endpoint::builder(presets::N0)
@@ -111,12 +123,20 @@ pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint
 /// on every call**, so nothing durable may be keyed on it — for tests
 /// and throwaway probes only; a real mount uses
 /// [`bind_endpoint_with_key`] so its identity is the device's.
+///
+/// # Errors
+///
+/// Returns an error if the endpoint fails to bind.
 pub async fn bind_ephemeral_endpoint() -> Result<(Endpoint, MemoryLookup)> {
     bind_endpoint_with_key(iroh::SecretKey::generate()).await
 }
 
 /// Fetch the full namespace document from a peer over the bootstrap
 /// ALPN, bounded by a timeout so a stalled host can't hang the caller.
+///
+/// # Errors
+///
+/// Returns an error if the connection, exchange, or read fails, or the peer doesn't respond within the timeout.
 pub async fn fetch_remote_doc(endpoint: &Endpoint, host: EndpointAddr) -> Result<Vec<u8>> {
     tokio::time::timeout(Duration::from_secs(10), async {
         let conn = endpoint.connect(host, QOS_FS_SYNC_ALPN).await?;
@@ -134,6 +154,10 @@ pub async fn fetch_remote_doc(endpoint: &Endpoint, host: EndpointAddr) -> Result
 /// Run the incremental Automerge sync protocol against a peer, applying
 /// missing changes into `namespace` — periodic anti-entropy exchanging
 /// only the delta, not the whole document.
+///
+/// # Errors
+///
+/// Returns an error if the connection, exchange, or a frame read/write fails, or the peer doesn't respond within the timeout.
 pub async fn sync_with_peer(
     endpoint: &Endpoint,
     peer: EndpointAddr,
@@ -146,13 +170,18 @@ pub async fn sync_with_peer(
         let mut state = automerge::sync::State::new();
         // Initiator: write-then-read each round; the responder mirrors.
         for _ in 0..200 {
-            let msg = { namespace.lock().unwrap().sync_generate(&mut state) };
+            let msg = {
+                namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .sync_generate(&mut state)
+            };
             write_frame(&mut send, msg.as_deref().unwrap_or(&[])).await?;
             let peer_msg = read_frame(&mut recv).await?;
             if !peer_msg.is_empty() {
                 let _ = namespace
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .sync_receive(&mut state, &peer_msg);
             }
             if msg.is_none() && peer_msg.is_empty() {
@@ -235,7 +264,11 @@ impl ProtocolHandler for SyncProtocol {
             match mode[0] {
                 MODE_FULL => {
                     let _ = recv.read_to_end(64).await;
-                    let doc = self.namespace.lock().unwrap().save();
+                    let doc = self
+                        .namespace
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .save();
                     send.write_all(&doc).await.map_err(AcceptError::from_err)?;
                     let _ = send.finish();
                 }
@@ -249,10 +282,15 @@ impl ProtocolHandler for SyncProtocol {
                             let _ = self
                                 .namespace
                                 .lock()
-                                .unwrap()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .sync_receive(&mut state, &peer_msg);
                         }
-                        let msg = { self.namespace.lock().unwrap().sync_generate(&mut state) };
+                        let msg = {
+                            self.namespace
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .sync_generate(&mut state)
+                        };
                         write_frame(&mut send, msg.as_deref().unwrap_or(&[]))
                             .await
                             .map_err(AcceptError::from_err)?;
@@ -431,6 +469,10 @@ impl Workspace {
     /// Begin hosting a new workspace, returning a ticket to share with
     /// peers. `policy` is what the sync and content planes serve *through*
     /// (see [`PeerPolicy`]); `None` hosts unenforced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the gossip topic or protocol router fails to start.
     pub async fn host(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -462,6 +504,10 @@ impl Workspace {
     /// already have bootstrapped `namespace` from the host (see
     /// [`fetch_remote_doc`]) — a joiner serves too (anti-entropy is
     /// symmetric), so it carries the same `policy` a host does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the gossip topic or protocol router fails to start.
     pub async fn join(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -498,7 +544,10 @@ impl Workspace {
     ) -> Result<Workspace> {
         // After bootstrap/seed, set the delta watermark so future local
         // writes produce minimal deltas (and the seed isn't re-broadcast).
-        namespace.lock().unwrap().prime_baseline();
+        namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .prime_baseline();
 
         // Register bootstrap peers so gossip can dial them and we can hydrate.
         let mut boot_ids = Vec::new();
@@ -558,7 +607,7 @@ fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// The bidirectional pump: broadcast local deltas, apply remote deltas,
@@ -585,7 +634,9 @@ async fn pump_loop(
                         // pure-CPU). Content-conflict resolution and anti-entropy run in
                         // reconcile_loop so a slow hydration never blocks local delta propagation.
                         let resolve_delta = {
-                            let mut ns = namespace.lock().unwrap();
+                            let mut ns = namespace
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
                             ns.apply_remote_and_resolve(msg.content.as_ref())
                                 .unwrap_or_default()
                         };
@@ -624,20 +675,31 @@ async fn reconcile_loop(
         for peer in hydrator.known_peers() {
             // Incremental anti-entropy: exchange only the missing changes.
             if sync_with_peer(&endpoint, peer, &namespace).await.is_ok() {
-                let resolve_delta = { namespace.lock().unwrap().post_sync_resolve() };
+                let resolve_delta = {
+                    namespace
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .post_sync_resolve()
+                };
                 if !resolve_delta.is_empty() {
                     let _ = sender.broadcast(Bytes::from(resolve_delta)).await;
                 }
             }
         }
 
-        let conflicts = crate::conflict::detect(&namespace.lock().unwrap());
+        let conflicts = crate::conflict::detect(
+            &namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         for c in conflicts {
             // Fetch just the loser's manifest for its length (chunks hydrate
             // lazily on read). Skipped if no peer can serve it yet; retried next pass.
             if let Ok(len) = hydrator.content_len(c.loser).await {
                 let delta = {
-                    let mut ns = namespace.lock().unwrap();
+                    let mut ns = namespace
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     crate::conflict::materialize(&mut ns, &c, len, now_ms())
                 };
                 if !delta.is_empty() {
@@ -659,12 +721,12 @@ mod tests {
     /// said about anybody else. Direct entries rather than capabilities so
     /// the test states its grant outright; `reads_anything` is asked the
     /// same question either way (see `acl::tests` for the capability route).
-    fn policy_granting(entitled: &[IdentityKey]) -> PeerPolicy {
+    fn policy_granting(entitled: &[IdentityKey]) -> AclHandle {
         let mut acl = WorkspaceAcl::new();
         for id in entitled {
             acl.grant_read(*id, "/");
         }
-        Some(AclHandle::new(acl))
+        AclHandle::new(acl)
     }
 
     /// The identity an endpoint authenticates as — the same 32 bytes an ACL
@@ -690,7 +752,7 @@ mod tests {
             node: EndpointAddr::new(id),
             workspace: [3u8; 32],
         };
-        let decoded = Ticket::decode(&ticket.encode()).unwrap();
+        let decoded = Ticket::decode(&ticket.encode().unwrap()).unwrap();
         assert_eq!(decoded.node.id, id);
         assert_eq!(decoded.workspace, [3u8; 32]);
     }
@@ -703,7 +765,7 @@ mod tests {
         let (ep_a, look_a) = bind_ephemeral_endpoint().await.unwrap();
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-        let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
+        let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
         ns_a.lock()
             .unwrap()
             .create_dir(ROOT_INO, "shared", 1)
@@ -781,7 +843,7 @@ mod tests {
         let (ep_a, look_a) = bind_ephemeral_endpoint().await.unwrap();
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-        let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
+        let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
         let (ws_a, ticket) = Workspace::host(
             ep_a.clone(),
             look_a,
@@ -854,7 +916,7 @@ mod tests {
         use iroh_blobs::provider::events::AbortReason;
 
         let invited = iroh::SecretKey::generate().public();
-        let policy = policy_granting(&[identity_of(invited)]);
+        let policy: PeerPolicy = Some(policy_granting(&[identity_of(invited)]));
 
         assert_eq!(
             admit_blob_caller(&policy, None),
@@ -905,7 +967,7 @@ mod tests {
 
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-        let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
+        let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
         ns_a.lock()
             .unwrap()
             .create_dir(ROOT_INO, "secret-plans", 1)
@@ -919,7 +981,7 @@ mod tests {
             store_a.clone(),
             hyd_a,
             ns_a,
-            policy_granting(&[someone_else]),
+            Some(policy_granting(&[someone_else])),
         )
         .await
         .unwrap();
@@ -944,7 +1006,7 @@ mod tests {
 
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-        let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
+        let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
         let secret = b"the contents of a workspace nobody invited them to";
         let hash = store_a.write_content(secret).await.unwrap().unwrap();
 
@@ -955,7 +1017,7 @@ mod tests {
             store_a.clone(),
             hyd_a,
             ns_a,
-            policy_granting(&[someone_else]),
+            Some(policy_granting(&[someone_else])),
         )
         .await
         .unwrap();
@@ -983,11 +1045,11 @@ mod tests {
     async fn an_entitled_peer_still_bootstraps_and_hydrates() {
         let (ep_a, look_a) = bind_ephemeral_endpoint().await.unwrap();
         let (ep_b, look_b) = bind_ephemeral_endpoint().await.unwrap();
-        let policy = policy_granting(&[identity(&ep_a), identity(&ep_b)]);
+        let policy: PeerPolicy = Some(policy_granting(&[identity(&ep_a), identity(&ep_b)]));
 
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-        let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
+        let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
         ns_a.lock()
             .unwrap()
             .create_dir(ROOT_INO, "shared", 1)

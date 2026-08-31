@@ -47,6 +47,14 @@ pub struct BooksDoc;
 impl BooksDoc {
     // --- generic helpers ---------------------------------------------------
 
+    // `put_object` here only ever creates a fresh map at a key we either just
+    // resolved as ROOT or as a map this same function created, so there is no
+    // real fallback `ObjId` to substitute on error — a failure here means the
+    // document itself is corrupt.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on ROOT or a map this fn created cannot fail short of document corruption, which has no meaningful ObjId fallback"
+    )]
     fn get_or_make_map(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
         match doc.get(parent, key) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -127,9 +135,8 @@ impl BooksDoc {
 
     pub fn read_settings(doc: &AutoCommit) -> Settings {
         let mut s = Settings::default();
-        let m = match doc.get(&ROOT, "settings") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return s,
+        let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, "settings") else {
+            return s;
         };
         if let Some(v) = Self::scalar_f64(doc, &m, "font_scale") {
             s.font_scale = (v as f32).clamp(Settings::FONT_MIN, Settings::FONT_MAX);
@@ -161,9 +168,8 @@ impl BooksDoc {
     /// built-in [`default_fonts`] set is returned without writing, so the
     /// document stays clean until the user actually edits the registry.
     pub fn read_fonts(doc: &AutoCommit) -> Vec<FontEntry> {
-        let list = match doc.get(&ROOT, "fonts") {
-            Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => return default_fonts(),
+        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "fonts") else {
+            return default_fonts();
         };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
@@ -190,6 +196,16 @@ impl BooksDoc {
     }
 
     /// Replace the whole font registry (the manager edits the list wholesale).
+    ///
+    /// # Panics
+    ///
+    /// Panics if creating the fresh `"fonts"` list (or a fresh entry map
+    /// inside it) fails, which only happens if the document itself is
+    /// corrupt — there is no meaningful `ObjId` to fall back to.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object/insert_object on a freshly-created list cannot fail short of document corruption, which has no meaningful ObjId fallback"
+    )]
     pub fn write_fonts(doc: &mut AutoCommit, fonts: &[FontEntry]) {
         let list = doc
             .put_object(&ROOT, "fonts", ObjType::List)
@@ -227,9 +243,8 @@ impl BooksDoc {
     /// Read the shelf's sort order + hide-read flag (defaults when unset).
     pub fn read_library_prefs(doc: &AutoCommit) -> LibraryPrefs {
         let mut p = LibraryPrefs::default();
-        let m = match doc.get(&ROOT, "settings") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return p,
+        let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, "settings") else {
+            return p;
         };
         if let Some(v) = Self::scalar_str(doc, &m, "library_sort") {
             p.sort = LibrarySort::from_str(&v);
@@ -278,9 +293,8 @@ impl BooksDoc {
     /// Every book in the library, ordered by when it was added (oldest first) so
     /// the shelf has a stable base order the sort control then re-orders.
     pub fn read_library_entries(doc: &AutoCommit) -> Vec<LibraryEntry> {
-        let lib = match doc.get(&ROOT, "library") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::Map), lib))) = doc.get(&ROOT, "library") else {
+            return Vec::new();
         };
         let mut out = Vec::new();
         for key in doc.keys(&lib) {
@@ -312,9 +326,9 @@ impl BooksDoc {
     /// pulled into the library automatically. Empty by default — the app never
     /// watches a hidden magic folder the reader didn't choose.
     pub fn read_watched_folders(doc: &AutoCommit) -> Vec<PathBuf> {
-        let list = match doc.get(&ROOT, "watched_folders") {
-            Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "watched_folders")
+        else {
+            return Vec::new();
         };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
@@ -330,6 +344,16 @@ impl BooksDoc {
 
     /// Replace the watched-folder set wholesale (the Library settings pane edits
     /// it as a list).
+    ///
+    /// # Panics
+    ///
+    /// Panics if creating the fresh `"watched_folders"` list fails, which
+    /// only happens if the document itself is corrupt — there is no
+    /// meaningful `ObjId` to fall back to.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on ROOT for a brand-new key cannot fail short of document corruption, which has no meaningful ObjId fallback"
+    )]
     pub fn write_watched_folders(doc: &mut AutoCommit, folders: &[PathBuf]) {
         let list = doc
             .put_object(&ROOT, "watched_folders", ObjType::List)
@@ -344,9 +368,8 @@ impl BooksDoc {
     /// Read the registered colour schemes, falling back to the built-ins when
     /// none are stored (kept out of the document until the user edits them).
     pub fn read_schemes(doc: &AutoCommit) -> Vec<ColorScheme> {
-        let list = match doc.get(&ROOT, "schemes") {
-            Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => return default_schemes(),
+        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "schemes") else {
+            return default_schemes();
         };
         let mut out = Vec::new();
         for i in 0..doc.length(&list) {
@@ -378,6 +401,16 @@ impl BooksDoc {
     }
 
     /// Replace the whole scheme registry (the manager edits it wholesale).
+    ///
+    /// # Panics
+    ///
+    /// Panics if creating the fresh `"schemes"` list (or a fresh entry map
+    /// inside it) fails, which only happens if the document itself is
+    /// corrupt — there is no meaningful `ObjId` to fall back to.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object/insert_object on a freshly-created list cannot fail short of document corruption, which has no meaningful ObjId fallback"
+    )]
     pub fn write_schemes(doc: &mut AutoCommit, schemes: &[ColorScheme]) {
         let list = doc
             .put_object(&ROOT, "schemes", ObjType::List)
@@ -412,13 +445,11 @@ impl BooksDoc {
     }
 
     pub fn read_progress(doc: &AutoCommit, book_id: &str) -> Progress {
-        let progress = match doc.get(&ROOT, "progress") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Progress::default(),
+        let Ok(Some((Value::Object(ObjType::Map), progress))) = doc.get(&ROOT, "progress") else {
+            return Progress::default();
         };
-        let entry = match doc.get(&progress, book_id) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Progress::default(),
+        let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&progress, book_id) else {
+            return Progress::default();
         };
         Progress {
             chapter: Self::scalar_i64(doc, &entry, "chapter").unwrap_or(0).max(0) as usize,
@@ -470,9 +501,8 @@ impl BooksDoc {
     }
 
     pub fn list_annotations(doc: &AutoCommit) -> Vec<Annotation> {
-        let map = match doc.get(&ROOT, "annotations") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(&ROOT, "annotations") else {
+            return Vec::new();
         };
         let mut out = Vec::new();
         for key in doc.keys(&map) {
@@ -600,7 +630,7 @@ mod tests {
             chapter: 2,
             page: 5,
             fraction: 0.42,
-            opened: 1720000000000,
+            opened: 1_720_000_000_000,
         };
         BooksDoc::write_progress(&mut doc, "book:x", &p);
         let back = BooksDoc::read_progress(&doc, "book:x");
@@ -608,7 +638,7 @@ mod tests {
         assert_eq!(back.page, 5);
         assert!((back.fraction - 0.42).abs() < 0.001);
         assert_eq!(
-            back.opened, 1720000000000,
+            back.opened, 1_720_000_000_000,
             "open time persists for recent-sort"
         );
         // Unknown book -> default.

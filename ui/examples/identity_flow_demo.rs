@@ -141,6 +141,11 @@ pub fn run(args: &[String]) {
     }
     flow.invite_mint
         .set_channel(ChannelId::new(), "engineering");
+    #[allow(
+        clippy::similar_names,
+        reason = "sk/pk is the standard secret-key/public-key naming convention; \
+                  distinguishing them further would reduce clarity"
+    )]
     let (owner_sk, owner_pk) = generate_keypair();
     let env: InviteEnvelope = mint_invite(
         ChannelId::new(),

@@ -23,7 +23,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, NamedKey, SmolStr};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -99,11 +99,11 @@ impl PairDeviceScreen {
 
     /// Inject the 6-digit code (used by tests + the QR-scanner shim).
     pub fn set_code(&mut self, code: &str) {
-        let digits: Vec<char> = code.chars().filter(char::is_ascii_digit).collect();
+        let digits = code.chars().filter(char::is_ascii_digit);
         for (slot, entered) in self
             .code_digits
             .iter_mut()
-            .zip(digits.into_iter().map(Some).chain(std::iter::repeat(None)))
+            .zip(digits.map(Some).chain(std::iter::repeat(None)))
         {
             *slot = entered.unwrap_or('_');
         }
@@ -270,37 +270,7 @@ impl PairDeviceScreen {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                for (i, r) in self.code_box_rects.iter().enumerate() {
-                    if r.contains(self.last_cursor) {
-                        self.code_focus = i;
-                        self.payload_focus = false;
-                        *handled = true;
-                        return ScreenOutcome::Stay;
-                    }
-                }
-                if self.payload_rect.contains(self.last_cursor) {
-                    self.payload_focus = true;
-                    *handled = true;
-                    return ScreenOutcome::Stay;
-                }
-                if self.submit_rect.contains(self.last_cursor) {
-                    *handled = true;
-                    if self.completed {
-                        return ScreenOutcome::Advance;
-                    }
-                    self.error = None;
-                    self.status = "Pairing…".to_string();
-                    // Driving the handshake needs the `PairingHandshake` the shell
-                    // owns; the screen exposes `perform_pairing` for the shell to
-                    // call. A click here just checks both fields are filled.
-                    if self.parse_code().is_none() || self.payload_text.is_empty() {
-                        self.error = Some("Enter both the code and the QR payload.".to_string());
-                    }
-                    return ScreenOutcome::Stay;
-                }
-                ScreenOutcome::Stay
-            }
+            } => self.handle_mouse_press(handled),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -310,56 +280,101 @@ impl PairDeviceScreen {
                         ..
                     },
                 ..
-            } => {
-                if self.payload_focus {
-                    match logical_key {
-                        Key::Named(NamedKey::Backspace) => {
-                            self.payload_text.pop();
+            } => self.handle_key_press(logical_key, text, handled),
+            _ => ScreenOutcome::Stay,
+        }
+    }
+
+    /// `MouseInput` arm of [`Self::handle_event_screen`]: focuses a code box,
+    /// the payload field, or triggers submit, whichever rect the last cursor
+    /// position landed in.
+    fn handle_mouse_press(&mut self, handled: &mut bool) -> ScreenOutcome {
+        for (i, r) in self.code_box_rects.iter().enumerate() {
+            if r.contains(self.last_cursor) {
+                self.code_focus = i;
+                self.payload_focus = false;
+                *handled = true;
+                return ScreenOutcome::Stay;
+            }
+        }
+        if self.payload_rect.contains(self.last_cursor) {
+            self.payload_focus = true;
+            *handled = true;
+            return ScreenOutcome::Stay;
+        }
+        if self.submit_rect.contains(self.last_cursor) {
+            *handled = true;
+            if self.completed {
+                return ScreenOutcome::Advance;
+            }
+            self.error = None;
+            self.status = "Pairing…".to_string();
+            // Driving the handshake needs the `PairingHandshake` the shell
+            // owns; the screen exposes `perform_pairing` for the shell to
+            // call. A click here just checks both fields are filled.
+            if self.parse_code().is_none() || self.payload_text.is_empty() {
+                self.error = Some("Enter both the code and the QR payload.".to_string());
+            }
+            return ScreenOutcome::Stay;
+        }
+        ScreenOutcome::Stay
+    }
+
+    /// `KeyboardInput` arm of [`Self::handle_event_screen`]: routes typing
+    /// and backspace to either the payload textarea or the focused code box,
+    /// depending on which currently has focus.
+    fn handle_key_press(
+        &mut self,
+        logical_key: &Key,
+        text: &Option<SmolStr>,
+        handled: &mut bool,
+    ) -> ScreenOutcome {
+        if self.payload_focus {
+            match logical_key {
+                Key::Named(NamedKey::Backspace) => {
+                    self.payload_text.pop();
+                    *handled = true;
+                }
+                _ => {
+                    if let Some(t) = text {
+                        for c in t.chars() {
+                            if c == '\u{8}' || c == '\u{7f}' {
+                                continue;
+                            }
+                            self.payload_text.push(c);
                             *handled = true;
                         }
-                        _ => {
-                            if let Some(t) = text {
-                                for c in t.chars() {
-                                    if c == '\u{8}' || c == '\u{7f}' {
-                                        continue;
-                                    }
-                                    self.payload_text.push(c);
-                                    *handled = true;
-                                }
-                            }
-                        }
                     }
-                } else {
-                    match logical_key {
-                        Key::Named(NamedKey::Backspace) => {
-                            if let Some(prev) = self.code_focus.checked_sub(1)
-                                && let Some(slot) = self.code_digits.get_mut(prev)
-                            {
-                                *slot = '_';
-                                self.code_focus = prev;
-                                *handled = true;
+                }
+            }
+        } else {
+            match logical_key {
+                Key::Named(NamedKey::Backspace) => {
+                    if let Some(prev) = self.code_focus.checked_sub(1)
+                        && let Some(slot) = self.code_digits.get_mut(prev)
+                    {
+                        *slot = '_';
+                        self.code_focus = prev;
+                        *handled = true;
+                    }
+                }
+                _ => {
+                    if let Some(t) = text {
+                        for c in t.chars() {
+                            if !c.is_ascii_digit() {
+                                continue;
                             }
-                        }
-                        _ => {
-                            if let Some(t) = text {
-                                for c in t.chars() {
-                                    if !c.is_ascii_digit() {
-                                        continue;
-                                    }
-                                    if let Some(slot) = self.code_digits.get_mut(self.code_focus) {
-                                        *slot = c;
-                                        self.code_focus = self.code_focus.saturating_add(1);
-                                        *handled = true;
-                                    }
-                                }
+                            if let Some(slot) = self.code_digits.get_mut(self.code_focus) {
+                                *slot = c;
+                                self.code_focus = self.code_focus.saturating_add(1);
+                                *handled = true;
                             }
                         }
                     }
                 }
-                ScreenOutcome::Stay
             }
-            _ => ScreenOutcome::Stay,
         }
+        ScreenOutcome::Stay
     }
 
     /// The card panel behind everything, plus its heading and status line.

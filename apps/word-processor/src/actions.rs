@@ -265,7 +265,210 @@ fn set_attr_region(dm: &mut DocMut, region: Region, block: &str, key: &str, valu
     }
 }
 
+// ---------------------------------------------------------------------------
+// Per-variant `apply` bodies. Split out of `Action::apply` below (one match
+// arm each) so that single trait method stays short; kept as free functions
+// (not methods on `WordProcessorAction`) because they live outside the trait
+// impl. Each takes the `dm: &mut DocMut` the caller builds once (`doc`/`c`/
+// `ids` bundled), matching the region helpers above; `dm.c` stands in for a
+// separate `c` parameter where one is needed.
+// ---------------------------------------------------------------------------
+
+fn apply_splice_text(
+    dm: &mut DocMut,
+    region: Region,
+    block: &str,
+    at: usize,
+    del: usize,
+    ins: &str,
+) {
+    dm.splice_text_in(region, block, at, num::isize_of_usize(del), ins);
+}
+
+fn apply_set_mark(
+    dm: &mut DocMut,
+    region: Region,
+    spans: &[Span],
+    name: &str,
+    value: &Option<MarkVal>,
+    also_clear: &[String],
+) {
+    let c = dm.c;
+    let mut sorted = spans.to_vec();
+    sorted.sort_by(|a, b| {
+        (a.block.as_str(), a.start, a.end).cmp(&(b.block.as_str(), b.start, b.end))
+    });
+    for span in &sorted {
+        if span.start >= span.end {
+            continue;
+        }
+        for sib in also_clear {
+            remove_mark_region(dm, c, region, span, sib);
+        }
+        match value {
+            None => remove_mark_region(dm, c, region, span, name),
+            Some(v) => {
+                // Replace: drop any prior value of the same mark before
+                // re-adding so values overwrite, not stack.
+                remove_mark_region(dm, c, region, span, name);
+                add_mark_region(dm, region, span, name, v);
+            }
+        }
+    }
+}
+
+fn apply_set_paragraph_style(
+    dm: &mut DocMut,
+    blocks: &[String],
+    kind: &str,
+    level: Option<i64>,
+    ordered: Option<bool>,
+) {
+    let mut sorted = blocks.to_vec();
+    sorted.sort();
+    for block in &sorted {
+        dm.set_kind(block, kind);
+        if let Some(l) = level {
+            dm.set_attr(block, "level", l);
+        }
+        if let Some(o) = ordered {
+            dm.set_attr(block, "ordered", o);
+        }
+    }
+}
+
+fn apply_named_style(
+    dm: &mut DocMut,
+    blocks: &[String],
+    style: &str,
+    kind: &Option<String>,
+    level: Option<i64>,
+    ordered: Option<bool>,
+) {
+    let mut sorted = blocks.to_vec();
+    sorted.sort();
+    for block in &sorted {
+        if let Some(k) = kind {
+            dm.set_kind(block, k);
+            if let Some(l) = level {
+                dm.set_attr(block, "level", l);
+            }
+            if let Some(o) = ordered {
+                dm.set_attr(block, "ordered", o);
+            }
+        }
+        dm.set_attr(block, "style", style);
+    }
+}
+
+fn apply_set_block_attr(
+    dm: &mut DocMut,
+    region: Region,
+    blocks: &[String],
+    key: &str,
+    value: &AttrVal,
+) {
+    let mut sorted = blocks.to_vec();
+    sorted.sort();
+    for block in &sorted {
+        set_attr_region(dm, region, block, key, value);
+    }
+}
+
+fn apply_insert_table(dm: &mut DocMut, after: &str, rows: usize, cols: usize) {
+    let table_id = dm.ids.mint(); // one id shared by every cell
+    let mut prev = Some(after.to_string());
+    for row in 0..rows {
+        for col in 0..cols {
+            let id = dm.insert_block(prev.as_deref(), "cell");
+            dm.set_attr(&id, "table", table_id.as_str());
+            dm.set_attr(&id, "row", num::i64_of_usize(row));
+            dm.set_attr(&id, "col", num::i64_of_usize(col));
+            prev = Some(id);
+        }
+    }
+}
+
+fn apply_insert_image(
+    dm: &mut DocMut,
+    block: &str,
+    at: usize,
+    bytes: &[u8],
+    width: Option<i64>,
+    height: Option<i64>,
+) {
+    let text = qdoc::model::block_text(dm.doc, dm.c, block).unwrap_or_default();
+    let char_count = text.chars().count();
+    let tail: String = text.chars().skip(at).collect();
+    let hash = dm.put_blob(bytes);
+    if let Some(tail) = char_count.checked_sub(at).filter(|n| *n > 0) {
+        dm.splice_text(block, at, num::isize_of_usize(tail), "");
+    }
+    let img = dm.insert_block(Some(block), "image");
+    dm.set_attr(&img, "blob", hash.as_str());
+    if let Some(w) = width {
+        dm.set_attr(&img, "width", w);
+    }
+    if let Some(h) = height {
+        dm.set_attr(&img, "height", h);
+    }
+    let after = dm.insert_block(Some(&img), "paragraph");
+    if !tail.is_empty() {
+        dm.splice_text(&after, 0, 0, &tail);
+    }
+}
+
+fn apply_insert_page_break(dm: &mut DocMut, block: &str, at: usize) {
+    // Split the block at the caret (like Enter): the tail moves into a fresh
+    // paragraph that starts on a new page.
+    let text = qdoc::model::block_text(dm.doc, dm.c, block).unwrap_or_default();
+    let char_count = text.chars().count();
+    let tail: String = text.chars().skip(at).collect();
+    if let Some(tail) = char_count.checked_sub(at).filter(|n| *n > 0) {
+        dm.splice_text(block, at, num::isize_of_usize(tail), "");
+    }
+    let new = dm.insert_block(Some(block), "paragraph");
+    if !tail.is_empty() {
+        dm.splice_text(&new, 0, 0, &tail);
+    }
+    dm.set_attr(&new, "page_break_before", true);
+}
+
+fn apply_insert_paragraph(dm: &mut DocMut, after: &str, text: &str) {
+    let new = dm.insert_block(Some(after), "paragraph");
+    if !text.is_empty() {
+        dm.splice_text(&new, 0, 0, text);
+    }
+}
+
+fn apply_remove_blocks(dm: &mut DocMut, blocks: &[String]) {
+    let mut sorted = blocks.to_vec();
+    sorted.sort();
+    for block in &sorted {
+        dm.remove_block(block);
+    }
+}
+
+fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
+    use qdoc::FormatProvider;
+    let existing = qdoc::model::blocks_in_order(dm.doc, dm.c);
+    for id in &existing {
+        dm.remove_block(id);
+    }
+    // A malformed template can't wedge a replay: the body-clear stays in the
+    // pinned change either way.
+    let _ = qdoc::MarkdownCodec.import(markdown.as_bytes(), dm);
+}
+
 impl Action for WordProcessorAction {
+    /// Apply this action's mutation to `doc`.
+    ///
+    /// # Errors
+    ///
+    /// Never returns `Err`: an action against a document with no schema yet,
+    /// or a malformed payload, is a documented no-op (see the module docs'
+    /// determinism contract) rather than a failure — a bad replay can't wedge
+    /// a peer. The `Result` return is the [`Action`] trait's shape.
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         // Bind to the canonical schema under ROOT. An unbound document (no
         // schema yet) is a no-op — nothing to mutate, and a bad replay can't
@@ -277,6 +480,11 @@ impl Action for WordProcessorAction {
         // actor — so any freshly-minted block id is `{action-actor}.{n}`,
         // byte-identical on origin and replay.
         let mut ids = qdoc::model::seeded_id_gen(doc, &c);
+        let mut dm = DocMut {
+            doc,
+            c: &c,
+            ids: &mut ids,
+        };
 
         match self {
             WordProcessorAction::SpliceText {
@@ -285,20 +493,7 @@ impl Action for WordProcessorAction {
                 at,
                 del,
                 ins,
-            } => {
-                let mut dm = DocMut {
-                    doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                dm.splice_text_in(
-                    region.to_region(),
-                    block,
-                    *at,
-                    num::isize_of_usize(*del),
-                    ins,
-                );
-            }
+            } => apply_splice_text(&mut dm, region.to_region(), block, *at, *del, ins),
 
             WordProcessorAction::SetMark {
                 region,
@@ -306,59 +501,14 @@ impl Action for WordProcessorAction {
                 name,
                 value,
                 also_clear,
-            } => {
-                let r = region.to_region();
-                let mut sorted = spans.clone();
-                sorted.sort_by(|a, b| {
-                    (a.block.as_str(), a.start, a.end).cmp(&(b.block.as_str(), b.start, b.end))
-                });
-                let mut dm = DocMut {
-                    doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                for span in &sorted {
-                    if span.start >= span.end {
-                        continue;
-                    }
-                    for sib in also_clear {
-                        remove_mark_region(&mut dm, &c, r, span, sib);
-                    }
-                    match value {
-                        None => remove_mark_region(&mut dm, &c, r, span, name),
-                        Some(v) => {
-                            // Replace: drop any prior value of the same mark
-                            // before re-adding so values overwrite, not stack.
-                            remove_mark_region(&mut dm, &c, r, span, name);
-                            add_mark_region(&mut dm, r, span, name, v);
-                        }
-                    }
-                }
-            }
+            } => apply_set_mark(&mut dm, region.to_region(), spans, name, value, also_clear),
 
             WordProcessorAction::SetParagraphStyle {
                 blocks,
                 kind,
                 level,
                 ordered,
-            } => {
-                let mut sorted = blocks.clone();
-                sorted.sort();
-                let mut dm = DocMut {
-                    doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                for block in &sorted {
-                    dm.set_kind(block, kind);
-                    if let Some(l) = level {
-                        dm.set_attr(block, "level", *l);
-                    }
-                    if let Some(o) = ordered {
-                        dm.set_attr(block, "ordered", *o);
-                    }
-                }
-            }
+            } => apply_set_paragraph_style(&mut dm, blocks, kind, *level, *ordered),
 
             WordProcessorAction::ApplyNamedStyle {
                 blocks,
@@ -366,64 +516,17 @@ impl Action for WordProcessorAction {
                 kind,
                 level,
                 ordered,
-            } => {
-                let mut sorted = blocks.clone();
-                sorted.sort();
-                let mut dm = DocMut {
-                    doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                for block in &sorted {
-                    if let Some(k) = kind {
-                        dm.set_kind(block, k);
-                        if let Some(l) = level {
-                            dm.set_attr(block, "level", *l);
-                        }
-                        if let Some(o) = ordered {
-                            dm.set_attr(block, "ordered", *o);
-                        }
-                    }
-                    dm.set_attr(block, "style", style.as_str());
-                }
-            }
+            } => apply_named_style(&mut dm, blocks, style, kind, *level, *ordered),
 
             WordProcessorAction::SetBlockAttr {
                 region,
                 blocks,
                 key,
                 value,
-            } => {
-                let r = region.to_region();
-                let mut sorted = blocks.clone();
-                sorted.sort();
-                let mut dm = DocMut {
-                    doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                for block in &sorted {
-                    set_attr_region(&mut dm, r, block, key, value);
-                }
-            }
+            } => apply_set_block_attr(&mut dm, region.to_region(), blocks, key, value),
 
             WordProcessorAction::InsertTable { after, rows, cols } => {
-                let mut dm = DocMut {
-                    doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                let table_id = dm.ids.mint(); // one id shared by every cell
-                let mut prev = Some(after.clone());
-                for row in 0..*rows {
-                    for col in 0..*cols {
-                        let id = dm.insert_block(prev.as_deref(), "cell");
-                        dm.set_attr(&id, "table", table_id.as_str());
-                        dm.set_attr(&id, "row", num::i64_of_usize(row));
-                        dm.set_attr(&id, "col", num::i64_of_usize(col));
-                        prev = Some(id);
-                    }
-                }
+                apply_insert_table(&mut dm, after, *rows, *cols);
             }
 
             WordProcessorAction::InsertImage {
@@ -432,93 +535,22 @@ impl Action for WordProcessorAction {
                 bytes,
                 width,
                 height,
-            } => {
-                let text = qdoc::model::block_text(doc, &c, block).unwrap_or_default();
-                let char_count = text.chars().count();
-                let tail: String = text.chars().skip(*at).collect();
-                let mut dm = DocMut {
-                    doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                let hash = dm.put_blob(bytes);
-                if let Some(tail) = char_count.checked_sub(*at).filter(|n| *n > 0) {
-                    dm.splice_text(block, *at, num::isize_of_usize(tail), "");
-                }
-                let img = dm.insert_block(Some(block), "image");
-                dm.set_attr(&img, "blob", hash.as_str());
-                if let Some(w) = width {
-                    dm.set_attr(&img, "width", *w);
-                }
-                if let Some(h) = height {
-                    dm.set_attr(&img, "height", *h);
-                }
-                let after = dm.insert_block(Some(&img), "paragraph");
-                if !tail.is_empty() {
-                    dm.splice_text(&after, 0, 0, &tail);
-                }
-            }
+            } => apply_insert_image(&mut dm, block, *at, bytes, *width, *height),
 
             WordProcessorAction::InsertPageBreak { block, at } => {
-                // Split the block at the caret (like Enter): the tail moves into a
-                // fresh paragraph that starts on a new page.
-                let text = qdoc::model::block_text(doc, &c, block).unwrap_or_default();
-                let char_count = text.chars().count();
-                let tail: String = text.chars().skip(*at).collect();
-                let mut dm = DocMut {
-                    doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                if let Some(tail) = char_count.checked_sub(*at).filter(|n| *n > 0) {
-                    dm.splice_text(block, *at, num::isize_of_usize(tail), "");
-                }
-                let new = dm.insert_block(Some(block), "paragraph");
-                if !tail.is_empty() {
-                    dm.splice_text(&new, 0, 0, &tail);
-                }
-                dm.set_attr(&new, "page_break_before", true);
+                apply_insert_page_break(&mut dm, block, *at);
             }
 
             WordProcessorAction::InsertParagraph { after, text } => {
-                let mut dm = DocMut {
-                    doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                let new = dm.insert_block(Some(after), "paragraph");
-                if !text.is_empty() {
-                    dm.splice_text(&new, 0, 0, text);
-                }
+                apply_insert_paragraph(&mut dm, after, text);
             }
 
             WordProcessorAction::RemoveBlocks { blocks } => {
-                let mut sorted = blocks.clone();
-                sorted.sort();
-                let mut dm = DocMut {
-                    doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                for block in &sorted {
-                    dm.remove_block(block);
-                }
+                apply_remove_blocks(&mut dm, blocks);
             }
 
             WordProcessorAction::ReplaceBody { markdown } => {
-                use qdoc::FormatProvider;
-                let existing = qdoc::model::blocks_in_order(doc, &c);
-                let mut dm = DocMut {
-                    doc,
-                    c: &c,
-                    ids: &mut ids,
-                };
-                for id in &existing {
-                    dm.remove_block(id);
-                }
-                // A malformed template can't wedge a replay: the body-clear stays
-                // in the pinned change either way.
-                let _ = qdoc::MarkdownCodec.import(markdown.as_bytes(), &mut dm);
+                apply_replace_body(&mut dm, markdown);
             }
         }
         Ok(())

@@ -1,6 +1,6 @@
-//! Narrow AccountsService administration for local login accounts.
+//! Narrow `AccountsService` administration for local login accounts.
 //!
-//! AccountsService is the authority and performs the polkit challenge.  qOS
+//! `AccountsService` is the authority and performs the polkit challenge.  qOS
 //! never invokes `useradd` with UI strings, edits `/etc/passwd`, or stores a
 //! login password in the Settings document.  Password bytes travel only over
 //! an anonymous stdin pipe to `openssl passwd`, then as a salted hash in the
@@ -71,14 +71,14 @@ async fn find_user(conn: &zbus::Connection, username: &str) -> Result<OwnedObjec
         .await?
         .call_method("FindUserByName", &(username))
         .await
-        .map_err(account_error)?;
+        .map_err(|e| account_error(&e))?;
     reply
         .body()
         .deserialize::<OwnedObjectPath>()
         .map_err(|e| format!("AccountsService returned an invalid user path: {e}"))
 }
 
-fn account_error(e: zbus::Error) -> String {
+fn account_error(e: &zbus::Error) -> String {
     // D-Bus errors can include policy/action names but never values supplied
     // to SetPassword.  Keep the useful authentication failure while avoiding
     // Debug output of the whole message body.
@@ -89,6 +89,12 @@ fn block<T>(f: impl std::future::Future<Output = Result<T, String>>) -> Result<T
     runtime()?.block_on(f)
 }
 
+/// Create a local login account through `AccountsService`.
+///
+/// # Errors
+///
+/// Returns an error message if `username` or `full_name` fails validation, the system bus is
+/// unreachable, or `AccountsService` refuses the request (e.g. the polkit challenge fails).
 pub fn create_user(username: &str, full_name: &str, role: AccountRole) -> Result<(), String> {
     let username = validate_username(username)?.to_string();
     let full_name = validate_real_name(full_name)?.to_string();
@@ -100,33 +106,48 @@ pub fn create_user(username: &str, full_name: &str, role: AccountRole) -> Result
             .await?
             .call_method("CreateUser", &(username, full_name, role as i32))
             .await
-            .map_err(account_error)?;
+            .map_err(|e| account_error(&e))?;
         Ok(())
     })
 }
 
+/// Delete the local login account `username` through `AccountsService`.
+///
+/// # Errors
+///
+/// Returns an error message if `username` fails validation, `uid` is outside the ordinary user
+/// range `1000..60000`, `username` is the caller's own account, `uid` does not fit in an
+/// `i64`, the system bus is unreachable, or `AccountsService` refuses the request.
 pub fn delete_user(username: &str, uid: u64, remove_files: bool) -> Result<(), String> {
     validate_username(username)?;
-    if uid < 1000 || uid >= 60000 {
+    if !(1000..60000).contains(&uid) {
         return Err("refusing to remove a system account".into());
     }
     let current = std::env::var("USER").unwrap_or_default();
     if current == username {
         return Err("sign in as another administrator before removing this account".into());
     }
+    let uid = i64::try_from(uid).map_err(|_| "user id is out of range".to_string())?;
     block(async move {
         let conn = zbus::Connection::system()
             .await
             .map_err(|e| format!("cannot reach the system bus: {e}"))?;
         manager_proxy(&conn)
             .await?
-            .call_method("DeleteUser", &(uid as i64, remove_files))
+            .call_method("DeleteUser", &(uid, remove_files))
             .await
-            .map_err(account_error)?;
+            .map_err(|e| account_error(&e))?;
         Ok(())
     })
 }
 
+// The returned future borrows `zbus::Proxy` internals that are not `Send`; that is fine here
+// because `call_user` is only ever driven to completion synchronously via `block()`'s
+// current-thread runtime, never spawned onto another thread.
+#[allow(
+    clippy::future_not_send,
+    reason = "only ever polled synchronously by block() on a current-thread runtime"
+)]
 async fn call_user(
     username: &str,
     method: &str,
@@ -142,10 +163,16 @@ async fn call_user(
     proxy
         .call_method(method, body)
         .await
-        .map_err(account_error)?;
+        .map_err(|e| account_error(&e))?;
     Ok(())
 }
 
+/// Change `username`'s account role (standard vs. administrator).
+///
+/// # Errors
+///
+/// Returns an error message if `username` fails validation, `username` is the caller's own
+/// account and `role` would demote it, or `AccountsService` refuses the request.
 pub fn set_role(username: &str, role: AccountRole) -> Result<(), String> {
     validate_username(username)?;
     if std::env::var("USER").ok().as_deref() == Some(username) && role == AccountRole::Standard {
@@ -154,11 +181,23 @@ pub fn set_role(username: &str, role: AccountRole) -> Result<(), String> {
     block(call_user(username, "SetAccountType", &(role as i32)))
 }
 
+/// Enable or disable passwordless automatic login for `username`.
+///
+/// # Errors
+///
+/// Returns an error message if `username` fails validation or `AccountsService` refuses the
+/// request.
 pub fn set_automatic_login(username: &str, enabled: bool) -> Result<(), String> {
     validate_username(username)?;
     block(call_user(username, "SetAutomaticLogin", &enabled))
 }
 
+/// Read whether `username` is set up for automatic login.
+///
+/// # Errors
+///
+/// Returns an error message if `username` fails validation, the system bus is unreachable, or
+/// `AccountsService` refuses the request.
 pub fn automatic_login(username: &str) -> Result<bool, String> {
     validate_username(username)?;
     block(async move {
@@ -172,16 +211,29 @@ pub fn automatic_login(username: &str) -> Result<bool, String> {
         proxy
             .get_property::<bool>("AutomaticLogin")
             .await
-            .map_err(account_error)
+            .map_err(|e| account_error(&e))
     })
 }
 
+/// Change `username`'s display ("full") name.
+///
+/// # Errors
+///
+/// Returns an error message if `username` or `real_name` fails validation, or
+/// `AccountsService` refuses the request.
 pub fn set_real_name(username: &str, real_name: &str) -> Result<(), String> {
     validate_username(username)?;
     let real_name = validate_real_name(real_name)?.to_string();
     block(call_user(username, "SetRealName", &real_name))
 }
 
+/// Set `username`'s account icon to the image at `path`.
+///
+/// # Errors
+///
+/// Returns an error message if `username` fails validation, `path` cannot be read, is not a
+/// regular file, is larger than 5 MB, cannot be canonicalised, or `AccountsService` refuses the
+/// request.
 pub fn set_avatar(username: &str, path: &std::path::Path) -> Result<(), String> {
     validate_username(username)?;
     let meta =
@@ -196,6 +248,14 @@ pub fn set_avatar(username: &str, path: &std::path::Path) -> Result<(), String> 
     block(call_user(username, "SetIconFile", &value))
 }
 
+/// Set `username`'s login password. `password` is zeroized in place before returning,
+/// regardless of outcome.
+///
+/// # Errors
+///
+/// Returns an error message if `username` fails validation, `password` is outside 10–1024
+/// bytes or contains a newline, hashing via `openssl passwd` fails or returns an unexpected
+/// result, or `AccountsService` refuses the request.
 pub fn set_password(username: &str, password: &mut [u8]) -> Result<(), String> {
     validate_username(username)?;
     if password.len() < 10 || password.len() > 1024 || password.contains(&b'\n') {

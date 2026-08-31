@@ -165,16 +165,27 @@ pub enum Envelope {
 
 /// Encode an envelope for the wire. Returns the length-prefixed
 /// bytes ready for `send.write_all`.
+///
+/// # Errors
+///
+/// Returns an error if `envelope` fails to postcard-serialize, or if
+/// the serialized payload is longer than `u32::MAX` bytes and so
+/// cannot be represented in the length prefix.
 pub fn encode(envelope: &Envelope) -> Result<Vec<u8>, postcard::Error> {
     let payload = postcard::to_allocvec(envelope)?;
-    let mut out = Vec::with_capacity(4 + payload.len());
-    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    let len = u32::try_from(payload.len()).map_err(|_| postcard::Error::SerializeBufferFull)?;
+    let mut out = Vec::with_capacity(4usize.saturating_add(payload.len()));
+    out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(&payload);
     Ok(out)
 }
 
 /// Decode a raw postcard payload (WITHOUT the 4-byte prefix — the
 /// caller reads that separately, see [`FrameReader`]).
+///
+/// # Errors
+///
+/// Returns an error if `bytes` does not decode as a valid `Envelope`.
 pub fn decode(bytes: &[u8]) -> Result<Envelope, postcard::Error> {
     postcard::from_bytes(bytes)
 }
@@ -208,6 +219,13 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     /// Read the next envelope. Returns `Ok(None)` on clean EOF.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError`] if the underlying reader errors
+    /// mid-frame, the declared length is zero or exceeds
+    /// [`MAX_FRAME_BYTES`], or the frame's bytes don't decode as a
+    /// valid `Envelope`.
     pub async fn read_next(&mut self) -> Result<Option<Envelope>, FrameError> {
         use tokio::io::AsyncReadExt;
         let mut prefix = [0u8; 4];

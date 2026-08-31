@@ -1,14 +1,14 @@
 //! Offscreen renders of the component gallery in **both** light and dark,
 //! so the showcase can be self-inspected without opening a window. Drives the
-//! real five-pass pipeline (sync → build_layout → compute_layout →
-//! apply_layout → draw) on the same widget tree the interactive `gallery`
+//! real five-pass pipeline (`sync` → `build_layout` → `compute_layout` →
+//! `apply_layout` → `draw`) on the same widget tree the interactive `gallery`
 //! example builds.
 //!
-//! Run:  cargo run -p ui --example ui-shots -- gallery_shots
-//! Out:  $GALLERY_SHOTS_OUT (default /tmp/gallery_shots) — gallery-dark.png,
+//! Run:  `cargo run -p ui --example ui-shots -- gallery_shots`
+//! Out:  `$GALLERY_SHOTS_OUT` (default `/tmp/gallery_shots`) — gallery-dark.png,
 //!       gallery-light.png
 //!
-//! Fractional HiDPI: set `GALLERY_SHOTS_SCALE=1.5` (or 1.25 / 1.75 / 2.0)
+//! Fractional `HiDPI`: set `GALLERY_SHOTS_SCALE=1.5` (or 1.25 / 1.75 / 2.0)
 //! to render at that display scale. This reproduces the exact live-window
 //! path — a physical-pixel surface sized `logical × scale`, taffy solved
 //! at the logical size, and the whole scene composited through
@@ -16,7 +16,7 @@
 //! fractional factor rather than a blurry upscale of a 1× frame.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
@@ -34,7 +34,7 @@ use super::gallery_scene;
 const WIDTH: u32 = 1200;
 const HEIGHT: u32 = 2300;
 
-fn shoot(theme: &Theme, out: PathBuf, scale: f64) {
+fn shoot(theme: &Theme, out: &Path, scale: f64) {
     let mut state = State::new();
     let mut root = gallery_scene::build_showcase(&mut state, theme);
 
@@ -49,21 +49,24 @@ fn shoot(theme: &Theme, out: PathBuf, scale: f64) {
     // of scale) — HiDPI must not change the logical layout, only how many
     // physical pixels each logical unit covers.
     let node = root.build_layout(&mut taffy, theme, &mut node_map);
-    taffy
-        .compute_layout_with_measure(
-            node,
-            Size {
-                width: AvailableSpace::Definite(WIDTH as f32),
-                height: AvailableSpace::Definite(HEIGHT as f32),
-            },
-            |known, available, node_id, _, _| {
-                node_map
-                    .get(&node_id)
-                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
-                    .unwrap_or(Size::ZERO)
-            },
-        )
-        .unwrap();
+    // WIDTH/HEIGHT are small fixed logical-pixel constants, far below
+    // f32's exact-integer range.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "WIDTH/HEIGHT are small fixed logical-pixel constants, far below f32's exact-integer range"
+    )]
+    let _ = taffy.compute_layout_with_measure(
+        node,
+        Size {
+            width: AvailableSpace::Definite(WIDTH as f32),
+            height: AvailableSpace::Definite(HEIGHT as f32),
+        },
+        |known, available, node_id, _, _| {
+            node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                (*p).measure(known, available, &mut tr)
+            })
+        },
+    );
     root.apply_layout(&taffy, node, Point::ZERO);
 
     let mut scene = Scene::new();
@@ -73,10 +76,19 @@ fn shoot(theme: &Theme, out: PathBuf, scale: f64) {
     root.draw(&mut scene, Affine::scale(scale), &mut tr, theme, &presence);
 
     // The offscreen target is sized in PHYSICAL pixels: logical × scale.
-    let phys_w = ((WIDTH as f64) * scale).round() as u32;
-    let phys_h = ((HEIGHT as f64) * scale).round() as u32;
+    // WIDTH/HEIGHT → f64 is lossless; the rounded product is always a
+    // small positive pixel count that fits u32.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "rounded logical-pixels × scale is always a small positive pixel count"
+    )]
+    let (phys_w, phys_h) = (
+        (f64::from(WIDTH) * scale).round() as u32,
+        (f64::from(HEIGHT) * scale).round() as u32,
+    );
     let mut r = OffscreenRenderer::new(phys_w, phys_h);
-    r.render_png(&scene, theme.bg_app, &out);
+    r.render_png(&scene, theme.bg_app, out);
     println!("wrote {} ({phys_w}x{phys_h} px @ {scale}x)", out.display());
 }
 
@@ -84,7 +96,8 @@ pub fn run(_args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
     let dir =
         std::env::var("GALLERY_SHOTS_OUT").unwrap_or_else(|_| "/tmp/gallery_shots".to_string());
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir)
+        .unwrap_or_else(|e| panic!("failed to create output dir {dir}: {e}"));
     let dir = PathBuf::from(dir);
 
     // Fractional HiDPI factor from the environment (default 1.0). 1.5 / 1.25
@@ -95,6 +108,6 @@ pub fn run(_args: &[String]) {
         .filter(|s| *s > 0.0)
         .unwrap_or(1.0);
 
-    shoot(&Theme::dark(), dir.join("gallery-dark.png"), scale);
-    shoot(&Theme::light(), dir.join("gallery-light.png"), scale);
+    shoot(&Theme::dark(), &dir.join("gallery-dark.png"), scale);
+    shoot(&Theme::light(), &dir.join("gallery-light.png"), scale);
 }

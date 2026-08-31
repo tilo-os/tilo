@@ -44,7 +44,7 @@ impl Screen {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Screen> {
+    pub fn parse_str(s: &str) -> Option<Screen> {
         match s {
             "camera" => Some(Screen::Camera),
             "scanner" => Some(Screen::Scanner),
@@ -69,7 +69,7 @@ impl CaptureMode {
             CaptureMode::Video => "video",
         }
     }
-    pub fn from_str(s: &str) -> CaptureMode {
+    pub fn parse_str(s: &str) -> CaptureMode {
         match s {
             "video" => CaptureMode::Video,
             _ => CaptureMode::Photo,
@@ -110,13 +110,14 @@ impl Facing {
             Facing::Wide => "wide",
         }
     }
-    pub fn from_str(s: &str) -> Facing {
+    pub fn parse_str(s: &str) -> Facing {
         match s {
             "front" => Facing::Front,
             "wide" => Facing::Wide,
             _ => Facing::Back,
         }
     }
+    #[must_use]
     pub fn next(self) -> Facing {
         match self {
             Facing::Back => Facing::Front,
@@ -167,7 +168,7 @@ impl Resolution {
             Resolution::R720p => "720p",
         }
     }
-    pub fn from_str(s: &str) -> Resolution {
+    pub fn parse_str(s: &str) -> Resolution {
         match s {
             "4k" => Resolution::R4K,
             "1080p" => Resolution::R1080p,
@@ -240,7 +241,7 @@ impl PhotoFormat {
             PhotoFormat::Png => "png",
         }
     }
-    pub fn from_str(s: &str) -> PhotoFormat {
+    pub fn parse_str(s: &str) -> PhotoFormat {
         match s {
             "png" => PhotoFormat::Png,
             _ => PhotoFormat::Jpeg,
@@ -250,6 +251,12 @@ impl PhotoFormat {
 
 /// User-tunable capture settings. Lives in the CRDT (see [`crate::doc`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent user-facing toggle persisted flat in the CRDT; \
+              grouping them into sub-structs would fragment doc.rs's read/write and app.rs's \
+              settings UI for no behavioral benefit"
+)]
 pub struct Settings {
     pub resolution: Resolution,
     pub photo_format: PhotoFormat,
@@ -291,7 +298,7 @@ impl CaptureKind {
             CaptureKind::Video => "video",
         }
     }
-    pub fn from_str(s: &str) -> CaptureKind {
+    pub fn parse_str(s: &str) -> CaptureKind {
         match s {
             "video" => CaptureKind::Video,
             _ => CaptureKind::Photo,
@@ -586,9 +593,9 @@ mod tests {
     #[test]
     fn screen_round_trips() {
         for s in Screen::ALL {
-            assert_eq!(Screen::from_str(s.as_str()), Some(s));
+            assert_eq!(Screen::parse_str(s.as_str()), Some(s));
         }
-        assert_eq!(Screen::from_str("nope"), None);
+        assert_eq!(Screen::parse_str("nope"), None);
     }
 
     #[test]

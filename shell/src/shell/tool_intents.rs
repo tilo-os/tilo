@@ -34,6 +34,11 @@ impl Drop for ToolServiceHandle {
     }
 }
 
+/// # Errors
+///
+/// Returns the OS error if the services root can't be created, the
+/// socket path is already bound by a live listener, or binding the new
+/// listener fails.
 pub fn spawn() -> std::io::Result<ToolServiceHandle> {
     launcher::services::ensure_services_root()?;
     let path = launcher::services::socket_for(TOOL_SERVICE);
@@ -73,7 +78,7 @@ fn spawn_at(path: PathBuf, handler: Handler) -> std::io::Result<ToolServiceHandl
                         let handler = Arc::clone(&handler);
                         let _ = std::thread::Builder::new()
                             .name("qos-tool-client".into())
-                            .spawn(move || serve_client(stream, handler));
+                            .spawn(move || serve_client(stream, &handler));
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(20));
@@ -92,17 +97,16 @@ fn spawn_at(path: PathBuf, handler: Handler) -> std::io::Result<ToolServiceHandl
     })
 }
 
-fn serve_client(stream: UnixStream, handler: Handler) {
+fn serve_client(stream: UnixStream, handler: &Handler) {
     let mut reader = BufReader::new(stream);
     loop {
         let mut line = String::new();
-        let read = match reader
+        let Ok(read) = reader
             .by_ref()
             .take(MAX_WIRE_BYTES + 1)
             .read_line(&mut line)
-        {
-            Ok(n) => n,
-            Err(_) => return,
+        else {
+            return;
         };
         if read == 0 {
             return;

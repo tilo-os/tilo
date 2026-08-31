@@ -96,18 +96,18 @@ impl AboutInfo {
     /// In a real deployment this is the device's P2P public-key handle;
     /// derived deterministically here so the panel always shows one.
     pub fn fingerprint(&self) -> String {
-        let mut hash: u64 = 1469598103934665603;
+        let mut hash: u64 = 1_469_598_103_934_665_603;
         for b in self.hostname.bytes() {
             hash ^= u64::from(b);
-            hash = hash.wrapping_mul(1099511628211);
+            hash = hash.wrapping_mul(1_099_511_628_211);
         }
         let hex = format!("{hash:016x}");
         format!(
             "{}·{}·{}·{}",
-            &hex[0..4],
-            &hex[4..8],
-            &hex[8..12],
-            &hex[12..16]
+            hex.get(0..4).unwrap_or_default(),
+            hex.get(4..8).unwrap_or_default(),
+            hex.get(8..12).unwrap_or_default(),
+            hex.get(12..16).unwrap_or_default()
         )
     }
 }

@@ -64,12 +64,22 @@ pub struct SwitchControlRuntime {
     next_scan: Option<Instant>,
 }
 
+/// `now + delta`, saturating to `now` itself on the (cosmically unlikely) `Instant` overflow
+/// rather than panicking — a scan or reload deadline that cannot be represented becomes "due
+/// now" instead of crashing the compositor.
+fn after(now: Instant, delta: Duration) -> Instant {
+    now.checked_add(delta).unwrap_or(now)
+}
+
 impl SwitchControlRuntime {
     pub fn new(now: Instant) -> Self {
         let config = Config::load();
         Self {
-            next_reload: now + Duration::from_millis(750),
-            next_scan: config.scan.filter(|_| config.enabled).map(|d| now + d),
+            next_reload: after(now, Duration::from_millis(750)),
+            next_scan: config
+                .scan
+                .filter(|_| config.enabled)
+                .map(|d| after(now, d)),
             config,
         }
     }
@@ -78,7 +88,7 @@ impl SwitchControlRuntime {
         if now < self.next_reload {
             return;
         }
-        self.next_reload = now + Duration::from_millis(750);
+        self.next_reload = after(now, Duration::from_millis(750));
         let old = self.config;
         self.config = Config::load();
         if old.enabled != self.config.enabled || old.scan != self.config.scan {
@@ -86,7 +96,7 @@ impl SwitchControlRuntime {
                 .config
                 .scan
                 .filter(|_| self.config.enabled)
-                .map(|d| now + d);
+                .map(|d| after(now, d));
         }
     }
 
@@ -110,7 +120,7 @@ impl SwitchControlRuntime {
             _ => return None,
         };
         if action == SwitchAction::Next && event.state == ElementState::Pressed {
-            self.next_scan = self.config.scan.map(|d| now + d);
+            self.next_scan = self.config.scan.map(|d| after(now, d));
         }
         Some((action, event.state == ElementState::Pressed))
     }
@@ -121,7 +131,7 @@ impl SwitchControlRuntime {
         if !due {
             return None;
         }
-        self.next_scan = self.config.scan.map(|d| now + d);
+        self.next_scan = self.config.scan.map(|d| after(now, d));
         Some(SwitchAction::Next)
     }
 }
@@ -158,7 +168,7 @@ mod tests {
                 pair: KeyPair::F6F7,
                 scan: Some(Duration::from_secs(1)),
             },
-            next_reload: now + Duration::from_secs(60),
+            next_reload: now + Duration::from_mins(1),
             next_scan: None,
         };
         assert_eq!(runtime.tick(now + Duration::from_secs(2)), None);
@@ -173,7 +183,7 @@ mod tests {
                 pair: KeyPair::F6F7,
                 scan: Some(Duration::from_secs(2)),
             },
-            next_reload: now + Duration::from_secs(60),
+            next_reload: now + Duration::from_mins(1),
             next_scan: Some(now + Duration::from_secs(2)),
         };
         assert_eq!(runtime.tick(now + Duration::from_secs(1)), None);
@@ -197,7 +207,7 @@ mod tests {
                 pair: KeyPair::F9F10,
                 scan: None,
             },
-            next_reload: now + Duration::from_secs(60),
+            next_reload: now + Duration::from_mins(1),
             next_scan: None,
         };
         assert_eq!(
@@ -223,7 +233,7 @@ mod tests {
                 pair: KeyPair::F6F7,
                 scan: None,
             },
-            next_reload: now + Duration::from_secs(60),
+            next_reload: now + Duration::from_mins(1),
             next_scan: None,
         };
         assert_eq!(

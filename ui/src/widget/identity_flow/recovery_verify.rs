@@ -244,11 +244,11 @@ impl RecoveryVerifyScreen {
                         self.last_attempt_failed = true;
                     }
                     _ => {
-                        if let Some(editor) = self.editors.get_mut(slot) {
-                            if editor.apply_key(logical_key, modifiers, text.as_deref()) {
-                                self.last_attempt_failed = false;
-                                *handled = true;
-                            }
+                        if let Some(editor) = self.editors.get_mut(slot)
+                            && editor.apply_key(logical_key, modifiers, text.as_deref())
+                        {
+                            self.last_attempt_failed = false;
+                            *handled = true;
                         }
                     }
                 }
@@ -410,13 +410,6 @@ impl Widget for RecoveryVerifyScreen {
         }
     }
 
-    /// One square of the grid: the row/col number label, and either the
-    /// read-only word or (for a blanked position) the editable slot.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal grid-layout helper, not a public surface"
-    )]
-
     fn handle_event(
         &mut self,
         _event: &WindowEvent,
@@ -541,6 +534,12 @@ impl RecoveryVerifyScreen {
         }
     }
 
+    /// One square of the grid: the row/col number label, and either the
+    /// read-only word or (for a blanked position) the editable slot.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal grid-layout helper, not a public surface"
+    )]
     fn draw_grid_cell(
         &self,
         scene: &mut Scene,

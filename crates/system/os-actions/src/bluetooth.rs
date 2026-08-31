@@ -1,4 +1,4 @@
-//! Compatibility-shaped Bluetooth helpers over the shared BlueZ D-Bus client.
+//! Compatibility-shaped Bluetooth helpers over the shared `BlueZ` D-Bus client.
 //! New code should prefer [`crate::bluez`] and object paths directly.
 
 /// One Bluetooth device entry returned by [`list_bt_devices`].
@@ -15,11 +15,20 @@ pub struct BtDeviceInfo {
 }
 
 /// Toggle the Bluetooth controller via `bluetoothctl power on|off`.
+///
+/// # Errors
+///
+/// Returns an error message if the `BlueZ` D-Bus connection is unavailable or the call fails.
 pub fn set_bluetooth(enabled: bool) -> Result<(), String> {
     crate::bluez::set_powered(enabled)
 }
 
 /// Connect a paired device by MAC via `bluetoothctl connect <mac>`.
+///
+/// # Errors
+///
+/// Returns an error message if `mac` does not match a device known to `BlueZ`, or the connect
+/// call fails.
 pub fn bt_connect(mac: &str) -> Result<(), String> {
     let device = crate::bluez::devices()?
         .into_iter()
@@ -29,6 +38,11 @@ pub fn bt_connect(mac: &str) -> Result<(), String> {
 }
 
 /// Disconnect a device by MAC via `bluetoothctl disconnect <mac>`.
+///
+/// # Errors
+///
+/// Returns an error message if `mac` does not match a device known to `BlueZ`, or the
+/// disconnect call fails.
 pub fn bt_disconnect(mac: &str) -> Result<(), String> {
     let device = crate::bluez::devices()?
         .into_iter()
@@ -39,6 +53,10 @@ pub fn bt_disconnect(mac: &str) -> Result<(), String> {
 
 /// Read the Bluetooth controller state by grepping `bluetoothctl show`
 /// for `Powered:`.
+///
+/// # Errors
+///
+/// Returns an error message if the `BlueZ` D-Bus connection is unavailable or the call fails.
 pub fn get_bluetooth() -> Result<bool, String> {
     crate::bluez::is_powered()
 }
@@ -58,6 +76,10 @@ fn parse_bluetoothctl_power(stdout: &str) -> Result<bool, String> {
 /// shell-out: `bluetoothctl devices Paired` lists name + MAC, then for
 /// each MAC we call `bluetoothctl info <mac>` to extract `Connected:`
 /// and `Battery Percentage:`.
+///
+/// # Errors
+///
+/// Returns an error message if the `BlueZ` D-Bus connection is unavailable or the call fails.
 pub fn list_bt_devices() -> Result<Vec<BtDeviceInfo>, String> {
     Ok(crate::bluez::paired_devices()?
         .into_iter()
@@ -107,7 +129,7 @@ fn parse_bluetoothctl_info(stdout: &str) -> (bool, u8) {
             // Format: `Battery Percentage: 0x50 (80)` — the decimal in
             // parens is what we want.
             if let Some(open) = rest.find('(') {
-                let after = &rest[open + 1..];
+                let after = &rest[open.saturating_add(1)..];
                 if let Some(close) = after.find(')')
                     && let Ok(n) = after[..close].trim().parse::<u8>()
                 {

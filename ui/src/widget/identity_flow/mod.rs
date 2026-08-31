@@ -751,7 +751,9 @@ impl RecoveryChallenge {
         let mut positions: Vec<usize> = (1..=24).collect();
         let mut rng = OsRng;
         for i in (1..positions.len()).rev() {
-            let j = (rng.next_u32() as usize) % i.saturating_add(1);
+            let j = (rng.next_u32() as usize)
+                .checked_rem(i.saturating_add(1))
+                .unwrap_or(0);
             positions.swap(i, j);
         }
         let picked: [usize; 3] = match positions.get(0..3) {
@@ -1308,8 +1310,8 @@ impl IdentityFlow {
                 | IdentityFlowScreen::InviteMint
                 | IdentityFlowScreen::InviteAccept,
                 ScreenOutcome::Advance | ScreenOutcome::Back,
-            ) => IdentityFlowScreen::Done,
-            (IdentityFlowScreen::Done, _) => IdentityFlowScreen::Done,
+            )
+            | (IdentityFlowScreen::Done, _) => IdentityFlowScreen::Done,
             (other, _) => other,
         };
         self.current = next;

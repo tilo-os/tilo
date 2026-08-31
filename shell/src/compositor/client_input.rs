@@ -135,12 +135,16 @@ pub(crate) fn step_active_window(
         .iter()
         .position(|&(g, t)| g == cur_group.id && t == cur_group.active_tab)
         .unwrap_or(0);
-    let last = windows.len() as i64 - 1;
-    let idx = (cur as i64 + i64::from(steps)).clamp(0, last) as usize;
+    // `windows.len()` is a handful of on-screen tabs, never near `i64::MAX` — the fallbacks below are unreachable in practice, just panic-free.
+    let last = i64::try_from(windows.len())
+        .unwrap_or(i64::MAX)
+        .saturating_sub(1);
+    let cur_i64 = i64::try_from(cur).unwrap_or(i64::MAX);
+    let idx = usize::try_from(cur_i64.saturating_add(i64::from(steps)).clamp(0, last)).unwrap_or(0);
     if idx == cur {
         return None;
     }
-    let (group, tab) = windows[idx];
+    let (group, tab) = *windows.get(idx)?;
     Some((strip.id, group, tab))
 }
 
@@ -385,7 +389,7 @@ pub fn apply_modifier_key(modifiers: &mut Modifiers, key: &KeyEvent) -> bool {
     if key.state == ElementState::Pressed {
         mask |= bit;
     } else {
-        mask -= bit;
+        mask.remove(bit);
     }
     if mask == modifiers.state() {
         return false;
@@ -418,6 +422,10 @@ pub enum ChordKey {
 
 /// The modifier mask a chord is evaluated against.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "this struct IS the flags grouping for the four modifier bits, each independently settable; fields are read directly from shell/src/network/input_firewall.rs, so their shape can't change in isolation here"
+)]
 pub struct ChordMods {
     pub shift: bool,
     pub ctrl: bool,
@@ -437,6 +445,7 @@ impl ChordMods {
     }
 
     /// Union of two masks. Used where a mask is assembled from more than one source and any bit set in either has to count.
+    #[must_use]
     pub fn union(self, other: Self) -> Self {
         Self {
             shift: self.shift || other.shift,
@@ -470,8 +479,7 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
     }
     match key {
         ChordKey::Space => mods.alt,
-        ChordKey::Tab => mods.ctrl,
-        ChordKey::ArrowUp | ChordKey::ArrowDown => mods.ctrl,
+        ChordKey::Tab | ChordKey::ArrowUp | ChordKey::ArrowDown => mods.ctrl,
         ChordKey::Escape => overlay_open,
         ChordKey::Char(c) => mods.ctrl && c == 'k',
         ChordKey::Delete | ChordKey::Function(_) | ChordKey::Other | ChordKey::Modifier => false,
@@ -521,19 +529,15 @@ pub fn chord_key_for_evdev(code: u32) -> ChordKey {
     match code {
         1 => ChordKey::Escape,
         15 => ChordKey::Tab,
-        29 | 97 => ChordKey::Modifier,  // left / right Ctrl
-        42 | 54 => ChordKey::Modifier,  // left / right Shift
-        56 | 100 => ChordKey::Modifier, // Alt / AltGr
+        // left/right Ctrl, left/right Shift, Alt/AltGr, CapsLock, NumLock, left/right Super
+        29 | 97 | 42 | 54 | 56 | 100 | 58 | 69 | 125 | 126 => ChordKey::Modifier,
         57 => ChordKey::Space,
-        58 => ChordKey::Modifier, // CapsLock
-        59..=68 => ChordKey::Function((code - 58) as u8),
-        69 => ChordKey::Modifier, // NumLock
+        59..=68 => ChordKey::Function(u8::try_from(code.saturating_sub(58)).unwrap_or(0)),
         87 => ChordKey::Function(11),
         88 => ChordKey::Function(12),
         103 => ChordKey::ArrowUp,
         108 => ChordKey::ArrowDown,
         111 => ChordKey::Delete,
-        125 | 126 => ChordKey::Modifier, // left / right Super
         _ => match char_from_evdev(code) {
             Some(c) => ChordKey::Char(c),
             None => ChordKey::Other,
@@ -777,12 +781,20 @@ pub fn axis_values(delta: MouseScrollDelta) -> ((f64, f64), Option<(i32, i32)>) 
         MouseScrollDelta::LineDelta(h, v) => (
             (-f64::from(h) * WHEEL_STEP, -f64::from(v) * WHEEL_STEP),
             Some((
-                (-f64::from(h) * 120.0).round() as i32,
-                (-f64::from(v) * 120.0).round() as i32,
+                v120_component(-f64::from(h) * 120.0),
+                v120_component(-f64::from(v) * 120.0),
             )),
         ),
         MouseScrollDelta::PixelDelta(p) => ((-p.x, -p.y), None),
     }
+}
+
+/// Round a `wl_pointer.axis_value120` component to `i32`, clamped to that
+/// type's range first — a real wheel notch never gets near either bound, this just keeps the cast itself infallible.
+fn v120_component(value: f64) -> i32 {
+    value
+        .round()
+        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
 
 /// Whether the shell chrome is currently claiming all input: an overlay,
@@ -823,7 +835,9 @@ fn mint_serial(state: &mut State) -> Serial {
 
 /// Milliseconds since compositor start — the timestamp base every input event on this seat shares.
 fn event_time(state: &State) -> u32 {
-    state.start_time.elapsed().as_millis() as u32
+    // `as_millis()` is `u128`; keep the low 32 bits exactly as `as u32` would (wrapping after ~49.7 days of uptime), just without the lint-flagged cast. `millis` is always in range, so `try_from` never actually falls back.
+    let millis = state.start_time.elapsed().as_millis() % (1u128 << 32);
+    u32::try_from(millis).unwrap_or(0)
 }
 
 impl State {
@@ -868,7 +882,7 @@ impl State {
         };
         let intercepted: Option<()> = keyboard.input(
             self,
-            (keycode + 8).into(),
+            keycode.saturating_add(8).into(),
             key_state,
             serial,
             time,
@@ -901,7 +915,7 @@ impl State {
                     .cloned()
                     .map(|s| (s, SmithayPoint::from(origin)))
             });
-        self.client_input.pointer_focus = focus.as_ref().and(target.map(|(id, _)| id));
+        self.client_input.pointer_focus = focus.as_ref().and_then(|_| target.map(|(id, _)| id));
         let serial = mint_serial(self);
         let time = event_time(self);
         pointer.motion(
@@ -1136,9 +1150,11 @@ pub fn touch_target(
     {
         return Some((surface_id, (rect.x0, rect.y0)));
     }
-    let chrome = fb.chrome();
-    let tree = chrome.tree();
-    let hit = foreign_tile_at(&tree, fb.host(), (*x, *y))?;
+    let hit = {
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        foreign_tile_at(&tree, fb.host(), (*x, *y))?
+    };
     if !state.client_input.surfaces.contains_key(&hit.surface_id) {
         return None;
     }
@@ -1312,11 +1328,16 @@ fn rename_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64, new_app_id: &st
 /// Tab-bar-friendly label for a wayland app-id (`org.example.MyApp` → `MyApp`), capped so a pathological id can't blow out the tab strip.
 fn foreign_tab_title(app_id: &str) -> String {
     let trimmed = app_id.split('.').next_back().unwrap_or(app_id);
-    if trimmed.len() > 32 {
-        trimmed[..32].to_string()
-    } else {
-        trimmed.to_string()
+    if trimmed.len() <= 32 {
+        return trimmed.to_string();
     }
+    // A client's app-id is untrusted Unicode; walk back from the byte cap to
+    // the nearest character boundary so a multi-byte character straddling it can't panic a slice.
+    let mut end = 32;
+    while end > 0 && !trimmed.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    trimmed.get(..end).unwrap_or(trimmed).to_string()
 }
 
 /// Reconcile the seat's keyboard focus with the shell's focused tab. Called every tick: chrome capture drops client focus outright; otherwise focus follows the active tab.
@@ -1402,144 +1423,194 @@ pub fn route_input(
     let captured = chrome_captures_input(fb);
     match event {
         WindowEvent::CursorMoved { position, .. } => {
-            state.client_input.cursor = Some((position.x, position.y));
-            // Withheld from the chrome's own dispatch below (belongs to the client) — without this the chrome's pointer idea freezes at its last chrome-side position.
-            fb.host_mut()
-                .note_pointer(vello::kurbo::Point::new(position.x, position.y));
-            let hit = current_pointer_target(state, fb, captured);
-            deliver_pointer(state, hit);
-            // During a chrome drag the file manager keeps drawing the ghost under the cursor, so it sees every move even over a client.
-            hit.is_some() && state.selection.chrome_drag.is_none()
+            route_cursor_moved(state, fb, captured, *position)
         }
-        WindowEvent::CursorLeft { .. } => {
-            let global = state.client_input.cursor();
-            state.forward_client_pointer_motion(global, None);
-            state.client_input.grab = None;
-            state.client_input.buttons_down = 0;
-            false
-        }
+        WindowEvent::CursorLeft { .. } => route_cursor_left(state),
         WindowEvent::MouseInput {
             state: element,
             button,
             ..
-        } => {
-            let pressed = *element == ElementState::Pressed;
-            if pressed {
-                if state.client_input.buttons_down == 0 {
-                    // Latch the implicit grab from a fresh hit test, so a drag that leaves the tile stays with its owner.
-                    let hit = current_pointer_target(state, fb, captured);
-                    deliver_pointer(state, hit);
-                    state.client_input.grab = Some(match hit {
-                        Some(h) => PointerOwner::Client(h.surface_id),
-                        None => PointerOwner::Chrome,
-                    });
-                    // Click-to-focus: raise the clicked window group so the keyboard follows the pointer into the client.
-                    if let Some(h) = hit {
-                        // Tapping the keyboard must keep the editable field's
-                        // keyboard focus. Pointer focus moves to the OSK, but
-                        // raising/focusing it would deactivate the very
-                        // text-input session the tap is meant to feed.
-                        if state.osk_surface != Some(h.surface_id) {
-                            raise_group(fb, h.strip, h.group);
-                            sync_keyboard_focus(state, fb);
-                        }
-                    }
-                }
-                state.client_input.buttons_down += 1;
-            } else {
-                state.client_input.buttons_down = state.client_input.buttons_down.saturating_sub(1);
-            }
-            // A chrome drag's release is the drop: the server-side grab smithay holds only ends on a button event, whether or not a client is under the pointer.
-            let chrome_drag = state.selection.chrome_drag.is_some();
-            let to_client = (matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
-                && state.client_input.pointer_focus.is_some())
-                || (chrome_drag && !pressed);
-            let consumed = if to_client {
-                match evdev_button(*button) {
-                    Some(code) => state.forward_client_pointer_button(code, pressed),
-                    None => false,
-                }
-            } else {
-                false
-            };
-            if state.client_input.buttons_down == 0 {
-                state.client_input.grab = None;
-                if !pressed {
-                    // Re-resolve focus now the grab is gone — the release may have happened over a different tile (or over chrome).
-                    let hit = current_pointer_target(state, fb, captured);
-                    deliver_pointer(state, hit);
-                }
-            }
-            // The file manager has to see the release too, to end its own side of the gesture without moving anything.
-            consumed && !chrome_drag
-        }
-        WindowEvent::MouseWheel { delta, .. } => {
-            // Alt-modified wheel is a compositor navigation gesture (Niri
-            // parity), grabbed before client forwarding like every shell chord, and reported as consumed either way:
-            //   Alt+wheel        → switch workspace
-            //   Alt+Shift+wheel  → jump focus to the neighbouring group
-            let mods = modifiers.state();
-            if mods.alt_key() && !mods.control_key() && !mods.super_key() {
-                let detents = wheel_jump_detents(delta);
-                let steps = state.client_input.jump_wheel.push(detents, Instant::now());
-                // Diagnostic for gesture-feel reports. `RUST_LOG=shell=debug`.
-                tracing::debug!(
-                    target: "shell::wheel_jump",
-                    ?delta,
-                    detents,
-                    steps,
-                    shift = mods.shift_key(),
-                    "alt-wheel jump gesture"
-                );
-                if steps != 0 {
-                    if mods.shift_key() {
-                        // Same primitive as Super+Left/Right — one implementation of "next window along the strip".
-                        if fb.host_mut().step_focus_along_strip(steps) {
-                            sync_keyboard_focus(state, fb);
-                        }
-                    } else {
-                        // Positive detents rotate DOWN the workspace wheel; `switch_workspace` stops at the wheel's end.
-                        let dir = steps.signum();
-                        fb.with_chrome(|chrome| {
-                            for _ in 0..steps.unsigned_abs().min(4) {
-                                if !chrome.switch_workspace(dir) {
-                                    break;
-                                }
-                            }
-                        });
-                    }
-                }
-                return true;
-            }
-            if state.client_input.pointer_focus.is_some() {
-                state.forward_client_pointer_axis(*delta)
-            } else {
-                false
-            }
-        }
-        WindowEvent::KeyboardInput { event: key, .. } => {
-            let pressed = key.state == ElementState::Pressed;
-            let Some(code) = evdev_keycode(key) else {
-                return false;
-            };
-            // Anything the shell has up that Escape would dismiss — the summoned workspace wheel counts, since Escape must reach the shell, not a focused client.
-            let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
-            let shell_owns = captured || is_shell_chord(event, modifiers, overlay_open);
-            let forward = if pressed {
-                let forward = !shell_owns && state.client_input.keyboard_focus.is_some();
-                if forward {
-                    state.client_input.forwarded_keys.insert(code);
-                }
-                forward
-            } else {
-                // A release mirrors its press exactly — see `ClientInput::forwarded_keys`.
-                state.client_input.forwarded_keys.remove(&code)
-            };
-            // Runs for shell-owned keys too: the seat's xkb state has to track every key, or its modifier view drifts (see `deliver_client_key`).
-            state.deliver_client_key(code, pressed, forward)
+        } => route_mouse_input(state, fb, captured, *element, *button),
+        WindowEvent::MouseWheel { delta, .. } => route_mouse_wheel(state, fb, *delta, modifiers),
+        WindowEvent::KeyboardInput { .. } => {
+            route_keyboard_input(state, fb, captured, event, modifiers)
         }
         _ => false,
     }
+}
+
+/// `WindowEvent::CursorMoved` half of [`route_input`]: track the new global
+/// position, keep the chrome's own pointer idea current, and hand the motion to whichever client (if any) is under it.
+fn route_cursor_moved(
+    state: &mut State,
+    fb: &mut FrameBuilder,
+    captured: bool,
+    position: winit::dpi::PhysicalPosition<f64>,
+) -> bool {
+    state.client_input.cursor = Some((position.x, position.y));
+    // Withheld from the chrome's own dispatch below (belongs to the client) — without this the chrome's pointer idea freezes at its last chrome-side position.
+    fb.host_mut()
+        .note_pointer(vello::kurbo::Point::new(position.x, position.y));
+    let hit = current_pointer_target(state, fb, captured);
+    deliver_pointer(state, hit);
+    // During a chrome drag the file manager keeps drawing the ghost under the cursor, so it sees every move even over a client.
+    hit.is_some() && state.selection.chrome_drag.is_none()
+}
+
+/// `WindowEvent::CursorLeft` half of [`route_input`]: the pointer left the
+/// output entirely, so any client focus and implicit grab go with it.
+fn route_cursor_left(state: &mut State) -> bool {
+    let global = state.client_input.cursor();
+    state.forward_client_pointer_motion(global, None);
+    state.client_input.grab = None;
+    state.client_input.buttons_down = 0;
+    false
+}
+
+/// `WindowEvent::MouseInput` half of [`route_input`]: latches the implicit
+/// grab on the first button down, raises + focuses the clicked window, and forwards the button to whichever side owns the grab.
+fn route_mouse_input(
+    state: &mut State,
+    fb: &mut FrameBuilder,
+    captured: bool,
+    element: ElementState,
+    button: MouseButton,
+) -> bool {
+    let pressed = element == ElementState::Pressed;
+    if pressed {
+        if state.client_input.buttons_down == 0 {
+            // Latch the implicit grab from a fresh hit test, so a drag that leaves the tile stays with its owner.
+            let hit = current_pointer_target(state, fb, captured);
+            deliver_pointer(state, hit);
+            state.client_input.grab = Some(match hit {
+                Some(h) => PointerOwner::Client(h.surface_id),
+                None => PointerOwner::Chrome,
+            });
+            // Click-to-focus: raise the clicked window group so the keyboard follows the pointer into the client.
+            if let Some(h) = hit {
+                // Tapping the keyboard must keep the editable field's
+                // keyboard focus. Pointer focus moves to the OSK, but
+                // raising/focusing it would deactivate the very
+                // text-input session the tap is meant to feed.
+                if state.osk_surface != Some(h.surface_id) {
+                    raise_group(fb, h.strip, h.group);
+                    sync_keyboard_focus(state, fb);
+                }
+            }
+        }
+        state.client_input.buttons_down = state.client_input.buttons_down.saturating_add(1);
+    } else {
+        state.client_input.buttons_down = state.client_input.buttons_down.saturating_sub(1);
+    }
+    // A chrome drag's release is the drop: the server-side grab smithay holds only ends on a button event, whether or not a client is under the pointer.
+    let chrome_drag = state.selection.chrome_drag.is_some();
+    let to_client = (matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
+        && state.client_input.pointer_focus.is_some())
+        || (chrome_drag && !pressed);
+    let consumed = if to_client {
+        match evdev_button(button) {
+            Some(code) => state.forward_client_pointer_button(code, pressed),
+            None => false,
+        }
+    } else {
+        false
+    };
+    if state.client_input.buttons_down == 0 {
+        state.client_input.grab = None;
+        if !pressed {
+            // Re-resolve focus now the grab is gone — the release may have happened over a different tile (or over chrome).
+            let hit = current_pointer_target(state, fb, captured);
+            deliver_pointer(state, hit);
+        }
+    }
+    // The file manager has to see the release too, to end its own side of the gesture without moving anything.
+    consumed && !chrome_drag
+}
+
+/// `WindowEvent::MouseWheel` half of [`route_input`]: Alt-modified wheel is a
+/// compositor navigation gesture (Niri parity), grabbed before client
+/// forwarding like every shell chord, and reported as consumed either way:
+///   Alt+wheel        → switch workspace
+///   Alt+Shift+wheel  → jump focus to the neighbouring group
+/// Anything else forwards straight to the focused client.
+fn route_mouse_wheel(
+    state: &mut State,
+    fb: &mut FrameBuilder,
+    delta: MouseScrollDelta,
+    modifiers: &Modifiers,
+) -> bool {
+    let mods = modifiers.state();
+    if mods.alt_key() && !mods.control_key() && !mods.super_key() {
+        let detents = wheel_jump_detents(&delta);
+        let steps = state.client_input.jump_wheel.push(detents, Instant::now());
+        // Diagnostic for gesture-feel reports. `RUST_LOG=shell=debug`.
+        tracing::debug!(
+            target: "shell::wheel_jump",
+            ?delta,
+            detents,
+            steps,
+            shift = mods.shift_key(),
+            "alt-wheel jump gesture"
+        );
+        if steps != 0 {
+            if mods.shift_key() {
+                // Same primitive as Super+Left/Right — one implementation of "next window along the strip".
+                if fb.host_mut().step_focus_along_strip(steps) {
+                    sync_keyboard_focus(state, fb);
+                }
+            } else {
+                // Positive detents rotate DOWN the workspace wheel; `switch_workspace` stops at the wheel's end.
+                let dir = steps.signum();
+                fb.with_chrome(|chrome| {
+                    for _ in 0..steps.unsigned_abs().min(4) {
+                        if !chrome.switch_workspace(dir) {
+                            break;
+                        }
+                    }
+                });
+            }
+        }
+        return true;
+    }
+    if state.client_input.pointer_focus.is_some() {
+        state.forward_client_pointer_axis(delta)
+    } else {
+        false
+    }
+}
+
+/// `WindowEvent::KeyboardInput` half of [`route_input`]: every key goes
+/// through here (shell-owned ones too, to keep the seat's xkb state in
+/// sync), forwarded to the focused client only when the shell doesn't own the chord and a client actually holds keyboard focus.
+fn route_keyboard_input(
+    state: &mut State,
+    fb: &FrameBuilder,
+    captured: bool,
+    event: &WindowEvent,
+    modifiers: &Modifiers,
+) -> bool {
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
+        return false;
+    };
+    let pressed = key.state == ElementState::Pressed;
+    let Some(code) = evdev_keycode(key) else {
+        return false;
+    };
+    // Anything the shell has up that Escape would dismiss — the summoned workspace wheel counts, since Escape must reach the shell, not a focused client.
+    let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
+    let shell_owns = captured || is_shell_chord(event, modifiers, overlay_open);
+    let forward = if pressed {
+        let forward = !shell_owns && state.client_input.keyboard_focus.is_some();
+        if forward {
+            state.client_input.forwarded_keys.insert(code);
+        }
+        forward
+    } else {
+        // A release mirrors its press exactly — see `ClientInput::forwarded_keys`.
+        state.client_input.forwarded_keys.remove(&code)
+    };
+    // Runs for shell-owned keys too: the seat's xkb state has to track every key, or its modifier view drifts (see `deliver_client_key`).
+    state.deliver_client_key(code, pressed, forward)
 }
 
 /// Promote a file drag from the hosted file manager into a Wayland drag.
@@ -1717,9 +1788,9 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) {
     fb.with_chrome(|chrome| {
         {
             let mut tree = chrome.tree_mut();
-            if tree.active_group_for(strip) != Some(group) {
+            changed = tree.active_group_for(strip) != Some(group);
+            if changed {
                 tree.set_active_group(strip, group);
-                changed = true;
             }
         }
         if changed {
@@ -2391,11 +2462,13 @@ mod tests {
             "the client's tile must have a real extent; got {rect:?}"
         );
 
-        let chrome = fb.chrome();
-        let tree = chrome.tree();
         let centre = (rect.center().x, rect.center().y);
-        let hit = foreign_tile_at(&tree, fb.host(), centre)
-            .expect("a cursor inside the tile resolves to the client");
+        let hit = {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            foreign_tile_at(&tree, fb.host(), centre)
+                .expect("a cursor inside the tile resolves to the client")
+        };
         assert_eq!(hit.surface_id, 4242);
         assert_eq!(hit.group, group);
         assert_eq!(hit.rect, rect);
@@ -2407,6 +2480,8 @@ mod tests {
         );
 
         // Chrome keeps priority: a point on the top bar, and a point on the tile's own tab bar, are not the client's.
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
         assert!(
             foreign_tile_at(&tree, fb.host(), (800.0, 4.0)).is_none(),
             "the top bar must never resolve to a client surface"
@@ -2434,9 +2509,11 @@ mod tests {
         });
         let _ = fb.paint_settled();
 
-        let chrome = fb.chrome();
-        let tree = chrome.tree();
-        let tiles = foreign_tiles(&tree, fb.host());
+        let tiles = {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            foreign_tiles(&tree, fb.host())
+        };
         assert_eq!(
             tiles.len(),
             2,
@@ -2474,15 +2551,19 @@ mod tests {
 
         // Wherever local input would land on a client, the firewall must name that same client; wherever it lands on chrome, the firewall must name nothing.
         let mut inside = 0;
-        for p in probes {
-            let local = foreign_tile_at(&tree, fb.host(), p).map(|h| h.surface_id);
-            assert_eq!(
-                view.topmost_at(p),
-                local,
-                "at {p:?} the firewall and the pointer router disagree",
-            );
-            if local.is_some() {
-                inside += 1;
+        {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            for p in probes {
+                let local = foreign_tile_at(&tree, fb.host(), p).map(|h| h.surface_id);
+                assert_eq!(
+                    view.topmost_at(p),
+                    local,
+                    "at {p:?} the firewall and the pointer router disagree",
+                );
+                if local.is_some() {
+                    inside += 1;
+                }
             }
         }
         assert!(
@@ -2782,6 +2863,8 @@ mod tests {
     /// The scrubber reads evdev keycodes off the wire; local input reads winit logical keys — both narrow to a [`ChordKey`], so the two can't drift apart.
     #[test]
     fn chord_key_agrees_across_both_directions() {
+        // Every character the forward table maps, including the space some layouts deliver as text rather than `NamedKey::Space`.
+        const CHARS: &str = "abcdefghijklmnopqrstuvwxyz0123456789-=[];'`\\,./ ";
         let named = [
             NamedKey::Escape,
             NamedKey::Backspace,
@@ -2828,8 +2911,6 @@ mod tests {
             );
             checked += 1;
         }
-        // Every character the forward table maps, including the space some layouts deliver as text rather than `NamedKey::Space`.
-        const CHARS: &str = "abcdefghijklmnopqrstuvwxyz0123456789-=[];'`\\,./ ";
         for c in CHARS.chars() {
             let key = Key::Character(SmolStr::new(c.to_string()));
             let code = evdev_from_logical(&key)

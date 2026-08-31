@@ -281,7 +281,6 @@ impl RecoveryShareScreen {
     /// Title + subtitle. Split out of `draw` to keep it under clippy's
     /// line budget.
     fn draw_header(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -591,7 +590,7 @@ impl Widget for RecoveryShareScreen {
     ) {
         let pad = 32.0;
         let card = self.draw_backdrop_and_card(scene, transform, theme);
-        self.draw_header(scene, transform, text_renderer, theme, card, pad);
+        Self::draw_header(scene, transform, text_renderer, theme, card, pad);
         self.draw_copy_button(scene, transform, text_renderer, theme);
         self.draw_word_grid(scene, transform, text_renderer, theme, card, pad);
         self.draw_acknowledge_row(scene, transform, text_renderer, theme, card, pad);

@@ -3,14 +3,14 @@
 //! Modes:
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!     (headless screenshot; identical passes to the live app).
 //!
 //! Optional flags for `--shots` (used to capture interaction states the
 //! single-frame renderer can't reach through live input):
 //!   * `--scenario NAME` — stage a frame (`narrow`, `context`); see
-//!                          [`chat::app_root_for_shot`].
+//!     [`chat::app_root_for_shot`].
 //!   * `--viewport WxH`  — render at a custom size (e.g. `--viewport 760x900`
-//!                          to exercise the narrow-window overlay flaps).
+//!     to exercise the narrow-window overlay flaps).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -55,6 +55,11 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+/// # Errors
+/// Only under `--shots`: propagates a `taffy` layout error if building or
+/// computing the offscreen frame's layout tree fails. The live winit path
+/// and `--headless-drive` never return here at all — they exit the process
+/// directly.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 

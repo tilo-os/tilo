@@ -19,7 +19,7 @@ use std::io::Read;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use thiserror::Error;
 
@@ -47,6 +47,11 @@ pub trait BlobStore: Send + Sync {
     /// backing source — the point of this trait is to stream only what
     /// the caller asked for. A short read (`Vec` shorter than `len`)
     /// signals end-of-blob.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobError::Missing`] if `hash` isn't known to the
+    /// store, or [`BlobError::Io`] if the backing read fails.
     fn get_range(&self, hash: &[u8; 32], offset: u64, len: u32) -> Result<Vec<u8>, BlobError>;
 
     /// Whether `hash` is known to this store.
@@ -54,7 +59,28 @@ pub trait BlobStore: Send + Sync {
 
     /// Total byte length of the blob; backs `getattr()`'s size field so
     /// the kernel knows the logical end without reading content.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobError::Missing`] if `hash` isn't known to the
+    /// store, or [`BlobError::Io`] if the backing lookup fails.
     fn size(&self, hash: &[u8; 32]) -> Result<u64, BlobError>;
+}
+
+/// Narrow a `u64` that's already bounded by (or below) `fallback` down
+/// to `usize`. Every call site has `.min()`-clamped `value` against a
+/// quantity that came from a `usize` in the first place, so the
+/// conversion cannot actually fail; `fallback` only matters if that
+/// invariant is ever broken by a future edit, in which case this
+/// degrades to a bounded value instead of panicking.
+pub(crate) fn narrow_usize(value: u64, fallback: usize) -> usize {
+    usize::try_from(value).unwrap_or(fallback)
+}
+
+/// Same as [`narrow_usize`] but down to `u32`, for a byte count headed
+/// into a `get_range(..., len: u32)` call.
+pub(crate) fn narrow_u32(value: u64, fallback: u32) -> u32 {
+    u32::try_from(value).unwrap_or(fallback)
 }
 
 /// In-memory blob store for tests and the CLI's pack flow; cheap to
@@ -70,41 +96,56 @@ impl MemoryBlobStore {
         Self::default()
     }
 
+    /// Lock the blob table, recovering from a poisoned lock instead of
+    /// panicking — a panic elsewhere while the lock was held doesn't
+    /// invalidate the map itself, and none of this store's methods
+    /// have a fallible contract to propagate the poison through.
+    fn lock(&self) -> MutexGuard<'_, BTreeMap<[u8; 32], Vec<u8>>> {
+        self.blobs.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Insert `bytes`; returns its BLAKE3 hash.
     pub fn put(&self, bytes: &[u8]) -> [u8; 32] {
         let h = *blake3::hash(bytes).as_bytes();
-        self.blobs.lock().unwrap().insert(h, bytes.to_vec());
+        self.lock().insert(h, bytes.to_vec());
         h
     }
 
     /// Number of blobs stored.
     pub fn len(&self) -> usize {
-        self.blobs.lock().unwrap().len()
+        self.lock().len()
     }
 
     /// Whether the store contains no blobs.
     pub fn is_empty(&self) -> bool {
-        self.blobs.lock().unwrap().is_empty()
+        self.lock().is_empty()
     }
 }
 
 impl BlobStore for MemoryBlobStore {
     fn get_range(&self, hash: &[u8; 32], offset: u64, len: u32) -> Result<Vec<u8>, BlobError> {
-        let blobs = self.blobs.lock().unwrap();
+        let blobs = self.lock();
         let blob = blobs
             .get(hash)
             .ok_or_else(|| BlobError::Missing(hex(hash)))?;
-        let start = offset.min(blob.len() as u64) as usize;
-        let end = (offset.saturating_add(u64::from(len))).min(blob.len() as u64) as usize;
-        Ok(blob[start..end].to_vec())
+        let blob_len = blob.len();
+        let blob_len_u64 = blob_len as u64; // widening; never truncates
+        let start = narrow_usize(offset.min(blob_len_u64), blob_len);
+        let end = narrow_usize(
+            offset.saturating_add(u64::from(len)).min(blob_len_u64),
+            blob_len,
+        );
+        let bytes = blob.get(start..end).map(<[u8]>::to_vec).unwrap_or_default();
+        drop(blobs);
+        Ok(bytes)
     }
 
     fn has(&self, hash: &[u8; 32]) -> bool {
-        self.blobs.lock().unwrap().contains_key(hash)
+        self.lock().contains_key(hash)
     }
 
     fn size(&self, hash: &[u8; 32]) -> Result<u64, BlobError> {
-        let blobs = self.blobs.lock().unwrap();
+        let blobs = self.lock();
         blobs
             .get(hash)
             .map(|b| b.len() as u64)
@@ -137,6 +178,10 @@ impl DiskBlobStore {
     /// Write `bytes` under their BLAKE3 hash; returns the hash. Exposed
     /// for tests and one-off ingest — production packers go through
     /// `qos-pkg`, which lays out a directory the same way.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobError::Io`] if the write fails.
     pub fn put(&self, bytes: &[u8]) -> Result<[u8; 32], BlobError> {
         let h = *blake3::hash(bytes).as_bytes();
         let path = self.path_for(&h);
@@ -166,16 +211,21 @@ impl BlobStore for DiskBlobStore {
         if offset >= file_len {
             return Ok(Vec::new());
         }
-        let want = ((file_len - offset).min(u64::from(len))) as usize;
+        let remaining = file_len.saturating_sub(offset);
+        let want = narrow_usize(remaining.min(u64::from(len)), 0);
         let mut buf = vec![0u8; want];
         let mut filled = 0usize;
         while filled < want {
-            let n = file.read_at(&mut buf[filled..], offset + filled as u64)?;
+            let Some(rest) = buf.get_mut(filled..) else {
+                break;
+            };
+            let read_offset = offset.saturating_add(filled as u64);
+            let n = file.read_at(rest, read_offset)?;
             if n == 0 {
                 buf.truncate(filled);
                 break;
             }
-            filled += n;
+            filled = filled.saturating_add(n);
         }
         Ok(buf)
     }
@@ -280,55 +330,83 @@ pub fn hex(hash: &[u8; 32]) -> String {
     const CHARS: &[u8; 16] = b"0123456789abcdef";
     let mut s = String::with_capacity(64);
     for &b in hash {
-        s.push(CHARS[(b >> 4) as usize] as char);
-        s.push(CHARS[(b & 0xf) as usize] as char);
+        let hi = CHARS.get((b >> 4) as usize).copied().unwrap_or(b'0');
+        let lo = CHARS.get((b & 0xf) as usize).copied().unwrap_or(b'0');
+        s.push(hi as char);
+        s.push(lo as char);
     }
     s
 }
 
 /// Decode a 64-char hex string back to a 32-byte hash; used by disk-store recovery/debugging, not the hot path.
+///
+/// # Errors
+///
+/// Returns [`BlobError::BadName`] if `s` isn't exactly 64 hex digits.
 pub fn from_hex(s: &str) -> Result<[u8; 32], BlobError> {
     if s.len() != 64 {
         return Err(BlobError::BadName(s.to_string()));
     }
     let mut out = [0u8; 32];
     for (i, chunk) in s.as_bytes().chunks_exact(2).enumerate() {
-        let hi = nibble(chunk[0]).ok_or_else(|| BlobError::BadName(s.to_string()))?;
-        let lo = nibble(chunk[1]).ok_or_else(|| BlobError::BadName(s.to_string()))?;
-        out[i] = (hi << 4) | lo;
+        let hi_byte = *chunk
+            .first()
+            .ok_or_else(|| BlobError::BadName(s.to_string()))?;
+        let lo_byte = *chunk
+            .get(1)
+            .ok_or_else(|| BlobError::BadName(s.to_string()))?;
+        let hi = nibble(hi_byte).ok_or_else(|| BlobError::BadName(s.to_string()))?;
+        let lo = nibble(lo_byte).ok_or_else(|| BlobError::BadName(s.to_string()))?;
+        let Some(slot) = out.get_mut(i) else {
+            return Err(BlobError::BadName(s.to_string()));
+        };
+        *slot = (hi << 4) | lo;
     }
     Ok(out)
 }
 
 fn nibble(b: u8) -> Option<u8> {
     match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
+        b'0'..=b'9' => b.checked_sub(b'0'),
+        b'a'..=b'f' => b.checked_sub(b'a')?.checked_add(10),
+        b'A'..=b'F' => b.checked_sub(b'A')?.checked_add(10),
         _ => None,
     }
 }
 
 /// Convenience: read a whole blob via repeated `get_range` calls; not
 /// on the FUSE hot path — used by the mount loader for the (tiny) Collection blob.
+///
+/// # Errors
+///
+/// Returns whatever [`BlobStore::size`] or [`BlobStore::get_range`]
+/// returned — typically [`BlobError::Missing`] if `hash` isn't known
+/// to `store`.
 pub fn read_all<S: BlobStore + ?Sized>(store: &S, hash: &[u8; 32]) -> Result<Vec<u8>, BlobError> {
-    let total = store.size(hash)?;
-    let mut buf = Vec::with_capacity(total as usize);
-    let mut offset = 0u64;
     const CHUNK: u32 = 64 * 1024;
+
+    let total = store.size(hash)?;
+    let mut buf = Vec::with_capacity(narrow_usize(total, 0));
+    let mut offset = 0u64;
     while offset < total {
-        let want = ((total - offset).min(u64::from(CHUNK))) as u32;
+        let remaining = total.saturating_sub(offset);
+        let want = narrow_u32(remaining.min(u64::from(CHUNK)), CHUNK);
         let part = store.get_range(hash, offset, want)?;
         if part.is_empty() {
             break;
         }
-        offset += part.len() as u64;
+        offset = offset.saturating_add(part.len() as u64);
         buf.extend(part);
     }
     Ok(buf)
 }
 
 /// Read the full contents of a file as a blob into the disk store; useful for one-off packing in tests.
+///
+/// # Errors
+///
+/// Returns [`BlobError::Io`] if `path` can't be read or the write into
+/// `store` fails.
 pub fn put_file_disk(store: &DiskBlobStore, path: &Path) -> Result<[u8; 32], BlobError> {
     let mut f = File::open(path)?;
     let mut buf = Vec::new();

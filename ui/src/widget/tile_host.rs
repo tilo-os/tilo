@@ -75,8 +75,8 @@ fn build_shadow_sprite(red: u8, green: u8, blue: u8) -> Image {
     let max_radius = cx.max(cy);
     let falloff = SHADOW_GAUSSIAN_K;
     let peak_radius = SHADOW_PEAK_RADIUS;
-    let side = usize::try_from(size).unwrap_or(usize::MAX);
-    let mut data = Vec::<u8>::with_capacity(side.saturating_mul(side).saturating_mul(4));
+    let side_len = usize::try_from(size).unwrap_or(usize::MAX);
+    let mut data = Vec::<u8>::with_capacity(side_len.saturating_mul(side_len).saturating_mul(4));
     for py in 0..size {
         for px in 0..size {
             let dx = (f64::from(px) - cx) / max_radius;

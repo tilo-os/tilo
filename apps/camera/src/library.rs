@@ -68,7 +68,7 @@ fn mtime_secs(path: &Path) -> i64 {
 /// Scan `dir` for image/video files, newest first. Missing directory ⇒ empty
 /// (a fresh install simply has an empty library until the first capture).
 /// `favorites` marks which file names are starred.
-pub fn scan(dir: &Path, favorites: &HashSet<String>) -> Vec<Capture> {
+pub fn scan<S: std::hash::BuildHasher>(dir: &Path, favorites: &HashSet<String, S>) -> Vec<Capture> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -148,6 +148,11 @@ fn prettify_stem(stem: &str) -> String {
 /// Encode `frame` to `dir` in the requested `format` (a real JPEG or a real
 /// PNG), creating the directory on first use. Returns the written file name
 /// (the capture id) on success.
+///
+/// # Errors
+///
+/// Returns an error if `dir` cannot be created or the file cannot be written
+/// or encoded.
 pub fn write_photo(dir: &Path, frame: &FrameBuf, format: PhotoFormat) -> std::io::Result<String> {
     std::fs::create_dir_all(dir)?;
     let name = format!("IMG_{}.{}", timestamp_name(), format.extension());
@@ -165,8 +170,10 @@ fn write_png(path: &Path, frame: &FrameBuf) -> std::io::Result<()> {
     let mut encoder = png::Encoder::new(w, frame.w, frame.h);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().map_err(png_io)?;
-    writer.write_image_data(&frame.rgba).map_err(png_io)?;
+    let mut writer = encoder.write_header().map_err(|e| png_io(&e))?;
+    writer
+        .write_image_data(&frame.rgba)
+        .map_err(|e| png_io(&e))?;
     Ok(())
 }
 
@@ -181,7 +188,7 @@ fn write_jpeg(path: &Path, frame: &FrameBuf) -> std::io::Result<()> {
     Ok(())
 }
 
-fn png_io(e: png::EncodingError) -> std::io::Error {
+fn png_io(e: &png::EncodingError) -> std::io::Error {
     std::io::Error::other(e.to_string())
 }
 
@@ -209,6 +216,10 @@ pub fn load_luma(path: &Path, max: u32) -> Option<(Vec<u8>, usize, usize)> {
 }
 
 /// Remove the backing file for a capture id in `dir`.
+///
+/// # Errors
+///
+/// Returns an error if the file exists but could not be removed.
 pub fn delete(dir: &Path, id: &str) -> std::io::Result<()> {
     let path = dir.join(id);
     match std::fs::remove_file(&path) {
@@ -239,7 +250,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
@@ -267,7 +278,11 @@ mod tests {
         let frame = crate::frame::viewfinder(1, 48, 32);
         let name = write_photo(&dir, &frame, PhotoFormat::Png).expect("write");
         assert!(dir.join(&name).exists());
-        assert!(name.ends_with(".png"));
+        assert!(
+            Path::new(&name)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+        );
         let caps = scan(&dir, &HashSet::new());
         assert_eq!(caps.len(), 1);
         assert_eq!(caps[0].id, name);
@@ -282,7 +297,11 @@ mod tests {
         let dir = tmp();
         let frame = crate::frame::viewfinder(3, 64, 48);
         let name = write_photo(&dir, &frame, PhotoFormat::Jpeg).expect("write");
-        assert!(name.ends_with(".jpg"));
+        assert!(
+            Path::new(&name)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("jpg"))
+        );
         // The bytes are a genuine JPEG (SOI marker) and decode at full size.
         let bytes = std::fs::read(dir.join(&name)).unwrap();
         assert_eq!(&bytes[0..2], &[0xFF, 0xD8], "JPEG SOI marker");
@@ -330,7 +349,11 @@ mod tests {
         }
         let bytes = rec.finish().unwrap();
         let name = crate::video::write_clip(&dir, &bytes, &timestamp_name()).unwrap();
-        assert!(name.ends_with(".avi"));
+        assert!(
+            Path::new(&name)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("avi"))
+        );
 
         let caps = scan(&dir, &HashSet::new());
         assert_eq!(caps.len(), 1);

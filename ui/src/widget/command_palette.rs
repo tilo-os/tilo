@@ -324,7 +324,7 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
         if q.get(qi) == Some(ch) {
             if let Some(pm) = prev_match {
                 let gap = ti.saturating_sub(pm).saturating_sub(1);
-                gaps += i32::try_from(gap).unwrap_or(i32::MAX);
+                gaps = gaps.saturating_add(i32::try_from(gap).unwrap_or(i32::MAX));
             }
             prev_match = Some(ti);
             qi = qi.saturating_add(1);
@@ -905,9 +905,7 @@ impl CommandPalette {
             return None;
         }
         let mut y0 = self.list_top_y();
-        let Some(window) = self.rows.get(start..target) else {
-            return None;
-        };
+        let window = self.rows.get(start..target)?;
         for r in window {
             y0 += self.visual_row_height(r);
         }

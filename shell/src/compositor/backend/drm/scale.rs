@@ -86,12 +86,16 @@ pub fn resolve_scale(px: (u32, u32), mm: Option<(u32, u32)>, override_scale: Opt
     }
 }
 
+/// One output's `(position, size, scale)` in combined coordinate space, as
+/// consumed by [`preferred_scale_at`].
+pub type OutputGeometry = ((i32, i32), (u32, u32), f64);
+
 /// The scale a surface at global point `(x, y)` should render at, from
 /// `(position, size, scale)` triples in combined coordinate space. A surface
 /// in a gap between mismatched monitors — or before any output is known —
 /// gets the *largest* scale in play: rendering too sharp costs bandwidth,
 /// rendering too soft is visible.
-pub fn preferred_scale_at(outputs: &[((i32, i32), (u32, u32), f64)], x: f64, y: f64) -> f64 {
+pub fn preferred_scale_at(outputs: &[OutputGeometry], x: f64, y: f64) -> f64 {
     for &((ox, oy), (ow, oh), scale) in outputs {
         let (ox, oy) = (f64::from(ox), f64::from(oy));
         if x >= ox && x < ox + f64::from(ow) && y >= oy && y < oy + f64::from(oh) {

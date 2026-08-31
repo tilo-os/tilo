@@ -464,7 +464,10 @@ mod tests {
     #[test]
     fn run_provisions_identity_when_missing() {
         let tmp = TmpDir::new("mint-identity");
-        run_with_env(Some(OsString::from(tmp.path())), None).expect("firstboot ok");
+        // An explicit non-root uid: `run_with_env` reads the real one, and as
+        // root the guard returns before minting, so this asserted nothing on a
+        // runner that builds in a root container.
+        run_as(Some(OsString::from(tmp.path())), None, 1000).expect("firstboot ok");
         let identity_file = tmp
             .path()
             .join("qos")
@@ -535,7 +538,9 @@ mod tests {
         // Marker bytes: not a valid identity — proves firstboot doesn't
         // overwrite it. If firstboot starts repairing malformed records, swap in a real record and assert byte-content is preserved.
         std::fs::write(&file, b"MARKER: hands off").unwrap();
-        run_with_env(Some(OsString::from(tmp.path())), None).expect("firstboot ok");
+        // Non-root, so the run actually reaches the "identity already exists"
+        // branch this test is about rather than returning at the uid guard.
+        run_as(Some(OsString::from(tmp.path())), None, 1000).expect("firstboot ok");
         let got = std::fs::read(&file).unwrap();
         assert_eq!(got, b"MARKER: hands off");
     }
@@ -590,7 +595,8 @@ mod tests {
     #[test]
     fn provisioned_identity_file_is_0600() {
         let tmp = TmpDir::new("mode");
-        run_with_env(Some(OsString::from(tmp.path())), None).expect("firstboot ok");
+        // Non-root: as root nothing is minted and there is no file to stat.
+        run_as(Some(OsString::from(tmp.path())), None, 1000).expect("firstboot ok");
         let identity_file = tmp
             .path()
             .join("qos")

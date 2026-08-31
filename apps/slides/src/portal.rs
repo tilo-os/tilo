@@ -60,6 +60,12 @@ pub struct DocPortalChannel {
 
 impl DocPortalChannel {
     /// Non-blocking drain, mirroring [`std::sync::mpsc::Receiver::try_recv`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryRecvError::Empty`] while the host dialog is still open,
+    /// or [`TryRecvError::Disconnected`] if the portal worker thread ended
+    /// without sending an outcome.
     pub fn try_recv(&self) -> Result<DocOutcome, TryRecvError> {
         self.rx.try_recv().map(|outcome| match outcome {
             PortalOutcome::Opened(p) if self.save => DocOutcome::Save(p),

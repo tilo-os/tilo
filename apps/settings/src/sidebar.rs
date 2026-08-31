@@ -185,6 +185,10 @@ impl Widget for SidebarRow {
     ) -> NodeId {
         // Full width, fixed height — the row is a leaf that draws itself, so it
         // needs no taffy children.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -199,7 +203,7 @@ impl Widget for SidebarRow {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -543,6 +547,8 @@ mod tests {
 
     #[test]
     fn row_writes_select_key_on_release() {
+        use automerge::{ReadDoc, Value};
+
         let mut row = SidebarRow::new(Category::About, false);
         // Seat a rect and pretend the cursor is inside it.
         row.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
@@ -580,7 +586,6 @@ mod tests {
             );
         }
 
-        use automerge::{ReadDoc, Value};
         let got = doc.get(&root, "settings.select.about");
         assert!(
             matches!(got, Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))),

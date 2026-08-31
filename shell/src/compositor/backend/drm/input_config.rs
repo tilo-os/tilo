@@ -75,6 +75,10 @@ impl KeyboardSettings {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "accessibility toggles: each is an independent, named setting from a settings pane, not a state machine"
+)]
 pub struct AccessibilityInputSettings {
     pub sticky_keys: bool,
     pub slow_keys: bool,
@@ -146,6 +150,10 @@ pub const REPEAT_DELAY_MIN_MS: u32 = 200;
 /// The persisted input preferences, with the defaults applied. Mirrors the shape
 /// `apps/settings` writes; the defaults match that pane's starting values, so a user who never opened Settings and one who opened it and changed nothing get the same session.
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "persisted input toggles: each is an independent, named setting mirroring the Settings pane, not a state machine"
+)]
 pub struct InputSettings {
     /// Content-follows-finger scrolling. Off by default, matching the Settings pane.
     pub natural_scroll: bool,
@@ -232,10 +240,23 @@ impl InputSettings {
         let rate = f64::from(REPEAT_RATE_MIN) + t * f64::from(REPEAT_RATE_MAX - REPEAT_RATE_MIN);
         let delay = f64::from(REPEAT_DELAY_MAX_MS)
             - t * f64::from(REPEAT_DELAY_MAX_MS - REPEAT_DELAY_MIN_MS);
-        (
-            Duration::from_millis(delay.round() as u64),
-            rate.round() as u32,
-        )
+        // `t` is clamped to `[0.0, 1.0]`, so `rate` stays within
+        // `[REPEAT_RATE_MIN, REPEAT_RATE_MAX]` (10..=50) and `delay` within
+        // `[REPEAT_DELAY_MIN_MS, REPEAT_DELAY_MAX_MS]` (200..=600) — both
+        // comfortably non-negative and far under the target types' ranges.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "delay/rate are bounded to small known-positive ranges by the clamp above"
+        )]
+        let delay_ms = delay.round() as u64;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "delay/rate are bounded to small known-positive ranges by the clamp above"
+        )]
+        let rate = rate.round() as u32;
+        (Duration::from_millis(delay_ms), rate)
     }
 }
 
@@ -279,6 +300,7 @@ impl SettingsWatch {
     }
 
     /// Use a different poll interval; tests set it to zero so they don't wait out a real second.
+    #[must_use]
     pub fn with_interval(mut self, interval: Duration) -> Self {
         self.interval = interval;
         self
@@ -291,7 +313,10 @@ impl SettingsWatch {
         {
             return false;
         }
-        self.next_check = Some(now + self.interval);
+        // `checked_add` sidesteps a theoretical `Instant` overflow (would
+        // need centuries of uptime); falling back to "now" just makes the
+        // next `changed()` call re-check immediately instead of panicking.
+        self.next_check = Some(now.checked_add(self.interval).unwrap_or(now));
         let Some(path) = self.path.as_ref() else {
             return false;
         };
@@ -308,6 +333,10 @@ impl SettingsWatch {
 /// What one libinput device is capable of. Every field is a question libinput answers per
 /// device (`config_tap_finger_count`, `config_scroll_has_natural_scroll`, `config_accel_is_available`, …), so the plan below never asks a device for something it doesn't have.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mirrors libinput's per-capability query API one bool at a time, not a state machine"
+)]
 pub struct DeviceCaps {
     /// The device reports tap fingers — i.e. it is a touchpad.
     pub supports_tap: bool,
@@ -368,9 +397,17 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
         middle_emulation: caps
             .supports_middle_emulation
             .then_some(settings.middle_emulation),
-        accel_speed_milli: caps
-            .supports_accel
-            .then(|| (settings.accel_speed() * 1000.0).round() as i32),
+        accel_speed_milli: caps.supports_accel.then(|| {
+            // `accel_speed()` is `pointer_speed.clamp(0.0, 1.0) * 2.0 - 1.0`,
+            // i.e. always within `[-1.0, 1.0]`; milli-units keep it within
+            // `[-1000, 1000]`, far under `i32`'s range.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "accel_speed() is bounded to [-1.0, 1.0]; milli-units stay within [-1000, 1000]"
+            )]
+            let milli = (settings.accel_speed() * 1000.0).round() as i32;
+            milli
+        }),
         left_handed: caps.supports_left_handed.then_some(settings.left_handed),
         flat_acceleration: caps
             .supports_flat_acceleration
@@ -381,6 +418,9 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the tests build a `Path`; the module itself deals in `PathBuf`.
+    use std::path::Path;
+
     use serde_json::json;
 
     fn section(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -680,8 +720,8 @@ mod tests {
         dir.join("settings.json")
     }
 
-    fn watch(path: &PathBuf) -> SettingsWatch {
-        SettingsWatch::at(Some(path.clone())).with_interval(Duration::ZERO)
+    fn watch(path: &Path) -> SettingsWatch {
+        SettingsWatch::at(Some(path.to_path_buf())).with_interval(Duration::ZERO)
     }
 
     #[test]

@@ -1018,7 +1018,7 @@ impl Widget for NavShell {
         self.route_event_to_children(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -1094,11 +1094,16 @@ impl NavShell {
     /// for a sidebar-plus-content shell but must not stop the sidebar/
     /// overview panes from being routed to. Split out of `handle_event` to
     /// keep that under the line cap.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards Widget::handle_event's own parameter list to route to the right \
+                  child pane; bundling it would mean bundling the trait method too"
+    )]
     fn route_event_to_children(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -1155,7 +1160,7 @@ impl NavShell {
             target.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,

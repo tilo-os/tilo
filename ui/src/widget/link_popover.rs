@@ -289,8 +289,22 @@ impl LinkPopover {
         if !self.visible_flag {
             return;
         }
-        let tokens = &theme.tokens;
         let rect = self.rect();
+        self.draw_chrome_and_filter(scene, transform, text_renderer, theme, rect);
+        self.draw_rows(scene, transform, text_renderer, theme, rect);
+    }
+
+    /// The card background/border and the filter query box. Split out of
+    /// `draw_overlay` to keep that under the line cap.
+    fn draw_chrome_and_filter(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let tokens = &theme.tokens;
         let shape = RoundedRect::from_rect(rect, 6.0);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -341,7 +355,19 @@ impl LinkPopover {
             tokens.colors.accent[5],
             true,
         );
+    }
 
+    /// The "No matches" empty state or the scrolled row window. Split out of
+    /// `draw_overlay` to keep that under the line cap.
+    fn draw_rows(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let tokens = &theme.tokens;
         let font_size = tokens.typography.scale.sm;
         if self.visible.is_empty() {
             let y = self.rows_top() + (ROW_HEIGHT - f64::from(font_size)) / 2.0;

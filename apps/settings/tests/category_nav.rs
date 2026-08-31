@@ -141,7 +141,7 @@ fn renders_something(app: &mut SettingsApp) -> bool {
 fn active_row_count(app: &SettingsApp) -> usize {
     fn walk(w: &dyn Widget, n: &mut usize) {
         if w.name() == "SidebarRow" && w.get_state().as_deref() == Some("active") {
-            *n += 1;
+            *n = n.saturating_add(1);
         }
         for c in w.children() {
             walk(c, n);

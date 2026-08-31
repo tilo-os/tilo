@@ -36,6 +36,11 @@ const MIME: &str = "application/vnd.oasis.opendocument.presentation";
 // ===========================================================================
 
 /// Serialise `deck` to the bytes of a `.odp` package.
+///
+/// # Errors
+///
+/// Returns an error if the ZIP writer fails (an I/O error on the underlying
+/// cursor, which does not happen in practice since it writes to memory).
 pub fn write_odp(deck: &Deck) -> std::io::Result<Vec<u8>> {
     let content = content_xml(deck);
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -119,14 +124,14 @@ fn push_model_attrs(s: &mut String, el: &Element) {
 }
 
 fn push_element(s: &mut String, el: &Element, sx: f64, sy: f64) {
-    let x = cm(el.x, sx);
-    let y = cm(el.y, sy);
-    let w = cm(el.w, sx);
-    let h = cm(el.h, sy);
+    let gx = cm(el.x, sx);
+    let gy = cm(el.y, sy);
+    let gw = cm(el.w, sx);
+    let gh = cm(el.h, sy);
     match el.kind {
         ElementKind::Text | ElementKind::Image => {
             s.push_str("<draw:frame");
-            push_geo(s, &x, &y, &w, &h);
+            push_geo(s, &gx, &gy, &gw, &gh);
             push_model_attrs(s, el);
             s.push('>');
             if el.kind == ElementKind::Image {
@@ -149,21 +154,21 @@ fn push_element(s: &mut String, el: &Element, sx: f64, sy: f64) {
         }
         ElementKind::Rect => {
             s.push_str("<draw:rect");
-            push_geo(s, &x, &y, &w, &h);
+            push_geo(s, &gx, &gy, &gw, &gh);
             push_model_attrs(s, el);
             s.push_str("/>");
         }
         ElementKind::Ellipse => {
             s.push_str("<draw:ellipse");
-            push_geo(s, &x, &y, &w, &h);
+            push_geo(s, &gx, &gy, &gw, &gh);
             push_model_attrs(s, el);
             s.push_str("/>");
         }
         ElementKind::Line => {
             s.push_str("<draw:line svg:x1=\"");
-            s.push_str(&x);
+            s.push_str(&gx);
             s.push_str("\" svg:y1=\"");
-            s.push_str(&y);
+            s.push_str(&gy);
             s.push_str("\" svg:x2=\"");
             s.push_str(&cm(el.x + el.w, sx));
             s.push_str("\" svg:y2=\"");
@@ -175,15 +180,15 @@ fn push_element(s: &mut String, el: &Element, sx: f64, sy: f64) {
     }
 }
 
-fn push_geo(s: &mut String, x: &str, y: &str, w: &str, h: &str) {
+fn push_geo(s: &mut String, gx: &str, gy: &str, gw: &str, gh: &str) {
     s.push_str(" svg:x=\"");
-    s.push_str(x);
+    s.push_str(gx);
     s.push_str("\" svg:y=\"");
-    s.push_str(y);
+    s.push_str(gy);
     s.push_str("\" svg:width=\"");
-    s.push_str(w);
+    s.push_str(gw);
     s.push_str("\" svg:height=\"");
-    s.push_str(h);
+    s.push_str(gh);
     s.push('"');
 }
 
@@ -256,6 +261,11 @@ fn resolve_entity(r: &quick_xml::events::BytesRef) -> Option<char> {
 // ===========================================================================
 
 /// Parse the bytes of a `.odp` package back into a [`Deck`].
+///
+/// # Errors
+///
+/// Returns an error if `bytes` isn't a readable ZIP archive, if it has no
+/// `content.xml` entry, or if `content.xml` parses to zero slides.
 pub fn read_odp(bytes: &[u8]) -> std::io::Result<Deck> {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -319,11 +329,12 @@ fn parse_content(xml: &str) -> Option<Deck> {
                         in_text_p = false;
                         cur_lines.push(std::mem::take(&mut p_buf));
                     }
-                    b"draw:frame" if cur_text_el.is_some() => {
-                        let mut el = cur_text_el.take().unwrap();
-                        el.text = cur_lines.join("\n");
-                        if let Some(slide) = slides.last_mut() {
-                            slide.elements.push(el);
+                    b"draw:frame" => {
+                        if let Some(mut el) = cur_text_el.take() {
+                            el.text = cur_lines.join("\n");
+                            if let Some(slide) = slides.last_mut() {
+                                slide.elements.push(el);
+                            }
                         }
                     }
                     _ => {}

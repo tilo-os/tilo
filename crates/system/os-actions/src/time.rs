@@ -38,6 +38,10 @@ pub fn get_time_sync_status() -> TimeSyncStatus {
 
 /// The IANA zones timedated accepts. This uses the system zoneinfo database,
 /// so the list follows tzdata updates instead of an embedded copy.
+///
+/// # Errors
+///
+/// Returns an error message if `timedatectl` is not installed or the command fails.
 pub fn list_timezones() -> Result<Vec<String>, String> {
     let out = run_capture("timedatectl", &["list-timezones"])?;
     let mut zones: Vec<String> = out
@@ -51,6 +55,12 @@ pub fn list_timezones() -> Result<Vec<String>, String> {
     Ok(zones)
 }
 
+/// Set the system time zone to the IANA identifier `timezone`.
+///
+/// # Errors
+///
+/// Returns an error message if `timezone` fails [`valid_timezone`], or if `timedatectl` is not
+/// installed, is not authorised, or the command otherwise fails.
 pub fn set_timezone(timezone: &str) -> Result<(), String> {
     if !valid_timezone(timezone) {
         return Err("invalid IANA time-zone identifier".into());
@@ -111,6 +121,11 @@ fn parse_time_source(out: &str) -> Option<String> {
 
 /// Is automatic time synchronisation (NTP) enabled?
 /// `timedatectl show -p NTP --value` prints `yes` / `no`.
+///
+/// # Errors
+///
+/// Returns an error message if `timedatectl` is not installed, the command fails, or its
+/// output is not `yes`/`no`.
 pub fn get_ntp() -> Result<bool, String> {
     let out = run_capture("timedatectl", &["show", "-p", "NTP", "--value"])?;
     parse_timedatectl_ntp(&out)
@@ -118,6 +133,11 @@ pub fn get_ntp() -> Result<bool, String> {
 
 /// Enable/disable automatic time synchronisation. Needs privilege, so a
 /// denial surfaces as the command's error string.
+///
+/// # Errors
+///
+/// Returns an error message if `timedatectl` is not installed, is not authorised, or the
+/// command otherwise fails.
 pub fn set_ntp(enabled: bool) -> Result<(), String> {
     run(
         "timedatectl",
@@ -127,12 +147,20 @@ pub fn set_ntp(enabled: bool) -> Result<(), String> {
 
 /// Current wall-clock time, formatted 24-hour (`14:05`) or 12-hour
 /// (`02:05 PM`) per `h24`.
+///
+/// # Errors
+///
+/// Returns an error message if `date` is not installed or the command fails.
 pub fn now_clock(h24: bool) -> Result<String, String> {
     let fmt = if h24 { "+%H:%M" } else { "+%I:%M %p" };
     Ok(run_capture("date", &[fmt])?.trim().to_string())
 }
 
 /// Current date, e.g. `Monday, 4 July 2026`.
+///
+/// # Errors
+///
+/// Returns an error message if `date` is not installed or the command fails.
 pub fn now_date() -> Result<String, String> {
     Ok(run_capture("date", &["+%A, %-d %B %Y"])?.trim().to_string())
 }

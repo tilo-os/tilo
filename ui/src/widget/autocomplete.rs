@@ -534,6 +534,76 @@ impl Default for Autocomplete {
     }
 }
 
+impl Autocomplete {
+    /// The `KeyboardInput` arm of [`Widget::handle_event`], split out to
+    /// keep that under the line cap. Navigation/accept/cancel keys are
+    /// intercepted here since the field itself never consumes them;
+    /// everything else forwards to the field and recomputes on change.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards Widget::handle_event's own parameter list to the inner field; \
+                  bundling it would mean bundling the trait method too"
+    )]
+    fn handle_key_while_editing(
+        &mut self,
+        logical_key: &Key,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        match logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                self.move_highlight(true);
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.move_highlight(false);
+                *handled = true;
+            }
+            Key::Named(NamedKey::Enter) => {
+                let value = self
+                    .highlighted()
+                    .map_or_else(|| self.input.value().to_string(), |s| s.value.clone());
+                self.accept(value);
+                *handled = true;
+            }
+            Key::Named(NamedKey::Tab) if !self.suggestions.is_empty() => {
+                self.complete_to_highlight();
+                *handled = true;
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.cancel();
+                *handled = true;
+            }
+            _ => {
+                // Forward to the field, then recompute if the text changed.
+                self.input.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    root,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                );
+                if self.input.take_dirty().is_some() {
+                    self.recompute();
+                    self.open = !self.suggestions.is_empty();
+                    self.highlight = None;
+                }
+            }
+        }
+    }
+}
+
 impl Widget for Autocomplete {
     fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {}
 
@@ -664,50 +734,18 @@ impl Widget for Autocomplete {
                         ..
                     },
                 ..
-            } => match logical_key {
-                Key::Named(NamedKey::ArrowDown) => {
-                    self.move_highlight(true);
-                    *handled = true;
-                }
-                Key::Named(NamedKey::ArrowUp) => {
-                    self.move_highlight(false);
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Enter) => {
-                    let value = self
-                        .highlighted()
-                        .map_or_else(|| self.input.value().to_string(), |s| s.value.clone());
-                    self.accept(value);
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Tab) if !self.suggestions.is_empty() => {
-                    self.complete_to_highlight();
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Escape) => {
-                    self.cancel();
-                    *handled = true;
-                }
-                _ => {
-                    // Forward to the field, then recompute if the text changed.
-                    self.input.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        root,
-                        handled,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    );
-                    if self.input.take_dirty().is_some() {
-                        self.recompute();
-                        self.open = !self.suggestions.is_empty();
-                        self.highlight = None;
-                    }
-                }
-            },
+            } => self.handle_key_while_editing(
+                logical_key,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            ),
             // A left press on a dropdown row accepts it.
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
