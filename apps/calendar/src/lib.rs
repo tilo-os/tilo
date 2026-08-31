@@ -45,6 +45,7 @@ pub mod app;
 pub mod caldav;
 pub mod date;
 pub mod doc;
+mod event_popovers;
 pub mod ics;
 pub mod model;
 pub mod search_provider;
