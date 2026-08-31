@@ -21,6 +21,7 @@ use winit::keyboard::{Key, NamedKey};
 use std::cell::Cell;
 use std::rc::Rc;
 use ui::icons::Icon;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -33,7 +34,6 @@ use crate::model::{
     ConnId, ConnKind, ConnStatus, Connection, Vault, human_ago, sample_vault, stub_connection,
 };
 use crate::net::{self, Transfer};
-use crate::portal::{self, ImportOutcome};
 use crate::throughput;
 
 /// One real byte-counter reading of a connected tunnel, timestamped so a
@@ -107,6 +107,23 @@ impl TransferHistory {
 
 const HEADER_H: f64 = 72.0;
 const LIST_W: f64 = 440.0;
+
+fn tunnel_import_request(kind: ConnKind) -> PickRequest {
+    let (title, filter) = match kind {
+        ConnKind::WireGuard => (
+            "Import WireGuard tunnel",
+            FileFilter::new("WireGuard (.conf)").glob("*.conf"),
+        ),
+        ConnKind::OpenVpn => (
+            "Import OpenVPN tunnel",
+            FileFilter::new("OpenVPN (.ovpn)").glob("*.ovpn"),
+        ),
+    };
+    PickRequest::open(title, "Import")
+        .thread_name("vpn-portal-import")
+        .filter(filter)
+        .all_files()
+}
 const ROW_H: f64 = 74.0;
 const ROW_GAP: f64 = 8.0;
 
@@ -321,7 +338,7 @@ pub struct VpnApp {
     activity: Vec<String>,
     /// In-flight XDG-portal file import, drained once per frame. `None` when
     /// idle.
-    import_rx: Option<portal::ImportChannel>,
+    import_rx: Option<PortalChannel>,
     /// Which protocol the pending import was requested for (seeds the parser
     /// when the chosen file has an ambiguous extension).
     import_hint: ConnKind,
@@ -644,7 +661,7 @@ impl VpnApp {
             return;
         }
         self.import_hint = kind;
-        self.import_rx = Some(portal::request_import(kind));
+        self.import_rx = Some(tunnel_import_request(kind).send());
         self.log(format!("choose a .{} file to import…", kind.ext()));
     }
 
@@ -665,7 +682,7 @@ impl VpnApp {
         };
         self.import_rx = None;
         match outcome {
-            ImportOutcome::Opened(path) => match std::fs::read_to_string(&path) {
+            PortalOutcome::Opened(path) => match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     let stem = path
                         .file_stem()
@@ -724,8 +741,8 @@ impl VpnApp {
                     true
                 }
             },
-            ImportOutcome::Cancelled => false,
-            ImportOutcome::Failed(reason) => {
+            PortalOutcome::Cancelled => false,
+            PortalOutcome::Failed(reason) => {
                 self.log(format!("import failed: {reason}"));
                 true
             }
@@ -3225,7 +3242,9 @@ mod tests {
         let path = std::env::temp_dir().join(format!("home-{}.conf", uuid::Uuid::new_v4()));
         std::fs::write(&path, raw).unwrap();
 
-        app.import_rx = Some(portal::inject_for_test(ImportOutcome::Opened(path.clone())));
+        app.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
+            path.clone(),
+        )));
         assert!(app.drain_import(&mut doc), "a delivered import applies");
         assert!(app.import_rx.is_none(), "draining clears the request");
         assert_eq!(app.vault.connections.len(), before + 1);

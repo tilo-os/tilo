@@ -50,6 +50,7 @@ use std::collections::HashMap;
 
 use calendar::{CalendarApp, View};
 use taffy::prelude::*;
+use ui::launch::LaunchSpec;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -150,24 +151,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            calendar::app_root(),
-            "dev.qos.calendar",
-        ));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.calendar");
-    let mut app = ui::App::new(state, calendar::app_root()).with_autosave(autosave);
-    // Register the calendar's actions so the shell's Ctrl+K palette can decode +
-    // replay the same event/task actions the on-screen affordances dispatch.
-    calendar::actions::register(app.action_registry_mut());
-    app.run();
+    // The historical dual-output screenshot command stays above because one
+    // invocation may write both wide and narrow PNGs. The ordinary live and
+    // headless modes use the standard persisted lifecycle.
+    ui::launch::run(
+        &LaunchSpec::new("dev.qos.calendar", calendar::app_root).configure_app(configure_app),
+    )?;
     Ok(())
+}
+
+fn configure_app(app: &mut ui::App) {
+    calendar::actions::register(app.action_registry_mut());
 }
 
 fn view_from_str(s: &str) -> Option<View> {

@@ -24,6 +24,10 @@ jobs:
       CARGO_HOME: /cargo-home
       CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
+      # Keep dev and test fingerprints compatible. The all-target check and
+      # example links can then reuse dependencies emitted by nextest instead
+      # of rebuilding the workspace merely to add unused CI debuginfo.
+      CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_TERM_COLOR: never
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
