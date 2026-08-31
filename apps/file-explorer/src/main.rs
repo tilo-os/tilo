@@ -38,6 +38,7 @@ use std::collections::HashMap;
 
 use file_explorer::FileExplorerWidget;
 use taffy::prelude::*;
+use ui::launch::LaunchSpec;
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -160,19 +161,19 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let widget = FileExplorerWidget::new();
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            &spec,
-            Box::new(widget),
-            "dev.qos.file-explorer",
-        ));
-    }
+    ui::launch::run(
+        &LaunchSpec::new("dev.qos.file-explorer", || {
+            Box::new(FileExplorerWidget::new())
+        })
+        .open_state(open_state),
+    )?;
+    Ok(())
+}
 
-    let (mut state, autosave) = ui::persist::open("dev.qos.file-explorer");
+/// Open persisted state while preserving the file manager's per-replica actor
+/// naming. The shared runner still owns autosave, headless driving, and exit.
+fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
+    let (mut state, autosave) = ui::persist::open(app_id);
     // Two windows of the file manager are two authors of the same document
     // — an inline rename is native collaborative `Text` (see
     // `actions.rs`), so concurrent edits have to be attributable to tell
@@ -185,9 +186,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     state
         .doc
         .set_actor(automerge::ActorId::from(app_id.as_bytes()));
-    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
-    app.run();
-    Ok(())
+    (state, autosave)
 }
 
 /// Seed a demo workspace directory whose files carry real `user.qos.sync`
