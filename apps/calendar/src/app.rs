@@ -56,6 +56,7 @@ use crate::timeline_viewport::TIMELINE_MIN_HOUR_H;
 use crate::timeline_viewport::{
     TIMELINE_ALLDAY_H, TIMELINE_HEAD_H, TimelineGeom, TimelineViewport,
 };
+use crate::topbar::{Action as TopbarAction, LeadingControl, Topbar};
 
 /// Placeholder shown in the empty title field of a new event.
 const TITLE_PLACEHOLDER: &str = "New event";
@@ -68,7 +69,6 @@ const NOTES_PLACEHOLDER: &str = "Add details…";
 const EMPTY_ONBOARDING_TITLE: &str = "No events yet";
 const EMPTY_ONBOARDING_HINT: &str = "Click a day to add your first event";
 
-const TOPBAR_H: f64 = 60.0;
 const DETAIL_PAD: f64 = 22.0;
 const NOTES_TOP_OFFSET: f64 = 296.0;
 
@@ -96,15 +96,6 @@ const MODAL_BODY_W: f64 = MODAL_W - 2.0 * DETAIL_PAD;
 const MODAL_MARGIN: f64 = 40.0;
 /// Cap on the modal card height so it stays a card, not a full-height column.
 const MODAL_MAX_H: f64 = 720.0;
-
-/// Topbar view-switcher metrics, shared by the draw pass and the fit check so
-/// the two never disagree about whether the switcher fits.
-const SEG_CELL_W: f64 = 56.0;
-const SEG_TOTAL_W: f64 = SEG_CELL_W * 4.0;
-const NEW_BTN_W: f64 = 60.0;
-/// Minimum horizontal room the period title needs beside the switcher before
-/// the switcher folds out of the topbar into the sidebar.
-const TITLE_MIN_W: f64 = 80.0;
 
 /// How the event/task detail editor is presented at the current width.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -341,15 +332,13 @@ pub struct CalendarApp {
     // --- responsive state ------------------------------------------------
     /// Responsive drawer state, geometry and chrome interaction.
     sidebar: Sidebar,
+    /// Responsive navigation chrome and its pointer hit map.
+    topbar: Topbar,
     /// Which narrow screen is showing (only meaningful when the editor is
     /// full-screen, i.e. below [`EDITOR_OVERLAY_MIN`]).
     narrow_screen: NarrowScreen,
     /// How the detail editor is presented — recomputed every layout from width.
     detail_mode: DetailMode,
-    /// Whether the topbar has room for the segmented view switcher. When it
-    /// doesn't, the switcher folds into the sidebar/flap. Recomputed per layout.
-    switcher_in_topbar: bool,
-
     // --- layout caches (filled by `relayout`) ----------------------------
     rect: Rect,
     /// The region right of a persistent sidebar (or full-width under an overlay
@@ -481,13 +470,13 @@ impl CalendarApp {
             force_persist: false,
             last_persist: std::time::Instant::now(),
             sidebar: Sidebar::new(),
+            topbar: Topbar::new(),
             narrow_screen: if detail_open {
                 NarrowScreen::Detail
             } else {
                 NarrowScreen::Calendar
             },
             detail_mode: DetailMode::Overlay,
-            switcher_in_topbar: true,
             rect: Rect::ZERO,
             content_rect: Rect::ZERO,
             detail_rect: Rect::ZERO,
@@ -2143,10 +2132,16 @@ impl CalendarApp {
             }
         }
 
-        // The switcher stays in the topbar as long as it genuinely fits beside
-        // the period title and New button; only then does it fold into the
-        // sidebar/flap.
-        self.switcher_in_topbar = self.topbar_fits_switcher(self.content_rect.width());
+        // Navigation chrome owns its geometry and the responsive decision to
+        // keep the view switcher here or fold it into the sidebar.
+        let leading = if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
+            LeadingControl::OpenSidebar
+        } else if self.sidebar.is_collapsed() {
+            LeadingControl::ExpandSidebar
+        } else {
+            LeadingControl::None
+        };
+        self.topbar.layout(self.content_rect, leading);
 
         // Point the active view's scroll container at the fresh geometry so a
         // resize reflows the scroll extents (and re-clamps the offset) every
@@ -2227,30 +2222,6 @@ impl CalendarApp {
         let cx = content_x0 + content_w / 2.0;
         let cy = r.y0 + r.height() / 2.0;
         Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
-    }
-
-    /// Whether the segmented view switcher fits in the topbar at `content_w`.
-    /// Mirrors `draw_topbar`'s fixed metrics so the two agree; when this is
-    /// false the switcher folds into the sidebar/flap instead. Kept as a pure
-    /// function of width so it is deterministic and directly testable.
-    fn topbar_fits_switcher(&self, content_w: f64) -> bool {
-        if content_w <= 0.0 {
-            return false;
-        }
-        let mut left = 16.0;
-        // Hamburger (overlay) or expand chevron (collapsed persistent) share the
-        // same left slot.
-        if matches!(self.sidebar.mode(), SidebarMode::Overlay) || self.sidebar.is_collapsed() {
-            left += 38.0;
-        }
-        left += 74.0; // prev / next chevrons
-        left += 60.0; // Today pill
-        let title_x = left + 14.0;
-        let seg_x1 = content_w - 14.0;
-        let seg_x0 = seg_x1 - SEG_TOTAL_W;
-        let new_x0 = seg_x0 - NEW_BTN_W - 10.0;
-        let title_right = new_x0 - 12.0;
-        title_right - title_x >= TITLE_MIN_W
     }
 
     /// The rect covering the notes editor column inside the detail card/page —
@@ -2527,7 +2498,7 @@ impl CalendarApp {
             self.rect,
             self.content_rect,
             self.detail_rect,
-            self.switcher_in_topbar,
+            self.topbar.switcher_visible(),
             self.view,
             self.last_mouse,
         ) else {
@@ -3057,248 +3028,8 @@ impl CalendarApp {
         hits
     }
 
-    /// Candidate period titles for the topbar, widest first. The topbar draws
-    /// the widest one that fits the space between the Today pill and the New
-    /// button, so the full range still reads when there's room and degrades to
-    /// a compact form (still showing both endpoints) when there isn't — rather
-    /// than clipping the end date off a single fixed string.
-    fn period_title_variants(&self) -> Vec<String> {
-        match self.view {
-            View::Month => vec![date::month_title(self.anchor)],
-            View::Week => {
-                let w = date::week_days(self.anchor);
-                vec![
-                    date::week_range_long(w[0], w[6]),
-                    date::week_range_short(w[0], w[6]),
-                ]
-            }
-            View::Day => vec![date::fmt_day_long(self.anchor)],
-            View::Agenda => vec!["Upcoming".into()],
-        }
-    }
-
-    fn draw_topbar(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Vec<(Rect, Action)> {
-        let c = &theme.tokens.colors;
-        let mut hits = Vec::new();
-        let content_x0 = self.content_rect.x0;
-        let right_edge = self.content_rect.x1;
-        let r = Rect::new(
-            content_x0,
-            self.rect.y0,
-            right_edge,
-            self.rect.y0 + TOPBAR_H,
-        );
-        fill_rect(scene, t, c.surfaces.base, r);
-        stroke_line(
-            scene,
-            t,
-            c.border_standard,
-            Point::new(r.x0, r.y1),
-            Point::new(r.x1, r.y1),
-            1.0,
-        );
-
-        let cy = r.center().y;
-        let title_x = self.draw_topbar_nav(scene, t, tr, theme, r, cy, &mut hits);
-        let title_right = self.draw_topbar_actions(scene, t, tr, theme, right_edge, cy, &mut hits);
-        self.draw_topbar_title(scene, t, tr, theme, r, cy, title_x, title_right);
-
-        hits
-    }
-
-    /// The hamburger/collapse toggle, prev/next chevrons, and Today pill
-    /// (part of [`Self::draw_topbar`]). Returns the x the period title
-    /// should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    fn draw_topbar_nav(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        cy: f64,
-        hits: &mut Vec<(Rect, Action)>,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        let overlay_sidebar = matches!(self.sidebar.mode(), SidebarMode::Overlay);
-        let mut left = r.x0 + 16.0;
-        // Hamburger toggle for the overlay flap (narrow only).
-        if overlay_sidebar {
-            let ham = Rect::new(left, cy - 15.0, left + 30.0, cy + 15.0);
-            draw_icon_button(scene, t, theme, ham, ham.contains(self.last_mouse));
-            draw_hamburger(scene, t, c.neutral[8], ham.center());
-            hits.push((ham, Action::ToggleSidebar));
-            left += 38.0;
-        } else if self.sidebar.is_collapsed() {
-            // Persistent sidebar collapsed → expand chevron (mirror of the
-            // sidebar's collapse control). A chevron, not a hamburger: the
-            // sidebar is inline, not an overlay drawer.
-            let exp = Rect::new(left, cy - 15.0, left + 30.0, cy + 15.0);
-            draw_icon_button(scene, t, theme, exp, exp.contains(self.last_mouse));
-            draw_chevron(scene, t, c.neutral[8], exp.center(), false);
-            hits.push((exp, Action::ToggleSidebarCollapsed));
-            left += 38.0;
-        }
-
-        // prev / next chevrons
-        let prev = Rect::new(left, cy - 15.0, left + 30.0, cy + 15.0);
-        let next = Rect::new(left + 34.0, cy - 15.0, left + 64.0, cy + 15.0);
-        draw_icon_button(scene, t, theme, prev, prev.contains(self.last_mouse));
-        draw_icon_button(scene, t, theme, next, next.contains(self.last_mouse));
-        draw_chevron(scene, t, c.neutral[8], prev.center(), true);
-        draw_chevron(scene, t, c.neutral[8], next.center(), false);
-        hits.push((prev, Action::Prev));
-        hits.push((next, Action::Next));
-        left += 74.0;
-
-        // Today pill
-        let today_btn = Rect::new(left, cy - 15.0, left + 60.0, cy + 15.0);
-        draw_icon_button(
-            scene,
-            t,
-            theme,
-            today_btn,
-            today_btn.contains(self.last_mouse),
-        );
-        center_text(scene, tr, "Today", 13.0, c.neutral[8], today_btn, t);
-        hits.push((today_btn, Action::Today));
-        today_btn.x1 + 14.0
-    }
-
-    /// The right cluster: the segmented view control (when it fits) + the
-    /// New button (part of [`Self::draw_topbar`]). Returns the x the period
-    /// title must stop before.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    fn draw_topbar_actions(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        right_edge: f64,
-        cy: f64,
-        hits: &mut Vec<(Rect, Action)>,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        // The segmented switch stays in the topbar whenever it genuinely fits
-        // (computed in `relayout`); only when it doesn't does it fold into the
-        // sidebar/flap. Either way the view stays switchable by keyboard.
-        let show_segmented = self.switcher_in_topbar;
-        let new_w = NEW_BTN_W;
-        let seg_x0 = if show_segmented {
-            let seg_w = SEG_CELL_W;
-            let seg_total = SEG_TOTAL_W;
-            let seg_x1 = right_edge - 14.0;
-            let seg_x0 = seg_x1 - seg_total;
-            let seg = Rect::new(seg_x0, cy - 16.0, seg_x1, cy + 16.0);
-            fill_round(scene, t, c.surfaces.raised, seg, 9.0);
-            stroke_round(scene, t, c.border_standard, seg, 9.0, 1.0);
-            for (i, v) in View::ALL.iter().enumerate() {
-                let cell = Rect::new(
-                    seg_x0 + seg_w * i as f64,
-                    seg.y0,
-                    seg_x0 + seg_w * (i as f64 + 1.0),
-                    seg.y1,
-                );
-                if self.view == *v {
-                    fill_round(scene, t, c.accent[5], cell.inflate(-3.0, -3.0), 7.0);
-                } else if cell.contains(self.last_mouse) {
-                    fill_round(scene, t, c.surface_white_5, cell.inflate(-3.0, -3.0), 7.0);
-                }
-                let col = if self.view == *v {
-                    Color::WHITE
-                } else {
-                    c.neutral[7]
-                };
-                center_text(scene, tr, v.label(), 13.0, col, cell, t);
-                hits.push((cell, Action::View(*v)));
-            }
-            seg_x0
-        } else {
-            right_edge - 14.0
-        };
-
-        let new_btn = Rect::new(seg_x0 - new_w - 10.0, cy - 16.0, seg_x0 - 10.0, cy + 16.0);
-        fill_round(scene, t, c.accent[5], new_btn, 9.0);
-        draw_plus(scene, t, Color::WHITE, Point::new(new_btn.x0 + 16.0, cy));
-        tr.draw_text(
-            scene,
-            "New",
-            13.0,
-            Color::WHITE,
-            t * Affine::translate((new_btn.x0 + 28.0, cy - 8.0)),
-            None,
-        );
-        hits.push((new_btn, Action::NewEvent));
-        new_btn.x0 - 12.0
-    }
-
-    /// The period title — fills the gap between the Today pill and the New
-    /// button. Draws the widest variant that fits so the full range reads
-    /// whenever there's room (dropping to a compact both-endpoints form when
-    /// there isn't); the clip layer is only a last-resort safety net (part
-    /// of [`Self::draw_topbar`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    fn draw_topbar_title(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        cy: f64,
-        title_x: f64,
-        title_right: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let avail = (title_right - title_x).max(0.0);
-        let variants = self.period_title_variants();
-        let title = variants
-            .iter()
-            .find(|v| f64::from(tr.measure(v, 19.0, None).0) <= avail)
-            .unwrap_or_else(|| variants.last().expect("at least one title variant"));
-        let title_clip = Rect::new(title_x - 2.0, r.y0, title_right, r.y1);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &title_clip,
-        );
-        tr.draw_text(
-            scene,
-            title,
-            19.0,
-            c.text_primary,
-            t * Affine::translate((title_x, cy - 11.0)),
-            None,
-        );
-        scene.pop_layer();
-    }
-
     fn view_rect(&self) -> Rect {
-        Rect::new(
-            self.content_rect.x0,
-            self.rect.y0 + TOPBAR_H,
-            self.content_rect.x1,
-            self.rect.y1,
-        )
+        self.topbar.view_rect()
     }
 
     fn draw_month(
@@ -5411,7 +5142,31 @@ impl Widget for CalendarApp {
         // pushed detail).
         let detail_drawn = self.detail_open && self.detail_rect.area() > 0.0;
         if self.content_rect.area() > 0.0 {
-            hits.extend(self.draw_topbar(scene, t, text_renderer, theme));
+            hits.extend(
+                self.topbar
+                    .draw(
+                        scene,
+                        t,
+                        text_renderer,
+                        theme,
+                        self.view,
+                        self.anchor,
+                        self.last_mouse,
+                    )
+                    .iter()
+                    .map(|(rect, action)| {
+                        let action = match action {
+                            TopbarAction::View(view) => Action::View(*view),
+                            TopbarAction::Today => Action::Today,
+                            TopbarAction::Previous => Action::Prev,
+                            TopbarAction::Next => Action::Next,
+                            TopbarAction::NewEvent => Action::NewEvent,
+                            TopbarAction::OpenSidebar => Action::ToggleSidebar,
+                            TopbarAction::ExpandSidebar => Action::ToggleSidebarCollapsed,
+                        };
+                        (*rect, action)
+                    }),
+            );
             let area = self.view_rect();
             match self.view {
                 View::Month => hits.extend(self.draw_month(scene, t, text_renderer, theme, area)),
@@ -5810,7 +5565,7 @@ fn draw_caret(scene: &mut Scene, t: Affine, color: Color, center: Point, expande
     scene.stroke(&Stroke::new(1.6), t, color, None, &p);
 }
 
-fn draw_plus(scene: &mut Scene, t: Affine, color: Color, center: Point) {
+pub(crate) fn draw_plus(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     stroke_line(
         scene,
         t,
@@ -5829,7 +5584,7 @@ fn draw_plus(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     );
 }
 
-fn draw_hamburger(scene: &mut Scene, t: Affine, color: Color, center: Point) {
+pub(crate) fn draw_hamburger(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     for dy in [-5.0, 0.0, 5.0] {
         stroke_line(
             scene,
@@ -6776,7 +6531,7 @@ mod tests {
     fn view_switcher_stays_in_topbar_until_it_genuinely_doesnt_fit() {
         // Issue: the switcher folded into the sidebar too eagerly. It must stay
         // in the topbar at normal/large widths and only fold when it truly
-        // can't fit. Assert the real fit decision that `draw_topbar` reads.
+        // can't fit. Assert the real fit decision that `Topbar::draw` reads.
         let mut app = CalendarApp::new_demo();
         // Isolate the switcher logic on the calendar screen (no pushed detail
         // zeroing the content width out from under us).
@@ -6787,7 +6542,7 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
         assert!(
-            app.switcher_in_topbar,
+            app.topbar.switcher_visible(),
             "wide window keeps the switcher in the topbar"
         );
 
@@ -6797,7 +6552,7 @@ mod tests {
         app.relayout();
         assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
         assert!(
-            app.switcher_in_topbar,
+            app.topbar.switcher_visible(),
             "a roomy topbar keeps the switcher even with an overlay sidebar"
         );
 
@@ -6805,7 +6560,7 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 460.0, 800.0);
         app.relayout();
         assert!(
-            !app.switcher_in_topbar,
+            !app.topbar.switcher_visible(),
             "a cramped topbar folds the switcher into the sidebar"
         );
     }
