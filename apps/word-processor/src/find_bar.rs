@@ -456,6 +456,7 @@ impl FindBar {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,

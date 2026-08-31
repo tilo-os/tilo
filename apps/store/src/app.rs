@@ -47,6 +47,17 @@ use vello::kurbo::{Affine, Point, Rect};
 use crate::model::{ActionKind, SourceFilter, StoreItem};
 use crate::sources::distinct_categories;
 
+/// Build a taffy node from `children` already built in the same tree.
+/// `new_with_children` only fails when a child id does not resolve in this
+/// tree, which cannot happen for children this same call just built.
+#[allow(
+    clippy::unwrap_used,
+    reason = "new_with_children cannot fail for children built in this same tree; see doc comment"
+)]
+fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> NodeId {
+    taffy.new_with_children(style, children).unwrap()
+}
+
 /// One-shot CRDT keys the sub-widgets write on click. The names are
 /// prefixed with `store.` so the toplevel `state.doc` root object
 /// can hold them without colliding with sibling widgets when the
@@ -80,6 +91,15 @@ pub enum RemoteIntent {
 }
 
 /// Root widget.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, unrelated flag (host flatpak \
+              availability, a layout-rebuild gate, a pending worker action, \
+              the remotes view's open/closed state, and a --shots-only seam); \
+              grouping them into enums would not express any real invariant \
+              between them and would touch sync/draw/handle_event call sites \
+              across this file"
+)]
 pub struct StoreApp {
     /// Merged item feed.
     items: Vec<StoreItem>,
@@ -307,12 +327,11 @@ impl StoreApp {
         // refreshes. When a query is active the best fuzzy match wins
         // regardless of install state.
         if self.query.trim().is_empty() {
-            hits.sort_by(|a, b| {
-                b.install_rank().cmp(&a.install_rank()).then_with(|| {
-                    a.name
-                        .to_ascii_lowercase()
-                        .cmp(&b.name.to_ascii_lowercase())
-                })
+            hits.sort_by_key(|i| {
+                (
+                    std::cmp::Reverse(i.install_rank()),
+                    i.name.to_ascii_lowercase(),
+                )
             });
         } else {
             let q = self.query.clone();
@@ -334,7 +353,7 @@ impl StoreApp {
     /// Compose the whole tree. Called from `build_layout`; also used
     /// by tests to inspect the composition graph directly.
     fn compose(&self, theme: &Theme) -> Box<dyn Widget> {
-        let header = self.build_header();
+        let header = Self::build_header();
         let filter_row = self.build_filter_row();
         let category_row = self.build_category_row();
         let list = if self.remotes_open {
@@ -453,7 +472,7 @@ impl StoreApp {
         )
     }
 
-    fn build_header(&self) -> Box<dyn Widget> {
+    fn build_header() -> Box<dyn Widget> {
         // Live search box: a real `TextInput` bound to a CRDT `Text`
         // object at `SEARCH_QUERY_KEY`. `sync` seeds the object and
         // reads the typed value back into `self.query`, which drives
@@ -632,11 +651,21 @@ impl StoreApp {
     /// `true` if anything changed (used by callers as a signal to
     /// re-render).
     fn drain_click_keys(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        let mut any = false;
         // Source-filter chips are wired through the `filter_click`
         // cell (see `sync`), not a CRDT key, so there is no filter
         // loop here.
-        // Category chips.
+        let mut any = self.drain_category_clicks(state, path);
+        any |= self.drain_primary_action_click(state, path);
+        any |= self.drain_secondary_clicks(state, path);
+        any |= self.drain_detail_back_click(state, path);
+        any |= self.drain_remotes_clicks(state, path);
+        any |= self.drain_refresh_click(state, path);
+        any
+    }
+
+    /// Category chips.
+    fn drain_category_clicks(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        let mut any = false;
         for label in self.category_labels() {
             let key = format!("{CATEGORY_SELECT_KEY}.{label}");
             if take_bool_edge(state, path, &key) {
@@ -649,33 +678,42 @@ impl StoreApp {
                 any = true;
             }
         }
-        // Primary action clicks (the big button on each card).
-        if let Some((id, action)) = self.take_action_click(state, path) {
-            self.status_line = match action {
-                ActionKind::Open => format!("Opening {id}…"),
-                ActionKind::Update => format!("Updating {id}…"),
-                ActionKind::Remove => format!("Removing {id}…"),
-                ActionKind::MarkInstalled => format!("Marking {id} installed…"),
-                ActionKind::Unmark => format!("Unmarking {id}…"),
-                ActionKind::FlatpakInstall => format!("Installing Flatpak {id}…"),
-                ActionKind::FlatpakUpdate => format!("Updating Flatpak {id}…"),
-                // Named as unconfined in the status line, not only in
-                // the launcher's log: this is the moment the user
-                // chooses to start it.
-                ActionKind::FlatpakOpen => format!("Opening {id} (unconfined host app)…"),
-                ActionKind::FlatpakRemove => format!("Removing Flatpak {id}…"),
-                ActionKind::NeedsFlatpakHost => {
-                    "Install flatpak on the host to use this action.".to_string()
-                }
-            };
-            if action != ActionKind::NeedsFlatpakHost {
-                self.pending_actions.push((id, action));
+        any
+    }
+
+    /// Primary action click (the big button on each card).
+    fn drain_primary_action_click(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        let Some((id, action)) = self.take_action_click(state, path) else {
+            return false;
+        };
+        self.status_line = match action {
+            ActionKind::Open => format!("Opening {id}…"),
+            ActionKind::Update => format!("Updating {id}…"),
+            ActionKind::Remove => format!("Removing {id}…"),
+            ActionKind::MarkInstalled => format!("Marking {id} installed…"),
+            ActionKind::Unmark => format!("Unmarking {id}…"),
+            ActionKind::FlatpakInstall => format!("Installing Flatpak {id}…"),
+            ActionKind::FlatpakUpdate => format!("Updating Flatpak {id}…"),
+            // Named as unconfined in the status line, not only in
+            // the launcher's log: this is the moment the user
+            // chooses to start it.
+            ActionKind::FlatpakOpen => format!("Opening {id} (unconfined host app)…"),
+            ActionKind::FlatpakRemove => format!("Removing Flatpak {id}…"),
+            ActionKind::NeedsFlatpakHost => {
+                "Install flatpak on the host to use this action.".to_string()
             }
-            any = true;
+        };
+        if action != ActionKind::NeedsFlatpakHost {
+            self.pending_actions.push((id, action));
         }
-        // Secondary clicks: the pin ("mark installed") toggle and the
-        // Remove affordance on cached qOS cards. Collect first so the
-        // item borrow ends before we mutate `self`.
+        true
+    }
+
+    /// Secondary clicks: the pin ("mark installed") toggle, the Remove
+    /// affordance on cached qOS cards, and the detail-select tap.
+    /// Collect first so the item borrow ends before we mutate `self`.
+    fn drain_secondary_clicks(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        let mut any = false;
         let mut secondary: Vec<(String, ActionKind)> = Vec::new();
         for item in &self.items {
             let pin_key = format!("{}{}", PIN_CLICK_KEY_PREFIX, item.id);
@@ -707,11 +745,23 @@ impl StoreApp {
             self.pending_actions.push((id, action));
             any = true;
         }
+        any
+    }
+
+    fn drain_detail_back_click(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         if take_bool_edge(state, path, DETAIL_BACK_KEY) {
             self.focused_detail = None;
             self.structure_dirty = true;
-            any = true;
+            true
+        } else {
+            false
         }
+    }
+
+    /// Remotes view: open/back navigation, a refresh tap, per-remote
+    /// removal, and the add-remote form submit.
+    fn drain_remotes_clicks(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        let mut any = false;
         if take_bool_edge(state, path, REMOTES_OPEN_KEY) {
             self.remotes_open = true;
             self.pending_remote_intents.push(RemoteIntent::Refresh);
@@ -750,13 +800,17 @@ impl StoreApp {
             }
             any = true;
         }
-        // Refresh.
+        any
+    }
+
+    fn drain_refresh_click(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         if take_bool_edge(state, path, REFRESH_KEY) {
             self.status_line = "Refreshing…".to_string();
             self.pending_refresh = true;
-            any = true;
+            true
+        } else {
+            false
         }
-        any
     }
 
     /// Look for a `store.action_click.<id> = true` key. Returns the
@@ -779,6 +833,14 @@ impl StoreApp {
 /// Resolve (or lazily create) the `Text` object at `path`.`key`. The
 /// toolkit's `TextInput` binds to an existing `Text` but never creates
 /// one, so the host must seed it before the input syncs.
+///
+/// # Panics
+/// Never in practice: `root` is always a live Map (the widget's own CRDT
+/// path), so `put_object` on it cannot fail short of a corrupted document.
+#[allow(
+    clippy::expect_used,
+    reason = "root is always a live Map (the widget's own CRDT path), so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+)]
 fn ensure_text_obj(state: &mut AutoCommit, root: &ObjId, key: &str) -> ObjId {
     if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, key) {
         return id;
@@ -849,24 +911,25 @@ impl Widget for StoreApp {
         let mut root = self.compose(theme);
         let child = root.build_layout(taffy, theme, node_map);
         self.root = Some(root);
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
+        let node = parent_node(
+            taffy,
+            Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
                 },
-                &[child],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[child],
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

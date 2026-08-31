@@ -578,9 +578,7 @@ impl PreviewPane {
         }
         let mut out = String::new();
         let mut prev_key: Option<(usize, i64)> = None;
-        let Some(selected) = self.cells.get(lo..hi) else {
-            return None;
-        };
+        let selected = self.cells.get(lo..hi)?;
         for cell in selected {
             if let Some(k) = prev_key
                 && k != cell.line_key

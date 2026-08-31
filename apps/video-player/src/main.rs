@@ -4,12 +4,12 @@
 //!   * default          — run the live winit event loop via `ui::App`.
 //!   * `--open PATH`     — open a local or `/var/workspace` file on launch.
 //!   * `--shots PATH`    — render one offscreen frame to a PNG and exit
-//!                          (headless screenshot; identical passes to the live app).
+//!     (headless screenshot; identical passes to the live app).
 //!
 //! Optional flags for `--shots`:
 //!   * `--viewport WxH`  — render at a custom size (default 1280x800).
 //!   * `--open PATH`     — stage a real file for the captured frame (else a
-//!                          synthesized demo clip is shown).
+//!     synthesized demo clip is shown).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -61,7 +61,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let open = parse_value_arg(&args, "--open")
         .map(PathBuf::from)
         .or_else(|| {
-            (args.len() == 2 && !args[1].starts_with('-')).then(|| PathBuf::from(&args[1]))
+            args.get(1)
+                .filter(|a| args.len() == 2 && !a.starts_with('-'))
+                .map(PathBuf::from)
         });
 
     if let Some(out) = parse_value_arg(&args, "--shots").map(PathBuf::from) {
@@ -148,37 +150,33 @@ fn render_shot_to_png(
 
     widget.sync(&mut state.doc, &state.root);
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
+    let root = taffy.new_with_children(
+        Style {
+            size: Size {
+                width: Dimension::length(w as f32),
+                height: Dimension::length(h as f32),
             },
-            &[child],
-        )
-        .expect("shot root");
+            ..Default::default()
+        },
+        &[child],
+    )?;
     {
         let measure_map = node_map.clone();
         let tr = &mut text_renderer;
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("shot layout");
+        taffy.compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 

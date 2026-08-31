@@ -167,7 +167,7 @@ mod tests {
             .unwrap()
             .filter_map(std::result::Result::ok)
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.ends_with(".tmp"))
+            .filter(|n| Path::new(n).extension().is_some_and(|e| e == "tmp"))
             .collect();
         assert!(left.is_empty(), "left {left:?}");
     }

@@ -302,8 +302,12 @@ mod tests {
             PhotosDoc::seed(&mut just_started);
 
             let clock = if empty_is_ahead { "ahead" } else { "behind" };
-            // The room hands each of them the other's whole document.
-            for (mut doc, mut incoming, side) in [
+            // The room hands each of them the other's whole document. A `Vec`
+            // rather than a fixed-size array: each element is a full
+            // `AutoCommit` replica, and two of those inline would put this
+            // stack frame over clippy's large-array threshold for no benefit
+            // — the pair is only ever iterated once, never indexed.
+            for (mut doc, mut incoming, side) in vec![
                 (
                     copy(&mut has_picture),
                     copy(&mut just_started),
