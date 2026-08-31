@@ -6,6 +6,16 @@
 //! Nothing here touches the CRDT, the renderer, or winit — it is unit
 //! testable in isolation.
 
+// This module's several `from_str(s: &str) -> Self` methods are deliberately
+// infallible tag parsers with a default fallback (an unknown/legacy document
+// tag maps to a sensible variant rather than erroring) -- a different
+// contract from `std::str::FromStr::from_str`, which returns `Result`.
+// Implementing the trait would force a `Result` return and ripple
+// `.parse()`/`?` handling through every call site for no behavioural
+// benefit, so the name collision is accepted here rather than exempted
+// call-by-call.
+#![allow(clippy::should_implement_trait)]
+
 use ui::ColorCompat;
 use uuid::Uuid;
 use vello::peniko::Color;
@@ -99,6 +109,7 @@ impl TextAlign {
             _ => TextAlign::Left,
         }
     }
+    #[must_use]
     pub fn next(self) -> TextAlign {
         match self {
             TextAlign::Left => TextAlign::Center,
@@ -224,11 +235,13 @@ impl Element {
         }
     }
 
+    #[must_use]
     pub fn with(mut self, f: impl FnOnce(&mut Element)) -> Element {
         f(&mut self);
         self
     }
 
+    #[must_use]
     pub fn center_x(mut self) -> Element {
         self.align = TextAlign::Center;
         self
@@ -429,10 +442,11 @@ impl PaletteKind {
             PaletteKind::Sky => "Sky",
         }
     }
+    #[must_use]
     pub fn next(self) -> PaletteKind {
         let all = PaletteKind::ALL;
         let i = all.iter().position(|p| *p == self).unwrap_or(0);
-        all[(i + 1) % all.len()]
+        all.get((i + 1) % all.len()).copied().unwrap_or(self)
     }
 }
 
@@ -524,7 +538,9 @@ impl Palette {
         }
         Some(match role {
             "none" => return None,
-            "accent" => self.accent,
+            // Falls through to the wildcard below, which also resolves to
+            // `self.accent` — an unrecognised role and the literal "accent"
+            // role are meant to land on the same colour.
             "accent-soft" => self.accent_soft,
             "accent-deep" => self.accent_deep,
             "surface" => self.surface,
@@ -582,7 +598,7 @@ fn with_alpha(c: Color, a: u8) -> Color {
 /// Returns `None` for anything that isn't a well-formed hex literal.
 pub fn parse_hex(s: &str) -> Option<Color> {
     let h = s.strip_prefix('#').unwrap_or(s);
-    let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    let byte = |i: usize| h.get(i..i + 2).and_then(|b| u8::from_str_radix(b, 16).ok());
     match h.len() {
         6 => Some(Color::from_rgba8(byte(0)?, byte(2)?, byte(4)?, 255)),
         8 => Some(Color::from_rgba8(byte(0)?, byte(2)?, byte(4)?, byte(6)?)),
@@ -636,279 +652,283 @@ pub fn starter_deck() -> Deck {
 /// A hermetic, realistic sample deck. Used only for headless screenshots and
 /// unit tests — never auto-loaded on a live launch (see [`starter_deck`]).
 pub fn seed_deck() -> Deck {
-    let mut slides = Vec::new();
-
-    // --- Slide 1: cover -----------------------------------------------------
-    {
-        let mut s = Slide::new(Layout::Section);
-        s.background = Background::Accent;
-        s.notes = "Set the scene. One line on why we're renewing the park and who \
-                   the workshop is for."
-            .into();
-        s.add(
-            Element::text("CONCEPT REVIEW", 110.0, 250.0, 700.0, 70.0, 28.0).with(|e| {
-                e.fill = "on-accent".into();
-                e.bold = true;
-            }),
-        );
-        s.add(
-            Element::text(
-                "Riverside Park\nrenewal plan",
-                105.0,
-                300.0,
-                900.0,
-                220.0,
-                72.0,
-            )
-            .with(|e| {
-                e.fill = "white".into();
-                e.bold = true;
-            }),
-        );
-        s.add(
-            Element::text(
-                "Design workshop  ·  spring review",
-                110.0,
-                500.0,
-                900.0,
-                60.0,
-                30.0,
-            )
-            .with(|e| {
-                e.fill = "on-accent".into();
-            }),
-        );
-        s.add(
-            Element::shape(ElementKind::Rect, 110.0, 232.0, 92.0, 8.0).with(|e| {
-                e.fill = "white".into();
-                e.radius = 4.0;
-            }),
-        );
-        slides.push(s);
+    Deck {
+        title: "Riverside Park — concept review".into(),
+        palette: PaletteKind::Indigo,
+        slides: vec![
+            seed_slide_cover(),
+            seed_slide_goals(),
+            seed_slide_two_column(),
+            seed_slide_diagram(),
+            seed_slide_closing(),
+        ],
     }
+}
 
-    // --- Slide 2: title + body (selected on launch) -------------------------
-    {
-        let mut s = Slide::new(Layout::TitleContent);
-        s.background = Background::Surface;
-        s.notes = "Walk the four goals. Spend the most time on protecting the \
-                   wetland — that's the constraint everything else works around."
-            .into();
-        s.add(
-            Element::text("Goals for this phase", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| {
-                e.bold = true;
-            }),
-        );
-        s.add(
-            Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
-                e.fill = "accent".into();
-                e.radius = 4.0;
-            }),
-        );
-        s.add(Element::text(
-            "• Reconnect the waterfront path\n\n• Add shade, seating and lighting\n\n• Protect the existing wetland\n\n• Keep the budget under review",
-            96.0,
-            210.0,
-            720.0,
-            440.0,
-            34.0,
-        ));
-        // A small decorative figure block on the right.
-        s.add(
-            Element::shape(ElementKind::Rect, 880.0, 230.0, 300.0, 300.0).with(|e| {
-                e.fill = "accent-soft".into();
-                e.radius = 28.0;
-            }),
-        );
-        s.add(
-            Element::shape(ElementKind::Ellipse, 940.0, 290.0, 180.0, 180.0).with(|e| {
-                e.fill = "accent".into();
-            }),
-        );
-        s.add(
-            Element::text("Q3", 940.0, 350.0, 180.0, 80.0, 52.0).with(|e| {
-                e.fill = "white".into();
-                e.bold = true;
-                e.align = TextAlign::Center;
-            }),
-        );
-        slides.push(s);
-    }
+/// Slide 1: cover.
+fn seed_slide_cover() -> Slide {
+    let mut s = Slide::new(Layout::Section);
+    s.background = Background::Accent;
+    s.notes = "Set the scene. One line on why we're renewing the park and who \
+               the workshop is for."
+        .into();
+    s.add(
+        Element::text("CONCEPT REVIEW", 110.0, 250.0, 700.0, 70.0, 28.0).with(|e| {
+            e.fill = "on-accent".into();
+            e.bold = true;
+        }),
+    );
+    s.add(
+        Element::text(
+            "Riverside Park\nrenewal plan",
+            105.0,
+            300.0,
+            900.0,
+            220.0,
+            72.0,
+        )
+        .with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+        }),
+    );
+    s.add(
+        Element::text(
+            "Design workshop  ·  spring review",
+            110.0,
+            500.0,
+            900.0,
+            60.0,
+            30.0,
+        )
+        .with(|e| {
+            e.fill = "on-accent".into();
+        }),
+    );
+    s.add(
+        Element::shape(ElementKind::Rect, 110.0, 232.0, 92.0, 8.0).with(|e| {
+            e.fill = "white".into();
+            e.radius = 4.0;
+        }),
+    );
+    s
+}
 
-    // --- Slide 3: two column ------------------------------------------------
-    {
-        let mut s = Slide::new(Layout::TwoColumn);
-        s.background = Background::Surface;
-        s.notes = "Two path options. Ask the room which trade-off they prefer \
-                   before we cost them out."
-            .into();
-        s.add(
-            Element::text("Two options to compare", 96.0, 70.0, 1088.0, 90.0, 56.0)
-                .with(|e| e.bold = true),
-        );
-        s.add(
-            Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
-                e.fill = "accent".into();
-                e.radius = 4.0;
-            }),
-        );
-        s.add(
-            Element::shape(ElementKind::Rect, 96.0, 220.0, 520.0, 400.0).with(|e| {
-                e.fill = "surface-dim".into();
-                e.stroke = "accent".into();
-                e.stroke_width = 3.0;
-                e.radius = 24.0;
-            }),
-        );
-        s.add(
-            Element::text("OPTION A", 128.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
-                e.fill = "accent".into();
-                e.bold = true;
-            }),
-        );
-        s.add(Element::text(
-            "A boardwalk along the east\nbank with a single wide\npromenade and open views.",
-            128.0,
+/// Slide 2: title + body (selected on launch).
+fn seed_slide_goals() -> Slide {
+    let mut s = Slide::new(Layout::TitleContent);
+    s.background = Background::Surface;
+    s.notes = "Walk the four goals. Spend the most time on protecting the \
+               wetland — that's the constraint everything else works around."
+        .into();
+    s.add(
+        Element::text("Goals for this phase", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| {
+            e.bold = true;
+        }),
+    );
+    s.add(
+        Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
+            e.fill = "accent".into();
+            e.radius = 4.0;
+        }),
+    );
+    s.add(Element::text(
+        "• Reconnect the waterfront path\n\n• Add shade, seating and lighting\n\n• Protect the existing wetland\n\n• Keep the budget under review",
+        96.0,
+        210.0,
+        720.0,
+        440.0,
+        34.0,
+    ));
+    // A small decorative figure block on the right.
+    s.add(
+        Element::shape(ElementKind::Rect, 880.0, 230.0, 300.0, 300.0).with(|e| {
+            e.fill = "accent-soft".into();
+            e.radius = 28.0;
+        }),
+    );
+    s.add(
+        Element::shape(ElementKind::Ellipse, 940.0, 290.0, 180.0, 180.0).with(|e| {
+            e.fill = "accent".into();
+        }),
+    );
+    s.add(
+        Element::text("Q3", 940.0, 350.0, 180.0, 80.0, 52.0).with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+            e.align = TextAlign::Center;
+        }),
+    );
+    s
+}
+
+/// Slide 3: two column.
+fn seed_slide_two_column() -> Slide {
+    let mut s = Slide::new(Layout::TwoColumn);
+    s.background = Background::Surface;
+    s.notes = "Two path options. Ask the room which trade-off they prefer \
+               before we cost them out."
+        .into();
+    s.add(
+        Element::text("Two options to compare", 96.0, 70.0, 1088.0, 90.0, 56.0)
+            .with(|e| e.bold = true),
+    );
+    s.add(
+        Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
+            e.fill = "accent".into();
+            e.radius = 4.0;
+        }),
+    );
+    s.add(
+        Element::shape(ElementKind::Rect, 96.0, 220.0, 520.0, 400.0).with(|e| {
+            e.fill = "surface-dim".into();
+            e.stroke = "accent".into();
+            e.stroke_width = 3.0;
+            e.radius = 24.0;
+        }),
+    );
+    s.add(
+        Element::text("OPTION A", 128.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+            e.fill = "accent".into();
+            e.bold = true;
+        }),
+    );
+    s.add(Element::text(
+        "A boardwalk along the east\nbank with a single wide\npromenade and open views.",
+        128.0,
+        312.0,
+        460.0,
+        240.0,
+        30.0,
+    ));
+    s.add(
+        Element::shape(ElementKind::Rect, 664.0, 220.0, 520.0, 400.0).with(|e| {
+            e.fill = "accent".into();
+            e.radius = 24.0;
+        }),
+    );
+    s.add(
+        Element::text("OPTION B", 696.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+        }),
+    );
+    s.add(
+        Element::text(
+            "A split path with a quiet\ngarden loop inland and a\nterrace at the water's edge.",
+            696.0,
             312.0,
             460.0,
             240.0,
             30.0,
-        ));
-        s.add(
-            Element::shape(ElementKind::Rect, 664.0, 220.0, 520.0, 400.0).with(|e| {
-                e.fill = "accent".into();
-                e.radius = 24.0;
-            }),
-        );
-        s.add(
-            Element::text("OPTION B", 696.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
-                e.fill = "white".into();
-                e.bold = true;
-            }),
-        );
-        s.add(
-            Element::text(
-                "A split path with a quiet\ngarden loop inland and a\nterrace at the water's edge.",
-                696.0,
-                312.0,
-                460.0,
-                240.0,
-                30.0,
-            )
-            .with(|e| e.fill = "on-accent".into()),
-        );
-        slides.push(s);
-    }
+        )
+        .with(|e| e.fill = "on-accent".into()),
+    );
+    s
+}
 
-    // --- Slide 4: a built diagram ------------------------------------------
-    {
-        let mut s = Slide::new(Layout::Blank);
-        s.background = Background::Deep;
-        s.notes = "The route at a glance: north gate, through the plaza, out to \
-                   the pier. Trace it as you talk."
-            .into();
-        s.add(
-            Element::text("How the paths connect", 96.0, 70.0, 1088.0, 90.0, 52.0).with(|e| {
-                e.fill = "white".into();
-                e.bold = true;
-            }),
-        );
-        // node A
-        s.add(
-            Element::shape(ElementKind::Ellipse, 150.0, 320.0, 230.0, 230.0).with(|e| {
-                e.fill = "accent".into();
-            }),
-        );
-        s.add(
-            Element::text("North\ngate", 150.0, 385.0, 230.0, 110.0, 34.0).with(|e| {
-                e.fill = "white".into();
-                e.bold = true;
-                e.align = TextAlign::Center;
-            }),
-        );
-        // connector
-        s.add(
-            Element::shape(ElementKind::Line, 380.0, 435.0, 280.0, 0.0).with(|e| {
-                e.stroke = "accent-soft".into();
-                e.stroke_width = 8.0;
-            }),
-        );
-        // node B
-        s.add(
-            Element::shape(ElementKind::Ellipse, 660.0, 320.0, 230.0, 230.0).with(|e| {
-                e.fill = "surface".into();
-                e.stroke = "accent".into();
-                e.stroke_width = 4.0;
-            }),
-        );
-        s.add(
-            Element::text("Plaza", 660.0, 405.0, 230.0, 60.0, 36.0).with(|e| {
-                e.bold = true;
-                e.align = TextAlign::Center;
-            }),
-        );
-        s.add(
-            Element::shape(ElementKind::Line, 890.0, 435.0, 160.0, 0.0).with(|e| {
-                e.stroke = "accent-soft".into();
-                e.stroke_width = 8.0;
-            }),
-        );
-        s.add(
-            Element::shape(ElementKind::Rect, 1050.0, 360.0, 150.0, 150.0).with(|e| {
-                e.fill = "accent".into();
-                e.radius = 20.0;
-            }),
-        );
-        s.add(
-            Element::text("Pier", 1050.0, 405.0, 150.0, 60.0, 34.0).with(|e| {
-                e.fill = "white".into();
-                e.bold = true;
-                e.align = TextAlign::Center;
-            }),
-        );
-        slides.push(s);
-    }
+/// Slide 4: a built diagram.
+fn seed_slide_diagram() -> Slide {
+    let mut s = Slide::new(Layout::Blank);
+    s.background = Background::Deep;
+    s.notes = "The route at a glance: north gate, through the plaza, out to \
+               the pier. Trace it as you talk."
+        .into();
+    s.add(
+        Element::text("How the paths connect", 96.0, 70.0, 1088.0, 90.0, 52.0).with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+        }),
+    );
+    // node A
+    s.add(
+        Element::shape(ElementKind::Ellipse, 150.0, 320.0, 230.0, 230.0).with(|e| {
+            e.fill = "accent".into();
+        }),
+    );
+    s.add(
+        Element::text("North\ngate", 150.0, 385.0, 230.0, 110.0, 34.0).with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+            e.align = TextAlign::Center;
+        }),
+    );
+    // connector
+    s.add(
+        Element::shape(ElementKind::Line, 380.0, 435.0, 280.0, 0.0).with(|e| {
+            e.stroke = "accent-soft".into();
+            e.stroke_width = 8.0;
+        }),
+    );
+    // node B
+    s.add(
+        Element::shape(ElementKind::Ellipse, 660.0, 320.0, 230.0, 230.0).with(|e| {
+            e.fill = "surface".into();
+            e.stroke = "accent".into();
+            e.stroke_width = 4.0;
+        }),
+    );
+    s.add(
+        Element::text("Plaza", 660.0, 405.0, 230.0, 60.0, 36.0).with(|e| {
+            e.bold = true;
+            e.align = TextAlign::Center;
+        }),
+    );
+    s.add(
+        Element::shape(ElementKind::Line, 890.0, 435.0, 160.0, 0.0).with(|e| {
+            e.stroke = "accent-soft".into();
+            e.stroke_width = 8.0;
+        }),
+    );
+    s.add(
+        Element::shape(ElementKind::Rect, 1050.0, 360.0, 150.0, 150.0).with(|e| {
+            e.fill = "accent".into();
+            e.radius = 20.0;
+        }),
+    );
+    s.add(
+        Element::text("Pier", 1050.0, 405.0, 150.0, 60.0, 34.0).with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+            e.align = TextAlign::Center;
+        }),
+    );
+    s
+}
 
-    // --- Slide 5: closing section ------------------------------------------
-    {
-        let mut s = Slide::new(Layout::Section);
-        s.background = Background::Deep;
-        s.notes = "Close on the ask: feedback by Friday, prototype in April. \
-                   Leave the last slide up for questions."
-            .into();
-        s.add(
-            Element::shape(ElementKind::Rect, 110.0, 300.0, 92.0, 8.0).with(|e| {
-                e.fill = "accent".into();
-                e.radius = 4.0;
-            }),
-        );
-        s.add(
-            Element::text("Questions & next steps", 105.0, 330.0, 1000.0, 110.0, 64.0).with(|e| {
-                e.fill = "white".into();
-                e.bold = true;
-            }),
-        );
-        s.add(
-            Element::text(
-                "Share feedback by Friday  ·  prototype in April",
-                110.0,
-                450.0,
-                1000.0,
-                60.0,
-                30.0,
-            )
-            .with(|e| {
-                e.fill = "text-dim".into();
-            }),
-        );
-        slides.push(s);
-    }
-
-    Deck {
-        title: "Riverside Park — concept review".into(),
-        palette: PaletteKind::Indigo,
-        slides,
-    }
+/// Slide 5: closing section.
+fn seed_slide_closing() -> Slide {
+    let mut s = Slide::new(Layout::Section);
+    s.background = Background::Deep;
+    s.notes = "Close on the ask: feedback by Friday, prototype in April. \
+               Leave the last slide up for questions."
+        .into();
+    s.add(
+        Element::shape(ElementKind::Rect, 110.0, 300.0, 92.0, 8.0).with(|e| {
+            e.fill = "accent".into();
+            e.radius = 4.0;
+        }),
+    );
+    s.add(
+        Element::text("Questions & next steps", 105.0, 330.0, 1000.0, 110.0, 64.0).with(|e| {
+            e.fill = "white".into();
+            e.bold = true;
+        }),
+    );
+    s.add(
+        Element::text(
+            "Share feedback by Friday  ·  prototype in April",
+            110.0,
+            450.0,
+            1000.0,
+            60.0,
+            30.0,
+        )
+        .with(|e| {
+            e.fill = "text-dim".into();
+        }),
+    );
+    s
 }
 
 #[cfg(test)]

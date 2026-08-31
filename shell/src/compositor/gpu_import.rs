@@ -97,6 +97,12 @@ fn device_matches(device: &EGLDevice, want_rdev: libc::dev_t) -> bool {
 impl GpuImporter {
     /// Build an importer on the DRM node at `node`, which should be the same render node the
     /// compositor advertises as the dmabuf `main_device` — a cross-device import would work only where the kernel can peer-map, and silently be a `PCIe` copy where it did.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuImportError::Unavailable`] if `node` cannot be `stat`'d, EGL reports no
+    /// devices, no EGL device is bound to `node`, or the EGL display, context or renderer
+    /// cannot be created on it.
     pub fn new(node: &Path) -> Result<Self, GpuImportError> {
         use std::os::unix::fs::MetadataExt as _;
         let want = std::fs::metadata(node)
@@ -147,6 +153,12 @@ impl GpuImporter {
     ///
     /// Returns the buffer's `(width, height)`. `out` is cleared and refilled; the caller's `Vec` is
     /// reused across commits so a steady-state client costs no reallocation. The GL scratch the readback allocates is released before this returns — see [`Self::release_readback_scratch`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GpuImportError::InvalidDimensions`] for a degenerate or unrepresentable
+    /// buffer size, [`GpuImportError::ImportFailed`] if EGL cannot wrap the client's dma-buf,
+    /// or [`GpuImportError::ReadbackFailed`] if the GPU-side copy or map fails.
     pub fn import(
         &mut self,
         dmabuf: &Dmabuf,
@@ -193,10 +205,17 @@ impl GpuImporter {
             .import_dmabuf(dmabuf, None)
             .map_err(|e| GpuImportError::ImportFailed(e.to_string()))?;
 
+        // `width`/`height` are client-controlled; a GL region needs `i32` coordinates, so a
+        // buffer claiming a size that does not fit one is rejected rather than wrapped.
+        let region_width = i32::try_from(width)
+            .map_err(|_| GpuImportError::InvalidDimensions { width, height })?;
+        let region_height = i32::try_from(height)
+            .map_err(|_| GpuImportError::InvalidDimensions { width, height })?;
+
         // `Abgr8888` is `[R, G, B, A]` in memory — exactly the `ImageFormat::Rgba8` blob vello wants, so the readback lands in its final layout with no swizzle pass.
         let region = Rectangle::new(
             Point::from((0, 0)),
-            Size::from((width as i32, height as i32)),
+            Size::from((region_width, region_height)),
         );
         let mapping = self
             .renderer
@@ -207,21 +226,28 @@ impl GpuImporter {
             .map_texture(&mapping)
             .map_err(|e| GpuImportError::ReadbackFailed(e.to_string()))?;
 
-        let expected = (width as usize) * (height as usize) * 4;
-        if bytes.len() < expected {
+        // Also client-controlled: a buffer whose reported area overflows `usize` is rejected
+        // rather than silently wrapping into a too-small allocation.
+        let expected = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|area| area.checked_mul(4))
+            .ok_or(GpuImportError::InvalidDimensions { width, height })?;
+        let Some(head) = bytes.get(..expected) else {
             return Err(GpuImportError::ReadbackFailed(format!(
                 "readback returned {} bytes, expected {expected}",
                 bytes.len()
             )));
-        }
+        };
         out.clear();
         out.reserve(expected);
-        out.extend_from_slice(&bytes[..expected]);
+        out.extend_from_slice(head);
 
         // The `X` FourCCs have no alpha channel — the fourth byte is undefined padding that would otherwise show up as a see-through tile. Force it opaque, same as the CPU importer's swizzle.
         if is_opaque_fourcc(dmabuf.format().code) {
             for px in out.chunks_exact_mut(4) {
-                px[3] = 0xFF;
+                if let Some(alpha) = px.last_mut() {
+                    *alpha = 0xFF;
+                }
             }
         }
         Ok((width, height))
@@ -242,13 +268,18 @@ thread_local! {
 
 /// Run `f` with the thread's GPU importer, building it on first use. `node` is the render node
 /// to build on. Returns the construction error — cached, so a machine without EGL pays the probe once — when no importer exists. Callers must not re-enter: `f` runs with the thread-local borrowed.
+///
+/// # Errors
+///
+/// Returns the cached [`GpuImportError`] from [`GpuImporter::new`] when this thread has no
+/// working GPU importer; `f` does not run in that case.
 pub fn with_importer<R>(
     node: &Path,
     f: impl FnOnce(&mut GpuImporter) -> R,
 ) -> Result<R, GpuImportError> {
     IMPORTER.with(|cell| {
         let mut slot = cell.borrow_mut();
-        if slot.is_none() {
+        let built = slot.get_or_insert_with(|| {
             let built = GpuImporter::new(node);
             match &built {
                 Ok(imp) => tracing::info!(
@@ -262,9 +293,9 @@ pub fn with_importer<R>(
                     "GPU dmabuf import unavailable; falling back to CPU mmap import"
                 ),
             }
-            *slot = Some(built);
-        }
-        match slot.as_mut().expect("just initialised") {
+            built
+        });
+        match built {
             Ok(importer) => Ok(f(importer)),
             Err(e) => Err(e.clone()),
         }
@@ -302,7 +333,7 @@ mod tests {
                 };
                 let digits: String = amount.chars().filter(char::is_ascii_digit).collect();
                 if let Ok(kib) = digits.parse::<u64>() {
-                    total += kib;
+                    total = total.saturating_add(kib);
                     saw_any = true;
                 }
             }
@@ -318,6 +349,10 @@ mod tests {
     fn repeated_readbacks_do_not_accumulate_gpu_memory() {
         use smithay::backend::renderer::ImportMem;
 
+        // Big enough that a leaked buffer cannot hide inside a driver's small-allocation slab: one readback is 4 MiB.
+        const SIDE: i32 = 1024;
+        const ROUNDS: usize = 24;
+
         let Ok(node) = crate::compositor::render_node::probe() else {
             eprintln!("skipping: no advertisable render node on this machine");
             return;
@@ -331,9 +366,6 @@ mod tests {
             ),
         };
 
-        // Big enough that a leaked buffer cannot hide inside a driver's small-allocation slab: one readback is 4 MiB.
-        const SIDE: i32 = 1024;
-        const ROUNDS: usize = 24;
         let pixels = vec![0x40_u8; (SIDE * SIDE * 4) as usize];
         let size = Size::from((SIDE, SIDE));
         let texture = importer

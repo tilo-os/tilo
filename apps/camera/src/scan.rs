@@ -20,7 +20,13 @@ pub struct QrMatrix {
 
 impl QrMatrix {
     pub fn is_dark(&self, x: usize, y: usize) -> bool {
-        x < self.size && y < self.size && self.modules[y * self.size + x]
+        x < self.size
+            && y < self.size
+            && self
+                .modules
+                .get(y * self.size + x)
+                .copied()
+                .unwrap_or(false)
     }
 }
 
@@ -51,7 +57,9 @@ pub fn decode_greyscale(luma: &[u8], w: usize, h: usize) -> Vec<Decoded> {
     if luma.len() < w * h || w == 0 || h == 0 {
         return Vec::new();
     }
-    let mut img = rqrr::PreparedImage::prepare_from_greyscale(w, h, |x, y| luma[y * w + x]);
+    let mut img = rqrr::PreparedImage::prepare_from_greyscale(w, h, |x, y| {
+        luma.get(y * w + x).copied().unwrap_or(0)
+    });
     let mut out = Vec::new();
     for grid in img.detect_grids() {
         if let Ok((_meta, text)) = grid.decode() {
@@ -81,8 +89,8 @@ pub fn decode_and_classify(
     let decoded = decode_greyscale(luma, w, h).into_iter().next()?;
     let kind = classify(&decoded.text);
     let mut corners = [(0.0, 0.0); 4];
-    for (i, p) in decoded.corners.iter().enumerate() {
-        corners[i] = map(*p);
+    for (dst, p) in corners.iter_mut().zip(decoded.corners.iter()) {
+        *dst = map(*p);
     }
     Some(ScannedCode {
         raw: decoded.text,

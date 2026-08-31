@@ -328,7 +328,7 @@ impl Widget for InviteAcceptScreen {
         let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
         let pad = 24.0;
 
-        self.draw_card_chrome(scene, transform, text_renderer, theme, card, pad);
+        Self::draw_card_chrome(scene, transform, text_renderer, theme, card, pad);
         self.draw_url_field(scene, transform, text_renderer, theme);
         self.draw_invite_status(scene, transform, text_renderer, theme, card, pad);
         self.draw_decline_button(scene, transform, text_renderer, theme);
@@ -373,7 +373,6 @@ impl Widget for InviteAcceptScreen {
 impl InviteAcceptScreen {
     /// The card background/border and its title.
     fn draw_card_chrome(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,

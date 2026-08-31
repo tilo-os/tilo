@@ -6,11 +6,11 @@
 //! `SearchField` + `SearchResultsView` — the same widgets the "find things"
 //! surface uses — so the pixels match the live Ctrl+K.
 //!
-//! Run:  cargo run -p ui --example ui-shots -- ctrl_k_palette
-//! Out:  $CTRLK_PALETTE_OUT (default /tmp/ctrl_k_palette) —
-//!       ctrlk-{dark,light}-browse.png, ctrlk-dark-query.png
+//! Run:  `cargo run -p ui --example ui-shots -- ctrl_k_palette`
+//! Out:  `$CTRLK_PALETTE_OUT` (default `/tmp/ctrl_k_palette`) —
+//!       `ctrlk-{dark,light}-browse.png`, `ctrlk-dark-query.png`
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -60,6 +60,10 @@ fn open_resource() -> Resource {
 /// A folded-in searchable corpus — stands in for the contacts provider.
 struct Contacts;
 impl SearchProvider for Contacts {
+    #[allow(
+        clippy::unnecessary_literal_bound,
+        reason = "SearchProvider::name is `&str`, not `&'static str`; the impl can't widen it"
+    )]
     fn name(&self) -> &str {
         "Contacts"
     }
@@ -95,11 +99,23 @@ fn palette(query: &str, cursor: usize) -> ActionPalette {
     p
 }
 
-fn shoot(theme: &Theme, out: PathBuf, query: &str, cursor: usize) {
+/// Rounds a rendered pixel measurement (always non-negative, far under
+/// `u32::MAX`) to a `u32` for `OffscreenRenderer::new`'s `height` parameter.
+fn px_u32(v: f64) -> u32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "v is a rendered pixel measurement, always non-negative and far below u32::MAX"
+    )]
+    let out = v.max(0.0).round() as u32;
+    out
+}
+
+fn shoot(theme: &Theme, out: &Path, query: &str, cursor: usize) {
     let mut p = palette(query, cursor);
-    let width = WIDTH as f64 - MARGIN * 2.0;
+    let width = f64::from(WIDTH) - MARGIN * 2.0;
     p.layout(theme, Point::new(MARGIN, MARGIN), width);
-    let height = (p.rect().y1 + MARGIN).ceil() as u32;
+    let height = px_u32((p.rect().y1 + MARGIN).ceil());
 
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
@@ -107,14 +123,17 @@ fn shoot(theme: &Theme, out: PathBuf, query: &str, cursor: usize) {
     p.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(WIDTH, height);
-    r.render_png(&scene, theme.bg_app, &out);
+    r.render_png(&scene, theme.bg_app, out);
     println!("wrote {} ({}x{})", out.display(), WIDTH, height);
 }
 
 pub fn run(_args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
     let dir = std::env::var("CTRLK_PALETTE_OUT").unwrap_or_else(|_| "/tmp/ctrl_k_palette".into());
-    std::fs::create_dir_all(&dir).unwrap();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("failed to create output dir {dir}: {e}");
+        return;
+    }
     let dir = PathBuf::from(dir);
 
     let dark = Theme::dark();
@@ -122,8 +141,8 @@ pub fn run(_args: &[String]) {
 
     // Browse (empty query): the full Actions group + the full Contacts group,
     // highlight on the first action.
-    shoot(&dark, dir.join("ctrlk-dark-browse.png"), "", 0);
-    shoot(&light, dir.join("ctrlk-light-browse.png"), "", 0);
+    shoot(&dark, &dir.join("ctrlk-dark-browse.png"), "", 0);
+    shoot(&light, &dir.join("ctrlk-light-browse.png"), "", 0);
     // A live query hitting both groups, highlight on a contact row.
-    shoot(&dark, dir.join("ctrlk-dark-query.png"), "a", 3);
+    shoot(&dark, &dir.join("ctrlk-dark-query.png"), "a", 3);
 }

@@ -672,7 +672,7 @@ impl<Row> DataTable<Row> {
     /// that priority order.
     fn on_left_press(
         &mut self,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
@@ -793,7 +793,7 @@ impl<Row> DataTable<Row> {
     fn on_key(
         &mut self,
         ke: &winit::event::KeyEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) {
         use winit::keyboard::{Key, NamedKey};
@@ -954,7 +954,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_press(modifiers, handled, focus_target, node_id);
+                self.on_left_press(*modifiers, handled, focus_target, node_id);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -969,7 +969,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
             WindowEvent::KeyboardInput { event: ke, .. }
                 if self.selectable && self.is_focused && ke.state == ElementState::Pressed =>
             {
-                self.on_key(ke, modifiers, handled);
+                self.on_key(ke, *modifiers, handled);
             }
             _ => {}
         }

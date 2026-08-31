@@ -48,6 +48,12 @@ impl BridgeSocket {
     /// best-effort before the bind. Failures of the unlink are swallowed
     /// because they may simply mean "no stale file" — only a real
     /// `bind(2)` failure surfaces as an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if binding the UNIX listener at the bridge path
+    /// fails (e.g. permission denied, or the path is occupied by something
+    /// that isn't a stale socket file).
     pub fn bind(
         workspace_id: u64,
         runtime_dir: &Path,
@@ -73,6 +79,11 @@ impl BridgeSocket {
     /// direction) and the accept loop returns to wait on the next client.
     /// The loop runs until the listener errors (which happens when the
     /// socket file is unlinked or the FD is closed).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if cloning the listener or switching it to
+    /// non-blocking mode fails.
     pub fn start(&mut self) -> io::Result<()> {
         let listener = self.listener.try_clone()?;
         // Make the listener non-blocking so the accept loop can poll
@@ -95,7 +106,8 @@ impl BridgeSocket {
                         };
                         if relay(client, upstream_stream).is_err() {
                             // Failed to spawn relay threads; drop both ends.
-                            continue;
+                            // (Falling through here already loops back to
+                            // `accept()`, so there is nothing further to do.)
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -142,7 +154,12 @@ impl Drop for BridgeSocket {
         // block workspace teardown.
         self.shutdown.store(true, Ordering::SeqCst);
         if let Some(handle) = self.accept_thread.take() {
-            let join_deadline = std::time::Instant::now() + Duration::from_secs(1);
+            // `Instant + Duration` can theoretically panic on overflow;
+            // fall back to "now" (i.e. an immediate deadline) rather than
+            // let teardown abort the session over a clock edge case.
+            let join_deadline = std::time::Instant::now()
+                .checked_add(Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now);
             // Poll-join: the std `JoinHandle::join` blocks indefinitely
             // and has no timeout API, so we sample `is_finished` and
             // either join cleanly or detach if the budget is blown.

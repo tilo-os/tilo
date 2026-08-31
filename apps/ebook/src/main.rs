@@ -49,6 +49,9 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+/// # Errors
+///
+/// Returns an error if a `--shots` capture fails to render or write its PNG.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 

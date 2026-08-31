@@ -124,22 +124,233 @@ pub enum EbookAction {
     },
 }
 
+// Per-variant `apply` bodies, kept as inherent methods (not trait methods) so
+// `too_many_lines` can be satisfied without moving code out of this impl.
+impl EbookAction {
+    fn apply_edit_note(doc: &mut Doc, id: &str, note: &str) -> Result<(), ActionError> {
+        if let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")?
+            && let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id)?
+        {
+            doc.put(&entry, "note", note)?;
+        }
+        Ok(())
+    }
+
+    fn apply_delete_annotation(doc: &mut Doc, id: &str) -> Result<(), ActionError> {
+        if let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")? {
+            doc.delete(&map, id)?;
+        }
+        Ok(())
+    }
+
+    // A malformed id (never produced by our own builder) is a no-op rather
+    // than an error, so a replay can't wedge on bad input.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_add_note(
+        doc: &mut Doc,
+        book_id: &str,
+        id: &str,
+        chapter: usize,
+        block: usize,
+        start: usize,
+        end: usize,
+        excerpt: &str,
+        color: &str,
+        text: &str,
+    ) -> Result<(), ActionError> {
+        if let Ok(uuid) = id.parse::<Uuid>() {
+            let anno = Annotation {
+                id: uuid,
+                doc_id: book_id.to_string(),
+                kind: AnnoKind::Note,
+                chapter,
+                block,
+                start,
+                end,
+                excerpt: excerpt.to_string(),
+                note: text.to_string(),
+                color: HiColor::from_str(color),
+                // Deterministic: no wall-clock in `apply`.
+                created: 0,
+                group: uuid,
+            };
+            BooksDoc::upsert_annotation(doc, &anno);
+        }
+        Ok(())
+    }
+
+    fn apply_toggle_bookmark(
+        doc: &mut Doc,
+        book_id: &str,
+        id: &str,
+        chapter: usize,
+        block: usize,
+        excerpt: &str,
+    ) -> Result<(), ActionError> {
+        // Deterministic against the document at the replay's base state.
+        let existing: Vec<Uuid> = BooksDoc::annotations_for(doc, book_id)
+            .into_iter()
+            .filter(|a| a.kind == AnnoKind::Bookmark && a.chapter == chapter && a.block == block)
+            .map(|a| a.id)
+            .collect();
+        if existing.is_empty() {
+            if let Ok(uuid) = id.parse::<Uuid>() {
+                let anno = Annotation {
+                    id: uuid,
+                    doc_id: book_id.to_string(),
+                    kind: AnnoKind::Bookmark,
+                    chapter,
+                    block,
+                    start: 0,
+                    end: 0,
+                    excerpt: excerpt.to_string(),
+                    note: String::new(),
+                    color: HiColor::Yellow,
+                    created: 0,
+                    group: uuid,
+                };
+                BooksDoc::upsert_annotation(doc, &anno);
+            }
+        } else {
+            for id in existing {
+                BooksDoc::remove_annotation(doc, id);
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_highlight_selection(
+        doc: &mut Doc,
+        book_id: &str,
+        group: &str,
+        chapter: usize,
+        color: &str,
+        remove_groups: &[String],
+        pieces: &[HiPiece],
+    ) -> Result<(), ActionError> {
+        for g in remove_groups {
+            if let Ok(uuid) = g.parse::<Uuid>() {
+                BooksDoc::remove_group(doc, uuid);
+            }
+        }
+        if let Ok(group_uuid) = group.parse::<Uuid>() {
+            let col = HiColor::from_str(color);
+            for p in pieces {
+                let Ok(pid) = p.id.parse::<Uuid>() else {
+                    continue;
+                };
+                let anno = Annotation {
+                    id: pid,
+                    doc_id: book_id.to_string(),
+                    kind: AnnoKind::Highlight,
+                    chapter,
+                    block: p.block,
+                    start: p.start,
+                    end: p.end,
+                    excerpt: p.excerpt.clone(),
+                    note: String::new(),
+                    color: col,
+                    created: 0,
+                    group: group_uuid,
+                };
+                BooksDoc::upsert_annotation(doc, &anno);
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_change_highlight_color(
+        doc: &mut Doc,
+        group: &str,
+        color: &str,
+    ) -> Result<(), ActionError> {
+        if let Ok(group_uuid) = group.parse::<Uuid>() {
+            let col = HiColor::from_str(color);
+            let rows: Vec<Annotation> = BooksDoc::list_annotations(doc)
+                .into_iter()
+                .filter(|a| a.group == group_uuid)
+                .collect();
+            for mut a in rows {
+                a.color = col;
+                BooksDoc::upsert_annotation(doc, &a);
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_delete_highlight(doc: &mut Doc, group: &str) -> Result<(), ActionError> {
+        if let Ok(group_uuid) = group.parse::<Uuid>() {
+            BooksDoc::remove_group(doc, group_uuid);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_add_comment(
+        doc: &mut Doc,
+        book_id: &str,
+        group: &str,
+        id: &str,
+        chapter: usize,
+        block: usize,
+        start: usize,
+        end: usize,
+        excerpt: &str,
+        color: &str,
+        text: &str,
+    ) -> Result<(), ActionError> {
+        if let (Ok(group_uuid), Ok(cid)) = (group.parse::<Uuid>(), id.parse::<Uuid>()) {
+            let anno = Annotation {
+                id: cid,
+                doc_id: book_id.to_string(),
+                kind: AnnoKind::Note,
+                chapter,
+                block,
+                start,
+                end,
+                excerpt: excerpt.to_string(),
+                note: text.to_string(),
+                color: HiColor::from_str(color),
+                created: 0,
+                group: group_uuid,
+            };
+            BooksDoc::upsert_annotation(doc, &anno);
+        }
+        Ok(())
+    }
+
+    fn apply_move_annotation(
+        doc: &mut Doc,
+        id: &str,
+        chapter: usize,
+        block: usize,
+        start: usize,
+        end: usize,
+        excerpt: &str,
+    ) -> Result<(), ActionError> {
+        // Reposition exactly the one row; a missing id (never produced by
+        // our builder) is a no-op so a bad replay can't wedge a peer.
+        if let Ok(uuid) = id.parse::<Uuid>()
+            && let Some(mut a) = BooksDoc::list_annotations(doc)
+                .into_iter()
+                .find(|a| a.id == uuid)
+        {
+            a.chapter = chapter;
+            a.block = block;
+            a.start = start;
+            a.end = end;
+            a.excerpt = excerpt.to_string();
+            BooksDoc::upsert_annotation(doc, &a);
+        }
+        Ok(())
+    }
+}
+
 impl Action for EbookAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
-            EbookAction::EditAnnotationNote { id, note } => {
-                if let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")?
-                    && let Some((Value::Object(ObjType::Map), entry)) =
-                        doc.get(&map, id.as_str())?
-                {
-                    doc.put(&entry, "note", note.as_str())?;
-                }
-            }
-            EbookAction::DeleteAnnotation { id } => {
-                if let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")? {
-                    doc.delete(&map, id.as_str())?;
-                }
-            }
+            EbookAction::EditAnnotationNote { id, note } => Self::apply_edit_note(doc, id, note),
+            EbookAction::DeleteAnnotation { id } => Self::apply_delete_annotation(doc, id),
             EbookAction::AddNote {
                 book_id,
                 id,
@@ -150,67 +361,16 @@ impl Action for EbookAction {
                 excerpt,
                 color,
                 text,
-            } => {
-                // A malformed id (never produced by our own builder) is a no-op
-                // rather than an error, so a replay can't wedge on bad input.
-                if let Ok(uuid) = id.parse::<Uuid>() {
-                    let anno = Annotation {
-                        id: uuid,
-                        doc_id: book_id.clone(),
-                        kind: AnnoKind::Note,
-                        chapter: *chapter,
-                        block: *block,
-                        start: *start,
-                        end: *end,
-                        excerpt: excerpt.clone(),
-                        note: text.clone(),
-                        color: HiColor::from_str(color),
-                        // Deterministic: no wall-clock in `apply`.
-                        created: 0,
-                        group: uuid,
-                    };
-                    BooksDoc::upsert_annotation(doc, &anno);
-                }
-            }
+            } => Self::apply_add_note(
+                doc, book_id, id, *chapter, *block, *start, *end, excerpt, color, text,
+            ),
             EbookAction::ToggleBookmark {
                 book_id,
                 id,
                 chapter,
                 block,
                 excerpt,
-            } => {
-                // Deterministic against the document at the replay's base state.
-                let existing: Vec<Uuid> = BooksDoc::annotations_for(doc, book_id)
-                    .into_iter()
-                    .filter(|a| {
-                        a.kind == AnnoKind::Bookmark && a.chapter == *chapter && a.block == *block
-                    })
-                    .map(|a| a.id)
-                    .collect();
-                if existing.is_empty() {
-                    if let Ok(uuid) = id.parse::<Uuid>() {
-                        let anno = Annotation {
-                            id: uuid,
-                            doc_id: book_id.clone(),
-                            kind: AnnoKind::Bookmark,
-                            chapter: *chapter,
-                            block: *block,
-                            start: 0,
-                            end: 0,
-                            excerpt: excerpt.clone(),
-                            note: String::new(),
-                            color: HiColor::Yellow,
-                            created: 0,
-                            group: uuid,
-                        };
-                        BooksDoc::upsert_annotation(doc, &anno);
-                    }
-                } else {
-                    for id in existing {
-                        BooksDoc::remove_annotation(doc, id);
-                    }
-                }
-            }
+            } => Self::apply_toggle_bookmark(doc, book_id, id, *chapter, *block, excerpt),
             EbookAction::HighlightSelection {
                 book_id,
                 group,
@@ -218,54 +378,19 @@ impl Action for EbookAction {
                 color,
                 remove_groups,
                 pieces,
-            } => {
-                for g in remove_groups {
-                    if let Ok(uuid) = g.parse::<Uuid>() {
-                        BooksDoc::remove_group(doc, uuid);
-                    }
-                }
-                if let Ok(group_uuid) = group.parse::<Uuid>() {
-                    let col = HiColor::from_str(color);
-                    for p in pieces {
-                        let Ok(pid) = p.id.parse::<Uuid>() else {
-                            continue;
-                        };
-                        let anno = Annotation {
-                            id: pid,
-                            doc_id: book_id.clone(),
-                            kind: AnnoKind::Highlight,
-                            chapter: *chapter,
-                            block: p.block,
-                            start: p.start,
-                            end: p.end,
-                            excerpt: p.excerpt.clone(),
-                            note: String::new(),
-                            color: col,
-                            created: 0,
-                            group: group_uuid,
-                        };
-                        BooksDoc::upsert_annotation(doc, &anno);
-                    }
-                }
-            }
+            } => Self::apply_highlight_selection(
+                doc,
+                book_id,
+                group,
+                *chapter,
+                color,
+                remove_groups,
+                pieces,
+            ),
             EbookAction::ChangeHighlightColor { group, color } => {
-                if let Ok(group_uuid) = group.parse::<Uuid>() {
-                    let col = HiColor::from_str(color);
-                    let rows: Vec<Annotation> = BooksDoc::list_annotations(doc)
-                        .into_iter()
-                        .filter(|a| a.group == group_uuid)
-                        .collect();
-                    for mut a in rows {
-                        a.color = col;
-                        BooksDoc::upsert_annotation(doc, &a);
-                    }
-                }
+                Self::apply_change_highlight_color(doc, group, color)
             }
-            EbookAction::DeleteHighlight { group } => {
-                if let Ok(group_uuid) = group.parse::<Uuid>() {
-                    BooksDoc::remove_group(doc, group_uuid);
-                }
-            }
+            EbookAction::DeleteHighlight { group } => Self::apply_delete_highlight(doc, group),
             EbookAction::AddComment {
                 book_id,
                 group,
@@ -277,25 +402,9 @@ impl Action for EbookAction {
                 excerpt,
                 color,
                 text,
-            } => {
-                if let (Ok(group_uuid), Ok(cid)) = (group.parse::<Uuid>(), id.parse::<Uuid>()) {
-                    let anno = Annotation {
-                        id: cid,
-                        doc_id: book_id.clone(),
-                        kind: AnnoKind::Note,
-                        chapter: *chapter,
-                        block: *block,
-                        start: *start,
-                        end: *end,
-                        excerpt: excerpt.clone(),
-                        note: text.clone(),
-                        color: HiColor::from_str(color),
-                        created: 0,
-                        group: group_uuid,
-                    };
-                    BooksDoc::upsert_annotation(doc, &anno);
-                }
-            }
+            } => Self::apply_add_comment(
+                doc, book_id, group, id, *chapter, *block, *start, *end, excerpt, color, text,
+            ),
             EbookAction::MoveAnnotation {
                 id,
                 chapter,
@@ -303,24 +412,8 @@ impl Action for EbookAction {
                 start,
                 end,
                 excerpt,
-            } => {
-                // Reposition exactly the one row; a missing id (never produced by
-                // our builder) is a no-op so a bad replay can't wedge a peer.
-                if let Ok(uuid) = id.parse::<Uuid>()
-                    && let Some(mut a) = BooksDoc::list_annotations(doc)
-                        .into_iter()
-                        .find(|a| a.id == uuid)
-                {
-                    a.chapter = *chapter;
-                    a.block = *block;
-                    a.start = *start;
-                    a.end = *end;
-                    a.excerpt = excerpt.clone();
-                    BooksDoc::upsert_annotation(doc, &a);
-                }
-            }
+            } => Self::apply_move_annotation(doc, id, *chapter, *block, *start, *end, excerpt),
         }
-        Ok(())
     }
 
     fn locus(&self) -> ExecutionLocus {
@@ -336,6 +429,20 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`EbookAction`] into the wire form the palette and the on-page
 /// affordances both dispatch. This is the single point that turns Books' actions
 /// into replayable envelopes.
+///
+/// # Panics
+///
+/// Panics if `action` fails to serialize to JSON. `EbookAction`'s fields are
+/// all primitive (`String`, `usize`, `Vec<String>`/`Vec<HiPiece>`), so this
+/// cannot happen in practice. The alternative — threading `Result` through
+/// every builder in this file and through `qos_actions::ActionSpec::prompted`,
+/// whose `build: Fn(&str) -> EncodedAction` closure signature is infallible
+/// by contract — would push a theoretical error through call sites that can
+/// never observe it.
+#[allow(
+    clippy::expect_used,
+    reason = "EbookAction always serializes; ActionSpec::prompted's build closure must return EncodedAction, not Result"
+)]
 pub fn encode(action: &EbookAction) -> EncodedAction {
     EncodedAction::encode(EBOOK_ACTION_TYPE, action).expect("EbookAction is always serializable")
 }
@@ -499,6 +606,12 @@ pub struct BookResourceCtx {
     pub selection_highlight: Option<HighlightPlan>,
 }
 
+// Same infallibility as `encode` above: `ActionSpec::immediate` can only fail
+// on JSON serialization, which `EbookAction`'s primitive fields never trigger.
+#[allow(
+    clippy::expect_used,
+    reason = "EbookAction always serializes; see encode()'s doc comment"
+)]
 fn encode_spec(id: &str, label: &str, action: &EbookAction) -> ActionSpec {
     ActionSpec::immediate(id, label, EBOOK_ACTION_TYPE, action).expect("encode ebook action")
 }
@@ -521,18 +634,11 @@ fn anno_label(a: &Annotation) -> String {
     }
 }
 
-/// Build the resource tree Books currently has open: the book being read, its
-/// highlights (each owning its comments), its bookmarks, and its standalone
-/// notes — every document-mutating operation exported as an action.
-pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = Resource::new(
-        format!("ebook.book:{}", ctx.book_id),
-        "ebook.book",
-        ctx.book_title.clone(),
-    );
-
-    // Book-level: toggle a bookmark at the current reading position. One action
-    // covers both add and remove (it decides deterministically against the
+/// Book-level actions: toggle bookmark, highlight-the-selection (only when
+/// one exists), and add a free-text note at the current reading position.
+fn book_level_actions(mut root: Resource, ctx: &BookResourceCtx) -> Resource {
+    // Toggle a bookmark at the current reading position. One action covers
+    // both add and remove (it decides deterministically against the
     // document); the id is only used on the add branch.
     root = root.with_action(encode_spec(
         "toggle-bookmark",
@@ -546,7 +652,6 @@ pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         ),
     ));
 
-    // Book-level: highlight the current selection — only offered when one exists.
     if let Some(plan) = &ctx.selection_highlight {
         root = root.with_action(encode_spec(
             "highlight-selection",
@@ -555,13 +660,12 @@ pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         ));
     }
 
-    // Book-level: add a free-text note at the current reading position. The uuid
-    // is minted once when the argument is committed, then baked into the
-    // envelope, so replay stays deterministic.
+    // The uuid is minted once when the argument is committed, then baked
+    // into the envelope, so replay stays deterministic.
     let bid = ctx.book_id.clone();
     let chapter = ctx.chapter;
     let block = ctx.bookmark_block;
-    root = root.with_action(ActionSpec::prompted(
+    root.with_action(ActionSpec::prompted(
         "add-note",
         "Add note",
         "Note",
@@ -580,115 +684,124 @@ pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 text,
             ))
         },
+    ))
+}
+
+/// One highlight-group resource (change colour, delete, add comment) with its
+/// comments nested as children, oldest first.
+fn highlight_resource(group: Uuid, annos: &[Annotation], book_id: &str) -> Option<Resource> {
+    let first = annos
+        .iter()
+        .filter(|a| a.kind == AnnoKind::Highlight && a.group == group)
+        .min_by_key(|a| (a.block, a.start))?;
+    let mut hl = Resource::new(
+        format!("ebook.highlight:{group}"),
+        "ebook.highlight",
+        anno_label(first),
+    );
+
+    // Change colour — a prompted action taking a colour name.
+    hl = hl.with_action(ActionSpec::prompted(
+        "change-color",
+        "Change colour",
+        "Colour",
+        "yellow, green, blue, pink, purple",
+        ExecutionLocus::ClientLocal,
+        move |name: &str| encode(&change_color_action(group, HiColor::from_str(name.trim()))),
+    ));
+    // Delete the whole highlight (pieces + comments).
+    hl = hl.with_action(encode_spec(
+        "delete-highlight",
+        "Delete highlight",
+        &delete_highlight_action(group),
+    ));
+    // Add a comment — prompted; the comment id is minted at commit time and
+    // the anchor is copied from the highlight's first piece.
+    let bid = book_id.to_string();
+    let anchor = (
+        first.chapter,
+        first.block,
+        first.start,
+        first.end,
+        first.color,
+        first.excerpt.clone(),
+    );
+    hl = hl.with_action(ActionSpec::prompted(
+        "add-comment",
+        "Add comment",
+        "Comment",
+        "your comment…",
+        ExecutionLocus::ClientLocal,
+        move |text: &str| {
+            encode(&add_comment_action(
+                &bid,
+                group,
+                Uuid::new_v4(),
+                anchor.0,
+                anchor.1,
+                anchor.2,
+                anchor.3,
+                anchor.4,
+                &anchor.5,
+                text,
+            ))
+        },
     ));
 
-    let annos = BooksDoc::annotations_for(doc, &ctx.book_id);
-
-    // Highlight groups (deduped, in reading order) → one resource each, owning
-    // its comments.
-    let mut highlight_groups: Vec<Uuid> = Vec::new();
-    for a in annos.iter().filter(|a| a.kind == AnnoKind::Highlight) {
-        if !highlight_groups.contains(&a.group) {
-            highlight_groups.push(a.group);
-        }
-    }
-    for group in &highlight_groups {
-        let first = annos
-            .iter()
-            .filter(|a| a.kind == AnnoKind::Highlight && a.group == *group)
-            .min_by_key(|a| (a.block, a.start));
-        let Some(first) = first else { continue };
-        let mut hl = Resource::new(
-            format!("ebook.highlight:{group}"),
-            "ebook.highlight",
-            anno_label(first),
-        );
-
-        // Change colour — a prompted action taking a colour name.
-        let gid = *group;
-        hl = hl.with_action(ActionSpec::prompted(
-            "change-color",
-            "Change colour",
-            "Colour",
-            "yellow, green, blue, pink, purple",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| encode(&change_color_action(gid, HiColor::from_str(name.trim()))),
-        ));
-        // Delete the whole highlight (pieces + comments).
-        hl = hl.with_action(encode_spec(
-            "delete-highlight",
-            "Delete highlight",
-            &delete_highlight_action(*group),
-        ));
-        // Add a comment — prompted; the comment id is minted at commit time and
-        // the anchor is copied from the highlight's first piece.
-        let bid = ctx.book_id.clone();
-        let anchor = (
-            first.chapter,
-            first.block,
-            first.start,
-            first.end,
-            first.color,
-            first.excerpt.clone(),
-        );
-        let gid = *group;
-        hl = hl.with_action(ActionSpec::prompted(
-            "add-comment",
-            "Add comment",
+    // Comments on this highlight (note rows sharing the group), oldest first.
+    let mut comments: Vec<&Annotation> = annos
+        .iter()
+        .filter(|a| a.kind == AnnoKind::Note && a.group == group)
+        .collect();
+    comments.sort_by_key(|a| a.created);
+    for cm in comments {
+        let cid = cm.id;
+        let child = Resource::new(
+            format!("ebook.comment:{cid}"),
+            "ebook.comment",
+            anno_label(cm),
+        )
+        .with_action(ActionSpec::prompted(
+            "edit-comment",
+            "Edit comment",
             "Comment",
-            "your comment…",
+            "edit the comment…",
             ExecutionLocus::ClientLocal,
-            move |text: &str| {
-                encode(&add_comment_action(
-                    &bid,
-                    gid,
-                    Uuid::new_v4(),
-                    anchor.0,
-                    anchor.1,
-                    anchor.2,
-                    anchor.3,
-                    anchor.4,
-                    &anchor.5,
-                    text,
-                ))
-            },
+            move |text: &str| encode(&edit_note_action(cid, text)),
+        ))
+        .with_action(encode_spec(
+            "delete-comment",
+            "Delete comment",
+            &delete_annotation_action(cid),
         ));
-
-        // Comments on this highlight (note rows sharing the group), oldest first.
-        let mut comments: Vec<&Annotation> = annos
-            .iter()
-            .filter(|a| a.kind == AnnoKind::Note && a.group == *group)
-            .collect();
-        comments.sort_by_key(|a| a.created);
-        for cm in comments {
-            let cid = cm.id;
-            let child = Resource::new(
-                format!("ebook.comment:{cid}"),
-                "ebook.comment",
-                anno_label(cm),
-            )
-            .with_action(ActionSpec::prompted(
-                "edit-comment",
-                "Edit comment",
-                "Comment",
-                "edit the comment…",
-                ExecutionLocus::ClientLocal,
-                move |text: &str| encode(&edit_note_action(cid, text)),
-            ))
-            .with_action(encode_spec(
-                "delete-comment",
-                "Delete comment",
-                &delete_annotation_action(cid),
-            ));
-            hl = hl.with_child(child);
-        }
-        root = root.with_child(hl);
+        hl = hl.with_child(child);
     }
+    Some(hl)
+}
 
-    // Bookmarks → a resource each with a single delete action.
-    for a in annos.iter().filter(|a| a.kind == AnnoKind::Bookmark) {
-        let id = a.id;
-        root = root.with_child(
+/// Highlight-group resources (deduped, in reading order), plus the set of
+/// groups covered — so standalone-note resources can exclude comment rows.
+fn highlight_resources(annos: &[Annotation], book_id: &str) -> (Vec<Resource>, Vec<Uuid>) {
+    let mut groups: Vec<Uuid> = Vec::new();
+    for a in annos.iter().filter(|a| a.kind == AnnoKind::Highlight) {
+        if !groups.contains(&a.group) {
+            groups.push(a.group);
+        }
+    }
+    let resources = groups
+        .iter()
+        .filter_map(|&group| highlight_resource(group, annos, book_id))
+        .collect();
+    (resources, groups)
+}
+
+/// Bookmark resources, each with a single delete action.
+fn bookmark_resources(annos: &[Annotation]) -> Vec<Resource> {
+    annos
+        .iter()
+        .filter(|a| a.kind == AnnoKind::Bookmark)
+        .map(|a| {
+            let id = a.id;
             Resource::new(
                 format!("ebook.bookmark:{id}"),
                 "ebook.bookmark",
@@ -698,31 +811,58 @@ pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 "delete",
                 "Delete bookmark",
                 &delete_annotation_action(id),
-            )),
-        );
-    }
+            ))
+        })
+        .collect()
+}
 
-    // Standalone notes (note rows not attached to a highlight group) → edit + delete.
-    for a in annos
+/// Standalone-note resources (note rows not attached to a highlight group),
+/// each with edit + delete actions.
+fn standalone_note_resources(annos: &[Annotation], highlight_groups: &[Uuid]) -> Vec<Resource> {
+    annos
         .iter()
         .filter(|a| a.kind == AnnoKind::Note && !highlight_groups.contains(&a.group))
-    {
-        let id = a.id;
-        let child = Resource::new(format!("ebook.note:{id}"), "ebook.note", anno_label(a))
-            .with_action(ActionSpec::prompted(
-                "edit",
-                "Edit note",
-                "Note",
-                "edit the note…",
-                ExecutionLocus::ClientLocal,
-                move |text: &str| encode(&edit_note_action(id, text)),
-            ))
-            .with_action(encode_spec(
-                "delete",
-                "Delete note",
-                &delete_annotation_action(id),
-            ));
-        root = root.with_child(child);
+        .map(|a| {
+            let id = a.id;
+            Resource::new(format!("ebook.note:{id}"), "ebook.note", anno_label(a))
+                .with_action(ActionSpec::prompted(
+                    "edit",
+                    "Edit note",
+                    "Note",
+                    "edit the note…",
+                    ExecutionLocus::ClientLocal,
+                    move |text: &str| encode(&edit_note_action(id, text)),
+                ))
+                .with_action(encode_spec(
+                    "delete",
+                    "Delete note",
+                    &delete_annotation_action(id),
+                ))
+        })
+        .collect()
+}
+
+/// Build the resource tree Books currently has open: the book being read, its
+/// highlights (each owning its comments), its bookmarks, and its standalone
+/// notes — every document-mutating operation exported as an action.
+pub fn provide_resources(ctx: &BookResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    let root = Resource::new(
+        format!("ebook.book:{}", ctx.book_id),
+        "ebook.book",
+        ctx.book_title.clone(),
+    );
+    let mut root = book_level_actions(root, ctx);
+
+    let annos = BooksDoc::annotations_for(doc, &ctx.book_id);
+    let (highlights, highlight_groups) = highlight_resources(&annos, &ctx.book_id);
+    for hl in highlights {
+        root = root.with_child(hl);
+    }
+    for bm in bookmark_resources(&annos) {
+        root = root.with_child(bm);
+    }
+    for note in standalone_note_resources(&annos, &highlight_groups) {
+        root = root.with_child(note);
     }
 
     vec![root]
@@ -755,14 +895,14 @@ mod tests {
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 

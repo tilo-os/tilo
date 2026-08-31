@@ -34,6 +34,11 @@ fn params_json(params: &[crate::shell::search::action_api::ActionParam]) -> Vec<
         .collect()
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "both `chrome` and `tree` back the values handed to `f` at the final call, which is \
+              the whole point of this function — there is no earlier point to drop either guard"
+)]
 fn with_action_gate<R>(
     chrome_handle: &crate::shell::chrome_state::Chrome,
     f: impl FnOnce(&crate::shell::chrome_state::ChromeState, &dyn ActionVisibility) -> R,
@@ -151,12 +156,18 @@ fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
                 eprintln!("nirios compositor: test_control set_nonblocking: {e}");
                 return None;
             }
-            eprintln!("nirios compositor test_control listening on {path:?}");
+            eprintln!(
+                "nirios compositor test_control listening on {}",
+                path.display()
+            );
             let guard = UnlinkOnDrop(path);
             Some((listener, guard))
         }
         Err(e) => {
-            eprintln!("nirios compositor: test_control bind {path:?}: {e}");
+            eprintln!(
+                "nirios compositor: test_control bind {}: {e}",
+                path.display()
+            );
             None
         }
     }
@@ -382,7 +393,11 @@ impl ControlState for FrameBuilderControlState<'_> {
         use crate::shell::state::CapOverride;
         let chrome = self.fb.chrome();
         let user = chrome.local_user_id.clone();
-        let mut tree = chrome.tree_mut();
+        // Clone the handle and drop the `ChromeState` borrow before locking the
+        // tree — the RefCell guard has nothing left to do once the handle is in hand.
+        let tree_handle = chrome.tree_handle();
+        drop(chrome);
+        let mut tree = tree_handle.write();
         let ws_id = tree
             .active_workspace()
             .map(|w| w.id)
@@ -407,7 +422,11 @@ impl ControlState for FrameBuilderControlState<'_> {
     fn revoke_capability(&self, id: &str) -> Result<serde_json::Value, String> {
         let chrome = self.fb.chrome();
         let user = chrome.local_user_id.clone();
-        let mut tree = chrome.tree_mut();
+        // Same early-drop as `grant_capability`: nothing further needs the
+        // `ChromeState` borrow once the tree handle is cloned out of it.
+        let tree_handle = chrome.tree_handle();
+        drop(chrome);
+        let mut tree = tree_handle.write();
         let ws_id = tree
             .active_workspace()
             .map(|w| w.id)
@@ -445,7 +464,10 @@ impl ControlState for FrameBuilderControlState<'_> {
         use crate::shell::actions::{ActionDecl, ActionRegistry, check_action};
         use crate::shell::state::ResourceRef;
         let chrome = self.fb.chrome();
-        let tree = chrome.tree();
+        // Same early-drop as `grant_capability`: only the tree is read below.
+        let tree_handle = chrome.tree_handle();
+        drop(chrome);
+        let tree = tree_handle.read();
         let ws = tree
             .active_workspace()
             .ok_or_else(|| "no active workspace".to_string())?;
@@ -728,7 +750,7 @@ fn keytag_into_winit_key(tag: KeyTag) -> Key {
 /// `pub(crate)` `platform_specific` field, so we zero-init and overwrite
 /// only the fields the host reads; `text` is set for `Character` keys so
 /// text-input branches see the same glyph real hardware would send.
-fn keyboard_input_event(key: Key, pressed: bool) -> WindowEvent {
+fn keyboard_input_event(key: &Key, pressed: bool) -> WindowEvent {
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = key.clone();
     ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
@@ -739,7 +761,7 @@ fn keyboard_input_event(key: Key, pressed: bool) -> WindowEvent {
         ElementState::Released
     };
     ev.repeat = false;
-    ev.text = if let Key::Character(s) = &key {
+    ev.text = if let Key::Character(s) = key {
         Some(s.clone())
     } else {
         None
@@ -753,7 +775,7 @@ fn keyboard_input_event(key: Key, pressed: bool) -> WindowEvent {
 
 fn switch_action_event(action: SwitchAction, pressed: bool) -> WindowEvent {
     keyboard_input_event(
-        Key::Named(match action {
+        &Key::Named(match action {
             SwitchAction::Next => NamedKey::Tab,
             SwitchAction::Activate => NamedKey::Enter,
         }),
@@ -761,23 +783,131 @@ fn switch_action_event(action: SwitchAction, pressed: bool) -> WindowEvent {
     )
 }
 
+/// Grouped modifier flags for [`apply_modifier_mask`] — four bare `bool`
+/// parameters read ambiguous at the call site (`fn_params_excessive_bools`).
+struct ModifierFlags {
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    logo: bool,
+}
+
 /// Apply a [`SetModifiers`] action by overwriting `ctx.modifiers` — the
 /// host reads the snapshot inline on the next chord. Mirrors `ShellDriver::set_modifiers`.
-fn apply_modifier_mask(ctx: &mut TestControlCtx, ctrl: bool, shift: bool, alt: bool, logo: bool) {
+fn apply_modifier_mask(ctx: &mut TestControlCtx, flags: ModifierFlags) {
     let mut mask = ModifiersState::empty();
-    if ctrl {
+    if flags.ctrl {
         mask |= ModifiersState::CONTROL;
     }
-    if shift {
+    if flags.shift {
         mask |= ModifiersState::SHIFT;
     }
-    if alt {
+    if flags.alt {
         mask |= ModifiersState::ALT;
     }
-    if logo {
+    if flags.logo {
         mask |= ModifiersState::SUPER;
     }
     ctx.modifiers = Modifiers::from(mask);
+}
+
+/// Offer `event` to the focused Wayland client; returns `true` when it was
+/// consumed and must not also reach the chrome.
+fn to_client(
+    state: &mut Option<&mut State>,
+    fb: &mut FrameBuilder,
+    event: &WindowEvent,
+    modifiers: Modifiers,
+) -> bool {
+    match state {
+        Some(st) => client_input::route_input(st, fb, event, &modifiers),
+        None => false,
+    }
+}
+
+/// Offer `event` to the client first, then the chrome — the shared shape
+/// behind every [`PlannedAction`] arm that just synthesises one `WindowEvent`.
+fn dispatch_synth_event(
+    event: &WindowEvent,
+    fb: &mut FrameBuilder,
+    ctx: &mut TestControlCtx,
+    state: &mut Option<&mut State>,
+) {
+    if to_client(state, fb, event, ctx.modifiers) {
+        return;
+    }
+    fb.dispatch_event(
+        event,
+        &ctx.modifiers,
+        &mut ctx.doc,
+        &ctx.root_obj,
+        &mut ctx.focus,
+    );
+}
+
+/// Re-resolve and run one `InvokeAction` — split out of
+/// [`execute_planned_action`] because catalog resolution, arg binding and
+/// invoke-failure handling alone were half that function's line budget.
+fn execute_invoke_action(
+    provider: &str,
+    id: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+    fb: &mut FrameBuilder,
+    ctx: &mut TestControlCtx,
+) -> Option<InvokeFailure> {
+    // Re-resolve rather than carry a handle from dispatch: the document is
+    // mutable between planning and execution, so we run the current action or nothing.
+    let chrome_handle = fb.chrome_handle();
+    // Built through the same gate the dispatcher resolved against — without
+    // it, a revoked capability wouldn't stop a caller who got past it once.
+    let catalog = match with_action_gate(&chrome_handle, |chrome, gate| {
+        fb.host()
+            .action_catalog("", chrome, &ctx.doc, &ctx.root_obj, gate)
+    }) {
+        Ok(catalog) => catalog,
+        Err(why) => {
+            eprintln!("nirios compositor: cannot invoke ({provider}, {id}): {why}");
+            return None;
+        }
+    };
+    // The `Ref` above is dropped with the block, so the provider's callback
+    // is free to borrow the chrome cell mutably — which most of them do.
+    if let Some(selected) = catalog.select(&ResourceRef::new(provider, id)) {
+        // Re-bound against *this* resolution's parameters — the catalogue was just
+        // rebuilt and may have landed on a different action under the same address.
+        let bound = test_control::arg_values_from_json(args)
+            .map_err(|r| InvokeFailure {
+                code: r.code.to_string(),
+                message: r.message,
+            })
+            .and_then(|values| {
+                selected
+                    .invoke(&mut ctx.doc, &ctx.root_obj, &chrome_handle, values)
+                    .map_err(|e| InvokeFailure {
+                        code: e.code().to_string(),
+                        message: e.to_string(),
+                    })
+            });
+        if let Err(failure) = bound {
+            // Logged and returned in the socket reply. Actions run before the reply is
+            // written, so "it ran" and "it could not run" never look alike to a caller with no screen.
+            eprintln!(
+                "nirios compositor: ({provider}, {id}) did not run: {}",
+                failure.message
+            );
+            return Some(failure);
+        }
+        None
+    } else {
+        let message = format!(
+            "action ({provider}, {id}) vanished between resolve and invoke; nothing was run"
+        );
+        eprintln!("nirios compositor: {message}");
+        Some(InvokeFailure {
+            code: "action_failed".to_string(),
+            message,
+        })
+    }
 }
 
 /// Synthesise the [`WindowEvent`] for one [`PlannedAction`] and dispatch it
@@ -793,20 +923,6 @@ fn execute_planned_action(
     ctx: &mut TestControlCtx,
     state: Option<&mut State>,
 ) -> Option<InvokeFailure> {
-    /// Offer `event` to the focused Wayland client; returns `true` when it
-    /// was consumed and must not also reach the chrome.
-    fn to_client(
-        state: &mut Option<&mut State>,
-        fb: &mut FrameBuilder,
-        event: &WindowEvent,
-        modifiers: &Modifiers,
-    ) -> bool {
-        match state {
-            Some(st) => client_input::route_input(st, fb, event, modifiers),
-            None => false,
-        }
-    }
-
     let mut state = state;
     match action {
         PlannedAction::CursorMoved { x, y } => {
@@ -815,16 +931,7 @@ fn execute_planned_action(
                 device_id: unsafe { std::mem::zeroed() },
                 position: ctx.cursor,
             };
-            if to_client(&mut state, fb, &event, &ctx.modifiers) {
-                return None;
-            }
-            fb.dispatch_event(
-                &event,
-                &ctx.modifiers,
-                &mut ctx.doc,
-                &ctx.root_obj,
-                &mut ctx.focus,
-            );
+            dispatch_synth_event(&event, fb, ctx, &mut state);
         }
         PlannedAction::SetGroupWidth { permille } => {
             let touched = fb.host_mut().set_group_widths(*permille);
@@ -844,16 +951,7 @@ fn execute_planned_action(
                 },
                 button: MouseButton::Left,
             };
-            if to_client(&mut state, fb, &event, &ctx.modifiers) {
-                return None;
-            }
-            fb.dispatch_event(
-                &event,
-                &ctx.modifiers,
-                &mut ctx.doc,
-                &ctx.root_obj,
-                &mut ctx.focus,
-            );
+            dispatch_synth_event(&event, fb, ctx, &mut state);
         }
         PlannedAction::MousePointerButton { pressed, button } => {
             let event = WindowEvent::MouseInput {
@@ -869,35 +967,17 @@ fn execute_planned_action(
                     PointerButtonKind::Middle => MouseButton::Middle,
                 },
             };
-            if to_client(&mut state, fb, &event, &ctx.modifiers) {
-                return None;
-            }
-            fb.dispatch_event(
-                &event,
-                &ctx.modifiers,
-                &mut ctx.doc,
-                &ctx.root_obj,
-                &mut ctx.focus,
-            );
+            dispatch_synth_event(&event, fb, ctx, &mut state);
         }
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
-            let event = keyboard_input_event(winit_key, *pressed);
+            let event = keyboard_input_event(&winit_key, *pressed);
             // Keep the running mask in step with the injected key stream — this wire
             // carries no `ModifiersChanged`, so a held modifier would otherwise be invisible.
             if let WindowEvent::KeyboardInput { event: key_ev, .. } = &event {
                 client_input::apply_modifier_key(&mut ctx.modifiers, key_ev);
             }
-            if to_client(&mut state, fb, &event, &ctx.modifiers) {
-                return None;
-            }
-            fb.dispatch_event(
-                &event,
-                &ctx.modifiers,
-                &mut ctx.doc,
-                &ctx.root_obj,
-                &mut ctx.focus,
-            );
+            dispatch_synth_event(&event, fb, ctx, &mut state);
         }
         PlannedAction::MouseWheel { dx, dy } => {
             let event = WindowEvent::MouseWheel {
@@ -905,16 +985,7 @@ fn execute_planned_action(
                 delta: winit::event::MouseScrollDelta::LineDelta(*dx, *dy),
                 phase: winit::event::TouchPhase::Moved,
             };
-            if to_client(&mut state, fb, &event, &ctx.modifiers) {
-                return None;
-            }
-            fb.dispatch_event(
-                &event,
-                &ctx.modifiers,
-                &mut ctx.doc,
-                &ctx.root_obj,
-                &mut ctx.focus,
-            );
+            dispatch_synth_event(&event, fb, ctx, &mut state);
         }
         PlannedAction::SetModifiers {
             ctrl,
@@ -923,7 +994,15 @@ fn execute_planned_action(
             logo,
         } => {
             // Mutate the modifier snapshot directly — the host reads it on the next chord dispatch, no event needed.
-            apply_modifier_mask(ctx, *ctrl, *shift, *alt, *logo);
+            apply_modifier_mask(
+                ctx,
+                ModifierFlags {
+                    ctrl: *ctrl,
+                    shift: *shift,
+                    alt: *alt,
+                    logo: *logo,
+                },
+            );
         }
         PlannedAction::Snapshot { path } => {
             // Re-render into a fresh OffscreenRenderer rather than tap a backend-cached
@@ -944,62 +1023,7 @@ fn execute_planned_action(
             write_snapshot_png(fb, path, drag);
         }
         PlannedAction::InvokeAction { provider, id, args } => {
-            // Re-resolve rather than carry a handle from dispatch: the document is
-            // mutable between planning and execution, so we run the current action or nothing.
-            let chrome_handle = fb.chrome_handle();
-            // Built through the same gate the dispatcher resolved against — without
-            // it, a revoked capability wouldn't stop a caller who got past it once.
-            let catalog = match with_action_gate(&chrome_handle, |chrome, gate| {
-                fb.host()
-                    .action_catalog("", chrome, &ctx.doc, &ctx.root_obj, gate)
-            }) {
-                Ok(catalog) => catalog,
-                Err(why) => {
-                    eprintln!("nirios compositor: cannot invoke ({provider}, {id}): {why}");
-                    return None;
-                }
-            };
-            match catalog.select(&ResourceRef::new(provider.as_str(), id.as_str())) {
-                // The `Ref` above is dropped with the block, so the provider's callback
-                // is free to borrow the chrome cell mutably — which most of them do.
-                Some(selected) => {
-                    // Re-bound against *this* resolution's parameters — the catalogue was just
-                    // rebuilt and may have landed on a different action under the same address.
-                    let bound = test_control::arg_values_from_json(args)
-                        .map_err(|r| InvokeFailure {
-                            code: r.code.to_string(),
-                            message: r.message,
-                        })
-                        .and_then(|values| {
-                            selected
-                                .invoke(&mut ctx.doc, &ctx.root_obj, &chrome_handle, values)
-                                .map_err(|e| InvokeFailure {
-                                    code: e.code().to_string(),
-                                    message: e.to_string(),
-                                })
-                        });
-                    if let Err(failure) = bound {
-                        // Logged and returned in the socket reply. Actions run before the reply is
-                        // written, so "it ran" and "it could not run" never look alike to a caller with no screen.
-                        eprintln!(
-                            "nirios compositor: ({provider}, {id}) did not run: {}",
-                            failure.message
-                        );
-                        return Some(failure);
-                    }
-                }
-                None => {
-                    let message = format!(
-                        "action ({provider}, {id}) vanished between resolve and invoke; \
-                         nothing was run"
-                    );
-                    eprintln!("nirios compositor: {message}");
-                    return Some(InvokeFailure {
-                        code: "action_failed".to_string(),
-                        message,
-                    });
-                }
-            }
+            return execute_invoke_action(provider, id, args, fb, ctx);
         }
     }
     None
@@ -1022,7 +1046,7 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
     match action {
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
-            let event = keyboard_input_event(winit_key, *pressed);
+            let event = keyboard_input_event(&winit_key, *pressed);
             lock.handle_key(winit_event_to_lock_key(&event));
         }
         // Pointer, modifiers, snapshots and action invocations are all swallowed
@@ -1076,7 +1100,12 @@ fn write_snapshot_png(
 ) {
     use std::io::Write;
     let (w, h) = fb.viewport();
-    let (w, h) = (w as u32, h as u32);
+    // Viewport dimensions are always non-negative pixel counts; clamped rather
+    // than a bare `as u32` so a pathological value saturates instead of wrapping.
+    let (w, h) = (
+        w.round().clamp(0.0, f64::from(u32::MAX)) as u32,
+        h.round().clamp(0.0, f64::from(u32::MAX)) as u32,
+    );
     if w == 0 || h == 0 {
         eprintln!(
             "nirios compositor: test_control snapshot: viewport is {w}x{h}, nothing to write"
@@ -1107,36 +1136,47 @@ fn write_snapshot_png(
     // keeps the compositor alive with no wgpu adapter (CI without llvmpipe).
     // Failure isn't cached: the slot stays empty so a later snapshot retries.
     let cache = SNAPSHOT_RENDERER.get_or_init(|| std::sync::Mutex::new(None));
-    // A panic elsewhere poisons the mutex without damaging what it guards (an
-    // intact renderer or empty slot) — recover rather than compound the failure.
-    let mut slot = cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let stale = match slot.as_ref() {
-        Some(renderer) => renderer.width != w || renderer.height != h,
-        None => true,
-    };
-    if stale {
-        match ui::offscreen::OffscreenRenderer::try_new(w, h) {
-            Ok(renderer) => {
-                SNAPSHOT_RENDERERS_BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                // Assigning drops any previous renderer here, mid-execution — the one place it's safe to.
-                *slot = Some(renderer);
-            }
-            Err(e) => {
-                eprintln!("nirios compositor: test_control snapshot: no offscreen renderer: {e}");
-                *slot = None;
-                return;
+    // The mutex only needs to guard the renderer slot; encoding the PNG and
+    // writing it to disk below are unrelated work and don't need it held, so
+    // the guard's scope ends here once `rgba` is copied out.
+    let rgba = {
+        // A panic elsewhere poisons the mutex without damaging what it guards
+        // (an intact renderer or empty slot) — recover rather than compound the failure.
+        let mut slot = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stale = match slot.as_ref() {
+            Some(renderer) => renderer.width != w || renderer.height != h,
+            None => true,
+        };
+        if stale {
+            match ui::offscreen::OffscreenRenderer::try_new(w, h) {
+                Ok(renderer) => {
+                    SNAPSHOT_RENDERERS_BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    // Assigning drops any previous renderer here, mid-execution — the one place it's safe to.
+                    *slot = Some(renderer);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "nirios compositor: test_control snapshot: no offscreen renderer: {e}"
+                    );
+                    *slot = None;
+                    return;
+                }
             }
         }
-    }
-    let Some(rgba) = slot.as_mut().map(|renderer| renderer.render_rgba(&scene)) else {
-        return;
+        let Some(rgba) = slot.as_mut().map(|renderer| renderer.render_rgba(&scene)) else {
+            return;
+        };
+        rgba
     };
     let file = match std::fs::File::create(path) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("nirios compositor: test_control snapshot: create {path:?}: {e}");
+            eprintln!(
+                "nirios compositor: test_control snapshot: create {}: {e}",
+                path.display()
+            );
             return;
         }
     };
@@ -1147,19 +1187,28 @@ fn write_snapshot_png(
     let mut png_writer = match encoder.write_header() {
         Ok(w) => w,
         Err(e) => {
-            eprintln!("nirios compositor: test_control snapshot: png header {path:?}: {e}");
+            eprintln!(
+                "nirios compositor: test_control snapshot: png header {}: {e}",
+                path.display()
+            );
             return;
         }
     };
     if let Err(e) = png_writer.write_image_data(&rgba) {
-        eprintln!("nirios compositor: test_control snapshot: png write {path:?}: {e}");
+        eprintln!(
+            "nirios compositor: test_control snapshot: png write {}: {e}",
+            path.display()
+        );
         return;
     }
     // Drop the PNG writer first so the BufWriter holds the last bytes, then
     // flush explicitly — else a fast-following file-size assertion could race a buffered tail.
     drop(png_writer);
     if let Err(e) = writer.flush() {
-        eprintln!("nirios compositor: test_control snapshot: flush {path:?}: {e}");
+        eprintln!(
+            "nirios compositor: test_control snapshot: flush {}: {e}",
+            path.display()
+        );
     }
 }
 
@@ -1218,18 +1267,26 @@ pub(crate) fn read_bounded_line<R: BufRead>(
         }
         // Find the newline (if any) in the available slice.
         let (consumed, found_nl) = match available.iter().position(|&b| b == b'\n') {
-            Some(idx) => (idx + 1, true),
+            Some(idx) => (idx.saturating_add(1), true),
             None => (available.len(), false),
         };
-        if buf.len() + consumed > max_bytes {
+        if buf.len().saturating_add(consumed) > max_bytes {
             // Cap reached: consume up to the cap so we don't leave garbage in the reader, then bail.
             let remaining = max_bytes.saturating_sub(buf.len());
-            buf.extend_from_slice(&available[..remaining]);
-            reader.consume(remaining);
+            // `remaining < consumed <= available.len()` by construction, so this
+            // never misses — `unwrap_or(available)` is just a defensive fallback.
+            let take = available.get(..remaining).unwrap_or(available);
+            let taken = take.len();
+            buf.extend_from_slice(take);
+            reader.consume(taken);
             return Err(ReadLineError::TooLarge);
         }
-        buf.extend_from_slice(&available[..consumed]);
-        reader.consume(consumed);
+        // `consumed` is either `idx + 1` (a valid position in `available`) or
+        // `available.len()`, so this too never misses.
+        let take = available.get(..consumed).unwrap_or(available);
+        let taken = take.len();
+        buf.extend_from_slice(take);
+        reader.consume(taken);
         if found_nl {
             match String::from_utf8(buf) {
                 Ok(s) => {
@@ -1407,7 +1464,7 @@ fn power_notification_to_incoming(
 /// kernel's VT-switch handling never sees the chord — if the compositor
 /// doesn't act, the user can't leave this terminal for the session's life.
 /// Pure so the chord table is checked without a seat.
-fn vt_switch_chord(event: &WindowEvent, modifiers: &Modifiers) -> Option<i32> {
+fn vt_switch_chord(event: &WindowEvent, modifiers: Modifiers) -> Option<i32> {
     let WindowEvent::KeyboardInput { event, .. } = event else {
         return None;
     };
@@ -1444,7 +1501,7 @@ fn vt_switch_chord(event: &WindowEvent, modifiers: &Modifiers) -> Option<i32> {
 /// The panic key for a shared session — stops whatever a guest is doing.
 /// Checked ahead of the client router and the shell's own Escape handling
 /// so an open overlay or a keyboard-grabbing client can't swallow it.
-fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: &Modifiers) -> bool {
+fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: Modifiers) -> bool {
     let WindowEvent::KeyboardInput { event, .. } = event else {
         return false;
     };
@@ -1453,7 +1510,7 @@ fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: &Modifiers) -> bo
         && matches!(event.logical_key, Key::Named(NamedKey::Escape))
 }
 
-fn is_lock_chord(event: &WindowEvent, modifiers: &Modifiers) -> bool {
+fn is_lock_chord(event: &WindowEvent, modifiers: Modifiers) -> bool {
     let WindowEvent::KeyboardInput { event, .. } = event else {
         return false;
     };
@@ -1607,7 +1664,7 @@ fn collab_socket_is_live(path: &std::path::Path) -> bool {
 /// until this succeeds; reported at `error!` and surfaced via `chrome_state::set_collab_unavailable`.
 fn spawn_session_collab_broker(
     chrome: &crate::shell::chrome_state::Chrome,
-    peer_sync: Option<Arc<crate::shell::network::ShellNetwork>>,
+    peer_sync: &Option<Arc<crate::shell::network::ShellNetwork>>,
 ) -> Option<crate::shell::collab_broker::BrokerHandle> {
     if let Err(e) = launcher::services::ensure_services_root() {
         tracing::error!(
@@ -1722,11 +1779,11 @@ fn start_portal_backend(
         print_spooler: crate::portal::PrintSpoolerHandle::cups(),
     };
 
-    let served = runtime.block_on(async {
+    let serve_result = runtime.block_on(async {
         let conn = zbus::ConnectionBuilder::session()?.build().await?;
         crate::portal::serve(conn, ctx).await
     });
-    let server = match served {
+    let server = match serve_result {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(
@@ -1770,36 +1827,26 @@ fn start_portal_backend(
     Some(PortalBackend { runtime, server })
 }
 
-/// Entry point for the smithay-on-Wayland compositor. Diverges (`-> !`) so
-/// `main` can use it next to [`super::hosted::run`] without juggling return
-/// types; unrecoverable errors `panic` via `expect`, appropriate for a
-/// top-level entry point (matches smithay's own examples).
-pub fn run() -> ! {
-    // Calloop drives the whole compositor; smithay is callback-oriented and
-    // expects every wakeup to fan out from a single `EventLoop::<State>`.
-    let mut event_loop: EventLoop<'static, State> =
-        EventLoop::try_new().expect("create calloop event loop");
-
-    // The `Display` owns the wayland-server protocol state, held locally so
-    // `dispatch_clients`/`flush_clients` run per tick — mirrors smithay 0.7's examples.
-    let mut display: Display<State> = Display::new().expect("create wayland display");
-    let display_handle = display.handle();
-
-    let mut state = State::new(event_loop.handle(), display_handle.clone());
-    spawn_auto_brightness_worker();
-    // Point `ui`'s clipboard at the compositor's selection mirror — everything
-    // hosted here isn't a Wayland client, so without this they'd share no buffer.
-    crate::compositor::selection::install_host_clipboard(state.selection_store());
-
-    // Construct the backend. `expect` here, same as the socket bind below — a
-    // top-level `-> !` entry point treats backend init failure as fatal (smithay's `anvil` posture).
-    //
-    // `--backend drm|winit` selects the impl; `Drm` is currently a skeleton
-    // (errors "not yet implemented" at construction) but dispatch is wired so follow-up TTY work plugs in.
-    let backend_kind = parse_backend_from_args();
-    let mut backend: Box<dyn Backend> = match backend_kind {
+/// Construct the backend selected by `--backend drm|winit|headless` — split
+/// out of [`run`] to keep that function's line count down. `expect`-free:
+/// same fatal-on-`Err` posture as the rest of `run`'s startup, just spelled
+/// as a logged `eprintln!` + `process::exit(1)` instead of a panic, since
+/// this crate builds with `panic = "abort"`.
+#[allow(
+    clippy::exit,
+    reason = "only ever called from `run`'s own top-level entry-point setup; a fatal backend \
+              init failure has always ended the process here"
+)]
+fn build_backend(kind: BackendKind) -> Box<dyn Backend> {
+    match kind {
         BackendKind::Winit => {
-            let mut b = WinitBackend::new().expect("init winit backend");
+            let mut b = match WinitBackend::new() {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("nirios compositor: --backend winit failed: {e}");
+                    std::process::exit(1);
+                }
+            };
             // Match the FrameBuilder's configured theme so the host window
             // clears to chrome background before the first frame paints.
             b.set_base_color(ui::theme::Theme::configured().bg_app);
@@ -1824,7 +1871,121 @@ pub fn run() -> ! {
                 }
             }
         }
+    }
+}
+
+/// Widen a `(u32, u32)` pixel size to `(i32, i32)` for `State::output_size`.
+/// Clamped rather than wrapped: a client-visible fullscreen target derived
+/// from a bogus size is far less harmful than the sign flip a bare `as`
+/// cast would produce, and no real display size comes anywhere near `i32::MAX`.
+fn size_to_signed(size: (u32, u32)) -> (i32, i32) {
+    (
+        i32::try_from(size.0).unwrap_or(i32::MAX),
+        i32::try_from(size.1).unwrap_or(i32::MAX),
+    )
+}
+
+/// Bind the primary public Wayland socket (`wayland-1..32`, first free
+/// name), print the two lines a human or test relies on, and publish the
+/// name to `$XDG_RUNTIME_DIR/qos-session/wayland-display`. Split out of
+/// [`run`] to keep that function's line count down.
+#[allow(
+    clippy::exit,
+    reason = "only ever called from `run`'s own top-level entry-point setup; a fatal socket-bind \
+              failure has always ended the process here"
+)]
+fn bind_and_publish_wayland_socket() -> (
+    ListeningSocketSource,
+    std::ffi::OsString,
+    Option<UnlinkOnDrop>,
+) {
+    let listening_socket = match ListeningSocketSource::new_auto() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("nirios compositor: bind listening wayland socket failed: {e}");
+            std::process::exit(1);
+        }
     };
+    let socket_name = listening_socket.socket_name().to_os_string();
+    // A smoke test asserts on the exact text of this line, quotes included —
+    // `OsString` has no `Display` impl, and `extract_socket_name` in
+    // `tests/compositor_test.rs` strips the Debug form's surrounding `"`.
+    #[allow(
+        clippy::unnecessary_debug_formatting,
+        reason = "OsString has no Display impl, and the quoted Debug form is a strict parsing \
+                  contract in tests/compositor_test.rs::extract_socket_name — switching to \
+                  `to_string_lossy()` would drop the quotes that test strips"
+    )]
+    let banner = format!("nirios compositor listening on {socket_name:?}");
+    eprintln!("{banner}");
+    // The two lines below are for a human who just ran `cargo run -p shell` —
+    // publishing to a file too lets the next command read it instead of copying from a log.
+    let display_file = publish_wayland_display(&socket_name);
+    eprintln!(
+        "  WAYLAND_DISPLAY={} — e.g. `WAYLAND_DISPLAY={} cargo run -p terminal`",
+        socket_name.to_string_lossy(),
+        socket_name.to_string_lossy(),
+    );
+    if let Some(guard) = display_file.as_ref() {
+        eprintln!("  also written to {}", guard.0.display());
+    }
+    (listening_socket, socket_name, display_file)
+}
+
+/// Entry point for the smithay-on-Wayland compositor. Diverges (`-> !`) so
+/// `main` can use it next to [`super::hosted::run`] without juggling return
+/// types; unrecoverable setup errors are logged and end the process via
+/// `std::process::exit`, appropriate for a top-level entry point (matches
+/// smithay's own examples) — never a bare `panic`, since this crate builds
+/// with `panic = "abort"` and a clean logged exit beats an abort with no message.
+#[allow(
+    clippy::exit,
+    reason = "this is the compositor's real process entry point (invoked directly from `main`); \
+              every exit call below is a fatal, logged setup failure, the same posture smithay's \
+              own examples take"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the per-frame dispatch loop below is one continuous tick over ~30 pieces of live \
+              session state (backend, chrome, session/idle/lock, metrics, test-control); \
+              mechanically splitting it into mutable-reference-passing phase functions with no \
+              compiler available to verify the transformation risks a subtle correctness bug in \
+              a panic-abort, session-critical entry point. Setup that could be safely verified by \
+              inspection (backend construction, the wayland socket bind+publish) is factored out \
+              into `build_backend`/`bind_and_publish_wayland_socket` below"
+)]
+pub fn run() -> ! {
+    // Calloop drives the whole compositor; smithay is callback-oriented and
+    // expects every wakeup to fan out from a single `EventLoop::<State>`.
+    let mut event_loop: EventLoop<'static, State> = match EventLoop::try_new() {
+        Ok(el) => el,
+        Err(e) => {
+            eprintln!("nirios compositor: create calloop event loop failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // The `Display` owns the wayland-server protocol state, held locally so
+    // `dispatch_clients`/`flush_clients` run per tick — mirrors smithay 0.7's examples.
+    let mut display: Display<State> = match Display::new() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("nirios compositor: create wayland display failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let display_handle = display.handle();
+
+    let mut state = State::new(event_loop.handle(), display_handle.clone());
+    spawn_auto_brightness_worker();
+    // Point `ui`'s clipboard at the compositor's selection mirror — everything
+    // hosted here isn't a Wayland client, so without this they'd share no buffer.
+    crate::compositor::selection::install_host_clipboard(state.selection_store());
+
+    // `--backend drm|winit` selects the impl; `Drm` is currently a skeleton
+    // (errors "not yet implemented" at construction) but dispatch is wired so follow-up TTY work plugs in.
+    let backend_kind = parse_backend_from_args();
+    let mut backend: Box<dyn Backend> = build_backend(backend_kind);
 
     // Per-frame scene production, shared with offscreen tooling via
     // `FrameBuilder` — chrome in the host window is byte-identical to `cargo run --bin shots`.
@@ -1911,8 +2072,7 @@ pub fn run() -> ! {
     // Lives in this process, not a unit of its own: a listener + fanout
     // table over `ShellNetwork` (the Iroh handle above), since the shell
     // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
-    let collab_broker =
-        spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.clone());
+    let collab_broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), &peer_sync);
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
     // failure only removes the advanced handoff, never core Settings controls.
@@ -1950,42 +2110,33 @@ pub fn run() -> ! {
     }
 
     // Seed the fullscreen-configure size so an early `set_fullscreen` fills the output before the first resize.
-    state.output_size = (initial_size.0 as i32, initial_size.1 as i32);
+    state.output_size = size_to_signed(initial_size);
 
     // `new_auto` walks `wayland-1..wayland-32`, binding the first free name.
-    // A smoke test asserts on the exact "nirios compositor listening on …" line below, so this format is contract.
-    let listening_socket =
-        ListeningSocketSource::new_auto().expect("bind listening wayland socket");
-    let socket_name = listening_socket.socket_name().to_os_string();
-    eprintln!("nirios compositor listening on {socket_name:?}");
-    // The line above is the contract; the two below are for a human who just
-    // ran `cargo run -p shell` — publishing to a file too lets the next command read it instead of copying from a log.
-    let _display_file = publish_wayland_display(&socket_name);
-    eprintln!(
-        "  WAYLAND_DISPLAY={} — e.g. `WAYLAND_DISPLAY={} cargo run -p terminal`",
-        socket_name.to_string_lossy(),
-        socket_name.to_string_lossy(),
-    );
-    if let Some(guard) = _display_file.as_ref() {
-        eprintln!("  also written to {}", guard.0.display());
-    }
+    let (listening_socket, socket_name, _display_file) = bind_and_publish_wayland_socket();
     // Publish to the app launcher: every app is pointed at this socket
     // explicitly (`qos-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
 
-    event_loop
-        .handle()
-        .insert_source(listening_socket, move |client_stream, (), state| {
-            // Each accepted connection becomes a wayland-server `Client`; attach a
-            // `ClientState` so `client_compositor_state` can fish out the per-client state later.
-            if let Err(err) = state
-                .display_handle
-                .insert_client(client_stream, Arc::new(ClientState::default()))
-            {
-                eprintln!("nirios compositor: failed to insert client: {err}");
-            }
-        })
-        .expect("insert listening socket source into event loop");
+    if let Err(err) =
+        event_loop
+            .handle()
+            .insert_source(listening_socket, move |client_stream, (), state| {
+                // Each accepted connection becomes a wayland-server `Client`; attach a
+                // `ClientState` so `client_compositor_state` can fish out the per-client state later.
+                if let Err(err) = state
+                    .display_handle
+                    .insert_client(client_stream, Arc::new(ClientState::default()))
+                {
+                    eprintln!("nirios compositor: failed to insert client: {err}");
+                }
+            })
+    {
+        eprintln!(
+            "nirios compositor: insert listening socket source into event loop failed: {err}"
+        );
+        std::process::exit(1);
+    }
 
     // A third display is the input-method trust boundary. The OSK package is
     // sandboxed exactly like any other app, but receives this one socket as
@@ -2034,7 +2185,7 @@ pub fn run() -> ! {
     // bind-mounts only the public socket (`crates/packaging/launcher/src/sandbox.rs`); bind failure is logged and non-fatal.
     match bind_privileged_socket() {
         Ok((privileged_socket, path)) => {
-            eprintln!("nirios compositor privileged socket on {path:?}");
+            eprintln!("nirios compositor privileged socket on {}", path.display());
             if let Err(err) = event_loop.handle().insert_source(
                 privileged_socket,
                 move |client_stream, (), state| {
@@ -2065,7 +2216,7 @@ pub fn run() -> ! {
 
     // Opt-in unix socket for newline-delimited JSON commands
     // (`compositor::test_control`), bound at `QOS_TEST_CONTROL`; unset means never created.
-    let (test_control_listener, _test_control_unlink) = match bind_test_control_socket() {
+    let (test_control_listener, test_control_unlink) = match bind_test_control_socket() {
         Some((l, g)) => (Some(l), Some(g)),
         None => (None, None),
     };
@@ -2112,8 +2263,11 @@ pub fn run() -> ! {
         st.set_notification_runtime(notification_sound.clone(), priority_contacts.clone());
     });
     // Held for the lifetime of `run` so the runtime's worker threads keep driving zbus dispatch in the background.
-    let mut _notif_runtime: Option<tokio::runtime::Runtime> = None;
-    let mut _notif_handle: Option<crate::notifications::ServerHandle> = None;
+    let mut notif_runtime: Option<tokio::runtime::Runtime> = None;
+    // RAII: dropping this releases the D-Bus bus name and tears down the
+    // object server. Explicitly dropped near `process::exit` below, same as
+    // the session's other RAII guards, since `process::exit` skips destructors.
+    let mut notif_handle: Option<crate::notifications::ServerHandle> = None;
     match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(1)
@@ -2144,7 +2298,7 @@ pub fn run() -> ! {
                         "notifications: serving {} on session bus",
                         crate::notifications::BUS_NAME
                     );
-                    _notif_handle = Some(h);
+                    notif_handle = Some(h);
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -2155,7 +2309,7 @@ pub fn run() -> ! {
             }
             // Keep the runtime alive regardless of notification outcome: the power
             // service lives on the *system* bus (logind/UPower), independent of the session-bus daemon, sharing these threads.
-            _notif_runtime = Some(rt);
+            notif_runtime = Some(rt);
         }
         Err(e) => {
             tracing::warn!("notifications: tokio runtime build failed ({e}); D-Bus service off");
@@ -2166,7 +2320,7 @@ pub fn run() -> ! {
     // inhibitor registry into a logind lock, watching the battery and lid.
     // Spawned on the notify runtime; if the system bus/logind/UPower are
     // unreachable it logs and falls back to the pure idle policy (still blanks/locks/honours env timeouts, just can't actuate real suspend).
-    if let Some(rt) = _notif_runtime.as_ref() {
+    if let Some(rt) = notif_runtime.as_ref() {
         let bridge = power_bridge.clone();
         let registry = inhibit_registry.clone();
         let policy = power_policy;
@@ -2211,13 +2365,19 @@ pub fn run() -> ! {
         eprintln!("nirios compositor: presenting on a dedicated render thread");
         // Wake the loop when a frame retires — otherwise a tick that declined to
         // paint for lack of pipe capacity would park out the whole interval, halving throughput.
-        let (ping, ping_source) = calloop::ping::make_ping().expect("create present-retire ping");
-        event_loop
-            .handle()
-            .insert_source(ping_source, |(), (), _| {
-                // Waking is the whole effect: the loop re-evaluates its paint gate next iteration and now finds room.
-            })
-            .expect("insert present-retire ping source");
+        let (ping, ping_source) = match calloop::ping::make_ping() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("nirios compositor: create present-retire ping failed: {e}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = event_loop.handle().insert_source(ping_source, |(), (), _| {
+            // Waking is the whole effect: the loop re-evaluates its paint gate next iteration and now finds room.
+        }) {
+            eprintln!("nirios compositor: insert present-retire ping source failed: {e}");
+            std::process::exit(1);
+        }
         present::PresentPipe::spawn(p, Box::new(move || ping.ping()))
     });
     // Reused per-iteration scratch so backend events process *after*
@@ -2264,13 +2424,15 @@ pub fn run() -> ! {
     metrics.set_target_period(frame_period);
     // Bench hook: shut down cleanly after N seconds so the frame trace/summary
     // flush via the normal exit path instead of a SIGKILL. Unset in production.
-    let run_deadline = metrics::run_seconds_from_env().map(|d| {
+    // `checked_add`: an absurd env value overflowing `Instant` degrades to
+    // "no deadline" rather than panicking a session over a bench-only knob.
+    let run_deadline = metrics::run_seconds_from_env().and_then(|d| {
         eprintln!(
             "nirios compositor: {}={:?}; will exit cleanly after that",
             metrics::RUN_SECONDS_ENV,
             d
         );
-        Instant::now() + d
+        Instant::now().checked_add(d)
     });
     let mut stats_since = Instant::now();
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
@@ -2282,6 +2444,14 @@ pub fn run() -> ! {
         backend.poll_events(&mut |event| pending_events.push(event));
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
+        // `drain`, not `into_iter`: `pending_events` is declared once outside
+        // this loop and reused every tick to avoid a per-frame allocation on
+        // this hot path — `into_iter` would consume it, forcing a fresh `Vec` next iteration.
+        #[allow(
+            clippy::iter_with_drain,
+            reason = "pending_events is reused across ticks precisely to avoid a per-frame \
+                      allocation; into_iter() would consume it and defeat that"
+        )]
         for event in pending_events.drain(..) {
             match event {
                 BackendEvent::CloseRequested => {
@@ -2298,7 +2468,7 @@ pub fn run() -> ! {
                         // re-derive per-display widths alongside the scene extent.
                         frame_builder.set_output_geometry(output_geometry(backend.outputs()));
                         // Keep the fullscreen-configure size in sync so a fullscreened client fills the current output.
-                        state.output_size = (size.0 as i32, size.1 as i32);
+                        state.output_size = size_to_signed(size);
                         // The swap chain lives on the render thread now, so the reconfigure
                         // travels with the frames rather than inline, keeping it ordered against any frame already queued at the old size.
                         if let Some(pipe) = present_pipe.as_ref() {
@@ -2364,16 +2534,16 @@ pub fn run() -> ! {
                             }
                             Some(qos_power_mgmt::PowerAction::Ignore) | None => {}
                         }
-                    } else if let Some(vt) = vt_switch_chord(wev, &test_control_ctx.modifiers) {
+                    } else if let Some(vt) = vt_switch_chord(wev, test_control_ctx.modifiers) {
                         // Ahead of every other chord, never offered to a client: leaving the
                         // terminal must work even with a grabbed keyboard, or a client can strand the user.
                         backend.switch_vt(vt);
-                    } else if is_remote_input_kill_switch(wev, &test_control_ctx.modifiers) {
+                    } else if is_remote_input_kill_switch(wev, test_control_ctx.modifiers) {
                         // Super+Esc: every peer's input stops and stays stopped. Ahead of the
                         // client router and shell's Escape handling — a panic key a client can swallow isn't one.
                         client_input::stop_remote_input(&mut state, &mut frame_builder);
                         session_changed = true;
-                    } else if is_lock_chord(wev, &test_control_ctx.modifiers) {
+                    } else if is_lock_chord(wev, test_control_ctx.modifiers) {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
                             apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
@@ -2517,7 +2687,7 @@ pub fn run() -> ! {
             );
             if combined.0 > 0 && combined.1 > 0 {
                 frame_builder.set_viewport(combined);
-                state.output_size = (combined.0 as i32, combined.1 as i32);
+                state.output_size = size_to_signed(combined);
                 if let Some(pipe) = present_pipe.as_ref() {
                     pipe.resize(combined);
                 }
@@ -2722,9 +2892,10 @@ pub fn run() -> ! {
             // a session that never moved one; being level-triggered, `cursor()` would paint a cursor for nobody.
             relay.set_cursor_position(state.client_input.pointer_position());
             let (rooms, here) = {
-                let chrome = frame_builder.chrome_handle();
-                let chrome = chrome.borrow();
-                let tree = chrome.tree();
+                // Clone the tree handle and drop the `ChromeState` borrow before
+                // locking the tree — nothing here needs the RefCell guard itself.
+                let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+                let tree = tree_handle.read();
                 let rooms = tree
                     .workspaces
                     .iter()
@@ -2755,7 +2926,12 @@ pub fn run() -> ! {
         let revision_changed = revision != last_revision;
         let animating = frame_builder.needs_animation_frame();
         let keepalive_due = last_paint.elapsed() >= keepalive;
-        metrics.mark_pump(iter_t0.elapsed().checked_sub(t_input_done).unwrap());
+        metrics.mark_pump(
+            iter_t0
+                .elapsed()
+                .checked_sub(t_input_done)
+                .unwrap_or_default(),
+        );
         // Is there anything new to show? This redraw gating lets a static desktop
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
         let content_changed = force_first_paint
@@ -2786,25 +2962,25 @@ pub fn run() -> ! {
         // Diagnostic: `QOS_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
         if paint_stats {
-            frames_total += 1;
+            frames_total = frames_total.saturating_add(1);
             if should_paint {
-                frames_painted += 1;
+                frames_painted = frames_painted.saturating_add(1);
                 if had_backend_events {
-                    cause_events += 1;
+                    cause_events = cause_events.saturating_add(1);
                 }
                 if session_changed {
-                    cause_session += 1;
+                    cause_session = cause_session.saturating_add(1);
                 }
                 if revision_changed {
-                    cause_revision += 1;
+                    cause_revision = cause_revision.saturating_add(1);
                 }
                 if animating {
-                    cause_anim += 1;
+                    cause_anim = cause_anim.saturating_add(1);
                 }
                 if keepalive_due
                     && !(had_backend_events || session_changed || revision_changed || animating)
                 {
-                    cause_keepalive += 1;
+                    cause_keepalive = cause_keepalive.saturating_add(1);
                 }
             }
             if stats_since.elapsed() >= Duration::from_secs(2) {
@@ -2909,8 +3085,8 @@ pub fn run() -> ! {
                 let _ = projection_capture.submit_scene(
                     &scene,
                     (
-                        viewport.0.round().max(1.0) as u32,
-                        viewport.1.round().max(1.0) as u32,
+                        viewport.0.round().clamp(1.0, f64::from(u32::MAX)) as u32,
+                        viewport.1.round().clamp(1.0, f64::from(u32::MAX)) as u32,
                     ),
                 );
             }
@@ -3000,7 +3176,7 @@ pub fn run() -> ! {
             test_control_conns.retain(|c| !c.closed);
         }
         let t_testctl_done = iter_t0.elapsed();
-        metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap());
+        metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
 
         // Drain wayland client traffic and push updates back out: `dispatch_clients`
         // advances each client's request queue through the `*Handler` impls, `flush_clients` pumps server events back. Mirrors smithay 0.7's minimal example.
@@ -3016,15 +3192,15 @@ pub fn run() -> ! {
             break;
         }
         let t_work_done = iter_t0.elapsed();
-        metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap());
+        metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
         if loop_timing && t_work_done > Duration::from_millis(100) {
             eprintln!(
                 "SLOW-ITER total_work={:?} | input={:?} paint=+{:?} testctl=+{:?} dispatch_clients=+{:?}",
                 t_work_done,
                 t_input_done,
-                t_paint_done.checked_sub(t_input_done).unwrap(),
-                t_testctl_done.checked_sub(t_paint_done).unwrap(),
-                t_work_done.checked_sub(t_testctl_done).unwrap(),
+                t_paint_done.checked_sub(t_input_done).unwrap_or_default(),
+                t_testctl_done.checked_sub(t_paint_done).unwrap_or_default(),
+                t_work_done.checked_sub(t_testctl_done).unwrap_or_default(),
             );
         }
 
@@ -3071,11 +3247,14 @@ pub fn run() -> ! {
     drop(display);
     // Explicitly drop the test-control socket guard so its `Drop` unlinks the
     // file before `process::exit` skips destructors; the panic path already runs `Drop` via unwind.
-    drop(_test_control_unlink);
+    drop(test_control_unlink);
     // Same reasoning for the collab broker: its `Drop` quiesces the drain
     // thread and unlinks both sockets, else the next session must tell a stale file from a live one.
     drop(collab_broker);
     drop(tool_service);
+    // Same reasoning again: releases the D-Bus bus name and tears down the
+    // notification object server before `process::exit` skips its destructor.
+    drop(notif_handle);
     std::process::exit(0)
 }
 
@@ -3137,7 +3316,7 @@ mod tests {
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
         let fb = FrameBuilder::new((800, 600));
         let chrome = fb.chrome_handle();
-        let broker = spawn_session_collab_broker(&chrome, None)
+        let broker = spawn_session_collab_broker(&chrome, &None)
             .expect("the compositor must be able to bind its own collab socket");
 
         assert!(
@@ -3183,11 +3362,11 @@ mod tests {
 
         let first_fb = FrameBuilder::new((800, 600));
         let first_chrome = first_fb.chrome_handle();
-        let first = spawn_session_collab_broker(&first_chrome, None).expect("first broker binds");
+        let first = spawn_session_collab_broker(&first_chrome, &None).expect("first broker binds");
 
         let second_fb = FrameBuilder::new((800, 600));
         let second_chrome = second_fb.chrome_handle();
-        let second = spawn_session_collab_broker(&second_chrome, None);
+        let second = spawn_session_collab_broker(&second_chrome, &None);
 
         assert!(
             second.is_none(),
@@ -3276,6 +3455,8 @@ mod tests {
 
     #[test]
     fn published_display_file_is_exactly_the_socket_name() {
+        use std::os::unix::fs::PermissionsExt;
+
         // Round-trip through the real writer: what lands on disk must be usable as
         // `WAYLAND_DISPLAY=$(cat …)` — no trailing newline, no quoting.
         let dir = std::env::temp_dir().join(format!("qos-display-test-{}", std::process::id()));
@@ -3289,7 +3470,6 @@ mod tests {
         let read = std::fs::read_to_string(&path).expect("read back");
         assert_eq!(read, "wayland-7");
 
-        use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "session file must not be readable by others");
 
@@ -3367,10 +3547,20 @@ mod tests {
         // the affordance; misses are harmless (rim press drags back, row press switches workspace).
         let mut ctx = TestControlCtx::new();
         let mut found = false;
-        let mut y = wheel_rect.y1 - 4.0;
-        'sweep: while y > wheel_rect.y0 {
-            let mut x = wheel_rect.x0 + 4.0;
-            while x < wheel_rect.x1 {
+        // Integer-counted sweep (not a float-terminated `while`): the `if`
+        // breaks below reproduce the original `y > y0` / `x < x1` bounds
+        // exactly, so a generously wide static loop cap is safe — it never
+        // runs anywhere near it before hitting one of them.
+        'sweep: for row in 0..10_000u32 {
+            let y = wheel_rect.y1 - 4.0 - f64::from(row) * 4.0;
+            if y <= wheel_rect.y0 {
+                break;
+            }
+            for col in 0..10_000u32 {
+                let x = wheel_rect.x0 + 4.0 + f64::from(col) * 8.0;
+                if x >= wheel_rect.x1 {
+                    break;
+                }
                 execute_planned_action(&PlannedAction::CursorMoved { x, y }, &mut fb, &mut ctx);
                 execute_planned_action(
                     &PlannedAction::MouseLeftButton { pressed: true },
@@ -3386,9 +3576,7 @@ mod tests {
                     found = true;
                     break 'sweep;
                 }
-                x += 8.0;
             }
-            y -= 4.0;
         }
         assert!(
             found,
@@ -3608,7 +3796,11 @@ mod tests {
         let fb = FrameBuilder::new((1600, 900));
         {
             let chrome = fb.chrome();
-            let mut tree = chrome.tree_mut();
+            // Drop the `ChromeState` borrow before locking the tree — nothing
+            // here needs it once the handle is cloned out.
+            let tree_handle = chrome.tree_handle();
+            drop(chrome);
+            let mut tree = tree_handle.write();
             let room = tree.active_workspace().expect("active workspace").room;
             assert!(tree.note_peer_present(room, 0x51, "alice"));
         }
@@ -3762,53 +3954,53 @@ mod tests {
     /// Super+L on key press is the lock chord.
     #[test]
     fn super_l_press_is_lock_chord() {
-        let ev = keyboard_input_event(Key::Character(SmolStr::new("l")), true);
-        assert!(is_lock_chord(&ev, &mods_with_super(true)));
+        let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
+        assert!(is_lock_chord(&ev, mods_with_super(true)));
         // Upper-case 'L' (Shift+Super+L) also counts.
-        let ev_upper = keyboard_input_event(Key::Character(SmolStr::new("L")), true);
-        assert!(is_lock_chord(&ev_upper, &mods_with_super(true)));
+        let ev_upper = keyboard_input_event(&Key::Character(SmolStr::new("L")), true);
+        assert!(is_lock_chord(&ev_upper, mods_with_super(true)));
     }
 
     /// Without Super held, plain `l` is not the lock chord (it types).
     #[test]
     fn l_without_super_is_not_lock_chord() {
-        let ev = keyboard_input_event(Key::Character(SmolStr::new("l")), true);
-        assert!(!is_lock_chord(&ev, &mods_with_super(false)));
+        let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
+        assert!(!is_lock_chord(&ev, mods_with_super(false)));
     }
 
     /// The lock chord only fires on press, not release — else key-up would re-trigger and toggle twice.
     #[test]
     fn super_l_release_is_not_lock_chord() {
-        let ev = keyboard_input_event(Key::Character(SmolStr::new("l")), false);
-        assert!(!is_lock_chord(&ev, &mods_with_super(true)));
+        let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), false);
+        assert!(!is_lock_chord(&ev, mods_with_super(true)));
     }
 
     /// `Super+Esc` on press is the remote-input kill switch.
     #[test]
     fn super_escape_press_is_the_remote_input_kill_switch() {
-        let ev = keyboard_input_event(Key::Named(NamedKey::Escape), true);
-        assert!(is_remote_input_kill_switch(&ev, &mods_with_super(true)));
+        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
+        assert!(is_remote_input_kill_switch(&ev, mods_with_super(true)));
     }
 
     /// Escape on its own closes an overlay and reaches modal clients; must not stop a shared session by accident.
     #[test]
     fn escape_without_super_is_not_the_kill_switch() {
-        let ev = keyboard_input_event(Key::Named(NamedKey::Escape), true);
-        assert!(!is_remote_input_kill_switch(&ev, &mods_with_super(false)));
+        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
+        assert!(!is_remote_input_kill_switch(&ev, mods_with_super(false)));
     }
 
     /// Press only — a re-firing release would engage the latch twice and post a second toast for one keystroke.
     #[test]
     fn super_escape_release_is_not_the_kill_switch() {
-        let ev = keyboard_input_event(Key::Named(NamedKey::Escape), false);
-        assert!(!is_remote_input_kill_switch(&ev, &mods_with_super(true)));
+        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), false);
+        assert!(!is_remote_input_kill_switch(&ev, mods_with_super(true)));
     }
 
     /// The panic key is not a key a client can be handed — `Super` is the
     /// compositor modifier the shell's chord table already claims, so no client can steal it.
     #[test]
     fn super_escape_is_a_shell_chord_and_never_reaches_a_client() {
-        let ev = keyboard_input_event(Key::Named(NamedKey::Escape), true);
+        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
         assert!(client_input::is_shell_chord(
             &ev,
             &mods_with_super(true),
@@ -3827,14 +4019,14 @@ mod tests {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(10.0, 10.0),
         };
-        assert!(!is_lock_chord(&ev, &mods_with_super(true)));
+        assert!(!is_lock_chord(&ev, mods_with_super(true)));
     }
 
     /// Enter and Escape on press are the explicit unlock action.
     #[test]
     fn enter_and_escape_press_map_to_submit_and_cancel() {
-        let enter = keyboard_input_event(Key::Named(NamedKey::Enter), true);
-        let escape = keyboard_input_event(Key::Named(NamedKey::Escape), true);
+        let enter = keyboard_input_event(&Key::Named(NamedKey::Enter), true);
+        let escape = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
         assert_eq!(winit_event_to_lock_key(&enter), LockKey::Submit);
         assert_eq!(winit_event_to_lock_key(&escape), LockKey::Cancel);
     }
@@ -3842,16 +4034,16 @@ mod tests {
     /// A plain character keypress feeds the password buffer as text — it doesn't itself unlock.
     #[test]
     fn char_key_maps_to_text() {
-        let ev = keyboard_input_event(Key::Character(SmolStr::new("a")), true);
+        let ev = keyboard_input_event(&Key::Character(SmolStr::new("a")), true);
         assert_eq!(winit_event_to_lock_key(&ev), LockKey::Text("a".to_string()));
     }
 
     /// Backspace maps to a buffer edit; a key *release* is ignored (only presses type).
     #[test]
     fn backspace_maps_and_release_is_ignored() {
-        let bs = keyboard_input_event(Key::Named(NamedKey::Backspace), true);
+        let bs = keyboard_input_event(&Key::Named(NamedKey::Backspace), true);
         assert_eq!(winit_event_to_lock_key(&bs), LockKey::Backspace);
-        let release = keyboard_input_event(Key::Named(NamedKey::Enter), false);
+        let release = keyboard_input_event(&Key::Named(NamedKey::Enter), false);
         assert_eq!(winit_event_to_lock_key(&release), LockKey::Ignored);
     }
 
@@ -3896,7 +4088,11 @@ fn refresh_mhz_of(backend: &dyn crate::compositor::backend::Backend) -> Option<u
     backend
         .refresh_interval()
         .filter(|d| !d.is_zero())
-        .map(|d| (1000.0 / d.as_secs_f64()).round() as u32)
+        .map(|d| {
+            (1000.0 / d.as_secs_f64())
+                .round()
+                .clamp(0.0, f64::from(u32::MAX)) as u32
+        })
 }
 
 /// Perform the navigation a claimed touchpad gesture resolved to — a second
@@ -3979,16 +4175,16 @@ mod vt_chord_tests {
     fn ctrl_alt_f_maps_to_the_matching_vt() {
         let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
         assert_eq!(
-            vt_switch_chord(&key(NamedKey::F1, ElementState::Pressed), &m),
+            vt_switch_chord(&key(NamedKey::F1, ElementState::Pressed), m),
             Some(1)
         );
         assert_eq!(
-            vt_switch_chord(&key(NamedKey::F3, ElementState::Pressed), &m),
+            vt_switch_chord(&key(NamedKey::F3, ElementState::Pressed), m),
             Some(3),
             "Ctrl+Alt+F3 is the one the seat diagnosis tells people to use"
         );
         assert_eq!(
-            vt_switch_chord(&key(NamedKey::F12, ElementState::Pressed), &m),
+            vt_switch_chord(&key(NamedKey::F12, ElementState::Pressed), m),
             Some(12)
         );
     }
@@ -3999,21 +4195,21 @@ mod vt_chord_tests {
         assert_eq!(
             vt_switch_chord(
                 &key(NamedKey::F4, ElementState::Pressed),
-                &mods(ModifiersState::ALT)
+                mods(ModifiersState::ALT)
             ),
             None
         );
         assert_eq!(
             vt_switch_chord(
                 &key(NamedKey::F4, ElementState::Pressed),
-                &mods(ModifiersState::CONTROL)
+                mods(ModifiersState::CONTROL)
             ),
             None
         );
         assert_eq!(
             vt_switch_chord(
                 &key(NamedKey::F4, ElementState::Pressed),
-                &mods(ModifiersState::empty())
+                mods(ModifiersState::empty())
             ),
             None
         );
@@ -4024,7 +4220,7 @@ mod vt_chord_tests {
         // Acting on the release too would switch twice per chord.
         let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
         assert_eq!(
-            vt_switch_chord(&key(NamedKey::F2, ElementState::Released), &m),
+            vt_switch_chord(&key(NamedKey::F2, ElementState::Released), m),
             None
         );
     }
@@ -4033,11 +4229,11 @@ mod vt_chord_tests {
     fn other_keys_with_the_modifiers_held_are_not_vt_switches() {
         let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
         assert_eq!(
-            vt_switch_chord(&key(NamedKey::Delete, ElementState::Pressed), &m),
+            vt_switch_chord(&key(NamedKey::Delete, ElementState::Pressed), m),
             None
         );
         assert_eq!(
-            vt_switch_chord(&key(NamedKey::Tab, ElementState::Pressed), &m),
+            vt_switch_chord(&key(NamedKey::Tab, ElementState::Pressed), m),
             None
         );
     }

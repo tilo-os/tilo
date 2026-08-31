@@ -384,7 +384,7 @@ impl TabBar {
         self.draw_pill_body(
             scene, transform, r, tr, theme, i, t, is_pinned, is_active, is_hover,
         );
-        self.draw_pill_presence(scene, transform, &shape, r, t, presence);
+        Self::draw_pill_presence(scene, transform, &shape, r, t, presence);
 
         // Chip strength ramps 0→1 as the trailing zone opens, reaching full once the
         // zone clears the chip by CHIP_FADE_PX. Close-hover tints red; tab-hover
@@ -575,7 +575,6 @@ impl TabBar {
 
     /// Per-tab collaborator presence dots, up to 4, centred under the pill.
     fn draw_pill_presence(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         shape: &RoundedRect,
@@ -623,7 +622,13 @@ impl TabBar {
     /// The close × (or unsaved-changes dot) chip. Split out of
     /// `draw_pill_inner` to keep it inside the `too_many_lines` budget.
     // Every parameter is state `draw_pill_inner` already resolved once per pill.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::fn_params_excessive_bools,
+        reason = "each bool is an independent fact about the pill's per-frame render state \
+                  `draw_pill_inner` already resolved once; bundling into a struct would just \
+                  move the count, not reduce it"
+    )]
     fn draw_pill_close_chip(
         &self,
         scene: &mut Scene,
@@ -1804,12 +1809,12 @@ impl Widget for TabBar {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         self.tab_rects.clear();
         self.close_rects.clear();
@@ -1859,8 +1864,8 @@ impl Widget for TabBar {
             } else {
                 let protect = self.shaped_title_width(i).min(MIN_TITLE_PX);
                 let afford = (r.width() - PILL_PAD_X - self.leading_zone(i) - protect).max(0.0);
-                let g = grow.get(slot).copied().unwrap_or(0.0);
-                (self.resting_reveal(i).reserve() + g).min(afford)
+                let grow_px = grow.get(slot).copied().unwrap_or(0.0);
+                (self.resting_reveal(i).reserve() + grow_px).min(afford)
             };
             let (close, max_rect, search_rect) = chip_rects(
                 r,
@@ -2405,11 +2410,10 @@ impl TabBar {
             return;
         }
         let now = Instant::now();
-        let elapsed_ms = self
-            .hover_drop_animated_at
-            .map_or(ms_f64(HOVER_DROP_FADE_MS), |t| {
-                duration_ms_f64(now.duration_since(t).as_millis())
-            });
+        let elapsed_ms = self.hover_drop_animated_at.map_or_else(
+            || ms_f64(HOVER_DROP_FADE_MS),
+            |t| duration_ms_f64(now.duration_since(t).as_millis()),
+        );
         let raw_t = (elapsed_ms / ms_f64(HOVER_DROP_FADE_MS)).clamp(0.0, 1.0);
         let eased_t = crate::ease_out(raw_t);
         // 4px above/below the pill's extent for bleed past the rounded caps.

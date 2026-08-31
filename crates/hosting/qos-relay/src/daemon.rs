@@ -22,7 +22,7 @@ use crate::auth::{self, Hello, HelloAck2, PeerRole};
 use crate::client::RelayClient;
 use crate::config::{PeerRelayConfig, RelayConfig};
 use crate::metrics::Metrics;
-use crate::peer::{WorkspaceAutobind, WorkspaceRegistry, now_ns, run_peer};
+use crate::peer::{PeerContext, WorkspaceAutobind, WorkspaceRegistry, now_ns, run_peer};
 use crate::policy::TrustPolicy;
 use crate::store::load_or_create_iroh_secret;
 use crate::transport::{ALPN, Envelope, MAX_FRAME_BYTES};
@@ -113,6 +113,7 @@ pub struct RelayHandle {
 /// the daemon's `main.rs` from
 /// [`qos_user_identity::persist`] and passed in explicitly so the
 /// integration tests can wire a `tempdir`-based identity.
+#[derive(Clone)]
 pub struct RelayIdentity {
     /// The user root pubkey the relay chains to.
     pub user_public_key: [u8; 32],
@@ -132,37 +133,23 @@ impl Relay {
     /// on disk, and spawns an accept task that runs the auth
     /// handshake + dispatches to `run_peer` for every inbound
     /// connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RelayError::Identity`] if `identity` fails validation
+    /// (bad signature, wrong chain, revoked, or not host-capable),
+    /// [`RelayError::Io`] if the state root can't be created,
+    /// [`RelayError::Store`] if the persistent iroh secret or any
+    /// configured workspace can't be loaded, and [`RelayError::Iroh`] if
+    /// the listen address is invalid or the endpoint fails to bind.
     pub async fn start(cfg: RelayConfig, identity: RelayIdentity) -> Result<Self, RelayError> {
         validate_relay_identity(&identity)?;
         std::fs::create_dir_all(&cfg.state_root)?;
-        let secret_bytes = load_or_create_iroh_secret(&cfg.state_root)?;
-        let secret = iroh::SecretKey::from_bytes(&secret_bytes);
-
-        let endpoint = Endpoint::builder(presets::N0)
-            .secret_key(secret)
-            .bind_addr(cfg.iroh_listen)
-            .map_err(|e| RelayError::Iroh(format!("invalid iroh listen address: {e}")))?
-            .bind()
-            .await
-            .map_err(|e| RelayError::Iroh(e.to_string()))?;
-
-        // Build workspace registry.
-        let mut wsmap: HashMap<u64, SharedWorkspace> = HashMap::new();
-        for binding in &cfg.workspaces {
-            let mut rt = WorkspaceRuntime::open(
-                &cfg.state_root,
-                binding.id,
-                binding.pin,
-                Membership::default(),
-            )?;
-            rt.admit_authenticated = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
-            wsmap.insert(binding.id, Arc::new(AsyncMutex::new(rt)));
-        }
-        let workspaces: WorkspaceRegistry = Arc::new(AsyncMutex::new(wsmap));
-
+        let endpoint = bind_endpoint(&cfg).await?;
+        let workspaces = build_workspace_registry(&cfg)?;
         let metrics = Arc::new(Metrics::default());
-
         let revocations = Arc::new(std::sync::RwLock::new(identity.revocations.clone()));
+
         let handler = RelayProtocol {
             workspaces: workspaces.clone(),
             trust_policy: cfg.trust_policy.clone(),
@@ -181,70 +168,14 @@ impl Relay {
             .accept(ALPN, handler)
             .spawn();
 
-        // Spawn one reconnect-with-backoff task per configured peer
-        // relay. Each task dials via `RelayClient::connect` (same code
-        // path any client uses), exchanges `PeerRelayHello`, subscribes
-        // to the intersection, then feeds inbound Deltas into the
-        // local `WorkspaceRuntime::fanout_delta` — no new fan-out.
-        let peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
-        {
-            let state_root = cfg.state_root.clone();
-            let base_revocations = identity.revocations.clone();
-            let live_revocations = revocations;
-            let task = tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(1));
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                loop {
-                    interval.tick().await;
-                    let Ok(entries) = crate::store::load_revocations(&state_root) else {
-                        continue;
-                    };
-                    let mut next = base_revocations.clone();
-                    let mut valid = true;
-                    for entry in entries {
-                        if next.insert(entry).is_err() {
-                            valid = false;
-                            break;
-                        }
-                    }
-                    if valid && let Ok(mut current) = live_revocations.write() {
-                        *current = next;
-                    }
-                }
-            });
-            peer_relay_tasks.lock().unwrap().push(AbortOnDrop(task));
-        }
-        {
-            let state_root = cfg.state_root.clone();
-            let live_metrics = metrics.clone();
-            let task = tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(1));
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                loop {
-                    interval.tick().await;
-                    if let Err(error) =
-                        crate::store::save_metrics(&state_root, &live_metrics.snapshot())
-                    {
-                        tracing::warn!(%error, "could not persist relay metrics snapshot");
-                    }
-                }
-            });
-            peer_relay_tasks.lock().unwrap().push(AbortOnDrop(task));
-        }
-        for peer_cfg in cfg.peer_relays.iter().cloned() {
-            let task = spawn_peer_relay_dial(
-                peer_cfg,
-                endpoint.clone(),
-                identity.user_public_key,
-                identity.device_cert.clone(),
-                identity.device_signing_key.clone(),
-                identity.revocations.clone(),
-                workspaces.clone(),
-                metrics.clone(),
-            );
-            peer_relay_tasks.lock().unwrap().push(AbortOnDrop(task));
-        }
+        let peer_relay_tasks = spawn_background_tasks(
+            &cfg,
+            &identity,
+            &endpoint,
+            &workspaces,
+            &metrics,
+            revocations,
+        );
 
         Ok(Self {
             endpoint,
@@ -287,7 +218,7 @@ impl Relay {
     pub async fn shutdown(self) {
         // Stop reconnecting first: the dial loop would otherwise open a
         // fresh connection while the endpoint is closing.
-        self.peer_relay_tasks.lock().unwrap().clear();
+        lock_peer_relay_tasks(&self.peer_relay_tasks).clear();
         self.endpoint.close().await;
     }
 
@@ -295,9 +226,7 @@ impl Relay {
     /// admin CLI. Same reconnect-with-backoff loop as the config-time
     /// path.
     pub fn add_peer_relay(&self, peer: PeerRelayConfig) {
-        let node_id = if let Some(id) = parse_iroh_node_id(&peer.iroh_node_id) {
-            id
-        } else {
+        let Some(node_id) = parse_iroh_node_id(&peer.iroh_node_id) else {
             tracing::warn!(?peer.iroh_node_id, "peer relay iroh_node_id not parseable, skipping");
             return;
         };
@@ -321,10 +250,7 @@ impl Relay {
             self.workspaces.clone(),
             self.metrics.clone(),
         );
-        self.peer_relay_tasks
-            .lock()
-            .unwrap()
-            .push(AbortOnDrop(task));
+        push_peer_relay_task(&self.peer_relay_tasks, task);
     }
 
     /// Cheap external handle.
@@ -343,6 +269,11 @@ impl Relay {
 
     /// Bind (or re-bind) a workspace's membership set. Called by
     /// the admin CLI after `bind-workspace`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RelayError::Store`] if opening a not-yet-bound
+    /// workspace, or persisting its membership list, fails.
     pub async fn set_workspace_membership(
         &self,
         workspace_id: u64,
@@ -350,20 +281,27 @@ impl Relay {
         members: Vec<[u8; 32]>,
         state_root: PathBuf,
     ) -> Result<(), RelayError> {
-        let mut map = self.workspaces.lock().await;
-        if let Some(existing) = map.get(&workspace_id).cloned() {
+        let existing = {
+            let map = self.workspaces.lock().await;
+            map.get(&workspace_id).cloned()
+        };
+        if let Some(existing) = existing {
             let mut existing = existing.lock().await;
             existing.membership.set(members);
             existing
                 .store
                 .save_membership(&existing.membership.devices)?;
+            drop(existing);
             return Ok(());
         }
         let mut rt =
             WorkspaceRuntime::open(&state_root, workspace_id, pinned, Membership::default())?;
         rt.membership.set(members);
         rt.store.save_membership(&rt.membership.devices)?;
-        map.insert(workspace_id, Arc::new(AsyncMutex::new(rt)));
+        self.workspaces
+            .lock()
+            .await
+            .insert(workspace_id, Arc::new(AsyncMutex::new(rt)));
         Ok(())
     }
 
@@ -371,6 +309,146 @@ impl Relay {
     pub fn own_user_public_key(&self) -> [u8; 32] {
         self.own_user_public_key
     }
+}
+
+/// Bind the iroh endpoint on the persistent secret at
+/// `<state_root>/iroh-secret.bin`.
+async fn bind_endpoint(cfg: &RelayConfig) -> Result<Endpoint, RelayError> {
+    let secret_bytes = load_or_create_iroh_secret(&cfg.state_root)?;
+    let secret = iroh::SecretKey::from_bytes(&secret_bytes);
+    Endpoint::builder(presets::N0)
+        .secret_key(secret)
+        .bind_addr(cfg.iroh_listen)
+        .map_err(|e| RelayError::Iroh(format!("invalid iroh listen address: {e}")))?
+        .bind()
+        .await
+        .map_err(|e| RelayError::Iroh(e.to_string()))
+}
+
+/// Open every configured workspace binding on disk and build the
+/// shared registry `run_peer` and the peer-relay session loop route
+/// through.
+fn build_workspace_registry(cfg: &RelayConfig) -> Result<WorkspaceRegistry, RelayError> {
+    let mut wsmap: HashMap<u64, SharedWorkspace> = HashMap::new();
+    for binding in &cfg.workspaces {
+        let mut rt = WorkspaceRuntime::open(
+            &cfg.state_root,
+            binding.id,
+            binding.pin,
+            Membership::default(),
+        )?;
+        rt.admit_authenticated = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
+        wsmap.insert(binding.id, Arc::new(AsyncMutex::new(rt)));
+    }
+    Ok(Arc::new(AsyncMutex::new(wsmap)))
+}
+
+/// Spawn the revocation-refresh loop, the metrics-persist loop, and
+/// one reconnect-with-backoff task per configured peer relay,
+/// returning the abort-on-drop handle list `Relay` owns.
+///
+/// Each peer-relay task dials via `RelayClient::connect` (same code
+/// path any client uses), exchanges `PeerRelayHello`, subscribes to
+/// the intersection, then feeds inbound Deltas into the local
+/// `WorkspaceRuntime::fanout_delta` — no new fan-out.
+fn spawn_background_tasks(
+    cfg: &RelayConfig,
+    identity: &RelayIdentity,
+    endpoint: &Endpoint,
+    workspaces: &WorkspaceRegistry,
+    metrics: &Arc<Metrics>,
+    revocations: Arc<std::sync::RwLock<RevocationList>>,
+) -> Arc<std::sync::Mutex<Vec<AbortOnDrop>>> {
+    let peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let revocation_task = spawn_revocation_refresh_task(
+        cfg.state_root.clone(),
+        identity.revocations.clone(),
+        revocations,
+    );
+    push_peer_relay_task(&peer_relay_tasks, revocation_task);
+
+    let metrics_task = spawn_metrics_persist_task(cfg.state_root.clone(), metrics.clone());
+    push_peer_relay_task(&peer_relay_tasks, metrics_task);
+
+    for peer_cfg in cfg.peer_relays.iter().cloned() {
+        let task = spawn_peer_relay_dial(
+            peer_cfg,
+            endpoint.clone(),
+            identity.clone(),
+            workspaces.clone(),
+            metrics.clone(),
+        );
+        push_peer_relay_task(&peer_relay_tasks, task);
+    }
+
+    peer_relay_tasks
+}
+
+/// The revocation-refresh loop: every second, re-read the on-disk
+/// revocation log and, if every entry still applies cleanly against
+/// the identity's own base list, swap it in. A malformed entry
+/// leaves the previously-live list untouched rather than partially
+/// applying.
+fn spawn_revocation_refresh_task(
+    state_root: PathBuf,
+    base_revocations: RevocationList,
+    live_revocations: Arc<std::sync::RwLock<RevocationList>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let Ok(entries) = crate::store::load_revocations(&state_root) else {
+                continue;
+            };
+            let mut next = base_revocations.clone();
+            let mut valid = true;
+            for entry in entries {
+                if next.insert(entry).is_err() {
+                    valid = false;
+                    break;
+                }
+            }
+            if valid && let Ok(mut current) = live_revocations.write() {
+                *current = next;
+            }
+        }
+    })
+}
+
+/// The metrics-persist loop: snapshot + save to disk every second.
+fn spawn_metrics_persist_task(state_root: PathBuf, live_metrics: Arc<Metrics>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if let Err(error) = crate::store::save_metrics(&state_root, &live_metrics.snapshot()) {
+                tracing::warn!(%error, "could not persist relay metrics snapshot");
+            }
+        }
+    })
+}
+
+/// Lock the peer-relay task list, recovering the inner `Vec` if the
+/// mutex was poisoned by an earlier panic rather than propagating one
+/// here — losing track of a reconnect task would leak it past the
+/// owning `Relay`'s lifetime.
+fn lock_peer_relay_tasks(
+    tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
+) -> std::sync::MutexGuard<'_, Vec<AbortOnDrop>> {
+    tasks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Register a spawned task on the peer-relay task list (see
+/// [`lock_peer_relay_tasks`]).
+fn push_peer_relay_task(tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>, task: JoinHandle<()>) {
+    lock_peer_relay_tasks(tasks).push(AbortOnDrop(task));
 }
 
 fn validate_relay_identity(identity: &RelayIdentity) -> Result<(), RelayError> {
@@ -453,7 +531,11 @@ async fn handle_conn(
     let hello: Hello = postcard::from_bytes(&hello_bytes)
         .map_err(|e| RelayError::Iroh(format!("decode hello: {e}")))?;
     let now_ns = crate::peer::now_ns();
-    let revs = ctx.revocations.read().unwrap().clone();
+    let revs = ctx
+        .revocations
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     let client_peer =
         match auth::accept_hello(&hello, &ctx.own_user_pk, &ctx.trust_policy, &revs, now_ns) {
             Ok(p) => p,
@@ -480,10 +562,10 @@ async fn handle_conn(
         .await
         .map_err(|e| RelayError::Iroh(format!("write ack: {e}")))?;
     // 3. Read HelloAck2.
-    let ack2_bytes = read_frame(&mut recv, MAX_FRAME_BYTES)
+    let client_ack2_bytes = read_frame(&mut recv, MAX_FRAME_BYTES)
         .await
         .map_err(|e| RelayError::Iroh(format!("read ack2: {e}")))?;
-    let ack2: HelloAck2 = postcard::from_bytes(&ack2_bytes)
+    let ack2: HelloAck2 = postcard::from_bytes(&client_ack2_bytes)
         .map_err(|e| RelayError::Iroh(format!("decode ack2: {e}")))?;
     if let Err(e) = auth::verify_hello_ack2(&ack2, &client_peer.device_public_key, &server_nonce) {
         ctx.metrics.inc_auth_rejected();
@@ -493,20 +575,21 @@ async fn handle_conn(
     ctx.metrics.inc_conns_authed();
 
     // 4. Hand off to the peer loop.
-    let workspaces = ctx.workspaces.clone();
-    let res = run_peer(
+    let peer_result = run_peer(
         client_peer,
         connection.clone(),
         recv,
         send,
-        workspaces,
-        ctx.autobind,
-        ctx.revocations,
-        ctx.own_user_pk,
-        ctx.metrics,
+        PeerContext {
+            workspaces: ctx.workspaces.clone(),
+            autobind: ctx.autobind,
+            revocations: ctx.revocations,
+            own_user_public_key: ctx.own_user_pk,
+            metrics: ctx.metrics,
+        },
     )
     .await;
-    if let Err(e) = res {
+    if let Err(e) = peer_result {
         tracing::debug!("peer session ended with error: {e}");
     }
     connection.close(0u32.into(), b"relay session ended");
@@ -514,6 +597,12 @@ async fn handle_conn(
 }
 
 /// Read a 4-byte-LE-prefix framed message from `recv`.
+///
+/// # Errors
+///
+/// Returns an error if the stream closes or errors mid-read, or if the
+/// decoded length prefix is `0` or exceeds `max` — the latter guards
+/// against a peer claiming an unbounded frame.
 pub async fn read_frame(recv: &mut RecvStream, max: usize) -> Result<Vec<u8>, std::io::Error> {
     let mut prefix = [0u8; 4];
     recv.read_exact(&mut prefix)
@@ -534,8 +623,20 @@ pub async fn read_frame(recv: &mut RecvStream, max: usize) -> Result<Vec<u8>, st
 }
 
 /// Write a 4-byte-LE-prefix framed message to `send`.
+///
+/// # Errors
+///
+/// Returns an error if the stream write fails, or if `data` is longer
+/// than `u32::MAX` bytes and so cannot be represented in the length
+/// prefix.
 pub async fn write_frame(send: &mut SendStream, data: &[u8]) -> Result<(), std::io::Error> {
-    send.write_all(&(data.len() as u32).to_le_bytes()).await?;
+    let len = u32::try_from(data.len()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "frame too large to encode a u32 length prefix",
+        )
+    })?;
+    send.write_all(&len.to_le_bytes()).await?;
     if !data.is_empty() {
         send.write_all(data).await?;
     }
@@ -548,10 +649,7 @@ pub async fn write_frame(send: &mut SendStream, data: &[u8]) -> Result<(), std::
 fn spawn_peer_relay_dial(
     peer_cfg: PeerRelayConfig,
     endpoint: Endpoint,
-    own_user_pk: [u8; 32],
-    own_cert: DeviceCert,
-    own_sk: ed25519_dalek::SigningKey,
-    revocations: RevocationList,
+    identity: RelayIdentity,
     workspaces: WorkspaceRegistry,
     metrics: Arc<Metrics>,
 ) -> JoinHandle<()> {
@@ -559,9 +657,7 @@ fn spawn_peer_relay_dial(
     let label = peer_cfg.label.clone();
     let priority = peer_cfg.priority;
     tokio::spawn(async move {
-        let node_id = if let Some(id) = node_id {
-            id
-        } else {
+        let Some(node_id) = node_id else {
             tracing::warn!(?peer_cfg.iroh_node_id, "peer relay iroh_node_id not parseable, skipping");
             return;
         };
@@ -571,10 +667,10 @@ fn spawn_peer_relay_dial(
             label,
             priority,
             endpoint,
-            own_user_pk,
-            own_cert,
-            own_sk,
-            revocations,
+            identity.user_public_key,
+            identity.device_cert,
+            identity.device_signing_key,
+            identity.revocations,
             workspaces,
             metrics,
         )
@@ -658,7 +754,7 @@ async fn peer_relay_dial_loop(
             }
         }
         tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-        backoff_ms = (backoff_ms * 2).min(60_000);
+        backoff_ms = backoff_ms.saturating_mul(2).min(60_000);
     }
 }
 
@@ -672,7 +768,19 @@ async fn run_peer_relay_session(
     client: &RelayClient,
     workspaces: &WorkspaceRegistry,
 ) -> Result<(), String> {
-    // 1. Advertise what we host.
+    let hosted_local = advertise_hosted_workspaces(client, workspaces).await?;
+    let intersection = negotiate_intersection(client, &hosted_local).await?;
+    subscribe_to_intersection(client, &intersection)?;
+    drain_peer_relay_session(client, workspaces, &intersection).await
+}
+
+/// Step 1: advertise what we host, returning the list sent — needed
+/// again once the peer replies with its own `PeerRelayHello` so we
+/// can compute the intersection.
+async fn advertise_hosted_workspaces(
+    client: &RelayClient,
+    workspaces: &WorkspaceRegistry,
+) -> Result<Vec<u64>, String> {
     let hosted_local: Vec<u64> = {
         let map = workspaces.lock().await;
         map.keys().copied().collect()
@@ -682,12 +790,18 @@ async fn run_peer_relay_session(
             hosted_workspaces: hosted_local.clone(),
         })
         .map_err(|_| "outbound closed".to_string())?;
+    Ok(hosted_local)
+}
 
-    // 2. Wait for the peer's PeerRelayHello, then subscribe to
-    //    the intersection.
+/// Step 2: wait (bounded — 25 polls of 200ms) for the peer's
+/// `PeerRelayHello` and compute the intersection with what we host
+/// locally.
+async fn negotiate_intersection(
+    client: &RelayClient,
+    hosted_local: &[u64],
+) -> Result<Vec<u64>, String> {
     let mut intersection: Vec<u64> = Vec::new();
     let mut hello_seen = false;
-    // Bounded wait for the hello — do a few short recv polls.
     for _ in 0..25 {
         let env = tokio::time::timeout(Duration::from_millis(200), client.recv()).await;
         match env {
@@ -713,34 +827,44 @@ async fn run_peer_relay_session(
     if !hello_seen {
         return Err("peer relay never sent PeerRelayHello".into());
     }
+    Ok(intersection)
+}
 
-    // 3. Subscribe to each intersection workspace. This is a plain
-    //    `Subscribe` envelope — the accepter side's `handle_envelope`
-    //    registers us as a subscriber-with-role-PeerRelay (because
-    //    our own cert has `can_act_as_host = true`, that role was
-    //    stamped at handshake time).
-    for id in &intersection {
+/// Step 3: subscribe to each intersection workspace. This is a plain
+/// `Subscribe` envelope — the accepter side's `handle_envelope`
+/// registers us as a subscriber-with-role-PeerRelay (because our own
+/// cert has `can_act_as_host = true`, that role was stamped at
+/// handshake time).
+fn subscribe_to_intersection(client: &RelayClient, intersection: &[u64]) -> Result<(), String> {
+    for id in intersection {
         client
             .send(Envelope::Subscribe { workspace_id: *id })
             .map_err(|_| "outbound closed on subscribe".to_string())?;
     }
+    Ok(())
+}
 
-    // 4. Drain inbound envelopes for the life of this connection AND
-    //    periodically run anti-entropy against the upstream relay.
-    //
-    //    Live fan-out (Delta / Presence) is forwarded LOCALLY via the
-    //    same `fanout_delta` / `fanout_presence` device peers use;
-    //    `PeerRole::PeerRelay` suppresses re-echo to other peer relays.
-    //
-    //    Anti-entropy is the recovery tier layered on top: on a timer we
-    //    advertise our local materialized heads (`SyncRequest`) so the
-    //    upstream backfills any change we are missing. This heals two
-    //    cases live fan-out cannot: a change kept off the live path by
-    //    echo-suppression (the middle hop of a relay chain — a relay does
-    //    not re-forward a PeerRelay-origin delta to another peer relay),
-    //    and anything missed across a reconnect/restart. A converged pair
-    //    exchanges empty `SyncResponse`s, so this quiesces to near-zero
-    //    work once caught up.
+/// Step 4: drain inbound envelopes for the life of this connection AND
+/// periodically run anti-entropy against the upstream relay.
+///
+/// Live fan-out (Delta / Presence) is forwarded LOCALLY via the same
+/// `fanout_delta` / `fanout_presence` device peers use; `PeerRole::PeerRelay`
+/// suppresses re-echo to other peer relays.
+///
+/// Anti-entropy is the recovery tier layered on top: on a timer we
+/// advertise our local materialized heads (`SyncRequest`) so the
+/// upstream backfills any change we are missing. This heals two cases
+/// live fan-out cannot: a change kept off the live path by
+/// echo-suppression (the middle hop of a relay chain — a relay does
+/// not re-forward a PeerRelay-origin delta to another peer relay), and
+/// anything missed across a reconnect/restart. A converged pair
+/// exchanges empty `SyncResponse`s, so this quiesces to near-zero work
+/// once caught up.
+async fn drain_peer_relay_session(
+    client: &RelayClient,
+    workspaces: &WorkspaceRegistry,
+    intersection: &[u64],
+) -> Result<(), String> {
     let mut resync = tokio::time::interval(Duration::from_millis(500));
     resync.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -748,90 +872,94 @@ async fn run_peer_relay_session(
             // `interval` fires its first tick immediately, so the initial
             // resync goes out as soon as we enter the loop.
             _ = resync.tick() => {
-                for id in &intersection {
+                for id in intersection {
                     send_sync_request_for(client, workspaces, *id).await;
                 }
             }
             maybe = client.recv() => {
-                let env = match maybe {
-                    Some(e) => e,
-                    None => return Ok(()), // clean EOF
+                let Some(env) = maybe else { return Ok(()) }; // clean EOF
+                handle_peer_relay_envelope(workspaces, client, env).await;
+            }
+        }
+    }
+}
+
+/// Apply one inbound envelope from the federated peer-relay session:
+/// fan Delta/Presence out to local subscribers, materialize a
+/// `SyncResponse` backfill, or handle protocol housekeeping (Ping,
+/// NotAuthorised).
+async fn handle_peer_relay_envelope(
+    workspaces: &WorkspaceRegistry,
+    client: &RelayClient,
+    env: Envelope,
+) {
+    match &env {
+        Envelope::Delta {
+            workspace_id,
+            author_device_public_key,
+            delta,
+            ..
+        } => {
+            let ws = {
+                let map = workspaces.lock().await;
+                map.get(workspace_id).cloned()
+            };
+            if let Some(ws) = ws {
+                let mut wr = ws.lock().await;
+                let raw = delta.clone();
+                let seq = now_ns();
+                let author = *author_device_public_key;
+                let _ = wr.fanout_delta(&author, PeerRole::PeerRelay, &env, &raw, seq);
+            }
+        }
+        Envelope::Presence { workspace_id, .. } => {
+            let ws = {
+                let map = workspaces.lock().await;
+                map.get(workspace_id).cloned()
+            };
+            if let Some(ws) = ws {
+                // Presence has no persistent author field on the wire;
+                // use zero as a sentinel — presence fanout only
+                // compares to subscriber pubkeys and the "don't echo
+                // to peer relays" filter.
+                ws.lock()
+                    .await
+                    .fanout_presence(&[0u8; 32], PeerRole::PeerRelay, &env);
+            }
+        }
+        Envelope::SyncResponse {
+            workspace_id,
+            delta_since,
+        } => {
+            // The upstream backfilled changes we were missing.
+            // Materialize them into our pinned doc and fan the batch
+            // out to our LOCAL devices so they converge — even when
+            // echo-suppression kept these changes off the live
+            // fan-out path.
+            if !delta_since.is_empty() {
+                let ws = {
+                    let map = workspaces.lock().await;
+                    map.get(workspace_id).cloned()
                 };
-                match &env {
-                    Envelope::Delta {
-                        workspace_id,
-                        author_device_public_key,
-                        delta,
-                        ..
-                    } => {
-                        let ws = {
-                            let map = workspaces.lock().await;
-                            map.get(workspace_id).cloned()
-                        };
-                        if let Some(ws) = ws {
-                            let mut wr = ws.lock().await;
-                            let raw = delta.clone();
-                            let seq = now_ns();
-                            let author = *author_device_public_key;
-                            let _ = wr.fanout_delta(
-                                &author,
-                                PeerRole::PeerRelay,
-                                env.clone(),
-                                &raw,
-                                seq,
-                            );
-                        }
-                    }
-                    Envelope::Presence { workspace_id, .. } => {
-                        let ws = {
-                            let map = workspaces.lock().await;
-                            map.get(workspace_id).cloned()
-                        };
-                        if let Some(ws) = ws {
-                            // Presence has no persistent author field on
-                            // the wire; use zero as a sentinel — presence
-                            // fanout only compares to subscriber pubkeys
-                            // and the "don't echo to peer relays" filter.
-                            ws.lock()
-                                .await
-                                .fanout_presence(&[0u8; 32], PeerRole::PeerRelay, env.clone());
-                        }
-                    }
-                    Envelope::SyncResponse {
-                        workspace_id,
-                        delta_since,
-                    } => {
-                        // The upstream backfilled changes we were missing.
-                        // Materialize them into our pinned doc and fan the
-                        // batch out to our LOCAL devices so they converge —
-                        // even when echo-suppression kept these changes off
-                        // the live fan-out path.
-                        if !delta_since.is_empty() {
-                            let ws = {
-                                let map = workspaces.lock().await;
-                                map.get(workspace_id).cloned()
-                            };
-                            if let Some(ws) = ws {
-                                let seq = now_ns();
-                                let _ = ws.lock().await.ingest_sync_changes(
-                                    *workspace_id,
-                                    delta_since,
-                                    seq,
-                                );
-                            }
-                        }
-                    }
-                    Envelope::Ready { .. } => {}
-                    Envelope::NotAuthorised { workspace_id, reason } => {
-                        tracing::warn!(workspace_id, %reason, "peer relay refused subscribe");
-                    }
-                    Envelope::Ping => {
-                        let _ = client.send(Envelope::Pong);
-                    }
-                    _ => {}
+                if let Some(ws) = ws {
+                    let seq = now_ns();
+                    let _ = ws
+                        .lock()
+                        .await
+                        .ingest_sync_changes(*workspace_id, delta_since, seq);
                 }
             }
         }
+        Envelope::NotAuthorised {
+            workspace_id,
+            reason,
+        } => {
+            tracing::warn!(workspace_id, %reason, "peer relay refused subscribe");
+        }
+        Envelope::Ping => {
+            let _ = client.send(Envelope::Pong);
+        }
+        _ => {}
     }
 }
 

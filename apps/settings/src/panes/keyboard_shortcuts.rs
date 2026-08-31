@@ -188,17 +188,17 @@ impl Widget for ShortcutPane {
                 },
                 &[child],
             )
-            .unwrap();
+            .unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + (l.location.x + l.size.width) as f64,
-            origin.y + (l.location.y + l.size.height) as f64,
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x + l.size.width),
+            origin.y + f64::from(l.location.y + l.size.height),
         );
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)

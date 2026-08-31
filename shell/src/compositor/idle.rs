@@ -79,6 +79,7 @@ impl IdleConfig {
     }
 
     /// Override the suspend timeout (the Settings power policy drives this in production; env/`from_env` only seeds the headless default). Chainable.
+    #[must_use]
     pub fn with_suspend(mut self, suspend: Option<Duration>) -> Self {
         self.suspend_timeout = suspend;
         self
@@ -102,9 +103,8 @@ impl IdleConfig {
             match v {
                 None => None,
                 Some(s) => match s.trim().parse::<u64>() {
-                    Ok(0) => None,
+                    Ok(0) | Err(_) => None,
                     Ok(n) => Some(Duration::from_secs(n)),
-                    Err(_) => None,
                 },
             }
         };
@@ -317,9 +317,9 @@ mod tests {
         let t0 = Instant::now();
         let mut session = SessionManager::new(cfg_s(None, None, Some(900)), t0);
         assert!(session.tick(t0 + Duration::from_secs(599)).is_empty());
-        session.set_suspend_timeout(Some(Duration::from_secs(600)));
+        session.set_suspend_timeout(Some(Duration::from_mins(10)));
         assert_eq!(
-            session.tick(t0 + Duration::from_secs(600)),
+            session.tick(t0 + Duration::from_mins(10)),
             vec![SessionTransition::Suspend]
         );
         session.set_suspend_timeout(None);

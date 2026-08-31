@@ -96,6 +96,12 @@ pub struct WorkspaceRuntime {
 impl WorkspaceRuntime {
     /// Build a runtime for a bound workspace. Loads the snapshot
     /// from disk if pinned + present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the on-disk store can't be opened, the
+    /// durable membership file can't be read, or a pinned snapshot
+    /// exists but fails to load as an Automerge document.
     pub fn open(
         state_root: &std::path::Path,
         workspace_id: u64,
@@ -148,6 +154,10 @@ impl WorkspaceRuntime {
 
     /// Remember an authenticated device so deltas received while it is offline
     /// are queued across daemon restarts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if persisting the updated membership list fails.
     pub fn admit_device(&mut self, device: [u8; 32]) -> Result<(), crate::store::StoreError> {
         if !self.membership.contains(&device) {
             self.membership.devices.push(device);
@@ -175,11 +185,17 @@ impl WorkspaceRuntime {
     /// is the ONE line federation adds to the fan-out; the rest of
     /// the routing (author exclusion, live subscriber loop, offline
     /// store-and-forward via `store.enqueue_pending`) is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `envelope` can't be re-encoded for the
+    /// durable queue, or if persisting it (pending, checkpoint, or
+    /// retained tail) fails.
     pub fn fanout_delta(
         &mut self,
         author: &[u8; 32],
         from_role: PeerRole,
-        envelope: Envelope,
+        envelope: &Envelope,
         raw_delta_bytes: &[u8],
         seq: u64,
     ) -> Result<usize, crate::store::StoreError> {
@@ -199,7 +215,7 @@ impl WorkspaceRuntime {
                 let _ = sub.disconnect.try_send(());
                 dead.push(*peer);
             } else {
-                delivered += 1;
+                delivered = delivered.saturating_add(1);
             }
         }
         for d in dead {
@@ -215,7 +231,7 @@ impl WorkspaceRuntime {
             if self.subscribers.contains_key(member) {
                 continue;
             }
-            let raw = crate::transport::encode(&envelope).map_err(|e| {
+            let raw = crate::transport::encode(envelope).map_err(|e| {
                 crate::store::StoreError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("encode: {e}"),
@@ -235,7 +251,7 @@ impl WorkspaceRuntime {
                 if self.subscribers.contains_key(pr) {
                     continue;
                 }
-                let raw = crate::transport::encode(&envelope).map_err(|e| {
+                let raw = crate::transport::encode(envelope).map_err(|e| {
                     crate::store::StoreError::Io(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!("encode: {e}"),
@@ -256,7 +272,7 @@ impl WorkspaceRuntime {
         // queue. A device can be invited while every existing device is
         // offline, so it may have no per-device pending directory yet.
         if let Some(payload) = crate::coedit::CoeditPayload::decode(raw_delta_bytes) {
-            let encoded = crate::transport::encode(&envelope).map_err(|error| {
+            let encoded = crate::transport::encode(envelope).map_err(|error| {
                 crate::store::StoreError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("encode retained envelope: {error}"),
@@ -297,12 +313,15 @@ impl WorkspaceRuntime {
     ///   doc + snapshot untouched;
     /// - a delta that adds nothing new writes no snapshot.
     fn materialize(&mut self, delta_bytes: &[u8]) -> bool {
-        if self.doc.is_none() || delta_bytes.is_empty() {
+        if delta_bytes.is_empty() {
             return false;
         }
+        let Some(current) = self.doc.as_ref() else {
+            return false;
+        };
         // Apply to a clone so a malformed / non-Automerge payload cannot
         // half-apply and corrupt the authoritative doc.
-        let mut candidate = self.doc.as_ref().expect("doc.is_some checked").clone();
+        let mut candidate = current.clone();
         match candidate.load_incremental(delta_bytes) {
             Ok(n) if n > 0 => {
                 let saved = candidate.save();
@@ -352,6 +371,11 @@ impl WorkspaceRuntime {
     /// origin, so it reuses the same routing (offline members get
     /// store-and-forward; other peer relays are not re-echoed) as any
     /// federated delta — no new delivery path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if fanning the ingested batch back out to
+    /// local subscribers fails to persist (see [`Self::fanout_delta`]).
     pub fn ingest_sync_changes(
         &mut self,
         workspace_id: u64,
@@ -371,7 +395,7 @@ impl WorkspaceRuntime {
         };
         // fan-out re-materializes, but `changes` are now already present
         // so that inner call is a no-op (no second snapshot write).
-        self.fanout_delta(&[0u8; 32], PeerRole::PeerRelay, env, changes, seq)?;
+        self.fanout_delta(&[0u8; 32], PeerRole::PeerRelay, &env, changes, seq)?;
         Ok(true)
     }
 
@@ -381,7 +405,7 @@ impl WorkspaceRuntime {
         &mut self,
         author: &[u8; 32],
         from_role: PeerRole,
-        envelope: Envelope,
+        envelope: &Envelope,
     ) -> usize {
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
@@ -396,7 +420,7 @@ impl WorkspaceRuntime {
                 let _ = sub.disconnect.try_send(());
                 dead.push(*peer);
             } else {
-                delivered += 1;
+                delivered = delivered.saturating_add(1);
             }
         }
         for d in dead {
@@ -450,7 +474,7 @@ mod tests {
         });
         let env = env_delta(42, [1u8; 32]);
         let delivered = rt
-            .fanout_delta(&[1u8; 32], PeerRole::Device, env.clone(), b"1 2 3", 111)
+            .fanout_delta(&[1u8; 32], PeerRole::Device, &env, b"1 2 3", 111)
             .unwrap();
         assert_eq!(delivered, 1);
         // Peer 2 saw the delta live.
@@ -475,7 +499,7 @@ mod tests {
         });
         let env = env_delta(5, [1u8; 32]);
         let delivered = rt
-            .fanout_delta(&[1u8; 32], PeerRole::Device, env, b"", 1)
+            .fanout_delta(&[1u8; 32], PeerRole::Device, &env, b"", 1)
             .unwrap();
         assert_eq!(delivered, 0);
         assert!(rt.subscribers.is_empty());
@@ -503,7 +527,7 @@ mod tests {
             .fanout_delta(
                 &author,
                 PeerRole::Device,
-                env_delta(6, author),
+                &env_delta(6, author),
                 b"durable",
                 2,
             )
@@ -542,7 +566,7 @@ mod tests {
         let author = [3u8; 32];
         let env = env_delta(8, author);
         let delivered = rt
-            .fanout_delta(&author, PeerRole::PeerRelay, env.clone(), b"x", 1)
+            .fanout_delta(&author, PeerRole::PeerRelay, &env, b"x", 1)
             .unwrap();
         // Only the local device saw it.
         assert_eq!(delivered, 1);
@@ -559,7 +583,7 @@ mod tests {
         // A local device authors — pr is offline, should be queued.
         let author = [1u8; 32];
         let env = env_delta(12, author);
-        rt.fanout_delta(&author, PeerRole::Device, env, b"x", 42)
+        rt.fanout_delta(&author, PeerRole::Device, &env, b"x", 42)
             .unwrap();
         assert_eq!(rt.store.count_pending(&pr_pk).unwrap(), 1);
     }
@@ -574,7 +598,7 @@ mod tests {
         // queued (that's the echo across a chain of relays).
         let author = [2u8; 32];
         let env = env_delta(13, author);
-        rt.fanout_delta(&author, PeerRole::PeerRelay, env, b"x", 42)
+        rt.fanout_delta(&author, PeerRole::PeerRelay, &env, b"x", 42)
             .unwrap();
         assert_eq!(rt.store.count_pending(&pr_pk).unwrap(), 0);
     }
@@ -596,7 +620,7 @@ mod tests {
         let d1 = doc_a.save_incremental();
 
         let env = env_delta(55, [1u8; 32]);
-        rt.fanout_delta(&[1u8; 32], PeerRole::Device, env, &d1, 1)
+        rt.fanout_delta(&[1u8; 32], PeerRole::Device, &env, &d1, 1)
             .unwrap();
 
         // Host materialized the change — its heads match the author's.
@@ -624,7 +648,7 @@ mod tests {
         let mut rt = WorkspaceRuntime::open(tmp.path(), 56, true, Membership::default()).unwrap();
         let env = env_delta(56, [5u8; 32]);
         // fanout still succeeds (routing is unaffected)...
-        rt.fanout_delta(&[5u8; 32], PeerRole::Device, env, b"not-automerge", 1)
+        rt.fanout_delta(&[5u8; 32], PeerRole::Device, &env, b"not-automerge", 1)
             .unwrap();
         // ...but the doc did not advance and no snapshot was written.
         assert!(rt.current_heads().is_empty());
@@ -678,7 +702,7 @@ mod tests {
             signature: [0u8; 64],
         };
         let delivered = rt
-            .fanout_delta(&a, PeerRole::Device, env, &d1, 111)
+            .fanout_delta(&a, PeerRole::Device, &env, &d1, 111)
             .unwrap();
         assert_eq!(delivered, 1, "delta fanned out to the live subscriber B");
 

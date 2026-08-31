@@ -13,7 +13,7 @@
 //! Output dir: `$NAV_SHELL_SHOTS_OUT` (default `/tmp/nav_shell_shots`).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
@@ -136,6 +136,16 @@ fn make_shell(theme: &Theme) -> NavShell {
         .with_overview_width(320.0)
 }
 
+/// Widens a shot's pixel dimension (window w/h, always a small on-screen
+/// size in practice) to `f32` for taffy's layout math.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "shot dimensions are small fixed constants, far below f32's exact-integer range"
+)]
+fn to_f32(v: u32) -> f32 {
+    v as f32
+}
+
 /// Lay `shell` out at `w×h`, apply `set` (drawer/pane state), then draw a
 /// deterministic frame to `out`.
 ///
@@ -144,7 +154,7 @@ fn make_shell(theme: &Theme) -> NavShell {
 /// the panes (open drawer, pushed detail) must be applied *before* the final
 /// layout pass. `apply_layout` at an unchanged size is a no-op for the flap
 /// reconcile (same breakpoint side), so it preserves the snapped state.
-fn shoot(shell: &mut NavShell, w: u32, h: u32, out: PathBuf, set: impl Fn(&mut NavShell)) {
+fn shoot(shell: &mut NavShell, w: u32, h: u32, out: &Path, set: impl Fn(&mut NavShell)) {
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
 
@@ -158,8 +168,8 @@ fn shoot(shell: &mut NavShell, w: u32, h: u32, out: PathBuf, set: impl Fn(&mut N
         let _ = taffy.compute_layout_with_measure(
             root,
             Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
+                width: AvailableSpace::Definite(to_f32(w)),
+                height: AvailableSpace::Definite(to_f32(h)),
             },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = node_map.get(&node_id) {
@@ -185,20 +195,23 @@ fn shoot(shell: &mut NavShell, w: u32, h: u32, out: PathBuf, set: impl Fn(&mut N
     shell.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let mut r = OffscreenRenderer::new(w, h);
-    r.render_png(&scene, theme.bg_app, &out);
+    r.render_png(&scene, theme.bg_app, out);
     println!("wrote {}", out.display());
 }
 
 pub fn run(_args: &[String]) {
     let dir =
         std::env::var("NAV_SHELL_SHOTS_OUT").unwrap_or_else(|_| "/tmp/nav_shell_shots".to_string());
-    std::fs::create_dir_all(&dir).unwrap();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("failed to create output dir {dir}: {e}");
+        return;
+    }
     let dir = PathBuf::from(dir);
     let theme = Theme::dark();
 
     // 1. WIDE: three abreast, docked sidebar (open), collapse chevron.
     let mut s = make_shell(&theme);
-    shoot(&mut s, 1240, 780, dir.join("nav_shell-wide.png"), |_| {});
+    shoot(&mut s, 1240, 780, &dir.join("nav_shell-wide.png"), |_| {});
 
     // 2. NARROW overview: full-screen overview, hamburger to summon the drawer.
     let mut s = make_shell(&theme);
@@ -206,7 +219,7 @@ pub fn run(_args: &[String]) {
         &mut s,
         440,
         780,
-        dir.join("nav_shell-narrow-overview.png"),
+        &dir.join("nav_shell-narrow-overview.png"),
         |_| {},
     );
 
@@ -216,7 +229,7 @@ pub fn run(_args: &[String]) {
         &mut s,
         440,
         780,
-        dir.join("nav_shell-narrow-drawer.png"),
+        &dir.join("nav_shell-narrow-drawer.png"),
         |sh| {
             sh.open_sidebar();
             sh.snap_sidebar(true);
@@ -229,7 +242,7 @@ pub fn run(_args: &[String]) {
         &mut s,
         440,
         780,
-        dir.join("nav_shell-narrow-detail.png"),
+        &dir.join("nav_shell-narrow-detail.png"),
         |sh| {
             sh.snap_pane(NavPane::Detail);
         },

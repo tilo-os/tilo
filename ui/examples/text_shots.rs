@@ -8,8 +8,8 @@
 //! that the selection band renders, the number field + steppers lay out, and
 //! the colour picker embeds cleanly.
 //!
-//! Run:  cargo run -p ui --example ui-shots -- text_shots
-//! Out:  $TEXT_SHOTS_OUT (default /tmp/text_shots)
+//! Run:  `cargo run -p ui --example ui-shots -- text_shots`
+//! Out:  `$TEXT_SHOTS_OUT` (default `/tmp/text_shots`)
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -30,33 +30,37 @@ use ui::widget::{ColorPicker, NumberInput, TextInput, Widget};
 
 /// Lay a single widget out at `origin` through the real taffy pass and return
 /// nothing (the widget stores its own rect). Used for the widgets whose
-/// `build_layout` carries an intrinsic size (NumberInput, ColorPicker).
+/// `build_layout` carries an intrinsic size (`NumberInput`, `ColorPicker`).
 fn layout_one(w: &mut dyn Widget, origin: Point) {
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let mut tr = TextRenderer::new();
     let node = w.build_layout(&mut taffy, &theme, &mut nm);
-    taffy
-        .compute_layout_with_measure(
-            node,
-            Size {
-                width: AvailableSpace::MaxContent,
-                height: AvailableSpace::MaxContent,
-            },
-            |known, available, node_id, _, _| {
-                nm.get(&node_id)
-                    .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
-                    .unwrap_or(Size::ZERO)
-            },
-        )
-        .unwrap();
+    let layout_result = taffy.compute_layout_with_measure(
+        node,
+        Size {
+            width: AvailableSpace::MaxContent,
+            height: AvailableSpace::MaxContent,
+        },
+        |known, available, node_id, _, _| {
+            nm.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                (*p).measure(known, available, &mut tr)
+            })
+        },
+    );
+    if let Err(e) = layout_result {
+        eprintln!("layout failed: {e}");
+        return;
+    }
     w.apply_layout(&taffy, node, origin);
 }
 
 fn dispatch(w: &mut dyn Widget, doc: &mut AutoCommit, ev: &WindowEvent) {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+    let Ok(node) = taffy.new_leaf(taffy::Style::default()) else {
+        return;
+    };
     let mut handled = false;
     let mut focus_target = None;
     w.handle_event(
@@ -80,7 +84,10 @@ fn cursor(x: f64, y: f64) -> WindowEvent {
 }
 pub fn run(_args: &[String]) {
     let dir = std::env::var("TEXT_SHOTS_OUT").unwrap_or_else(|_| "/tmp/text_shots".to_string());
-    std::fs::create_dir_all(&dir).unwrap();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("failed to create output dir {dir}: {e}");
+        return;
+    }
     let dir = PathBuf::from(dir);
 
     let theme = Theme::dark();

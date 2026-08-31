@@ -84,8 +84,10 @@ impl PersonalAppsPane {
                 .handlers
                 .get(resource)
                 .and_then(|id| apps.iter().find(|a| &a.package_id == id))
-                .map(|a| Self::option(a))
-                .unwrap_or_else(|| options[0].clone());
+                .map_or_else(
+                    || options.first().cloned().unwrap_or_default(),
+                    |a| Self::option(a),
+                );
             let label = resource.display_label();
             let picker = Dropdown::new(options, &Self::key(resource))
                 .with_id(&format!("personal-default.{}", resource.as_str()))
@@ -254,12 +256,14 @@ impl Widget for PersonalAppsPane {
                 },
                 &[child],
             )
-            .unwrap();
+            .unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

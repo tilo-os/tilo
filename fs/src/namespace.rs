@@ -96,7 +96,7 @@ fn read_u64(doc: &AutoCommit, obj: &ObjId, key: &str) -> u64 {
     match doc.get(obj, key) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
             ScalarValue::Uint(n) => *n,
-            ScalarValue::Int(n) => *n as u64,
+            ScalarValue::Int(n) => u64::try_from(*n).unwrap_or(0),
             _ => 0,
         },
         _ => 0,
@@ -104,11 +104,12 @@ fn read_u64(doc: &AutoCommit, obj: &ObjId, key: &str) -> u64 {
 }
 
 impl Namespace {
-    pub fn new(author: impl Into<String>) -> Self {
+    /// # Errors
+    ///
+    /// Returns an error if the fresh document's root `nodes` map cannot be created.
+    pub fn new(author: impl Into<String>) -> Result<Self, automerge::AutomergeError> {
         let mut doc = AutoCommit::new();
-        let nodes = doc
-            .put_object(&ROOT, "nodes", ObjType::Map)
-            .expect("put nodes map");
+        let nodes = doc.put_object(&ROOT, "nodes", ObjType::Map)?;
         let mut ns = Self {
             doc,
             nodes,
@@ -120,9 +121,12 @@ impl Namespace {
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
-        ns
+        Ok(ns)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `data` is not a valid automerge document, or its root `nodes` map can't be created.
     pub fn from_bytes(
         author: impl Into<String>,
         data: &[u8],
@@ -140,7 +144,7 @@ impl Namespace {
             if let Some(n) = id.strip_prefix(&prefix)
                 && let Ok(v) = n.parse::<u64>()
             {
-                max_local = max_local.max(v + 1);
+                max_local = max_local.max(v.saturating_add(1));
             }
         }
         let mut ns = Self {
@@ -174,6 +178,9 @@ impl Namespace {
     pub fn save_incremental(&mut self) -> Vec<u8> {
         self.doc.save_incremental()
     }
+    /// # Errors
+    ///
+    /// Returns an error if `data` is not a valid incremental automerge change set for this document.
     pub fn apply_incremental(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         self.doc.load_incremental(data)?;
         Ok(())
@@ -181,12 +188,20 @@ impl Namespace {
     pub fn prime_baseline(&mut self) {
         let _ = self.doc.save_incremental();
     }
+
+    /// # Errors
+    ///
+    /// Returns an error if `other`'s document cannot be merged into this one.
     pub fn merge_doc(&mut self, other: &mut Namespace) -> Result<(), automerge::AutomergeError> {
         self.doc.merge(&mut other.doc)?;
         Ok(())
     }
 
     /// Apply a remote delta: advance the watermark, resolve, and return the resolution delta to broadcast (empty if none).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `data` is not a valid incremental automerge change set for this document.
     pub fn apply_remote_and_resolve(
         &mut self,
         data: &[u8],
@@ -197,6 +212,9 @@ impl Namespace {
         Ok(self.doc.save_incremental())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `data` is not a valid automerge document, or cannot be merged into this one.
     pub fn merge_remote_and_resolve(
         &mut self,
         data: &[u8],
@@ -215,6 +233,9 @@ impl Namespace {
             .map(automerge::sync::Message::encode)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `data` is not a valid sync message, or applying it against `state` fails.
     pub fn sync_receive(
         &mut self,
         state: &mut automerge::sync::State,
@@ -333,7 +354,7 @@ impl Namespace {
             return ino;
         }
         let ino = self.next_ino;
-        self.next_ino += 1;
+        self.next_ino = self.next_ino.saturating_add(1);
         self.id_to_ino.insert(id.to_string(), ino);
         self.ino_to_id.insert(ino, id.to_string());
         ino
@@ -372,12 +393,16 @@ impl Namespace {
 
     fn gen_id(&mut self) -> String {
         let id = format!("{}/{}", self.author, self.next_id);
-        self.next_id += 1;
+        self.next_id = self.next_id.saturating_add(1);
         id
     }
 
-    fn attr_for(&self, ino: u64, kind: NodeKind, size: u64, mtime_ms: u64) -> FileAttr {
-        let t = UNIX_EPOCH + Duration::from_millis(mtime_ms);
+    fn attr_for(ino: u64, kind: NodeKind, size: u64, mtime_ms: u64) -> FileAttr {
+        // Saturates rather than panics: `mtime_ms` is stored CRDT state, not
+        // computed here, so an out-of-range value must degrade, not take the mount down.
+        let t = UNIX_EPOCH
+            .checked_add(Duration::from_millis(mtime_ms))
+            .unwrap_or(UNIX_EPOCH);
         FileAttr {
             ino: INodeNo(ino),
             size,
@@ -406,13 +431,13 @@ impl Namespace {
     pub fn getattr(&self, ino: u64) -> Option<FileAttr> {
         let id = self.ino_to_id.get(&ino)?.clone();
         if id == ROOT_ID {
-            return Some(self.attr_for(ROOT_INO, NodeKind::Dir, 0, 0));
+            return Some(Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0));
         }
         if !self.reaches_root(&id) {
             return None;
         }
         let e = self.entry(&id)?;
-        Some(self.attr_for(ino, e.kind, e.size, e.mtime))
+        Some(Self::attr_for(ino, e.kind, e.size, e.mtime))
     }
 
     pub fn lookup(&mut self, parent_ino: u64, name: &str) -> Option<FileAttr> {
@@ -420,7 +445,7 @@ impl Namespace {
         let child = self.child_named(&parent_id, name)?;
         let e = self.entry(&child)?;
         let ino = self.ino_for_id(&child);
-        Some(self.attr_for(ino, e.kind, e.size, e.mtime))
+        Some(Self::attr_for(ino, e.kind, e.size, e.mtime))
     }
 
     pub fn readdir(&mut self, ino: u64) -> Option<Vec<(u64, FileType, String)>> {
@@ -465,6 +490,9 @@ impl Namespace {
         self.entry(id)?.hash
     }
 
+    /// `None` only if the document's node map itself has become unwritable
+    /// (never observed against a live `Namespace`); every caller already
+    /// returns `Option`/`bool` for other failure modes, so this folds into the same contract.
     fn create_node(
         &mut self,
         parent_id: &str,
@@ -473,12 +501,9 @@ impl Namespace {
         hash: Option<&Hash>,
         size: u64,
         mtime: u64,
-    ) -> String {
+    ) -> Option<String> {
         let id = self.gen_id();
-        let obj = self
-            .doc
-            .put_object(&self.nodes, &id, ObjType::Map)
-            .expect("put node");
+        let obj = self.doc.put_object(&self.nodes, &id, ObjType::Map).ok()?;
         let _ = self.doc.put(&obj, "parent", parent_id);
         let _ = self.doc.put(&obj, "prev_parent", parent_id);
         let _ = self.doc.put(&obj, "name", name);
@@ -489,7 +514,7 @@ impl Namespace {
         let _ = self.doc.put(&obj, "size", size);
         let _ = self.doc.put(&obj, "mtime", mtime);
         let _ = self.doc.put(&obj, "author", self.author.clone());
-        id
+        Some(id)
     }
 
     pub fn create_file(
@@ -501,13 +526,13 @@ impl Namespace {
         mtime: u64,
     ) -> Option<u64> {
         let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
-        let id = self.create_node(&parent_id, name, NodeKind::File, hash, size, mtime);
+        let id = self.create_node(&parent_id, name, NodeKind::File, hash, size, mtime)?;
         Some(self.ino_for_id(&id))
     }
 
     pub fn create_dir(&mut self, parent_ino: u64, name: &str, mtime: u64) -> Option<u64> {
         let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
-        let id = self.create_node(&parent_id, name, NodeKind::Dir, None, 0, mtime);
+        let id = self.create_node(&parent_id, name, NodeKind::Dir, None, 0, mtime)?;
         Some(self.ino_for_id(&id))
     }
 
@@ -523,13 +548,10 @@ impl Namespace {
         mtime: u64,
     ) -> Option<u64> {
         let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
-        let id = self.create_node(&parent_id, name, NodeKind::File, None, 0, mtime);
+        let id = self.create_node(&parent_id, name, NodeKind::File, None, 0, mtime)?;
         self.set_field(&id, "codec", codec);
         let node = self.node(&id)?;
-        let root = self
-            .doc
-            .put_object(&node, "doc", ObjType::Map)
-            .expect("put document root");
+        let root = self.doc.put_object(&node, "doc", ObjType::Map).ok()?;
         qdoc::model::init(&mut self.doc, &root);
         Some(self.ino_for_id(&id))
     }
@@ -587,12 +609,13 @@ impl Namespace {
             return false;
         }
         let _ = self.doc.delete(&node, "doc");
-        let root = self
-            .doc
-            .put_object(&node, "doc", ObjType::Map)
-            .expect("put document root");
+        let Ok(root) = self.doc.put_object(&node, "doc", ObjType::Map) else {
+            return false;
+        };
         qdoc::model::init(&mut self.doc, &root);
-        let containers = qdoc::model::open(&self.doc, &root).expect("open");
+        let Ok(containers) = qdoc::model::open(&self.doc, &root) else {
+            return false;
+        };
         let mut ids = qdoc::model::seeded_id_gen(&self.doc, &containers);
         {
             let mut dmut = qdoc::DocMut {
@@ -827,7 +850,7 @@ impl Namespace {
                     break;
                 }
                 if let Some(pos) = seq.iter().position(|x| x == &cur) {
-                    return Some(seq[pos..].to_vec());
+                    return seq.get(pos..).map(<[String]>::to_vec);
                 }
                 if !seen.insert(cur.clone()) || self.node(&cur).is_none() {
                     break;
@@ -846,12 +869,15 @@ impl Namespace {
     /// reverts to `prev_parent` (or ROOT). Pure function of the doc, so every peer computes the same repair.
     pub fn resolve(&mut self) -> bool {
         let mut changed = false;
-        let guard = self.doc.keys(&self.nodes).count() + 2;
+        let guard = self.doc.keys(&self.nodes).count().saturating_add(2);
         for _ in 0..guard {
             let Some(cycle) = self.find_cycle() else {
                 break;
             };
-            let loser = cycle.iter().min().cloned().unwrap();
+            // `find_cycle` never returns an empty `Vec`.
+            let Some(loser) = cycle.iter().min().cloned() else {
+                break;
+            };
             let pp = self
                 .node(&loser)
                 .and_then(|o| read_str(&self.doc, &o, "prev_parent"))
@@ -937,7 +963,7 @@ impl Namespace {
                         ScalarValue::Str(x) => Some((opid.to_string(), x.to_string())),
                         _ => None,
                     },
-                    _ => None,
+                    Value::Object(_) => None,
                 })
                 .collect(),
             Err(_) => Vec::new(),
@@ -956,8 +982,8 @@ impl Namespace {
         if self.child_named(parent_id, name).is_some() {
             return false;
         }
-        self.create_node(parent_id, name, NodeKind::File, Some(hash), size, mtime);
-        true
+        self.create_node(parent_id, name, NodeKind::File, Some(hash), size, mtime)
+            .is_some()
     }
 }
 
@@ -971,7 +997,7 @@ mod tests {
 
     #[test]
     fn root_is_inode_one_and_listable() {
-        let mut ns = Namespace::new("a");
+        let mut ns = Namespace::new("a").unwrap();
         assert_eq!(ns.id_for_ino(ROOT_INO), Some(ROOT_ID));
         assert_eq!(ns.getattr(ROOT_INO).unwrap().kind, FileType::Directory);
         assert_eq!(ns.readdir(ROOT_INO).unwrap().len(), 2); // "." ".."
@@ -979,7 +1005,7 @@ mod tests {
 
     #[test]
     fn create_lookup_and_nested_readdir() {
-        let mut ns = Namespace::new("a");
+        let mut ns = Namespace::new("a").unwrap();
         let ino = ns
             .create_file(ROOT_INO, "hello.txt", Some(&h(7)), 12, 1)
             .unwrap();
@@ -990,13 +1016,12 @@ mod tests {
 
         let dir = ns.create_dir(ROOT_INO, "docs", 1).unwrap();
         ns.create_file(dir, "a.txt", Some(&h(1)), 1, 1).unwrap();
-        let names: Vec<String> = ns
-            .readdir(dir)
-            .unwrap()
-            .into_iter()
-            .map(|(_, _, n)| n)
-            .collect();
-        assert!(names.contains(&"a.txt".to_string()));
+        assert!(
+            ns.readdir(dir)
+                .unwrap()
+                .into_iter()
+                .any(|(_, _, n)| n == "a.txt")
+        );
         let dotdot = ns
             .readdir(dir)
             .unwrap()
@@ -1008,7 +1033,7 @@ mod tests {
 
     #[test]
     fn remove_moves_subtree_to_trash() {
-        let mut ns = Namespace::new("a");
+        let mut ns = Namespace::new("a").unwrap();
         let dir = ns.create_dir(ROOT_INO, "d", 1).unwrap();
         let child = ns.create_file(dir, "c.txt", Some(&h(1)), 1, 1).unwrap();
         assert!(ns.remove(dir));
@@ -1022,7 +1047,7 @@ mod tests {
 
     #[test]
     fn rename_is_a_move_that_preserves_inode() {
-        let mut ns = Namespace::new("a");
+        let mut ns = Namespace::new("a").unwrap();
         let ino = ns.create_file(ROOT_INO, "old", Some(&h(9)), 4, 1).unwrap();
         let dir = ns.create_dir(ROOT_INO, "sub", 1).unwrap();
         assert!(ns.rename(ROOT_INO, "old", dir, "new", 2));
@@ -1034,7 +1059,7 @@ mod tests {
 
     #[test]
     fn rename_rejects_move_into_own_descendant() {
-        let mut ns = Namespace::new("a");
+        let mut ns = Namespace::new("a").unwrap();
         let d1 = ns.create_dir(ROOT_INO, "d1", 1).unwrap();
         let d2 = ns.create_dir(d1, "d2", 1).unwrap();
         assert!(
@@ -1046,7 +1071,7 @@ mod tests {
 
     #[test]
     fn disjoint_inserts_merge() {
-        let mut a = Namespace::new("a");
+        let mut a = Namespace::new("a").unwrap();
         let bytes = a.save();
         let mut b = Namespace::from_bytes("b", &bytes).unwrap();
         a.create_file(ROOT_INO, "from_a", Some(&h(1)), 1, 1)
@@ -1060,7 +1085,7 @@ mod tests {
 
     #[test]
     fn concurrent_cross_move_resolves_acyclically_and_converges() {
-        let mut a = Namespace::new("a");
+        let mut a = Namespace::new("a").unwrap();
         let xino = a.create_dir(ROOT_INO, "X", 1).unwrap();
         let yino = a.create_dir(ROOT_INO, "Y", 1).unwrap();
         let snap = a.save();
@@ -1113,7 +1138,7 @@ mod tests {
 
     #[test]
     fn delete_dir_vs_create_child_converges_to_deleted() {
-        let mut a = Namespace::new("a");
+        let mut a = Namespace::new("a").unwrap();
         let dino = a.create_dir(ROOT_INO, "d", 1).unwrap();
         let snap = a.save();
         let mut b = Namespace::from_bytes("b", &snap).unwrap();
@@ -1142,7 +1167,7 @@ mod tests {
 
     #[test]
     fn tree_survives_save_and_reload() {
-        let mut a = Namespace::new("a");
+        let mut a = Namespace::new("a").unwrap();
         let dir = a.create_dir(ROOT_INO, "docs", 1).unwrap();
         a.create_file(dir, "f.txt", Some(&h(5)), 5, 1).unwrap();
         let bytes = a.save();
@@ -1155,7 +1180,7 @@ mod tests {
 
     #[test]
     fn incremental_apply_and_resolve() {
-        let mut a = Namespace::new("a");
+        let mut a = Namespace::new("a").unwrap();
         let snap = a.save();
         let mut b = Namespace::from_bytes("b", &snap).unwrap();
         let _ = a.save_incremental();
@@ -1169,7 +1194,7 @@ mod tests {
     #[test]
     fn sync_protocol_converges_two_namespaces() {
         // Diverge from a shared base doc; the incremental sync ping-pong must converge them.
-        let mut a = Namespace::new("a");
+        let mut a = Namespace::new("a").unwrap();
         a.create_file(ROOT_INO, "base", Some(&h(1)), 1, 1).unwrap();
         let mut b = Namespace::from_bytes("b", &a.save()).unwrap();
 
@@ -1200,7 +1225,7 @@ mod tests {
     #[test]
     fn document_import_export_roundtrips() {
         let reg = qdoc::builtin_registry();
-        let mut ns = Namespace::new("a");
+        let mut ns = Namespace::new("a").unwrap();
         let ino = ns.create_document(ROOT_INO, "note.md", "md", 1).unwrap();
         assert_eq!(ns.document_codec(ino).as_deref(), Some("md"));
 
@@ -1217,7 +1242,7 @@ mod tests {
     #[test]
     fn failed_import_preserves_existing_document() {
         let reg = qdoc::builtin_registry();
-        let mut ns = Namespace::new("a");
+        let mut ns = Namespace::new("a").unwrap();
         let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
         assert!(ns.import_document(ino, &reg, b"# Keep\n\nimportant\n", 2));
         let before = ns.export_document(ino, &reg).unwrap();
@@ -1237,7 +1262,7 @@ mod tests {
     #[test]
     fn document_concurrent_edits_merge_semantically() {
         // The point of model B: concurrent edits to the same document merge at the text level, not a conflict copy.
-        let mut a = Namespace::new("a");
+        let mut a = Namespace::new("a").unwrap();
         let ino = a.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
         let bid = a.document_insert_block(ino, None, "paragraph").unwrap();
         a.document_splice(ino, &bid, 0, 0, "Hello world");

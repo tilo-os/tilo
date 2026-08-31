@@ -76,6 +76,12 @@ pub enum ToolIntent {
 }
 
 impl ToolIntent {
+    /// Check that this intent's contextual data is safe to hand to the shell.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if a route that requires a VPN profile name has none, or the
+    /// supplied profile name is empty, too long, or contains control characters.
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Self::Vpn { route, profile } => {
@@ -95,8 +101,7 @@ impl ToolIntent {
                 }
                 Ok(())
             }
-            Self::Firewall { .. } => Ok(()),
-            Self::Disks { .. } | Self::Backups { .. } => Ok(()),
+            Self::Firewall { .. } | Self::Disks { .. } | Self::Backups { .. } => Ok(()),
         }
     }
 
@@ -124,6 +129,12 @@ pub struct ToolReply {
 }
 
 /// Ask the current shell session to open a known tool at a typed context.
+///
+/// # Errors
+///
+/// Returns an error message if `intent` fails [`ToolIntent::validate`], the process is not
+/// attached to a qOS workspace or its tool service, the request is too large to send, or the
+/// shell rejects or fails to answer the request.
 pub fn open_tool(intent: ToolIntent) -> Result<(), String> {
     intent.validate()?;
     let workspace_id = std::env::var("QOS_WORKSPACE_ID")
@@ -151,7 +162,7 @@ pub fn open_tool(intent: ToolIntent) -> Result<(), String> {
     }
     stream
         .write_all(&encoded)
-        .and_then(|_| stream.write_all(b"\n"))
+        .and_then(|()| stream.write_all(b"\n"))
         .map_err(|e| format!("sending tool request: {e}"))?;
 
     let mut reply = String::new();

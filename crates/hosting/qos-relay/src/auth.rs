@@ -154,6 +154,12 @@ pub fn challenge_digest(nonce: &[u8; 32]) -> [u8; 32] {
 /// Server-side: verify the client's `Hello` against `own_user_pk` +
 /// `policy` + `revocations`. Returns the authenticated peer state
 /// on success.
+///
+/// # Errors
+///
+/// Returns [`AuthError::Cert`] if the client's cert doesn't verify or
+/// is expired, [`AuthError::Revoked`] if its device is revoked, or
+/// [`AuthError::PolicyReject`] if `policy` does not admit it.
 pub fn accept_hello(
     hello: &Hello,
     own_user_public_key: &[u8; 32],
@@ -197,6 +203,14 @@ pub fn build_hello_ack(
 /// chain, expiry, policy admission (from *client's* point of view:
 /// the server must chain to our own user identity), revocation,
 /// and the nonce signature.
+///
+/// # Errors
+///
+/// Returns [`AuthError::Cert`] if the server's cert doesn't verify or
+/// is expired, [`AuthError::PolicyReject`] if it isn't host-capable or
+/// doesn't chain to `own_user_public_key`, [`AuthError::Revoked`] if
+/// its device is revoked, or [`AuthError::BadChallengeSig`] if the
+/// nonce signature doesn't verify.
 pub fn verify_hello_ack(
     ack: &HelloAck,
     own_user_public_key: &[u8; 32],
@@ -217,6 +231,14 @@ pub fn verify_hello_ack(
 /// requiring it to share the client's user root. This is the hosted-service
 /// path: Iroh authenticates the endpoint from `EndpointAddr`, while this
 /// handshake verifies that the server owns the device key in its valid cert.
+///
+/// # Errors
+///
+/// Returns [`AuthError::Cert`] if the server's cert doesn't verify or
+/// is expired, [`AuthError::PolicyReject`] if it isn't host-capable,
+/// [`AuthError::Revoked`] if its device is revoked, or
+/// [`AuthError::BadChallengeSig`] if the nonce signature doesn't
+/// verify.
 pub fn verify_pinned_host_ack(
     ack: &HelloAck,
     revocations: &RevocationList,
@@ -264,6 +286,12 @@ fn verify_hello_ack_inner(
 
 /// Server-side: verify the client's `HelloAck2` — its signature
 /// over our nonce.
+///
+/// # Errors
+///
+/// Returns [`AuthError::BadChallengeSig`] if `client_device_pubkey`
+/// is not a valid Ed25519 key or the signature over `server_nonce`
+/// doesn't verify.
 pub fn verify_hello_ack2(
     ack: &HelloAck2,
     client_device_pubkey: &[u8; 32],

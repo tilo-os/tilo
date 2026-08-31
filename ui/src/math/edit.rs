@@ -98,7 +98,7 @@ impl Editor {
         self.pre_move(extend);
         if self.caret.offset > 0 {
             // Step into the structure to the left if it has an entry slot.
-            let idx = self.caret.offset - 1;
+            let idx = self.caret.offset.saturating_sub(1);
             if let Some(node) = self.row().get(idx).cloned()
                 && !extend
                 && let Some(slot) = enter_from_right(&node)
@@ -108,10 +108,9 @@ impl Editor {
                 self.caret.offset = inner;
                 return;
             }
-            self.caret.offset -= 1;
-        } else if !self.caret.steps.is_empty() && !extend {
+            self.caret.offset = self.caret.offset.saturating_sub(1);
+        } else if !extend && let Some((idx, _slot)) = self.caret.steps.pop() {
             // At row start: pop out to the left of the owning node.
-            let (idx, _slot) = self.caret.steps.pop().unwrap();
             self.caret.offset = idx;
         }
     }
@@ -135,11 +134,10 @@ impl Editor {
                 self.caret.offset = 0;
                 return;
             }
-            self.caret.offset += 1;
-        } else if !self.caret.steps.is_empty() && !extend {
+            self.caret.offset = self.caret.offset.saturating_add(1);
+        } else if !extend && let Some((idx, _slot)) = self.caret.steps.pop() {
             // At row end: pop out to the right of the owning node.
-            let (idx, _slot) = self.caret.steps.pop().unwrap();
-            self.caret.offset = idx + 1;
+            self.caret.offset = idx.saturating_add(1);
         }
     }
 
@@ -158,8 +156,7 @@ impl Editor {
     fn vertical(&mut self, up: bool) {
         // If the caret is inside a structure, try moving between that
         // structure's vertically-stacked slots.
-        if let Some(&(idx, slot)) = self.caret.steps.last() {
-            let parent_steps = &self.caret.steps[..self.caret.steps.len() - 1];
+        if let Some((&(idx, slot), parent_steps)) = self.caret.steps.split_last() {
             if let Some(parent_row) = self.expr.row_at(parent_steps)
                 && let Some(node) = parent_row.get(idx)
             {
@@ -167,13 +164,12 @@ impl Editor {
                 if let Some(pos) = slots.iter().position(|s| *s == slot) {
                     let target = if up {
                         pos.checked_sub(1)
-                    } else if pos + 1 < slots.len() {
-                        Some(pos + 1)
                     } else {
-                        None
+                        pos.checked_add(1).filter(|&p| p < slots.len())
                     };
-                    if let Some(tp) = target {
-                        let new_slot = slots[tp];
+                    if let Some(tp) = target
+                        && let Some(&new_slot) = slots.get(tp)
+                    {
                         let mut steps = parent_steps.to_vec();
                         steps.push((idx, new_slot));
                         let new_len = self.expr.row_at(&steps).map_or(0, std::vec::Vec::len);
@@ -186,7 +182,7 @@ impl Editor {
             // Can't move within this structure: step out toward the target dir.
             if let Some(&(pidx, _)) = self.caret.steps.last() {
                 self.caret.steps.pop();
-                self.caret.offset = if up { pidx } else { pidx + 1 };
+                self.caret.offset = if up { pidx } else { pidx.saturating_add(1) };
             }
         }
     }
@@ -205,21 +201,22 @@ impl Editor {
     pub fn move_word_left(&mut self, extend: bool) {
         self.pre_move(extend);
         let row = self.row().clone();
+        let word_at = |idx: usize| row.get(idx).is_some_and(is_word_node);
         let mut i = self.caret.offset;
         // skip immediate non-word atoms
-        while i > 0 && !is_word_node(&row[i - 1]) {
-            i -= 1;
+        while i > 0 && !word_at(i.saturating_sub(1)) {
+            i = i.saturating_sub(1);
             if i == 0 {
                 break;
             }
             // stop after consuming a single structure / operator
-            if !is_word_node(&row[i]) {
+            if !word_at(i) {
                 self.caret.offset = i;
                 return;
             }
         }
-        while i > 0 && is_word_node(&row[i - 1]) {
-            i -= 1;
+        while i > 0 && word_at(i.saturating_sub(1)) {
+            i = i.saturating_sub(1);
         }
         self.caret.offset = i;
     }
@@ -228,18 +225,18 @@ impl Editor {
     pub fn move_word_right(&mut self, extend: bool) {
         self.pre_move(extend);
         let row = self.row().clone();
-        let len = row.len();
+        let word_at = |idx: usize| row.get(idx).is_some_and(is_word_node);
         let mut i = self.caret.offset;
         // Stop after consuming a single structure / operator, mirroring
         // move_word_left. This was a `while` that returned on its first
         // iteration, so it only ever ran once anyway.
-        if i < len && !is_word_node(&row[i]) {
-            i += 1;
+        if row.get(i).is_some_and(|n| !is_word_node(n)) {
+            i = i.saturating_add(1);
             self.caret.offset = i;
             return;
         }
-        while i < len && is_word_node(&row[i]) {
-            i += 1;
+        while word_at(i) {
+            i = i.saturating_add(1);
         }
         self.caret.offset = i;
     }
@@ -260,21 +257,22 @@ impl Editor {
             self.caret.offset = 0;
             return;
         }
+        let word_at = |idx: usize| row.get(idx).is_some_and(is_word_node);
         let probe = index.min(row.len().saturating_sub(1));
-        if is_word_node(&row[probe]) {
+        if word_at(probe) {
             let mut lo = probe;
-            while lo > 0 && is_word_node(&row[lo - 1]) {
-                lo -= 1;
+            while lo > 0 && word_at(lo.saturating_sub(1)) {
+                lo = lo.saturating_sub(1);
             }
-            let mut hi = probe + 1;
-            while hi < row.len() && is_word_node(&row[hi]) {
-                hi += 1;
+            let mut hi = probe.saturating_add(1);
+            while word_at(hi) {
+                hi = hi.saturating_add(1);
             }
             self.anchor = Some(lo);
             self.caret.offset = hi;
         } else {
             self.anchor = Some(probe);
-            self.caret.offset = probe + 1;
+            self.caret.offset = probe.saturating_add(1);
         }
     }
 
@@ -301,7 +299,7 @@ impl Editor {
             return;
         }
         if self.caret.offset > 0 {
-            let idx = self.caret.offset - 1;
+            let idx = self.caret.offset.saturating_sub(1);
             if let Some(row) = self.expr.row_at_mut(&self.caret.steps) {
                 row.remove(idx);
             }
@@ -332,11 +330,10 @@ impl Editor {
     /// Replace the parent structure with the concatenation of all its child
     /// rows, placing the caret where the current box used to start.
     fn unwrap_parent(&mut self) {
-        let (idx, _slot) = match self.caret.steps.last().copied() {
-            Some(x) => x,
-            None => return,
+        let Some((&(idx, _slot), parent_steps)) = self.caret.steps.split_last() else {
+            return;
         };
-        let parent_steps = self.caret.steps[..self.caret.steps.len() - 1].to_vec();
+        let parent_steps = parent_steps.to_vec();
         let node = match self.expr.row_at(&parent_steps).and_then(|r| r.get(idx)) {
             Some(n) => n.clone(),
             None => return,
@@ -346,18 +343,17 @@ impl Editor {
             parent.remove(idx);
             let n = flat.len();
             for (k, atom) in flat.into_iter().enumerate() {
-                parent.insert(idx + k, atom);
+                parent.insert(idx.saturating_add(k), atom);
             }
             self.caret.steps = parent_steps;
-            self.caret.offset = idx + n;
+            self.caret.offset = idx.saturating_add(n);
         }
     }
 
     /// Delete the active selection if any; returns whether it did.
     pub fn delete_selection(&mut self) -> bool {
-        let sel = match self.selection() {
-            Some(s) => s,
-            None => return false,
+        let Some(sel) = self.selection() else {
+            return false;
         };
         let (lo, hi) = (sel.lo(), sel.hi());
         if let Some(row) = self.expr.row_at_mut(&sel.steps) {
@@ -377,7 +373,7 @@ impl Editor {
         if let Some(row) = self.expr.row_at_mut(&self.caret.steps) {
             row.insert(at, node);
         }
-        self.caret.offset = at + 1;
+        self.caret.offset = at.saturating_add(1);
     }
 
     /// Insert a literal character (digit, letter, `.`, operator).
@@ -390,8 +386,7 @@ impl Editor {
         match ch {
             '/' => self.start_fraction(),
             '^' => self.start_power(),
-            '*' => self.insert_char('·'),
-            '·' => self.insert_char('·'),
+            '*' | '·' => self.insert_char('·'),
             '(' => self.start_paren(),
             ')' => self.skip_or_insert_close(),
             '√' => self.insert_sqrt(),
@@ -458,7 +453,7 @@ impl Editor {
             && matches!(slot, Slot::Body | Slot::Arg | Slot::Radicand)
         {
             self.caret.steps.pop();
-            self.caret.offset = idx + 1;
+            self.caret.offset = idx.saturating_add(1);
         }
         // Not inside a group: ignore stray close to keep the tree balanced.
     }
@@ -498,7 +493,7 @@ impl Editor {
     /// Move the caret into the slot of the node just inserted (now at
     /// `offset-1`).
     fn descend_into_last(&mut self, slot: Slot) {
-        let idx = self.caret.offset - 1;
+        let idx = self.caret.offset.saturating_sub(1);
         self.caret.steps.push((idx, slot));
         self.caret.offset = 0;
     }
@@ -507,31 +502,34 @@ impl Editor {
     /// serve as a fraction numerator: a trailing number, identifier run,
     /// or a single structure / parenthesized group.
     fn take_left_operand(&mut self) -> Row {
-        let row = match self.expr.row_at_mut(&self.caret.steps) {
-            Some(r) => r,
-            None => return Vec::new(),
+        let Some(row) = self.expr.row_at_mut(&self.caret.steps) else {
+            return Vec::new();
         };
         let end = self.caret.offset;
         if end == 0 {
             return Vec::new();
         }
-        let prev = &row[end - 1];
+        let Some(prev_idx) = end.checked_sub(1) else {
+            return Vec::new();
+        };
+        let Some(prev) = row.get(prev_idx) else {
+            return Vec::new();
+        };
         // A single structure / group / func is the whole operand.
         if !matches!(prev, Node::Char(_)) {
-            let node = row.remove(end - 1);
-            self.caret.offset = end - 1;
+            let node = row.remove(prev_idx);
+            self.caret.offset = prev_idx;
             return match node {
-                Node::Paren { body } => body,
-                Node::Delimited { body, .. } => body,
+                Node::Paren { body } | Node::Delimited { body, .. } => body,
                 other => vec![other],
             };
         }
         // Otherwise pull a run of number/identifier chars (not operators).
         let mut start = end;
-        while start > 0 {
-            match &row[start - 1] {
-                Node::Char(c) if c.is_ascii_alphanumeric() || *c == '.' || *c == 'π' => {
-                    start -= 1;
+        while let Some(prev_idx) = start.checked_sub(1) {
+            match row.get(prev_idx) {
+                Some(Node::Char(c)) if c.is_ascii_alphanumeric() || *c == '.' || *c == 'π' => {
+                    start = prev_idx;
                 }
                 _ => break,
             }
@@ -547,12 +545,12 @@ impl Editor {
         let row = self.row();
         let mut s = String::new();
         let mut i = self.caret.offset;
-        while i > 0 {
-            if let Node::Char(c) = &row[i - 1]
+        while let Some(prev_idx) = i.checked_sub(1) {
+            if let Some(Node::Char(c)) = row.get(prev_idx)
                 && c.is_ascii_alphabetic()
             {
                 s.insert(0, *c);
-                i -= 1;
+                i = prev_idx;
                 continue;
             }
             break;
@@ -570,8 +568,8 @@ impl Editor {
                 return false;
             }
             // char before the run must not be a letter
-            if off > n
-                && let Node::Char(c) = &row[off - n - 1]
+            if let Some(before_idx) = off.checked_sub(n).and_then(|v| v.checked_sub(1))
+                && let Some(Node::Char(c)) = row.get(before_idx)
                 && c.is_ascii_alphabetic()
             {
                 return false;
@@ -582,14 +580,14 @@ impl Editor {
 
     fn replace_run_before(&mut self, count: usize, with: Vec<Node>) {
         let off = self.caret.offset;
-        let start = off - count;
+        let start = off.saturating_sub(count);
         if let Some(row) = self.expr.row_at_mut(&self.caret.steps) {
             row.drain(start..off);
             let n = with.len();
             for (k, node) in with.into_iter().enumerate() {
-                row.insert(start + k, node);
+                row.insert(start.saturating_add(k), node);
             }
-            self.caret.offset = start + n;
+            self.caret.offset = start.saturating_add(n);
         }
     }
 
@@ -599,7 +597,7 @@ impl Editor {
     pub fn selected_linear(&self) -> Option<String> {
         let sel = self.selection()?;
         let row = self.expr.row_at(&sel.steps)?;
-        let slice: Row = row[sel.lo()..sel.hi()].to_vec();
+        let slice: Row = row.get(sel.lo()..sel.hi())?.to_vec();
         Some(super::model::to_linear(&MathExpr { root: slice }))
     }
 
@@ -612,10 +610,10 @@ impl Editor {
         let n = parsed.root.len();
         if let Some(row) = self.expr.row_at_mut(&self.caret.steps) {
             for (k, node) in parsed.root.into_iter().enumerate() {
-                row.insert(at + k, node);
+                row.insert(at.saturating_add(k), node);
             }
         }
-        self.caret.offset = at + n;
+        self.caret.offset = at.saturating_add(n);
     }
 
     /// Move the caret inside the first structure found scanning the root row
@@ -627,8 +625,7 @@ impl Editor {
             let slot = match node {
                 Node::Frac { .. } => Some(Slot::Num),
                 Node::Sup { .. } => Some(Slot::Exp),
-                Node::Sqrt { index: None, .. } => Some(Slot::Radicand),
-                Node::Sqrt { index: Some(_), .. } => Some(Slot::Radicand),
+                Node::Sqrt { .. } => Some(Slot::Radicand),
                 Node::Func { .. } => Some(Slot::Arg),
                 _ => None,
             };
@@ -692,16 +689,13 @@ fn enter_from_left(node: &Node) -> Option<Slot> {
         Node::SubSup { .. } => Some(Slot::Sup),
         Node::Sqrt { index: Some(_), .. } => Some(Slot::Index),
         Node::Sqrt { index: None, .. } => Some(Slot::Radicand),
-        Node::Paren { .. } => Some(Slot::Body),
-        Node::Delimited { .. } => Some(Slot::Body),
+        Node::Paren { .. } | Node::Delimited { .. } => Some(Slot::Body),
         Node::Func { .. } => Some(Slot::Arg),
-        Node::Accent { .. } => Some(Slot::Base),
-        Node::UnderOver { .. } => Some(Slot::Base),
+        Node::Accent { .. } | Node::UnderOver { .. } => Some(Slot::Base),
         Node::Table { rows } if rows.first().is_some_and(|row| !row.is_empty()) => {
             Some(Slot::Cell(0, 0))
         }
-        Node::Table { .. } => None,
-        Node::Char(_) | Node::Text(_) => None,
+        Node::Table { .. } | Node::Char(_) | Node::Text(_) => None,
     }
 }
 
@@ -710,14 +704,11 @@ fn enter_from_right(node: &Node) -> Option<Slot> {
     match node {
         Node::Frac { .. } => Some(Slot::Den),
         Node::Sup { .. } => Some(Slot::Exp),
-        Node::Sub { .. } => Some(Slot::Sub),
-        Node::SubSup { .. } => Some(Slot::Sub),
+        Node::Sub { .. } | Node::SubSup { .. } => Some(Slot::Sub),
         Node::Sqrt { .. } => Some(Slot::Radicand),
-        Node::Paren { .. } => Some(Slot::Body),
-        Node::Delimited { .. } => Some(Slot::Body),
+        Node::Paren { .. } | Node::Delimited { .. } => Some(Slot::Body),
         Node::Func { .. } => Some(Slot::Arg),
-        Node::Accent { .. } => Some(Slot::Base),
-        Node::UnderOver { .. } => Some(Slot::Base),
+        Node::Accent { .. } | Node::UnderOver { .. } => Some(Slot::Base),
         Node::Table { rows } => rows.iter().enumerate().rev().find_map(|(row, cells)| {
             let column = cells.len().checked_sub(1)?;
             Some(Slot::Cell(
@@ -750,8 +741,7 @@ fn flatten_node(node: &Node) -> Row {
             r.extend(radicand.clone());
             r
         }
-        Node::Paren { body } => body.clone(),
-        Node::Delimited { body, .. } => body.clone(),
+        Node::Paren { body } | Node::Delimited { body, .. } => body.clone(),
         Node::Func { arg, .. } => arg.clone(),
         Node::Accent { base, .. } => base.clone(),
         Node::Text(_) => vec![node.clone()],
@@ -763,7 +753,7 @@ fn flatten_node(node: &Node) -> Row {
         }
         Node::Table { rows } => rows
             .iter()
-            .flat_map(|cells| cells.iter().flat_map(|cell| cell.clone()))
+            .flat_map(|cells| cells.iter().flat_map(Clone::clone))
             .collect(),
     }
 }

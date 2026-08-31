@@ -36,6 +36,12 @@ pub enum BridgeError {
 
     #[error("wgpu buffer mapping failed: {0}")]
     Map(String),
+
+    #[error("invalid target size: {0}")]
+    InvalidSize(String),
+
+    #[error("invalid internal device handle: {0}")]
+    InvalidDevice(String),
 }
 
 /// One-shot latch so the "CPU fallback active" warning fires once per process; shared across all bridges since the message is process-global.
@@ -64,12 +70,22 @@ pub struct VelloDrmBridge {
 }
 
 impl VelloDrmBridge {
-    /// Build a bridge sized at `width × height`. Both must be > 0 (panics otherwise; DRM connector enumeration guarantees this).
+    /// Build a bridge sized at `width × height`.
+    ///
+    /// # Errors
+    /// Returns [`BridgeError::InvalidSize`] if `width` or `height` is `0` — DRM connector
+    /// enumeration is expected to guarantee non-zero modes, but a driver could still hand back a
+    /// degenerate one, and a panic here would take down the whole compositor session (`shell`
+    /// runs with `panic = "abort"`). Returns [`BridgeError::NoAdapter`] if no wgpu adapter is
+    /// available, [`BridgeError::InvalidDevice`] if the freshly acquired device id is out of
+    /// range (defensive; cannot happen in practice), or [`BridgeError::Renderer`] if the vello
+    /// renderer fails to build.
     pub fn new(width: u32, height: u32) -> Result<Self, BridgeError> {
-        assert!(
-            width > 0 && height > 0,
-            "VelloDrmBridge: width/height must be > 0"
-        );
+        if width == 0 || height == 0 {
+            return Err(BridgeError::InvalidSize(format!(
+                "VelloDrmBridge::new: width/height must be > 0, got {width}x{height}"
+            )));
+        }
 
         let mut context = RenderContext::new();
         let dev_id = context.device(None).block_on().ok_or_else(|| {
@@ -77,7 +93,10 @@ impl VelloDrmBridge {
                 "no wgpu adapter (install vulkan/llvmpipe drivers in the runtime)".to_owned(),
             )
         })?;
-        let device = &context.devices[dev_id].device;
+        let dev_handle = context.devices.get(dev_id).ok_or_else(|| {
+            BridgeError::InvalidDevice(format!("wgpu device id {dev_id} out of range"))
+        })?;
+        let device = &dev_handle.device;
 
         let (texture, view, readback_buf, padded_bytes_per_row) =
             Self::allocate_targets(device, width, height);
@@ -114,6 +133,12 @@ impl VelloDrmBridge {
 
     /// Render `scene` into the offscreen texture and return a slice of the tight-packed RGBA bytes
     /// (`width * height * 4`). The slice's lifetime is tied to `&mut self`; callers must clone bytes out before the next `paint`.
+    ///
+    /// # Errors
+    /// Returns a [`BridgeError`] if the vello render, the texture→buffer copy, or the readback
+    /// buffer mapping fails. A readback row that doesn't fit the mapped buffer (shouldn't happen
+    /// given `allocate_targets`, but guarded rather than trusted) is logged and truncates the
+    /// returned buffer instead of panicking.
     pub fn paint(&mut self, scene: &Scene) -> Result<&[u8], BridgeError> {
         if !WARNED_CPU_FALLBACK.swap(true, Ordering::AcqRel) {
             tracing::warn!(
@@ -128,14 +153,20 @@ impl VelloDrmBridge {
 
         // Block-map the readback buffer and copy into the tight `self.readback`, stripping row padding.
         let mapped = self.map_readback()?;
-        let tight_row = (width * 4) as usize;
-        let needed = tight_row * height as usize;
+        let tight_row = (width as usize).saturating_mul(4);
+        let needed = tight_row.saturating_mul(height as usize);
         self.readback.clear();
         self.readback.reserve(needed);
         for row in 0..height as usize {
-            let start = row * self.padded_bytes_per_row as usize;
-            self.readback
-                .extend_from_slice(&mapped[start..start + tight_row]);
+            let start = row.saturating_mul(self.padded_bytes_per_row as usize);
+            let end = start.saturating_add(tight_row);
+            let Some(src_row) = mapped.get(start..end) else {
+                tracing::warn!(
+                    "DRM paint: readback row {row} out of the mapped buffer's bounds; truncating frame"
+                );
+                break;
+            };
+            self.readback.extend_from_slice(src_row);
         }
         drop(mapped);
         self.readback_buf.unmap();
@@ -152,6 +183,9 @@ impl VelloDrmBridge {
     /// (a DRM dumb-buffer mmap), leaving only the unavoidable GPU→CPU readback plus one swizzle.
     ///
     /// `dst_pitch` may exceed `width * 4` for hardware pitch alignment; rows/columns are clamped to what `dst` can hold, so a short destination is logged-and-truncated rather than panicking.
+    ///
+    /// # Errors
+    /// Returns a [`BridgeError`] under the same conditions as [`paint`](Self::paint).
     pub fn paint_into_xrgb8888(
         &mut self,
         scene: &Scene,
@@ -171,25 +205,38 @@ impl VelloDrmBridge {
         self.render_to_readback(scene)?;
         let mapped = self.map_readback()?;
 
-        let tight_row = (width * 4) as usize;
+        let tight_row = (width as usize).saturating_mul(4);
         if dst_pitch == 0 {
             self.readback_buf.unmap();
             return Ok(());
         }
-        let max_rows = (dst.len() / dst_pitch).min(height as usize);
+        let max_rows = dst
+            .len()
+            .checked_div(dst_pitch)
+            .unwrap_or(0)
+            .min(height as usize);
         let cols = (dst_pitch / 4).min(width as usize);
         for row in 0..max_rows {
-            let s_start = row * self.padded_bytes_per_row as usize;
-            let srow = &mapped[s_start..s_start + tight_row];
-            let d_start = row * dst_pitch;
-            let drow = &mut dst[d_start..d_start + cols * 4];
-            for x in 0..cols {
-                let s = &srow[x * 4..x * 4 + 4]; // R, G, B, A
-                let d = &mut drow[x * 4..x * 4 + 4]; // B, G, R, X
-                d[0] = s[2];
-                d[1] = s[1];
-                d[2] = s[0];
-                d[3] = 0xFF;
+            let s_start = row.saturating_mul(self.padded_bytes_per_row as usize);
+            let s_end = s_start.saturating_add(tight_row);
+            let Some(srow) = mapped.get(s_start..s_end) else {
+                tracing::warn!(
+                    "DRM paint: readback row {row} out of the mapped buffer's bounds; stopping swizzle early"
+                );
+                break;
+            };
+            let d_start = row.saturating_mul(dst_pitch);
+            let d_end = d_start.saturating_add(cols.saturating_mul(4));
+            let Some(drow) = dst.get_mut(d_start..d_end) else {
+                break;
+            };
+            for (d, s) in drow.chunks_exact_mut(4).zip(srow.chunks_exact(4)) {
+                if let ([db, dg, dr, dx], [sr, sg, sb, _sa]) = (d, s) {
+                    *db = *sb;
+                    *dg = *sg;
+                    *dr = *sr;
+                    *dx = 0xFF;
+                }
             }
         }
         drop(mapped);
@@ -201,8 +248,11 @@ impl VelloDrmBridge {
     /// to wgpu's row alignment); shared prologue for [`paint`](Self::paint) and [`paint_into_xrgb8888`](Self::paint_into_xrgb8888).
     fn render_to_readback(&mut self, scene: &Scene) -> Result<(), BridgeError> {
         let (width, height) = self.size;
-        let device = &self.context.devices[self.dev_id].device;
-        let queue = &self.context.devices[self.dev_id].queue;
+        let dev_handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
+            BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
+        })?;
+        let device = &dev_handle.device;
+        let queue = &dev_handle.queue;
 
         self.renderer
             .render_to_texture(
@@ -248,7 +298,10 @@ impl VelloDrmBridge {
 
     /// Map the staged `readback_buf` for CPU reads, blocking until the GPU copy completes. The returned view borrows `readback_buf`; the caller must drop it then call `readback_buf.unmap()`.
     fn map_readback(&self) -> Result<wgpu::BufferView, BridgeError> {
-        let device = &self.context.devices[self.dev_id].device;
+        let dev_handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
+            BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
+        })?;
+        let device = &dev_handle.device;
         let slice = self.readback_buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
@@ -271,15 +324,24 @@ impl VelloDrmBridge {
     }
 
     /// Resize the offscreen target, reallocating texture + readback buffer; returns `Ok(())` even when the new size matches the current (no-op).
+    ///
+    /// # Errors
+    /// Returns [`BridgeError::InvalidSize`] if `width` or `height` is `0`, or
+    /// [`BridgeError::InvalidDevice`] if the bridge's device id is out of range (defensive;
+    /// cannot happen in practice).
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), BridgeError> {
-        assert!(
-            width > 0 && height > 0,
-            "VelloDrmBridge::resize: width/height must be > 0"
-        );
+        if width == 0 || height == 0 {
+            return Err(BridgeError::InvalidSize(format!(
+                "VelloDrmBridge::resize: width/height must be > 0, got {width}x{height}"
+            )));
+        }
         if (width, height) == self.size {
             return Ok(());
         }
-        let device = &self.context.devices[self.dev_id].device;
+        let dev_handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
+            BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
+        })?;
+        let device = &dev_handle.device;
         let (texture, view, readback_buf, padded_bytes_per_row) =
             Self::allocate_targets(device, width, height);
         self.texture = texture;
@@ -321,10 +383,10 @@ impl VelloDrmBridge {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let bytes_per_pixel = 4u32;
-        let unpadded = width * bytes_per_pixel;
+        let unpadded = width.saturating_mul(bytes_per_pixel);
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row = unpadded.div_ceil(align) * align;
-        let readback_size = u64::from(padded_bytes_per_row) * u64::from(height);
+        let padded_bytes_per_row = unpadded.div_ceil(align).saturating_mul(align);
+        let readback_size = u64::from(padded_bytes_per_row).saturating_mul(u64::from(height));
         let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("quick-desktop-drm-paint-readback"),
             size: readback_size,
@@ -336,33 +398,37 @@ impl VelloDrmBridge {
     }
 }
 
+/// The source half of a sub-rectangle copy/swizzle: the combined-scene RGBA buffer, its full
+/// width/height, and the sub-rect's top-left origin within it. The three free functions below
+/// share this shape; grouping it keeps each function under clippy's argument-count limit.
+pub struct SubrectSource<'a> {
+    pub src_rgba: &'a [u8],
+    pub src_w: usize,
+    pub src_h: usize,
+    pub src_x: usize,
+    pub src_y: usize,
+}
+
 /// Swizzle a sub-rectangle of a tight-packed RGBA source buffer (`[R, G, B, A]`, row stride
 /// `src_w * 4`) into an XRGB8888 destination (`[B, G, R, X]`, row stride `dst_pitch`).
 ///
 /// The per-output present primitive for multi-monitor: the compositor renders one scene
-/// spanning the combined output geometry into `src_rgba` (via [`VelloDrmBridge::paint`]), then
-/// each output presents the sub-rect at its `Output.position`/`size` into its own scanout dumb
-/// buffer. `(src_x, src_y)` is the sub-rect's top-left in the source; `out_w`×`out_h` is the output's size.
+/// spanning the combined output geometry into `source.src_rgba` (via [`VelloDrmBridge::paint`]),
+/// then each output presents the sub-rect at its `Output.position`/`size` into its own scanout
+/// dumb buffer. `source.src_x`/`source.src_y` is the sub-rect's top-left in the source; `out_w`×`out_h`
+/// is the output's size.
 ///
 /// Rows/cols outside the source or destination bounds are skipped (clamped, not panicking). For
 /// a single output at the origin matching the combined geometry, this is byte-for-byte [`VelloDrmBridge::paint_into_xrgb8888`].
 pub fn swizzle_subrect_rgba_to_xrgb8888(
-    src_rgba: &[u8],
-    src_w: usize,
-    src_h: usize,
-    src_x: usize,
-    src_y: usize,
+    source: SubrectSource<'_>,
     dst: &mut [u8],
     dst_pitch: usize,
     out_w: usize,
     out_h: usize,
 ) {
     swizzle_subrect_rgba_to_xrgb8888_transformed(
-        src_rgba,
-        src_w,
-        src_h,
-        src_x,
-        src_y,
+        source,
         dst,
         dst_pitch,
         out_w,
@@ -376,21 +442,28 @@ pub fn swizzle_subrect_rgba_to_xrgb8888(
 /// are in the physical KMS mode. This makes the scene, cursor, touch mapping,
 /// and `wl_output` transform describe one geometry.
 pub fn swizzle_subrect_rgba_to_xrgb8888_transformed(
-    src_rgba: &[u8],
-    src_w: usize,
-    src_h: usize,
-    src_x: usize,
-    src_y: usize,
+    source: SubrectSource<'_>,
     dst: &mut [u8],
     dst_pitch: usize,
     physical_w: usize,
     physical_h: usize,
     transform: settings_store::hardware::OutputTransform,
 ) {
+    let SubrectSource {
+        src_rgba,
+        src_w,
+        src_h,
+        src_x,
+        src_y,
+    } = source;
     if dst_pitch == 0 {
         return;
     }
-    let max_rows = (dst.len() / dst_pitch).min(physical_h);
+    let max_rows = dst
+        .len()
+        .checked_div(dst_pitch)
+        .unwrap_or(0)
+        .min(physical_h);
     let cols = (dst_pitch / 4).min(physical_w);
     let (logical_w, logical_h) = match transform {
         settings_store::hardware::OutputTransform::Rotate90
@@ -412,30 +485,40 @@ pub fn swizzle_subrect_rgba_to_xrgb8888_transformed(
     };
     for row in 0..max_rows {
         let (_, logical_y) = logical(0, row);
-        let sy_base = src_y + logical_y;
+        let sy_base = src_y.saturating_add(logical_y);
         if sy_base >= src_h
             && matches!(transform, settings_store::hardware::OutputTransform::Normal)
         {
             break;
         }
-        let d_start = row * dst_pitch;
-        let drow = &mut dst[d_start..d_start + cols * 4];
-        for col in 0..cols {
+        let d_start = row.saturating_mul(dst_pitch);
+        let d_end = d_start.saturating_add(cols.saturating_mul(4));
+        let Some(drow) = dst.get_mut(d_start..d_end) else {
+            break;
+        };
+        for (col, dpix) in drow.chunks_exact_mut(4).enumerate() {
             let (logical_x, logical_y) = logical(col, row);
-            let sx = src_x + logical_x;
-            let sy = src_y + logical_y;
+            let sx = src_x.saturating_add(logical_x);
+            let sy = src_y.saturating_add(logical_y);
             if sx >= src_w || sy >= src_h {
                 continue;
             }
-            let s = (sy * src_w + sx) * 4;
-            if s + 4 > src_rgba.len() {
+            let Some(s) = sy
+                .checked_mul(src_w)
+                .and_then(|v| v.checked_add(sx))
+                .and_then(|v| v.checked_mul(4))
+            else {
                 continue;
+            };
+            let Some(spix) = src_rgba.get(s..s.saturating_add(4)) else {
+                continue;
+            };
+            if let ([db, dg, dr, dx], [sr, sg, sb, _sa]) = (dpix, spix) {
+                *db = *sb;
+                *dg = *sg;
+                *dr = *sr;
+                *dx = 0xFF;
             }
-            let d = col * 4;
-            drow[d] = src_rgba[s + 2]; // B
-            drow[d + 1] = src_rgba[s + 1]; // G
-            drow[d + 2] = src_rgba[s]; // R
-            drow[d + 3] = 0xFF; // X
         }
     }
 }
@@ -444,27 +527,45 @@ pub fn swizzle_subrect_rgba_to_xrgb8888_transformed(
 /// only when a qcms ICC transform is active; the common unprofiled path keeps
 /// the zero-extra-copy swizzle above.
 pub fn copy_rgba_subrect(
-    src: &[u8],
-    src_w: usize,
-    src_h: usize,
-    src_x: usize,
-    src_y: usize,
+    source: SubrectSource<'_>,
     width: usize,
     height: usize,
     dst: &mut Vec<u8>,
 ) {
+    let SubrectSource {
+        src_rgba: src,
+        src_w,
+        src_h,
+        src_x,
+        src_y,
+    } = source;
     dst.clear();
     dst.resize(width.saturating_mul(height).saturating_mul(4), 0);
     for row in 0..height {
-        if src_y + row >= src_h || src_x >= src_w {
+        let Some(src_row) = src_y.checked_add(row) else {
+            break;
+        };
+        if src_row >= src_h || src_x >= src_w {
             break;
         }
-        let cols = width.min(src_w - src_x);
-        let source = ((src_y + row) * src_w + src_x) * 4;
-        let target = row * width * 4;
-        let bytes = cols * 4;
-        if source + bytes <= src.len() && target + bytes <= dst.len() {
-            dst[target..target + bytes].copy_from_slice(&src[source..source + bytes]);
+        let cols = width.min(src_w.saturating_sub(src_x));
+        let Some(byte_offset) = src_row
+            .checked_mul(src_w)
+            .and_then(|v| v.checked_add(src_x))
+            .and_then(|v| v.checked_mul(4))
+        else {
+            break;
+        };
+        let target = row.saturating_mul(width).saturating_mul(4);
+        let bytes = cols.saturating_mul(4);
+        let source_end = byte_offset.saturating_add(bytes);
+        let target_end = target.saturating_add(bytes);
+        if let (Some(dst_slice), Some(src_slice)) = (
+            dst.get_mut(target..target_end),
+            src.get(byte_offset..source_end),
+        ) && dst_slice.len() == src_slice.len()
+        {
+            dst_slice.copy_from_slice(src_slice);
         }
     }
 }
@@ -473,20 +574,20 @@ pub fn copy_rgba_subrect(
 mod subrect_tests {
     //! Pure-CPU tests for the sub-rect swizzle — no wgpu/GPU needed, run everywhere `cargo test -p shell --lib` runs.
     use super::{
-        copy_rgba_subrect, swizzle_subrect_rgba_to_xrgb8888,
+        SubrectSource, copy_rgba_subrect, swizzle_subrect_rgba_to_xrgb8888,
         swizzle_subrect_rgba_to_xrgb8888_transformed,
     };
 
     /// Build a `w×h` tight RGBA buffer where pixel `(x,y)` is `(x, y, 0, 0xFF)`, so the test can identify which source pixel landed where after the swizzle.
     fn ramp_rgba(w: usize, h: usize) -> Vec<u8> {
-        let mut v = vec![0u8; w * h * 4];
+        let mut v = vec![0u8; w.saturating_mul(h).saturating_mul(4)];
         for y in 0..h {
             for x in 0..w {
-                let o = (y * w + x) * 4;
-                v[o] = x as u8;
-                v[o + 1] = y as u8;
-                v[o + 2] = 0;
-                v[o + 3] = 0xFF;
+                let o = y.saturating_mul(w).saturating_add(x).saturating_mul(4);
+                v[o] = u8::try_from(x).unwrap_or(u8::MAX);
+                v[o.saturating_add(1)] = u8::try_from(y).unwrap_or(u8::MAX);
+                v[o.saturating_add(2)] = 0;
+                v[o.saturating_add(3)] = 0xFF;
             }
         }
         v
@@ -499,7 +600,19 @@ mod subrect_tests {
         let src = ramp_rgba(w, h);
         let pitch = w * 4;
         let mut dst = vec![0u8; pitch * h];
-        swizzle_subrect_rgba_to_xrgb8888(&src, w, h, 0, 0, &mut dst, pitch, w, h);
+        swizzle_subrect_rgba_to_xrgb8888(
+            SubrectSource {
+                src_rgba: &src,
+                src_w: w,
+                src_h: h,
+                src_x: 0,
+                src_y: 0,
+            },
+            &mut dst,
+            pitch,
+            w,
+            h,
+        );
         for y in 0..h {
             for x in 0..w {
                 let s = (y * w + x) * 4;
@@ -520,7 +633,19 @@ mod subrect_tests {
         let (ow, oh) = (2usize, 2usize);
         let pitch = ow * 4;
         let mut dst = vec![0u8; pitch * oh];
-        swizzle_subrect_rgba_to_xrgb8888(&src, cw, ch, 4, 0, &mut dst, pitch, ow, oh);
+        swizzle_subrect_rgba_to_xrgb8888(
+            SubrectSource {
+                src_rgba: &src,
+                src_w: cw,
+                src_h: ch,
+                src_x: 4,
+                src_y: 0,
+            },
+            &mut dst,
+            pitch,
+            ow,
+            oh,
+        );
         // dst pixel (0,0) must be source pixel (4,0): R channel == 4.
         assert_eq!(dst[2], 4, "dst(0,0).R should be source column 4");
         // dst pixel (1,1) must be source pixel (5,1): R==5, G==1.
@@ -536,7 +661,19 @@ mod subrect_tests {
         let src = ramp_rgba(w, h);
         let pitch = 16;
         let mut dst = vec![0xEEu8; pitch * h];
-        swizzle_subrect_rgba_to_xrgb8888(&src, w, h, 0, 0, &mut dst, pitch, w, h);
+        swizzle_subrect_rgba_to_xrgb8888(
+            SubrectSource {
+                src_rgba: &src,
+                src_w: w,
+                src_h: h,
+                src_x: 0,
+                src_y: 0,
+            },
+            &mut dst,
+            pitch,
+            w,
+            h,
+        );
         for row in 0..h {
             // Padding after the 2 written pixels (offset 8..) stays 0xEE.
             assert_eq!(dst[row * pitch + 8], 0xEE, "row {row} padding untouched");
@@ -552,7 +689,19 @@ mod subrect_tests {
         let pitch = ow * 4;
         let mut dst = vec![0u8; pitch * oh];
         // src_x=2 leaves only 1 valid source column; must not panic.
-        swizzle_subrect_rgba_to_xrgb8888(&src, w, h, 2, 0, &mut dst, pitch, ow, oh);
+        swizzle_subrect_rgba_to_xrgb8888(
+            SubrectSource {
+                src_rgba: &src,
+                src_w: w,
+                src_h: h,
+                src_x: 2,
+                src_y: 0,
+            },
+            &mut dst,
+            pitch,
+            ow,
+            oh,
+        );
         // Column 0 maps to source column 2 (valid); R==2.
         assert_eq!(dst[2], 2);
     }
@@ -562,11 +711,13 @@ mod subrect_tests {
         let src = ramp_rgba(2, 3);
         let mut dst = vec![0u8; 3 * 2 * 4];
         swizzle_subrect_rgba_to_xrgb8888_transformed(
-            &src,
-            2,
-            3,
-            0,
-            0,
+            SubrectSource {
+                src_rgba: &src,
+                src_w: 2,
+                src_h: 3,
+                src_x: 0,
+                src_y: 0,
+            },
             &mut dst,
             3 * 4,
             3,
@@ -583,7 +734,18 @@ mod subrect_tests {
     fn profiled_path_copies_only_the_output_viewport() {
         let src = ramp_rgba(5, 2);
         let mut output = Vec::new();
-        copy_rgba_subrect(&src, 5, 2, 3, 0, 2, 2, &mut output);
+        copy_rgba_subrect(
+            SubrectSource {
+                src_rgba: &src,
+                src_w: 5,
+                src_h: 2,
+                src_x: 3,
+                src_y: 0,
+            },
+            2,
+            2,
+            &mut output,
+        );
         assert_eq!(output.len(), 16);
         assert_eq!(output[0], 3);
         assert_eq!(output[4], 4);

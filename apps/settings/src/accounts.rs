@@ -193,6 +193,11 @@ impl MailStore {
             .unwrap_or_default()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if no config directory can be resolved (`no config
+    /// dir`), or if creating the parent directory or writing the JSON file
+    /// fails (permissions, missing/read-only filesystem, etc).
     pub fn save(&self) -> std::io::Result<PathBuf> {
         let path = Self::path().ok_or_else(|| std::io::Error::other("no config dir"))?;
         if let Some(parent) = path.parent() {
@@ -284,6 +289,11 @@ impl DavStore {
             .unwrap_or_default()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `path` is `None` (`no config dir`), or if creating
+    /// the parent directory or writing the JSON file fails (permissions,
+    /// missing/read-only filesystem, etc).
     pub fn save_to(&self, path: Option<PathBuf>) -> std::io::Result<PathBuf> {
         let path = path.ok_or_else(|| std::io::Error::other("no config dir"))?;
         if let Some(parent) = path.parent() {
@@ -301,6 +311,11 @@ impl DavStore {
 /// A Nextcloud account: a server URL + user that can surface mail,
 /// calendar, and files. Consumers derive per-service URLs from the root.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independently toggled service (files/calendar/mail) plus \
+              enabled, all serialised individually; not a state machine to collapse into an enum"
+)]
 pub struct NextcloudAccount {
     pub id: String,
     pub label: String,
@@ -371,6 +386,11 @@ impl NextcloudStore {
             .unwrap_or_default()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if no config directory can be resolved (`no config
+    /// dir`), or if creating the parent directory or writing the JSON file
+    /// fails (permissions, missing/read-only filesystem, etc).
     pub fn save(&self) -> std::io::Result<PathBuf> {
         let path = Self::path().ok_or_else(|| std::io::Error::other("no config dir"))?;
         if let Some(parent) = path.parent() {

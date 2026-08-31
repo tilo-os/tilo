@@ -1,4 +1,4 @@
-//! Kernel and PipeWire privacy state for shell indicators.
+//! Kernel and `PipeWire` privacy state for shell indicators.
 
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -12,8 +12,8 @@ pub enum MediaKind {
     Camera,
 }
 
-/// One actively-running PipeWire capture stream. `label` is derived from the
-/// executable behind PipeWire's server-assigned security PID, never from the
+/// One actively-running `PipeWire` capture stream. `label` is derived from the
+/// executable behind `PipeWire`'s server-assigned security PID, never from the
 /// client-supplied `application.name`; an app cannot rename itself to another
 /// app in the indicator.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,10 +97,15 @@ fn get_privacy_status_from(rfkill: &Path, dev: &Path) -> PrivacyStatus {
     status
 }
 
-/// Snapshot active capture streams through PipeWire's own graph. `pw-dump`
-/// is the reference client shipped with PipeWire and keeps compatibility
+/// Snapshot active capture streams through `PipeWire`'s own graph. `pw-dump`
+/// is the reference client shipped with `PipeWire` and keeps compatibility
 /// across native, Flatpak and portal clients. Attribution is independently
 /// re-derived from `/proc`; client-authored labels are intentionally ignored.
+///
+/// # Errors
+///
+/// Returns an error message if `pw-dump` is not installed, the command fails, or its output is
+/// not valid `PipeWire` graph JSON.
 pub fn active_media_uses() -> Result<Vec<ActiveMediaUse>, String> {
     let json = crate::process::run_capture("pw-dump", &[])?;
     parse_pipewire_media(&json, Path::new("/proc"), effective_uid())
@@ -109,7 +114,12 @@ pub fn active_media_uses() -> Result<Vec<ActiveMediaUse>, String> {
 /// Subscribe to `PipeWire` graph changes through the reference monitor and
 /// emit a freshly verified capture snapshot after each change burst. This
 /// blocks until the monitor exits; callers normally run it on one session
-/// worker and retry if PipeWire restarts.
+/// worker and retry if `PipeWire` restarts.
+///
+/// # Errors
+///
+/// Returns an error message if `pw-dump` is not installed, the monitor process fails to start
+/// or exits, or the monitor's stdout cannot be read.
 pub fn monitor_media_usage(mut on_change: impl FnMut(Vec<ActiveMediaUse>)) -> Result<(), String> {
     on_change(active_media_uses().unwrap_or_default());
     if !crate::process::which("pw-dump") {
@@ -155,9 +165,13 @@ pub fn monitor_media_usage(mut on_change: impl FnMut(Vec<ActiveMediaUse>)) -> Re
     ))
 }
 
-/// Immediately disconnect an offending PipeWire client. This is deliberately
+/// Immediately disconnect an offending `PipeWire` client. This is deliberately
 /// an ephemeral stop, not a pretend persistent permission: portal-managed
 /// grants remain owned by the portal permission store.
+///
+/// # Errors
+///
+/// Returns an error message if `pw-cli` is not installed or the command fails.
 pub fn revoke_media_client(client_id: u32) -> Result<(), String> {
     crate::process::run("pw-cli", &["destroy", &client_id.to_string()])
 }

@@ -46,6 +46,11 @@ pub const REVOCATIONS_FILE: &str = "revocations.json";
 pub const METRICS_FILE: &str = "metrics.json";
 
 /// Atomically persist a daemon metrics snapshot.
+///
+/// # Errors
+///
+/// Returns an error if the state root can't be created, `snapshot`
+/// can't be JSON-encoded, or the atomic write fails.
 pub fn save_metrics(
     state_root: &Path,
     snapshot: &crate::metrics::MetricsSnapshot,
@@ -58,6 +63,11 @@ pub fn save_metrics(
 }
 
 /// Read the last daemon metrics snapshot, if the daemon has written one.
+///
+/// # Errors
+///
+/// Returns an error if the file exists but can't be read, or fails to
+/// decode as JSON.
 pub fn load_metrics(
     state_root: &Path,
 ) -> Result<Option<crate::metrics::MetricsSnapshot>, StoreError> {
@@ -71,6 +81,11 @@ pub fn load_metrics(
 }
 
 /// Load root-signed revocation entries from the relay state root.
+///
+/// # Errors
+///
+/// Returns an error if the file exists but can't be read, or fails to
+/// decode as JSON.
 pub fn load_revocations(
     state_root: &Path,
 ) -> Result<Vec<qos_user_identity::RevocationEntry>, StoreError> {
@@ -82,6 +97,11 @@ pub fn load_revocations(
 }
 
 /// Atomically replace the relay's root-signed revocation entries.
+///
+/// # Errors
+///
+/// Returns an error if the state root can't be created, `entries`
+/// can't be JSON-encoded, or the atomic write fails.
 pub fn save_revocations(
     state_root: &Path,
     entries: &[qos_user_identity::RevocationEntry],
@@ -141,6 +161,11 @@ impl WorkspaceStore {
     ///
     /// `pinned=false` skips creating `snapshot.automerge` — the
     /// caller does not intend to hold a persistent CRDT.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any of the workspace's on-disk directories
+    /// can't be created.
     pub fn open(state_root: &Path, workspace_id: u64, pinned: bool) -> Result<Self, StoreError> {
         let root = state_root.join("workspaces").join(workspace_id.to_string());
         fs::create_dir_all(&root)?;
@@ -173,6 +198,10 @@ impl WorkspaceStore {
     /// Load the pinned Automerge snapshot if present. Returns
     /// `Ok(None)` when there is no snapshot yet (first boot for
     /// this workspace).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the snapshot file exists but can't be read.
     pub fn load_snapshot(&self) -> Result<Option<Vec<u8>>, StoreError> {
         let p = self.root.join(SNAPSHOT_FILE);
         if !p.exists() {
@@ -182,6 +211,10 @@ impl WorkspaceStore {
     }
 
     /// Atomically write a new snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the atomic write fails.
     pub fn save_snapshot(&self, bytes: &[u8]) -> Result<(), StoreError> {
         if !self.pinned {
             return Ok(());
@@ -191,6 +224,12 @@ impl WorkspaceStore {
     }
 
     /// Load device public keys previously admitted to this workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file exists but can't be read, fails
+    /// to decode as JSON, or contains a device key that isn't valid
+    /// hex or isn't exactly 32 bytes.
     pub fn load_membership(&self) -> Result<Vec<[u8; 32]>, StoreError> {
         let path = self.root.join(MEMBERSHIP_FILE);
         if !path.exists() {
@@ -215,6 +254,11 @@ impl WorkspaceStore {
     }
 
     /// Atomically replace the durable membership set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `devices` can't be JSON-encoded or the
+    /// atomic write fails.
     pub fn save_membership(&self, devices: &[[u8; 32]]) -> Result<(), StoreError> {
         let encoded: Vec<_> = devices.iter().map(hex::encode).collect();
         let bytes = serde_json::to_vec_pretty(&encoded)
@@ -226,6 +270,11 @@ impl WorkspaceStore {
     /// Append an audit log entry. Non-fatal if the log file fails —
     /// the audit trail is best-effort, forwarding must not depend
     /// on it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the log file can't be opened for append,
+    /// `entry` can't be JSON-encoded, or the write fails.
     pub fn append_log(&self, entry: &LogEntry) -> Result<(), StoreError> {
         let path = self.root.join(LOG_FILE);
         let mut file = fs::OpenOptions::new()
@@ -241,6 +290,11 @@ impl WorkspaceStore {
     /// enqueue produces a new file `<seq>.delta` where seq is a
     /// monotonically increasing hex nanosecond timestamp; the
     /// filename ordering is the delivery ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the per-device pending directory can't be
+    /// created or the atomic write fails.
     pub fn enqueue_pending(
         &self,
         device_pubkey: &[u8; 32],
@@ -288,6 +342,11 @@ impl WorkspaceStore {
     /// Drain the pending queue immediately. Primarily useful for offline
     /// maintenance and tests; live delivery uses [`Self::load_pending`] so a
     /// failed replay remains recoverable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if loading the pending queue fails, or if a
+    /// queued file can't be removed after being read.
     pub fn drain_pending(&self, device_pubkey: &[u8; 32]) -> Result<Vec<Vec<u8>>, StoreError> {
         let entries = self.load_pending(device_pubkey)?;
         let mut out = Vec::with_capacity(entries.len());
@@ -299,6 +358,11 @@ impl WorkspaceStore {
     }
 
     /// Count pending deltas for `device_pubkey` without draining.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pending directory exists but can't be
+    /// read.
     pub fn count_pending(&self, device_pubkey: &[u8; 32]) -> Result<u32, StoreError> {
         let dir = self.pending_dir_for(device_pubkey);
         if !dir.exists() {
@@ -308,11 +372,20 @@ impl WorkspaceStore {
             .flatten()
             .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
             .count();
-        Ok(n as u32)
+        // A count this large would mean a queue directory holding more
+        // files than a `u32` can index; saturate rather than wrap so
+        // the reported count never reads as smaller than the truth.
+        Ok(u32::try_from(n).unwrap_or(u32::MAX))
     }
 
     /// Replace the durable checkpoint for `channel` and discard the tail that
     /// preceded it. `bytes` is a complete encoded relay envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the atomic write fails, the old tail
+    /// directory can't be removed, or the fresh tail directory can't
+    /// be created.
     pub fn retain_checkpoint(&self, channel: &[u8; 32], bytes: &[u8]) -> Result<(), StoreError> {
         let name = hex::encode(channel);
         atomic_file::write(
@@ -328,6 +401,11 @@ impl WorkspaceStore {
     }
 
     /// Append one encoded relay envelope to the retained tail for `channel`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tail directory can't be created or the
+    /// atomic write fails.
     pub fn retain_delta(
         &self,
         channel: &[u8; 32],
@@ -347,6 +425,11 @@ impl WorkspaceStore {
     /// Load every retained checkpoint followed by its post-checkpoint tail.
     /// Documents are independent, so channel ordering is irrelevant; ordering
     /// within a channel is stable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a channel directory can't be listed, or a
+    /// checkpoint / tail file can't be read.
     pub fn load_retained(&self) -> Result<Vec<Vec<u8>>, StoreError> {
         let retained = self.root.join(RETAINED_DIR);
         let checkpoint_dir = retained.join("checkpoints");
@@ -387,7 +470,15 @@ impl WorkspaceStore {
 /// The secret is a 32-byte Ed25519-like key persisted at
 /// `<state_root>/iroh-secret.bin` with mode 0600 so the relay's
 /// iroh node id is stable across restarts.
+///
+/// # Errors
+///
+/// Returns an error if an existing secret file is not exactly 32
+/// bytes, or if reading it, creating the state root, or the atomic
+/// write of a freshly minted secret fails.
 pub fn load_or_create_iroh_secret(state_root: &Path) -> Result<[u8; 32], StoreError> {
+    use rand::RngCore;
+
     let path = state_root.join("iroh-secret.bin");
     if path.exists() {
         let bytes = fs::read(&path)?;
@@ -402,7 +493,6 @@ pub fn load_or_create_iroh_secret(state_root: &Path) -> Result<[u8; 32], StoreEr
         return Ok(out);
     }
     fs::create_dir_all(state_root)?;
-    use rand::RngCore;
     let mut secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret);
     atomic_file::write_with_mode(&path, &secret, 0o600)?;

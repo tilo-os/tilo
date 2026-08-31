@@ -1000,14 +1000,16 @@ impl BlockEditor {
             return;
         }
         let end = formula_run_end(&self.blocks, start);
-        let source = self.blocks[start..=end]
-            .iter()
-            .map(Block::text)
-            .collect::<Vec<_>>()
-            .join("\n");
+        let Some(run) = self.blocks.get(start..=end) else {
+            return;
+        };
+        let source = run.iter().map(Block::text).collect::<Vec<_>>().join("\n");
         descriptor.mode = mode;
         let language = descriptor.fence_language();
-        for block in &mut self.blocks[start..=end] {
+        let Some(run_mut) = self.blocks.get_mut(start..=end) else {
+            return;
+        };
+        for block in run_mut {
             block.kind = BlockKind::CodeBlock {
                 lang: Some(language.clone()),
             };
@@ -1047,7 +1049,12 @@ impl BlockEditor {
         if let Some(block) = self.blocks.get_mut(start) {
             block.line.set_text(&source);
         }
-        for block in self.blocks.iter_mut().take(end + 1).skip(start + 1) {
+        for block in self
+            .blocks
+            .iter_mut()
+            .take(end.saturating_add(1))
+            .skip(start.saturating_add(1))
+        {
             block.line.set_text("");
         }
         self.doc_structure_dirty = true;
@@ -1330,15 +1337,53 @@ fn formula_run_end(blocks: &[Block], start: usize) -> usize {
         return start;
     };
     let mut end = start;
-    while end + 1 < blocks.len()
+    while end.saturating_add(1) < blocks.len()
         && blocks
-            .get(end + 1)
+            .get(end.saturating_add(1))
             .and_then(|block| formula_descriptor(&block.kind))
             == Some(descriptor)
     {
-        end += 1;
+        end = end.saturating_add(1);
     }
     end
+}
+
+/// Per-block "is this the first block of a formula run" flag: the
+/// descriptor changes (or there is no previous block) at this index.
+/// Shared by `build_layout` and `apply_layout` so the "which index is a
+/// formula boundary" logic lives in exactly one panic-free place.
+fn compute_is_formula_start(blocks: &[Block]) -> Vec<bool> {
+    blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| {
+            formula_descriptor(&block.kind).is_some()
+                && index
+                    .checked_sub(1)
+                    .and_then(|prev| blocks.get(prev))
+                    .is_none_or(|prev_block| {
+                        formula_descriptor(&prev_block.kind) != formula_descriptor(&block.kind)
+                    })
+        })
+        .collect()
+}
+
+/// Per-block "is this the last block of a formula run" flag: the
+/// descriptor changes (or there is no next block) at this index. See
+/// [`compute_is_formula_start`].
+fn compute_is_formula_end(blocks: &[Block]) -> Vec<bool> {
+    blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| {
+            formula_descriptor(&block.kind).is_some()
+                && blocks
+                    .get(index.saturating_add(1))
+                    .is_none_or(|next_block| {
+                        formula_descriptor(&next_block.kind) != formula_descriptor(&block.kind)
+                    })
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -1400,7 +1445,7 @@ fn draw_formula_preview(
             "Type a formula above to preview it",
             12.0,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((rect.x0 + 8.0, rect.y0 + 8.0)),
+            translated(transform, rect.x0 + 8.0, rect.y0 + 8.0),
             None,
         );
         return;
@@ -1435,14 +1480,16 @@ fn draw_formula_preview(
     if let Some(diagnostic) = parsed.diagnostics.first() {
         let mut message = format!("Preview: {}", diagnostic.message);
         if message.chars().count() > 90 {
-            message = message.chars().take(89).collect::<String>() + "…";
+            let mut truncated: String = message.chars().take(89).collect();
+            truncated.push('…');
+            message = truncated;
         }
         text_renderer.draw_text(
             scene,
             &message,
             11.0,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((rect.x0 + 6.0, rect.y1 - 15.0)),
+            translated(transform, rect.x0 + 6.0, rect.y1 - 15.0),
             None,
         );
     }
@@ -1474,7 +1521,11 @@ fn draw_formula_chrome(
         syntax,
         11.0,
         colors.text_primary,
-        transform * Affine::translate((chrome.syntax_badge.x0 + 7.0, chrome.syntax_badge.y0 + 5.0)),
+        translated(
+            transform,
+            chrome.syntax_badge.x0 + 7.0,
+            chrome.syntax_badge.y0 + 5.0,
+        ),
         None,
     );
     for (rect, label, selected) in [
@@ -1508,7 +1559,7 @@ fn draw_formula_chrome(
             } else {
                 colors.text_dim
             },
-            transform * Affine::translate((rect.x0 + 7.0, rect.y0 + 5.0)),
+            translated(transform, rect.x0 + 7.0, rect.y0 + 5.0),
             None,
         );
     }
@@ -1609,7 +1660,7 @@ fn draw_visual_formula_editor(
 fn handle_visual_formula_key(
     editor: &mut crate::math::edit::Editor,
     key: &winit::keyboard::Key,
-    modifiers: &Modifiers,
+    modifiers: Modifiers,
 ) -> bool {
     use winit::keyboard::{Key, NamedKey};
     let state = modifiers.state();
@@ -2862,17 +2913,7 @@ impl Widget for BlockEditor {
             .iter()
             .map(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
             .collect();
-        let is_formula_end: Vec<bool> = self
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(index, block)| {
-                formula_descriptor(&block.kind).is_some()
-                    && (index + 1 == self.blocks.len()
-                        || formula_descriptor(&self.blocks[index + 1].kind)
-                            != formula_descriptor(&block.kind))
-            })
-            .collect();
+        let is_formula_end = compute_is_formula_end(&self.blocks);
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let n = b.line.build_layout(taffy, theme, node_map);
             // Per-block top margin (not the parent's `gap`) so it can be
@@ -2888,7 +2929,8 @@ impl Widget for BlockEditor {
             } else {
                 8.0
             };
-            if top_margin > 0.0 || is_formula_end[i] {
+            let block_is_formula_end = is_formula_end.get(i).copied().unwrap_or(false);
+            if top_margin > 0.0 || block_is_formula_end {
                 let existing = taffy.style(n).cloned().unwrap_or_default();
                 let mut s = existing;
                 s.margin = taffy::Rect {
@@ -2897,7 +2939,7 @@ impl Widget for BlockEditor {
                     top: length(top_margin),
                     bottom: length(0.0_f32),
                 };
-                if is_formula_end[i] {
+                if block_is_formula_end {
                     let min_height = if formula_descriptor(&b.kind).is_some_and(|descriptor| {
                         descriptor.mode == crate::math::FormulaMode::Visual
                     }) {
@@ -2946,28 +2988,8 @@ impl Widget for BlockEditor {
         let children = taffy.children(node).unwrap_or_default();
         self.formula_preview_rects = vec![None; self.blocks.len()];
         self.formula_chrome = vec![None; self.blocks.len()];
-        let is_formula_start: Vec<bool> = self
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(index, block)| {
-                formula_descriptor(&block.kind).is_some()
-                    && (index == 0
-                        || formula_descriptor(&self.blocks[index - 1].kind)
-                            != formula_descriptor(&block.kind))
-            })
-            .collect();
-        let is_formula_end: Vec<bool> = self
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(index, block)| {
-                formula_descriptor(&block.kind).is_some()
-                    && (index + 1 == self.blocks.len()
-                        || formula_descriptor(&self.blocks[index + 1].kind)
-                            != formula_descriptor(&block.kind))
-            })
-            .collect();
+        let is_formula_start = compute_is_formula_start(&self.blocks);
+        let is_formula_end = compute_is_formula_end(&self.blocks);
         for (index, (b, child_node)) in self.blocks.iter_mut().zip(children.iter()).enumerate() {
             b.line.apply_layout(taffy, *child_node, new_origin);
             // Shift prefixed kinds' text rect right of a reserved gutter
@@ -2976,7 +2998,9 @@ impl Widget for BlockEditor {
             let indent_px = f64::from(LIST_INDENT_STEP_PX) * f64::from(b.kind.indent());
             let original = b.line.get_rect();
             let descriptor = formula_descriptor(&b.kind);
-            let source_top = if is_formula_start[index] {
+            let starts_formula = is_formula_start.get(index).copied().unwrap_or(false);
+            let ends_formula = is_formula_end.get(index).copied().unwrap_or(false);
+            let source_top = if starts_formula {
                 (original.y0 + FORMULA_HEADER_HEIGHT).min(original.y1)
             } else {
                 original.y0
@@ -2984,12 +3008,12 @@ impl Widget for BlockEditor {
             let source_bottom =
                 if descriptor.is_some_and(|value| value.mode == crate::math::FormulaMode::Visual) {
                     source_top
-                } else if is_formula_end[index] {
+                } else if ends_formula {
                     (source_top + FORMULA_SOURCE_HEIGHT).min(original.y1)
                 } else {
                     original.y1
                 };
-            if is_formula_end[index] {
+            if ends_formula {
                 let mode = descriptor.map_or(crate::math::FormulaMode::Source, |value| value.mode);
                 let preview = Rect::new(
                     original.x0 + 12.0,
@@ -3002,13 +3026,15 @@ impl Widget for BlockEditor {
                     original.x1 - 8.0,
                     (original.y1 - 6.0).max(source_bottom + FORMULA_PREVIEW_GAP),
                 );
-                self.formula_preview_rects[index] = Some(preview);
+                if let Some(slot) = self.formula_preview_rects.get_mut(index) {
+                    *slot = Some(preview);
+                }
             }
             if gutter > 0.0
                 || indent_px > 0.0
-                || is_formula_start[index]
+                || starts_formula
                 || descriptor.is_some_and(|value| value.mode == crate::math::FormulaMode::Visual)
-                || is_formula_end[index]
+                || ends_formula
             {
                 let shifted = Rect::new(
                     original.x0 + indent_px + gutter,
@@ -3019,37 +3045,7 @@ impl Widget for BlockEditor {
                 b.line.apply_layout_external(shifted);
             }
         }
-        let mut start = 0usize;
-        while start < self.blocks.len() {
-            let Some(descriptor) = formula_descriptor(&self.blocks[start].kind) else {
-                start += 1;
-                continue;
-            };
-            let end = formula_run_end(&self.blocks, start);
-            if let Some(editor_rect) = self.formula_preview_rects[end] {
-                let first = self.blocks[start].line.get_rect();
-                let last = self.blocks[end].line.get_rect();
-                let header_y = first.y0 - FORMULA_HEADER_HEIGHT;
-                let badge = Rect::new(first.x0, header_y + 3.0, first.x0 + 40.0, header_y + 25.0);
-                let visual_button =
-                    Rect::new(last.x1 - 60.0, header_y + 3.0, last.x1, header_y + 25.0);
-                let source_button = Rect::new(
-                    visual_button.x0 - 68.0,
-                    header_y + 3.0,
-                    visual_button.x0 - 4.0,
-                    header_y + 25.0,
-                );
-                self.formula_chrome[start] = Some(FormulaChrome {
-                    end,
-                    descriptor,
-                    syntax_badge: badge,
-                    source_button,
-                    visual_button,
-                    editor_rect,
-                });
-            }
-            start = end + 1;
-        }
+        self.build_formula_chrome_rects();
     }
 
     fn draw(
@@ -3102,22 +3098,28 @@ impl Widget for BlockEditor {
         let mut formula_runs: Vec<Option<FormulaRunPreview>> = vec![None; self.blocks.len()];
         let mut formula_index = 0usize;
         while formula_index < self.blocks.len() {
-            let Some(descriptor) = formula_descriptor(&self.blocks[formula_index].kind) else {
-                formula_index += 1;
+            let Some(descriptor) = self
+                .blocks
+                .get(formula_index)
+                .and_then(|b| formula_descriptor(&b.kind))
+            else {
+                formula_index = formula_index.saturating_add(1);
                 continue;
             };
             let end = formula_run_end(&self.blocks, formula_index);
-            let source = self.blocks[formula_index..=end]
-                .iter()
-                .map(Block::text)
-                .collect::<Vec<_>>()
-                .join("\n");
-            formula_runs[formula_index] = Some(FormulaRunPreview {
-                end,
-                descriptor,
-                source,
-            });
-            formula_index = end + 1;
+            let source = self
+                .blocks
+                .get(formula_index..=end)
+                .map(|run| run.iter().map(Block::text).collect::<Vec<_>>().join("\n"))
+                .unwrap_or_default();
+            if let Some(slot) = formula_runs.get_mut(formula_index) {
+                *slot = Some(FormulaRunPreview {
+                    end,
+                    descriptor,
+                    source,
+                });
+            }
+            formula_index = end.saturating_add(1);
         }
 
         let mut ctx = BlockDrawCtx {
@@ -3205,7 +3207,7 @@ impl Widget for BlockEditor {
             if !matches!(logical_key, Key::Named(NamedKey::Tab)) {
                 let chrome = self.formula_chrome.get(start).and_then(|value| *value);
                 let changed = self.visual_formulas.get_mut(&start).is_some_and(|visual| {
-                    handle_visual_formula_key(&mut visual.editor, logical_key, modifiers)
+                    handle_visual_formula_key(&mut visual.editor, logical_key, *modifiers)
                 });
                 if changed && let Some(chrome) = chrome {
                     self.commit_visual_formula_edit(start, chrome.end, chrome.descriptor.syntax);
@@ -3231,7 +3233,7 @@ impl Widget for BlockEditor {
 
         // Reset the anchor on anything but a Ctrl+Shift+Arrow extend, so
         // the next extend latches a fresh one.
-        self.maybe_reset_kbd_sel_anchor(event, ctx.modifiers);
+        self.maybe_reset_kbd_sel_anchor(event, *ctx.modifiers);
 
         // Runs BEFORE event routing so the click doesn't fall through to
         // TextInput (which would place the caret at byte 0).
@@ -3362,7 +3364,9 @@ impl Widget for BlockEditor {
                     crate::math::FormulaSyntax::Tex => "TeX",
                     crate::math::FormulaSyntax::Typst => "Typst",
                 };
-                let source = self.blocks[start..=chrome.end]
+                let source = self
+                    .blocks
+                    .get(start..=chrome.end)?
                     .iter()
                     .map(Block::text)
                     .collect::<Vec<_>>()
@@ -3437,6 +3441,51 @@ impl Widget for BlockEditor {
 }
 
 impl BlockEditor {
+    /// Rebuilds `self.formula_chrome` (the syntax badge + Source/Visual
+    /// button rects, keyed by each formula run's first block) from the
+    /// just-laid-out `self.formula_preview_rects`. Split out of
+    /// `apply_layout` to keep that under the line cap.
+    fn build_formula_chrome_rects(&mut self) {
+        let mut start = 0usize;
+        while start < self.blocks.len() {
+            let Some(descriptor) = self
+                .blocks
+                .get(start)
+                .and_then(|b| formula_descriptor(&b.kind))
+            else {
+                start = start.saturating_add(1);
+                continue;
+            };
+            let end = formula_run_end(&self.blocks, start);
+            if let Some(Some(editor_rect)) = self.formula_preview_rects.get(end).copied()
+                && let Some(first) = self.blocks.get(start).map(|b| b.line.get_rect())
+                && let Some(last) = self.blocks.get(end).map(|b| b.line.get_rect())
+            {
+                let header_y = first.y0 - FORMULA_HEADER_HEIGHT;
+                let badge = Rect::new(first.x0, header_y + 3.0, first.x0 + 40.0, header_y + 25.0);
+                let visual_button =
+                    Rect::new(last.x1 - 60.0, header_y + 3.0, last.x1, header_y + 25.0);
+                let source_button = Rect::new(
+                    visual_button.x0 - 68.0,
+                    header_y + 3.0,
+                    visual_button.x0 - 4.0,
+                    header_y + 25.0,
+                );
+                if let Some(slot) = self.formula_chrome.get_mut(start) {
+                    *slot = Some(FormulaChrome {
+                        end,
+                        descriptor,
+                        syntax_badge: badge,
+                        source_button,
+                        visual_button,
+                        editor_rect,
+                    });
+                }
+            }
+            start = end.saturating_add(1);
+        }
+    }
+
     /// Peer authorship marker, live-typing glow, carets and selection
     /// bands for one block — collaboration overlays drawn after every
     /// block's own content so they land on top.
@@ -3634,7 +3683,7 @@ impl BlockEditor {
 
     /// Reset the keyboard-selection anchor on anything but a
     /// Ctrl+Shift+Arrow extend, so the next extend latches a fresh one.
-    fn maybe_reset_kbd_sel_anchor(&mut self, event: &WindowEvent, modifiers: &Modifiers) {
+    fn maybe_reset_kbd_sel_anchor(&mut self, event: &WindowEvent, modifiers: Modifiers) {
         use winit::event::{ElementState, KeyEvent};
         use winit::keyboard::{Key, NamedKey};
 

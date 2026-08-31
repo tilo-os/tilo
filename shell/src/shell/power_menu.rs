@@ -84,11 +84,17 @@ impl PowerMenu {
             return PowerMenuClick::Consumed;
         }
         self.close();
-        PowerMenuClick::Execute(ACTIONS[index].0)
+        // `index` is drawn from `0..ACTIONS.len()` above, so this is
+        // always present; `.get()` keeps the lookup panic-free regardless.
+        ACTIONS
+            .get(index)
+            .map_or(PowerMenuClick::Consumed, |action| {
+                PowerMenuClick::Execute(action.0)
+            })
     }
 
     pub(crate) fn draw(
-        &mut self,
+        &self,
         viewport: Rect,
         scene: &mut Scene,
         transform: Affine,
@@ -117,6 +123,15 @@ impl PowerMenu {
             &viewport,
         );
         let centre = panel.center();
+        // `Affine`'s `Mul` composes transform matrices with plain float
+        // multiply-adds — it cannot overflow or panic — but kurbo has no
+        // non-operator way to chain a translate/scale/translate around an
+        // arbitrary center point.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine * Affine is a panic-free float matrix multiply; no combinator \
+                      exists to compose this translate/scale/translate chain"
+        )]
         let modal_transform = transform
             * Affine::translate((centre.x, centre.y + dy))
             * Affine::scale(scale)
@@ -147,7 +162,7 @@ impl PowerMenu {
             "Session",
             theme.tokens.typography.scale.lg,
             colors.text_primary,
-            transform * Affine::translate((panel.x0 + 22.0, panel.y0 + 20.0)),
+            at(transform, (panel.x0 + 22.0, panel.y0 + 20.0)),
             None,
             TextWeight::Semibold,
         );
@@ -186,7 +201,7 @@ impl PowerMenu {
                 },
                 theme.tokens.typography.scale.sm,
                 colors.text_primary,
-                transform * Affine::translate((row.x0 + 50.0, row.y0 + 8.0)),
+                at(transform, (row.x0 + 50.0, row.y0 + 8.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -195,7 +210,7 @@ impl PowerMenu {
                 detail,
                 theme.tokens.typography.scale.xs,
                 colors.text_dim,
-                transform * Affine::translate((row.x0 + 50.0, row.y0 + 28.0)),
+                at(transform, (row.x0 + 50.0, row.y0 + 28.0)),
                 None,
             );
         }
@@ -249,8 +264,35 @@ fn panel_rect(viewport: Rect) -> Rect {
 
 fn action_rect(viewport: Rect, index: usize) -> Rect {
     let panel = panel_rect(viewport);
-    let y0 = panel.y0 + 62.0 + index as f64 * 58.0;
+    let y0 = panel.y0 + 62.0 + small_count_to_f64(index) * 58.0;
     Rect::new(panel.x0 + 18.0, y0, panel.x1 - 18.0, y0 + 50.0)
+}
+
+/// Widens a row index to `f64` for draw-time row-position math. Every
+/// call site is a row index into the fixed 5-entry [`ACTIONS`] table, so
+/// the integer is exactly representable.
+fn small_count_to_f64(n: usize) -> f64 {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "bounded well under 2^53 — a row index into a 5-action menu"
+    )]
+    {
+        n as f64
+    }
+}
+
+/// `transform * Affine::translate(xy)`, used at every glyph draw site
+/// below. `Affine::mul` is plain matrix composition with no side effects,
+/// but it is a custom `Mul` impl rather than primitive integer arithmetic,
+/// which is what trips the lint at each call site.
+fn at(transform: Affine, xy: (f64, f64)) -> Affine {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Affine::mul is pure matrix composition (translate here), not primitive integer arithmetic that can silently wrap"
+    )]
+    {
+        transform * Affine::translate(xy)
+    }
 }
 
 #[cfg(test)]

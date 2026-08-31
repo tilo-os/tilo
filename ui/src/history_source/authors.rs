@@ -173,39 +173,48 @@ pub fn stable_hue(actor_hex: &str) -> f32 {
         hash ^= u64::from(*b);
         hash = hash.wrapping_mul(0x1000_0000_01b3);
     }
-    (hash % 360) as f32
+    // `hash % 360` is always `0..359`, which fits a `u16` exactly and so
+    // converts to `f32` without any precision loss.
+    let bucket = u16::try_from(hash % 360).unwrap_or(0);
+    f32::from(bucket)
 }
 
 /// RGB → hue in degrees. Saturation/value are fixed by
 /// `crate::widget::history::hue_to_rgb`, so only the hue survives —
 /// deliberate, it keeps the dots a coherent family.
 fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
-    let r = f32::from(rgb[0]) / 255.0;
-    let g = f32::from(rgb[1]) / 255.0;
-    let b = f32::from(rgb[2]) / 255.0;
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let d = max - min;
-    if d <= f32::EPSILON {
+    let red = f32::from(rgb[0]) / 255.0;
+    let green = f32::from(rgb[1]) / 255.0;
+    let blue = f32::from(rgb[2]) / 255.0;
+    let max = red.max(green).max(blue);
+    let min = red.min(green).min(blue);
+    let range = max - min;
+    if range <= f32::EPSILON {
         // Grey has no hue. First boot writes [128, 128, 128], so this is the
         // common case until the user picks a colour: give it a fixed,
         // recognisable slot rather than a random one.
         return 0.0;
     }
-    let h = if max == r {
-        ((g - b) / d).rem_euclid(6.0)
-    } else if max == g {
-        (b - r) / d + 2.0
+    // `max` is always the literal value of one of `red`/`green`/`blue` (never
+    // a computed value of its own), so an epsilon compare here agrees with
+    // exact equality in every case and only avoids the float-cmp lint.
+    let hue = if (max - red).abs() <= f32::EPSILON {
+        ((green - blue) / range).rem_euclid(6.0)
+    } else if (max - green).abs() <= f32::EPSILON {
+        (blue - red) / range + 2.0
     } else {
-        (r - g) / d + 4.0
+        (red - green) / range + 4.0
     };
-    (h * 60.0).rem_euclid(360.0)
+    (hue * 60.0).rem_euclid(360.0)
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len().saturating_mul(2));
     for b in bytes {
-        s.push_str(&format!("{b:02x}"));
+        // Writing to a `String` is infallible, so there is no `Err` worth
+        // handling.
+        let _ = write!(s, "{b:02x}");
     }
     s
 }
@@ -217,9 +226,17 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(s.len() / 2);
     for pair in b.chunks(2) {
-        let hi = (pair[0] as char).to_digit(16)?;
-        let lo = (pair[1] as char).to_digit(16)?;
-        out.push((hi * 16 + lo) as u8);
+        // `chunks(2)` on a length checked even above only ever yields
+        // full pairs, but the pattern proves that instead of indexing.
+        let [p0, p1] = pair else {
+            return None;
+        };
+        let hi = (*p0 as char).to_digit(16)?;
+        let lo = (*p1 as char).to_digit(16)?;
+        // Both digits are `0..=15`, so `combined` is always `0..=255` and
+        // the cast below never actually truncates.
+        let combined = hi.saturating_mul(16).saturating_add(lo);
+        out.push(u8::try_from(combined).unwrap_or(u8::MAX));
     }
     Some(out)
 }

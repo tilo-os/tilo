@@ -111,7 +111,7 @@ pub enum Block {
         ordered: bool,
         index: usize,
     },
-    /// Presentation MathML lowered into the toolkit's shared expression tree.
+    /// Presentation `MathML` lowered into the toolkit's shared expression tree.
     Math {
         expr: ui::math::MathExpr,
         /// Linear fallback used for search, accessibility, and annotations.
@@ -162,9 +162,14 @@ impl Block {
 /// leading space and a `.` run with none. The layout and `plain_text` both
 /// consult `space_before` to decide whether to insert a gap.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "bold/italic/code/space_before are independent inline style flags a span can \
+              carry in any combination, not a state machine"
+)]
 pub struct Span {
     pub text: String,
-    /// Structured inline MathML. `text` remains its accessible linear form.
+    /// Structured inline `MathML`. `text` remains its accessible linear form.
     pub math: Option<ui::math::MathExpr>,
     pub bold: bool,
     pub italic: bool,
@@ -326,20 +331,24 @@ impl Annotation {
         }
     }
 
+    #[must_use]
     pub fn with_excerpt(mut self, s: impl Into<String>) -> Self {
         self.excerpt = s.into();
         self
     }
+    #[must_use]
     pub fn with_color(mut self, c: HiColor) -> Self {
         self.color = c;
         self
     }
+    #[must_use]
     pub fn with_note(mut self, n: impl Into<String>) -> Self {
         self.note = n.into();
         self
     }
     /// Bind this row to a logical annotation group (a multi-block highlight and
     /// its comments all share one group).
+    #[must_use]
     pub fn with_group(mut self, g: Uuid) -> Self {
         self.group = g;
         self
@@ -591,6 +600,11 @@ pub fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
     ]
 }
 
+#[allow(
+    clippy::many_single_char_names,
+    reason = "r, g, b, h, s, l are the standard RGB/HSL channel names; inventing longer ones \
+              would only hurt readability here"
+)]
 fn rgb_to_hsl(c: [u8; 3]) -> (f32, f32, f32) {
     let (r, g, b) = (
         f32::from(c[0]) / 255.0,
@@ -609,6 +623,11 @@ fn rgb_to_hsl(c: [u8; 3]) -> (f32, f32, f32) {
     } else {
         d / (max + min)
     };
+    #[allow(
+        clippy::float_cmp,
+        reason = "max is exactly one of r/g/b via f32::max (a selection, not an independent \
+                  computation), so exact equality is the correct test"
+    )]
     let h = if max == r {
         ((g - b) / d + if g < b { 6.0 } else { 0.0 }) * 60.0
     } else if max == g {
@@ -622,6 +641,11 @@ fn rgb_to_hsl(c: [u8; 3]) -> (f32, f32, f32) {
 /// Standard HSV → sRGB. `h` in degrees (any range; wrapped), `s`/`v` in 0..1.
 /// The colour picker edits in HSV so hue stays stable while dragging value on
 /// the achromatic axis; this is the conversion it commits back through.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "h, s, v, i, f, p, q, t, r, g, b are the standard HSV/RGB channel and \
+              interpolation names; inventing longer ones would only hurt readability here"
+)]
 pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
     let h = ((h % 360.0) + 360.0) % 360.0 / 60.0;
     let s = s.clamp(0.0, 1.0);
@@ -648,6 +672,11 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
 
 /// Inverse of [`hsv_to_rgb`]. Returns `(h_degrees, s, v)`; hue is 0 on the
 /// achromatic axis (callers editing a grey preserve their prior hue).
+#[allow(
+    clippy::many_single_char_names,
+    reason = "r, g, b, h, s, v are the standard RGB/HSV channel names; inventing longer ones \
+              would only hurt readability here"
+)]
 pub fn rgb_to_hsv(c: [u8; 3]) -> (f32, f32, f32) {
     let (r, g, b) = (
         f32::from(c[0]) / 255.0,
@@ -659,6 +688,11 @@ pub fn rgb_to_hsv(c: [u8; 3]) -> (f32, f32, f32) {
     let d = max - min;
     let v = max;
     let s = if max <= f32::EPSILON { 0.0 } else { d / max };
+    #[allow(
+        clippy::float_cmp,
+        reason = "max is exactly one of r/g/b via f32::max (a selection, not an independent \
+                  computation), so exact equality is the correct test"
+    )]
     let h = if d <= f32::EPSILON {
         0.0
     } else if max == r {
@@ -690,6 +724,10 @@ pub fn hex_string(c: [u8; 3]) -> String {
     format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2])
 }
 
+#[allow(
+    clippy::many_single_char_names,
+    reason = "h, s, l, c, x, m, r, g, b are the standard HSL-to-RGB algorithm variable names"
+)]
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [u8; 3] {
     let h = ((h % 360.0) + 360.0) % 360.0;
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
