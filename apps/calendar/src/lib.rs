@@ -51,6 +51,7 @@ pub mod model;
 pub mod search_provider;
 mod sidebar;
 pub mod store;
+mod timeline_viewport;
 
 pub use account::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar};
 pub use app::CalendarApp;
