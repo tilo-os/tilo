@@ -20,8 +20,12 @@ fn main() {
         "gbm",
     ] {
         if let Err(err) = pkg_config::probe_library(lib) {
-            panic!(
-                "feature `webview-wpe` needs {lib} (build the stack with \
+            // Cargo's own channel, not a panic. `cargo::error=` fails the
+            // build with this one line; panicking buries it under a
+            // build-script backtrace, which is how a missing library reads as
+            // a compiler crash rather than as the one-line instruction it is.
+            println!(
+                "cargo::error=feature `webview-wpe` needs {lib} (build the stack with \
                  os/dev/build-wpe.sh and set PKG_CONFIG_PATH to the prefix): {err}"
             );
         }
