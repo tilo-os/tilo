@@ -19,6 +19,12 @@ git init --quiet "$isolated_repo"
 source_objects=$(git -C "$repo_root" rev-parse --path-format=absolute --git-path objects)
 printf '%s\n' "$source_objects" >"$isolated_repo/.git/objects/info/alternates"
 
+# Materialize the current main tree just as a fresh clone would. The
+# standalone histories themselves remain remote-tracking refs below.
+main_tip=$(git -C "$repo_root" rev-parse HEAD)
+git -C "$isolated_repo" update-ref refs/heads/main "$main_tip"
+git -C "$isolated_repo" checkout --quiet main
+
 vello_tip=108405981ee51fd9b2c3ee7ef9c3b8b1c6a9d223
 winit_tip=b4ea19a1c6cccfe268ae2fb30f098629d926e5da
 git -C "$isolated_repo" update-ref \
@@ -28,7 +34,6 @@ git -C "$isolated_repo" update-ref \
 
 (
     cd "$isolated_repo"
-    export QOS_VENDOR_REFS_ONLY=1
     "$repo_root/tools/vendor-history.sh" verify
 
     # A stale local topic branch must not mask the immutable origin ref.
