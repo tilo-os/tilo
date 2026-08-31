@@ -7,9 +7,10 @@ are the things that MUST be unified: a painted rect with a manual hit-test, or a
 clipboard (Ctrl+C/V/X), keyboard activation and caret nav, the focus ring, the
 a11y tree, and `Theme`-driven colors. The rule is codified in `ui/HIG.md` §8.
 
-**Scope.** All 45 UI apps under `apps/`. Read-only audit — no refactors here. Method: for each category, the
-canonical widget lives in `ui/src/widget/`; app code was graded as hand-rolled
-only when it reimplements that widget rather than legitimately composing it.
+**Scope.** All UI apps under `apps/`. This is now a living migration ledger,
+not the original read-only snapshot. A row is marked done only after the app
+uses the shared primitive through its real event path; deliberate app-owned
+surfaces keep their contextual caveat instead of being counted as failures.
 
 **Risk key.** `HIGH` = breaks clipboard / selection / IME / a11y (every text
 input), `MED` = misses hover/press/focus/keyboard/a11y-role/theme (buttons,
@@ -21,23 +22,21 @@ first — see [ui gaps](#ui-gaps)).
 
 ## Executive summary
 
-| Category | Canonical widget | Apps affected | Worst offenders |
+| Category | Canonical widget | Current high-value remainder | Important caveat |
 |---|---|---|---|
-| 1. Text input (HIGH) | `TextInput` / `SearchField` / `NumberInput` / `EditableLabel` | **18** | db_client, imager, pdf_viewer, chat, maps, mail |
-| 2. Buttons (MED) | `Button` / `Toolbar` | **~28** (painted-rect + hit-test; 6 converted via `Button::paint`) | ebook, store, slides, camera |
-| 3. Modals (MED) | `ModalDialog` | **14** (6 done: monitor, containers, vpn, store, music, feeds) | disks, db_client, snippets |
-| 4. Other controls (MED) | `Dropdown`/`Toggle`/`Slider`/`ToggleGroup`/`ContextMenu`/`Popover`/`Chart` | **~22** (6 toggle/segmented/tab converts via `Toggle::paint` + `ToggleGroup::paint`) | tube, music, monitor, logs, camera |
-| 5. Hard-coded colors (LOW) | `Theme` tokens | **35** (≥1 literal); **2 genuine chrome offenders fixed** (diffmerge, sheets) — the high-count apps are already themed, their literals are document/over-media/on-accent/color-math content | ebook 62, word-processor 44, tube 32 *(all defensible — see Category 5)* |
+| 1. Text input (HIGH) | `TextInput` / `SearchField` / `NumberInput` / `EditableLabel` | containers create form; chat inline edit/rename; slides speaker notes | Sheets cells and on-canvas slide text need domain-aware editors, not a plain-input swap |
+| 2. Buttons (MED) | `Button` / `Toolbar` | exact create/restore footer faces; several retained-tree conversions | progress, ghost, keypad, canvas, and media surfaces are not ordinary buttons |
+| 3. Modals (MED) | `ModalDialog` | dynamic multi-field and export bodies | use shared framing without flattening app-specific validation/content |
+| 4. Other controls (MED) | `Dropdown`/`Toggle`/`Slider`/`ToggleGroup`/`ContextMenu`/`Popover`/`Chart` | targeted app-specific rows below | preserve semantic controls whose behavior exceeds the generic primitive |
+| 5. Hard-coded colors (LOW) | `Theme` tokens | genuine chrome literals only | document, media-overlay, on-accent, and color-content literals are often intentional |
 
-**Structural finding.** `ModalDialog` adoption is now broad after the modals
-wave (monitor, containers, vpn, store, music, feeds, mail, notes) — it gained
-`with_destructive` (danger primary) and a shared `PromptBody` text-entry body.
-Nine apps mount the retained `Button`; the buttons wave added an immediate-mode
-`Button::paint` face now shared by six more (see Category 2). `Slider` is
-used by two apps, `SearchField` by one. Toggle adoption is good. So the debt is
-overwhelmingly concentrated in **text input, buttons, and modals**, and a large
-share of the buttons/modals is the *same* anti-pattern copied across apps: a
-private `Vec<(Action, Rect)>` hit-test table painted by hand.
+**Structural finding.** The straightforward text fields are mostly migrated.
+The remaining debt is increasingly either a dynamic form (containers), an
+inline/domain editor (chat, slides, sheets), or immediate-mode app chrome. The
+next useful work is therefore smaller and more contextual: reuse the editor
+core while retaining app policy, and extract real components that own state,
+drawing, hit-testing, and tests. Raw occurrence counts were removed because
+they had become stale and encouraged mechanical conversions.
 
 **2026-07-30 — Ctrl+K unified on the shared search widgets.** The app-level Ctrl+K
 palette (`ui::ActionPalette`) previously bridged the resource/action model into
@@ -99,38 +98,50 @@ document splice helpers were deleted. The built-in SQL highlighter was extended
 generically with SQL functions/types, operators and doubled-quote escaping so
 the adoption does not regress highlighting quality.
 
+**Current wave:** **maps** now uses a dedicated shared-input search component
+plus shared route-endpoint inputs; **word-processor** has a shared-input find/
+replace component; **sheets** uses `TextInput`/`EditableLabel` for its name box
+and tab rename; **ebook** uses shared number inputs and multiline inputs for
+both standalone notes and highlight comments; **pdf_viewer** uses shared
+inputs for find and annotation text; **disks**, **vpn**, **remote**, and all six
+**imager** customization fields are migrated. Imager's destructive confirmation
+is now a peer-local shared input and no longer replicates consent. **db_client**'s
+seven connection fields are shared inputs and its password is protected secret
+input. **chat** composers are shared multiline inputs; only inline edit/rename
+remain. The rows below record those narrowed boundaries.
+
 ### Pure non-adoption — a fitting widget already exists (do these first)
 
 | file:symbol | app | evidence | ui alt | effort | risk |
 |---|---|---|---|---|---|
 | `apps/feeds/src/app.rs` add/rename modal | feeds ✅ | **DONE (prior)** — shared `ModalDialog` body hosts a real `TextInput` | `TextInput` | M | HIGH |
-| `apps/maps/src/app.rs:3491` search + `:3461` route endpoints | maps | `query.push_str(s)`, `endpoint_query_mut(o).push_str(s)`; `draw_search` fake blinking caret (`:1918`); zero `TextInput` | `SearchField`/`TextInput` | M | HIGH |
+| `apps/maps/src/search_box.rs` search + `app.rs` route endpoints | maps ✅ | **DONE** — extracted `SearchBox` and two shared endpoint `TextInput`s; ranking/network/recenter policy remains in the app | `SearchField`/`TextInput` | M | HIGH |
 | `apps/weather/src/core.rs` city search | weather ✅ | **DONE (prior)** — shared `Autocomplete`, including selection/clipboard/IME and async geocode suggestions | `Autocomplete` | S | HIGH |
 | `apps/logs/src/app.rs` search box | logs ✅ | **DONE** — embedded CRDT-bound `TextInput`; shared editor with collaborative live-filter state | `TextInput` | M | HIGH |
 | `apps/monitor/src/app.rs` process filter | monitor ✅ | **DONE** — shared local `TextInput` embedded in the responsive toolbar | `TextInput` | M | HIGH |
 | `apps/snippets/src/app.rs` search + `expand.rs` var fields | snippets ✅ | **DONE** — shared local `TextInput`s embedded in the existing search and dynamic modal chrome; view state remains outside the CRDT | `TextInput` | M | HIGH |
 | `apps/hex_editor/src/view.rs` search + goto | hex_editor ✅ | **DONE** — two embedded local `TextInput`s; byte-search and mixed-radix goto policy preserved | `TextInput` | S | HIGH |
-| `apps/word-processor/src/widget.rs:2533` `find_query`/`replace_query` | word-processor | `buf.pop()`/`push_str`, drawn via `draw_field_box` | `SearchField` | M | HIGH |
-| `apps/sheets/src/app.rs:136` `NameBoxEdit`, `:125` `TabRename` | sheets | `nb.chars.insert/remove`, `r.chars.insert/remove` (go-to + tab rename) | `TextInput`/`EditableLabel` | M | HIGH |
-| `apps/music/src/app.rs:384` `name_input` | music | new-playlist/rename prompt; `render.rs:654` `.pop()`, `:670` `push_str` | `TextInput` | M | HIGH |
-| `apps/ebook/src/app.rs:541` `num_edit`, `:2344` note composer | ebook | digit-filtered click-to-type; `a.note.push_str`/`.pop()` | `NumberInput`/`TextInput` | S/M | HIGH |
-| `apps/pdf_viewer/src/app.rs:349` `editing`, `:364` `query` | pdf_viewer | inline comment/reply/signer editor **self-admits "no selection"** + hand-rolled clipboard (`app_events.rs:789`); find query | `TextInput`/`SearchField` | L | HIGH |
-| `apps/disks/src/app.rs:2099` `confirm_input` | disks | `push(ch)`/`.pop()` on the format-confirm field | `TextInput` | S | HIGH |
-| `apps/vpn/src/app.rs:1469` `Modal::Add` | vpn | `add_name`/`add_endpoint` Strings, Tab-cycled focus, `f.push_str(s)`/`.pop()` | `TextInput` | M | HIGH |
-| `apps/remote/src/app.rs:649` `type_char`/`:664` backspace | remote | splices into `draft.{name,host,port,user,group}` + `search`; port hand-filters `is_ascii_digit` | `TextInput`/`NumberInput`/`SearchField` | L | HIGH |
+| `apps/word-processor/src/find_bar.rs` | word-processor ✅ | **DONE** — component owns shared query/replacement inputs, layout, hits, and effects | `SearchField` | M | HIGH |
+| `apps/sheets/src/app.rs` name box + tab rename | sheets ✅ | **DONE** — shared `TextInput` and `EditableLabel`; grid/formula editing remains a separate domain editor | `TextInput`/`EditableLabel` | M | HIGH |
+| `apps/music/src/app/render.rs` playlist prompt | music ✅ | **DONE** — `ModalDialog<PromptBody>` with a real `TextInput` | `TextInput` | M | HIGH |
+| `apps/ebook/src/input_controls.rs`, `comment_overlay.rs` | ebook ✅ | **DONE** — number fields plus both note surfaces use shared inputs; annotation persistence remains app policy | `NumberInput`/`TextInput` | S/M | HIGH |
+| `apps/pdf_viewer/src/app.rs` annotation editors + find | pdf_viewer ✅ | **DONE** — shared inputs; PDF-specific find shell, toggles, signature pad, and match navigation remain app-owned | `TextInput`/`SearchField` | L | HIGH |
+| `apps/disks/src/app.rs` format confirmation | disks ✅ | **DONE** — peer-local shared `TextInput` with exact-name gate | `TextInput` | S | HIGH |
+| `apps/vpn/src/app.rs` add form | vpn ✅ | **DONE** — shared Name/Endpoint inputs with IME, selection, clipboard, and focus cycling | `TextInput` | M | HIGH |
+| `apps/remote/src/app.rs` search + connection form | remote ✅ | **DONE** — six shared inputs; connection and validation policy stays local | `TextInput`/`NumberInput`/`SearchField` | L | HIGH |
 | `apps/store/src/app.rs` search input | store | **DONE** — shared `TextInput`, bound to the store search document | `TextInput` | M | HIGH |
-| `apps/chat/src/events.rs:714` inline rename | chat | `text.push_str(s)`/`.pop()` | `EditableLabel` | M | HIGH |
-| `apps/containers/src/panels.rs:1893` `prompt_key` | containers | `prompt.value.push_str(ch)`/`.pop()` | `TextInput` | S | HIGH |
+| `apps/chat/src/events.rs` inline message edit + rename | chat | composers are **DONE**; these two residual local Strings still splice by hand | multiline `TextInput` / `EditableLabel` | M | HIGH |
+| `apps/containers/src/panels.rs` transient prompts | containers ✅ | **DONE** — `ModalDialog<PromptBody>`; the separate six-field create form remains below | `TextInput` | S | HIGH |
 
 ### Forced by a missing widget capability (extend `ui` first — see [ui gaps](#ui-gaps))
 
 | file:symbol | app | evidence | blocked on | effort | risk |
 |---|---|---|---|---|---|
-| `apps/db_client/src/connect_modal.rs:36-42` `ConnectModal` | db_client | **7** hand-rolled Strings (name/host/port/db/user/**password unmasked**/file) `field_mut(f).push_str(t)` (`:224`) | multiline not needed, but wants secret mode + dynamic field set | L | HIGH |
-| `apps/imager/src/app.rs:1367` `type_into_field` | imager | ~~one splicer feeding **7** fields incl. **masked password**~~ **password field DONE** — migrated to secret `TextInput`; the other 6 fields + whole-CRDT-per-keystroke rewrite remain | secret `TextInput` mode (gap 5) | L | HIGH |
+| `apps/db_client/src/connect_modal.rs` `ConnectModal` | db_client ✅ | **DONE** — seven shared local inputs; password uses protected secret mode; dynamic engine field set and validation remain local | `TextInput` secret mode | M | HIGH |
+| `apps/imager/src/customize.rs`, `app.rs` confirmation | imager ✅ | **DONE** — all six customization fields plus peer-local destructive confirmation use shared inputs; password is protected | `TextInput` secret mode | L | HIGH |
 | `apps/mail/src/compose.rs` `plain_body`, `wysiwyg.rs:740` | mail | **plain body DONE** — the hand-rolled multiline `String` is now a multiline `TextInput`. `Wysiwyg` (HTML mode) is still a forked rich editor (own `caret`, insert/backspace/split/select) | multiline `TextInput` (gap 1) done; rich editor = gap 3 | M/L | HIGH |
-| `apps/chat/src/events.rs:676` composer, `:737` inline edit | chat | `insert_text` splices into Automerge + tracks `caret: usize` (`app.rs:242`) by hand; zero `TextInput` | multiline CRDT-bound composer | L | HIGH |
-| `apps/slides/src/app.rs:2310` `insert_text`, `:5742` backspace | slides | canvas text elements + speaker-notes box, hand-rolled caret/selection/splice | multiline canvas text editor | M | HIGH |
+| `apps/chat/src/app.rs` composers | chat ✅ | **DONE** — shared multiline inputs; residual inline message edit/rename are tracked above | multiline `TextInput` | L | HIGH |
+| `apps/slides/src/app.rs` speaker notes + canvas text | slides | title rename is **DONE**; speaker notes fit shared multiline input, while transformed canvas text needs a geometry-aware editor | multiline input / canvas editor | M/L | HIGH |
 | `apps/sheets/src/grid.rs:48` `EditState{chars,caret,sel}` | sheets | cell/formula body editor fully reimplements caret+selection; formula bar is a 2nd view | formula-aware single-line editor | L | HIGH |
 | `apps/code_editor/src/editor_view.rs` (1999 LOC) | code_editor | full multiline editor (caret/selection/completion). **Palette DONE** — the app-specific painter was replaced by a thin typed adapter over `ui::CommandPalette`, including shared IME/selection/clipboard and direct go-to-line arguments | `ui::CodeEditor` (gap 2, **built**) | L | HIGH |
 | ~~`apps/db_client/src/editor.rs` SQL editor~~ | db_client ✅ | **DONE** — CRDT-bound `ui::CodeEditor` with `Language::Sql`; app-local editor + lexer deleted, while query/snippet/results policy stays in the app | `ui::CodeEditor` (gap 2, **built**) | L | HIGH |
@@ -146,12 +157,12 @@ has none; hex_editor's search/goto are flagged above).
 
 ## Category 2 — Buttons (MED risk)
 
-Nearly universal anti-pattern: a painted rect (often collected into a private
-`Vec<(Action, Rect)>` "hit list") tested with `.contains()`. Misses hover/press/
-focus states, Space/Enter activation, a11y role, and `Theme` colors. **Zero
-`ui::Button` in git_client, logs, ebook, tube, music, camera, video_editor,
-sheets, typst_editor, disks, containers, firewall, vpn, remote, backups, imager,
-store, calculator, slides.** Representative helpers:
+The recurring anti-pattern is a painted rect (often collected into a private
+`Vec<(Action, Rect)>` hit list) tested with `.contains()`. It misses some
+combination of hover/press/focus, keyboard activation, a11y role, and shared
+theming. The old zero-adoption list was removed because several apps now mix
+shared ordinary buttons with legitimate custom surfaces. Representative
+remainders follow.
 
 **Status (this wave):** the standard apps are monolithic *immediate-mode*
 widgets — a single leaf `Widget` that paints its whole surface and hit-tests
@@ -168,7 +179,8 @@ gaining real hover/press feedback and one consistent button look. Converted:
 **api_tester** (Send), **snippets** (action toolbar + expand Copy/Cancel),
 **db_client** (connect-modal Cancel/Save), **video-player** (floating Open
 pill), **monitor** (detail Stop/Kill, incl. the danger style), **diffmerge**
-(toolbar Open/Load/Next/Prev). Keyboard/AT activation and per-button a11y nodes
+(toolbar Open/Load/Next/Prev), **store** cards/actions, and ordinary **disks**/
+**vpn** controls. Keyboard/AT activation and per-button a11y nodes
 remain bounded by these apps' monolithic immediate-mode architecture (a separate
 retained-tree refactor), not by the button primitive.
 
@@ -207,8 +219,8 @@ widget, tracked separately).
 | `apps/diffmerge/src/merge_view.rs:340` take-ours/theirs/both, `app.rs:293` toolbar | diffmerge ✅ (toolbar) | painted colored rects, hit-tested `:482` | `Button`/`Toolbar` | M | MED |
 | `apps/calculator/src/keypad.rs:245` `key_rects` | calculator | painted keypad grid + manual hit-test | `Button` grid (+ keypad widget gap) | L | MED |
 | `apps/sheets/src/app.rs:83` `MenuButton`, `:201` `fx_rect` | sheets | File/Format/Σ menu-bar + fx affordance | `Button`/`Toolbar` | M | MED |
-| `apps/disks/src/app.rs:2047` whole-disk + action pills | disks | painted pills hit-tested | `Button` | M | MED |
-| `apps/vpn/src/app.rs:554` add/connect/footer, `apps/remote/src/app.rs:1438` rail | vpn, remote | `LayoutRects`/`push_hit` painted button rects | `Button` | M | MED |
+| `apps/disks/src/app.rs` ordinary controls | disks ✅ | **DONE where semantically ordinary** — shared faces; partition/device surfaces remain custom | `Button` | M | MED |
+| `apps/vpn/src/app.rs` ordinary controls, `apps/remote/src/app.rs` rail | vpn ✅, remote | VPN **DONE** with shared faces; Remote rail remains contextual | `Button` | M | MED |
 | `apps/imager/src/app.rs:421` wizard back/primary | imager | painted rects hit-tested | `Button` | M | MED |
 | `apps/api_tester/src/app.rs:808` `send_label` | api_tester ✅ | hand-painted Send button | `Button` | S | MED |
 | `apps/logs/src/app.rs:873` `draw_back_button` | logs | narrow-mode nav back | `Button` | S | MED |
@@ -244,7 +256,7 @@ also use the widget elsewhere.
 | `apps/vpn/src/app.rs:1163` `draw_confirm_modal` | vpn | **DONE** — `ModalDialog<ConfirmBody>` (keeps the command-preview box), destructive primary for disconnect. `draw_modal` (the Add multi-field form) left for the text-input wave |
 | `apps/store/src/app.rs` reference detail | store ✅ | **DONE** — retained shared controls replaced the retired store's scrim-only reference sheet |
 | `apps/feeds/src/app.rs` (was `draw_input_modal`) | feeds | **DONE (prior)** — `ModalDialog<ModalBody>` with a real `TextInput` |
-| `apps/db_client/src/connect_modal.rs:256` | db_client | **DEFER** — declines `ModalDialog` for a dynamic field set + an unmasked password; belongs to the text-input wave (secret `TextInput` + dynamic content) |
+| `apps/db_client/src/connect_modal.rs` | db_client | **DEFER framing only** — all fields and buttons are shared and the password is protected; the engine-dependent body/validation remains a custom modal surface |
 | `apps/disks/src/app.rs:1275` `draw_modal` | disks | **DEFER** — a gated *type-the-device-name-to-confirm* dialog with a locked primary; needs a gated-primary `ModalDialog` capability first |
 | `apps/music/src/app/render.rs` `draw_name_prompt` | music | **DONE** — create/rename playlist prompt → `ModalDialog<PromptBody>` (real `TextInput`, kills the hand-rolled `name_input` char-splice); `name_input` kept only as the submit value-carrier |
 | `apps/video_editor/src/app.rs:2292` `draw_export_modal` | video_editor | **DEFER** — embeds interactive segmented controls (resolution/format/fps); belongs with the controls wave (5a), then wrap in `ModalDialog` |
@@ -366,18 +378,10 @@ Left for later, with the reason each isn't a clean face-swap:
 
 ## Category 5 — Hard-coded colors (LOW risk)
 
-`Color::rgb*`/`from_rgb*`/`from_hex` literals instead of `Theme` tokens — breaks
-dark-mode, high-contrast, and OS-accent. Total per app (production + tests):
-
-| app | count | app | count | app | count |
-|---|---|---|---|---|---|
-| ebook | 62 | sheets | 13 | mail | 5 |
-| word-processor | 44 | camera | 12 | calculator | 5 |
-| tube | 32 | chat | 11 | weather | 4 |
-| pdf_viewer | 18 | diffmerge | 10 | video_editor | 4 |
-| feeds | 16 | slides | 7 | typst_editor | 3 |
-| terminal | 14 (8 tests) | remote | 7 | containers | 3 |
-| | | db_client | 7 | *(≤2: themes, monitor, logs, hex_editor, file-explorer, contacts, calendar, api_tester, store, maps, git_client, imager, firewall, disks, music, notes, video-player)* | |
+`Color::rgb*`/`from_rgb*`/`from_hex` in app chrome can break dark mode,
+high-contrast, and OS accent. Raw per-app literal counts are intentionally no
+longer tracked: they mixed production chrome with tests, document content,
+syntax/category palettes, and over-media ink, producing a misleading target.
 
 **Status (this wave).** The raw counts badly over-state the debt: on close
 triage the overwhelming majority of these literals are *not* chrome. The
@@ -451,8 +455,9 @@ themed, clipboard-correct version — do **not** keep forking.
    `AccessState::multiline`. **Adopter:** mail's compose body
    (`compose.rs`) — the hand-rolled `plain_body: String` (with its
    `handle_plain_key`/`draw_plain_body`) is deleted and replaced by a multiline
-   `TextInput`. Remaining forks to migrate onto it: chat composer, slides
-   speaker-notes.
+   `TextInput`. Chat's main/thread composers and Ebook's note/comment editors
+   now use the same mode. Remaining straightforward adopter: Slides speaker
+   notes; transformed canvas text is a separate geometry-aware problem.
 
 2. **Shared multiline code editor** (gutter + syntax-highlight hook, caret/
    selection). **— BUILT.** `ui::widget::CodeEditor` puts real code editing on the
@@ -498,8 +503,9 @@ themed, clipboard-correct version — do **not** keep forking.
    screen without ever leaking to a11y. **Adopter:** imager's password field
    (`app.rs`) — the `Field::Password` char-splice and the manual bullet-mask +
    fake caret in `draw_field` are gone; it now uses a secret `TextInput` whose
-   value mirrors `profile.user.password`. Remaining fork to migrate: db_client's
-   connect-modal password (unmasked today).
+   value mirrors `profile.user.password`. `db_client` now uses the same
+   protected mode for its connection password; no known unmasked plain-input
+   password fork remains in this audit.
 
 6. **Typeable `ComboBox`.** Free-text value + filtered suggestion dropdown.
    `containers/combobox.rs` documents this exact gap ("belongs in `ui` next to
@@ -539,102 +545,31 @@ themed, clipboard-correct version — do **not** keep forking.
 
 ---
 
-## Remediation plan (waves)
+## Current remediation order
 
-Ordered by risk × reach. Each wave is independently shippable; waves 2/5b/7
-require extending a `ui` widget *before* the app migrations.
+The broad mechanical waves are complete enough that a shorter, contextual
+queue is safer than old app counts:
 
-### Wave 1 — Text inputs, pure non-adoption (HIGH, no ui changes needed)
-Route existing single-line fields to `TextInput`/`SearchField`/`NumberInput`/
-`EditableLabel`. **Done:** feeds, weather, logs, hex_editor, monitor, snippets. **Remaining apps:**
-maps, word-processor (find), sheets (name box + tab rename), music
-(name_input), ebook (num_edit + note), disks (confirm), vpn (add), containers
-(prompt), remote (fields), store (search), chat (inline rename),
-pdf_viewer (find query). *Continue with maps' search and route fields.*
+1. **Containers create form:** six existing Automerge text objects can host six
+   shared inputs. Preserve image completion, dynamic fields, and validation.
+2. **Chat inline edit and rename:** use multiline `TextInput` and
+   `EditableLabel`; preserve ownership checks, emoji insertion, and one undo
+   boundary. The composers are already shared.
+3. **Slides speaker notes:** adopt a shared multiline input independently of
+   transformed on-canvas text, which needs a geometry-aware editor.
+4. **Exact button faces:** containers Create/Cancel and backups Restore/Cancel
+   fit `ButtonFace` without semantic loss. Do not fold progress, ghost, keypad,
+   canvas, or media controls into an ordinary button merely to lower a count.
+5. **Component boundaries:** continue extracting cohesive surfaces from large
+   app modules. The component must own its state, layout/drawing, hit-testing,
+   event routing, and focused tests; domain persistence stays in the host.
+6. **Domain editors:** design formula-aware Sheets and transformed-canvas Slides
+   adapters around the shared editor core. These are not plain `TextInput`
+   migrations.
 
-### Wave 2 — Extend `TextInput`, then migrate the blocked text inputs (HIGH)
-Land ui gaps **1** (multiline), **5** (secret mode), then migrate: mail
-(plain_body), chat (composer), slides (notes), imager (7-field form incl.
-password), db_client (connect_modal fields incl. password). Fold in the
-per-keystroke CRDT rewrites (imager, containers) as diff-splice while touching
-them (`ui/HIG.md` §6).
-
-### Wave 3 — Modals (MED)
-Migrate app-drawn confirm/prompt/sheet overlays to `ModalDialog`. **Done:**
-monitor, containers (confirm + prompt), vpn (confirm), store (reference
-sheet), music (name prompt), notes (shortcut help); feeds landed earlier.
-Notes keeps its richer two-column shortcut body while `ModalFrame` owns the
-generic chrome and hit-testing. Snippets' dynamic expansion form now uses
-shared `TextInput`s without changing its custom preview layout.
-The widget was extended
-additively — `with_destructive` (danger primary) and a shared `PromptBody`
-text-entry body. **Remaining:** imager (config info sheet); **deferred to other waves:** db_client, disks
-(needs a gated-primary capability), video_editor (controls wave — segmented
-controls inside), git_client (arm-twice → dialog is a behaviour change), sheets
-(scrim-only behind the shared palette). The multi-field forms left hand-rolled
-for now: `containers` create-container, `vpn` add-tunnel.
-
-### Wave 4 — Buttons sweep (MED, broadest single win)
-Paint painted-rect + hit-test tables through the immediate-mode
-`ui::widget::Button::paint(&ButtonFace)` face (added this wave), or mount the
-retained `Button`/`Toolbar` where an app already has a widget tree. **Done:**
-api_tester, snippets, db_client, video-player, monitor, diffmerge (see the
-Category 2 status note). **Remaining (still hand-rolled):** git_client, logs,
-ebook, tube, music, camera, video_editor, sheets, typst_editor, disks,
-containers, firewall, vpn, remote, backups, imager, store, calculator,
-slides; plus leftovers in word-processor, pdf_viewer, notes. The ghost-styled
-ones (git_client, notes, logs) want a `Ghost`/tinted `ButtonFace` variant first.
-Do the large hit-table apps (ebook, music, camera, slides)
-last — they are `L` because the whole draw layer is the table.
-
-### Wave 5a — Controls with an existing widget (MED)
-The toolkit gained immediate-mode paint faces `Toggle::paint(&ToggleFace)` and
-`ToggleGroup::paint(&SegmentedFace)` (Solid / Pill / Underline styles, optional
-left-aligned labels) so canvas apps adopt the shared switch + segmented control
-without a tree rewrite.
-- **Dropdowns:** api_tester (method/env), logs (unit/boot), ebook (font/sort),
-  remote (kind/auth), db_client (engine). *(not started)*
-- **Toggles:** firewall ✅, backups ✅ **done**; remaining: camera (over-media),
-  vpn (semantic green), remote (icon toggle-buttons).
-- **Tabs/segmented:** disks ✅, backups ✅, diffmerge ✅, store ✅,
-  pdf_viewer ✅, firewall ✅ **done**; remaining: vpn (raised-subtle active),
-  code_editor (closeable file tabs), sheets (per-tab colour + rename), camera
-  (over-media), video_editor (in export modal), logs (per-priority cumulative
-  chips), imager (stepper breadcrumb), word-processor / hex_editor (independent
-  toggle-buttons / cycle). See Category 4 status for why each remainder isn't a
-  clean drop-in.
-- **Menus/popovers:** pdf_viewer (`ContextMenu`), ebook/music/hex_editor
-  (`Popover`), typst_editor (overflow), browser (address overlay), slides (fill).
-  *(not started)*
-
-### Wave 5b — Controls blocked on a ui gap (MED)
-Extend then migrate: gap **7** (non-CRDT Toggle/Slider binding) → tube Switch,
-music/tube/video_editor sliders; gap **6** (typeable ComboBox) → containers;
-gap **8** (Slider segment bands) → tube SeekBar; gap **9** (NumberInput
-drag-step) → ebook.
-
-### Wave 6 — Theme-color reads (LOW)
-**Largely a no-op once triaged** (see Category 5 status): the app chrome is
-already theme-driven everywhere checked (proven by light+dark shots). The only
-genuine "frozen to one theme's token value" chrome offenders were **diffmerge**
-(`merge_view.rs` resolution chips → `semantic.*`/`text_dim`) and **sheets**
-(`grid.rs` selection wash → `accent[5]`) — both **DONE**. The high-count apps
-(word-processor paper, ebook reader themes, tube over-media/brand) are document /
-over-media / on-accent / color-math content that must *not* track the OS theme;
-leave them. A future `Theme` shadow/scrim token could fold in the
-`from_rgba8(0,0,0,α)` cluster, but a dark scrim is conventional in both modes so
-it is not a violation. Leave color-math helpers, picker seeds, syntax/categorical
-palettes, and test-only literals alone.
-
-### Wave 7 — Larger widget builds, then adopt (MED/HIGH)
-The multi-day widget work: gap **2** (code editor) **built** as `ui::CodeEditor`
-and adopted by **typst_editor** and **db_client** (their app-local editor/lexer
-forks deleted); remaining adopter **code_editor**. Gap **3** (rich-text document editor) →
-word-processor, mail, slides; gap
-**4** (formula cell editor) → sheets; gap **12** (Chart/Gauge + virtualized
-DataTable) → monitor, logs; gap **10** (TreeView inline-rename) → notes; gap
-**13** (MathField) → calculator; gap **11** (shared find bar) collapses the
-Wave-1 editor find fields into one primitive.
+Theme literals are already triaged: diffmerge and Sheets' genuine chrome
+offenders are fixed. Document colors, syntax/categorical palettes, over-media
+ink, shadows/scrims, picker seeds, and test literals remain intentional.
 
 ---
 
