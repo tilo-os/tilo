@@ -50,6 +50,7 @@ use crate::event_popovers::{
 };
 use crate::ics;
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
+use crate::sidebar::{Action as SidebarAction, Mode as SidebarMode, Sidebar};
 
 /// Placeholder shown in the empty title field of a new event.
 const TITLE_PLACEHOLDER: &str = "New event";
@@ -62,7 +63,6 @@ const NOTES_PLACEHOLDER: &str = "Add details…";
 const EMPTY_ONBOARDING_TITLE: &str = "No events yet";
 const EMPTY_ONBOARDING_HINT: &str = "Click a day to add your first event";
 
-const SIDEBAR_W: f64 = 252.0;
 const TOPBAR_H: f64 = 60.0;
 const DETAIL_PAD: f64 = 22.0;
 const NOTES_TOP_OFFSET: f64 = 296.0;
@@ -86,11 +86,6 @@ const TIMELINE_SNAP_MIN: i64 = 15;
 /// Width at/above which the sidebar is an inline persistent panel. Below it the
 /// sidebar becomes an overlay drawer (see [`SidebarMode`] and
 /// [`CalendarApp::relayout`]).
-const SIDEBAR_PERSISTENT_MIN: f64 = 900.0;
-/// Below this window width the overlay sidebar drawer covers the WHOLE window
-/// (a full-screen page) rather than a 252px flap over a dimmed calendar — more
-/// readable on phone-width windows.
-const SIDEBAR_FULLSCREEN_MAX: f64 = 560.0;
 /// Width at/above which the event/task editor opens as a centered modal
 /// **overlay** floating over the still-visible calendar. Below it the editor
 /// takes the whole screen as its own pushed page — comfortable on narrow
@@ -115,16 +110,6 @@ const NEW_BTN_W: f64 = 60.0;
 /// Minimum horizontal room the period title needs beside the switcher before
 /// the switcher folds out of the topbar into the sidebar.
 const TITLE_MIN_W: f64 = 80.0;
-
-/// How the calendars/smart-lists sidebar is presented at the current width.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SidebarMode {
-    /// Inline, always visible, occupies the left edge (wide windows).
-    Persistent,
-    /// Floats over the content behind a scrim; toggled open, hidden by default.
-    /// A 252px flap at tablet width, a full-window page at phone width.
-    Overlay,
-}
 
 /// How the event/task detail editor is presented at the current width.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -390,15 +375,8 @@ pub struct CalendarApp {
     last_persist: std::time::Instant,
 
     // --- responsive state ------------------------------------------------
-    /// Recomputed every layout from the allocated width.
-    sidebar_mode: SidebarMode,
-    /// Whether the overlay flap is open (only meaningful in `Overlay` mode).
-    sidebar_open: bool,
-    /// Whether the persistent sidebar is collapsed (only meaningful in
-    /// `Persistent` mode — the wide layout). Collapsing hides the sidebar and
-    /// lets the calendar + detail reclaim its width; the overlay flap uses
-    /// `sidebar_open` instead.
-    sidebar_collapsed: bool,
+    /// Responsive drawer state, geometry and chrome interaction.
+    sidebar: Sidebar,
     /// Which narrow screen is showing (only meaningful when the editor is
     /// full-screen, i.e. below [`EDITOR_OVERLAY_MIN`]).
     narrow_screen: NarrowScreen,
@@ -410,7 +388,6 @@ pub struct CalendarApp {
 
     // --- layout caches (filled by `relayout`) ----------------------------
     rect: Rect,
-    sidebar_rect: Rect,
     /// The region right of a persistent sidebar (or full-width under an overlay
     /// one) holding the topbar + calendar view.
     content_rect: Rect,
@@ -547,9 +524,7 @@ impl CalendarApp {
             saved_heads: Vec::new(),
             force_persist: false,
             last_persist: std::time::Instant::now(),
-            sidebar_mode: SidebarMode::Persistent,
-            sidebar_open: false,
-            sidebar_collapsed: false,
+            sidebar: Sidebar::new(),
             narrow_screen: if detail_open {
                 NarrowScreen::Detail
             } else {
@@ -558,7 +533,6 @@ impl CalendarApp {
             detail_mode: DetailMode::Overlay,
             switcher_in_topbar: true,
             rect: Rect::ZERO,
-            sidebar_rect: Rect::ZERO,
             content_rect: Rect::ZERO,
             detail_rect: Rect::ZERO,
             notes_origin: Point::new(-10000.0, -10000.0),
@@ -606,13 +580,13 @@ impl CalendarApp {
 
     /// Open the overlay sidebar flap for a screenshot.
     pub fn shots_open_flap(&mut self) {
-        self.sidebar_open = true;
+        self.sidebar.set_open(true);
         self.dirty = true;
     }
 
     /// Collapse the persistent sidebar for a screenshot (wide layout only).
     pub fn shots_collapse_sidebar(&mut self) {
-        self.sidebar_collapsed = true;
+        self.sidebar.set_collapsed(true);
         self.dirty = true;
     }
 
@@ -1161,8 +1135,8 @@ impl CalendarApp {
         if matches!(self.detail_mode, DetailMode::FullScreen) {
             self.narrow_screen = NarrowScreen::Detail;
         }
-        if matches!(self.sidebar_mode, SidebarMode::Overlay) {
-            self.sidebar_open = false;
+        if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
+            self.sidebar.set_open(false);
         }
         self.dirty = true;
     }
@@ -1396,7 +1370,7 @@ impl CalendarApp {
     fn calendar_content_interactive(&self) -> bool {
         self.content_rect.area() > 0.0
             && !(self.detail_open && self.detail_rect.area() > 0.0)
-            && !(matches!(self.sidebar_mode, SidebarMode::Overlay) && self.sidebar_open)
+            && !(matches!(self.sidebar.mode(), SidebarMode::Overlay) && self.sidebar.is_open())
     }
 
     /// Forward a raw event to the timeline scroll container. Returns whether it
@@ -2178,9 +2152,8 @@ impl CalendarApp {
     /// `apply_layout`. This is the one place breakpoints are decided, along two
     /// independent axes:
     ///
-    /// * **sidebar** — persistent inline panel at/above [`SIDEBAR_PERSISTENT_MIN`];
-    ///   an overlay drawer below it (a 252px flap, or a full-window page below
-    ///   [`SIDEBAR_FULLSCREEN_MAX`]).
+    /// * **sidebar** — responsive inline panel / overlay drawer, delegated to
+    ///   [`Sidebar`] so its state and geometry stay together.
     /// * **editor** — a centered modal card floating over the still-visible
     ///   calendar at/above [`EDITOR_OVERLAY_MIN`]; a full-screen page that
     ///   replaces the calendar below it (only one of {calendar, detail} is laid
@@ -2188,35 +2161,12 @@ impl CalendarApp {
     fn relayout(&mut self) {
         let r = self.rect;
         // Two independent responsive axes, each re-derived from the current
-        // width so a live resize reflows both: how the sidebar is presented,
-        // and how the detail editor is presented.
-        self.sidebar_mode = if r.width() >= SIDEBAR_PERSISTENT_MIN {
-            SidebarMode::Persistent
-        } else {
-            SidebarMode::Overlay
-        };
+        // width so a live resize reflows both.
+        let content_x0 = self.sidebar.layout(r);
         self.detail_mode = if r.width() >= EDITOR_OVERLAY_MIN {
             DetailMode::Overlay
         } else {
             DetailMode::FullScreen
-        };
-
-        // Sidebar rect. A persistent panel and the tablet-width flap are both
-        // SIDEBAR_W wide; the phone-width drawer covers the whole window so it
-        // reads as a full page.
-        let sidebar_w = if matches!(self.sidebar_mode, SidebarMode::Overlay)
-            && r.width() < SIDEBAR_FULLSCREEN_MAX
-        {
-            r.width()
-        } else {
-            SIDEBAR_W
-        };
-        self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + sidebar_w, r.y1);
-        // A persistent sidebar only takes width while it's expanded; collapsed,
-        // or in overlay mode, the content begins at the window's left edge.
-        let content_x0 = match self.sidebar_mode {
-            SidebarMode::Persistent if !self.sidebar_collapsed => r.x0 + SIDEBAR_W,
-            _ => r.x0,
         };
 
         match self.detail_mode {
@@ -2359,7 +2309,7 @@ impl CalendarApp {
         let mut left = 16.0;
         // Hamburger (overlay) or expand chevron (collapsed persistent) share the
         // same left slot.
-        if matches!(self.sidebar_mode, SidebarMode::Overlay) || self.sidebar_collapsed {
+        if matches!(self.sidebar.mode(), SidebarMode::Overlay) || self.sidebar.is_collapsed() {
             left += 38.0;
         }
         left += 74.0; // prev / next chevrons
@@ -2473,15 +2423,6 @@ impl CalendarApp {
         }
     }
 
-    /// Whether the overlay flap is currently shown (always true for a
-    /// persistent sidebar).
-    fn sidebar_visible(&self) -> bool {
-        match self.sidebar_mode {
-            SidebarMode::Persistent => !self.sidebar_collapsed,
-            SidebarMode::Overlay => self.sidebar_open,
-        }
-    }
-
     /// Y offset (from the detail rect top) of the NOTES section + editor. The
     /// narrow detail screen carries a back bar above the body, so its notes
     /// start lower. Single source of truth for both `relayout` (editor origin)
@@ -2501,9 +2442,9 @@ impl CalendarApp {
                 // On narrow layouts the switcher lives in the overlay flap;
                 // picking a view there returns to the calendar screen and
                 // dismisses the flap so the chosen view is visible at once.
-                if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+                if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
                     self.narrow_screen = NarrowScreen::Calendar;
-                    self.sidebar_open = false;
+                    self.sidebar.set_open(false);
                 }
             }
             Action::Today => self.anchor = self.today,
@@ -2521,9 +2462,9 @@ impl CalendarApp {
                 self.list_sel = s;
                 // Picking a smart list/project on the narrow flap returns to
                 // the calendar screen and dismisses the flap.
-                if matches!(self.sidebar_mode, SidebarMode::Overlay) {
+                if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
                     self.narrow_screen = NarrowScreen::Calendar;
-                    self.sidebar_open = false;
+                    self.sidebar.set_open(false);
                 }
             }
             Action::CloseDetail => {
@@ -2532,9 +2473,9 @@ impl CalendarApp {
                 self.narrow_screen = NarrowScreen::Calendar;
                 self.blur_editor();
             }
-            Action::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
-            Action::DismissSidebar => self.sidebar_open = false,
-            Action::ToggleSidebarCollapsed => self.sidebar_collapsed = !self.sidebar_collapsed,
+            Action::ToggleSidebar => self.sidebar.toggle_open(),
+            Action::DismissSidebar => self.sidebar.set_open(false),
+            Action::ToggleSidebarCollapsed => self.sidebar.toggle_collapsed(),
             Action::BackToCalendar => {
                 self.narrow_screen = NarrowScreen::Calendar;
                 // The calendar screen owns the keyboard once the editor is off
@@ -2642,192 +2583,42 @@ impl CalendarApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> Vec<(Rect, Action)> {
-        let c = &theme.tokens.colors;
-        let mut hits = Vec::new();
-        if !self.sidebar_visible() {
-            return hits;
-        }
-        let overlay = matches!(self.sidebar_mode, SidebarMode::Overlay);
-        self.draw_sidebar_scrim(scene, t, theme, overlay, &mut hits);
-
-        let r = self.sidebar_rect;
-        fill_rect(scene, t, c.surfaces.raised, r);
-        if overlay {
-            // Drop shadow along the flap's right edge.
-            scene.fill(
-                Fill::NonZero,
-                t,
-                Color::from_rgba8(0, 0, 0, 70),
-                None,
-                &Rect::new(r.x1, r.y0, r.x1 + 8.0, r.y1),
-            );
-        }
-        stroke_line(
+        let Some(chrome) = self.sidebar.draw_chrome(
             scene,
             t,
-            c.border_standard,
-            Point::new(r.x1, r.y0),
-            Point::new(r.x1, r.y1),
-            1.0,
-        );
-
+            tr,
+            theme,
+            self.rect,
+            self.content_rect,
+            self.detail_rect,
+            self.switcher_in_topbar,
+            self.view,
+            self.last_mouse,
+        ) else {
+            return Vec::new();
+        };
+        let mut hits: Vec<_> = chrome
+            .hits
+            .into_iter()
+            .map(|(rect, action)| {
+                let action = match action {
+                    SidebarAction::Dismiss => Action::DismissSidebar,
+                    SidebarAction::ToggleCollapsed => Action::ToggleSidebarCollapsed,
+                    SidebarAction::View(view) => Action::View(view),
+                    SidebarAction::Export => Action::Export,
+                    SidebarAction::Import => Action::Import,
+                };
+                (rect, action)
+            })
+            .collect();
+        let r = self.sidebar.rect();
         let pad = 18.0;
-        let y = r.y0 + 22.0;
-        let y = self.draw_sidebar_top(scene, t, tr, theme, r, pad, y, overlay, &mut hits);
-        let y = self.draw_sidebar_lists(scene, t, tr, theme, r, pad, y, &mut hits);
+        let y = self.draw_sidebar_lists(scene, t, tr, theme, r, pad, chrome.body_y, &mut hits);
         let y = self.draw_sidebar_calendars(scene, t, tr, theme, r, pad, y, &mut hits);
         self.draw_sidebar_footer(scene, t, tr, theme, r, pad, y, &mut hits);
 
         hits
     }
-
-    /// The dimming scrim behind an overlay flap, dismissed on click (part
-    /// of [`Self::draw_sidebar`]).
-    fn draw_sidebar_scrim(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        overlay: bool,
-        hits: &mut Vec<(Rect, Action)>,
-    ) {
-        let c = &theme.tokens.colors;
-        // The overlay flap dims the content behind a scrim; clicking it
-        // dismisses the flap. Drawn before the panel so the panel sits on top.
-        if overlay && (self.content_rect.area() > 0.0 || self.detail_rect.area() > 0.0) {
-            let behind = if self.content_rect.area() > 0.0 {
-                self.content_rect
-            } else {
-                self.detail_rect
-            };
-            fill_rect(scene, t, c.surfaces.overlay, behind);
-            hits.push((behind, Action::DismissSidebar));
-        }
-    }
-
-    /// Collapse/close button, the overlay-only view switcher, and the
-    /// Export/Import buttons (part of [`Self::draw_sidebar`]). Returns the
-    /// `y` the lists should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    fn draw_sidebar_top(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        pad: f64,
-        mut y: f64,
-        overlay: bool,
-        hits: &mut Vec<(Rect, Action)>,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        // No app-name wordmark: the OS owns window chrome and shows "Calendar"
-        // in the titlebar. The sidebar leads with its collapse affordance and
-        // flows the calendar list up into the reclaimed space.
-        // Collapse control — persistent sidebar only. A chevron pointing at the
-        // edge it tucks into (never an X: this hides the panel, it does not
-        // dismiss a dialog). When collapsed, the mirror-image expand chevron
-        // appears in the topbar so the sidebar is always one click away.
-        if !overlay {
-            let cb = Rect::new(r.x1 - pad - 24.0, y - 3.0, r.x1 - pad, y + 21.0);
-            if cb.contains(self.last_mouse) {
-                fill_round(scene, t, c.surface_white_5, cb, 7.0);
-            }
-            draw_chevron(scene, t, c.neutral[7], cb.center(), true);
-            hits.push((cb, Action::ToggleSidebarCollapsed));
-        } else if r.width() >= self.rect.width() - 0.5 {
-            // Full-screen drawer: it covers the whole window, so there is no
-            // dimmed calendar edge to click — it carries its own close button.
-            let cl = Rect::new(r.x1 - pad - 24.0, y - 4.0, r.x1 - pad, y + 20.0);
-            draw_icon_button(scene, t, theme, cl, cl.contains(self.last_mouse));
-            draw_cross(scene, t, c.neutral[8], cl.center());
-            hits.push((cl, Action::DismissSidebar));
-        }
-        y += 30.0;
-
-        // View switcher — carried by the flap only when the topbar switch has
-        // folded away (a too-narrow topbar). Without it a pointer/touch user
-        // could reach Day/Agenda but never get back to Month. When the topbar
-        // still shows the switch, the flap omits it so there's no duplicate.
-        if overlay && !self.switcher_in_topbar {
-            let seg = Rect::new(r.x0 + 12.0, y, r.x1 - 12.0, y + 36.0);
-            fill_round(scene, t, c.surfaces.base, seg, 9.0);
-            stroke_round(scene, t, c.border_standard, seg, 9.0, 1.0);
-            let cell_w = seg.width() / View::ALL.len() as f64;
-            for (i, v) in View::ALL.iter().enumerate() {
-                let cell = Rect::new(
-                    seg.x0 + cell_w * i as f64,
-                    seg.y0,
-                    seg.x0 + cell_w * (i as f64 + 1.0),
-                    seg.y1,
-                );
-                if self.view == *v {
-                    fill_round(scene, t, c.accent[5], cell.inflate(-3.0, -3.0), 7.0);
-                } else if cell.contains(self.last_mouse) {
-                    fill_round(scene, t, c.surface_white_5, cell.inflate(-3.0, -3.0), 7.0);
-                }
-                let col = if self.view == *v {
-                    Color::WHITE
-                } else {
-                    c.neutral[7]
-                };
-                center_text(scene, tr, v.label(), 13.0, col, cell, t);
-                hits.push((cell, Action::View(*v)));
-            }
-            y += 50.0;
-        }
-
-        // Export / Import .ics buttons (also bound to `e` / `i`).
-        let bw = (r.width() - 24.0 - 8.0) / 2.0;
-        let exp = Rect::new(r.x0 + 12.0, y, r.x0 + 12.0 + bw, y + 32.0);
-        draw_icon_button(scene, t, theme, exp, exp.contains(self.last_mouse));
-        draw_download(
-            scene,
-            t,
-            c.neutral[8],
-            Point::new(exp.x0 + 18.0, exp.center().y),
-        );
-        tr.draw_text(
-            scene,
-            "Export",
-            13.0,
-            c.neutral[8],
-            t * Affine::translate((exp.x0 + 32.0, exp.center().y - 8.0)),
-            None,
-        );
-        hits.push((exp, Action::Export));
-
-        let imp = Rect::new(exp.x1 + 8.0, y, r.x1 - 12.0, y + 32.0);
-        draw_icon_button(scene, t, theme, imp, imp.contains(self.last_mouse));
-        draw_upload(
-            scene,
-            t,
-            c.neutral[8],
-            Point::new(imp.x0 + 18.0, imp.center().y),
-        );
-        tr.draw_text(
-            scene,
-            "Import",
-            13.0,
-            c.neutral[8],
-            t * Affine::translate((imp.x0 + 32.0, imp.center().y - 8.0)),
-            None,
-        );
-        hits.push((imp, Action::Import));
-        y + 46.0
-    }
-
-    /// The smart lists (Inbox/Today/Upcoming/Completed) and, when the user
-    /// has any, the projects section (part of [`Self::draw_sidebar`]).
-    /// Returns the `y` the CALENDARS section should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_sidebar_lists(
         &self,
         scene: &mut Scene,
@@ -3399,7 +3190,7 @@ impl CalendarApp {
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        let overlay_sidebar = matches!(self.sidebar_mode, SidebarMode::Overlay);
+        let overlay_sidebar = matches!(self.sidebar.mode(), SidebarMode::Overlay);
         let mut left = r.x0 + 16.0;
         // Hamburger toggle for the overlay flap (narrow only).
         if overlay_sidebar {
@@ -3408,7 +3199,7 @@ impl CalendarApp {
             draw_hamburger(scene, t, c.neutral[8], ham.center());
             hits.push((ham, Action::ToggleSidebar));
             left += 38.0;
-        } else if self.sidebar_collapsed {
+        } else if self.sidebar.is_collapsed() {
             // Persistent sidebar collapsed → expand chevron (mirror of the
             // sidebar's collapse control). A chevron, not a hamburger: the
             // sidebar is inline, not an overlay drawer.
@@ -5201,8 +4992,8 @@ impl CalendarApp {
                 self.dirty = true;
                 return true;
             }
-            if matches!(self.sidebar_mode, SidebarMode::Overlay) && self.sidebar_open {
-                self.sidebar_open = false;
+            if matches!(self.sidebar.mode(), SidebarMode::Overlay) && self.sidebar.is_open() {
+                self.sidebar.set_open(false);
                 *handled = true;
                 self.dirty = true;
                 return true;
@@ -6007,7 +5798,7 @@ pub(crate) fn center_text(
     );
 }
 
-fn draw_icon_button(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, hover: bool) {
+pub(crate) fn draw_icon_button(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, hover: bool) {
     let c = &theme.tokens.colors;
     let bg = if hover {
         c.surface_white_10
@@ -6018,7 +5809,7 @@ fn draw_icon_button(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, hover:
     stroke_round(scene, t, c.border_standard, r, 8.0, 1.0);
 }
 
-fn draw_chevron(scene: &mut Scene, t: Affine, color: Color, center: Point, left: bool) {
+pub(crate) fn draw_chevron(scene: &mut Scene, t: Affine, color: Color, center: Point, left: bool) {
     // `left == true` draws a "<" (points left); false draws ">".
     let dx = if left { -4.0 } else { 4.0 };
     let mut p = BezPath::new();
@@ -6092,7 +5883,7 @@ fn draw_back_arrow(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     scene.stroke(&Stroke::new(1.7), t, color, None, &p);
 }
 
-fn draw_cross(scene: &mut Scene, t: Affine, color: Color, center: Point) {
+pub(crate) fn draw_cross(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     stroke_line(
         scene,
         t,
@@ -6281,7 +6072,7 @@ fn field_row(
     );
 }
 
-fn draw_download(scene: &mut Scene, t: Affine, color: Color, center: Point) {
+pub(crate) fn draw_download(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     // Down-arrow into a tray.
     stroke_line(
         scene,
@@ -6306,7 +6097,7 @@ fn draw_download(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     );
 }
 
-fn draw_upload(scene: &mut Scene, t: Affine, color: Color, center: Point) {
+pub(crate) fn draw_upload(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     // Up-arrow rising out of a tray (mirror of `draw_download`).
     stroke_line(
         scene,
@@ -6504,7 +6295,7 @@ mod tests {
         // Wide first frame: persistent sidebar, detail docked beside calendar.
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Persistent);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
         assert!(app.content_rect.width() > 0.0);
         assert!(app.detail_rect.width() > 0.0);
         let wide_content = app.content_rect;
@@ -6514,7 +6305,7 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
         app.relayout();
         assert_eq!(
-            app.sidebar_mode,
+            app.sidebar.mode(),
             SidebarMode::Overlay,
             "breakpoint must re-derive from the current width, not the first frame"
         );
@@ -6530,7 +6321,7 @@ mod tests {
         // Back to wide — proves it toggles both directions, not just once.
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Persistent);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
         assert!(app.detail_rect.width() > 0.0);
         assert_eq!(app.content_rect, wide_content);
     }
@@ -6582,7 +6373,7 @@ mod tests {
         // Beyond the panel breakpoints, the *grid inside a view* must also
         // re-derive its cell geometry from the current width on every frame —
         // "lays out once, breaks after resize" is the reported bug. Both widths
-        // here sit ABOVE every panel breakpoint (>= SIDEBAR_PERSISTENT_MIN), so a
+        // here sit above every panel breakpoint, so a
         // change in cell width can only be the grid itself reflowing, not a
         // breakpoint flip. Measured on the real path: the hit rects that live
         // clicks resolve against, populated by driving `draw` through `Harness`.
@@ -6607,13 +6398,10 @@ mod tests {
             assert!(wide > 0.0, "{view:?}: expected grid cells in the hit map");
 
             // Resize narrower — still wide enough that the sidebar stays docked,
-            // isolating the grid's own reflow from any breakpoint change. Both
-            // sides are consts, so this is a compile-time check, not a runtime
-            // assertion on the test fixture itself.
-            const _: () = assert!(1000.0 >= SIDEBAR_PERSISTENT_MIN);
+            // isolating the grid's own reflow from any breakpoint change.
             hn.w = 1000;
             hn.relayout();
-            assert_eq!(hn.app.sidebar_mode, SidebarMode::Persistent);
+            assert_eq!(hn.app.sidebar.mode(), SidebarMode::Persistent);
             let narrow = widest_cell(&hn.app, view);
             assert!(
                 narrow + 1.0 < wide,
@@ -6813,10 +6601,10 @@ mod tests {
         app.detail_open = true;
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Persistent);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
         assert_eq!(app.detail_mode, DetailMode::Overlay);
         // Sidebar is inline (content starts to its right).
-        assert!(app.content_rect.x0 >= app.sidebar_rect.x1 - 0.5);
+        assert!(app.content_rect.x0 >= app.sidebar.rect().x1 - 0.5);
         // The editor is a centered modal floating OVER the calendar: the
         // calendar keeps its full content width behind it, and the card is
         // inset from every content edge (not a docked strip on the right).
@@ -6851,13 +6639,13 @@ mod tests {
     fn narrow_window_collapses_sidebar_to_overlay() {
         let mut app = CalendarApp::new_demo();
         app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
-        app.sidebar_open = false;
+        app.sidebar.set_open(false);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Overlay);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
         // Overlay sidebar floats over the content from the left edge: content
         // starts at the window's left edge, not to the sidebar's right.
         assert_eq!(app.content_rect.x0, app.rect.x0);
-        assert!(!app.sidebar_visible(), "overlay flap is closed by default");
+        assert!(!app.sidebar.visible(), "overlay flap is closed by default");
     }
 
     #[test]
@@ -6870,17 +6658,17 @@ mod tests {
         app.detail_open = true;
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
-        assert!(app.sidebar_visible(), "sidebar shown when expanded");
+        assert!(app.sidebar.visible(), "sidebar shown when expanded");
         let expanded_content_x0 = app.content_rect.x0;
         assert!(
-            expanded_content_x0 >= app.sidebar_rect.x1 - 0.5,
+            expanded_content_x0 >= app.sidebar.rect().x1 - 0.5,
             "expanded: content starts to the right of the sidebar"
         );
 
         // Collapse: sidebar hidden, content reclaims the left edge, editor stays.
-        app.sidebar_collapsed = true;
+        app.sidebar.set_collapsed(true);
         app.relayout();
-        assert!(!app.sidebar_visible(), "collapsed sidebar is hidden");
+        assert!(!app.sidebar.visible(), "collapsed sidebar is hidden");
         assert_eq!(
             app.content_rect.x0, app.rect.x0,
             "content reclaims the sidebar edge"
@@ -6898,9 +6686,9 @@ mod tests {
         );
 
         // Expand again — proves it toggles both directions.
-        app.sidebar_collapsed = false;
+        app.sidebar.set_collapsed(false);
         app.relayout();
-        assert!(app.sidebar_visible());
+        assert!(app.sidebar.visible());
         assert_eq!(
             app.content_rect.x0, expanded_content_x0,
             "expanding restores the layout"
@@ -6940,12 +6728,12 @@ mod tests {
         let mut app = CalendarApp::new_demo();
         app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
         app.relayout();
-        app.sidebar_open = true;
+        app.sidebar.set_open(true);
         let id = app.model.events[0].id;
         app.select_event(id);
         assert_eq!(app.narrow_screen, NarrowScreen::Detail);
         assert!(
-            !app.sidebar_open,
+            !app.sidebar.is_open(),
             "opening a detail dismisses the overlay flap"
         );
     }
@@ -7015,7 +6803,7 @@ mod tests {
         // previous behaviour wrongly folded it away here.
         app.rect = Rect::new(0.0, 0.0, 780.0, 800.0);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Overlay);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
         assert!(
             app.switcher_in_topbar,
             "a roomy topbar keeps the switcher even with an overlay sidebar"
@@ -7038,17 +6826,17 @@ mod tests {
 
         app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Overlay);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
         assert!(
-            app.sidebar_rect.width() < app.rect.width() - 1.0,
+            app.sidebar.rect().width() < app.rect.width() - 1.0,
             "tablet width: a flap, not full-width"
         );
 
         app.rect = Rect::new(0.0, 0.0, 420.0, 800.0);
         app.relayout();
-        assert_eq!(app.sidebar_mode, SidebarMode::Overlay);
+        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
         assert!(
-            (app.sidebar_rect.width() - app.rect.width()).abs() < 0.5,
+            (app.sidebar.rect().width() - app.rect.width()).abs() < 0.5,
             "phone width: the sidebar drawer is a full-screen page"
         );
     }
@@ -7059,11 +6847,11 @@ mod tests {
         // close (no dimmed edge to click). Drive the real click path.
         let mut h = Harness::new(420, 800);
         h.app.shots_show_calendar();
-        h.app.sidebar_open = true;
+        h.app.sidebar.set_open(true);
         h.relayout();
-        assert!(h.app.sidebar_visible(), "flap is open");
+        assert!(h.app.sidebar.visible(), "flap is open");
         assert!(
-            (h.app.sidebar_rect.width() - h.app.rect.width()).abs() < 0.5,
+            (h.app.sidebar.rect().width() - h.app.rect.width()).abs() < 0.5,
             "the drawer is full-screen at this width"
         );
         // Two DismissSidebar targets exist: the (hidden) scrim behind and the
@@ -7078,7 +6866,7 @@ mod tests {
             .expect("a close button in the full-screen drawer");
         h.click(close);
         assert!(
-            !h.app.sidebar_open,
+            !h.app.sidebar.is_open(),
             "clicking close dismissed the full-screen drawer"
         );
     }
@@ -7744,16 +7532,16 @@ mod tests {
         // user collapses the rail from).
         h.app.shots_show_calendar();
         h.relayout();
-        assert!(h.app.sidebar_visible(), "starts expanded on a wide window");
+        assert!(h.app.sidebar.visible(), "starts expanded on a wide window");
         let collapse = h
             .hit_center(|a| matches!(a, Action::ToggleSidebarCollapsed))
             .expect("collapse chevron present in the persistent sidebar");
         h.click(collapse);
         assert!(
-            h.app.sidebar_collapsed,
+            h.app.sidebar.is_collapsed(),
             "clicking the chevron collapsed the sidebar"
         );
-        assert!(!h.app.sidebar_visible());
+        assert!(!h.app.sidebar.visible());
 
         // Re-lay so the collapsed topbar's expand chevron enters the hit-map.
         h.relayout();
@@ -7762,10 +7550,10 @@ mod tests {
             .expect("expand chevron present in the topbar when collapsed");
         h.click(expand);
         assert!(
-            !h.app.sidebar_collapsed,
+            !h.app.sidebar.is_collapsed(),
             "clicking the topbar chevron expanded the sidebar"
         );
-        assert!(h.app.sidebar_visible());
+        assert!(h.app.sidebar.visible());
     }
 
     #[test]
@@ -7845,12 +7633,12 @@ mod tests {
         // real `handle_event` click path, not a synthetic call.
         let mut h = Harness::new(560, 720);
         assert_eq!(
-            h.app.sidebar_mode,
+            h.app.sidebar.mode(),
             SidebarMode::Overlay,
             "560px is a narrow layout"
         );
         // Open the flap and re-lay so its hit-map is populated.
-        h.app.sidebar_open = true;
+        h.app.sidebar.set_open(true);
         h.relayout();
         assert_eq!(h.app.view, View::Month);
         let p = h
@@ -7862,7 +7650,10 @@ mod tests {
             View::Week,
             "clicking the flap switcher changed the view"
         );
-        assert!(!h.app.sidebar_open, "picking a view dismisses the flap");
+        assert!(
+            !h.app.sidebar.is_open(),
+            "picking a view dismisses the flap"
+        );
         assert_eq!(
             h.app.narrow_screen,
             NarrowScreen::Calendar,

@@ -49,6 +49,7 @@ mod event_popovers;
 pub mod ics;
 pub mod model;
 pub mod search_provider;
+mod sidebar;
 pub mod store;
 
 pub use account::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar};
