@@ -15,6 +15,11 @@
 // return; nothing outside this file constructs these servers, so the
 // refinement stays where it is written.
 #![allow(refining_impl_trait_internal)]
+// `unwrap` in a test-support helper: clippy.toml sets `allow-unwrap-in-tests`,
+// but that only recognises code inside a `#[test]` function, and the fixtures
+// below are free functions. A fixture that cannot stand up has nothing to
+// assert, so failing loudly there is the same decision the config already made.
+#![allow(clippy::unwrap_used)]
 use std::cell::RefCell;
 use std::os::fd::IntoRawFd;
 use std::rc::Rc;
@@ -345,7 +350,10 @@ impl collab_service::Server for FakeBroker {
     }
 }
 
-async fn stand_up_client(broker: FakeBroker) -> CollabClient {
+// Not `async`: it awaits nothing. `spawn_local` needs the surrounding `LocalSet`
+// context, which every caller already has from `run_until`, not an async fn of
+// its own.
+fn stand_up_client(broker: FakeBroker) -> CollabClient {
     let (server_side, client_side) = UnixStream::pair().unwrap();
 
     let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
@@ -354,7 +362,7 @@ async fn stand_up_client(broker: FakeBroker) -> CollabClient {
         server_read.compat(),
         server_write.compat_write(),
         rpc_twoparty_capnp::Side::Server,
-        Default::default(),
+        capnp::message::ReaderOptions::default(),
     ));
     let server_rpc = RpcSystem::new(server_network, Some(broker_client.client));
     tokio::task::spawn_local(async move {
@@ -380,7 +388,7 @@ async fn offer_and_want_blob_reach_the_broker_verbatim() {
                 captures: captures.clone(),
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("chan-blob", b"identity").await.unwrap();
 
             channel
@@ -411,7 +419,7 @@ async fn subscribe_blobs_yields_hash_and_bytes() {
                 ],
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab
                 .join_channel("chan-blob-rx", b"identity")
                 .await
@@ -441,7 +449,7 @@ async fn send_action_carries_type_id_and_opaque_payload() {
                 captures: captures.clone(),
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("chan-act", b"identity").await.unwrap();
 
             channel
@@ -470,7 +478,7 @@ async fn subscribe_actions_keeps_sender_attribution_separate_from_payload() {
                 action_backlog: vec![("chat.remark".into(), b"payload".to_vec(), "peer-3".into())],
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab
                 .join_channel("chan-act-rx", b"identity")
                 .await
@@ -497,7 +505,7 @@ async fn publish_actions_round_trips_both_input_shapes() {
                 captures: captures.clone(),
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("chan-pub", b"identity").await.unwrap();
 
             channel
@@ -583,7 +591,7 @@ async fn invocation_distinguishes_an_empty_argument_from_no_argument() {
                 ],
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("chan-inv", b"identity").await.unwrap();
             let stream = channel.subscribe_invocations().await.unwrap();
 
@@ -613,7 +621,7 @@ async fn complete_invocation_reports_both_success_and_refusal() {
                 captures: captures.clone(),
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("chan-done", b"identity").await.unwrap();
 
             channel.complete_invocation(1, "", "").await.unwrap();
@@ -649,7 +657,7 @@ async fn compose_remark_carries_the_reference_and_the_window_local_rect() {
                 captures: captures.clone(),
                 ..Default::default()
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab
                 .join_channel("chan-remark", b"identity")
                 .await

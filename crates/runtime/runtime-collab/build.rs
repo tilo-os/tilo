@@ -1,9 +1,14 @@
 fn main() {
     // Generated module lands in OUT_DIR; lib.rs pulls it in via `include!`.
     println!("cargo:rerun-if-changed=schema/collab.capnp");
-    capnpc::CompilerCommand::new()
+    if let Err(err) = capnpc::CompilerCommand::new()
         .src_prefix("schema")
         .file("schema/collab.capnp")
         .run()
-        .expect("capnpc compilation of schema/collab.capnp failed");
+    {
+        // `cargo::error` fails the build with this one line. Panicking here
+        // would bury the capnp diagnostic — usually a missing `capnp` binary or
+        // a syntax error with a line number — under a build-script backtrace.
+        println!("cargo::error=capnpc could not compile schema/collab.capnp: {err}");
+    }
 }

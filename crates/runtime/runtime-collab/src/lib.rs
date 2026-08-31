@@ -21,6 +21,31 @@
 //!
 //! Every call returns [`NotAvailable`] if the broker is missing or
 //! the connection drops, never a panic.
+//!
+//! ## Errors, in general
+//!
+//! Every method below is one capnp RPC, so all of them share two failure modes and say
+//! only what is particular to them:
+//!
+//! - **The connection is gone** — the broker exited, the socket closed, or the RPC driver
+//!   task was dropped. Arrives as [`NotAvailable::Capnp`], and every later call on any
+//!   handle derived from the same connection fails the same way.
+//! - **The broker refused** — the channel's permissions do not allow it, the handle names a
+//!   channel that has been closed, or an argument is malformed. Also
+//!   [`NotAvailable::Capnp`], carrying the broker's own message.
+//!
+//! Methods that decode text out of a reply add a third: a field that is not valid UTF-8
+//! fails the whole call rather than being lossily repaired, because a mangled user id or
+//! content hash is an attribution or an address, not a display string.
+
+// Every `async fn` here awaits a capnp-rpc promise, and capnp-rpc's promises are
+// `!Send` by construction: a capability is reference-counted with `Rc` and its
+// hooks are `dyn` traits without a `Send` bound, so the RPC system runs on one
+// thread and is driven by `tokio::task::spawn_local`. There is no version of
+// this client whose futures cross threads, which is why the module docs tell
+// callers to run it inside a `LocalSet`. `future_not_send` has nothing to warn
+// about here — it would only ever be silenced, never satisfied.
+#![allow(clippy::future_not_send)]
 
 use std::rc::Rc;
 
@@ -30,9 +55,24 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 // references its own module path absolutely as `crate::collab_capnp`
 // — must be included at the crate root with that exact name (the
 // same pattern capnp's own samples use).
-#[allow(clippy::all)]
-#[allow(unused)]
-#[allow(dead_code)]
+//
+// capnpc rewrites this file on every build, so nothing in it can be fixed —
+// the lint groups are switched off wholesale rather than chased. The same
+// list guards `app_host_capnp` in `crates/packaging/app-host`.
+#[allow(
+    clippy::all,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::restriction,
+    unused_imports,
+    unused_qualifications,
+    unused_results,
+    non_camel_case_types,
+    missing_docs,
+    unused,
+    dead_code,
+    unsafe_code
+)]
 pub mod collab_capnp {
     include!(concat!(env!("OUT_DIR"), "/collab_capnp.rs"));
 }
@@ -56,6 +96,16 @@ pub use collab_capnp::stream::Client as StreamClient;
 /// [`CollabClient`] for the idiomatic Rust surface. Must be called from
 /// within a `tokio::task::LocalSet`-driven context — capnp-rpc futures
 /// are `!Send`.
+///
+/// # Errors
+///
+/// [`NotAvailable::ServiceFdMissing`] when `QOS_SVC_COLLAB_FD` is unset or names an fd that
+/// is no longer open — the ordinary case off qOS, where the caller works alone rather than
+/// treating it as a fault. [`NotAvailable::ConnectionFailed`] when the fd is there but cannot
+/// be lifted onto the tokio reactor.
+///
+/// Dialling is local: nothing is sent to the broker, so a broker that is present but
+/// unwilling shows up on the first [`CollabClient::join_channel`], not here.
 pub fn try_connect() -> Result<CollabClient, NotAvailable> {
     let fd = service_fd("collab").ok_or(NotAvailable::ServiceFdMissing)?;
     let unix = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
@@ -82,6 +132,10 @@ impl CollabClient {
     /// given opaque identity blob. `identity` is the postcard
     /// encoding of a `collab-types` identity record — opaque
     /// from the broker's perspective.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`Self::join_channel_as`] returns; this is that call with an empty handle.
     pub async fn join_channel(
         &self,
         channel_id: &str,
@@ -92,6 +146,13 @@ impl CollabClient {
 
     /// Join a channel while announcing the participant's display handle.
     /// Empty handles retain the broker's room/local-identity fallback.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the broker rejects the join: `identity` does not decode as
+    /// an identity record, or is not one this room admits. Joining is where membership is
+    /// decided, so a caller holding a handle has already been let in — the later per-verb
+    /// refusals are about permissions inside the room, not about belonging to it.
     pub async fn join_channel_as(
         &self,
         channel_id: &str,
@@ -124,6 +185,12 @@ pub struct ChannelHandle {
 impl ChannelHandle {
     /// Submit a single signed op into the channel. The op blob is
     /// a postcard-encoded `collab-types::SignedOp`.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when `op` does not decode as a signed op, its signature does not
+    /// verify against an identity this room knows, or the local participant lacks write
+    /// permission. The broker validates before fan-out, so a rejected op reaches no peer.
     pub async fn send(&self, op: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_request();
         req.get().set_op(op);
@@ -134,6 +201,11 @@ impl ChannelHandle {
     /// LEGACY — publish an unsigned full-document snapshot, for apps not yet
     /// provisioned with a signing identity (removed once the whole fleet is
     /// provisioned). Prefer [`Self::send`] with a signed op.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the local participant lacks write permission, or the broker
+    /// was built without the unsigned transitional path.
     pub async fn send_unsigned_snapshot(&self, data: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_unsigned_snapshot_request();
         req.get().set_data(data);
@@ -144,6 +216,10 @@ impl ChannelHandle {
     /// LEGACY — publish an unsigned incremental Automerge change
     /// blob. Same transitional contract as
     /// [`Self::send_unsigned_snapshot`].
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::send_unsigned_snapshot`].
     pub async fn send_unsigned_incremental(&self, data: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_unsigned_incremental_request();
         req.get().set_data(data);
@@ -155,6 +231,12 @@ impl ChannelHandle {
     /// [`OpStream`] yields one op per `read` call; the consumer is
     /// expected to drive it in a loop. Stream lifetime is bounded
     /// by the parent channel handle.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the local participant lacks read permission on the channel.
+    /// Only opening the stream can fail here; a delivery that fails later surfaces on
+    /// [`OpStream::read`].
     pub async fn subscribe(&self) -> Result<OpStream, NotAvailable> {
         let req = self.inner.subscribe_request();
         let reply = req.send().promise.await?;
@@ -165,6 +247,10 @@ impl ChannelHandle {
     }
 
     /// Open the channel's presence sub-handle.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the channel handle has been closed by the broker.
     pub async fn presence(&self) -> Result<PresenceHandle, NotAvailable> {
         let req = self.inner.presence_request();
         let reply = req.send().promise.await?;
@@ -178,6 +264,11 @@ impl ChannelHandle {
     /// fresh [`ChannelContext`] whenever its view changes; the
     /// stream is client-pulled like every other stream in this
     /// schema.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the channel handle has been closed by the broker. Roster
+    /// visibility is not separately gated: a participant who is in the room can see who else is.
     pub async fn subscribe_context(&self) -> Result<ContextStream, NotAvailable> {
         let req = self.inner.subscribe_context_request();
         let reply = req.send().promise.await?;
@@ -193,6 +284,13 @@ impl ChannelHandle {
     /// this is the only way the content behind a reference leaves the
     /// process that produced it — an app's blob store lives inside its
     /// sandbox, so the shell cannot go and read it directly.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the local participant lacks write permission, `bytes`
+    /// exceeds the broker's per-message ceiling, or the broker finds that `bytes` do not hash to
+    /// `hash` — content is addressed by its hash, so an offer under the wrong name is refused
+    /// rather than stored.
     pub async fn offer_blob(&self, hash: &str, bytes: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.offer_blob_request();
         {
@@ -208,6 +306,12 @@ impl ChannelHandle {
     /// Returns as soon as the broker has the request, not when the content
     /// lands — the answer arrives on [`Self::subscribe_blobs`], so a caller
     /// doesn't block a frame on a transfer that may take several round trips.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the local participant lacks read permission. Content nobody
+    /// in the room has is **not** an error: the request is accepted and simply never answered, so
+    /// a caller waiting on [`Self::subscribe_blobs`] needs its own timeout.
     pub async fn want_blob(&self, hash: &str) -> Result<(), NotAvailable> {
         let mut req = self.inner.want_blob_request();
         req.get().set_hash(hash);
@@ -217,6 +321,11 @@ impl ChannelHandle {
 
     /// Open a server-pulled stream of arrived content — answers to
     /// [`Self::want_blob`], and content a peer offered the room.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the local participant lacks read permission, or the channel
+    /// handle has been closed.
     pub async fn subscribe_blobs(&self) -> Result<BlobStream, NotAvailable> {
         let req = self.inner.subscribe_blobs_request();
         let reply = req.send().promise.await?;
@@ -235,6 +344,13 @@ impl ChannelHandle {
     /// it says what should happen, and the owning app decides whether it
     /// recognises the request. Fanned out at cluster scope; a receiver
     /// applies it only if its own registry knows `type_id`.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the local participant lacks write permission, or `payload`
+    /// exceeds the broker's per-message ceiling. A `type_id` no receiver recognises is not an
+    /// error — the action is fanned out and quietly ignored by every app whose registry does not
+    /// know it, which is the point of the verb.
     pub async fn send_action(&self, type_id: &str, payload: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.send_action_request();
         {
@@ -248,6 +364,11 @@ impl ChannelHandle {
 
     /// Open a server-pulled stream of actions other apps published into
     /// this room.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the local participant lacks read permission, or the channel
+    /// handle has been closed.
     pub async fn subscribe_actions(&self) -> Result<ActionStream, NotAvailable> {
         let req = self.inner.subscribe_actions_request();
         let reply = req.send().promise.await?;
@@ -267,6 +388,13 @@ impl ChannelHandle {
     /// process that built it, so nothing published here can be fired by
     /// whoever reads it, only requested back through
     /// [`Self::subscribe_invocations`].
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the channel handle has been closed, or when `actions` is
+    /// longer than the wire list can address — the schema counts them in a `u32`, so more than
+    /// `u32::MAX` actions is refused rather than silently truncated to a surface that omits most
+    /// of what the app can do.
     pub async fn publish_actions(
         &self,
         app_id: &str,
@@ -276,9 +404,15 @@ impl ChannelHandle {
         {
             let mut b = req.get();
             b.set_app_id(app_id);
-            let mut list = b.init_actions(actions.len() as u32);
-            for (i, a) in actions.iter().enumerate() {
-                let mut row = list.reborrow().get(i as u32);
+            // The schema counts list elements in a u32. Checked rather than cast:
+            // a truncating cast would publish a surface missing most of the app's
+            // operations, invisible to both the caller and the session.
+            let count = u32::try_from(actions.len()).map_err(|_| {
+                capnp::Error::failed("too many exported actions for one publish".to_owned())
+            })?;
+            let mut list = b.init_actions(count);
+            for (i, a) in (0..count).zip(actions.iter()) {
+                let mut row = list.reborrow().get(i);
                 row.set_resource(&a.resource);
                 row.set_action(&a.action);
                 row.set_resource_kind(&a.resource_kind);
@@ -309,6 +443,10 @@ impl ChannelHandle {
     /// to *this* application — distinct from [`Self::subscribe_actions`]
     /// (room-wide fan-out): an invocation names one connection, an
     /// instruction to one app to perform one operation it published.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the channel handle has been closed.
     pub async fn subscribe_invocations(&self) -> Result<InvocationStream, NotAvailable> {
         let req = self.inner.subscribe_invocations_request();
         let reply = req.send().promise.await?;
@@ -322,6 +460,13 @@ impl ChannelHandle {
     /// anything else is a refusal, reported to whoever asked rather than
     /// swallowed — a caller that can't see the screen has no other way to
     /// tell a completed operation from one that quietly did nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when `id` matches no outstanding invocation — already answered,
+    /// or belonging to a session that has gone — or the channel handle has been closed. Reporting
+    /// a refusal is itself a call that can fail, so a caller that must not lose the report has to
+    /// retry it.
     pub async fn complete_invocation(
         &self,
         id: u64,
@@ -347,6 +492,17 @@ impl ChannelHandle {
     /// window sits on a desktop. The panel can't be drawn here: it opens
     /// beside the app's context menu, and a Wayland client has no way to
     /// paint outside its own window.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when `reference` does not parse as a `ResourceRef`, the session
+    /// declines to open the surface, or the channel handle has been closed. Returning `Ok` means
+    /// the session accepted the request, not that the user said anything.
+    // The rect is f32 on the wire and f64 in the signature because that is what each
+    // side actually holds: the layout engine produces f64, the schema stores window
+    // coordinates. f32 carries every integer pixel exactly up to 2^24, three orders of
+    // magnitude past the widest display, so nothing observable is lost.
+    #[allow(clippy::cast_possible_truncation)]
     pub async fn compose_remark(
         &self,
         reference: &str,
@@ -371,6 +527,12 @@ impl ChannelHandle {
     /// LEGACY — doesn't carry an artifact id (the broker keys the read on
     /// `ArtifactId::default()`). Prefer [`Self::fetch_scrollback_for`] when
     /// a specific artifact is available.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the local participant lacks read permission, or the channel
+    /// handle has been closed. Asking for history the broker no longer holds is not an error: the
+    /// page comes back empty with `done` set.
     pub async fn fetch_scrollback(
         &self,
         before_seq: u64,
@@ -400,6 +562,11 @@ impl ChannelHandle {
     /// Fetch a page of previously-validated signed ops on a specific
     /// artifact. `artifact_id` is the 16-byte little-endian encoding
     /// of the artifact uuid used by `collab-types`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::fetch_scrollback`], plus a refusal when `artifact_id` is not the expected 16
+    /// bytes.
     pub async fn fetch_scrollback_for(
         &self,
         artifact_id: &[u8],
@@ -465,6 +632,12 @@ pub struct OpStream {
 impl OpStream {
     /// Pull the next op along with the broker's attribution string
     /// for its author. Resolves when the broker has one available.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] once the channel closes or the connection drops — the normal way
+    /// a `while let Ok(..)` consume loop ends — and when the attribution string is not valid
+    /// UTF-8.
     pub async fn read(&self) -> Result<OpEvent, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
@@ -480,10 +653,9 @@ impl OpStream {
         // raw bytes to the envelope decoder; leaving it unmapped and letting
         // the caller ignore it is the honest direction.
         let kind = match r.get_kind() {
-            Ok(collab_capnp::OpKind::Signed) => OpKind::Signed,
+            Ok(collab_capnp::OpKind::Signed) | Err(_) => OpKind::Signed,
             Ok(collab_capnp::OpKind::UnsignedIncremental) => OpKind::UnsignedIncremental,
             Ok(collab_capnp::OpKind::UnsignedSnapshot) => OpKind::UnsignedSnapshot,
-            Err(_) => OpKind::Signed,
         };
         Ok(OpEvent {
             op,
@@ -513,6 +685,11 @@ impl BlobStream {
     /// Pull the next piece of arrived content. The caller MUST verify the
     /// bytes against `hash` before storing them — the key is the content's
     /// identity, so bytes hashing to something else aren't what was asked for.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] once the channel closes or the connection drops, and when the
+    /// hash field is not valid UTF-8.
     pub async fn read(&self) -> Result<BlobEvent, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
@@ -550,6 +727,11 @@ pub struct ActionStream {
 
 impl ActionStream {
     /// Pull the next action published into this room.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] once the channel closes or the connection drops, and when the
+    /// type id or the attribution string is not valid UTF-8.
     pub async fn read(&self) -> Result<ActionEvent, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
@@ -632,6 +814,11 @@ pub struct InvocationStream {
 
 impl InvocationStream {
     /// Pull the next invocation addressed to this application.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] once the channel closes or the connection drops, and when the
+    /// resource, action, actor or argument field is not valid UTF-8.
     pub async fn read(&self) -> Result<Invocation, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
@@ -667,6 +854,11 @@ pub struct PresenceHandle {
 
 impl PresenceHandle {
     /// Publish a cursor position. The broker fan-outs to peers.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the presence handle has been closed with its channel.
+    /// Presence is not permission-gated separately from membership.
     pub async fn publish_cursor(&self, x: f32, y: f32) -> Result<(), NotAvailable> {
         let mut req = self.inner.publish_cursor_request();
         {
@@ -683,6 +875,12 @@ impl PresenceHandle {
     /// `key_bytes` is a postcard-encoded `ui::PresenceKey`
     /// (`PresenceKey::Pointer` for a pointer); the broker relays those bytes
     /// untouched, so the receiver reads the space its publisher chose.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the presence handle has been closed. `key_bytes` is relayed
+    /// without being decoded, so a malformed key is not rejected here — it reaches peers, which
+    /// fail to decode it.
     pub async fn publish_pointer(
         &self,
         key_bytes: &[u8],
@@ -704,6 +902,10 @@ impl PresenceHandle {
     /// by `key_bytes`. `key_bytes` is a postcard-encoded
     /// `ui::PresenceKey`; the broker treats it as an opaque routing
     /// tag.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the presence handle has been closed.
     pub async fn publish_caret(&self, key_bytes: &[u8], pos: u64) -> Result<(), NotAvailable> {
         let mut req = self.inner.publish_caret_request();
         {
@@ -718,6 +920,11 @@ impl PresenceHandle {
     /// Publish a selection range on the keyed artifact. `start ==
     /// end` MAY be used to represent a caret; either publish path
     /// is accepted.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the presence handle has been closed. An inverted range
+    /// (`start > end`) is not validated here; it is relayed as given.
     pub async fn publish_selection(
         &self,
         key_bytes: &[u8],
@@ -736,6 +943,10 @@ impl PresenceHandle {
     }
 
     /// Publish "the local user has arrived at the keyed object".
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the presence handle has been closed.
     pub async fn publish_arrived(&self, key_bytes: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.publish_arrived_request();
         req.get().set_key_bytes(key_bytes);
@@ -744,6 +955,12 @@ impl PresenceHandle {
     }
 
     /// Publish "the local user has left the keyed object".
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the presence handle has been closed — which is also what
+    /// happens when the process goes away without sending this, so a peer must treat a dropped
+    /// connection as a departure rather than waiting for the message.
     pub async fn publish_left(&self, key_bytes: &[u8]) -> Result<(), NotAvailable> {
         let mut req = self.inner.publish_left_request();
         req.get().set_key_bytes(key_bytes);
@@ -754,6 +971,10 @@ impl PresenceHandle {
     /// LEGACY — subscribe to only remote-cursor updates. Kept so
     /// clients built against schema v1 keep compiling; new code
     /// uses [`Self::subscribe_all`].
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the presence handle has been closed.
     pub async fn subscribe_remote_cursors(&self) -> Result<CursorStream, NotAvailable> {
         let req = self.inner.subscribe_remote_cursors_request();
         let reply = req.send().promise.await?;
@@ -766,6 +987,10 @@ impl PresenceHandle {
     /// Subscribe to every kind of remote presence update in one
     /// stream. Each event carries the full [`PresencePayload`]
     /// union; clients discriminate on payload variant.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] when the presence handle has been closed.
     pub async fn subscribe_all(&self) -> Result<PresenceStream, NotAvailable> {
         let req = self.inner.subscribe_all_request();
         let reply = req.send().promise.await?;
@@ -792,6 +1017,11 @@ pub struct CursorStream {
 
 impl CursorStream {
     /// Pull the next remote-cursor update.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] once the stream closes or the connection drops, and when the user
+    /// id is not valid UTF-8.
     pub async fn read(&self) -> Result<CursorUpdate, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
@@ -857,6 +1087,13 @@ pub struct PresenceStream {
 
 impl PresenceStream {
     /// Pull the next presence event across all payload kinds.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] once the stream closes or the connection drops, when the user id
+    /// is not valid UTF-8, and when the payload union carries a variant this build's schema does
+    /// not name — a newer broker publishing a presence kind that did not exist when this app was
+    /// compiled.
     pub async fn read(&self) -> Result<PresenceEvent, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;
@@ -936,6 +1173,12 @@ pub struct ContextStream {
 
 impl ContextStream {
     /// Pull the next roster / permission snapshot.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAvailable::Capnp`] once the stream closes or the connection drops, and when any user
+    /// id, display name or permission string is not valid UTF-8 — one bad row fails the whole
+    /// snapshot, so a caller never acts on a roster it half-read.
     pub async fn read(&self) -> Result<ChannelContext, NotAvailable> {
         let req = self.inner.read_request();
         let reply = req.send().promise.await?;

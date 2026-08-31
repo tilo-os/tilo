@@ -12,6 +12,11 @@ use std::path::Path;
 pub const DEFAULT_STORAGE_SOCKET: &str = "/run/qos/fs-storage.sock";
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 
+// The five booleans are independent facts the daemon reports about one file —
+// a file can be dirty and pinned and in flight at once — and they are the
+// postcard wire format the daemon and its clients agree on. Folding them into
+// a state enum would both lose combinations and break the protocol.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SyncedFileState {
     pub workspace: String,
@@ -91,25 +96,60 @@ pub struct StorageClient {
 }
 
 impl StorageClient {
+    /// Connect to the daemon's storage socket, normally [`DEFAULT_STORAGE_SOCKET`].
+    ///
+    /// # Errors
+    ///
+    /// The `connect(2)` error: [`NotFound`](std::io::ErrorKind::NotFound) when the daemon is
+    /// not running (nothing has bound the socket path),
+    /// [`ConnectionRefused`](std::io::ErrorKind::ConnectionRefused) when the path is a stale
+    /// socket file from a dead daemon, or
+    /// [`PermissionDenied`](std::io::ErrorKind::PermissionDenied) when this process is
+    /// outside the group allowed to talk to it.
     pub fn connect(path: impl AsRef<Path>) -> std::io::Result<Self> {
         Ok(Self {
             stream: UnixStream::connect(path)?,
         })
     }
 
+    /// Ask the daemon for its current accounting of every synced file.
+    ///
+    /// # Errors
+    ///
+    /// A socket error if the request cannot be written or the reply cannot be read — the
+    /// daemon exiting mid-call arrives as
+    /// [`UnexpectedEof`](std::io::ErrorKind::UnexpectedEof). Otherwise
+    /// [`Error::other`](std::io::Error::other) carrying either the daemon's own refusal
+    /// message, or a note that it answered a different question than the one asked, which
+    /// means the two sides disagree about the protocol.
     pub fn snapshot(&mut self) -> std::io::Result<SyncStorageSnapshot> {
         match self.request(&StorageRequest::Snapshot)? {
             StorageResponse::Snapshot(snapshot) => Ok(snapshot),
             StorageResponse::Error(error) => Err(std::io::Error::other(error)),
-            _ => Err(std::io::Error::other("unexpected storage response")),
+            StorageResponse::Evicted(_) => {
+                Err(std::io::Error::other("unexpected storage response"))
+            }
         }
     }
 
+    /// Ask the daemon to drop the local content of `selected`. The daemon revalidates every
+    /// field before freeing anything, so a selection copied from a stale snapshot is skipped
+    /// (reported in [`EvictionReport::skipped`]) rather than evicting the wrong version.
+    ///
+    /// # Errors
+    ///
+    /// A socket error if the request cannot be written or the reply cannot be read.
+    /// Otherwise [`Error::other`](std::io::Error::other) carrying the daemon's refusal
+    /// message, or a note that it answered a different question than the one asked. An
+    /// individual selection the daemon declines is **not** an error: it lands in
+    /// [`EvictionReport::skipped`], so a successful return still needs that field read.
     pub fn evict(&mut self, selected: Vec<EvictionSelection>) -> std::io::Result<EvictionReport> {
         match self.request(&StorageRequest::Evict { selected })? {
             StorageResponse::Evicted(report) => Ok(report),
             StorageResponse::Error(error) => Err(std::io::Error::other(error)),
-            _ => Err(std::io::Error::other("unexpected storage response")),
+            StorageResponse::Snapshot(_) => {
+                Err(std::io::Error::other("unexpected storage response"))
+            }
         }
     }
 
@@ -119,15 +159,37 @@ impl StorageClient {
     }
 }
 
+/// Write one length-prefixed postcard frame.
+///
+/// # Errors
+///
+/// [`Error::other`](std::io::Error::other) when `value` cannot be postcard-encoded, or when
+/// the encoding exceeds the 16 MiB frame ceiling — the ceiling exists so a peer cannot make
+/// the reader allocate arbitrarily. Otherwise the writer's own error, typically
+/// [`BrokenPipe`](std::io::ErrorKind::BrokenPipe) once the far end has gone. A failure after
+/// the length prefix has gone out leaves the stream desynchronised, so the connection should
+/// be dropped rather than reused.
 pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> std::io::Result<()> {
     let bytes = postcard::to_allocvec(value).map_err(std::io::Error::other)?;
-    if bytes.len() > MAX_FRAME {
-        return Err(std::io::Error::other("storage frame too large"));
-    }
-    writer.write_all(&(bytes.len() as u32).to_le_bytes())?;
+    // Bounded above by MAX_FRAME, so the length always fits; `try_from` keeps that
+    // a checked fact instead of a cast that would wrap if the ceiling ever moved.
+    let len = u32::try_from(bytes.len())
+        .ok()
+        .filter(|_| bytes.len() <= MAX_FRAME)
+        .ok_or_else(|| std::io::Error::other("storage frame too large"))?;
+    writer.write_all(&len.to_le_bytes())?;
     writer.write_all(&bytes)
 }
 
+/// Read one length-prefixed postcard frame.
+///
+/// # Errors
+///
+/// [`UnexpectedEof`](std::io::ErrorKind::UnexpectedEof) when the stream ends mid-frame,
+/// which is how a daemon exiting mid-call arrives. [`Error::other`](std::io::Error::other)
+/// when the length prefix exceeds the 16 MiB ceiling — refused before allocating, so a
+/// hostile or desynchronised peer cannot drive this process out of memory — or when the
+/// body does not decode as `T`, meaning the two sides disagree about the protocol.
 pub fn read_frame<R: Read, T: for<'de> Deserialize<'de>>(reader: &mut R) -> std::io::Result<T> {
     let mut len = [0u8; 4];
     reader.read_exact(&mut len)?;
