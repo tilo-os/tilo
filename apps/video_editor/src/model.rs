@@ -922,6 +922,19 @@ pub struct MediaItem {
     /// comes out of the document instead of out of a file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<TextSource>,
+    /// Whether a *picture* source also carries a sound track.
+    ///
+    /// The timeline puts a video file on a video track, and the mixer used to
+    /// read audio only from audio tracks — so a talking-head clip was silent
+    /// in the preview and silent in the exported file, with nothing on screen
+    /// admitting it. This is what lets the mixer find that sound.
+    ///
+    /// False for a still, and false for a sound-only file: those land on an
+    /// audio track, which the mixer already read. It is also false for a
+    /// container whose header the probe does not parse — "no sound track was
+    /// found", not "there is none".
+    #[serde(default)]
+    pub has_audio: bool,
 }
 
 impl Default for MediaItem {
@@ -930,6 +943,7 @@ impl Default for MediaItem {
             id: Uuid::nil(),
             name: String::new(),
             kind: MediaKind::Video,
+            has_audio: false,
             duration: 0.0,
             width: 0,
             height: 0,
