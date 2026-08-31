@@ -27,7 +27,6 @@ env:
   # Cache availability changes speed, never correctness or mergeability.
   SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
   RUSTFLAGS: "-D warnings"
-  SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
   WGPU_BACKEND: vulkan
   # Every runner may expose a different physical adapter. Goldens are rendered
   # with Mesa's CPU Vulkan driver, so make all headless GPU tests use that same
