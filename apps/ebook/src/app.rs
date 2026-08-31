@@ -60,6 +60,7 @@ use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice, layout_
 use crate::paint;
 use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
+use crate::reading_settings::{ReadingSettings, ReadingSettingsAction};
 use crate::shelf_controls::{ShelfControlAction, ShelfControls};
 
 const TOP_BAR: f64 = 54.0;
@@ -364,8 +365,6 @@ enum Ico {
     Toc,
     Notes,
     Bookmark(bool),
-    /// A horizontal three-dot "more" glyph (opens the full settings screen).
-    Dots,
     /// A downward chevron (dropdown affordance).
     ChevDown,
 }
@@ -478,9 +477,9 @@ pub struct BooksApp {
     /// Accumulated wheel delta in the reader, so a trackpad's small pixel
     /// deltas coalesce into whole page turns.
     turn_accum: f64,
-    /// Reading-settings popover (text size / spacing / typeface / page tint),
-    /// summoned by the "Aa" button in the top bar.
-    type_popover: bool,
+    /// Reading-settings popover; owns its open state, drawing, inputs, and
+    /// modal hit stack, and emits settings effects for CRDT persistence here.
+    reading_settings: ReadingSettings,
 
     /// Owns the transient page indicator's animation, drawing and hit-testing.
     reader_bubble: ReaderBubble,
@@ -685,7 +684,7 @@ impl BooksApp {
             shelf_cols: 1,
             scroll_to_cursor: false,
             turn_accum: 0.0,
-            type_popover: false,
+            reading_settings: ReadingSettings::default(),
             reader_bubble: ReaderBubble::default(),
             cursor: Point::ZERO,
             page_top_block: 0,
@@ -909,7 +908,7 @@ impl BooksApp {
             }
             "type" => {
                 self.view = View::Reader;
-                self.type_popover = true;
+                self.reading_settings.open();
             }
             "library-scrolled" => {
                 // The large value clamps to the real max in draw.
@@ -1518,7 +1517,7 @@ impl BooksApp {
             Action::GotoChapter(c) => self.on_goto_chapter(c),
             Action::ToggleToc => self.on_toggle_toc(),
             Action::ToggleNotes => self.on_toggle_notes(),
-            Action::ToggleTypePopover => self.type_popover = !self.type_popover,
+            Action::ToggleTypePopover => self.reading_settings.toggle(),
             Action::DismissOverlay => self.on_dismiss_overlay(),
             Action::Swallow => {}
             Action::ToggleBookmark => self.toggle_bookmark(doc),
@@ -1591,12 +1590,35 @@ impl BooksApp {
         }
     }
 
+    fn dispatch_reading_settings(&mut self, action: ReadingSettingsAction, doc: &mut AutoCommit) {
+        match action {
+            ReadingSettingsAction::Swallow => {}
+            ReadingSettingsAction::Dismiss => self.reading_settings.close(),
+            ReadingSettingsAction::OpenManager => self.dispatch(Action::OpenSettings, doc),
+            ReadingSettingsAction::SetFontScale(value) => {
+                self.bump_setting(doc, |settings| settings.font_scale = value);
+            }
+            ReadingSettingsAction::SetLineSpacing(value) => {
+                self.bump_setting(doc, |settings| settings.line_spacing = value);
+            }
+            ReadingSettingsAction::SetMode(mode) => self.dispatch(Action::SetMode(mode), doc),
+            ReadingSettingsAction::SetComposition(composition) => {
+                self.dispatch(Action::SetComposition(composition), doc);
+            }
+            ReadingSettingsAction::SetFont(id) => self.dispatch(Action::SetFont(id), doc),
+            ReadingSettingsAction::SetReadTheme(theme) => {
+                self.dispatch(Action::SetReadTheme(theme), doc);
+            }
+            ReadingSettingsAction::SetScheme(id) => self.dispatch(Action::SetScheme(id), doc),
+        }
+    }
+
     fn on_back(&mut self) {
         self.view = View::Library;
         self.composing = None;
         self.note_composer.close();
         self.comment_overlay.close();
-        self.type_popover = false;
+        self.reading_settings.close();
     }
 
     fn on_next_page(&mut self) {
@@ -1684,7 +1706,7 @@ impl BooksApp {
     }
 
     fn on_dismiss_overlay(&mut self) {
-        self.type_popover = false;
+        self.reading_settings.close();
         if self.toc_layout() == SplitLayout::Overlay && self.toc_open() {
             self.toc_flap.close();
         }
@@ -1896,7 +1918,7 @@ impl BooksApp {
 
     fn on_open_settings(&mut self) {
         self.view = View::Settings;
-        self.type_popover = false;
+        self.reading_settings.close();
         // Numeric controls retain their own edit state and commit on blur.
         self.font_picker = false;
         self.color_picker.cancel();
@@ -2277,32 +2299,6 @@ impl BooksApp {
         };
         let mono = f.kind.is_mono();
         (choice, f.size_mult, font_sig(&f), mono)
-    }
-
-    /// Every enabled scheme (built-ins + custom). Built-in tints route
-    /// through `SetReadTheme` to keep their hand-tuned palette; custom
-    /// schemes apply their own colours.
-    fn quick_scheme_pills(&self) -> Vec<SchemePill> {
-        self.schemes
-            .iter()
-            .filter(|s| s.enabled)
-            .map(|s| {
-                if s.builtin {
-                    let rt = ReadTheme::from_str(&s.id);
-                    SchemePill {
-                        label: s.name.clone(),
-                        action: Action::SetReadTheme(rt),
-                        active: self.settings.scheme_id.is_empty() && self.settings.theme == rt,
-                    }
-                } else {
-                    SchemePill {
-                        label: s.name.clone(),
-                        action: Action::SetScheme(s.id.clone()),
-                        active: self.settings.scheme_id == s.id,
-                    }
-                }
-            })
-            .collect()
     }
 
     /// Resolve the reader's page palette: a selected, enabled custom scheme wins;
@@ -2972,34 +2968,6 @@ enum NoteEdit {
     Done,
 }
 
-/// One PAGE pill in the quick-settings popover: a colour scheme the reader
-/// can switch to (built-in tint or enabled custom scheme).
-struct SchemePill {
-    label: String,
-    action: Action,
-    active: bool,
-}
-
-/// Count how many rows a run of pill widths wraps into within `max_w`, matching
-/// the greedy layout the draw loop uses (so a pre-sized panel fits its pills).
-fn wrap_row_count(widths: &[f64], max_w: f64, gap: f64) -> usize {
-    if widths.is_empty() {
-        return 1;
-    }
-    let mut rows = 1;
-    let mut x = 0.0;
-    for (i, &w) in widths.iter().enumerate() {
-        let adv = if i == 0 { w } else { gap + w };
-        if x + adv > max_w && x > 0.0 {
-            rows += 1;
-            x = w;
-        } else {
-            x += adv;
-        }
-    }
-    rows
-}
-
 impl Widget for BooksApp {
     /// Publish the open book + its annotations so the host's Ctrl+K action
     /// palette scopes to them, via [`crate::actions`]'s
@@ -3170,6 +3138,7 @@ impl Widget for BooksApp {
         self.hits.clear();
         self.comment_overlay.begin_frame();
         self.number_controls.begin_frame();
+        self.reading_settings.begin_frame();
         // Advance the rail flap transitions (reconcile first so a resize this
         // frame uses the right mode default) before laying anything out.
         self.reconcile_flaps();
@@ -3330,6 +3299,20 @@ impl BooksApp {
             input_handled = true;
         }
 
+        let settings_actions = self.reading_settings.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            doc,
+            path,
+            node_id,
+            taffy,
+            &mut input_handled,
+        );
+        for action in settings_actions {
+            self.dispatch_reading_settings(action, doc);
+        }
+
         let changes = self.number_controls.handle_event(
             event,
             scale_factor,
@@ -3415,6 +3398,7 @@ impl BooksApp {
             return;
         }
         self.cursor = p;
+        self.reading_settings.set_cursor(p);
         self.dirty = true; // hover feedback
         // Margin-marker drag: a release past the threshold
         // re-anchors the highlight (vs a plain tap → comments).
@@ -3486,6 +3470,13 @@ impl BooksApp {
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
+        if let Some(action) = self.reading_settings.hit_test(self.cursor) {
+            self.dispatch_reading_settings(action, doc);
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
         if let Some(action) = self.color_picker.press(self.cursor) {
             self.mouse_down = true;
             match action {
@@ -3889,8 +3880,8 @@ impl BooksApp {
                     self.notes_layout() == SplitLayout::Overlay && self.notes_open();
                 if self.comment_overlay.is_open() {
                     self.dispatch(Action::CloseComments, doc);
-                } else if self.type_popover {
-                    self.type_popover = false;
+                } else if self.reading_settings.is_open() {
+                    self.reading_settings.close();
                 } else if toc_overlay || notes_overlay {
                     self.dispatch(Action::DismissOverlay, doc);
                 } else {
@@ -3947,7 +3938,7 @@ impl BooksApp {
         if dx == 0.0 || self.view != View::Reader {
             return false;
         }
-        if self.type_popover || self.composing.is_some() {
+        if self.reading_settings.is_open() || self.composing.is_some() {
             return false;
         }
         self.swipe_accum += dx;
@@ -4018,7 +4009,7 @@ impl BooksApp {
                 // A page fills the viewport, so the wheel turns pages rather than
                 // scrolling within one. Suppressed while a modal surface (the
                 // reading-settings popover or an in-progress note) owns input.
-                if self.type_popover || self.composing.is_some() {
+                if self.reading_settings.is_open() || self.composing.is_some() {
                     return false;
                 }
                 // Continuous mode scrolls the flow by pixels instead of turning
@@ -4113,7 +4104,6 @@ impl BooksApp {
             Ico::Toc => paint::list(scene, t, inner, icon_col, w),
             Ico::Notes => paint::note(scene, t, inner, icon_col, w),
             Ico::Bookmark(filled) => paint::bookmark(scene, t, inner, icon_col, w, filled),
-            Ico::Dots => paint::dots(scene, t, inner, icon_col),
             Ico::ChevDown => paint::chevron_down(scene, t, inner, icon_col, w),
         }
         self.push_hit(rect, action);
@@ -5290,23 +5280,6 @@ struct ReaderPageGeometry {
     gutter: f64,
 }
 
-/// Sizing + pre-measured content for the reading-settings popover, computed
-/// once per [`BooksApp::draw_type_popover`] call.
-struct TypePopoverLayout {
-    pad: f64,
-    row_h: f64,
-    pill_h: f64,
-    pill_gap: f64,
-    header_h: f64,
-    panel: Rect,
-    /// Inner-content left/right edges (`panel` inset by `pad`).
-    ix0: f64,
-    ix1: f64,
-    font_pills: Vec<(String, String, f64, bool)>,
-    scheme_pills: Vec<SchemePill>,
-    scheme_widths: Vec<f64>,
-}
-
 impl BooksApp {
     fn draw_reader(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let lib = std::mem::take(&mut self.library);
@@ -5534,8 +5507,21 @@ impl BooksApp {
             self.hi_color,
             self.composing,
         );
-        // Reading-settings popover floats above everything.
-        self.draw_type_popover(scene, t, tr, theme, c);
+        // Reading-settings floats above everything and owns its own modal hit
+        // stack; only the available reader span is supplied by the host.
+        self.reading_settings.draw(
+            scene,
+            t,
+            tr,
+            theme,
+            self.rect,
+            geom.center_x0 + 12.0,
+            geom.center_x1 - 18.0,
+            &self.settings,
+            &self.fonts,
+            &self.default_font_id,
+            &self.schemes,
+        );
 
         self.library = lib;
     }
@@ -6897,7 +6883,7 @@ impl BooksApp {
         let aa_h = 32.0;
         let aa_y = r.y0 + (TOP_BAR - aa_h) / 2.0;
         let aa_rect = Rect::new(rx, aa_y, rx + aa_w, aa_y + aa_h);
-        let aa_active = self.type_popover;
+        let aa_active = self.reading_settings.is_open();
         let aa_hover = self.is_hover(aa_rect);
         let aa_bg = if aa_active {
             theme.accent_primary
@@ -6925,553 +6911,6 @@ impl BooksApp {
             TextWeight::Semibold,
         );
         self.push_hit(aa_rect, Action::ToggleTypePopover);
-    }
-
-    /// Horizontal bounds `(left, right)` for the reading-settings popover,
-    /// kept clear of any docked rail. Shared by the draw path and its layout test.
-    fn type_popover_x_bounds(&self, panel_w: f64) -> (f64, f64) {
-        let r = self.rect;
-        let notes_docked_w = match self.notes_layout() {
-            SplitLayout::Docked => NOTES_W * self.notes_flap.reveal(),
-            SplitLayout::Overlay => 0.0,
-        };
-        let toc_docked_w = match self.toc_layout() {
-            SplitLayout::Docked => TOC_W * self.toc_flap.reveal(),
-            SplitLayout::Overlay => 0.0,
-        };
-        let px1 = r.x1 - 18.0 - notes_docked_w;
-        let px0 = (px1 - panel_w).max(r.x0 + 12.0 + toc_docked_w);
-        (px0, px1)
-    }
-
-    fn draw_type_popover(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-    ) {
-        if !self.type_popover {
-            return;
-        }
-        let r = self.rect;
-        // No scrim: the page IS the live preview of the type/colour you're
-        // choosing, so it must stay at full brightness while this popover is
-        // open. A full-surface *invisible* dismiss target still lets a tap
-        // anywhere off the panel close it.
-        self.push_hit(r, Action::DismissOverlay);
-
-        let layout = self.type_popover_layout(tr, r);
-        // Body panel (its own tap-swallow so clicks inside don't dismiss).
-        paint::fill_round(
-            scene,
-            t,
-            layout.panel,
-            f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            t,
-            layout.panel,
-            f64::from(theme.tokens.radii.lg),
-            c.border_standard,
-            1.0,
-        );
-        self.push_hit(layout.panel, Action::Swallow);
-
-        let (ix0, ix1) = (layout.ix0, layout.ix1);
-        let y = layout.panel.y0 + layout.pad;
-        let y = self.draw_type_popover_header(scene, t, tr, theme, c, ix0, ix1, y, layout.header_h);
-        let y = self.draw_type_popover_steppers(scene, t, tr, theme, c, ix0, ix1, y, layout.row_h);
-        let y = self.draw_type_popover_layout_row(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            ix0,
-            ix1,
-            y,
-            layout.pill_h,
-            layout.pill_gap,
-        );
-        let y = self.draw_type_popover_composition_row(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            ix0,
-            y,
-            layout.pill_h,
-            layout.pill_gap,
-        );
-        let y = self.draw_type_popover_typeface_row(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            ix0,
-            ix1,
-            y,
-            layout.pill_h,
-            layout.pill_gap,
-            &layout.font_pills,
-        );
-        self.draw_type_popover_page_row(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            ix0,
-            ix1,
-            y,
-            layout.pill_h,
-            layout.pill_gap,
-            &layout.scheme_pills,
-            &layout.scheme_widths,
-        );
-    }
-
-    /// Sizing for the whole popover: pre-measured font/scheme pills (so the
-    /// panel sizes to however many the reader has chosen to show), the
-    /// panel's total height from every section's row count, and its clamped
-    /// on-screen rect.
-    fn type_popover_layout(&self, tr: &mut TextRenderer, r: Rect) -> TypePopoverLayout {
-        let pad = 16.0;
-        let row_h = 34.0;
-        let pill_h = row_h - 4.0;
-        let pill_gap = 8.0;
-        let panel_w = 320.0_f64.min(r.width() - 24.0);
-        let inner_w = panel_w - pad * 2.0;
-
-        let shown = self.shown_fonts();
-        let active_id = self.active_font().id;
-        let font_pills: Vec<(String, String, f64, bool)> = shown
-            .iter()
-            .map(|f| {
-                let w = f64::from(
-                    tr.measure_weighted(&f.name, 12.5, None, TextWeight::Medium)
-                        .0,
-                ) + 24.0;
-                (f.id.clone(), f.name.clone(), w, f.id == active_id)
-            })
-            .collect();
-        let font_widths: Vec<f64> = font_pills.iter().map(|p| p.2).collect();
-        let font_rows = wrap_row_count(&font_widths, inner_w, pill_gap);
-
-        // Enabled colour schemes offered as PAGE pills.
-        let scheme_pills: Vec<SchemePill> = self.quick_scheme_pills();
-        let scheme_widths: Vec<f64> = scheme_pills
-            .iter()
-            .map(|p| {
-                f64::from(
-                    tr.measure_weighted(&p.label, 12.5, None, TextWeight::Medium)
-                        .0,
-                ) + 24.0
-            })
-            .collect();
-        let scheme_rows = wrap_row_count(&scheme_widths, inner_w, pill_gap);
-
-        let header_h = 30.0;
-        let steppers_h = row_h + 10.0 + row_h;
-        // Layout row: a "LAYOUT" label + one row of page/scroll/spread pills.
-        let layout_h = 16.0 + pill_h;
-        let composition_h = 16.0 + pill_h;
-        let type_h =
-            16.0 + font_rows as f64 * pill_h + font_rows.saturating_sub(1) as f64 * pill_gap;
-        let page_h =
-            16.0 + scheme_rows as f64 * pill_h + scheme_rows.saturating_sub(1) as f64 * pill_gap;
-        let panel_h = pad * 2.0
-            + header_h
-            + steppers_h
-            + 22.0
-            + layout_h
-            + 22.0
-            + composition_h
-            + 22.0
-            + type_h
-            + 22.0
-            + page_h;
-
-        // The "Aa" trigger now lives in the top bar, so the popover drops down
-        // from just below it (right-aligned via the shared x-bounds), clamping
-        // its foot to the window bottom on a short window.
-        let (px0, px1) = self.type_popover_x_bounds(panel_w);
-        let py0 = r.y0 + TOP_BAR + 8.0;
-        let py1 = (py0 + panel_h).min(r.y1 - 12.0);
-
-        TypePopoverLayout {
-            pad,
-            row_h,
-            pill_h,
-            pill_gap,
-            header_h,
-            panel: Rect::new(px0, py0, px1, py1),
-            ix0: px0 + pad,
-            ix1: px1 - pad,
-            font_pills,
-            scheme_pills,
-            scheme_widths,
-        }
-    }
-
-    /// "Display" title + the ⋯ button that opens the full settings manager.
-    /// Returns the y just below the header.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_type_popover_header(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        y: f64,
-        header_h: f64,
-    ) -> f64 {
-        // Header: "Display" + a small ⋯ button that opens the full manager.
-        tr.draw_text_weighted(
-            scene,
-            "Display",
-            13.5,
-            c.text_primary,
-            t * Affine::translate((ix0, y + 4.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let dots_s = 26.0;
-        self.icon_button(
-            scene,
-            t,
-            theme,
-            ix1 - dots_s,
-            y - 2.0,
-            dots_s,
-            Ico::Dots,
-            false,
-            Action::OpenSettings,
-        );
-        y + header_h
-    }
-
-    /// Text-size and line-spacing steppers (each value is click-to-type as
-    /// well as +/− steppable). Returns the y just below them.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_type_popover_steppers(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        y: f64,
-        row_h: f64,
-    ) -> f64 {
-        self.stepper_row(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            ix0,
-            ix1,
-            y,
-            row_h,
-            "Text size",
-            f64::from(self.settings.font_scale) * 100.0,
-            NumberField::FontScale,
-        );
-        let y = y + row_h + 10.0;
-        self.stepper_row(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            ix0,
-            ix1,
-            y,
-            row_h,
-            "Line spacing",
-            f64::from(self.settings.line_spacing),
-            NumberField::LineSpacing,
-        );
-        y + row_h + 22.0
-    }
-
-    /// "LAYOUT" — single page / continuous scroll / two-up spread pills,
-    /// wrapping within the panel. Returns the y just below the row(s).
-    #[allow(clippy::too_many_arguments)]
-    fn draw_type_popover_layout_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        mut y: f64,
-        pill_h: f64,
-        pill_gap: f64,
-    ) -> f64 {
-        tr.draw_text_weighted(
-            scene,
-            "LAYOUT",
-            10.0,
-            c.text_dim,
-            t * Affine::translate((ix0, y)),
-            None,
-            TextWeight::Semibold,
-        );
-        y += 16.0;
-        let mut sx = ix0;
-        for m in ReadMode::ALL {
-            let w = f64::from(
-                tr.measure_weighted(m.label(), 12.5, None, TextWeight::Medium)
-                    .0,
-            ) + 24.0;
-            if sx + w > ix1 && sx > ix0 {
-                sx = ix0;
-                y += pill_h + pill_gap;
-            }
-            let active = self.settings.mode == m;
-            let action = if active {
-                Action::Swallow
-            } else {
-                Action::SetMode(m)
-            };
-            self.pill(
-                scene,
-                t,
-                tr,
-                theme,
-                sx,
-                y,
-                pill_h,
-                m.label(),
-                12.5,
-                active,
-                Some(action),
-            );
-            sx += w + pill_gap;
-        }
-        y + pill_h + 22.0
-    }
-
-    /// "COMPOSITION" — book-quality global fitting or natural ragged lines.
-    /// Returns the y just below the row.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_type_popover_composition_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        mut y: f64,
-        pill_h: f64,
-        pill_gap: f64,
-    ) -> f64 {
-        tr.draw_text_weighted(
-            scene,
-            "COMPOSITION",
-            10.0,
-            c.text_dim,
-            t * Affine::translate((ix0, y)),
-            None,
-            TextWeight::Semibold,
-        );
-        y += 16.0;
-        let mut sx = ix0;
-        for composition in CompositionStyle::ALL {
-            let label = composition.label();
-            let width =
-                f64::from(tr.measure_weighted(label, 12.5, None, TextWeight::Medium).0) + 24.0;
-            let active = self.settings.composition == composition;
-            let action = if active {
-                Action::Swallow
-            } else {
-                Action::SetComposition(composition)
-            };
-            self.pill(
-                scene,
-                t,
-                tr,
-                theme,
-                sx,
-                y,
-                pill_h,
-                label,
-                12.5,
-                active,
-                Some(action),
-            );
-            sx += width + pill_gap;
-        }
-        y + pill_h + 22.0
-    }
-
-    /// "TYPEFACE" — one pill per shown font, wrapping within the panel.
-    /// Returns the y just below the row(s).
-    #[allow(clippy::too_many_arguments)]
-    fn draw_type_popover_typeface_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        mut y: f64,
-        pill_h: f64,
-        pill_gap: f64,
-        font_pills: &[(String, String, f64, bool)],
-    ) -> f64 {
-        tr.draw_text_weighted(
-            scene,
-            "TYPEFACE",
-            10.0,
-            c.text_dim,
-            t * Affine::translate((ix0, y)),
-            None,
-            TextWeight::Semibold,
-        );
-        y += 16.0;
-        let mut sx = ix0;
-        for (id, name, w, active) in font_pills {
-            if sx + w > ix1 && sx > ix0 {
-                sx = ix0;
-                y += pill_h + pill_gap;
-            }
-            let action = if *active {
-                Action::Swallow
-            } else {
-                Action::SetFont(id.clone())
-            };
-            self.pill(
-                scene,
-                t,
-                tr,
-                theme,
-                sx,
-                y,
-                pill_h,
-                name,
-                12.5,
-                *active,
-                Some(action),
-            );
-            sx += w + pill_gap;
-        }
-        y + pill_h + 22.0
-    }
-
-    /// "PAGE" — one pill per enabled colour scheme, wrapping within the panel.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_type_popover_page_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        mut y: f64,
-        pill_h: f64,
-        pill_gap: f64,
-        scheme_pills: &[SchemePill],
-        scheme_widths: &[f64],
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            "PAGE",
-            10.0,
-            c.text_dim,
-            t * Affine::translate((ix0, y)),
-            None,
-            TextWeight::Semibold,
-        );
-        y += 16.0;
-        let mut sx = ix0;
-        for (p, w) in scheme_pills.iter().zip(scheme_widths.iter()) {
-            if sx + w > ix1 && sx > ix0 {
-                sx = ix0;
-                y += pill_h + pill_gap;
-            }
-            let action = if p.active {
-                Action::Swallow
-            } else {
-                p.action.clone()
-            };
-            self.pill(
-                scene,
-                t,
-                tr,
-                theme,
-                sx,
-                y,
-                pill_h,
-                &p.label,
-                12.5,
-                p.active,
-                Some(action),
-            );
-            sx += w + pill_gap;
-        }
-        let _ = y;
-    }
-
-    /// A labelled −/value/＋ stepper row used inside the reading popover. The
-    /// value itself is a click-to-type field: tapping it (via `field`) starts a
-    /// numeric edit, in addition to the ± steppers.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn stepper_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x0: f64,
-        x1: f64,
-        y: f64,
-        h: f64,
-        label: &str,
-        value: f64,
-        field: NumberField,
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            label,
-            13.0,
-            c.text_primary,
-            t * Affine::translate((x0, y + (h - 13.0) / 2.0)),
-            None,
-            TextWeight::Medium,
-        );
-        let width = (h * 2.0 + 62.0).min((x1 - x0) * 0.58);
-        self.number_controls.draw(
-            &field,
-            value,
-            Rect::new(x1 - width, y, x1, y + h),
-            scene,
-            t,
-            tr,
-            theme,
-        );
     }
 
     /// `panel_x0` is the rail's left edge — `r.x0` when docked, or a slid
@@ -9721,6 +9160,15 @@ mod interaction_tests {
             })
     }
 
+    fn find_reading_hit(
+        app: &BooksApp,
+        pred: impl Fn(&ReadingSettingsAction) -> bool,
+    ) -> Option<Point> {
+        app.reading_settings
+            .action_rect(pred)
+            .map(|rect| rect.center())
+    }
+
     /// Route a real left-click at `p` (logical px) through `handle_event`.
     fn click(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) -> bool {
         let mods = Modifiers::default();
@@ -10095,9 +9543,9 @@ mod interaction_tests {
         let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
         click(&mut app, &mut doc, aa);
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        let sans = find_hit(
+        let sans = find_reading_hit(
             &app,
-            |a| matches!(a, Action::SetFont(id) if id.as_str() == "default"),
+            |a| matches!(a, ReadingSettingsAction::SetFont(id) if id == "default"),
         )
         .expect("default (sans) pill");
         assert!(click(&mut app, &mut doc, sans), "sans pill handled");
@@ -10119,9 +9567,9 @@ mod interaction_tests {
             "font signature differs so the chapter relays out"
         );
         // And back to serif via its own pill — reselecting the reading face.
-        let serif = find_hit(
+        let serif = find_reading_hit(
             &app,
-            |a| matches!(a, Action::SetFont(id) if id.as_str() == "serif"),
+            |a| matches!(a, ReadingSettingsAction::SetFont(id) if id == "serif"),
         )
         .expect("serif pill");
         assert!(click(&mut app, &mut doc, serif), "serif pill handled");
@@ -10187,8 +9635,6 @@ mod interaction_tests {
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Colours;
         frame(&mut app, &mut doc, 1200.0, 820.0);
-        // All four built-in schemes start enabled and offered in quick settings.
-        assert_eq!(app.quick_scheme_pills().len(), 4);
         // Toggle the Light scheme off through its manager row.
         let toggle = find_hit(
             &app,
@@ -10196,16 +9642,24 @@ mod interaction_tests {
         )
         .expect("scheme enable toggle");
         assert!(click(&mut app, &mut doc, toggle), "toggle handled");
+        app.view = View::Reader;
+        app.reading_settings.open();
         frame(&mut app, &mut doc, 1200.0, 820.0);
-        let pills = app.quick_scheme_pills();
-        assert_eq!(
-            pills.len(),
-            3,
-            "a disabled scheme drops out of quick settings"
+        assert!(
+            find_reading_hit(&app, |action| matches!(
+                action,
+                ReadingSettingsAction::SetReadTheme(ReadTheme::Light)
+            ))
+            .is_none(),
+            "Light is gone from quick settings"
         );
         assert!(
-            !pills.iter().any(|p| p.label == "Light"),
-            "Light is gone from quick settings"
+            find_reading_hit(&app, |action| matches!(
+                action,
+                ReadingSettingsAction::SetReadTheme(ReadTheme::Dark)
+            ))
+            .is_some(),
+            "enabled schemes remain in quick settings"
         );
     }
 
@@ -10537,7 +9991,7 @@ mod interaction_tests {
         let mut doc = AutoCommit::new();
         // Same page, popover closed then open.
         let closed = render_scene(&mut app, &mut doc, f64::from(w), f64::from(h));
-        app.type_popover = true;
+        app.reading_settings.open();
         let open = render_scene(&mut app, &mut doc, f64::from(w), f64::from(h));
 
         let mut ro = OffscreenRenderer::new(w, h);
@@ -10562,10 +10016,13 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(app.layout.is_some(), "reader starts laid out");
 
-        app.type_popover = true;
+        app.reading_settings.open();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        let ragged = find_hit(&app, |action| {
-            matches!(action, Action::SetComposition(CompositionStyle::Ragged))
+        let ragged = find_reading_hit(&app, |action| {
+            matches!(
+                action,
+                ReadingSettingsAction::SetComposition(CompositionStyle::Ragged)
+            )
         })
         .expect("settings popover exposes the Ragged composition choice");
         assert!(click(&mut app, &mut doc, ragged), "choice is clickable");
@@ -11239,14 +10696,16 @@ mod interaction_tests {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        assert!(!app.type_popover);
+        assert!(!app.reading_settings.is_open());
         let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
         assert!(click(&mut app, &mut doc, aa));
-        assert!(app.type_popover, "popover opened");
+        assert!(app.reading_settings.is_open(), "popover opened");
         // Choose the Dark page tint from the popover.
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        let dark = find_hit(&app, |a| matches!(a, Action::SetReadTheme(ReadTheme::Dark)))
-            .expect("dark tint pill");
+        let dark = find_reading_hit(&app, |action| {
+            matches!(action, ReadingSettingsAction::SetReadTheme(ReadTheme::Dark))
+        })
+        .expect("dark tint pill");
         assert!(click(&mut app, &mut doc, dark));
         assert_eq!(BooksDoc::read_settings(&doc).theme, ReadTheme::Dark);
     }
@@ -11609,8 +11068,11 @@ mod interaction_tests {
             "wide window docks the rail"
         );
 
-        let panel_w = 320.0_f64.min(app.rect.width() - 24.0);
-        let (px0, px1) = app.type_popover_x_bounds(panel_w);
+        let (px0, px1) = ReadingSettings::panel_x_bounds(
+            app.rect,
+            app.rect.x0 + 12.0 + TOC_W,
+            app.rect.x1 - 18.0 - NOTES_W,
+        );
         let rail_left = app.rect.x1 - NOTES_W;
         assert!(
             px1 <= rail_left,
@@ -12008,8 +11470,8 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let base = BooksDoc::read_settings(&doc).font_scale;
         let font = app
-            .number_controls
-            .rect(&NumberField::FontScale)
+            .reading_settings
+            .number_rect(&NumberField::FontScale)
             .expect("font + stepper");
         let inc = Point::new(
             font.x1 - font.height() / 2.0,
@@ -12026,8 +11488,8 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let sbase = BooksDoc::read_settings(&doc).line_spacing;
         let spacing = app
-            .number_controls
-            .rect(&NumberField::LineSpacing)
+            .reading_settings
+            .number_rect(&NumberField::LineSpacing)
             .expect("spacing - stepper");
         let dec = Point::new(
             spacing.x0 + spacing.height() / 2.0,
@@ -12099,9 +11561,9 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 700.0);
 
         // Layer 1: an open type popover — first Escape closes only that.
-        app.type_popover = true;
+        app.reading_settings.open();
         assert!(key_named(&mut app, &mut doc, NamedKey::Escape));
-        assert!(!app.type_popover, "escape closed the popover");
+        assert!(!app.reading_settings.is_open(), "escape closed the popover");
         assert_eq!(app.view, View::Reader, "still in the book");
 
         // Layer 2: a narrow window with the contents overlay flap open.
@@ -12159,8 +11621,8 @@ mod interaction_tests {
         // Tap the text-size value to type a number directly.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let val = app
-            .number_controls
-            .rect(&NumberField::FontScale)
+            .reading_settings
+            .number_rect(&NumberField::FontScale)
             .expect("the text-size value is a shared number field");
         let val = Point::new(f64::midpoint(val.x0, val.x1), f64::midpoint(val.y0, val.y1));
         assert!(click(&mut app, &mut doc, val), "value tap handled");
@@ -12180,8 +11642,8 @@ mod interaction_tests {
         // Line spacing is click-to-type too.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let ls_val = app
-            .number_controls
-            .rect(&NumberField::LineSpacing)
+            .reading_settings
+            .number_rect(&NumberField::LineSpacing)
             .expect("line spacing is a shared number field");
         let ls_val = Point::new(
             f64::midpoint(ls_val.x0, ls_val.x1),
