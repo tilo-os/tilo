@@ -41,7 +41,6 @@ impl ZoomControl {
         self.factor
     }
 
-    #[cfg(test)]
     pub(crate) fn anchor(&self) -> Point {
         self.anchor
     }
@@ -74,10 +73,12 @@ impl ZoomControl {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn content_x_to_screen(&self, x: f64) -> f64 {
         self.anchor.x + (x - self.anchor.x) * self.factor
     }
 
+    #[cfg(test)]
     pub(crate) fn screen_x_to_content(&self, x: f64) -> f64 {
         self.anchor.x + (x - self.anchor.x) / self.factor
     }
