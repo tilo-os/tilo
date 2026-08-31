@@ -1,0 +1,211 @@
+name: Package the qOS desktop session
+
+# Native builds are intentional: the compositor links the distribution's
+# graphics/input stack and cannot be safely produced by a generic cross image.
+# Register runners with both `runner` and `amd64`/`arm64` labels; see
+# docs/packaging.md. Pull requests build and install-test everything. Version
+# tags additionally publish the verified artifacts to a Forgejo release.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "dist/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".cargo/config.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".forgejo/workflows/package-desktop.yml"
+  push:
+    branches: ["codex/package-desktop-release"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: package-desktop-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  validate:
+    runs-on: runner
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Validate packaging inputs before allocating native builders
+        run: |
+          set -euo pipefail
+          bash -n dist/*.sh dist/*/*.sh
+          test "$(<dist/VERSION)" = "$(sed -n 's/^pkgver=//p' dist/arch/PKGBUILD)"
+          grep -Fxq "%{!?qos_version:%global qos_version $(<dist/VERSION)}" dist/rpm/qos-session.spec
+          dist/session/tests/dev-session-refusals.sh
+          os/tests/portal_config_validity.sh
+
+  debian:
+    needs: validate
+    env:
+      CARGO_HOME: /usr/local/cargo
+      RUSTUP_HOME: /usr/local/rustup
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: [runner, "${{ matrix.arch }}"]
+    container: ubuntu:24.04
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y nodejs git curl ca-certificates
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Install native desktop dependencies and Rust
+        run: dist/ci/install-build-deps.sh debian
+      - name: Build Debian packages
+        run: dist/debian/build-deb.sh
+      - name: Inspect and install-test packages
+        run: |
+          dpkg-deb --info dist/debian/build/qos-session_*.deb
+          dist/debian/test-package.sh dist/debian/build/qos-session_*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-${{ matrix.arch }}
+          path: dist/debian/build/*.deb
+          if-no-files-found: error
+
+  fedora:
+    needs: validate
+    env:
+      CARGO_HOME: /usr/local/cargo
+      RUSTUP_HOME: /usr/local/rustup
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: [runner, "${{ matrix.arch }}"]
+    container: registry.fedoraproject.org/fedora:42
+    steps:
+      - name: Install checkout dependencies
+        run: dnf install -y nodejs git curl ca-certificates
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Install native desktop dependencies and Rust
+        run: dist/ci/install-build-deps.sh fedora
+      - name: Build RPM packages
+        run: dist/rpm/build-rpm.sh
+      - name: Inspect and install-test packages
+        run: |
+          rpm -qip dist/rpm/build/RPMS/*/qos-session-*.rpm
+          dist/rpm/test-package.sh dist/rpm/build/RPMS/*/qos-session-*.rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fedora-${{ matrix.arch }}
+          path: dist/rpm/build/RPMS/**/*.rpm
+          if-no-files-found: error
+
+  arch:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: [runner, "${{ matrix.arch }}"]
+    # Arch itself is x86-64-only. This pinned multi-arch image uses Arch on
+    # amd64 and the matching Arch Linux ARM repositories on aarch64.
+    container: menci/archlinuxarm@sha256:730b232affd3cf553c2e416824ea696b1f07ab8fc4e43190d0658a027f94fb22
+    steps:
+      - name: Install checkout dependencies
+        run: pacman -Syu --noconfirm nodejs git
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 0
+      - name: Install native desktop dependencies
+        run: dist/ci/install-build-deps.sh arch
+      - name: Build Arch packages as an unprivileged user
+        run: |
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su builder -c "cd '$GITHUB_WORKSPACE' && dist/arch/build-arch.sh"
+      - name: Inspect and install-test packages
+        run: |
+          pacman -Qip dist/arch/build/qos-session-*.pkg.tar.*
+          dist/arch/test-package.sh dist/arch/build/qos-session-*.pkg.tar.*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-${{ matrix.arch }}
+          path: dist/arch/build/*.pkg.tar.*
+          if-no-files-found: error
+
+  nix:
+    needs: validate
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: [runner, "${{ matrix.arch }}"]
+    container: nixos/nix:2.24.9
+    steps:
+      - name: Install checkout dependencies
+        run: nix-env -iA nixpkgs.nodejs nixpkgs.git nixpkgs.gzip nixpkgs.file
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Build and inspect the flake package
+        run: |
+          nix build --print-build-logs .#qos-session
+          file result/bin/qos-shell | grep -Eq 'ELF 64-bit.*(x86-64|ARM aarch64)'
+          test -f result/share/wayland-sessions/qos.desktop
+          nix flake check --no-build
+      - name: Export the exact Nix store closure
+        run: |
+          mkdir -p dist/nix/build
+          nix-store --export $(nix-store --query --requisites result) \
+            | gzip -9 > "dist/nix/build/qos-session-${{ matrix.arch }}.nar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nix-${{ matrix.arch }}
+          path: dist/nix/build/*.nar.gz
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [debian, fedora, arch, nix]
+    runs-on: runner
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Check release version and create checksums
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          deb=$(find release -name 'qos-session_*.deb' -print -quit)
+          test -n "$deb"
+          dpkg_version=$(basename "$deb" | sed -n 's/^qos-session_\([^-]*\)-.*/\1/p')
+          test "$version" = "$dpkg_version" || {
+            echo "tag $GITHUB_REF_NAME does not match dist/VERSION $dpkg_version" >&2
+            exit 1
+          }
+          (cd release && sha256sum -- * > SHA256SUMS)
+      - name: Publish checksummed, install-tested artifacts
+        uses: actions/forgejo-release@v2
+        with:
+          direction: upload
+          url: ${{ github.server_url }}
+          repo: ${{ github.repository }}
+          tag: ${{ github.ref_name }}
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          release-dir: release
+          release-notes: "qOS desktop session ${{ github.ref_name }}. Every attached package was built and install-tested natively on its target distribution and architecture."
