@@ -8,6 +8,10 @@ repo_root=$(git rev-parse --show-toplevel)
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/qos-vendor-history-test.XXXXXX")
 trap 'chmod -R u+w "$test_root" 2>/dev/null || true; rm -rf -- "$test_root"' EXIT
 
+# The real repository check covers byte equivalence and the documented qOS
+# overlay. The artificial repository below exercises remote-ref resolution.
+"$repo_root/tools/vendor-history.sh" verify
+
 isolated_repo=$test_root/repository
 export_dir=$test_root/export
 git init --quiet "$isolated_repo"
@@ -24,6 +28,7 @@ git -C "$isolated_repo" update-ref \
 
 (
     cd "$isolated_repo"
+    export QOS_VENDOR_REFS_ONLY=1
     "$repo_root/tools/vendor-history.sh" verify
 
     # A stale local topic branch must not mask the immutable origin ref.
@@ -41,5 +46,6 @@ git bundle verify "$export_dir/vello-0.9.bundle" >/dev/null
 git bundle verify "$export_dir/winit-0.30.13.bundle" >/dev/null
 git bundle list-heads "$export_dir/vello-0.9.bundle" | rg -q "^$vello_tip "
 git bundle list-heads "$export_dir/winit-0.30.13.bundle" | rg -q "^$winit_tip "
+cmp "$repo_root/docs/vendor-forks.md" "$export_dir/README.md"
 
 echo "vendor history remote-ref verification and export passed"
