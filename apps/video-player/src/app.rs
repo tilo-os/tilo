@@ -37,6 +37,17 @@ const OPEN_BTN_H: f64 = 32.0;
 /// Width (logical px) of the floating Open pill.
 const OPEN_BTN_W: f64 = 84.0;
 
+/// Build a taffy node from `children` already built in the same tree.
+/// `new_with_children` only fails when a child id does not resolve in this
+/// tree, which cannot happen for children this same call just built.
+#[allow(
+    clippy::unwrap_used,
+    reason = "new_with_children cannot fail for children built in this same tree; see doc comment"
+)]
+fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> NodeId {
+    taffy.new_with_children(style, children).unwrap()
+}
+
 fn video_open_request() -> PickRequest {
     PickRequest::open("Open a video", "Play")
         .thread_name("video-player-portal")
@@ -384,26 +395,27 @@ impl Widget for PlayerApp {
         // in the node map (so it can intercept the floating Open pill) by owning
         // a single-child root that stretches the player to 100%×100%.
         let player_node = self.player.build_layout(taffy, theme, node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: percent(1.0_f32),
-                    },
-                    ..Default::default()
+        let root = parent_node(
+            taffy,
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Column,
+                size: Size {
+                    width: percent(1.0_f32),
+                    height: percent(1.0_f32),
                 },
-                &[player_node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[player_node],
+        );
         node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -411,9 +423,14 @@ impl Widget for PlayerApp {
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
-        let children = taffy.children(node).unwrap();
+        let Ok(children) = taffy.children(node) else {
+            return;
+        };
         // children[0] = player, filling the whole surface (edge-to-edge).
-        self.player.apply_layout(taffy, children[0], new_origin);
+        let Some(&player_node) = children.first() else {
+            return;
+        };
+        self.player.apply_layout(taffy, player_node, new_origin);
         // Floating Open pill: top-right corner, over the video.
         let by0 = self.rect.y0 + OVERLAY_MARGIN;
         let bx1 = self.rect.x1 - OVERLAY_MARGIN;
@@ -467,7 +484,9 @@ impl Widget for PlayerApp {
             }
         }
         // Forward everything else to the player (its controls + shortcuts).
-        let children = taffy.children(node_id).unwrap();
+        let Ok(children) = taffy.children(node_id) else {
+            return;
+        };
         if let Some(&player_node) = children.first() {
             self.player.handle_event(
                 event,

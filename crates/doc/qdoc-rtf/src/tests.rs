@@ -72,10 +72,11 @@ fn assert_balanced(rtf: &str) {
             }
             b'{' => depth = depth.saturating_add(1),
             b'}' => {
-                // `checked_sub` (not `saturating_sub`): the assert right below
-                // depends on actually observing a negative depth to catch a
-                // stray closing brace — saturating at 0 would hide that.
-                depth = depth.checked_sub(1).unwrap_or(i32::MIN);
+                // `depth` is signed, so `saturating_sub` only clamps at
+                // `i32::MIN` — light-years past any real brace count — and
+                // the assert right below still sees the negative depth a
+                // stray closing brace produces.
+                depth = depth.saturating_sub(1);
                 assert!(
                     depth >= 0,
                     "unbalanced: closing brace with no open at byte {i}\n{rtf}"

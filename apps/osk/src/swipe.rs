@@ -295,13 +295,10 @@ fn resample(path: &[Point], n: usize) -> Vec<Point> {
     for _ in 1..(n - 1) {
         acc += step;
         // Advance along segments until we've covered `acc` arc length.
-        loop {
-            // `seg` is bounded below `path.len() - 1` by the loop condition
-            // (`seg + 1 >= path.len() - 1` breaks it out first), so both
-            // indices are always in range.
-            let (Some(&a), Some(&b)) = (path.get(seg), path.get(seg + 1)) else {
-                break;
-            };
+        // `seg` is bounded below `path.len() - 1` by the loop condition
+        // (`seg + 1 >= path.len() - 1` breaks it out first), so both
+        // indices are always in range.
+        while let (Some(&a), Some(&b)) = (path.get(seg), path.get(seg + 1)) {
             let seg_len = dist(a, b);
             let remaining = seg_len - seg_consumed;
             let need = acc - traversed(path, seg, seg_consumed);

@@ -495,6 +495,15 @@ impl OskWidget {
     }
 
     /// The layout currently on screen.
+    ///
+    /// # Panics
+    /// Never in practice: `layouts` always holds at least the symbols layer
+    /// plus one letter layout (see the field doc on `OskWidget::layouts`),
+    /// so the last-resort fallback below always has something to return.
+    #[allow(
+        clippy::unreachable,
+        reason = "layouts is guaranteed non-empty by construction; see this fn's # Panics doc"
+    )]
     fn current_layout(&self) -> &KeyboardLayout {
         let name = self.active_layout_name();
         self.layouts
@@ -725,6 +734,13 @@ impl OskWidget {
 /// Interaction/visual flags for one drawn cell, bundled so [`draw_cell`]
 /// doesn't take four separate `bool` parameters.
 #[derive(Clone, Copy, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "this struct IS the bool-bundling fix for draw_cell's argument count; \
+              its four fields are independent interaction/visual flags for one \
+              cell, and splitting them into sub-structs would not express any \
+              real invariant between them"
+)]
 struct CellState {
     hovered: bool,
     pressed: bool,

@@ -13,7 +13,10 @@
     clippy::string_slice,
     clippy::panic,
     clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard; the arithmetic \
+              here crafts an adversarial (stale) counter value for a rollback \
+              test, not real user data"
 )]
 
 use qos_rollback::{

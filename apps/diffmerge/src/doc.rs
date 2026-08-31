@@ -23,12 +23,18 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+#[cfg(test)]
+use std::fmt::Write as _;
 
 /// Stateless helpers over the shared document.
 pub struct MergeDoc;
 
 impl MergeDoc {
     /// Get-or-create the top-level `merged` Text object.
+    #[allow(
+        clippy::expect_used,
+        reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     pub fn merged_text_obj(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "merged") {
             Ok(Some((Value::Object(ObjType::Text), id))) => id,
@@ -64,6 +70,10 @@ impl MergeDoc {
     }
 
     /// Get-or-create the top-level `resolutions` map.
+    #[allow(
+        clippy::expect_used,
+        reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     fn resolutions_map(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "resolutions") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -154,7 +164,10 @@ mod tests {
         // Rewriting it wholesale costs O(len) ops and leaves O(len) tombstones
         // per resolve; the buffer must grow with the *edited span* instead.
         let mut doc = AutoCommit::new();
-        let body: String = (0..400).map(|i| format!("line {i}\n")).collect();
+        let body: String = (0..400).fold(String::new(), |mut s, i| {
+            let _ = writeln!(s, "line {i}");
+            s
+        });
         MergeDoc::set_merged(&mut doc, &body);
         let baseline = doc.save().len();
 

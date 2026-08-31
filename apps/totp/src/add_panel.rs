@@ -808,7 +808,7 @@ impl AddAccountPanel {
     /// The scroll hint, the inline error line and the Cancel/Add-account
     /// footer buttons. Split out of [`Self::draw`].
     fn draw_footer(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
