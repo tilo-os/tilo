@@ -6525,7 +6525,11 @@ impl Widget for VideoEditorApp {
     /// is editing a dialog they can no longer see, and a screen reader reads a
     /// pane the dimming scrim says is unavailable.
     fn traps_focus(&self) -> bool {
-        self.show_export
+        // Every surface that paints the full-window scrim, not just the
+        // export dialog. A scrim is a promise that what is behind it is
+        // unavailable; if the click still lands there, the promise is a lie
+        // and the edit it makes is one the user cannot see coming.
+        self.is_modal()
     }
 
     /// The widgets this editor mounts inside itself. They paint and take
@@ -8480,6 +8484,28 @@ impl VideoEditorApp {
         }
     }
 
+    /// The go-to-timecode card, for the painter and the hit test alike.
+    ///
+    /// Shared rather than derived twice: a click has to land on the card that
+    /// was actually drawn, or dismiss-on-click-away fires while the pointer
+    /// is over the field.
+    fn goto_layout(&self, r: &Regions) -> Rect {
+        let w = 260.0_f64.min(self.rect.width() - 32.0);
+        Rect::from_center_size(
+            Point::new(self.rect.center().x, r.transport.y0 - 46.0),
+            (w, 76.0),
+        )
+    }
+
+    /// Whether a full-window scrim is up — the editor behind it is
+    /// unavailable, and every click belongs to the surface on top.
+    fn is_modal(&self) -> bool {
+        self.pending_open.is_some()
+            || self.show_export
+            || self.show_help
+            || self.goto_entry.is_some()
+    }
+
     fn handle_press(&mut self, state: &mut AutoCommit, r: &Regions, shift: bool) {
         let p = self.last_mouse;
 
@@ -8498,6 +8524,22 @@ impl VideoEditorApp {
         }
         if self.show_export {
             self.press_export(state, r, p);
+            return;
+        }
+        // The shortcut sheet and the go-to-timecode field paint the same
+        // full-window scrim as the dialogs above, so they swallow clicks the
+        // same way. Before this, a click "on" the dimmed background reached
+        // the clip, slider or Export button underneath — a real edit, made
+        // invisibly, through a surface that said the editor was unavailable.
+        // Clicking away dismisses, which is what a scrim invites.
+        if self.show_help {
+            self.show_help = false;
+            return;
+        }
+        if self.goto_entry.is_some() {
+            if !self.goto_layout(r).contains(p) {
+                self.goto_entry = None;
+            }
             return;
         }
         // Scrollbars float over their panes, so they are hit-tested before any
@@ -13475,11 +13517,7 @@ impl VideoEditorApp {
             return;
         };
         let c = &theme.tokens.colors;
-        let w = 260.0_f64.min(self.rect.width() - 32.0);
-        let card = Rect::from_center_size(
-            Point::new(self.rect.center().x, r.transport.y0 - 46.0),
-            (w, 76.0),
-        );
+        let card = self.goto_layout(r);
         fill_rrect(scene, tf, c.surfaces.raised, card, 12.0);
         stroke_rrect(
             scene,
@@ -15635,6 +15673,52 @@ mod tests {
 
     /// Build an app + its backing doc seeded from the same sample, so the
     /// app's in-memory project and `doc` agree (mirrors the live wiring).
+
+    /// A scrim means the editor behind it is unavailable, and a click on it
+    /// must not reach through.
+    ///
+    /// The shortcut sheet and the go-to field both painted the full-window
+    /// scrim while `traps_focus` named only the export dialog, so a click
+    /// "on" the dimmed background landed on whatever was underneath — a
+    /// clip, a slider, the Export button. A real edit, made invisibly,
+    /// through a surface that said nothing was clickable.
+    #[test]
+    fn a_scrim_swallows_the_click_it_dims() {
+        let cases: [(&str, fn(&mut VideoEditorApp)); 2] = [
+            ("shortcut sheet", |a| a.show_help = true),
+            ("go-to field", |a| a.goto_entry = Some(String::new())),
+        ];
+        for (name, open) in cases {
+            let (mut app, mut doc) = app_and_doc();
+            let r = app.regions();
+            let before = app.project.clips.len();
+            let target = app.project.clips.first().map(|c| c.id);
+            app.selection = Selection::default();
+
+            open(&mut app);
+            assert!(
+                app.is_modal(),
+                "{name}: paints the scrim but does not claim the click",
+            );
+
+            // Aim at a clip on the timeline — something a stray click would
+            // otherwise select or move.
+            app.last_mouse = r.lanes.center();
+            app.handle_press(&mut doc, &r, false);
+
+            assert!(
+                app.selected().is_none(),
+                "{name}: the click reached the timeline and selected something",
+            );
+            assert_eq!(
+                app.project.clips.len(),
+                before,
+                "{name}: the click reached the timeline and changed it",
+            );
+            let _ = target;
+        }
+    }
+
     fn app_and_doc() -> (VideoEditorApp, AutoCommit) {
         // No test may put a real file chooser on the person's screen. Several
         // here press the shortcuts that ask for one (Ctrl+O, Ctrl+Shift+O,
