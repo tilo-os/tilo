@@ -9,7 +9,7 @@ use automerge::AutoCommit;
 use ui::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{Button, ButtonFace, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -2567,7 +2567,6 @@ impl ContainersApp {
         theme: &Theme,
         modal: Rect,
     ) {
-        let c = &theme.tokens.colors;
         let cancel = Rect::new(
             modal.x1 - 24.0 - 200.0,
             modal.y1 - 52.0,
@@ -2580,43 +2579,28 @@ impl ContainersApp {
             modal.x1 - 24.0,
             modal.y1 - 16.0,
         );
-        draw::fill_round(
+        Button::paint(
             scene,
-            cancel,
-            f64::from(theme.tokens.radii.md),
-            if self.hovered(cancel) {
-                c.surface_white_10
-            } else {
-                c.surface_white_5
-            },
-        );
-        draw::text(
-            scene,
+            draw::base(),
             tr,
-            "Cancel",
-            theme.tokens.typography.scale.sm,
-            c.text_primary,
-            Point::new(cancel.center().x - 22.0, cancel.center().y - 7.0),
-            TextWeight::Medium,
+            theme,
+            &ButtonFace::new(cancel, "Cancel")
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(theme.tokens.typography.scale.sm)
+                .weight(TextWeight::Medium)
+                .hovered(self.hovered(cancel)),
         );
-        draw::fill_round(
+        Button::paint(
             scene,
-            create,
-            f64::from(theme.tokens.radii.md),
-            if self.hovered(create) {
-                c.accent[4]
-            } else {
-                c.accent[5]
-            },
-        );
-        draw::text(
-            scene,
+            draw::base(),
             tr,
-            "Create",
-            theme.tokens.typography.scale.sm,
-            Color::WHITE,
-            Point::new(create.center().x - 21.0, create.center().y - 7.0),
-            TextWeight::Semibold,
+            theme,
+            &ButtonFace::new(create, "Create")
+                .primary()
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(theme.tokens.typography.scale.sm)
+                .weight(TextWeight::Semibold)
+                .hovered(self.hovered(create)),
         );
         self.push_hit(cancel, Hit::CreateCancel);
         self.push_hit(create, Hit::CreateSubmit);
