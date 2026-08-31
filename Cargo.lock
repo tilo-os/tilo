@@ -15886,16 +15886,13 @@ dependencies = [
 name = "vpn"
 version = "0.1.0"
 dependencies = [
- "ashpd",
  "automerge",
  "os-actions",
  "qos-actions",
  "serde",
  "serial_test",
  "taffy",
- "tokio",
  "ui",
- "url",
  "uuid",
  "vello",
  "winit",
