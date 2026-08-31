@@ -61,7 +61,8 @@ jobs:
               --volume "$GITHUB_WORKSPACE:/source:ro" \
               --workdir /source \
               docker.io/library/ubuntu:24.04 \
-              dist/session/tests/dev-session-refusals.sh; then
+              -lc "useradd --create-home tester && \
+                   su tester -s /bin/bash -c '/source/dist/session/tests/dev-session-refusals.sh'"; then
             diagnostic=dev-session-contract
           elif ! os/tests/portal_config_validity.sh; then
             diagnostic=portal-contract
