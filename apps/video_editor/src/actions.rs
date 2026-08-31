@@ -1198,6 +1198,107 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 },
             ));
 
+            // The nine knobs behind that switch and that shape: the key's
+            // tolerance, softness and spill, and the mask's own geometry. Each
+            // had an inspector slider and an `Increment`/`Decrement` for a
+            // reader, and no action — so "switch the key on" was addressable by
+            // name and "key 30% of the plate" was not, which leaves the whole
+            // section reachable and unusable to a script.
+            //
+            // The parameter names follow the ones already here rather than a
+            // generic "value" each: a `0..1` amount is `value` like the grade,
+            // an offset from centre is `offset` like `set-pos-x`, an extent is
+            // `fraction` like the crops, and a tilt is `degrees` like
+            // `set-rotation`.
+            for (id, label, axis, param, description) in [
+                (
+                    "set-key-tolerance",
+                    "Set key tolerance",
+                    KeyMaskAxis::Tolerance,
+                    "value",
+                    "how wide a band of chroma is removed, 0 to 1; 0 keys nothing",
+                ),
+                (
+                    "set-key-softness",
+                    "Set key softness",
+                    KeyMaskAxis::Softness,
+                    "value",
+                    "width of the soft edge past the tolerance, 0 to 1",
+                ),
+                (
+                    "set-key-spill",
+                    "Set key spill removal",
+                    KeyMaskAxis::Spill,
+                    "value",
+                    "how much of the key colour is pulled back out of what survives, 0 to 1",
+                ),
+                (
+                    "set-mask-x",
+                    "Set mask centre X",
+                    KeyMaskAxis::MaskX,
+                    "offset",
+                    "mask centre right of the frame centre, in frame widths",
+                ),
+                (
+                    "set-mask-y",
+                    "Set mask centre Y",
+                    KeyMaskAxis::MaskY,
+                    "offset",
+                    "mask centre below the frame centre, in frame heights",
+                ),
+                (
+                    "set-mask-width",
+                    "Set mask width",
+                    KeyMaskAxis::MaskW,
+                    "fraction",
+                    "full width of the shape as a fraction of the frame; 1 spans it",
+                ),
+                (
+                    "set-mask-height",
+                    "Set mask height",
+                    KeyMaskAxis::MaskH,
+                    "fraction",
+                    "full height of the shape as a fraction of the frame; 1 spans it",
+                ),
+                (
+                    "set-mask-rotation",
+                    "Set mask rotation (degrees)",
+                    KeyMaskAxis::MaskRotation,
+                    "degrees",
+                    "clockwise rotation of the shape",
+                ),
+                (
+                    "set-mask-feather",
+                    "Set mask feather",
+                    KeyMaskAxis::MaskFeather,
+                    "value",
+                    "softness of the edge, 0 to 1 of the shape's own half-extent",
+                ),
+            ] {
+                let base = clip.clone();
+                cr = cr.with_action(ActionSpec::typed(
+                    id,
+                    label,
+                    match axis {
+                        KeyMaskAxis::MaskRotation => "15",
+                        KeyMaskAxis::MaskX | KeyMaskAxis::MaskY => "0.25",
+                        _ => "0.5",
+                    },
+                    ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required(param, ParamType::Number, description)],
+                    move |args: &ActionArgs| {
+                        let mut next = base.clone();
+                        // Declared as a number, so a word is refused before the
+                        // document is touched rather than read as some
+                        // plausible middle value. An argument that did not bind
+                        // at all leaves the knob where it was.
+                        let v = args.number(param).unwrap_or_else(|| axis.get(&next));
+                        axis.set(&mut next, v);
+                        encode(&upsert_clip_action(&next))
+                    },
+                ));
+            }
+
             // Effects stack — add one by name, or clear them all.
             let add_base = clip.clone();
             // The vocabulary is declared, not narrated. `EffectKind::from_str`
@@ -1708,6 +1809,68 @@ enum GeomAxis {
     PosX,
     PosY,
     Rotation,
+}
+
+/// One of the nine knobs the chroma key and the mask carry.
+///
+/// These reached an assistive technology through `Increment`/`Decrement` on
+/// their inspector rows and had no action at all, so a script could switch a
+/// key on by name and then had no way to say how much of the plate to take
+/// out. The two blocks share an enum because they share a shape: a named
+/// scalar on the selected clip, folded into a whole-clip write.
+#[derive(Clone, Copy)]
+enum KeyMaskAxis {
+    Tolerance,
+    Softness,
+    Spill,
+    MaskX,
+    MaskY,
+    MaskW,
+    MaskH,
+    MaskRotation,
+    MaskFeather,
+}
+
+impl KeyMaskAxis {
+    /// Read the knob off a clip, so an unbound argument leaves it where it is
+    /// rather than answering with a plausible-looking default.
+    fn get(self, c: &Clip) -> f64 {
+        match self {
+            KeyMaskAxis::Tolerance => c.key.tolerance,
+            KeyMaskAxis::Softness => c.key.softness,
+            KeyMaskAxis::Spill => c.key.spill,
+            KeyMaskAxis::MaskX => c.mask.x,
+            KeyMaskAxis::MaskY => c.mask.y,
+            KeyMaskAxis::MaskW => c.mask.w,
+            KeyMaskAxis::MaskH => c.mask.h,
+            KeyMaskAxis::MaskRotation => c.mask.rotation,
+            KeyMaskAxis::MaskFeather => c.mask.feather,
+        }
+    }
+
+    /// Write it, clamped to what the value can legibly mean.
+    ///
+    /// Out of range is clamped rather than refused wherever the far stop is a
+    /// real intent — "take out everything on this side of the wheel" is 1, and
+    /// asking for 1.4 says that. It is *not* clamped where the model has a
+    /// reason to allow more: a mask may sit past the frame edge (that is how an
+    /// edge is put outside the picture instead of across it) and degrees wrap.
+    fn set(self, c: &mut Clip, v: f64) {
+        match self {
+            KeyMaskAxis::Tolerance => c.key.tolerance = v.clamp(0.0, 1.0),
+            KeyMaskAxis::Softness => c.key.softness = v.clamp(0.0, 1.0),
+            KeyMaskAxis::Spill => c.key.spill = v.clamp(0.0, 1.0),
+            KeyMaskAxis::MaskX => c.mask.x = v,
+            KeyMaskAxis::MaskY => c.mask.y = v,
+            // A negative extent is not a shape, so zero is the floor; there is
+            // no ceiling, because a mask wider than the frame is how a soft
+            // edge is kept out of the picture.
+            KeyMaskAxis::MaskW => c.mask.w = v.max(0.0),
+            KeyMaskAxis::MaskH => c.mask.h = v.max(0.0),
+            KeyMaskAxis::MaskRotation => c.mask.rotation = v,
+            KeyMaskAxis::MaskFeather => c.mask.feather = v.clamp(0.0, 1.0),
+        }
+    }
 }
 
 /// Which edge a prompted crop action cuts.
@@ -2570,12 +2733,22 @@ mod tests {
 
     /// The rest of the table. Split only because a single array literal past
     /// thirty entries stopped being readable; the test walks both.
-    const DECLARED_MORE: [(&str, &[(&str, ParamType)]); 5] = [
+    const DECLARED_MORE: [(&str, &[(&str, ParamType)]); 14] = [
         ("set-title-size", &[("size", ParamType::Number)]),
         ("set-title-align", &[("align", ParamType::Text)]),
         ("set-title-colour", &[("colour", ParamType::Text)]),
         ("set-title-backdrop", &[("opacity", ParamType::Number)]),
         ("rename-media", &[("name", ParamType::Text)]),
+        // The chroma key's three sliders and the mask's six geometry knobs.
+        ("set-key-tolerance", &[("value", ParamType::Number)]),
+        ("set-key-softness", &[("value", ParamType::Number)]),
+        ("set-key-spill", &[("value", ParamType::Number)]),
+        ("set-mask-x", &[("offset", ParamType::Number)]),
+        ("set-mask-y", &[("offset", ParamType::Number)]),
+        ("set-mask-width", &[("fraction", ParamType::Number)]),
+        ("set-mask-height", &[("fraction", ParamType::Number)]),
+        ("set-mask-rotation", &[("degrees", ParamType::Number)]),
+        ("set-mask-feather", &[("value", ParamType::Number)]),
     ];
 
     /// Both halves of the table, as one list.
@@ -2620,6 +2793,111 @@ mod tests {
                 known.iter().any(|(k, _)| *k == id),
                 "{id} takes an argument but declares nothing this test has read",
             );
+        }
+    }
+
+    /// The chroma key's three sliders and the mask's six geometry knobs write
+    /// the value they are named for.
+    ///
+    /// Declaring the parameter is half of it; the other half is that the number
+    /// lands on the knob the id names. Nine near-identical actions is exactly
+    /// the shape a copy-paste slip hides in — `set-mask-height` writing
+    /// `mask.w` would satisfy every type assertion in this file and stay
+    /// invisible until someone actually masked something — so each is checked
+    /// against every one of its neighbours as well as against itself.
+    #[test]
+    fn the_key_and_mask_knobs_write_the_value_they_are_named_for() {
+        let (ctx, cid) = ctx_fixture();
+        type Read = fn(&Clip) -> f64;
+        let cases: [(&str, &str, f64, Read); 9] = [
+            ("set-key-tolerance", "0.31", 0.31, |c| c.key.tolerance),
+            ("set-key-softness", "0.17", 0.17, |c| c.key.softness),
+            ("set-key-spill", "0.62", 0.62, |c| c.key.spill),
+            ("set-mask-x", "-0.24", -0.24, |c| c.mask.x),
+            ("set-mask-y", "0.44", 0.44, |c| c.mask.y),
+            ("set-mask-width", "0.73", 0.73, |c| c.mask.w),
+            ("set-mask-height", "0.29", 0.29, |c| c.mask.h),
+            ("set-mask-rotation", "-37", -37.0, |c| c.mask.rotation),
+            ("set-mask-feather", "0.08", 0.08, |c| c.mask.feather),
+        ];
+        let before = ctx.project.clip(cid).expect("the fixture clip").clone();
+        for (id, arg, want, read) in cases {
+            let after = run(&ctx.project, &spec(&ctx, id), Some(arg));
+            let clip = after.clip(cid).expect("the clip survives its own edit");
+            assert!(
+                (read(clip) - want).abs() < 1e-9,
+                "{id} left {} where it was asked for {want}",
+                read(clip),
+            );
+            for (other, other_read) in cases.iter().map(|(i, _, _, r)| (*i, *r)) {
+                if other == id {
+                    continue;
+                }
+                assert!(
+                    (other_read(clip) - other_read(&before)).abs() < 1e-9,
+                    "{id} also moved the knob {other} is for",
+                );
+            }
+        }
+        // Out of range clamps where the far stop is a legible intent, and does
+        // not where the model has a reason to allow more.
+        let hot = run(&ctx.project, &spec(&ctx, "set-key-tolerance"), Some("1.8"));
+        let tol = hot.clip(cid).expect("clip").key.tolerance;
+        assert!(
+            (tol - 1.0).abs() < 1e-9,
+            "\u{201c}as much as it takes\u{201d} is the far stop, not {tol}",
+        );
+        let wide = run(&ctx.project, &spec(&ctx, "set-mask-width"), Some("1.6"));
+        assert!(
+            (wide.clip(cid).expect("clip").mask.w - 1.6).abs() < 1e-9,
+            "a mask may reach past the frame — that is how a soft edge is kept \
+             out of the picture rather than drawn across it",
+        );
+        let inverted = run(&ctx.project, &spec(&ctx, "set-mask-width"), Some("-0.5"));
+        let w = inverted.clip(cid).expect("clip").mask.w;
+        assert!(
+            (w - 0.0).abs() < 1e-9,
+            "a negative extent is not a shape: {w}"
+        );
+    }
+
+    /// A key or mask knob asked for nothing it can read leaves the value where
+    /// it was, rather than answering with a plausible middle.
+    ///
+    /// The failure this rules out is the one the grade actions were built to
+    /// rule out: a lenient parser that read a word as 0.5 made a real,
+    /// convincing edit and reported success.
+    #[test]
+    fn a_word_never_reaches_a_key_or_mask_knob() {
+        use qos_actions::params::ArgValue;
+
+        let (ctx, _cid) = ctx_fixture();
+        for (id, param) in [
+            ("set-key-tolerance", "value"),
+            ("set-key-softness", "value"),
+            ("set-key-spill", "value"),
+            ("set-mask-x", "offset"),
+            ("set-mask-y", "offset"),
+            ("set-mask-width", "fraction"),
+            ("set-mask-height", "fraction"),
+            ("set-mask-rotation", "degrees"),
+            ("set-mask-feather", "value"),
+        ] {
+            let sp = spec(&ctx, id);
+            assert!(
+                ActionArgs::bind(
+                    sp.params(),
+                    vec![(param.to_string(), ArgValue::Text("a lot".into()))]
+                )
+                .is_err(),
+                "{id} must refuse a word where {param} declares a number",
+            );
+            let bound = ActionArgs::bind(
+                sp.params(),
+                vec![(param.to_string(), ArgValue::Number(0.4))],
+            )
+            .unwrap_or_else(|e| panic!("{id} takes a number for {param}: {e}"));
+            assert_eq!(bound.number(param), Some(0.4));
         }
     }
 
