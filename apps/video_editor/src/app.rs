@@ -455,6 +455,10 @@ enum Section {
     Title,
     Effects,
     Markers,
+    /// The project's own format: frame size and rate. Project-level like
+    /// `Markers`, so it is listed whether or not a clip is selected, and last
+    /// for the same reason — the panel reads clip-first, project-after.
+    Project,
 }
 
 impl Section {
@@ -468,6 +472,7 @@ impl Section {
             Section::Title => "TITLE",
             Section::Effects => "EFFECTS",
             Section::Markers => "MARKERS",
+            Section::Project => "PROJECT",
         }
     }
 }
@@ -480,6 +485,20 @@ impl Section {
 /// arms from growing a near-identical copy per knob.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum NumField {
+    /// The clip's level and grade, and its two fades. These are the panel's
+    /// **first** controls — drawn above its first section header — and were
+    /// the ones no keyboard or assistive technology could reach: the row list
+    /// started at the first header, so the walk began below them and could
+    /// never climb back up.
+    Opacity,
+    Volume,
+    Brightness,
+    Contrast,
+    Saturation,
+    FadeIn,
+    FadeOut,
+    /// How long the incoming transition ramps for.
+    TransitionLen,
     ScaleX,
     ScaleY,
     PosX,
@@ -508,6 +527,14 @@ enum NumField {
 impl NumField {
     fn label(self) -> &'static str {
         match self {
+            NumField::Opacity => "Opacity",
+            NumField::Volume => "Volume",
+            NumField::Brightness => "Brightness",
+            NumField::Contrast => "Contrast",
+            NumField::Saturation => "Saturation",
+            NumField::FadeIn => "Fade in",
+            NumField::FadeOut => "Fade out",
+            NumField::TransitionLen => "Transition length",
             NumField::ScaleX => "Scale X",
             NumField::ScaleY => "Scale Y",
             NumField::PosX => "Position X",
@@ -539,6 +566,11 @@ impl NumField {
     /// all, so those have no key control.
     fn param(self) -> Option<Param> {
         Some(match self {
+            NumField::Opacity => Param::Opacity,
+            NumField::Volume => Param::Volume,
+            NumField::Brightness => Param::Brightness,
+            NumField::Contrast => Param::Contrast,
+            NumField::Saturation => Param::Saturation,
             NumField::ScaleX => Param::ScaleX,
             NumField::ScaleY => Param::ScaleY,
             NumField::PosX => Param::PosX,
@@ -570,6 +602,17 @@ impl NumField {
     /// zero for the same reason.
     fn range(self) -> (f64, f64) {
         match self {
+            NumField::Opacity
+            | NumField::Volume
+            | NumField::Brightness
+            | NumField::Contrast
+            | NumField::Saturation => (0.0, 1.0),
+            // A fade and a transition ramp are seconds measured against the
+            // clip they sit on, so their real span is the one
+            // `VideoEditorApp::field_span` reads off that clip. This pair is
+            // the widest any clip can make them, and is what a caller asking
+            // for a fraction without a clip in hand gets.
+            NumField::FadeIn | NumField::FadeOut | NumField::TransitionLen => (0.0, 3600.0),
             NumField::ScaleX | NumField::ScaleY => (0.05, 4.0),
             NumField::PosX | NumField::PosY => (-1.0, 1.0),
             NumField::Rotation => (-180.0, 180.0),
@@ -625,6 +668,14 @@ impl NumField {
 
     fn readout(self, v: f64) -> String {
         match self {
+            NumField::Opacity
+            | NumField::Volume
+            | NumField::Brightness
+            | NumField::Contrast
+            | NumField::Saturation => format!("{:.0}%", v * 100.0),
+            NumField::FadeIn | NumField::FadeOut | NumField::TransitionLen => {
+                format!("{v:.2}s")
+            }
             NumField::ScaleX | NumField::ScaleY => format!("{v:.2}×"),
             NumField::PosX | NumField::PosY => format!("{v:+.2}"),
             NumField::Rotation => format!("{v:.0}°"),
@@ -919,6 +970,14 @@ pub enum ShotScenario {
     /// The render after it failed, with the reason it gives, so the failing
     /// half of the chip can be reviewed as well as the working half.
     ExportFailed,
+    /// In and out marks on the timeline: the band across the ruler, the
+    /// bracket at each mark, and the lanes outside the range greyed back — so
+    /// what a render will and will not cover can be seen at a glance.
+    RenderRange,
+    /// The project's own format, with nothing selected: the PROJECT section
+    /// open under the marker list, stating the frame and offering the size
+    /// and rate presets.
+    ProjectFormat,
 }
 
 impl ShotScenario {
@@ -946,6 +1005,7 @@ impl ShotScenario {
                 | ShotScenario::ProjectMenu
                 | ShotScenario::Curves
                 | ShotScenario::Collaborators
+                | ShotScenario::ProjectFormat
         )
     }
 
@@ -982,6 +1042,8 @@ impl ShotScenario {
             "collaborators" => ShotScenario::Collaborators,
             "exporting" => ShotScenario::ExportRunning,
             "exportfailed" => ShotScenario::ExportFailed,
+            "range" => ShotScenario::RenderRange,
+            "format" => ShotScenario::ProjectFormat,
             _ => return None,
         })
     }
@@ -1305,6 +1367,16 @@ pub struct VideoEditorApp {
     /// What a `Save` should do once the destination comes back: just save, or
     /// save and then continue into the open that was interrupted.
     save_then_open: Option<PathBuf>,
+    /// The project's format, worded once for the inspector to paint.
+    ///
+    /// Cached against the numbers it was built from for the same reason the
+    /// export chip's words are: `draw` runs for every animation frame, and a
+    /// project's frame size and rate change a handful of times in a session.
+    project_format_shown: String,
+    /// The `(width, height, fps-bits)` the string above was built from. The
+    /// rate is carried as its bit pattern so the freshness test is an exact
+    /// comparison rather than a float one.
+    project_format_from: (u32, u32, u64),
 }
 
 /// A row in the project menu, as an intent rather than an index.
@@ -1442,7 +1514,15 @@ impl VideoEditorApp {
             flap_tick: Instant::now(),
             bin_menu: ContextMenu::new(),
             menu_target: None,
-            collapsed: HashSet::new(),
+            // PROJECT starts folded — the one section that does. A folded
+            // header still states what is inside it, and what is inside this
+            // one is a single line ("1920 × 1080 · 30 fps"), so folding costs
+            // no information at all: it says the format at a glance and keeps
+            // its ten preset buttons out of both the column and the draw
+            // pass, which they were costing ~0.15ms of every frame to sit in.
+            // One press opens it, and the format is a decision taken once a
+            // project rather than once an edit.
+            collapsed: HashSet::from([Section::Project]),
             curve_channel: crate::curve::Channel::Master,
             system_fonts: Vec::new(),
             font_picker: None,
@@ -1478,6 +1558,10 @@ impl VideoEditorApp {
             recents: crate::project_file::recents::load(),
             pending_open: None,
             save_then_open: None,
+            // Filled on the first `sync`, from whatever project the document
+            // actually holds -- a blank one included.
+            project_format_shown: String::new(),
+            project_format_from: (0, 0, 0),
         }
     }
 
@@ -2820,12 +2904,27 @@ impl VideoEditorApp {
     /// Animatable channels read through [`Clip::param_at`], the same door the
     /// compositor uses, so a keyframed slider tracks the playhead instead of
     /// showing a constant the picture is ignoring.
+    /// The span a control has **on the current clip**, for the controls whose
+    /// range is not a constant. `None` for every other field, which reads its
+    /// span off [`NumField::range`].
+    fn field_span(&self, f: NumField) -> Option<(f64, f64)> {
+        let clip = self.selected_clip()?;
+        match f {
+            NumField::FadeIn | NumField::FadeOut => Some((0.0, clip.duration())),
+            NumField::TransitionLen => Some((0.01, self.transition_len_max())),
+            _ => None,
+        }
+    }
+
     fn num_value(&self, f: NumField) -> Option<f64> {
         let clip = self.selected().and_then(|id| self.project.clip(id))?;
         if let Some(p) = f.param() {
             return Some(clip.param_at(p, self.playhead));
         }
         Some(match f {
+            NumField::FadeIn => clip.fade_in,
+            NumField::FadeOut => clip.fade_out,
+            NumField::TransitionLen => clip.transition_len(),
             NumField::CropLeft => clip.transform.crop_left,
             NumField::CropRight => clip.transform.crop_right,
             NumField::CropTop => clip.transform.crop_top,
@@ -2864,6 +2963,15 @@ impl VideoEditorApp {
         let at = self.playhead;
         let _ = at;
         match f {
+            // Clamped against the clip, exactly as the drag does: a fade
+            // longer than the clip it is on is not a fade.
+            NumField::FadeIn => self.preview_edit(move |c| c.fade_in = v.clamp(0.0, c.duration())),
+            NumField::FadeOut => {
+                self.preview_edit(move |c| c.fade_out = v.clamp(0.0, c.duration()));
+            }
+            NumField::TransitionLen => {
+                self.preview_edit(move |c| c.transition_duration = v.max(0.01));
+            }
             NumField::CropLeft => self.preview_edit(move |c| c.transform.crop_left = v),
             NumField::CropRight => self.preview_edit(move |c| c.transform.crop_right = v),
             NumField::CropTop => self.preview_edit(move |c| c.transform.crop_top = v),
@@ -3028,6 +3136,140 @@ impl VideoEditorApp {
             self.shuttle = 0.0;
             self.chase_playhead = true;
         }
+    }
+
+    /// Write the project's own settings as one action, mirroring them in
+    /// memory the way every other local edit does: the document is the truth
+    /// and `sync` will reload it, but the model must not disagree with it in
+    /// between.
+    fn dispatch_project_meta(&mut self, doc: &mut AutoCommit, next: Project) {
+        let action = set_project_meta_action(&next);
+        self.actions
+            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &action);
+        self.project = next;
+    }
+
+    /// Set the project's frame size — the same whole-settings write the
+    /// `set-frame-size` action dispatches.
+    fn set_project_frame_size(&mut self, doc: &mut AutoCommit, width: u32, height: u32) {
+        let mut next = self.project.clone();
+        next.set_frame_size(width, height);
+        self.dispatch_project_meta(doc, next);
+    }
+
+    fn set_project_fps(&mut self, doc: &mut AutoCommit, fps: f64) {
+        let mut next = self.project.clone();
+        next.set_fps(fps);
+        self.dispatch_project_meta(doc, next);
+    }
+
+    /// Take the shape of whatever [`Self::format_source`] names as the
+    /// project's own — deliberately, so a later import cannot undo it.
+    fn match_project_format(&mut self, doc: &mut AutoCommit) {
+        let Some(m) = self.format_source().cloned() else {
+            return;
+        };
+        let mut next = self.project.clone();
+        next.set_frame_size(m.width, m.height);
+        if m.fps > 0.0 {
+            next.set_fps(m.fps);
+        }
+        self.dispatch_project_meta(doc, next);
+    }
+
+    /// Re-word the project's format if it has moved since the last frame.
+    fn refresh_project_format_words(&mut self) {
+        let now = (
+            self.project.width,
+            self.project.height,
+            self.project.fps.to_bits(),
+        );
+        if now != self.project_format_from {
+            self.project_format_from = now;
+            self.project_format_shown =
+                format_words(self.project.width, self.project.height, self.project.fps);
+        }
+    }
+
+    /// Switch the chroma key on or off, opening the section so its sliders
+    /// are on screen — the one edit both the enable button and an assistive
+    /// technology's activation run, so the two cannot diverge.
+    fn toggle_key_enabled(&mut self, doc: &mut AutoCommit) {
+        self.edit_selected(doc, |c| {
+            c.key.enabled = !c.key.enabled;
+            // A key switched on with the tolerance wound to zero removes
+            // nothing, which reads as the button not working; give it back a
+            // tolerance that keys.
+            if c.key.enabled && c.key.tolerance <= 1e-6 {
+                c.key.tolerance = crate::model::ChromaKey::default().tolerance;
+            }
+        });
+        self.collapsed.remove(&Section::Key);
+    }
+
+    /// Choose the mask's shape. Turning a mask on lands it over the picture
+    /// rather than in the middle of an empty frame, so a masked
+    /// picture-in-picture is one press.
+    fn set_mask_shape(&mut self, doc: &mut AutoCommit, shape: crate::model::MaskShape) {
+        let (src_aspect, frame_aspect) = self.selected_aspects();
+        self.edit_selected(doc, move |c| {
+            if shape == crate::model::MaskShape::None || c.mask.is_active() {
+                c.mask.shape = shape;
+            } else {
+                c.mask = crate::model::Mask::over(shape, &c.transform, src_aspect, frame_aspect);
+            }
+        });
+        self.collapsed.remove(&Section::Mask);
+    }
+
+    /// A blank project has no shape of its own, so the first clip to land on
+    /// its timeline gives it one.
+    ///
+    /// Without this, shooting vertically meant a 1920×1080 project holding
+    /// 1080×1920 footage, and — because the export scales its preset height by
+    /// the *project's* aspect — an exported file letterboxed into 16:9 with no
+    /// exit. A format that was set deliberately is never overridden, and
+    /// neither is one whose timeline already has clips cut against it.
+    fn adopt_project_format(&mut self, doc: &mut AutoCommit, media: MediaId) {
+        if self.project.format_explicit || !self.project.clips.is_empty() {
+            return;
+        }
+        let Some(m) = self.project.media(media).cloned() else {
+            return;
+        };
+        let mut next = self.project.clone();
+        if next.adopt_format(&m) {
+            self.dispatch_project_meta(doc, next);
+        }
+    }
+
+    /// Mark **in** at the playhead — the start of what a render covers.
+    ///
+    /// The clip trim on plain I / O is untouched: that trims the *selected
+    /// clip*, which is a different thing from the span of the timeline that
+    /// gets rendered, and the export loop ran the whole timeline
+    /// unconditionally — so checking a ten-second fix meant re-rendering
+    /// everything.
+    fn mark_in_here(&mut self, doc: &mut AutoCommit) {
+        let mut next = self.project.clone();
+        next.set_mark_in(self.playhead);
+        self.dispatch_project_meta(doc, next);
+    }
+
+    fn mark_out_here(&mut self, doc: &mut AutoCommit) {
+        let mut next = self.project.clone();
+        next.set_mark_out(self.playhead);
+        self.dispatch_project_meta(doc, next);
+    }
+
+    /// Drop both marks, putting the render back to the whole timeline.
+    fn clear_marks(&mut self, doc: &mut AutoCommit) {
+        if !self.project.has_marks() {
+            return;
+        }
+        let mut next = self.project.clone();
+        next.clear_marks();
+        self.dispatch_project_meta(doc, next);
     }
 
     /// Add a timeline marker at the playhead and open it for naming, so the
@@ -3456,6 +3698,10 @@ impl VideoEditorApp {
     /// new clip id.
     fn add_media_to_timeline(&mut self, doc: &mut AutoCommit, media: MediaId) -> Option<ClipId> {
         let m = self.project.media(media).cloned()?;
+        // Before the clip lands, while the timeline is still empty: a blank
+        // project takes its shape from the footage rather than making the
+        // user go and find a dialog.
+        self.adopt_project_format(doc, media);
         let kind = if m.kind.is_visual() {
             TrackKind::Video
         } else {
@@ -3478,6 +3724,9 @@ impl VideoEditorApp {
         track: TrackId,
         start: f64,
     ) -> Option<ClipId> {
+        // A drag from the bin is just as much "the project's first clip" as
+        // an append is, so it adopts the same way.
+        self.adopt_project_format(doc, media);
         let start = snap_to_frame(start.max(0.0), self.project.fps);
         let id = self.project.add_clip(track, media, start)?;
         self.dispatch_clip(doc, id);
@@ -4216,6 +4465,7 @@ impl VideoEditorApp {
             let x1 = r.inspector.x1 - PAD;
             let mut y = r.inspector.y0 - self.inspector_scroll + 116.0;
             self.layout_markers(&mut l, x0, x1, &mut y);
+            self.layout_project(&mut l, x0, x1, &mut y);
             l.content_height = y - (r.inspector.y0 - self.inspector_scroll);
             return l;
         }
@@ -4549,6 +4799,7 @@ impl VideoEditorApp {
         // Markers: every marked instant on the timeline, the project's own and
         // each clip's, so one list is the whole answer to "what is marked".
         self.layout_markers(&mut l, x0, x1, &mut y);
+        self.layout_project(&mut l, x0, x1, &mut y);
         // Actions.
         y += 6.0;
         l.split = Rect::new(x0, y, (x0 + x1) / 2.0 - 4.0, y + 28.0);
@@ -4680,6 +4931,91 @@ impl VideoEditorApp {
 
     /// Draw the marker list: one row per marked instant, with rename and
     /// delete revealed under the pointer. Shared by both inspector states.
+    /// Paint the project's format section: what the frame is now, the size
+    /// and rate presets with the one in force marked, and the match button.
+    fn draw_project_section(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        l: &InspectorLayout,
+        x0: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        if l.project_format_y > 0.0 {
+            // The cached words, not a fresh format!: `draw` runs for every
+            // animation frame and this string only changes when the project's
+            // format does.
+            text_w(
+                scene,
+                tr,
+                tf,
+                &self.project_format_shown,
+                12.0,
+                c.text_primary,
+                x0,
+                l.project_format_y,
+                TextWeight::Medium,
+            );
+        }
+        if !l.project_frames.is_empty() {
+            let rects: Vec<Rect> = l.project_frames.iter().map(|(_, r)| *r).collect();
+            let labels: Vec<&str> = FRAME_PRESETS.iter().map(|(name, _, _)| *name).collect();
+            // Nothing is marked unless the frame is exactly a preset: a
+            // segmented control that always highlights something would claim
+            // a 1440x1080 project was 1080p.
+            let sel = l
+                .project_frames
+                .iter()
+                .position(|((w, h), _)| *w == self.project.width && *h == self.project.height)
+                .unwrap_or(usize::MAX);
+            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+        }
+        if l.project_rate_y > 0.0 {
+            text(
+                scene,
+                tr,
+                tf,
+                "Rate",
+                11.5,
+                c.text_dim,
+                x0,
+                l.project_rate_y,
+            );
+        }
+        if !l.project_rates.is_empty() {
+            let rects: Vec<Rect> = l.project_rates.iter().map(|(_, r)| *r).collect();
+            let labels: Vec<String> = RATE_PRESETS.iter().map(|r| rate_words(*r)).collect();
+            let refs: Vec<&str> = labels.iter().map(std::string::String::as_str).collect();
+            let sel = l
+                .project_rates
+                .iter()
+                .position(|(rate, _)| (rate - self.project.fps).abs() < 1e-6)
+                .unwrap_or(usize::MAX);
+            draw_segmented(scene, tf, tr, theme, &rects, &refs, sel, self.last_mouse);
+        }
+        if let Some(rect) = l.project_match {
+            // The button names the source it will copy, so pressing it is not
+            // a guess about which of several sources it meant.
+            let label = self
+                .format_source()
+                .map(|m| format!("Match {}", m.name))
+                .unwrap_or_else(|| "Match media".to_string());
+            let shown = elide_w(&label, (rect.width() - 20.0) as f32, tr);
+            draw_button(
+                scene,
+                tf,
+                tr,
+                theme,
+                rect,
+                &shown,
+                false,
+                rect.contains(self.last_mouse),
+            );
+        }
+    }
+
     fn draw_marker_rows(
         &self,
         scene: &mut Scene,
@@ -4855,6 +5191,75 @@ impl VideoEditorApp {
         *y += 34.0;
     }
 
+    /// Lay out the project's format section — the readout of what the frame
+    /// currently is, the size presets, the rate presets, and the button that
+    /// takes the selected source's shape — advancing `y` past it.
+    ///
+    /// Project-level like the markers above it, so it is laid out in both
+    /// inspector states. The frame was hard-wired to 1920x1080 at 30: there
+    /// was exactly one place in the model that ever wrote those three numbers
+    /// and every other reference read them, so a vertical or 4K shoot had no
+    /// way to say so and came out letterboxed into 16:9.
+    fn layout_project(&self, l: &mut InspectorLayout, x0: f64, x1: f64, y: &mut f64) {
+        l.sections
+            .push((Section::Project, Rect::new(x0, *y, x1, *y + SECTION_H)));
+        *y += SECTION_H + 4.0;
+        if self.collapsed.contains(&Section::Project) {
+            return;
+        }
+        // The readout's own line, then the two segmented rows under their
+        // captions -- the same 20px a caption takes everywhere else in this
+        // panel, so the three read as one convention.
+        // The readout is drawn from `y` downwards, like every caption in this
+        // panel, so it needs a caption's worth of room: at a 12px gap its
+        // descenders sat on the preset row's top border.
+        l.project_format_y = *y;
+        *y += 24.0;
+        let seg_w = (x1 - x0) / FRAME_PRESETS.len() as f64;
+        for (i, (_, w, h)) in FRAME_PRESETS.iter().enumerate() {
+            let sx0 = x0 + i as f64 * seg_w;
+            l.project_frames
+                .push(((*w, *h), Rect::new(sx0, *y, sx0 + seg_w - 3.0, *y + 24.0)));
+        }
+        *y += 32.0;
+        l.project_rate_y = *y;
+        *y += 20.0;
+        let rate_w = (x1 - x0) / RATE_PRESETS.len() as f64;
+        for (i, rate) in RATE_PRESETS.iter().enumerate() {
+            let sx0 = x0 + i as f64 * rate_w;
+            l.project_rates
+                .push((*rate, Rect::new(sx0, *y, sx0 + rate_w - 3.0, *y + 24.0)));
+        }
+        *y += 32.0;
+        // Offered only when there is a source to copy a shape from, and only
+        // when that source has one -- audio and titles carry no frame.
+        if self.format_source().is_some() {
+            l.project_match = Some(Rect::new(x0, *y, x1, *y + 26.0));
+            *y += 34.0;
+        }
+    }
+
+    /// The source whose shape "Match media" would take: the bin selection
+    /// when it has a frame, else the media under the selected clip, else the
+    /// first source in the bin that has one.
+    ///
+    /// One resolver so the button, the press that runs it and the accessible
+    /// node all name the same source -- a button that copied a shape from
+    /// something other than the one it named would be worse than absent.
+    fn format_source(&self) -> Option<&MediaItem> {
+        let has_frame = |m: &&MediaItem| m.width > 0 && m.height > 0;
+        self.selected_media
+            .and_then(|id| self.project.media(id))
+            .filter(has_frame)
+            .or_else(|| {
+                self.selected()
+                    .and_then(|id| self.project.clip(id))
+                    .and_then(|c| self.project.media(c.media))
+                    .filter(has_frame)
+            })
+            .or_else(|| self.project.media.iter().find(has_frame))
+    }
+
     /// Sub-rects of one effect row:
     /// `(key, reorder-up, reorder-down, slider, remove)`.
     ///
@@ -4991,6 +5396,14 @@ impl VideoEditorApp {
                 self.export_status = ExportStatus::Failed {
                     reason: "no encoder for H.264 on this machine".to_string(),
                 };
+            }
+            ShotScenario::RenderRange => {
+                // A range that starts inside the timeline and ends well
+                // before its end, so both brackets and both scrims are on
+                // screen at once.
+                self.project.set_mark_out(19.0);
+                self.project.set_mark_in(6.5);
+                self.playhead = 11.0;
             }
             ShotScenario::SavedProject => {
                 let path = PathBuf::from("/home/you/Videos/Coastline_Doc_v3.qvp");
@@ -5447,6 +5860,19 @@ impl VideoEditorApp {
                 self.collapsed.insert(Section::Effects);
                 self.inspector_scroll = self.inspector_max_scroll(r);
             }
+            ShotScenario::ProjectFormat => {
+                // Nothing selected, so the panel is in its project-level
+                // state: the marker list and, under it, the format.
+                self.selection.clear();
+                self.selected_media = None;
+                self.project.add_marker(4.0, "cold open", 1);
+                // Vertical, which is the shape the editor could not previously
+                // be told about at all.
+                self.project.set_frame_size(1080, 1920);
+                self.project.set_fps(24.0);
+                self.collapsed.remove(&Section::Project);
+                self.inspector_scroll = self.inspector_max_scroll(r);
+            }
             ShotScenario::MultiSelect => {
                 // Everything on the top video lane, plus an audio clip, so the
                 // capture shows a selection spanning tracks.
@@ -5631,6 +6057,18 @@ struct InspectorLayout {
     // ---- keyframes --------------------------------------------------------
     /// The key control at the head of each animatable row.
     keys: Vec<(Param, Rect)>,
+    // ---- project format ---------------------------------------------------
+    /// Baseline y of the readout that states the project's current format.
+    project_format_y: f64,
+    /// Frame-size presets as a segmented row: the dimensions each writes.
+    project_frames: Vec<((u32, u32), Rect)>,
+    /// Baseline y of the "Rate" caption over the rate row.
+    project_rate_y: f64,
+    project_rates: Vec<(f64, Rect)>,
+    /// Takes the selected source's shape as the project's -- the button
+    /// behind the one thing a preset row cannot offer, which is whatever the
+    /// footage actually is.
+    project_match: Option<Rect>,
     // ---- markers ----------------------------------------------------------
     marker_rows: Vec<(MarkerRef, Rect)>,
     /// Sub-rects of the row above: the name (click to rename) and the delete.
@@ -5708,6 +6146,48 @@ const TITLE_COLORS: [[f64; 4]; 8] = [
 
 /// Rate presets offered as a segmented row beside the rate slider.
 const SPEED_PRESETS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
+
+/// Frame-size presets for the project, as `(label, width, height)`.
+///
+/// The set is the shapes people actually shoot, not a resolution ladder: two
+/// landscape sizes, 4K, vertical and square. Anything else is a number, and
+/// the `set-frame-size` action takes numbers — a picker is for the shapes
+/// worth one press, and until now there was no press at all.
+const FRAME_PRESETS: [(&str, u32, u32); 5] = [
+    ("720p", 1280, 720),
+    ("1080p", 1920, 1080),
+    ("4K", 3840, 2160),
+    ("9:16", 1080, 1920),
+    ("1:1", 1080, 1080),
+];
+
+/// Project frame-rate presets. Five that fit the column; the
+/// `set-frame-rate` action takes any rate, and a clip's own rate arrives
+/// through it when a blank project adopts its first clip's shape.
+const RATE_PRESETS: [f64; 5] = [24.0, 25.0, 30.0, 50.0, 60.0];
+
+/// The project's format in words: "1920 x 1080 - 30 fps".
+///
+/// A free function so the draw path, the folded header's summary and the
+/// accessible node all read from one place; the drawn copy is cached against
+/// the numbers it was built from (see `VideoEditorApp::project_format_words`)
+/// rather than being formatted per frame.
+fn format_words(width: u32, height: u32, fps: f64) -> String {
+    format!("{width} \u{d7} {height} \u{b7} {} fps", rate_words(fps))
+}
+
+/// A frame rate with no trailing zeros: "30", not "30.00", and "23.98" for a
+/// rate that really is fractional.
+fn rate_words(fps: f64) -> String {
+    if (fps - fps.round()).abs() < 1e-6 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "rates are clamped to 1..240 by Project::set_fps"
+        )]
+        return format!("{}", fps.round() as i64);
+    }
+    format!("{fps:.2}")
+}
 
 #[derive(Default)]
 struct ExportLayout {
@@ -5967,6 +6447,13 @@ impl Widget for VideoEditorApp {
             self.scroll_to_time(self.playhead, &r);
         }
         self.clamp_scroll(&r);
+        // The format readout's words, re-built only when the format has moved
+        // — three scalar comparisons a frame instead of a `format!`. It runs
+        // here rather than in `sync` because the inspector paints from it: a
+        // format changed after the last reload (a local press, or a capture
+        // scenario staged in this very pass) would otherwise paint the numbers
+        // the project had a frame ago.
+        self.refresh_project_format_words();
         // Request the filmstrip frames the timeline is about to draw, now that
         // the scroll is settled and we know which clips are on screen.
         self.request_filmstrips(&r);
@@ -6601,7 +7088,12 @@ impl Widget for VideoEditorApp {
             let clickable = l.sections.iter().any(|(_, rc)| rc.contains(point))
                 || l.keys.iter().any(|(_, rc)| rc.contains(point))
                 || l.marker_rows.iter().any(|(_, rc)| rc.contains(point))
-                || l.add_marker.map(|rc| rc.contains(point)).unwrap_or(false);
+                || l.add_marker.map(|rc| rc.contains(point)).unwrap_or(false)
+                || l.project_frames.iter().any(|(_, rc)| rc.contains(point))
+                || l.project_rates.iter().any(|(_, rc)| rc.contains(point))
+                || l.project_match
+                    .map(|rc| rc.contains(point))
+                    .unwrap_or(false);
             if clickable {
                 return Some(CursorIcon::Pointer);
             }
@@ -7011,10 +7503,28 @@ impl VideoEditorApp {
             .selected()
             .and_then(|id| self.project.clip(id))
             .cloned();
+        // The controls the panel draws **above** its first section header, in
+        // painted order. This list is both the accessibility tree and the
+        // keyboard walk, and it used to begin at the first header — so Opacity
+        // was on screen, above the cursor's first stop, and unreachable.
+        out.extend(self.a11y_top_rows(clip.as_ref()));
         for section in self.a11y_sections(clip.as_ref()) {
             out.push(InspectorRow::Header(section));
             if self.collapsed.contains(&section) {
                 continue;
+            }
+            // The control that opens a section whose contents are conditional
+            // on it. Emitted before the section's knobs, which is where it is
+            // drawn, and without it the knobs are unreachable rather than
+            // merely awkward.
+            match section {
+                Section::Key => out.push(InspectorRow::Pick(PickField::KeyEnable)),
+                Section::Mask => out.extend(
+                    crate::model::MaskShape::ALL
+                        .iter()
+                        .map(|s| InspectorRow::Pick(PickField::MaskShape(*s))),
+                ),
+                _ => {}
             }
             // The marker list is not a run of numeric knobs, so it is walked
             // on its own terms: one stop per marked instant, then the button
@@ -7028,10 +7538,66 @@ impl VideoEditorApp {
                 out.push(InspectorRow::AddMarker);
                 continue;
             }
+            // The project's format is two preset rows and a button, not a run
+            // of knobs — exactly the stops `layout_project` draws.
+            if section == Section::Project {
+                out.extend(
+                    (0..FRAME_PRESETS.len()).map(|i| InspectorRow::Pick(PickField::Frame(i))),
+                );
+                out.extend((0..RATE_PRESETS.len()).map(|i| InspectorRow::Pick(PickField::Rate(i))));
+                if self.format_source().is_some() {
+                    out.push(InspectorRow::Pick(PickField::MatchFormat));
+                }
+                continue;
+            }
             for f in Self::a11y_section_fields(section, clip.as_ref()) {
                 out.push(InspectorRow::Field(f));
             }
         }
+        out
+    }
+
+    /// The stops the panel draws above its first section header: the clip's
+    /// level or its grade, its two fades, the transition at its head cut, the
+    /// transition's length when there is one, and the seven label colours.
+    ///
+    /// Built from the same `is_video` test the layout makes, so the walk is
+    /// offered exactly the controls that are drawn — an audio clip has a
+    /// volume slider where a video clip has four grade sliders, and neither
+    /// is offered the other's.
+    fn a11y_top_rows(&self, clip: Option<&Clip>) -> Vec<InspectorRow> {
+        let Some(clip) = clip else {
+            return Vec::new();
+        };
+        let is_video = self
+            .project
+            .media(clip.media)
+            .is_none_or(|m| m.kind.is_visual());
+        let mut out: Vec<InspectorRow> = Vec::new();
+        if is_video {
+            for f in [
+                NumField::Opacity,
+                NumField::Brightness,
+                NumField::Contrast,
+                NumField::Saturation,
+            ] {
+                out.push(InspectorRow::Field(f));
+            }
+        } else {
+            out.push(InspectorRow::Field(NumField::Volume));
+        }
+        out.push(InspectorRow::Field(NumField::FadeIn));
+        out.push(InspectorRow::Field(NumField::FadeOut));
+        out.extend(
+            Transition::ALL
+                .iter()
+                .map(|t| InspectorRow::Pick(PickField::Transition(*t))),
+        );
+        // The length slider is laid out only when there is a ramp to size.
+        if clip.transition != Transition::None {
+            out.push(InspectorRow::Field(NumField::TransitionLen));
+        }
+        out.extend((0..7u8).map(|slot| InspectorRow::Pick(PickField::Label(slot))));
         out
     }
 
@@ -7040,7 +7606,8 @@ impl VideoEditorApp {
     /// listed whether or not a clip is selected.
     fn a11y_sections(&self, clip: Option<&Clip>) -> Vec<Section> {
         let Some(clip) = clip else {
-            return vec![Section::Markers];
+            // Both project-level sections, in the order they are laid out.
+            return vec![Section::Markers, Section::Project];
         };
         let media = self.project.media(clip.media);
         let is_title = media.map(|m| m.text.is_some()).unwrap_or(false);
@@ -7066,6 +7633,7 @@ impl VideoEditorApp {
             v.push(Section::Effects);
         }
         v.push(Section::Markers);
+        v.push(Section::Project);
         v
     }
 
@@ -7109,7 +7677,13 @@ impl VideoEditorApp {
                 NumField::MaskFeather,
             ],
             Section::Title => vec![NumField::TitleSize, NumField::TitleBackdrop],
-            Section::Key | Section::Mask | Section::Effects | Section::Markers => Vec::new(),
+            // `Project` carries no ranged knob: its two controls are preset
+            // rows, which reach the walk as `InspectorRow::Pick`.
+            Section::Key
+            | Section::Mask
+            | Section::Effects
+            | Section::Markers
+            | Section::Project => Vec::new(),
         }
     }
 
@@ -7416,6 +7990,14 @@ impl VideoEditorApp {
                         groups.push(node);
                     }
                 }
+                InspectorRow::Pick(pk) => {
+                    let node = self.a11y_pick_node(*pk, focused);
+                    if let Some((_, kids)) = current.as_mut() {
+                        kids.push(node);
+                    } else {
+                        groups.push(node);
+                    }
+                }
             }
         }
         if let Some((sec, kids)) = current.take() {
@@ -7480,6 +8062,150 @@ impl VideoEditorApp {
                 ..Default::default()
             })
             .with_children(verbs)
+    }
+
+    /// The clip the inspector is editing, if there is one. A convenience over
+    /// the `selected()` + `clip()` pair the panel does constantly.
+    fn selected_clip(&self) -> Option<&Clip> {
+        self.selected().and_then(|id| self.project.clip(id))
+    }
+
+    /// One picker segment or switch, as a reader meets it: a radio inside its
+    /// group when it is one of a set, a plain button when it stands alone —
+    /// and, either way, whether it is the one in force.
+    fn a11y_pick_node(&self, pk: PickField, focused: bool) -> AccessNode {
+        let (name, role, selected) = match pk {
+            PickField::Frame(i) => {
+                let Some((label, w, h)) = FRAME_PRESETS.get(i) else {
+                    return AccessNode::new(Role::Unknown).with_key(pk.a11y_key());
+                };
+                (
+                    // The dimensions, not only the shorthand: "9:16" alone
+                    // does not say what a reader is choosing.
+                    format!("{label}, {w} by {h}"),
+                    Role::RadioButton,
+                    *w == self.project.width && *h == self.project.height,
+                )
+            }
+            PickField::Rate(i) => {
+                let Some(rate) = RATE_PRESETS.get(i) else {
+                    return AccessNode::new(Role::Unknown).with_key(pk.a11y_key());
+                };
+                (
+                    format!("{} fps", rate_words(*rate)),
+                    Role::RadioButton,
+                    (rate - self.project.fps).abs() < 1e-6,
+                )
+            }
+            PickField::MatchFormat => (
+                self.format_source()
+                    .map(|m| format!("Match the shape of {}", m.name))
+                    .unwrap_or_else(|| "Match media".to_string()),
+                Role::Button,
+                false,
+            ),
+            PickField::KeyEnable => {
+                let on = self.selected_clip().is_some_and(|c| c.key.enabled);
+                (
+                    // The name says what pressing it will do now, the way the
+                    // play button does — a switch whose name never changes
+                    // leaves a reader guessing which way it is.
+                    if on {
+                        "Switch chroma key off".to_string()
+                    } else {
+                        "Switch chroma key on".to_string()
+                    },
+                    Role::Checkbox,
+                    on,
+                )
+            }
+            PickField::MaskShape(shape) => (
+                format!("Mask shape {}", shape.label().to_lowercase()),
+                Role::RadioButton,
+                self.selected_clip().is_some_and(|c| c.mask.shape == shape),
+            ),
+            PickField::Transition(t) => (
+                format!("Transition {}", t.label().to_lowercase()),
+                Role::RadioButton,
+                self.selected_clip().is_some_and(|c| c.transition == t),
+            ),
+            PickField::Label(slot) => (
+                format!("Label colour {}", slot + 1),
+                Role::RadioButton,
+                self.selected_clip().is_some_and(|c| c.palette == slot),
+            ),
+        };
+        // `checked` is what accesskit turns into a radio's or a checkbox's
+        // "toggled": `selected` alone reads as a highlighted list row, which
+        // is not what a reader needs to hear about a picker.
+        let checkable = role != Role::Button;
+        AccessNode::new(role)
+            .with_name(name)
+            .with_hashed_key(pk.tag())
+            .with_state(AccessState {
+                focusable: true,
+                focused,
+                selected,
+                checked: checkable.then_some(selected),
+                ..Default::default()
+            })
+    }
+
+    /// Run whatever a pick row does — the same call the pointer runs on that
+    /// control, so a reader and a mouse cannot do two different things.
+    fn a11y_activate_pick(&mut self, pk: PickField, doc: &mut AutoCommit) -> bool {
+        match pk {
+            PickField::Frame(i) => {
+                let Some((_, w, h)) = FRAME_PRESETS.get(i).copied() else {
+                    return false;
+                };
+                self.set_project_frame_size(doc, w, h);
+                true
+            }
+            PickField::Rate(i) => {
+                let Some(rate) = RATE_PRESETS.get(i).copied() else {
+                    return false;
+                };
+                self.set_project_fps(doc, rate);
+                true
+            }
+            PickField::MatchFormat => {
+                if self.format_source().is_none() {
+                    return false;
+                }
+                self.match_project_format(doc);
+                true
+            }
+            // Each runs the very call the pointer runs on that control.
+            PickField::KeyEnable => {
+                if self.selected().is_none() {
+                    return false;
+                }
+                self.toggle_key_enabled(doc);
+                true
+            }
+            PickField::MaskShape(shape) => {
+                if self.selected().is_none() {
+                    return false;
+                }
+                self.set_mask_shape(doc, shape);
+                true
+            }
+            PickField::Transition(t) => {
+                if self.selected().is_none() {
+                    return false;
+                }
+                self.set_transition(doc, t);
+                true
+            }
+            PickField::Label(slot) => {
+                if self.selected().is_none() {
+                    return false;
+                }
+                self.set_palette(doc, slot);
+                true
+            }
+        }
     }
 
     fn a11y_section_node(
@@ -7560,6 +8286,11 @@ impl VideoEditorApp {
             // told a tidier story than the panel tells.
             (Section::Curves, Some(c)) => curve_summary(c).unwrap_or_else(|| "unchanged".into()),
             (Section::Title, Some(_)) => "title properties".into(),
+            // Worded, not counted: the frame is the fact a reader needs from
+            // this header whether or not it is folded.
+            (Section::Project, _) => {
+                format_words(self.project.width, self.project.height, self.project.fps)
+            }
             _ => "collapsed".into(),
         }
     }
@@ -7782,7 +8513,9 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
     (
         "Editing",
         &[
-            ("I / O", "Set in / out point at playhead"),
+            ("I / O", "Trim clip in / out at playhead"),
+            ("Shift+I / O", "Mark render range in / out"),
+            ("Shift+X", "Clear the render range"),
             ("S", "Split at playhead"),
             ("M", "Add marker"),
             ("T", "Add title"),
@@ -7797,6 +8530,9 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
             ("Ctrl+D", "Duplicate selection"),
             ("Ctrl+A", "Select all clips"),
             ("Ctrl+Z", "Undo"),
+            // Both spellings work and neither was written down, so the sheet
+            // claimed the editor had undo and no redo.
+            ("Ctrl+Shift+Z", "Redo (or Ctrl+Y)"),
         ],
     ),
     (
@@ -8042,20 +8778,12 @@ impl VideoEditorApp {
                     ]
                 }
                 Some(InspectorRow::Field(f)) => {
-                    // A control's path runs through its section.
-                    let rows = self.a11y_inspector_rows();
-                    let section =
-                        rows[..=self.focus.inspector]
-                            .iter()
-                            .rev()
-                            .find_map(|r| match r {
-                                InspectorRow::Header(sec) => Some(*sec),
-                                _ => None,
-                            });
-                    match section {
-                        Some(sec) => vec![hash_key(&sec.label()), hash_key(&f.label())],
-                        None => return false,
-                    }
+                    let key = hash_key(&f.label());
+                    Self::a11y_row_path(&self.a11y_inspector_rows(), self.focus.inspector, key)
+                }
+                Some(InspectorRow::Pick(pk)) => {
+                    let key = pk.a11y_key();
+                    Self::a11y_row_path(&self.a11y_inspector_rows(), self.focus.inspector, key)
                 }
                 None => return false,
             },
@@ -8330,6 +9058,15 @@ impl VideoEditorApp {
                         _ => false,
                     };
                 }
+                InspectorRow::Pick(pk) if pk.a11y_key() == key => {
+                    self.focus.inspector = i;
+                    let pk = *pk;
+                    return match action {
+                        Action::Focus => true,
+                        Action::Activate => self.a11y_activate_pick(pk, doc),
+                        _ => false,
+                    };
+                }
                 _ => {}
             }
         }
@@ -8395,7 +9132,14 @@ impl VideoEditorApp {
         let Some(v) = self.num_value(f) else {
             return false;
         };
-        let next = f.from_frac((f.to_frac(v) + dir * 0.05).clamp(0.0, 1.0));
+        // A fade and a transition ramp are measured against the clip they sit
+        // on, so a twentieth of *their* span is a twentieth of the clip — not
+        // of `NumField::range`'s widest-possible pair, which would step an
+        // eight-second clip's fade in three-minute jumps.
+        let next = match self.field_span(f) {
+            Some((lo, hi)) => (v + dir * 0.05 * (hi - lo)).clamp(lo, hi),
+            None => f.from_frac((f.to_frac(v) + dir * 0.05).clamp(0.0, 1.0)),
+        };
         self.set_num(f, next);
         if f.is_media() {
             self.dispatch_selected_media(doc);
@@ -8436,6 +9180,31 @@ impl VideoEditorApp {
     }
 }
 
+impl VideoEditorApp {
+    /// The path a control's key hangs off: through its section header when it
+    /// has one, and directly off the pane when it does not.
+    ///
+    /// Not every inspector control lives inside a section — the panel draws
+    /// its level, grade, fade, transition and label controls **above** the
+    /// first header — and the old lookup returned "no path" for those, which
+    /// is one of the reasons pressing Enter on them did nothing.
+    fn a11y_row_path(rows: &[InspectorRow], i: usize, key: u64) -> Vec<u64> {
+        let section = rows
+            .get(..=i)
+            .unwrap_or(rows)
+            .iter()
+            .rev()
+            .find_map(|r| match r {
+                InspectorRow::Header(sec) => Some(*sec),
+                _ => None,
+            });
+        match section {
+            Some(sec) => vec![ui::a11y::hash_key(&sec.label()), key],
+            None => vec![key],
+        }
+    }
+}
+
 /// Step an index within `0..n`, clamping at both ends rather than wrapping:
 /// arrow navigation that wraps silently teleports a reader from the last row
 /// to the first, which reads as the list having restarted.
@@ -8450,12 +9219,72 @@ fn step_index(i: usize, n: usize, up: bool) -> usize {
     }
 }
 
+/// An inspector control that is **chosen or switched** rather than dialled.
+///
+/// [`NumField`] covers the panel's ranged knobs; these are the rest of its
+/// stops. They are here because the keyboard walk and the accessibility tree
+/// are the same list, and that list held only headers and knobs — so every
+/// picker and switch in the panel was reachable with a pointer and no other
+/// way.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PickField {
+    /// One project frame-size preset, by index into [`FRAME_PRESETS`].
+    Frame(usize),
+    /// One project frame-rate preset, by index into [`RATE_PRESETS`].
+    Rate(usize),
+    /// Take the frame of the source `format_source` names.
+    MatchFormat,
+    /// The chroma key's enable switch. The catch-22 control: the key's three
+    /// sliders are only laid out once it is on, so a user who could not reach
+    /// the switch could never reach the sliders either — the section was
+    /// pointer-only all the way down.
+    KeyEnable,
+    /// One mask shape button. Same catch-22: the mask's geometry rows appear
+    /// only once a shape is chosen.
+    MaskShape(crate::model::MaskShape),
+    /// One transition at the clip's head cut.
+    Transition(Transition),
+    /// One label colour, by palette slot.
+    Label(u8),
+}
+
+impl PickField {
+    /// A stable tag, which is what the accessible key hashes. Stable across a
+    /// re-layout and across a project edit, so an assistive technology holding
+    /// a node keeps holding the same control.
+    fn tag(self) -> String {
+        match self {
+            PickField::Frame(i) => format!(
+                "project.frame.{}",
+                FRAME_PRESETS.get(i).map_or("?", |(name, _, _)| *name)
+            ),
+            PickField::Rate(i) => format!(
+                "project.rate.{}",
+                RATE_PRESETS
+                    .get(i)
+                    .map_or_else(String::new, |r| rate_words(*r))
+            ),
+            PickField::MatchFormat => "project.match".to_string(),
+            PickField::KeyEnable => "clip.key.enable".to_string(),
+            PickField::MaskShape(shape) => format!("clip.mask.{}", shape.as_str()),
+            PickField::Transition(t) => format!("clip.transition.{}", t.as_str()),
+            PickField::Label(slot) => format!("clip.label.{slot}"),
+        }
+    }
+
+    fn a11y_key(self) -> u64 {
+        ui::a11y::hash_key(&self.tag())
+    }
+}
+
 /// A focus stop in the inspector: a section header, or one control inside an
 /// open section.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum InspectorRow {
     Header(Section),
     Field(NumField),
+    /// One picker segment or switch — see [`PickField`].
+    Pick(PickField),
     /// One row of the marker list. A marker is not a numeric knob, so it is
     /// its own stop: a reader that could only ever land on knobs could not
     /// reach a marker at all.
@@ -8668,6 +9497,23 @@ impl VideoEditorApp {
             }
             Key::Character(c) if c.eq_ignore_ascii_case("l") && !ctrl => {
                 self.shuttle_key(1.0);
+                true
+            }
+            // Shift+I / Shift+O mark the timeline's render range; Shift+X
+            // drops both marks. Plain I / O keep trimming the selected clip,
+            // which is what they have always done and what every NLE does
+            // with them — the range is a property of the timeline, the trim
+            // one of a clip, and they are not the same decision.
+            Key::Character(c) if shift && !ctrl && c.eq_ignore_ascii_case("i") => {
+                self.mark_in_here(state);
+                true
+            }
+            Key::Character(c) if shift && !ctrl && c.eq_ignore_ascii_case("o") => {
+                self.mark_out_here(state);
+                true
+            }
+            Key::Character(c) if shift && !ctrl && c.eq_ignore_ascii_case("x") => {
+                self.clear_marks(state);
                 true
             }
             // I / O set the selected clip's in / out point to the playhead.
@@ -9198,6 +10044,27 @@ impl VideoEditorApp {
                 return;
             }
         }
+        // The project's format is project-level too, so it answers whether or
+        // not a clip is selected -- above the `l.valid` gate, which is what
+        // marks "a clip's controls were laid out".
+        for ((w, h), rect) in l.project_frames.clone() {
+            if rect.contains(p) {
+                self.set_project_frame_size(state, w, h);
+                return;
+            }
+        }
+        for (rate, rect) in l.project_rates.clone() {
+            if rect.contains(p) {
+                self.set_project_fps(state, rate);
+                return;
+            }
+        }
+        if let Some(rect) = l.project_match
+            && rect.contains(p)
+        {
+            self.match_project_format(state);
+            return;
+        }
         if !l.valid {
             return;
         }
@@ -9384,16 +10251,7 @@ impl VideoEditorApp {
         // Colour key.
         if let Some(rect) = l.key_enable {
             if rect.contains(p) {
-                self.edit_selected(state, |c| {
-                    c.key.enabled = !c.key.enabled;
-                    // A key switched on with the tolerance wound to zero
-                    // removes nothing, which reads as the button not
-                    // working; give it back a tolerance that keys.
-                    if c.key.enabled && c.key.tolerance <= 1e-6 {
-                        c.key.tolerance = crate::model::ChromaKey::default().tolerance;
-                    }
-                });
-                self.collapsed.remove(&Section::Key);
+                self.toggle_key_enabled(state);
                 return;
             }
         }
@@ -9417,20 +10275,7 @@ impl VideoEditorApp {
         // Mask.
         for (shape, rect) in l.mask_shapes.clone() {
             if rect.contains(p) {
-                // Turning a mask on lands it over the picture rather than in
-                // the middle of an empty frame, so a masked PiP is one click.
-                let (src_aspect, frame_aspect) = self.selected_aspects();
-                self.edit_selected(state, move |c| {
-                    if shape == crate::model::MaskShape::None {
-                        c.mask.shape = shape;
-                    } else if c.mask.is_active() {
-                        c.mask.shape = shape;
-                    } else {
-                        c.mask =
-                            crate::model::Mask::over(shape, &c.transform, src_aspect, frame_aspect);
-                    }
-                });
-                self.collapsed.remove(&Section::Mask);
+                self.set_mask_shape(state, shape);
                 return;
             }
         }
@@ -11969,6 +12814,7 @@ impl VideoEditorApp {
                 self.draw_section_header(scene, tf, tr, theme, *rect, *s, &blank, None);
             }
             self.draw_marker_rows(scene, tf, tr, theme, &l, x0);
+            self.draw_project_section(scene, tf, tr, theme, &l, x0);
             return;
         };
         let id = clip.id;
@@ -12791,6 +13637,7 @@ impl VideoEditorApp {
             );
         }
         self.draw_marker_rows(scene, tf, tr, theme, &l, x0);
+        self.draw_project_section(scene, tf, tr, theme, &l, x0);
         // ---- key controls ---------------------------------------------
         // Drawn last so a diamond sits over its row rather than under it.
         for (param, rect) in &l.keys {
@@ -13085,6 +13932,10 @@ impl VideoEditorApp {
                     }
                 })
             }
+            // A folded PROJECT header is where the frame most needs stating:
+            // the format is a fact about every clip below it, and this is the
+            // one line that carries it when the section is away.
+            Section::Project => Some(self.project_format_shown.clone()),
         }
     }
 
@@ -13153,6 +14004,48 @@ impl VideoEditorApp {
                 );
             }
             t += tick_step;
+        }
+
+        // --- render range ---
+        // The in / out marks the export honours, drawn before the markers so
+        // a marker flag sits over the band rather than under it. A range that
+        // is set has to be visible: an export that is eight seconds long when
+        // the timeline is ninety needs a reason on screen.
+        if self.project.has_marks() {
+            let (from, to) = self.project.export_range();
+            let ax = self.time_to_x(from, &r.lanes).clamp(r.lanes.x0, r.lanes.x1);
+            let bx = self.time_to_x(to, &r.lanes).clamp(r.lanes.x0, r.lanes.x1);
+            if bx > ax {
+                fill_rect(
+                    scene,
+                    tf,
+                    c.accent[5],
+                    Rect::new(ax, r.ruler.y0, bx, r.ruler.y0 + 3.0),
+                );
+            }
+            // A bracket at each mark, opening towards the span it keeps, and
+            // a hairline down the lanes so the mark can be lined up against
+            // every track at once — the same story the marker flags tell.
+            for (mark, towards) in [(self.project.mark_in, 1.0), (self.project.mark_out, -1.0)] {
+                let Some(t) = mark else { continue };
+                let x = self.time_to_x(t, &r.lanes);
+                if x < r.lanes.x0 - 8.0 || x > r.lanes.x1 + 8.0 {
+                    continue;
+                }
+                let far = x + towards * 8.0;
+                fill_rect(
+                    scene,
+                    tf,
+                    c.accent[5],
+                    Rect::new(x.min(far), r.ruler.y0, x.max(far), r.ruler.y0 + 8.0),
+                );
+                // Only down the ruler. A line carried into the lanes is
+                // what the playhead and a marker are, and a third one in the
+                // same colour reads as one of those rather than as a mark;
+                // the scrim below already draws the boundary across the
+                // lanes.
+                stroke_line(scene, tf, c.accent[5], x, r.ruler.y0, x, r.ruler.y1, 2.0);
+            }
         }
 
         // --- markers ---
@@ -13291,6 +14184,22 @@ impl VideoEditorApp {
             }
             let full = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
             fill_rect(scene, tf, with_alpha(c.surfaces.base, 0.45), full);
+        }
+        // Everything outside the render range greys back, over the clips it
+        // covers: the range is what will be written to a file, and a clip
+        // that will not be in it must not look like one that will.
+        if self.project.has_marks() {
+            let (from, to) = self.project.export_range();
+            let ax = self.time_to_x(from, &r.lanes).clamp(r.lanes.x0, r.lanes.x1);
+            let bx = self.time_to_x(to, &r.lanes).clamp(r.lanes.x0, r.lanes.x1);
+            for out in [
+                Rect::new(r.lanes.x0, r.lanes.y0, ax, r.timeline.y1),
+                Rect::new(bx, r.lanes.y0, r.lanes.x1, r.timeline.y1),
+            ] {
+                if out.width() > 0.5 {
+                    fill_rect(scene, tf, with_alpha(c.surfaces.base, 0.55), out);
+                }
+            }
         }
         // A locked lane says so across its whole width, drawn *over* its clips:
         // they grey back under a diagonal hatch, so "my drag did nothing"
@@ -13652,6 +14561,16 @@ impl VideoEditorApp {
                 );
             }
         }
+        // The part of the clip the lane actually shows. The lane layer is
+        // clipped, so a clip whose start is scrolled off to the left had its
+        // name, its speed badge and its head marker all drawn outside the
+        // visible strip — and a clip wider than the viewport rendered as an
+        // anonymous coloured bar. Everything below anchors to this, not to
+        // the clip's own edges.
+        let vx0 = cr.x0.max(r.lanes.x0);
+        let vx1 = cr.x1.min(r.lanes.x1);
+        let seen = (vx1 - vx0).max(0.0);
+
         // name label
         let label = self
             .project
@@ -13667,8 +14586,10 @@ impl VideoEditorApp {
                 .0 as f64
                 + 18.0
         };
-        let avail = (cr.width() - 10.0 - badge_w).max(4.0) as f32;
-        if cr.width() > 30.0 {
+        // The width available is the width that can be *seen*, measured from
+        // where the name is actually drawn.
+        let avail = (seen - 10.0 - badge_w).max(4.0) as f32;
+        if seen > 30.0 {
             let shown = elide_w(&label, avail, tr);
             // The name sits on the clip's header strip, whose colour comes
             // from the user's chosen label — so the text colour has to be
@@ -13681,14 +14602,14 @@ impl VideoEditorApp {
                 &shown,
                 11.0,
                 name_col,
-                cr.x0 + 5.0,
+                vx0 + 5.0,
                 cr.y0 + 3.0,
                 TextWeight::Medium,
             );
         }
         // transition marker at head
-        if clip.transition != Transition::None && cr.width() > 16.0 {
-            let mk = triangle_corner(cr.x0, cr.y0, 12.0);
+        if clip.transition != Transition::None && seen > 16.0 {
+            let mk = triangle_corner(vx0, cr.y0, 12.0);
             scene.fill(
                 Fill::NonZero,
                 tf,
@@ -13700,16 +14621,16 @@ impl VideoEditorApp {
         // A re-timed clip says its rate on its own body. Speed changes the
         // clip's *length*, so without a badge a 2x clip is indistinguishable
         // from one that was simply trimmed shorter.
-        if !clip.speed.is_normal() && cr.width() > 52.0 {
+        if !clip.speed.is_normal() && seen > 52.0 {
             let label = clip.speed.label();
             let (lw, _) = tr.measure_weighted(&label, 9.5, None, TextWeight::Bold);
             let pill = Rect::new(
-                cr.x1 - 8.0 - lw as f64 - 10.0,
+                vx1 - 8.0 - lw as f64 - 10.0,
                 cr.y0 + 2.0,
-                cr.x1 - 4.0,
+                vx1 - 4.0,
                 cr.y0 + 16.0,
             );
-            if pill.x0 > cr.x0 + 4.0 {
+            if pill.x0 > vx0 + 4.0 {
                 let bg = darken(base, 0.45);
                 fill_rrect(scene, tf, with_alpha(bg, 0.9), pill, 4.0);
                 let baseline = text_baseline(pill, 9.5, tr);
@@ -14120,12 +15041,20 @@ impl VideoEditorApp {
         // encoder will run here and whether a size can honestly be predicted
         // from the rate it is given, which this dialog does not.
         let est = self.export.estimate_label(&self.project);
-        let (w, h) = self.export.resolution.dims();
+        // What will actually be written, not the preset's own 16:9 pair: the
+        // output keeps the *project's* aspect, so a vertical project writes a
+        // vertical file and the dialog has to say so.
+        let (w, h) = crate::export::output_dims(&self.export, &self.project);
+        // And how long it will run — the marked range when there is one,
+        // which is the whole reason for marking one.
         let info = format!(
-            "{est}   ·   {}×{}   ·   {}",
-            w,
-            h,
-            timecode(self.project.duration(), self.project.fps)
+            "{est}   ·   {w}×{h}   ·   {}{}",
+            timecode(self.project.export_duration(), self.project.fps),
+            if self.project.has_marks() {
+                " (marked)"
+            } else {
+                ""
+            }
         );
         text(scene, tr, tf, &info, 12.0, c.text_dim, x0, card.y1 - 96.0);
         match &self.export_status {
@@ -16149,6 +17078,303 @@ mod tests {
             );
             let _ = target;
         }
+    }
+
+    // ---- the timeline's render range -------------------------------------
+
+    #[test]
+    fn marking_in_and_out_narrows_what_a_render_covers() {
+        // The export loop ran `0..total` unconditionally, so checking a
+        // ten-second fix meant re-rendering the whole timeline. There were no
+        // marks to honour: no `mark_in`, no `mark_out`, no render range.
+        let (mut app, mut doc) = app_and_doc();
+        let whole = app.project.duration();
+        assert!(whole > 20.0, "the fixture is a real timeline");
+
+        app.playhead = 4.0;
+        assert!(key_press_mods(
+            &mut app,
+            &mut doc,
+            "I",
+            ModifiersState::SHIFT
+        ));
+        app.playhead = 14.0;
+        assert!(key_press_mods(
+            &mut app,
+            &mut doc,
+            "O",
+            ModifiersState::SHIFT
+        ));
+
+        // Through the document, which is what a peer and a reopened project
+        // read — a range held only in memory would not survive either.
+        app.sync(&mut doc, &automerge::ROOT);
+        let (from, to) = app.project.export_range();
+        assert!(
+            (from - 4.0).abs() < 1e-9 && (to - 14.0).abs() < 1e-9,
+            "{from}..{to}"
+        );
+
+        // And that range is what the render actually walks.
+        let plan = crate::export::RenderPlan::new(&app.project, 30.0);
+        assert_eq!(plan.total, 300, "ten seconds at 30fps");
+        assert!(
+            (plan.time_of(0) - 4.0).abs() < 1e-9,
+            "the first frame is the in mark"
+        );
+        assert!(
+            (plan.time_of(plan.total - 1) - (14.0 - 1.0 / 30.0)).abs() < 1e-6,
+            "and the last is one frame short of the out mark",
+        );
+        let unmarked = crate::export::RenderPlan::new(
+            &{
+                let mut p = app.project.clone();
+                p.clear_marks();
+                p
+            },
+            30.0,
+        );
+        assert!(
+            unmarked.total > plan.total * 2,
+            "the whole timeline is far longer: {} vs {}",
+            unmarked.total,
+            plan.total,
+        );
+    }
+
+    #[test]
+    fn clearing_the_marks_puts_the_render_back_to_the_whole_timeline() {
+        let (mut app, mut doc) = app_and_doc();
+        app.playhead = 6.0;
+        key_press_mods(&mut app, &mut doc, "I", ModifiersState::SHIFT);
+        assert!(app.project.has_marks());
+        assert!(key_press_mods(
+            &mut app,
+            &mut doc,
+            "X",
+            ModifiersState::SHIFT
+        ));
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(!app.project.has_marks(), "both marks are gone");
+        let (from, to) = app.project.export_range();
+        assert!((from).abs() < 1e-9 && (to - app.project.duration()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_range_marks_do_not_take_the_clip_trim_keys_away() {
+        // I and O have always trimmed the selected clip. The range is a
+        // different decision on a different thing, so it takes a different
+        // binding — and the old one has to keep working.
+        let (mut app, mut doc) = app_and_doc();
+        let cid = app
+            .project
+            .clips
+            .iter()
+            .find(|c| c.start < 3.0 && c.end() > 6.0)
+            .map(|c| c.id)
+            .unwrap_or(app.project.clips[0].id);
+        app.selection.select_only(cid);
+        let clip = app.project.clip(cid).cloned().expect("selected clip");
+        app.playhead = clip.start + 1.0;
+        assert!(key_press(&mut app, &mut doc, "i", false), "plain I answers");
+        let after = VideoDoc::load_project(&doc)
+            .clip(cid)
+            .cloned()
+            .expect("the clip survives");
+        assert!(
+            after.in_point > clip.in_point + 1e-6,
+            "plain I still trims the clip: {} -> {}",
+            clip.in_point,
+            after.in_point,
+        );
+        assert!(
+            !app.project.has_marks(),
+            "and it did not mark the timeline instead",
+        );
+    }
+
+    #[test]
+    fn the_shortcut_sheet_names_the_range_marks_and_redo() {
+        // The sheet is how a keyboard user learns the editor has shortcuts at
+        // all, so a binding missing from it is a binding nobody finds. Redo
+        // has always worked on two spellings and was written down on neither.
+        let rows: Vec<(&str, &str)> = SHORTCUTS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().copied())
+            .collect();
+        for key in ["Shift+I / O", "Shift+X", "Ctrl+Shift+Z"] {
+            assert!(
+                rows.iter().any(|(k, _)| *k == key),
+                "the sheet lists {key}: {rows:?}",
+            );
+        }
+        let redo = rows
+            .iter()
+            .find(|(k, _)| *k == "Ctrl+Shift+Z")
+            .expect("redo is listed");
+        assert!(
+            redo.1.contains("Ctrl+Y"),
+            "and says the other spelling that works: {}",
+            redo.1,
+        );
+    }
+
+    // ---- the project's own format ----------------------------------------
+
+    /// A blank editor on an empty document — the live app's opening state.
+    fn blank_app_and_doc() -> (VideoEditorApp, AutoCommit) {
+        ui::portal::suppress_for_tests();
+        let mut doc = AutoCommit::new();
+        let mut app = VideoEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.sync(&mut doc, &automerge::ROOT);
+        (app, doc)
+    }
+
+    /// Put one source in the bin, in both the document and the model, the way
+    /// an import does.
+    fn seed_media(
+        app: &mut VideoEditorApp,
+        doc: &mut AutoCommit,
+        w: u32,
+        h: u32,
+        fps: f64,
+    ) -> MediaId {
+        let item = MediaItem {
+            id: Uuid::new_v4(),
+            name: "Phone.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 12.0,
+            width: w,
+            height: h,
+            fps,
+            path: "media/Phone.mp4".into(),
+            hydration: crate::media::Hydration::Local,
+            ..Default::default()
+        };
+        let id = item.id;
+        VideoDoc::upsert_media(doc, &item);
+        app.project.media.push(item);
+        id
+    }
+
+    #[test]
+    fn a_blank_project_takes_its_shape_from_the_first_clip_that_lands_on_it() {
+        // Shoot vertically and there was no way to say so: the frame was
+        // fixed at 1920x1080 at 30 from the moment the project existed, and
+        // the export scales its preset height by the *project's* aspect — so
+        // the file came out letterboxed into 16:9 with no exit.
+        let (mut app, mut doc) = blank_app_and_doc();
+        assert_eq!((app.project.width, app.project.height), (1920, 1080));
+        let mid = seed_media(&mut app, &mut doc, 1080, 1920, 24.0);
+
+        app.add_media_to_timeline(&mut doc, mid)
+            .expect("the source places");
+
+        assert_eq!(
+            (app.project.width, app.project.height),
+            (1080, 1920),
+            "the project took the footage's shape"
+        );
+        assert!((app.project.fps - 24.0).abs() < 1e-9, "and its rate");
+        // Through the document, which is what replicates and what a reopened
+        // project reads back — a shape held only in memory would be gone on
+        // the next reload.
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!((app.project.width, app.project.height), (1080, 1920));
+        assert!(app.project.format_explicit, "and it is now a chosen format");
+
+        // Which is what the export honours: a vertical project renders
+        // vertical rather than pillarboxed.
+        let (w, h) = crate::export::output_dims(&ExportSettings::default(), &app.project);
+        assert!(h > w, "a vertical project exports vertical, got {w}x{h}");
+    }
+
+    #[test]
+    fn a_format_chosen_by_hand_is_not_overridden_by_the_next_clip() {
+        // Adoption is for a project that has never been told its shape. One
+        // that has must keep it, or the picker would be undone by the next
+        // import.
+        let (mut app, mut doc) = blank_app_and_doc();
+        app.set_project_frame_size(&mut doc, 3840, 2160);
+        app.set_project_fps(&mut doc, 25.0);
+        let mid = seed_media(&mut app, &mut doc, 1080, 1920, 60.0);
+
+        app.add_media_to_timeline(&mut doc, mid)
+            .expect("the source places");
+
+        assert_eq!((app.project.width, app.project.height), (3840, 2160));
+        assert!((app.project.fps - 25.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_second_clip_does_not_reshape_a_timeline_already_cut_against_the_first() {
+        let (mut app, mut doc) = blank_app_and_doc();
+        let first = seed_media(&mut app, &mut doc, 1080, 1920, 30.0);
+        app.add_media_to_timeline(&mut doc, first)
+            .expect("the first places");
+        let second = seed_media(&mut app, &mut doc, 3840, 2160, 60.0);
+        app.add_media_to_timeline(&mut doc, second)
+            .expect("the second places");
+        assert_eq!(
+            (app.project.width, app.project.height),
+            (1080, 1920),
+            "the shape the timeline was cut against survives"
+        );
+    }
+
+    #[test]
+    fn the_frame_size_and_rate_are_pressable_in_the_inspector() {
+        // The picker is the pointer half of the same capability the
+        // `set-frame-size` / `set-frame-rate` actions carry.
+        let (mut app, mut doc) = app_and_doc();
+        app.selection.clear();
+        app.inspector_flap.open();
+        app.collapsed.remove(&Section::Project);
+        let r = app.regions();
+        let l = app.inspector_layout(&r);
+        let ((w, h), rect) = *l
+            .project_frames
+            .iter()
+            .find(|((w, h), _)| (*w, *h) == (1080, 1920))
+            .expect("the panel offers a vertical frame");
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        assert_eq!((app.project.width, app.project.height), (w, h));
+
+        let r = app.regions();
+        let l = app.inspector_layout(&r);
+        let (rate, rect) = *l
+            .project_rates
+            .iter()
+            .find(|(rate, _)| (rate - 24.0).abs() < 1e-6)
+            .expect("the panel offers 24");
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        assert!((app.project.fps - rate).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_reader_can_set_the_projects_frame_size_without_a_pointer() {
+        // The accessibility tree and the keyboard walk are the same list, and
+        // the project's format had no stop on it at all.
+        let mut d = a11y_driver();
+        // PROJECT starts folded, so the first thing a reader has to be able to
+        // do is unfold it — through the header's own node, with no pointer.
+        let header = d
+            .a11y_node_named("PROJECT")
+            .expect("the project section reaches the tree");
+        d.perform_a11y_action(header, &ui::a11y::Action::Expand)
+            .unwrap();
+        let node = d
+            .a11y_node_named("9:16, 1080 by 1920")
+            .expect("the project's frame presets reach the tree once it is open");
+        d.perform_a11y_action(node, &ui::a11y::Action::Activate)
+            .unwrap();
+        let p = VideoDoc::load_project(&d.state_mut().doc);
+        assert_eq!(
+            (p.width, p.height),
+            (1080, 1920),
+            "activating the preset wrote the document"
+        );
     }
 
     fn app_and_doc() -> (VideoEditorApp, AutoCommit) {
@@ -18796,6 +20022,103 @@ mod tests {
             &PresenceCtx::empty(),
         );
         ui::offscreen::OffscreenRenderer::new(w, h).render_rgba(&scene)
+    }
+
+    #[test]
+    fn a_clip_scrolled_past_the_left_edge_still_shows_its_name() {
+        // The label was drawn at `cr.x0 + 5` with no viewport clamp, and the
+        // lane layer is clipped — so a clip whose start had scrolled off to
+        // the left rendered as an anonymous coloured bar, which for a clip
+        // wider than the viewport is every pixel of it.
+        let (mut app, _doc) = app_and_doc();
+        let cid = app
+            .project
+            .clips
+            .iter()
+            .max_by(|a, b| a.duration().total_cmp(&b.duration()))
+            .map(|c| c.id)
+            .expect("the fixture places clips");
+        let clip = app.project.clip(cid).cloned().expect("clip exists");
+        let mid = clip.media;
+        // Zoomed in and parked inside the clip, so its head is off the left
+        // edge of the lane and its body fills the visible width.
+        app.zoom = 220.0;
+        app.scroll = clip.start + 0.6;
+        app.playhead = clip.start + 1.0;
+        app.chase_playhead = false;
+        app.selection.clear();
+
+        let r = app.regions();
+        let cr = clip_screen_rect(&app, &r, cid);
+        assert!(
+            cr.x0 < r.lanes.x0 - 20.0 && cr.x1 > r.lanes.x1,
+            "the clip must overrun both edges for this to be the case under test:              {cr:?} in {:?}",
+            r.lanes,
+        );
+        // The strip where a clamped label lands: the left end of the *visible*
+        // part of the clip's header.
+        let strip = Rect::new(r.lanes.x0, cr.y0, r.lanes.x0 + 150.0, cr.y0 + 18.0);
+
+        let named = render_pixels(&mut app, 1280, 800, &Theme::dark());
+        // Blank the source's name and render again. Whatever differs inside
+        // that strip is the name — and before the clamp nothing did, because
+        // the text was being drawn off the left of a clipped layer.
+        if let Some(m) = app.project.media.iter_mut().find(|m| m.id == mid) {
+            m.name = String::new();
+        }
+        let unnamed = render_pixels(&mut app, 1280, 800, &Theme::dark());
+
+        let diff = region_diff(&named, &unnamed, 1280, 800, strip);
+        assert!(
+            diff > 40,
+            "the clip's name must be drawn inside the visible lane; only {diff} pixels              differ between a named and an unnamed source",
+        );
+    }
+
+    #[test]
+    fn a_scrolled_clip_keeps_its_speed_badge_on_screen() {
+        // Same defect at the other end: the badge was pinned to `cr.x1`, so a
+        // clip running off the right of the lane wore it outside the clip.
+        let (mut app, mut doc) = app_and_doc();
+        let cid = app
+            .project
+            .clips
+            .iter()
+            .max_by(|a, b| a.duration().total_cmp(&b.duration()))
+            .map(|c| c.id)
+            .expect("the fixture places clips");
+        app.selection.select_only(cid);
+        app.edit_selected(&mut doc, |c| {
+            c.set_speed(2.0, false);
+        });
+        let clip = app.project.clip(cid).cloned().expect("clip exists");
+        app.zoom = 220.0;
+        app.scroll = clip.start + 0.6;
+        app.playhead = clip.start + 1.0;
+        app.chase_playhead = false;
+        app.selection.clear();
+
+        let r = app.regions();
+        let cr = clip_screen_rect(&app, &r, cid);
+        assert!(
+            cr.x1 > r.lanes.x1 + 20.0,
+            "the clip runs off the right edge"
+        );
+        let strip = Rect::new(r.lanes.x1 - 90.0, cr.y0, r.lanes.x1, cr.y0 + 18.0);
+
+        let fast = render_pixels(&mut app, 1280, 800, &Theme::dark());
+        app.selection.select_only(cid);
+        app.edit_selected(&mut doc, |c| {
+            c.set_speed(1.0, false);
+        });
+        app.selection.clear();
+        let normal = render_pixels(&mut app, 1280, 800, &Theme::dark());
+
+        let diff = region_diff(&fast, &normal, 1280, 800, strip);
+        assert!(
+            diff > 40,
+            "the rate badge must be drawn inside the visible lane; only {diff} pixels differ",
+        );
     }
 
     /// How many pixels of `rect` differ between two frames of the same size.
@@ -21966,6 +23289,304 @@ mod tests {
             app.inspector_layout(&app.regions()).marker_rows.len(),
             1,
             "which is the row the panel drew",
+        );
+    }
+
+    /// A video clip in the sample fixture, selected — what the inspector's
+    /// full control set is drawn for.
+    fn with_video_clip_selected() -> (VideoEditorApp, AutoCommit) {
+        let (mut app, doc) = app_and_doc();
+        let cid = app
+            .project
+            .clips
+            .iter()
+            .find(|c| {
+                app.project
+                    .media(c.media)
+                    .is_some_and(|m| m.kind.is_visual() && m.text.is_none())
+            })
+            .map(|c| c.id)
+            .expect("the fixture places a video clip");
+        app.selection.select_only(cid);
+        (app, doc)
+    }
+
+    #[test]
+    fn the_keyboard_walk_reaches_the_controls_drawn_above_the_first_section() {
+        // `a11y_inspector_rows` is both the accessibility tree and the
+        // arrow-key walk, and it was built from `a11y_sections`, whose first
+        // entry is CURVES. Opacity, the three grade sliders, both fades, the
+        // transition picker and the label swatches are all laid out *above*
+        // that header, so none of them was ever emitted as a row: the arrows
+        // started at CURVES and could never climb back up to them.
+        let (app, _doc) = with_video_clip_selected();
+        let rows = app.a11y_inspector_rows();
+        let first_header = rows
+            .iter()
+            .position(|r| matches!(r, InspectorRow::Header(_)))
+            .expect("the panel has sections");
+        for want in [
+            NumField::Opacity,
+            NumField::Brightness,
+            NumField::Contrast,
+            NumField::Saturation,
+            NumField::FadeIn,
+            NumField::FadeOut,
+        ] {
+            let at = rows
+                .iter()
+                .position(|r| *r == InspectorRow::Field(want))
+                .unwrap_or_else(|| panic!("{} is a focus stop", want.label()));
+            assert!(
+                at < first_header,
+                "{} is drawn above the first section header, so its stop is too",
+                want.label(),
+            );
+        }
+        // The transition picker and the label swatches are drawn there too.
+        for t in Transition::ALL {
+            assert!(
+                rows.contains(&InspectorRow::Pick(PickField::Transition(t))),
+                "the {} segment is a focus stop",
+                t.label(),
+            );
+        }
+        for slot in 0..7u8 {
+            assert!(
+                rows.contains(&InspectorRow::Pick(PickField::Label(slot))),
+                "label swatch {slot} is a focus stop",
+            );
+        }
+    }
+
+    /// The rect the panel laid out for one walked row, resolved through the
+    /// very layout the renderer and the hit test read. `None` means the panel
+    /// drew no such control — which for a row on the walk is the defect.
+    fn walked_row_rect(l: &InspectorLayout, row: InspectorRow) -> Option<Rect> {
+        match row {
+            InspectorRow::Header(s) => l.sections.iter().find(|(x, _)| *x == s).map(|(_, r)| *r),
+            InspectorRow::Field(NumField::Opacity) => l.opacity,
+            InspectorRow::Field(NumField::Volume) => l.volume,
+            InspectorRow::Field(NumField::Brightness) => l.brightness,
+            InspectorRow::Field(NumField::Contrast) => l.contrast,
+            InspectorRow::Field(NumField::Saturation) => l.saturation,
+            InspectorRow::Field(NumField::FadeIn) => l.fade_in,
+            InspectorRow::Field(NumField::FadeOut) => l.fade_out,
+            InspectorRow::Field(NumField::TransitionLen) => l.transition_len,
+            InspectorRow::Field(f) => l.num(f),
+            InspectorRow::Marker(m) => l
+                .marker_rows
+                .iter()
+                .find(|(x, _)| x.id == m.id)
+                .map(|(_, r)| *r),
+            InspectorRow::AddMarker => l.add_marker,
+            InspectorRow::Pick(PickField::Frame(i)) => {
+                FRAME_PRESETS.get(i).and_then(|(_, w, h)| {
+                    l.project_frames
+                        .iter()
+                        .find(|((pw, ph), _)| pw == w && ph == h)
+                        .map(|(_, r)| *r)
+                })
+            }
+            InspectorRow::Pick(PickField::Rate(i)) => RATE_PRESETS.get(i).and_then(|rate| {
+                l.project_rates
+                    .iter()
+                    .find(|(x, _)| (x - rate).abs() < 1e-9)
+                    .map(|(_, r)| *r)
+            }),
+            InspectorRow::Pick(PickField::MatchFormat) => l.project_match,
+            InspectorRow::Pick(PickField::KeyEnable) => l.key_enable,
+            InspectorRow::Pick(PickField::MaskShape(shape)) => l
+                .mask_shapes
+                .iter()
+                .find(|(x, _)| *x == shape)
+                .map(|(_, r)| *r),
+            InspectorRow::Pick(PickField::Transition(t)) => {
+                l.transitions.iter().find(|(x, _)| *x == t).map(|(_, r)| *r)
+            }
+            InspectorRow::Pick(PickField::Label(slot)) => {
+                l.colors.iter().find(|(x, _)| *x == slot).map(|(_, r)| *r)
+            }
+        }
+    }
+
+    #[test]
+    fn every_stop_on_the_walk_is_a_control_the_panel_actually_drew() {
+        // The row list is both the accessibility tree and the keyboard walk,
+        // and it is built by different code from the layout. A stop with no
+        // rect is a control a reader is told about and a sighted user cannot
+        // see; a drawn control with no stop is the defect this pair of lists
+        // had — the whole top block, the key's switch and the mask's shapes.
+        for (note, prepare) in [
+            (
+                "a video clip",
+                (|app: &mut VideoEditorApp| {
+                    let cid = app
+                        .project
+                        .clips
+                        .iter()
+                        .find(|c| {
+                            app.project
+                                .media(c.media)
+                                .is_some_and(|m| m.kind.is_visual() && m.text.is_none())
+                        })
+                        .map(|c| c.id)
+                        .expect("a video clip");
+                    app.selection.select_only(cid);
+                }) as fn(&mut VideoEditorApp),
+            ),
+            ("nothing selected", |app: &mut VideoEditorApp| {
+                app.selection.clear();
+            }),
+        ] {
+            let (mut app, _doc) = app_and_doc();
+            // Every section open, so the walk is at its widest and every kind
+            // of stop is under test rather than folded away.
+            app.collapsed.clear();
+            prepare(&mut app);
+            let r = app.regions();
+            let l = app.inspector_layout(&r);
+            for row in app.a11y_inspector_rows() {
+                assert!(
+                    walked_row_rect(&l, row).is_some(),
+                    "{note}: the walk offers {row:?} but the panel laid out no such control",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_audio_clip_is_offered_its_volume_where_a_video_clip_has_a_grade() {
+        // The walk must offer exactly the controls that are drawn: an audio
+        // clip has one level slider where a video clip has four.
+        let (mut app, _doc) = app_and_doc();
+        let cid = app
+            .project
+            .clips
+            .iter()
+            .find(|c| {
+                app.project
+                    .media(c.media)
+                    .is_some_and(|m| !m.kind.is_visual())
+            })
+            .map(|c| c.id)
+            .expect("the fixture places an audio clip");
+        app.selection.select_only(cid);
+        let rows = app.a11y_inspector_rows();
+        assert!(rows.contains(&InspectorRow::Field(NumField::Volume)));
+        assert!(
+            !rows.contains(&InspectorRow::Field(NumField::Opacity)),
+            "an audio clip has no opacity slider drawn, so it is offered none",
+        );
+    }
+
+    #[test]
+    fn a_reader_can_nudge_the_opacity_it_can_now_reach() {
+        // Reachable is not the whole claim: the stop has to operate the same
+        // document a drag does.
+        let (mut app, mut doc) = with_video_clip_selected();
+        let cid = app.selected().expect("a clip is selected");
+        let before = app.project.clip(cid).expect("selected clip").opacity;
+        let rows = app.a11y_inspector_rows();
+        let at = rows
+            .iter()
+            .position(|r| *r == InspectorRow::Field(NumField::Opacity))
+            .expect("opacity is a stop");
+        app.focus.pane = Pane::Inspector;
+        app.focus.inspector = at;
+        let path = vec![Pane::Inspector.key(), ui::a11y::hash_key(&"Opacity")];
+        let root = automerge::ROOT;
+        assert!(
+            app.perform_action_at(&ui::a11y::Action::Decrement, &path, &mut doc, &root),
+            "the opacity slider answers a reader's decrement",
+        );
+        let after = VideoDoc::load_project(&doc)
+            .clip(cid)
+            .expect("the clip survives")
+            .opacity;
+        assert!(
+            after < before - 1e-6,
+            "opacity moved in the document: {before} -> {after}",
+        );
+    }
+
+    #[test]
+    fn a_reader_can_switch_the_chroma_key_on_and_only_then_reach_its_sliders() {
+        // The catch-22 this fixes: `Section::Key if c.key.enabled` exposed the
+        // key's sliders only once the key was on, and the switch that turns it
+        // on was not a row at all — so a keyboard or AT user could never turn
+        // it on and therefore never reach the sliders either.
+        let (mut app, mut doc) = with_video_clip_selected();
+        let cid = app.selected().expect("a clip is selected");
+        assert!(
+            !app.project.clip(cid).expect("selected clip").key.enabled,
+            "the fixture's clip starts unkeyed",
+        );
+        let rows = app.a11y_inspector_rows();
+        assert!(
+            !rows.contains(&InspectorRow::Field(NumField::KeyTolerance)),
+            "with the key off its sliders are not drawn, so they are not offered",
+        );
+        let switch = rows
+            .iter()
+            .position(|r| *r == InspectorRow::Pick(PickField::KeyEnable))
+            .expect("the enable switch is a focus stop");
+        assert!(
+            a11y_find(&app.a11y_inspector(), "Switch chroma key on")
+                .first()
+                .is_some(),
+            "and a reader can find it by name",
+        );
+
+        app.focus.pane = Pane::Inspector;
+        app.focus.inspector = switch;
+        assert!(app.activate_focused(&mut doc), "Enter switches it on");
+
+        assert!(
+            VideoDoc::load_project(&doc)
+                .clip(cid)
+                .expect("the clip survives")
+                .key
+                .enabled,
+            "the key is on in the document",
+        );
+        assert!(
+            app.a11y_inspector_rows()
+                .contains(&InspectorRow::Field(NumField::KeyTolerance)),
+            "and now the sliders it gates are reachable",
+        );
+    }
+
+    #[test]
+    fn a_reader_can_choose_a_mask_shape_and_only_then_reach_its_geometry() {
+        let (mut app, mut doc) = with_video_clip_selected();
+        let cid = app.selected().expect("a clip is selected");
+        let rows = app.a11y_inspector_rows();
+        assert!(
+            !rows.contains(&InspectorRow::Field(NumField::MaskW)),
+            "with no shape chosen the mask's geometry is not drawn",
+        );
+        let at = rows
+            .iter()
+            .position(|r| {
+                *r == InspectorRow::Pick(PickField::MaskShape(crate::model::MaskShape::Ellipse))
+            })
+            .expect("the shape buttons are focus stops");
+        app.focus.pane = Pane::Inspector;
+        app.focus.inspector = at;
+        assert!(app.activate_focused(&mut doc), "Enter chooses the shape");
+        assert_eq!(
+            VideoDoc::load_project(&doc)
+                .clip(cid)
+                .expect("the clip survives")
+                .mask
+                .shape,
+            crate::model::MaskShape::Ellipse,
+        );
+        assert!(
+            app.a11y_inspector_rows()
+                .contains(&InspectorRow::Field(NumField::MaskW)),
+            "and the geometry it gates is now reachable",
         );
     }
 
