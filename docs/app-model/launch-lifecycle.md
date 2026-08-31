@@ -3,24 +3,30 @@
 `ui::launch::LaunchSpec` owns the ordinary qOS window lifecycle: common CLI
 validation, persistent state, headless driving, deterministic screenshots,
 action registration, and the live event loop. It is intentionally not a
-generic command dispatcher. An entry point should use it when its live root is
-argument-free. Ordinary screenshots are represented by a root factory plus a
-viewport; apps with an established multi-scenario capture pipeline can retain
-that pipeline behind the runner's custom-shot hook.
+generic command dispatcher. Live roots may be argument-free or use explicitly
+allow-listed options and a bounded number of positional document arguments;
+fallible root construction reports a normal launch error before opening a
+window. Ordinary screenshots are represented by a root factory plus a viewport;
+apps with an established multi-scenario capture pipeline can retain that
+pipeline behind the runner's custom-shot hook.
 
 ## Adopted
 
-The following 22 applications use the shared lifecycle:
+The following 27 applications use the shared lifecycle:
 
-`api_tester`, `backups`, `chat`, `contacts`, `containers`, `db_client`,
-`diffmerge`, `disks`, `feeds`, `firewall`, `hex_editor`, `logs`, `mail`,
-`maps`, `remote`, `settings`, `sheets`, `slides`, `snippets`, `themes`, `totp`,
-and `vpn`.
+`api_tester`, `backups`, `calendar`, `chat`, `code_editor`, `contacts`,
+`containers`, `db_client`, `diffmerge`, `disks`, `feeds`, `file-explorer`,
+`firewall`, `hex_editor`, `logs`, `mail`, `maps`, `music`, `notes`, `remote`,
+`settings`, `sheets`, `slides`, `snippets`, `themes`, `totp`, and `vpn`.
 
 Their `main.rs` files now contain only app-specific root/action setup and, where
 needed, scenario-specific capture setup. Chat and Contacts use the shared
 state-loader hook to retain their idempotent legacy-document imports without
-forking live startup. Common argument parsing, mode
+forking live startup. Code accepts a validated positional project, while Notes
+uses fallible root construction and an argument-aware in-memory state loader to
+keep its workspace-owned persistence and per-peer actor identity. Calendar keeps
+its dual-output screenshot pre-dispatch, and Music keeps its non-GUI probe,
+relay, and benchmark commands; their actual GUI lifecycles are shared. Common argument parsing, mode
 dispatch, persistence and live startup are shared; ordinary apps also shed the
 duplicated sync/layout/draw/raster pipeline.
 
@@ -34,16 +40,11 @@ one of these concrete reasons:
 | `agent` | Headless Cap'n Proto participant with a Clap CLI; it has no window lifecycle. |
 | `browser` | Installs a web-engine frame waker and optional render-thread compositor, and has live-network screenshot modes. |
 | `calculator` | Runs an input/frame benchmark mode before launch and forces a release-only debug setting. |
-| `calendar` | Supports two screenshot outputs in one invocation plus value-taking layout setup and resize simulation. |
 | `camera` | Generates fixture files and maps value-taking capture options into a disk/camera source before threads start. |
-| `code_editor` | Accepts a positional project path and stages screenshot interactions after document sync. |
 | `ebook` | Accepts a positional EPUB path and the live/headless root depends on that path. |
-| `file-explorer` | Opens a positional path and installs filesystem/event-loop wake integration. |
 | `git_client` | Exposes a real, mutating stage-and-commit diagnostic and can emit wide and narrow shots together. |
 | `imager` | Emits a whole screenshot suite, probes hardware, and seeds the persistent document in demo mode. |
 | `monitor` | Runs interaction benchmarks and drives capture scenarios through multiple frames. |
-| `music` | Has live media probes, playback/relay modes, and multi-frame media captures. |
-| `notes` | Creates a per-peer CRDT actor and author identity before constructing its non-persistent app state. |
 | `osk` | Installs the input-method bridge and its event-loop waker; it also has a no-bridge diagnostic mode. |
 | `pdf_viewer` | Opens a selected PDF into a per-record document and room index rather than the ordinary single store. |
 | `photos` | Opens a selected image/library and stages decoded-image captures after synchronization. |
