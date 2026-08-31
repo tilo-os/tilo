@@ -49,6 +49,7 @@ pub mod geo;
 pub mod livetest;
 pub mod location;
 mod map_controls;
+mod map_info_sheet;
 pub mod model;
 pub mod net;
 mod offline_panel;
