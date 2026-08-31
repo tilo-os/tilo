@@ -69,10 +69,10 @@ execute it regardless of changed paths, wait for every install test, download
 the artifacts, and create the Forgejo release only after all eight native jobs
 succeed.
 
-The workflow requires native Forgejo runners carrying these labels:
+The workflow uses these native Forgejo runner labels:
 
-- `runner,amd64` on an x86-64 machine;
-- `runner,arm64` on an AArch64 machine.
+- `runner` for the existing x86-64 pool;
+- `arm64` on an AArch64 machine.
 
 Native runners are required because qOS links the distribution's DRM, input,
 seat, graphics, PipeWire, and portal libraries. QEMU builds would be much slower
