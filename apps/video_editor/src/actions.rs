@@ -114,6 +114,18 @@ pub struct ClipData {
     /// Clip-local markers.
     #[serde(default)]
     pub markers: Vec<crate::model::Marker>,
+    /// The link group this clip belongs to, as its plain id. Absent on the
+    /// wire for a peer that predates linked audio and video, which
+    /// `serde(default)` reads as "not linked" -- the independent clip that
+    /// peer is already editing, so the two do not diverge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    /// Whether this picture clip's sound has been split onto an audio clip.
+    /// Absent on the wire for a peer that predates the split, which
+    /// `serde(default)` reads as "still carries its own sound" -- what that
+    /// peer is already playing.
+    #[serde(default)]
+    pub sound_split: bool,
 }
 
 impl ClipData {
@@ -143,6 +155,8 @@ impl ClipData {
             mask: c.mask,
             anim: c.anim.clone(),
             markers: c.markers.clone(),
+            link: c.link.map(|l| l.to_string()),
+            sound_split: c.sound_split,
         }
     }
 
@@ -177,6 +191,11 @@ impl ClipData {
             mask: self.mask,
             anim: self.anim.clone(),
             markers: self.markers.clone(),
+            // An unparseable group id is dropped rather than fabricated: the
+            // clip lands unlinked, which is a state the editor already knows
+            // how to draw, instead of joining a group that does not exist.
+            link: self.link.as_ref().and_then(|l| l.parse::<Uuid>().ok()),
+            sound_split: self.sound_split,
         })
     }
 }
@@ -349,6 +368,33 @@ pub enum VideoEditorAction {
     /// trim (new `in`/`out`), grade, opacity/volume, fades, transition and
     /// palette — all are just a new whole-clip write.
     UpsertClip(ClipData),
+    /// Create or replace **several** clips in one change, together with any
+    /// tracks the change needs that do not exist yet.
+    ///
+    /// What an edit that follows a link is: re-timing, trimming or moving one
+    /// half of a linked pair has to write both halves, and writing them as two
+    /// actions would let a peer replay one without the other and hear the
+    /// sound slide off the picture. One action, one undo boundary, both
+    /// clips. `tracks` is empty for every edit of clips that are already
+    /// placed; it carries a lane only when the change *makes* one — giving a
+    /// shot its own audio clip in a project that has no audio lane yet.
+    UpsertClips {
+        #[serde(default)]
+        tracks: Vec<TrackData>,
+        clips: Vec<ClipData>,
+    },
+    /// Delete **several** clips in one change, then write `moved` — the
+    /// post-shift position of every clip a ripple pushed left.
+    ///
+    /// `moved` is empty for a plain delete, which leaves the gaps where they
+    /// were. Both halves of a linked pair go in one action for the same reason
+    /// they are written in one: a peer that replayed half of it would be left
+    /// with an orphan.
+    DeleteClips {
+        ids: Vec<String>,
+        #[serde(default)]
+        moved: Vec<ClipData>,
+    },
     /// Delete a single clip, leaving any gap where it was.
     DeleteClip { id: String },
     /// Delete a clip and close the gap: `moved` carries the post-shift position
@@ -440,6 +486,30 @@ impl Action for VideoEditorAction {
                     VideoDoc::upsert_clip(doc, &c);
                 }
             }
+            VideoEditorAction::UpsertClips { tracks, clips } => {
+                for data in tracks {
+                    if let Some(t) = data.to_track() {
+                        VideoDoc::upsert_track(doc, &t);
+                    }
+                }
+                for data in clips {
+                    if let Some(c) = data.to_clip() {
+                        VideoDoc::upsert_clip(doc, &c);
+                    }
+                }
+            }
+            VideoEditorAction::DeleteClips { ids, moved } => {
+                for id in ids {
+                    if let Ok(uuid) = id.parse::<Uuid>() {
+                        VideoDoc::remove_clip(doc, uuid);
+                    }
+                }
+                for m in moved {
+                    if let Some(c) = m.to_clip() {
+                        VideoDoc::upsert_clip(doc, &c);
+                    }
+                }
+            }
             VideoEditorAction::DeleteClip { id } => {
                 if let Ok(uuid) = id.parse::<Uuid>() {
                     VideoDoc::remove_clip(doc, uuid);
@@ -528,6 +598,42 @@ pub fn encode(action: &VideoEditorAction) -> EncodedAction {
 
 pub fn upsert_clip_action(c: &Clip) -> VideoEditorAction {
     VideoEditorAction::UpsertClip(ClipData::from_clip(c))
+}
+
+/// Write several clips as one change — what an edit that follows a link
+/// dispatches. See [`VideoEditorAction::UpsertClips`].
+pub fn upsert_clips_action(clips: &[Clip]) -> VideoEditorAction {
+    upsert_tracks_and_clips_action(&[], clips)
+}
+
+/// Write several clips *and* the tracks they need, as one change.
+pub fn upsert_tracks_and_clips_action(tracks: &[Track], clips: &[Clip]) -> VideoEditorAction {
+    VideoEditorAction::UpsertClips {
+        tracks: tracks.iter().map(TrackData::from_track).collect(),
+        clips: clips.iter().map(ClipData::from_clip).collect(),
+    }
+}
+
+/// One clip is written as a single-clip write, several as a multi-clip one —
+/// so an edit on an unlinked clip stays byte-identical to what it always was,
+/// and only an edit that really does follow a link changes shape on the wire.
+pub fn write_clips_action(clips: &[Clip]) -> VideoEditorAction {
+    match clips {
+        [one] => upsert_clip_action(one),
+        many => upsert_clips_action(many),
+    }
+}
+
+/// Delete several clips (and write the clips a ripple shifted) as one change.
+/// A single clip with nothing shifted stays the single-clip delete it was.
+pub fn delete_clips_action(ids: &[Uuid], moved: &[Clip]) -> VideoEditorAction {
+    match (ids, moved) {
+        ([one], []) => delete_clip_action(one),
+        _ => VideoEditorAction::DeleteClips {
+            ids: ids.iter().map(std::string::ToString::to_string).collect(),
+            moved: moved.iter().map(ClipData::from_clip).collect(),
+        },
+    }
 }
 
 pub fn delete_clip_action(id: &Uuid) -> VideoEditorAction {
@@ -994,14 +1100,26 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 .map_or_else(|| format!("Clip {cid}"), |m| m.name.clone());
             let mut cr = Resource::new(format!("video.clip:{cid}"), "video.clip", label);
 
-            // Delete + ripple-delete.
+            // Every clip linked to this one. A clip that is not linked is a
+            // group of one, so every operation below is written against the
+            // group and an unlinked clip takes exactly the path it always did.
+            let group = p.link_group(cid);
+            let linked = group.len() > 1;
+
+            // Delete + ripple-delete. Both take the whole group: half a shot
+            // left on the timeline after deleting the other half is the
+            // surprise a link exists to avoid.
             cr = cr.with_action(immediate(
                 "delete",
-                "Delete clip",
-                &delete_clip_action(&cid),
+                if linked {
+                    "Delete clip and its linked half"
+                } else {
+                    "Delete clip"
+                },
+                &delete_clips_action(&group, &[]),
             ));
             let mut ripple_project = p.clone();
-            let moved_ids = ripple_project.ripple_delete(cid);
+            let (removed, moved_ids) = ripple_project.ripple_delete_linked(cid);
             let moved: Vec<Clip> = moved_ids
                 .iter()
                 .filter_map(|id| ripple_project.clip(*id).cloned())
@@ -1009,42 +1127,59 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             cr = cr.with_action(immediate(
                 "ripple-delete",
                 "Ripple delete (close gap)",
-                &ripple_delete_action(&cid, &moved),
+                &delete_clips_action(&removed, &moved),
             ));
 
             // Split at the playhead — only when the playhead is strictly inside.
+            // A linked shot is cut on both lanes at once, and the two tails
+            // become a link group of their own (see `Project::split_linked`).
             let mut split_project = p.clone();
-            if let Some(new_id) = split_project.split_clip(cid, ctx.playhead)
-                && let (Some(left), Some(right)) =
-                    (split_project.clip(cid), split_project.clip(new_id))
-            {
-                cr = cr.with_action(immediate(
-                    "split",
-                    "Split at playhead",
-                    &split_clip_action(left, right),
-                ));
+            let halves = split_project.split_linked(cid, ctx.playhead);
+            if !halves.is_empty() {
+                let written: Vec<Clip> = halves
+                    .iter()
+                    .flat_map(|(l, r)| [*l, *r])
+                    .filter_map(|id| split_project.clip(id).cloned())
+                    .collect();
+                // Two clips are still the split they always were on the wire;
+                // four is the pair being cut, which has no two-clip shape.
+                let action = match written.as_slice() {
+                    [left, right] => split_clip_action(left, right),
+                    many => upsert_clips_action(many),
+                };
+                cr = cr.with_action(immediate("split", "Split at playhead", &action));
             }
 
             // Trim in / out to the playhead — only when it lies within the span.
+            // The linked half takes the same trim, so the sound keeps covering
+            // the picture.
             if clip.covers(ctx.playhead) {
                 let mut ti = p.clone();
                 let din = ctx.playhead - clip.start;
-                ti.trim_in(cid, din);
-                if let Some(c) = ti.clip(cid) {
+                ti.trim_in_linked(cid, din);
+                let trimmed: Vec<Clip> = group
+                    .iter()
+                    .filter_map(|id| ti.clip(*id).cloned())
+                    .collect();
+                if !trimmed.is_empty() {
                     cr = cr.with_action(immediate(
                         "trim-in",
                         "Trim in to playhead",
-                        &upsert_clip_action(c),
+                        &write_clips_action(&trimmed),
                     ));
                 }
                 let mut to = p.clone();
                 let dout = ctx.playhead - clip.end();
-                to.trim_out(cid, dout);
-                if let Some(c) = to.clip(cid) {
+                to.trim_out_linked(cid, dout);
+                let trimmed: Vec<Clip> = group
+                    .iter()
+                    .filter_map(|id| to.clip(*id).cloned())
+                    .collect();
+                if !trimmed.is_empty() {
                     cr = cr.with_action(immediate(
                         "trim-out",
                         "Trim out to playhead",
-                        &upsert_clip_action(c),
+                        &write_clips_action(&trimmed),
                     ));
                 }
             }
@@ -1345,7 +1480,14 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
 
             // Speed. The rate is prompted; reverse is a toggle, because
             // "play it backwards" is a decision, not a number.
-            let speed_base = clip.clone();
+            //
+            // Every one of the three re-times the whole link group. Speed is
+            // the field where letting the two halves disagree is not a
+            // cosmetic drift: the sound slides further from the picture with
+            // every second of the shot, and nothing on screen says why.
+            let speed_project = p.clone();
+            let speed_group = group.clone();
+            let speed_cid = cid;
             cr = cr.with_action(ActionSpec::typed(
                 "set-speed",
                 "Set speed",
@@ -1357,7 +1499,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     "playback rate: 1 is normal, 0.5 half speed, 2 double",
                 )],
                 move |args: &ActionArgs| {
-                    let mut next = speed_base.clone();
+                    let mut next = speed_project.clone();
                     // Out of range is still clamped, by `Speed::new` — asking
                     // for 100× is a legible "as fast as it goes". Unreadable
                     // is no longer 1×: a word cannot bind to a number, so a
@@ -1365,13 +1507,24 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     // back to normal speed. The `2x` spelling goes with it —
                     // the suffix was prose wrapped around the number, and the
                     // number is what is declared.
-                    let rate = args.number("rate").unwrap_or(next.speed.rate());
-                    next.set_speed(rate, next.speed.reverse);
-                    encode(&upsert_clip_action(&next))
+                    let (was, reverse) = next
+                        .clip(speed_cid)
+                        .map_or((1.0, false), |c| (c.speed.rate(), c.speed.reverse));
+                    let rate = args.number("rate").unwrap_or(was);
+                    next.set_speed_linked(speed_cid, rate, reverse);
+                    let clips: Vec<Clip> = speed_group
+                        .iter()
+                        .filter_map(|id| next.clip(*id).cloned())
+                        .collect();
+                    encode(&write_clips_action(&clips))
                 },
             ));
-            let mut reversed = clip.clone();
-            reversed.set_speed(clip.speed.rate(), !clip.speed.reverse);
+            let mut reversed = p.clone();
+            reversed.set_speed_linked(cid, clip.speed.rate(), !clip.speed.reverse);
+            let reversed_clips: Vec<Clip> = group
+                .iter()
+                .filter_map(|id| reversed.clip(*id).cloned())
+                .collect();
             cr = cr.with_action(immediate(
                 "toggle-reverse",
                 if clip.speed.reverse {
@@ -1379,15 +1532,138 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 } else {
                     "Play backwards"
                 },
-                &upsert_clip_action(&reversed),
+                &write_clips_action(&reversed_clips),
             ));
             if !clip.speed.is_normal() {
-                let mut normal = clip.clone();
-                normal.set_speed(1.0, false);
+                let mut normal = p.clone();
+                normal.set_speed_linked(cid, 1.0, false);
+                let normal_clips: Vec<Clip> = group
+                    .iter()
+                    .filter_map(|id| normal.clip(*id).cloned())
+                    .collect();
                 cr = cr.with_action(immediate(
                     "reset-speed",
                     "Reset speed to normal",
-                    &upsert_clip_action(&normal),
+                    &write_clips_action(&normal_clips),
+                ));
+            }
+
+            // ---- linked audio and video ---------------------------------
+            //
+            // A link is a shared group id on the clips, so linking and
+            // unlinking are ordinary clip writes. They are actions rather than
+            // only a menu item because a capability reachable only by clicking
+            // is invisible to automation, to a script and to a reader.
+            if linked {
+                let mut cut = p.clone();
+                cut.unlink_clips(&group);
+                let cut_clips: Vec<Clip> = group
+                    .iter()
+                    .filter_map(|id| cut.clip(*id).cloned())
+                    .collect();
+                cr = cr.with_action(immediate(
+                    "unlink",
+                    "Unlink audio and video",
+                    &write_clips_action(&cut_clips),
+                ));
+            }
+            {
+                // Give a picture that carries sound its own audio clip, so the
+                // sound can be slid, levelled, faded and cut on its own.
+                //
+                // Offered exactly while `can_split_audio` holds: a picture lane,
+                // a source the container said has a sound track, and no audio
+                // half already carrying it. That is also what a project made
+                // before linked audio existed is offered, and what a shot whose
+                // sound half was deleted is offered again.
+                if p.can_split_audio(cid) {
+                    let mut next = p.clone();
+                    // The lane it lands on, and the lane the change has to
+                    // *make* when the project has no audio track yet.
+                    let (audio_track, fresh) = match next.placement_track(TrackKind::Audio, None) {
+                        Some(t) => (t, Vec::new()),
+                        None => {
+                            let t = Track {
+                                id: Uuid::new_v4(),
+                                name: "A1".to_string(),
+                                kind: TrackKind::Audio,
+                                index: 1,
+                                muted: false,
+                                locked: false,
+                                solo: false,
+                            };
+                            let id = t.id;
+                            next.tracks.push(t.clone());
+                            (id, vec![t])
+                        }
+                    };
+                    if let Some(audio_id) = next.add_linked_audio(cid, audio_track) {
+                        let written: Vec<Clip> = [cid, audio_id]
+                            .iter()
+                            .filter_map(|id| next.clip(*id).cloned())
+                            .collect();
+                        cr = cr.with_action(immediate(
+                            "link-audio",
+                            "Split off linked audio clip",
+                            &upsert_tracks_and_clips_action(&fresh, &written),
+                        ));
+                    }
+                }
+            }
+            // Link this clip to another one that is already on the timeline —
+            // the reverse of `unlink`, and the only way back once a pair has
+            // been separated. The partner is named by id rather than described
+            // in prose, and the ids that exist are declared as the choices, so
+            // a clip that is not there is refused instead of silently linking
+            // nothing.
+            let others: Vec<String> = p
+                .clips
+                .iter()
+                .filter(|c| c.id != cid && !group.contains(&c.id))
+                .map(|c| c.id.to_string())
+                .collect();
+            if !others.is_empty() {
+                let link_project = p.clone();
+                let link_cid = cid;
+                let first = others[0].clone();
+                cr = cr.with_action(ActionSpec::typed(
+                    "link-with",
+                    "Link with another clip",
+                    &first,
+                    ExecutionLocus::ClientLocal,
+                    vec![
+                        ActionParam::required(
+                            "clip",
+                            ParamType::Text,
+                            "the id of the clip to move, trim and re-time with this one",
+                        )
+                        .with_choices(others.clone()),
+                    ],
+                    move |args: &ActionArgs| {
+                        let mut next = link_project.clone();
+                        let other = args.text("clip").and_then(|s| s.parse::<Uuid>().ok());
+                        // An unbound or unknown partner links nothing rather
+                        // than linking this clip to itself — and writes
+                        // nothing, rather than a clip made of defaults.
+                        let Some(other) = other.filter(|o| next.clip(*o).is_some()) else {
+                            return encode(&upsert_clips_action(&[]));
+                        };
+                        // Both sides join one fresh group, and anything either
+                        // of them was already linked to comes along -- a link
+                        // is a group, so joining is a merge, not a swap.
+                        let mut members = next.link_group(link_cid);
+                        for m in next.link_group(other) {
+                            if !members.contains(&m) {
+                                members.push(m);
+                            }
+                        }
+                        next.link_clips(&members);
+                        let clips: Vec<Clip> = members
+                            .iter()
+                            .filter_map(|id| next.clip(*id).cloned())
+                            .collect();
+                        encode(&write_clips_action(&clips))
+                    },
                 ));
             }
 
@@ -2777,7 +3053,16 @@ mod tests {
     /// title actions as well as the rename.
     fn ctx_with_title() -> VideoResourceCtx {
         let (ctx, _) = ctx_fixture();
-        let with_title = run(&ctx.project, &spec(&ctx, "add-title"), Some("Chapter One"));
+        let mut with_title = run(&ctx.project, &spec(&ctx, "add-title"), Some("Chapter One"));
+        // A second clip on the timeline, so the actions that name *another*
+        // clip -- linking one to another -- are offered here too. With a
+        // single clip there is nothing to name, the action is (rightly)
+        // absent, and the declaration table below could not reach it.
+        let (track, media) = {
+            let c = with_title.clips.first().expect("the fixture clip");
+            (c.track, c.media)
+        };
+        with_title.add_clip(track, media, 20.0);
         VideoResourceCtx {
             project: with_title,
             ..ctx
@@ -2842,7 +3127,11 @@ mod tests {
 
     /// The rest of the table. Split only because a single array literal past
     /// thirty entries stopped being readable; the test walks both.
-    const DECLARED_MORE: [(&str, &[(&str, ParamType)]); 14] = [
+    const DECLARED_MORE: [(&str, &[(&str, ParamType)]); 15] = [
+        // Linking names the partner by id, and the ids that exist are the
+        // declared choices — so a clip that is not there is refused rather
+        // than silently linking nothing.
+        ("link-with", &[("clip", ParamType::Text)]),
         ("set-title-size", &[("size", ParamType::Number)]),
         ("set-title-align", &[("align", ParamType::Text)]),
         ("set-title-colour", &[("colour", ParamType::Text)]),
@@ -2903,6 +3192,185 @@ mod tests {
                 "{id} takes an argument but declares nothing this test has read",
             );
         }
+    }
+
+    // ---- linked audio and video -----------------------------------------
+
+    /// A fixture whose picture source carries sound, so the palette offers to
+    /// split that sound onto a clip of its own.
+    fn ctx_with_sound() -> (VideoResourceCtx, Uuid) {
+        let (mut ctx, cid) = ctx_fixture();
+        for m in &mut ctx.project.media {
+            m.has_audio = true;
+        }
+        (ctx, cid)
+    }
+
+    fn ctx_of(p: Project, playhead: f64) -> VideoResourceCtx {
+        VideoResourceCtx {
+            project: p,
+            playhead,
+        }
+    }
+
+    /// The picture clip and the sound clip of `p`'s only shot.
+    fn halves(p: &Project) -> (Uuid, Uuid) {
+        let picture = p
+            .clips
+            .iter()
+            .find(|c| p.track(c.track).is_some_and(|t| t.kind == TrackKind::Video))
+            .expect("a picture clip")
+            .id;
+        let sound = p
+            .clips
+            .iter()
+            .find(|c| p.track(c.track).is_some_and(|t| t.kind == TrackKind::Audio))
+            .expect("a sound clip")
+            .id;
+        (picture, sound)
+    }
+
+    /// Splitting the sound off is an action, so a script, an agent and a
+    /// reader can do it — and it makes the audio lane it needs when the
+    /// project has none, in the same change, so it never half-lands.
+    #[test]
+    fn the_palette_splits_a_shots_sound_onto_its_own_clip() {
+        let (ctx, cid) = ctx_with_sound();
+        assert_eq!(
+            ctx.project.tracks.len(),
+            1,
+            "the fixture starts with only a picture lane",
+        );
+        let after = run(&ctx.project, &spec(&ctx, "link-audio"), None);
+        assert_eq!(after.clips.len(), 2, "the sound is a clip of its own");
+        assert_eq!(
+            after.tracks.len(),
+            2,
+            "and the lane it needed came with it, in the same change",
+        );
+        let (picture, sound) = halves(&after);
+        assert_eq!(picture, cid);
+        assert_eq!(
+            after.clip(picture).expect("picture").link,
+            after.clip(sound).expect("sound").link,
+        );
+        assert!(after.is_linked(picture));
+        assert!(
+            after.clip(picture).expect("picture").sound_split,
+            "or the shot would be heard twice",
+        );
+        assert!(
+            !crate::audio::plan_audio(&after, 4.0)
+                .iter()
+                .any(|l| l.clip == picture),
+            "the picture stops carrying the sound the audio clip now has",
+        );
+    }
+
+    /// Unlinking is explicit and reversible, both ways round, from the palette.
+    #[test]
+    fn the_palette_unlinks_a_pair_and_links_it_back() {
+        let (ctx, _cid) = ctx_with_sound();
+        let split = run(&ctx.project, &spec(&ctx, "link-audio"), None);
+        let (picture, sound) = halves(&split);
+        let ctx = ctx_of(split, 4.0);
+
+        let cut = run(&ctx.project, &spec(&ctx, "unlink"), None);
+        assert!(cut.clip(picture).expect("picture").link.is_none());
+        assert!(cut.clip(sound).expect("sound").link.is_none());
+        assert!(!cut.is_linked(picture));
+        assert_eq!(cut.clips.len(), 2, "unlinking removes nothing");
+
+        // …and back, by naming the partner. The ids that exist are declared
+        // as the choices, so a clip that is not there is refused.
+        let ctx = ctx_of(cut, 4.0);
+        let sp = spec(&ctx, "link-with");
+        let choices = &sp.params()[0].choices;
+        assert!(
+            choices.iter().any(|c| c.as_ref() == sound.to_string()),
+            "the other clip's id is offered: {choices:?}",
+        );
+        let relinked = run(&ctx.project, &sp, Some(&sound.to_string()));
+        assert!(
+            relinked.is_linked(picture),
+            "a pair that was separated has to be able to come back together",
+        );
+        assert_eq!(
+            relinked.clip(picture).expect("picture").link,
+            relinked.clip(sound).expect("sound").link,
+        );
+    }
+
+    /// Delete, ripple-delete, split, trim and re-time all follow the link
+    /// through the palette, exactly as they do on screen.
+    #[test]
+    fn every_palette_edit_that_follows_the_link_carries_both_halves() {
+        let (ctx, _cid) = ctx_with_sound();
+        let split = run(&ctx.project, &spec(&ctx, "link-audio"), None);
+        let (picture, sound) = halves(&split);
+        let ctx = ctx_of(split, 4.0);
+
+        let gone = run(&ctx.project, &spec(&ctx, "delete"), None);
+        assert!(
+            gone.clip(picture).is_none() && gone.clip(sound).is_none(),
+            "half a shot left on the timeline is the surprise a link avoids",
+        );
+
+        let rippled = run(&ctx.project, &spec(&ctx, "ripple-delete"), None);
+        assert!(rippled.clip(picture).is_none() && rippled.clip(sound).is_none());
+
+        let cut = run(&ctx.project, &spec(&ctx, "split"), None);
+        assert_eq!(cut.clips.len(), 4, "both lanes were cut");
+        let tails: Vec<&Clip> = cut.clips.iter().filter(|c| c.start > 3.9).collect();
+        assert_eq!(tails.len(), 2);
+        assert_eq!(
+            tails[0].link, tails[1].link,
+            "the two tails share a group of their own",
+        );
+        assert_ne!(
+            tails[0].link,
+            cut.clip(picture).expect("head").link,
+            "and it is not the heads'",
+        );
+
+        let fast = run(&ctx.project, &spec(&ctx, "set-speed"), Some("2"));
+        assert!((fast.clip(picture).expect("picture").speed.rate() - 2.0).abs() < 1e-9);
+        assert!(
+            (fast.clip(sound).expect("sound").speed.rate() - 2.0).abs() < 1e-9,
+            "re-timing one half and not the other desyncs them permanently",
+        );
+
+        let trimmed = run(&ctx.project, &spec(&ctx, "trim-in"), None);
+        assert!(
+            (trimmed.clip(picture).expect("picture").in_point
+                - trimmed.clip(sound).expect("sound").in_point)
+                .abs()
+                < 1e-9,
+            "the sound keeps covering the picture",
+        );
+        assert!(trimmed.clip(sound).expect("sound").in_point > 0.0);
+    }
+
+    /// A clip that is not linked writes exactly the payload it always did.
+    /// Following the link must not change the wire shape of an ordinary edit.
+    #[test]
+    fn an_unlinked_clips_edits_keep_their_single_clip_payload() {
+        let (ctx, cid) = ctx_fixture();
+        let sp = spec(&ctx, "set-speed");
+        let from_spec = prompted_encode(&sp, "2");
+        let mut expected = ctx.project.clip(cid).expect("the clip").clone();
+        expected.set_speed(2.0, false);
+        assert_eq!(
+            from_spec.payload,
+            encode(&upsert_clip_action(&expected)).payload,
+            "one clip is still one whole-clip write",
+        );
+        let del = immediate_encode(&spec(&ctx, "delete"));
+        assert_eq!(
+            del.payload,
+            encode(&delete_clip_action(&cid)).payload,
+            "and one delete is still one delete",
+        );
     }
 
     /// The chroma key's three sliders and the mask's six geometry knobs write

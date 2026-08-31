@@ -239,6 +239,19 @@ impl VideoDoc {
             "markers",
             serde_json::to_string(&c.markers).unwrap_or_else(|_| "[]".to_string()),
         );
+        // The link group. Written as the plain id when there is one and
+        // *deleted* when there is not, so unlinking replicates as a change
+        // rather than as silence -- a peer that already held the link would
+        // otherwise keep drawing the pair and keep moving both halves.
+        match c.link {
+            Some(link) => {
+                let _ = doc.put(&obj, "link", link.to_string());
+            }
+            None => {
+                let _ = doc.delete(&obj, "link");
+            }
+        }
+        let _ = doc.put(&obj, "sound_split", c.sound_split);
     }
 
     pub fn remove_clip(doc: &mut AutoCommit, id: Uuid) {
@@ -466,6 +479,14 @@ impl VideoDoc {
                     markers: Self::get_str(doc, &obj, "markers")
                         .and_then(|s| serde_json::from_str(&s).ok())
                         .unwrap_or_default(),
+                    // Absent in every document written before links existed,
+                    // which reads as "not linked" -- the independent clip that
+                    // peer is already editing.
+                    link: Self::get_str(doc, &obj, "link").and_then(|s| s.parse::<Uuid>().ok()),
+                    // Absent before the sound could be split off, which reads
+                    // as "this clip still carries its own" -- what that peer
+                    // is already playing.
+                    sound_split: Self::get_bool(doc, &obj, "sound_split"),
                 });
             }
         }
@@ -1295,5 +1316,59 @@ mod tests {
         a.merge(&mut b_loaded).unwrap();
         let pa = VideoDoc::load_project(&a);
         assert!((pa.clip(cid).unwrap().start - 42.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_link_survives_the_document_and_breaking_it_replicates() {
+        let (mut p, cid) = one_clip();
+        let group = Uuid::new_v4();
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.link = Some(group);
+            c.sound_split = true;
+        }
+        let back = round_trip(&p);
+        let c = back.clip(cid).expect("the clip");
+        assert_eq!(c.link, Some(group), "the group id replicates");
+        assert!(c.sound_split, "and so does where the sound comes from");
+
+        // Unlinking has to *remove* the key, or a peer that already holds the
+        // link would keep drawing the pair and keep moving both halves.
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &p);
+        let mut cut = p.clone();
+        cut.unlink_clips(&[cid]);
+        VideoDoc::upsert_clip(&mut doc, cut.clip(cid).expect("the clip"));
+        assert!(
+            VideoDoc::load_project(&doc)
+                .clip(cid)
+                .expect("the clip")
+                .link
+                .is_none(),
+            "an unlink that writes nothing is an unlink a peer never sees",
+        );
+    }
+
+    #[test]
+    fn a_clip_written_before_links_existed_reads_as_an_ordinary_clip() {
+        // The compatibility half: no `link` key and no `sound_split` key must
+        // mean "not linked, and still carrying its own sound" -- which is what
+        // that document's author is already playing.
+        let (p, cid) = one_clip();
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &p);
+        let clips = VideoDoc::map(&mut doc, "clips");
+        let obj = VideoDoc::ensure_child(&mut doc, &clips, &cid.to_string());
+        let _ = doc.delete(&obj, "link");
+        let _ = doc.delete(&obj, "sound_split");
+        let c = VideoDoc::load_project(&doc)
+            .clip(cid)
+            .expect("the clip")
+            .clone();
+        assert!(c.link.is_none());
+        assert!(
+            !c.sound_split,
+            "an old project's picture clip has to keep carrying its sound",
+        );
     }
 }

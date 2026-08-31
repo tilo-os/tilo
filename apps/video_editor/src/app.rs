@@ -1061,6 +1061,11 @@ pub enum ShotScenario {
     /// naming the direction and the rate, and the play button wearing the
     /// pause glyph because something is already moving.
     Shuttle,
+    /// Two shots whose sound was split onto its own lane: one pair selected,
+    /// so the anchor's outline, the other half's dashed one and the tie
+    /// between them are all on screen, and one pair left alone, so the quiet
+    /// chain a linked clip wears standing still can be judged next to it.
+    LinkedAudio,
 }
 
 impl ShotScenario {
@@ -1090,6 +1095,7 @@ impl ShotScenario {
                 | ShotScenario::Collaborators
                 | ShotScenario::ProjectFormat
                 | ShotScenario::FocusInspector
+                | ShotScenario::LinkedAudio
         )
     }
 
@@ -1132,6 +1138,7 @@ impl ShotScenario {
             "focusbin" => ShotScenario::FocusBin,
             "focustransport" => ShotScenario::FocusTransport,
             "shuttle" => ShotScenario::Shuttle,
+            "linked" => ShotScenario::LinkedAudio,
             _ => return None,
         })
     }
@@ -2661,6 +2668,15 @@ impl VideoEditorApp {
         }
     }
 
+    /// Write `id` and every clip linked to it. What an edit that follows the
+    /// link commits: the two halves are written inside one event, so they land
+    /// on one undo boundary and a peer never sees one without the other.
+    fn dispatch_clip_linked(&mut self, doc: &mut AutoCommit, id: ClipId) {
+        for gid in self.project.link_group(id) {
+            self.dispatch_clip(doc, gid);
+        }
+    }
+
     // ---- selection ------------------------------------------------------
 
     /// The primary (anchor) selected clip — what the inspector edits.
@@ -2680,6 +2696,36 @@ impl VideoEditorApp {
             .iter()
             .filter(|id| self.project.clip_editable(**id))
             .filter_map(|id| self.project.clip(*id).map(|c| (c.start, c.id)))
+            .collect();
+        v.sort_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.cmp(&b.1))
+        });
+        v.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// The clips an edit actually acts on: the editable selection **plus**
+    /// every clip linked to one of them, in the same settled order.
+    ///
+    /// This is the one place the link is applied to a bulk edit. Move, nudge,
+    /// delete, ripple-delete and duplicate all read the selection through here
+    /// rather than growing a parallel "…and the linked one" branch each, which
+    /// is how the picture and the sound would end up following different
+    /// rules. A clip whose track is locked is filtered out here too, so a link
+    /// cannot be used to route an edit around a lock.
+    fn edit_targets(&self) -> Vec<ClipId> {
+        let mut ids = self.editable_selection();
+        for id in self.selection.ids() {
+            for partner in self.project.link_partners(*id) {
+                if !ids.contains(&partner) && self.project.clip_editable(partner) {
+                    ids.push(partner);
+                }
+            }
+        }
+        let mut v: Vec<(f64, ClipId)> = ids
+            .into_iter()
+            .filter_map(|id| self.project.clip(id).map(|c| (c.start, c.id)))
             .collect();
         v.sort_by(|a, b| {
             a.0.partial_cmp(&b.0)
@@ -2716,20 +2762,23 @@ impl VideoEditorApp {
     /// undo boundary (see [`ui::ActionHost::dispatch`]).
     fn split_selected(&mut self, doc: &mut AutoCommit) {
         let mut right_halves = Vec::new();
-        for id in self.editable_selection() {
-            let Some(rid) = self.project.split_clip(id, self.playhead) else {
-                continue;
-            };
-            let left = self.project.clip(id).cloned();
-            let right = self.project.clip(rid).cloned();
-            if let (Some(left), Some(right)) = (left, right) {
-                self.actions.dispatch(
-                    doc,
-                    VIDEO_EDITOR_ACTION_TYPE,
-                    &split_clip_action(&left, &right),
-                );
+        // Cut a linked shot on both its lanes as one edit, so the two tails
+        // become a link group of their own rather than joining the heads' —
+        // four clips in one group would make dragging the second half of the
+        // shot drag the first half with it.
+        for group in self.target_groups() {
+            for (id, rid) in self.project.split_group(&group, self.playhead) {
+                let left = self.project.clip(id).cloned();
+                let right = self.project.clip(rid).cloned();
+                if let (Some(left), Some(right)) = (left, right) {
+                    self.actions.dispatch(
+                        doc,
+                        VIDEO_EDITOR_ACTION_TYPE,
+                        &split_clip_action(&left, &right),
+                    );
+                }
+                right_halves.push(rid);
             }
-            right_halves.push(rid);
         }
         // The right-hand halves become the selection, matching the
         // single-clip behaviour (S leaves you on the tail).
@@ -2740,7 +2789,7 @@ impl VideoEditorApp {
 
     /// Lift every editable selected clip, leaving the gaps where they were.
     fn delete_selected(&mut self, doc: &mut AutoCommit) {
-        let ids = self.editable_selection();
+        let ids = self.edit_targets();
         if ids.is_empty() {
             return;
         }
@@ -2759,7 +2808,7 @@ impl VideoEditorApp {
     /// replays atomically on a peer. Deleting right-to-left keeps each
     /// remaining clip's start valid while the earlier ones are still there.
     fn ripple_delete_selected(&mut self, doc: &mut AutoCommit) {
-        let mut ids = self.editable_selection();
+        let mut ids = self.edit_targets();
         if ids.is_empty() {
             return;
         }
@@ -2782,7 +2831,18 @@ impl VideoEditorApp {
     /// Copy the whole selection to the clipboard (no CRDT change). A locked
     /// track only forbids *edits*, so its clips can still be copied.
     fn copy_selected(&mut self) {
-        let ids: Vec<ClipId> = self.selection.ids().to_vec();
+        // The whole shot, not half of it. A lock forbids *edits*, not copies,
+        // so this follows the link with no editable filter — and pasting a
+        // picture whose sound stayed behind would be a silent clip with no
+        // explanation.
+        let mut ids: Vec<ClipId> = self.selection.ids().to_vec();
+        for id in self.selection.ids() {
+            for partner in self.project.link_partners(*id) {
+                if !ids.contains(&partner) {
+                    ids.push(partner);
+                }
+            }
+        }
         let mut clips: Vec<Clip> = ids
             .iter()
             .filter_map(|id| self.project.clip(*id).cloned())
@@ -2822,6 +2882,7 @@ impl VideoEditorApp {
             .and_then(|s| self.project.clip(s))
             .map(|c| c.track);
         let mut pasted = Vec::new();
+        let mut from: Vec<(Option<Uuid>, ClipId)> = Vec::new();
         for clip in src {
             let kind = self
                 .project
@@ -2846,10 +2907,12 @@ impl VideoEditorApp {
                 (self.playhead + (clip.start - base)).max(0.0),
                 self.project.fps,
             );
+            let was = clip.link;
             let id = self.project.paste_clip(clip, track, start);
-            self.dispatch_clip(doc, id);
+            from.push((was, id));
             pasted.push(id);
         }
+        self.relink_copies(doc, &from);
         if !pasted.is_empty() {
             self.selection.set(pasted);
         }
@@ -2858,7 +2921,7 @@ impl VideoEditorApp {
     /// Ctrl+D: drop a copy of the selection immediately after it, on the same
     /// tracks, and select the copies. One event → one undo boundary.
     fn duplicate_selected(&mut self, doc: &mut AutoCommit) {
-        let ids = self.editable_selection();
+        let ids = self.edit_targets();
         if ids.is_empty() {
             return;
         }
@@ -2872,14 +2935,206 @@ impl VideoEditorApp {
         let hi = clips.iter().map(|c| c.end()).fold(0.0_f64, f64::max);
         let offset = (hi - lo).max(crate::model::MIN_CLIP);
         let mut copies = Vec::new();
+        let mut from: Vec<(Option<Uuid>, ClipId)> = Vec::new();
         for clip in clips {
             let track = clip.track;
+            let was = clip.link;
             let start = snap_to_frame(clip.start + offset, self.project.fps);
             let id = self.project.paste_clip(clip, track, start);
-            self.dispatch_clip(doc, id);
+            from.push((was, id));
             copies.push(id);
         }
+        self.relink_copies(doc, &from);
         self.selection.set(copies);
+    }
+
+    /// The clips an edit acts on, gathered into link groups: one entry per
+    /// shot rather than one per clip, so an operation that has to treat a
+    /// linked pair as a unit (a split, whose two tails become a group of their
+    /// own) sees it as one.
+    ///
+    /// Only editable clips are ever in a group here, because they come out of
+    /// [`Self::edit_targets`] — a locked lane does not follow the link.
+    fn target_groups(&self) -> Vec<Vec<ClipId>> {
+        let targets = self.edit_targets();
+        let mut groups: Vec<Vec<ClipId>> = Vec::new();
+        for id in &targets {
+            if groups.iter().any(|g| g.contains(id)) {
+                continue;
+            }
+            let mut g: Vec<ClipId> = self
+                .project
+                .link_group(*id)
+                .into_iter()
+                .filter(|c| targets.contains(c))
+                .collect();
+            if g.is_empty() {
+                g.push(*id);
+            }
+            groups.push(g);
+        }
+        groups
+    }
+
+    /// Re-link a freshly made block of copies the way the originals were
+    /// linked, and write every one of them.
+    ///
+    /// `from` is `(the source clip's link group, the copy's id)`. Each source
+    /// group becomes one **fresh** group among the copies: duplicating a shot
+    /// has to give back a shot whose picture and sound still move together,
+    /// without tying either of them to the shot they were copied from.
+    fn relink_copies(&mut self, doc: &mut AutoCommit, from: &[(Option<Uuid>, ClipId)]) {
+        let mut seen: Vec<Uuid> = Vec::new();
+        for (link, _) in from {
+            if let Some(l) = link
+                && !seen.contains(l)
+            {
+                seen.push(*l);
+            }
+        }
+        for link in seen {
+            let members: Vec<ClipId> = from
+                .iter()
+                .filter(|(l, _)| *l == Some(link))
+                .map(|(_, id)| *id)
+                .collect();
+            self.project.link_clips(&members);
+        }
+        for (_, id) in from {
+            self.dispatch_clip(doc, *id);
+        }
+    }
+
+    // ---- linked audio and video -----------------------------------------
+
+    /// The clips that follow an edit made on `id`: everything linked to it
+    /// that its own track lock allows editing. Empty for an unlinked clip, so
+    /// every caller reads as "and whatever follows", with no special case.
+    fn linked_followers(&self, id: ClipId) -> Vec<ClipId> {
+        self.project
+            .link_partners(id)
+            .into_iter()
+            .filter(|c| self.project.clip_editable(*c))
+            .collect()
+    }
+
+    /// `id` together with [`Self::linked_followers`] — the set a whole-group
+    /// edit (a re-time) writes.
+    fn linked_editable(&self, id: ClipId) -> Vec<ClipId> {
+        let mut v = vec![id];
+        v.extend(self.linked_followers(id));
+        v
+    }
+
+    /// Give `video_clip` its linked audio half, when the picture it places
+    /// carries sound and does not have one yet.
+    ///
+    /// This is what makes a placed video file into two clips: the picture on a
+    /// video lane and its sound on an audio lane (created if the project has
+    /// none, exactly as an audio import already does), sharing one link. Both
+    /// are written inside the caller's event, so the pair lands on one undo
+    /// boundary. Returns the audio clip's id, or `None` when there is nothing
+    /// to split off.
+    fn attach_linked_audio(&mut self, doc: &mut AutoCommit, video_clip: ClipId) -> Option<ClipId> {
+        let clip = self.project.clip(video_clip)?;
+        let (media_id, track_id) = (clip.media, clip.track);
+        let media = self.project.media(media_id)?;
+        if !media.kind.is_visual() || !media.has_audio {
+            return None;
+        }
+        if self.project.track(track_id).map(|t| t.kind) != Some(TrackKind::Video) {
+            return None;
+        }
+        // Already has a sound half — linking a second one would be heard twice
+        // the moment the mixer stopped suppressing the picture clip's own.
+        if !self.project.link_partners(video_clip).is_empty() {
+            return None;
+        }
+        let audio_track = self
+            .project
+            .placement_track(TrackKind::Audio, None)
+            .unwrap_or_else(|| self.ensure_track_of_kind(doc, TrackKind::Audio));
+        let audio = self.project.add_linked_audio(video_clip, audio_track)?;
+        // The picture clip is written too: it is the half that just gained the
+        // link id, and a peer that only saw the audio clip would have an
+        // orphan.
+        self.dispatch_clip(doc, video_clip);
+        self.dispatch_clip(doc, audio);
+        Some(audio)
+    }
+
+    /// Break the link on every clip in the selection's groups, leaving two
+    /// ordinary independent clips. Writes exactly the clips that changed.
+    fn unlink_selected(&mut self, doc: &mut AutoCommit) {
+        let ids = self.edit_targets();
+        let changed = self.project.unlink_clips(&ids);
+        for id in changed {
+            self.dispatch_clip(doc, id);
+        }
+    }
+
+    /// Put every editable selected clip into one fresh link group — the way
+    /// back after an unlink, and the way to tie a sound to a picture it was
+    /// never imported with.
+    fn link_selected(&mut self, doc: &mut AutoCommit) {
+        let ids = self.editable_selection();
+        if self.project.link_clips(&ids).is_none() {
+            return;
+        }
+        for id in ids {
+            self.dispatch_clip(doc, id);
+        }
+    }
+
+    /// Re-time the selected clip and everything linked to it, and write them
+    /// all. The one door every rate affordance goes through — the slider, the
+    /// presets, the reverse toggle and the keyboard — so none of them can
+    /// leave half a shot at the old speed.
+    fn set_speed_selected(&mut self, doc: &mut AutoCommit, rate: f64, reverse: bool) {
+        let Some(id) = self.selected() else { return };
+        if !self.project.clip_editable(id) {
+            return;
+        }
+        let ids = self.linked_editable(id);
+        self.project.set_speed_group(&ids, rate, reverse);
+        self.dispatch_clip_linked(doc, id);
+    }
+
+    /// What the link control offers for the current selection, or `None` when
+    /// there is nothing to offer: one clip, unlinked, with nothing to link to.
+    ///
+    /// One door, so the inspector row, the context menu, the keyboard walk and
+    /// the accessibility tree cannot disagree about whether linking is
+    /// available or about which way round it is.
+    fn link_affordance(&self) -> Option<LinkAffordance> {
+        let ids = self.editable_selection();
+        if ids.iter().any(|id| self.project.is_linked(*id)) {
+            return Some(LinkAffordance::Unlink);
+        }
+        if ids.len() > 1 {
+            return Some(LinkAffordance::Link);
+        }
+        // One picture clip still carrying its own sound: offer to move that
+        // sound onto a clip of its own. Without this, a project made before
+        // links existed could never get one, and a pair whose sound half was
+        // deleted could never get it back.
+        ids.first()
+            .filter(|id| self.project.can_split_audio(**id))
+            .map(|_| LinkAffordance::SplitAudio)
+    }
+
+    /// Do whichever of link / unlink the selection currently offers.
+    fn toggle_link_selected(&mut self, doc: &mut AutoCommit) {
+        match self.link_affordance() {
+            Some(LinkAffordance::Unlink) => self.unlink_selected(doc),
+            Some(LinkAffordance::Link) => self.link_selected(doc),
+            Some(LinkAffordance::SplitAudio) => {
+                if let Some(id) = self.selected() {
+                    self.attach_linked_audio(doc, id);
+                }
+            }
+            None => {}
+        }
     }
 
     /// Set the in-point of the primary selected clip to the playhead (`I`):
@@ -2899,8 +3154,9 @@ impl VideoEditorApp {
         if delta.abs() < 1e-6 {
             return;
         }
-        self.project.trim_in(id, delta);
-        self.dispatch_clip(doc, id);
+        let also = self.linked_followers(id);
+        self.project.trim_in_with(id, delta, &also);
+        self.dispatch_clip_linked(doc, id);
     }
 
     /// Set the out-point of the primary selected clip to the playhead (`O`):
@@ -2918,15 +3174,16 @@ impl VideoEditorApp {
         if delta.abs() < 1e-6 {
             return;
         }
-        self.project.trim_out(id, delta);
-        self.dispatch_clip(doc, id);
+        let also = self.linked_followers(id);
+        self.project.trim_out_with(id, delta, &also);
+        self.dispatch_clip_linked(doc, id);
     }
 
     /// Nudge every editable selected clip by `dt` seconds (arrow keys).
     /// Snaps each result to the frame grid. One event → one undo boundary,
     /// so a multi-clip nudge is a single Ctrl+Z.
     fn nudge_selected(&mut self, doc: &mut AutoCommit, dt: f64) {
-        for id in self.editable_selection() {
+        for id in self.edit_targets() {
             let new_start = self
                 .project
                 .clip(id)
@@ -2987,6 +3244,14 @@ impl VideoEditorApp {
         };
         if let Some(m) = self.project.media.iter_mut().find(|m| m.id == mid) {
             edit(m);
+        }
+    }
+
+    /// Dispatch a whole-media write for one bin source.
+    fn dispatch_media(&mut self, doc: &mut AutoCommit, mid: MediaId) {
+        if let Some(m) = self.project.media(mid).cloned() {
+            self.actions
+                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&m));
         }
     }
 
@@ -3107,10 +3372,23 @@ impl VideoEditorApp {
             NumField::CropTop => self.preview_edit(move |c| c.transform.crop_top = v),
             NumField::CropBottom => self.preview_edit(move |c| c.transform.crop_bottom = v),
             NumField::Speed => {
-                self.preview_edit(move |c| {
-                    let rev = c.speed.reverse;
-                    c.set_speed(v, rev);
-                });
+                // Rate is the one knob that follows the link, because it is
+                // the one whose halves drift *further* apart the longer the
+                // shot runs — a fault with no cause visible anywhere on
+                // screen. Everything else here (a level, a fade, a grade) is
+                // per-clip on purpose: sliding the sound and levelling it
+                // separately is what the audio clip is for.
+                let Some(id) = self.selected() else { return };
+                if !self.project.clip_editable(id) {
+                    return;
+                }
+                let rev = self
+                    .project
+                    .clip(id)
+                    .map(|c| c.speed.reverse)
+                    .unwrap_or(false);
+                let ids = self.linked_editable(id);
+                self.project.set_speed_group(&ids, v, rev);
             }
             NumField::TitleSize => self.preview_media_edit(move |m| {
                 if let Some(t) = m.text.as_mut() {
@@ -3844,6 +4122,10 @@ impl VideoEditorApp {
         let start = self.project.clips_on(track).last().map_or(0.0, |c| c.end());
         let id = self.project.add_clip(track, media, start)?;
         self.dispatch_clip(doc, id);
+        // A picture that carries sound lands as two clips, not one: the sound
+        // on its own lane, linked to the picture. Without it there is nothing
+        // to slide, level, fade or cut the sound with.
+        self.attach_linked_audio(doc, id);
         self.selection.select_only(id);
         Some(id)
     }
@@ -3863,6 +4145,9 @@ impl VideoEditorApp {
         let start = snap_to_frame(start.max(0.0), self.project.fps);
         let id = self.project.add_clip(track, media, start)?;
         self.dispatch_clip(doc, id);
+        // Dropping a source on a lane is just as much a placement as
+        // appending one, so it splits the sound off the same way.
+        self.attach_linked_audio(doc, id);
         self.selection.select_only(id);
         Some(id)
     }
@@ -4039,6 +4324,14 @@ impl VideoEditorApp {
         menu.push(MenuItem::separator());
         menu.push(MenuItem::action("Delete", || {}));
         menu.push(MenuItem::action("Ripple delete", || {}));
+        // Link / unlink, last and behind its own rule: a person who wants the
+        // sound three frames late has to be able to find out how, and the
+        // clip's own right-click menu is where they will look. Appended only
+        // when there is something to do, so the rows above never shift.
+        if let Some(offer) = self.link_affordance() {
+            menu.push(MenuItem::separator());
+            menu.push(MenuItem::action(offer.label(), || {}));
+        }
         menu.open_at([at.x as f32, at.y as f32]);
         self.bin_menu = menu;
         self.menu_target = Some(MenuTarget::Clip(cid));
@@ -4122,6 +4415,10 @@ impl VideoEditorApp {
                 4 => self.split_selected(doc),
                 6 => self.delete_selected(doc),
                 7 => self.ripple_delete_selected(doc),
+                // 8 is the separator; 9 exists only when `open_clip_menu`
+                // found something to link or unlink, so it can only be chosen
+                // when it does.
+                9 => self.toggle_link_selected(doc),
                 _ => {}
             },
             Some(MenuTarget::AddEffect) => {
@@ -4675,6 +4972,15 @@ impl VideoEditorApp {
                 .push((i, Rect::new(sx0, y + 15.0, sx0 + sw, y + 15.0 + sw)));
         }
         y += 44.0;
+        // The link control. It sits in the top block, with the clip's own
+        // identity rather than down among the picture sections, because it
+        // says what this clip *is* — half of a shot, or a clip on its own —
+        // and because an audio clip has to be able to reach it too.
+        if self.link_affordance().is_some() {
+            l.link_label_y = y + 15.0;
+            l.link = Some(Rect::new(x0, y + 20.0, x1, y + 46.0));
+            y += 56.0;
+        }
 
         // ---- collapsible sections ------------------------------------
         // Each opens with a header row that folds it; a folded section
@@ -5562,6 +5868,66 @@ impl VideoEditorApp {
                     self.shuttle_key(1.0);
                 }
             }
+            ShotScenario::LinkedAudio => {
+                // Built through the production path — the same
+                // `attach_linked_audio` a real import runs — so the capture is
+                // of the feature and not of a hand-arranged imitation of it.
+                //
+                // The drone open (0..8) and the market cutaway (20..26) both
+                // sit over free A1 time, which is where their sound lands.
+                for name in ["Drone_Coastline.mov", "Cutaway_Market.mp4"] {
+                    let Some(mid) = self
+                        .project
+                        .media
+                        .iter()
+                        .find(|m| m.name == name)
+                        .map(|m| m.id)
+                    else {
+                        continue;
+                    };
+                    if let Some(m) = self.project.media.iter_mut().find(|m| m.id == mid) {
+                        m.has_audio = true;
+                    }
+                    self.dispatch_media(state, mid);
+                    let Some(cid) = self
+                        .project
+                        .clips
+                        .iter()
+                        .find(|c| c.media == mid)
+                        .map(|c| c.id)
+                    else {
+                        continue;
+                    };
+                    self.attach_linked_audio(state, cid);
+                }
+                // Select the market pair's picture half, and park the playhead
+                // inside it, so one shot shows the selected state and the drone
+                // open — off to the left, unselected — shows the resting one.
+                // Picked by source rather than by "the top clip at 22s", which
+                // is the sunset insert on V2 and is not linked to anything.
+                if let Some(cid) = self
+                    .project
+                    .clips
+                    .iter()
+                    .filter(|c| c.link.is_some())
+                    .filter(|c| {
+                        self.project
+                            .track(c.track)
+                            .is_some_and(|t| t.kind == TrackKind::Video)
+                    })
+                    .find(|c| {
+                        self.project
+                            .media(c.media)
+                            .is_some_and(|m| m.name == "Cutaway_Market.mp4")
+                    })
+                    .map(|c| c.id)
+                {
+                    self.selection.select_only(cid);
+                    self.selected_media = self.project.clip(cid).map(|c| c.media);
+                }
+                self.playhead = 22.0;
+                self.zoom = 26.0;
+            }
             ShotScenario::RenderRange => {
                 // A range that starts inside the timeline and ends well
                 // before its end, so both brackets and both scrims are on
@@ -5729,6 +6095,7 @@ impl VideoEditorApp {
                 | ShotScenario::Markers
                 | ShotScenario::Effects
                 | ShotScenario::FocusInspector
+                | ShotScenario::LinkedAudio
         ) {
             self.reveal_inspector();
             self.inspector_flap.snap(true);
@@ -5736,6 +6103,13 @@ impl VideoEditorApp {
         match self.shot_scenario {
             ShotScenario::Collaborators => {
                 self.seed_shot_collaborators();
+            }
+            ShotScenario::LinkedAudio => {
+                // Bring the link control into view. It is laid out under the
+                // label swatches, which on a panel this tall sits just past
+                // the bottom edge — and a capture of a control nobody can see
+                // is a capture of nothing.
+                self.inspector_scroll = 150.0_f64.min(self.inspector_max_scroll(r));
             }
             ShotScenario::FocusInspector => {
                 if let Some(c) = self.project.top_video_clip_at(4.0) {
@@ -6179,6 +6553,12 @@ struct InspectorLayout {
     /// transition is `None` — there is no ramp to size.
     transition_len: Option<Rect>,
     colors_y: f64,
+    /// The link / unlink button, laid out only when the selection actually has
+    /// one thing or the other to offer — a control that is present and inert
+    /// says nothing.
+    link: Option<Rect>,
+    /// Baseline of the caption above it.
+    link_label_y: f64,
     colors: Vec<(u8, Rect)>,
     /// y of the "EFFECTS" label; each row rect is a full-width effect row.
     effects_label_y: f64,
@@ -6506,7 +6886,11 @@ impl Widget for VideoEditorApp {
             .project
             .media
             .iter()
-            .filter(|m| m.kind == MediaKind::Audio)
+            // A picture whose file carries sound is asked for peaks as well:
+            // its linked audio clip draws a waveform, and without this the
+            // sound half of every shot was a flat line — which is what the
+            // editor draws for "no audio here".
+            .filter(|m| m.kind == MediaKind::Audio || m.has_audio)
             .map(|m| (m.id, m.source()))
             .collect();
         for (id, src) in audio {
@@ -7336,6 +7720,7 @@ impl Widget for VideoEditorApp {
                     || l.key_colors.iter().any(|(_, rc)| rc.contains(point))
                     || l.mask_shapes.iter().any(|(_, rc)| rc.contains(point))
                     || [
+                        l.link,
                         l.reset_transform,
                         l.reverse,
                         l.title_text,
@@ -7824,6 +8209,13 @@ impl VideoEditorApp {
             out.push(InspectorRow::Field(NumField::TransitionLen));
         }
         out.extend((0..7u8).map(|slot| InspectorRow::Pick(PickField::Label(slot))));
+        // The link control, in the place it is drawn. Offered only when the
+        // selection has something to link or unlink, exactly as the layout
+        // decides — a walk that stopped on a control nobody can see would be
+        // describing a different panel from the one on screen.
+        if self.link_affordance().is_some() {
+            out.push(InspectorRow::Pick(PickField::LinkToggle));
+        }
         out
     }
 
@@ -8364,6 +8756,17 @@ impl VideoEditorApp {
                 Role::RadioButton,
                 self.selected_clip().is_some_and(|c| c.palette == slot),
             ),
+            // A button, not a switch: the two directions are different
+            // operations on different sets of clips, and its name says which
+            // one pressing it will do — the same words the button carries.
+            PickField::LinkToggle => (
+                self.link_affordance().map_or_else(
+                    || "Link audio and video".to_string(),
+                    |o| o.label().to_string(),
+                ),
+                Role::Button,
+                false,
+            ),
         };
         // `checked` is what accesskit turns into a radio's or a checkbox's
         // "toggled": `selected` alone reads as a highlighted list row, which
@@ -8433,6 +8836,13 @@ impl VideoEditorApp {
                     return false;
                 }
                 self.set_palette(doc, slot);
+                true
+            }
+            PickField::LinkToggle => {
+                if self.link_affordance().is_none() {
+                    return false;
+                }
+                self.toggle_link_selected(doc);
                 true
             }
         }
@@ -9058,6 +9468,7 @@ impl VideoEditorApp {
             InspectorRow::Pick(PickField::Label(slot)) => {
                 l.colors.iter().find(|(x, _)| *x == slot).map(|(_, r)| *r)
             }
+            InspectorRow::Pick(PickField::LinkToggle) => l.link,
         }
     }
 
@@ -9665,6 +10076,10 @@ enum PickField {
     Transition(Transition),
     /// One label colour, by palette slot.
     Label(u8),
+    /// The link / unlink button. Which of the two it is depends on the
+    /// selection — see [`LinkAffordance`] — so the row is one stop whichever
+    /// way round it reads.
+    LinkToggle,
 }
 
 impl PickField {
@@ -9688,11 +10103,57 @@ impl PickField {
             PickField::MaskShape(shape) => format!("clip.mask.{}", shape.as_str()),
             PickField::Transition(t) => format!("clip.transition.{}", t.as_str()),
             PickField::Label(slot) => format!("clip.label.{slot}"),
+            PickField::LinkToggle => "clip.link".to_string(),
         }
     }
 
     fn a11y_key(self) -> u64 {
         ui::a11y::hash_key(&self.tag())
+    }
+}
+
+/// Which way round the inspector's link control reads for the current
+/// selection.
+///
+/// The two are never both available: a selection that already holds a linked
+/// clip offers the break, and one that does not offers the tie. Keeping it a
+/// single control rather than two rows means the row's position never moves
+/// under the cursor, and the keyboard walk has one stop instead of two that
+/// swap places.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum LinkAffordance {
+    /// Break the link on the selection's clips.
+    Unlink,
+    /// Tie the selected clips into one group.
+    Link,
+    /// Give a picture clip that carries sound its own audio clip. This is what
+    /// a project saved before linked audio existed is offered, and what a shot
+    /// whose sound half was deleted is offered again — so neither is a
+    /// one-way door.
+    SplitAudio,
+}
+
+impl LinkAffordance {
+    /// What the control says it will do. The button names the *change*, not
+    /// the state; the caption above it names the state.
+    fn label(self) -> &'static str {
+        match self {
+            LinkAffordance::Unlink => "Unlink audio and video",
+            LinkAffordance::Link => "Link audio and video",
+            LinkAffordance::SplitAudio => "Split off audio",
+        }
+    }
+
+    /// What is true now, above the button.
+    fn state(self) -> &'static str {
+        match self {
+            LinkAffordance::Unlink => "Linked audio and video",
+            LinkAffordance::Link => "Not linked",
+            // True whether the sound has never left the picture or the clip it
+            // left for is gone; the editor knows which of those it is, and
+            // neither changes what the button does.
+            LinkAffordance::SplitAudio => "No linked audio clip",
+        }
     }
 }
 
@@ -10543,6 +11004,12 @@ impl VideoEditorApp {
                 return;
             }
         }
+        if let Some(rect) = l.link
+            && rect.contains(p)
+        {
+            self.toggle_link_selected(state);
+            return;
+        }
         for (pal, rect) in &l.colors {
             if rect.contains(p) {
                 self.set_palette(state, *pal);
@@ -10651,19 +11118,21 @@ impl VideoEditorApp {
         }
         for (rate, rect) in l.speed_presets.clone() {
             if rect.contains(p) {
-                self.edit_selected(state, move |c| {
-                    let rev = c.speed.reverse;
-                    c.set_speed(rate, rev);
-                });
+                let rev = self.selected_clip().map(|c| c.speed.reverse);
+                if let Some(rev) = rev {
+                    self.set_speed_selected(state, rate, rev);
+                }
                 return;
             }
         }
         if let Some(rect) = l.reverse {
             if rect.contains(p) {
-                self.edit_selected(state, |c| {
-                    let (rate, rev) = (c.speed.rate(), c.speed.reverse);
-                    c.set_speed(rate, !rev);
-                });
+                let now = self
+                    .selected_clip()
+                    .map(|c| (c.speed.rate(), c.speed.reverse));
+                if let Some((rate, rev)) = now {
+                    self.set_speed_selected(state, rate, !rev);
+                }
                 return;
             }
         }
@@ -11409,7 +11878,7 @@ impl VideoEditorApp {
                 // parallel lane each, which the timeline cannot promise.
                 self.project.move_clip_to(id, target, new_start);
                 if dt != 0.0 {
-                    for other in self.editable_selection() {
+                    for other in self.edit_targets() {
                         if other == id {
                             continue;
                         }
@@ -11429,13 +11898,17 @@ impl VideoEditorApp {
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
                 let delta = self.project.clip(id).map_or(0.0, |c| target - c.start);
-                self.project.trim_in(id, delta);
+                // The linked half takes the amount this clip could actually
+                // take, so a trim that clamps on one of them clamps on both.
+                let also = self.linked_followers(id);
+                self.project.trim_in_with(id, delta, &also);
             }
             Drag::TrimOut { id } => {
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
                 let delta = self.project.clip(id).map_or(0.0, |c| target - c.end());
-                self.project.trim_out(id, delta);
+                let also = self.linked_followers(id);
+                self.project.trim_out_with(id, delta, &also);
             }
             Drag::Opacity | Drag::Volume | Drag::Brightness | Drag::Contrast | Drag::Saturation => {
                 let l = self.inspector_layout(r);
@@ -11517,14 +11990,14 @@ impl VideoEditorApp {
                 // including the lane change and every clip carried along —
                 // is a single undo boundary.
                 self.dispatch_clip(doc, id);
-                for other in self.editable_selection() {
+                for other in self.edit_targets() {
                     if other != id {
                         self.dispatch_clip(doc, other);
                     }
                 }
             }
             Drag::TrimIn { id } | Drag::TrimOut { id } => {
-                self.dispatch_clip(doc, id);
+                self.dispatch_clip_linked(doc, id);
             }
             Drag::Opacity
             | Drag::Volume
@@ -11542,6 +12015,13 @@ impl VideoEditorApp {
             // A title knob writes the *source*, so it commits a media write;
             // everything else on this path is a clip field.
             Drag::Num(f) if f.is_media() => self.dispatch_selected_media(doc),
+            // Rate is the one field the drag applied to the whole link group,
+            // so it is the one that has to commit the whole group.
+            Drag::Num(NumField::Speed) => {
+                if let Some(id) = self.selected() {
+                    self.dispatch_clip_linked(doc, id);
+                }
+            }
             Drag::Num(_) => {
                 if let Some(id) = self.selected() {
                     self.dispatch_clip(doc, id);
@@ -13548,6 +14028,33 @@ impl VideoEditorApp {
                 }
             }
         }
+        // Link / unlink. The caption names the state so the button can name
+        // the *change*: a control labelled only "Unlink" leaves a reader
+        // guessing whether it describes what is true or what will happen.
+        if let (Some(rect), Some(offer)) = (l.link, self.link_affordance()) {
+            let linked = offer == LinkAffordance::Unlink;
+            text(
+                scene,
+                tr,
+                tf,
+                offer.state(),
+                12.0,
+                if linked { c.accent[5] } else { c.text_dim },
+                x0,
+                l.link_label_y - 15.0,
+            );
+            draw_button_enabled(
+                scene,
+                tf,
+                tr,
+                theme,
+                rect,
+                offer.label(),
+                false,
+                rect.contains(self.last_mouse),
+                true,
+            );
+        }
         // ---- collapsible sections ------------------------------------
         // Headers first, so a folded section still says what is inside it.
         for (s, rect) in &l.sections {
@@ -14653,11 +15160,59 @@ impl VideoEditorApp {
             tf,
             &Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1),
         );
+        let links = LinkMarks::build(&self.project, &self.selection);
         let mut drawn: Vec<(ClipId, Rect)> = Vec::new();
+        let mut tied: Vec<(Uuid, Rect)> = Vec::new();
         for (tid, kind, lane) in &lanes {
             for clip in self.project.clips_on(*tid) {
-                self.draw_clip(scene, tf, tr, theme, clip, lane, *kind, r);
-                drawn.push((clip.id, self.clip_rect(clip, lane, r)));
+                self.draw_clip(scene, tf, tr, theme, clip, lane, *kind, r, &links);
+                let rect = self.clip_rect(clip, lane, r);
+                drawn.push((clip.id, rect));
+                if let Some(link) = clip.link.filter(|_| links.group_selected(clip)) {
+                    tied.push((link, rect));
+                }
+            }
+        }
+        // The tie between the halves of a selected shot: a hairline down the
+        // gap between their lanes, capped at each end. Drawn only while the
+        // group is selected — including all the way through a drag, which is
+        // what makes "dragging one drags both" legible while it happens rather
+        // than only after it lands.
+        tied.sort_by(|a, b| {
+            a.0.cmp(&b.0).then_with(|| {
+                a.1.y0
+                    .partial_cmp(&b.1.y0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        });
+        for pair in tied.windows(2) {
+            let (link_a, above) = pair[0];
+            let (link_b, below) = pair[1];
+            if link_a != link_b {
+                continue;
+            }
+            let x = above.x0.max(below.x0).clamp(r.lanes.x0, r.lanes.x1) + 1.0;
+            if x <= r.lanes.x0 || x >= r.lanes.x1 {
+                continue;
+            }
+            stroke_line(
+                scene,
+                tf,
+                with_alpha(c.border_focus, 0.85),
+                x,
+                above.y1,
+                x,
+                below.y0,
+                1.5,
+            );
+            for y in [above.y1, below.y0] {
+                fill_rrect(
+                    scene,
+                    tf,
+                    with_alpha(c.border_focus, 0.9),
+                    Rect::new(x - 2.5, y - 1.25, x + 2.5, y + 1.25),
+                    1.25,
+                );
             }
         }
         // A lane that will not be heard or seen — muted, or not soloed while
@@ -14908,6 +15463,7 @@ impl VideoEditorApp {
         lane: &Rect,
         kind: TrackKind,
         r: &Regions,
+        links: &LinkMarks,
     ) {
         let c = &theme.tokens.colors;
         let cr = self.clip_rect(clip, lane, r);
@@ -15074,23 +15630,44 @@ impl VideoEditorApp {
                 .0 as f64
                 + 18.0
         };
+        // A linked clip wears a chain at the head of its header, so "these two
+        // move together" is legible standing still — before anything is
+        // dragged and without anything being selected. The name starts after
+        // it, and after the transition triangle when the head also carries
+        // one, rather than running underneath either.
+        let head_col = on_fill(theme, darken(base, 0.3)).1;
+        let linked = links.linked(clip);
+        let corner = if clip.transition == Transition::None {
+            0.0
+        } else {
+            9.0
+        };
+        let chain_w = if linked { CHAIN_W } else { 0.0 };
+        if linked && seen > corner + CHAIN_W + 6.0 {
+            draw_chain(
+                scene,
+                tf,
+                with_alpha(head_col, 0.85),
+                vx0 + 4.0 + corner,
+                strip.center().y,
+            );
+        }
         // The width available is the width that can be *seen*, measured from
         // where the name is actually drawn.
-        let avail = (seen - 10.0 - badge_w).max(4.0) as f32;
-        if seen > 30.0 {
+        let avail = (seen - 10.0 - corner - chain_w - badge_w).max(4.0) as f32;
+        if seen > 30.0 + corner + chain_w {
             let shown = elide_w(&label, avail, tr);
             // The name sits on the clip's header strip, whose colour comes
             // from the user's chosen label — so the text colour has to be
             // resolved against it rather than assumed white.
-            let (_, name_col) = on_fill(theme, darken(base, 0.3));
             text_w(
                 scene,
                 tr,
                 tf,
                 &shown,
                 11.0,
-                name_col,
-                vx0 + 5.0,
+                head_col,
+                vx0 + 5.0 + corner + chain_w,
                 cr.y0 + 3.0,
                 TextWeight::Medium,
             );
@@ -15192,6 +15769,17 @@ impl VideoEditorApp {
             }
         } else if selected {
             stroke_rrect(scene, tf, with_alpha(c.border_focus, 0.6), cr, 6.0, 2.0);
+        } else if links.group_selected(clip) {
+            // The other half of a selected shot. Dashed rather than solid, so
+            // "this will move too" never reads as "this is selected" — an edit
+            // aimed at it (a grade, a level) still lands on the anchor.
+            scene.stroke(
+                &Stroke::new(1.6).with_dashes(0.0, [4.0, 3.0]),
+                tf,
+                with_alpha(c.border_focus, 0.75),
+                None,
+                &RoundedRect::from_rect(cr, 6.0),
+            );
         } else {
             stroke_rrect(scene, tf, with_alpha(c.surfaces.base, 0.55), cr, 6.0, 1.0);
         }
@@ -16285,6 +16873,77 @@ fn triangle_down(cx: f64, top: f64, s: f64) -> BezPath {
     p.close_path();
     p
 }
+/// What one timeline paint needs to know about link groups: how many clips
+/// each group holds and whether any of them is selected.
+///
+/// Built once per paint and handed down rather than asked per clip. "Is
+/// anything linked to me" is a scan of every clip in the project, and asking it
+/// inside the per-clip draw would make painting the lanes quadratic in the
+/// project — the one thing the draw pass is not allowed to become.
+#[derive(Default)]
+struct LinkMarks {
+    /// `(group, members, any member selected)`, sorted by group so a lookup is
+    /// a binary search rather than a scan.
+    groups: Vec<(Uuid, u32, bool)>,
+}
+
+impl LinkMarks {
+    fn build(project: &Project, selection: &Selection) -> Self {
+        let mut groups: Vec<(Uuid, u32, bool)> = Vec::new();
+        for clip in &project.clips {
+            let Some(link) = clip.link else { continue };
+            let chosen = selection.contains(clip.id);
+            match groups.binary_search_by(|(g, _, _)| g.cmp(&link)) {
+                Ok(i) => {
+                    groups[i].1 += 1;
+                    groups[i].2 |= chosen;
+                }
+                Err(i) => groups.insert(i, (link, 1, chosen)),
+            }
+        }
+        Self { groups }
+    }
+
+    fn entry(&self, clip: &Clip) -> Option<(u32, bool)> {
+        let link = clip.link?;
+        self.groups
+            .binary_search_by(|(g, _, _)| g.cmp(&link))
+            .ok()
+            .map(|i| (self.groups[i].1, self.groups[i].2))
+    }
+
+    /// Whether this clip has at least one partner. A group of one is a clip,
+    /// not a link, so it wears no mark.
+    fn linked(&self, clip: &Clip) -> bool {
+        self.entry(clip).is_some_and(|(n, _)| n > 1)
+    }
+
+    /// Whether something in this clip's group is selected — what makes the
+    /// *other* half show that it is implicated in the edit.
+    fn group_selected(&self, clip: &Clip) -> bool {
+        self.entry(clip).is_some_and(|(n, sel)| n > 1 && sel)
+    }
+}
+
+/// The chain glyph that marks a linked clip: two interlocking links, drawn
+/// with the header's own foreground so it reads on every label colour and in
+/// every theme.
+fn draw_chain(scene: &mut Scene, tf: Affine, color: Color, x: f64, y: f64) {
+    let stroke = Stroke::new(1.3);
+    for dx in [0.0, 5.0] {
+        scene.stroke(
+            &stroke,
+            tf,
+            color,
+            None,
+            &RoundedRect::from_rect(Rect::new(x + dx, y - 3.0, x + dx + 7.0, y + 3.0), 3.0),
+        );
+    }
+}
+
+/// The width the chain glyph reserves at the head of a clip's header.
+const CHAIN_W: f64 = 16.0;
+
 fn triangle_corner(x: f64, y: f64, s: f64) -> BezPath {
     let mut p = BezPath::new();
     p.move_to((x, y));
@@ -25112,5 +25771,569 @@ mod tests {
             .map(|t| t.font.clone())
             .expect("the title survived");
         assert_eq!(font, "Beta Serif");
+    }
+
+    // ---- linked audio and video -----------------------------------------
+
+    /// The sample project's market cutaway, with the sound split off onto its
+    /// own clip through the production path. Returns the two halves.
+    fn app_with_linked_shot() -> (VideoEditorApp, AutoCommit) {
+        let (mut app, mut doc) = app_and_doc();
+        let mid = app
+            .project
+            .media
+            .iter()
+            .find(|m| m.name == "Cutaway_Market.mp4")
+            .map(|m| m.id)
+            .expect("the market source is in the bin");
+        if let Some(m) = app.project.media.iter_mut().find(|m| m.id == mid) {
+            // What a probe reads off a real container.
+            m.has_audio = true;
+        }
+        app.dispatch_media(&mut doc, mid);
+        let vid = app
+            .project
+            .clips
+            .iter()
+            .find(|c| c.media == mid)
+            .map(|c| c.id)
+            .expect("the market clip is on V1");
+        app.attach_linked_audio(&mut doc, vid)
+            .expect("the sound splits off");
+        app.selection.select_only(vid);
+        (app, doc)
+    }
+
+    /// Where a clip is drawn right now, through the same two calls the paint
+    /// makes.
+    fn clip_rect_of(app: &VideoEditorApp, id: ClipId) -> Rect {
+        let r = app.regions();
+        let clip = app.project.clip(id).expect("the clip").clone();
+        let lane = app
+            .lane_rects(&r)
+            .into_iter()
+            .find(|(tid, _, _)| *tid == clip.track)
+            .map(|(_, _, lane)| lane)
+            .expect("the clip's lane is on screen");
+        app.clip_rect(&clip, &lane, &r)
+    }
+
+    /// Placing a source whose container carries sound has to give back *two*
+    /// clips, and both have to reach the document — a picture clip whose sound
+    /// only exists in this process is not something a collaborator can hear.
+    #[test]
+    fn placing_a_shot_with_sound_lands_a_linked_pair_that_replicates() {
+        let (mut app, mut doc) = app_and_doc();
+        let mid = app
+            .project
+            .media
+            .iter()
+            .find(|m| m.name == "Interview_A.mp4")
+            .map(|m| m.id)
+            .expect("the interview source");
+        if let Some(m) = app.project.media.iter_mut().find(|m| m.id == mid) {
+            m.has_audio = true;
+        }
+        app.dispatch_media(&mut doc, mid);
+        let before = app.project.clips.len();
+        let vid = app
+            .add_media_to_timeline(&mut doc, mid)
+            .expect("the picture lands");
+        assert_eq!(
+            app.project.clips.len(),
+            before + 2,
+            "a shot with sound is two clips, not one",
+        );
+        let partners = app.project.link_partners(vid);
+        assert_eq!(partners.len(), 1, "{partners:?}");
+        let aid = partners[0];
+        assert_eq!(
+            app.project.clip_kind(aid),
+            TrackKind::Audio,
+            "the sound goes on an audio lane, which is what makes it \
+             sliddable, levellable and cuttable on its own",
+        );
+
+        // Straight out of the CRDT, which is what a peer will read.
+        let shared = VideoDoc::load_project(&doc);
+        let v = shared.clip(vid).expect("the picture replicated");
+        let a = shared.clip(aid).expect("the sound replicated");
+        assert_eq!(v.link, a.link);
+        assert!(v.link.is_some());
+        assert!(v.sound_split, "or a peer would hear the shot twice");
+
+        // A source with no sound track still lands as one clip.
+        let silent = app
+            .project
+            .media
+            .iter()
+            .find(|m| m.name == "Sunset_Timelapse.mp4")
+            .map(|m| m.id)
+            .expect("the sunset source");
+        let n = app.project.clips.len();
+        let only = app
+            .add_media_to_timeline(&mut doc, silent)
+            .expect("it lands");
+        assert_eq!(app.project.clips.len(), n + 1);
+        assert!(!app.project.is_linked(only));
+    }
+
+    /// Dragging one half drags the other. The grabbed clip changes lane; the
+    /// linked half keeps its own and moves by the same amount of time.
+    #[test]
+    fn dragging_one_half_of_a_shot_carries_the_other() {
+        let (mut app, mut doc) = app_with_linked_shot();
+        let vid = app.selected().expect("the picture is selected");
+        let aid = app.project.link_partners(vid)[0];
+        let v_before = app.project.clip(vid).expect("picture").start;
+        let a_before = app.project.clip(aid).expect("sound").start;
+        let a_track = app.project.clip(aid).expect("sound").track;
+
+        let cr = clip_rect_of(&app, vid);
+        let grab = Point::new(cr.center().x, cr.center().y);
+        click(&mut app, &mut doc, grab.x, grab.y);
+        assert!(
+            matches!(app.drag, Some(Drag::ClipMove { .. })),
+            "the press has to start a move for this test to prove anything",
+        );
+        move_to(&mut app, &mut doc, grab.x + 90.0, grab.y);
+        // Mid-drag, before the button comes up: the sound has *already* moved.
+        // "Dragging one drags both" has to be legible while it happens, not
+        // only after it lands.
+        assert!(
+            (app.project.clip(aid).expect("sound").start - a_before).abs() > 0.1,
+            "the sound only catches up on release, so the drag shows the two              halves coming apart",
+        );
+        release(&mut app, &mut doc);
+
+        let v_after = app.project.clip(vid).expect("picture").start;
+        let a_after = app.project.clip(aid).expect("sound").start;
+        assert!(
+            v_after > v_before + 1.0,
+            "the drag did not move the picture: {v_before} -> {v_after}",
+        );
+        assert!(
+            ((a_after - a_before) - (v_after - v_before)).abs() < 1e-6,
+            "the sound moved by {} while the picture moved by {}",
+            a_after - a_before,
+            v_after - v_before,
+        );
+        assert_eq!(
+            app.project.clip(aid).expect("sound").track,
+            a_track,
+            "and it stayed on its own lane",
+        );
+        // Committed, not only previewed: the drag has to reach the document.
+        let shared = VideoDoc::load_project(&doc);
+        assert!((shared.clip(aid).expect("sound").start - a_after).abs() < 1e-9);
+    }
+
+    /// Delete, ripple-delete, split, trim and re-time all take the whole shot.
+    #[test]
+    fn every_on_screen_edit_that_follows_the_link_takes_both_halves() {
+        // Delete.
+        let (mut app, mut doc) = app_with_linked_shot();
+        let aid = app.project.link_partners(app.selected().expect("picture"))[0];
+        app.delete_selected(&mut doc);
+        assert!(
+            app.project.clip(aid).is_none(),
+            "half a shot left behind is the surprise",
+        );
+        assert!(VideoDoc::load_project(&doc).clip(aid).is_none());
+
+        // Ripple delete.
+        let (mut app, mut doc) = app_with_linked_shot();
+        let aid = app.project.link_partners(app.selected().expect("picture"))[0];
+        app.ripple_delete_selected(&mut doc);
+        assert!(app.project.clip(aid).is_none());
+
+        // Split at the playhead.
+        let (mut app, mut doc) = app_with_linked_shot();
+        let vid = app.selected().expect("picture");
+        let aid = app.project.link_partners(vid)[0];
+        let n = app.project.clips.len();
+        app.playhead = app.project.clip(vid).expect("picture").start + 2.0;
+        app.split_selected(&mut doc);
+        assert_eq!(app.project.clips.len(), n + 2, "both lanes were cut");
+        let heads_link = app.project.clip(vid).expect("head").link;
+        assert_eq!(app.project.clip(aid).expect("head").link, heads_link);
+        let tails: Vec<&Clip> = app
+            .project
+            .clips
+            .iter()
+            .filter(|c| c.link.is_some() && c.link != heads_link)
+            .collect();
+        assert_eq!(tails.len(), 2, "the tails are a group of their own");
+        assert_eq!(tails[0].link, tails[1].link);
+
+        // Trim to the playhead (`I`).
+        let (mut app, mut doc) = app_with_linked_shot();
+        let vid = app.selected().expect("picture");
+        let aid = app.project.link_partners(vid)[0];
+        app.playhead = app.project.clip(vid).expect("picture").start + 1.5;
+        app.set_in_at_playhead(&mut doc);
+        let (v, a) = (
+            app.project.clip(vid).expect("picture"),
+            app.project.clip(aid).expect("sound"),
+        );
+        assert!(v.in_point > 0.0, "the head really moved");
+        assert!(
+            (v.in_point - a.in_point).abs() < 1e-9 && (v.start - a.start).abs() < 1e-9,
+            "the sound has to keep covering the picture: {v:?} {a:?}",
+        );
+
+        // Re-time.
+        let (mut app, mut doc) = app_with_linked_shot();
+        let vid = app.selected().expect("picture");
+        let aid = app.project.link_partners(vid)[0];
+        app.set_speed_selected(&mut doc, 2.0, false);
+        assert!((app.project.clip(vid).expect("picture").speed.rate() - 2.0).abs() < 1e-9);
+        assert!(
+            (app.project.clip(aid).expect("sound").speed.rate() - 2.0).abs() < 1e-9,
+            "re-timing one half and not the other desyncs them permanently",
+        );
+        assert!(
+            (VideoDoc::load_project(&doc)
+                .clip(aid)
+                .expect("sound")
+                .speed
+                .rate()
+                - 2.0)
+                .abs()
+                < 1e-9,
+            "and the sound's new rate has to reach the document",
+        );
+    }
+
+    /// A grade, a level and a fade stay per-clip: sliding the sound and
+    /// levelling it on its own is the entire point of it being a clip.
+    #[test]
+    fn levels_and_fades_do_not_follow_the_link() {
+        let (mut app, mut doc) = app_with_linked_shot();
+        let vid = app.selected().expect("picture");
+        let aid = app.project.link_partners(vid)[0];
+        app.selection.select_only(aid);
+        app.edit_selected(&mut doc, |c| {
+            c.volume = 0.25;
+            c.fade_in = 0.8;
+        });
+        let v = app.project.clip(vid).expect("picture");
+        assert!(
+            (v.volume - 1.0).abs() < 1e-9 && v.fade_in < 1e-9,
+            "levelling the sound must not touch the picture: {v:?}",
+        );
+        let a = app.project.clip(aid).expect("sound");
+        assert!((a.volume - 0.25).abs() < 1e-9 && (a.fade_in - 0.8).abs() < 1e-9);
+    }
+
+    /// Copying half a shot and pasting it would give a picture whose sound
+    /// stayed behind — a silent clip with no explanation. Copy takes the whole
+    /// shot, and the pasted copies are linked to each other and to nothing
+    /// else.
+    #[test]
+    fn copying_and_duplicating_a_shot_keeps_it_whole_without_tying_it_to_the_original() {
+        let (mut app, mut doc) = app_with_linked_shot();
+        let vid = app.selected().expect("picture");
+        let aid = app.project.link_partners(vid)[0];
+        assert_eq!(app.selection.ids(), &[vid], "only the picture is selected");
+
+        app.copy_selected();
+        assert_eq!(
+            app.clipboard.len(),
+            2,
+            "the sound came with the picture: {:?}",
+            app.clipboard.iter().map(|c| c.id).collect::<Vec<_>>(),
+        );
+
+        let was = app.project.clip(vid).expect("picture").link;
+        app.duplicate_selected(&mut doc);
+        let copies = app.selection.ids().to_vec();
+        assert_eq!(copies.len(), 2, "a duplicated shot is still a shot");
+        let copy_link = app.project.clip(copies[0]).expect("a copy").link;
+        assert!(copy_link.is_some());
+        assert_eq!(
+            app.project.clip(copies[1]).expect("the other copy").link,
+            copy_link,
+            "the two copies still move together",
+        );
+        assert_ne!(
+            copy_link, was,
+            "but dragging the original must not drag the copy across the              timeline with it",
+        );
+        assert_eq!(
+            app.project.clip(vid).expect("original").link,
+            was,
+            "and the original pair is untouched",
+        );
+        assert_eq!(app.project.clip(aid).expect("original sound").link, was);
+    }
+
+    /// The sound half draws a waveform, which means its source has to be asked
+    /// for peaks — and its source is a *video* file, which the editor used to
+    /// ask about only for audio-kind media. Without this the sound of every
+    /// shot was the flat line the editor draws for "there is nothing here".
+    #[test]
+    fn a_picture_that_carries_sound_is_asked_for_its_peaks() {
+        use crate::waveform::WaveformState;
+        let (mut app, mut doc) = app_and_doc();
+        let mid = app
+            .project
+            .media
+            .iter()
+            .find(|m| m.name == "Cutaway_Market.mp4")
+            .map(|m| m.id)
+            .expect("the market source");
+        assert_eq!(
+            app.waveforms.state(mid),
+            WaveformState::Unrequested,
+            "a silent picture is not worth decoding for peaks",
+        );
+        if let Some(m) = app.project.media.iter_mut().find(|m| m.id == mid) {
+            m.has_audio = true;
+        }
+        app.dispatch_media(&mut doc, mid);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_ne!(
+            app.waveforms.state(mid),
+            WaveformState::Unrequested,
+            "the peaks were never asked for, so the sound half can only ever              draw the flat line that means 'nothing here'",
+        );
+    }
+
+    /// The link control is reachable without a pointer, and it does the same
+    /// thing the pointer does.
+    #[test]
+    fn the_keyboard_walk_reaches_the_link_control_and_it_unlinks() {
+        let (mut app, mut doc) = app_with_linked_shot();
+        let vid = app.selected().expect("picture");
+        let aid = app.project.link_partners(vid)[0];
+
+        assert_eq!(app.link_affordance(), Some(LinkAffordance::Unlink));
+        let rows = app.a11y_inspector_rows();
+        let at = rows
+            .iter()
+            .position(|r| *r == InspectorRow::Pick(PickField::LinkToggle))
+            .expect("the walk stops on the link control");
+        // Named the way the button is, so a reader is told what pressing it
+        // will do rather than what is true.
+        let node = app.a11y_pick_node(PickField::LinkToggle, false);
+        assert_eq!(node.name.as_deref(), Some("Unlink audio and video"));
+        // And it is laid out where the walk says it is.
+        let r = app.regions();
+        let l = app.inspector_layout(&r);
+        assert!(
+            VideoEditorApp::inspector_row_rect(&l, rows[at]).is_some(),
+            "a stop with no rect is a stop the cursor cannot be drawn on",
+        );
+
+        assert!(app.a11y_activate_pick(PickField::LinkToggle, &mut doc));
+        assert!(!app.project.is_linked(vid), "the pair came apart");
+        assert!(
+            VideoDoc::load_project(&doc)
+                .clip(aid)
+                .expect("sound")
+                .link
+                .is_none()
+        );
+
+        // …and the same control ties them back together.
+        app.selection.set(vec![vid, aid]);
+        assert_eq!(app.link_affordance(), Some(LinkAffordance::Link));
+        assert!(app.a11y_activate_pick(PickField::LinkToggle, &mut doc));
+        assert!(app.project.is_linked(vid));
+    }
+
+    /// A project made before linked audio existed has to be able to get one,
+    /// and the inspector is where a person will look for it.
+    #[test]
+    fn a_shot_still_carrying_its_sound_is_offered_the_split() {
+        let (mut app, mut doc) = app_and_doc();
+        let mid = app
+            .project
+            .media
+            .iter()
+            .find(|m| m.name == "Cutaway_Market.mp4")
+            .map(|m| m.id)
+            .expect("the market source");
+        if let Some(m) = app.project.media.iter_mut().find(|m| m.id == mid) {
+            m.has_audio = true;
+        }
+        let vid = app
+            .project
+            .clips
+            .iter()
+            .find(|c| c.media == mid)
+            .map(|c| c.id)
+            .expect("the market clip");
+        app.selection.select_only(vid);
+        assert_eq!(app.link_affordance(), Some(LinkAffordance::SplitAudio));
+        assert!(app.a11y_activate_pick(PickField::LinkToggle, &mut doc));
+        let partners = app.project.link_partners(vid);
+        assert_eq!(partners.len(), 1, "the sound came off onto its own clip");
+        assert_eq!(app.project.clip_kind(partners[0]), TrackKind::Audio);
+        assert_eq!(
+            app.link_affordance(),
+            Some(LinkAffordance::Unlink),
+            "and the control now offers the way back",
+        );
+    }
+
+    /// The right-click menu carries it too, because that is where a person
+    /// who wants the sound three frames late will look.
+    #[test]
+    fn the_clip_menu_offers_to_unlink_and_does_it() {
+        let (mut app, mut doc) = app_with_linked_shot();
+        let vid = app.selected().expect("picture");
+        let aid = app.project.link_partners(vid)[0];
+        let cr = clip_rect_of(&app, vid);
+        app.open_clip_menu(vid, cr.center());
+        let labels: Vec<String> = app
+            .bin_menu
+            .items()
+            .iter()
+            .map(|i| i.label().unwrap_or("--").to_string())
+            .collect();
+        let idx = labels
+            .iter()
+            .position(|l| l == "Unlink audio and video")
+            .unwrap_or_else(|| panic!("the clip menu offers the unlink: {labels:?}"));
+        app.bin_menu_choose(&mut doc, idx);
+        assert!(!app.project.is_linked(vid));
+        assert!(
+            VideoDoc::load_project(&doc)
+                .clip(aid)
+                .expect("sound")
+                .link
+                .is_none()
+        );
+
+        // An unlinked single clip with no sound to split has nothing to offer,
+        // so the row is absent rather than present and inert.
+        let (mut app, _doc) = app_and_doc();
+        let cid = app
+            .project
+            .clips
+            .iter()
+            .find(|c| {
+                app.project
+                    .media(c.media)
+                    .is_some_and(|m| m.kind == MediaKind::Image)
+            })
+            .map(|c| c.id)
+            .expect("the logo clip carries no sound");
+        app.selection.select_only(cid);
+        assert_eq!(app.link_affordance(), None);
+        app.open_clip_menu(cid, Point::new(400.0, 620.0));
+        assert!(
+            !app.bin_menu
+                .items()
+                .iter()
+                .any(|i| i.label().is_some_and(|l| l.contains("ink"))),
+            "nothing to link or unlink means no row at all",
+        );
+    }
+
+    /// A linked clip has to *look* linked, standing still and unselected.
+    ///
+    /// Rendered three times, not two: the same state twice first, so a
+    /// difference that came from the frame rather than from the link (an
+    /// animating flap, a moving playhead) fails here instead of being read as
+    /// the mark. Only then is the link removed.
+    #[test]
+    fn a_linked_clip_wears_a_mark_an_unlinked_one_does_not() {
+        let theme = Theme::dark();
+        let (w, h) = (1280u32, 800u32);
+        let (mut app, _doc) = app_with_linked_shot();
+        let vid = app.selected().expect("picture");
+        let aid = app.project.link_partners(vid)[0];
+        // Nothing selected, so the mark under test is the resting one and not
+        // the outline a selection draws.
+        app.selection.clear();
+
+        let cr = clip_rect_of(&app, aid);
+        let header = Rect::new(cr.x0 + 2.0, cr.y0 + 2.0, cr.x0 + 60.0, cr.y0 + 17.0);
+        // A band inside the body, clear of every border, so the control is a
+        // region the link is not supposed to change.
+        let body = Rect::new(cr.x0 + 6.0, cr.y0 + 24.0, cr.x1 - 6.0, cr.y1 - 4.0);
+
+        let first = render_pixels(&mut app, w, h, &theme);
+        let again = render_pixels(&mut app, w, h, &theme);
+        assert_eq!(
+            crop(&first, w, header),
+            crop(&again, w, header),
+            "two renders of one state already differ; nothing below this can \
+             be attributed to the link",
+        );
+
+        for id in [vid, aid] {
+            app.project.clip_mut(id).expect("the clip").link = None;
+        }
+        let unlinked = render_pixels(&mut app, w, h, &theme);
+        assert_ne!(
+            crop(&first, w, header),
+            crop(&unlinked, w, header),
+            "a linked clip is drawn no differently from an unlinked one",
+        );
+        assert_eq!(
+            crop(&first, w, body),
+            crop(&unlinked, w, body),
+            "the mark belongs in the header, not over the clip's content",
+        );
+    }
+
+    /// Selecting one half has to show the other is implicated, or dragging one
+    /// and watching another move is alarming rather than helpful.
+    #[test]
+    fn selecting_one_half_marks_the_other_as_implicated() {
+        let theme = Theme::dark();
+        let (w, h) = (1280u32, 800u32);
+        let (mut app, _doc) = app_with_linked_shot();
+        let vid = app.selected().expect("picture");
+        let aid = app.project.link_partners(vid)[0];
+        assert!(
+            !app.selection.contains(aid),
+            "the sound half is *not* selected; that is the point",
+        );
+
+        let cr = clip_rect_of(&app, aid);
+        // The clip's own outline, and the gap above it where the tie runs.
+        let edge = Rect::new(cr.x0 - 3.0, cr.y0 - 9.0, cr.x1 + 3.0, cr.y0 + 3.0);
+
+        let first = render_pixels(&mut app, w, h, &theme);
+        let again = render_pixels(&mut app, w, h, &theme);
+        assert_eq!(
+            crop(&first, w, edge),
+            crop(&again, w, edge),
+            "two renders of one state already differ",
+        );
+
+        // The only thing that changes: the link. The selection, the playhead
+        // and every clip's geometry stay exactly where they were.
+        for id in [vid, aid] {
+            app.project.clip_mut(id).expect("the clip").link = None;
+        }
+        let unlinked = render_pixels(&mut app, w, h, &theme);
+        assert_ne!(
+            crop(&first, w, edge),
+            crop(&unlinked, w, edge),
+            "the other half of a selected shot is drawn exactly like a clip \
+             that has nothing to do with it",
+        );
+    }
+
+    /// The raw bytes of a rectangle of the frame.
+    fn crop(rgba: &[u8], fw: u32, rect: Rect) -> Vec<u8> {
+        let (x0, y0) = (rect.x0.max(0.0) as u32, rect.y0.max(0.0) as u32);
+        let (x1, y1) = (rect.x1.max(0.0) as u32, rect.y1.max(0.0) as u32);
+        let mut out = Vec::new();
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = ((y * fw + x) * 4) as usize;
+                if i + 3 < rgba.len() {
+                    out.extend_from_slice(&rgba[i..i + 4]);
+                }
+            }
+        }
+        out
     }
 }
