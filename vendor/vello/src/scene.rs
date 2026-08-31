@@ -99,7 +99,7 @@ impl Scene {
     /// That is, the `transform` argument to this function only applies a transform to the `clip` shape.
     #[allow(
         single_use_lifetimes,
-        reason = "False positive: https://github.com/rust-lang/rust/issues/129255 —                   fixed in the pinned toolchain, so `expect` goes unfulfilled;                   `allow` is correct whether or not it returns"
+        reason = "False positive on older compilers; fixed by rust-lang/rust#129255"
     )]
     #[track_caller]
     pub fn push_layer<'a>(
@@ -149,7 +149,7 @@ impl Scene {
     /// with a [`Compose::SrcOver`].
     #[allow(
         single_use_lifetimes,
-        reason = "False positive: https://github.com/rust-lang/rust/issues/129255 —                   fixed in the pinned toolchain, so `expect` goes unfulfilled;                   `allow` is correct whether or not it returns"
+        reason = "False positive on older compilers; fixed by rust-lang/rust#129255"
     )]
     pub fn push_luminance_mask_layer<'a>(
         &mut self,
@@ -187,7 +187,7 @@ impl Scene {
     /// That is, the `transform` argument to this function only applies a transform to the `clip` shape.
     #[allow(
         single_use_lifetimes,
-        reason = "False positive: https://github.com/rust-lang/rust/issues/129255 —                   fixed in the pinned toolchain, so `expect` goes unfulfilled;                   `allow` is correct whether or not it returns"
+        reason = "False positive on older compilers; fixed by rust-lang/rust#129255"
     )]
     pub fn push_clip_layer<'a>(
         &mut self,
@@ -311,7 +311,7 @@ impl Scene {
     /// Fills a shape using the specified style and brush.
     #[allow(
         single_use_lifetimes,
-        reason = "False positive: https://github.com/rust-lang/rust/issues/129255 —                   fixed in the pinned toolchain, so `expect` goes unfulfilled;                   `allow` is correct whether or not it returns"
+        reason = "False positive on older compilers; fixed by rust-lang/rust#129255"
     )]
     pub fn fill<'b>(
         &mut self,
@@ -342,7 +342,7 @@ impl Scene {
     /// Strokes a shape using the specified style and brush.
     #[allow(
         single_use_lifetimes,
-        reason = "False positive: https://github.com/rust-lang/rust/issues/129255 —                   fixed in the pinned toolchain, so `expect` goes unfulfilled;                   `allow` is correct whether or not it returns"
+        reason = "False positive on older compilers; fixed by rust-lang/rust#129255"
     )]
     pub fn stroke<'b>(
         &mut self,
