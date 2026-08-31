@@ -145,7 +145,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, maps::app_root(), "dev.qos.maps"));
+        std::process::exit(ui::headless::run(&spec, maps::app_root(), "dev.qos.maps"));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.maps");

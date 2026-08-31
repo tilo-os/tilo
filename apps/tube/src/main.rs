@@ -184,7 +184,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
         std::process::exit(ui::headless::run(
-            spec,
+            &spec,
             Box::new(tube::TubeApp::new().online()),
             "dev.qos.tube",
         ));

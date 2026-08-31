@@ -117,7 +117,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let open_path = code_editor::parse_path_arg(&args);
     if let Some(spec) = ui::headless::spec_from_args(&args) {
         std::process::exit(ui::headless::run(
-            spec,
+            &spec,
             code_editor::app_root_at(open_path.as_deref()),
             "dev.qos.code-editor",
         ));

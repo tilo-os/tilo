@@ -90,9 +90,10 @@ impl Action for ThemesAction {
                 if catalog.iter().any(|s| s.id == spec.id && s.builtin) {
                     return Ok(());
                 }
-                match catalog.iter().position(|s| s.id == spec.id) {
-                    Some(i) => catalog[i] = spec.clone(),
-                    None => catalog.push(spec.clone()),
+                if let Some(slot) = catalog.iter_mut().find(|s| s.id == spec.id) {
+                    *slot = spec.clone();
+                } else {
+                    catalog.push(spec.clone());
                 }
                 doc::save_catalog(doc, &ROOT, &catalog);
             }
@@ -100,7 +101,8 @@ impl Action for ThemesAction {
                 let mut catalog = doc::load_catalog(doc, &ROOT).unwrap_or_default();
                 if let Some(i) = catalog.iter().position(|s| &s.id == id) {
                     // Built-in presets are protected; never empty the catalog.
-                    if !catalog[i].builtin && catalog.len() > 1 {
+                    let builtin = catalog.get(i).is_some_and(|s| s.builtin);
+                    if !builtin && catalog.len() > 1 {
                         catalog.remove(i);
                         doc::save_catalog(doc, &ROOT, &catalog);
                     }
@@ -123,6 +125,20 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`ThemesAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a Themes action into a
 /// replayable envelope.
+///
+/// Returns `EncodedAction` rather than a `Result`: every call site — including
+/// the `build` closures [`ActionSpec::prompted`](qos_actions::ActionSpec::prompted)
+/// requires to return `EncodedAction` directly — needs the value unconditionally,
+/// and every [`ThemesAction`] variant carries only plain `String` / [`ThemeSpec`]
+/// fields, which `serde_json` cannot fail to serialize.
+///
+/// # Panics
+///
+/// Panics if the action cannot be serialized (should never happen for valid actions).
+#[allow(
+    clippy::expect_used,
+    reason = "ThemesAction's fields are always JSON-serializable; see doc comment"
+)]
 pub fn encode(action: &ThemesAction) -> EncodedAction {
     EncodedAction::encode(THEMES_ACTION_TYPE, action).expect("ThemesAction is always serializable")
 }
@@ -153,11 +169,24 @@ pub fn max_order(catalog: &[ThemeSpec]) -> u32 {
     catalog.iter().map(|s| s.order).max().unwrap_or(0)
 }
 
+/// The first built-in preset, used as the starting tokens for a fresh theme
+/// ([`new_theme_spec`]) and a reset ([`reset_spec`]). [`presets`] is built
+/// from the fixed `PRESET_ENTRIES` table in [`crate::model`] and is never
+/// empty; the indexing is centralised here with a documented reason rather
+/// than repeated at each call site.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "presets() is built from the fixed, non-empty PRESET_ENTRIES table in crate::model"
+)]
+fn base_preset() -> ThemeSpec {
+    presets()[0].clone()
+}
+
 /// A fresh editable theme starting from the first preset's tokens, carrying the
 /// authored `id` / `name` / `order`. Shared by the top-bar New button and the
 /// palette's "New theme" action so both dispatch the identical upsert.
 pub fn new_theme_spec(id: &str, name: &str, order: u32) -> ThemeSpec {
-    let mut s = presets()[0].clone();
+    let mut s = base_preset();
     s.id = id.to_string();
     s.name = name.to_string();
     s.builtin = false;
@@ -180,7 +209,7 @@ pub fn duplicate_spec(src: &ThemeSpec, id: &str, order: u32) -> ThemeSpec {
 /// theme's own id / name / order so it stays the same catalog row. Shared by the
 /// customizer Reset button and the palette.
 pub fn reset_spec(current: &ThemeSpec) -> ThemeSpec {
-    let mut s = presets()[0].clone();
+    let mut s = base_preset();
     s.id = current.id.clone();
     s.name = current.name.clone();
     s.builtin = false;
@@ -208,6 +237,13 @@ pub fn rename_spec(current: &ThemeSpec, name: &str) -> ThemeSpec {
 // Resource tree
 // ===========================================================================
 
+/// Same non-fallible-in-practice contract as [`encode`]: `provide_resources`
+/// returns a plain `Vec<Resource>` (the [`qos_actions::ResourceProvider`]
+/// trait shape), so there is no `Result` to propagate an encode failure into.
+#[allow(
+    clippy::expect_used,
+    reason = "ThemesAction's fields are always JSON-serializable; see encode's doc comment"
+)]
 fn immediate_spec(id: &str, label: &str, action: &ThemesAction) -> ActionSpec {
     ActionSpec::immediate(id, label, THEMES_ACTION_TYPE, action).expect("encode themes action")
 }
@@ -337,14 +373,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 

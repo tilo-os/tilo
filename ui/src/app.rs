@@ -2798,7 +2798,7 @@ impl AppHandler {
         )
         .map_err(|e| format!("could not create the renderer: {e}"))?;
         // After this, every GPU call happens on the `ui-render` thread.
-        self.render = Some(spawn_render_thread(render_cx, surface, renderer));
+        self.render = Some(spawn_render_thread(render_cx, surface, renderer)?);
         Ok(())
     }
 

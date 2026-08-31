@@ -34,6 +34,16 @@ use wayland_client::{
     protocol::{wl_output, wl_shm, wl_surface},
 };
 
+/// `width * height * 4` bytes (RGBA8), computed in `usize` and saturating rather than
+/// wrapping on the multiplication — `width`/`height` come from `--size` or the
+/// compositor's `configure` event, neither of which is bounded.
+fn pixel_buffer_size(width: u32, height: u32) -> usize {
+    usize::try_from(width)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(usize::try_from(height).unwrap_or(usize::MAX))
+        .saturating_mul(4)
+}
+
 struct Opts {
     fullscreen: bool,
     width: u32,
@@ -114,29 +124,42 @@ impl LoadApp {
             return;
         };
         let (w, h) = (self.width.max(1), self.height.max(1));
-        let stride = w as i32 * 4;
+        let Some((w_px, h_px, stride)) = Self::buffer_geometry(w, h) else {
+            return;
+        };
         let Ok((buffer, canvas)) =
             self.pool
-                .create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888)
+                .create_buffer(w_px, h_px, stride, wl_shm::Format::Argb8888)
         else {
             return;
         };
         // Moving diagonal gradient: cheap, different every frame, and
         // visually obvious in a snapshot when the import path is wrong.
         let phase = (self.frames % 256) as u32;
-        for y in 0..h {
-            let row = &mut canvas[(y * w * 4) as usize..((y + 1) * w * 4) as usize];
-            for x in 0..w {
-                let px = &mut row[(x * 4) as usize..(x * 4 + 4) as usize];
-                let v = ((x + y + phase) % 256) as u8;
-                px[0] = v; // B
-                px[1] = 0x40; // G
-                px[2] = 0xFF - v; // R
-                px[3] = 0xFF; // A
+        // `stride` is `w_px.checked_mul(4)`, so it is always > 0 here; the
+        // conversion cannot fail.
+        let Ok(row_len) = usize::try_from(stride) else {
+            return;
+        };
+        for (y, row) in canvas.chunks_exact_mut(row_len).enumerate() {
+            let y = u32::try_from(y).unwrap_or(0);
+            for (x, px) in row.chunks_exact_mut(4).enumerate() {
+                let x = u32::try_from(x).unwrap_or(0);
+                let [b, g, r, a] = px else {
+                    continue; // chunks_exact_mut(4) guarantees len == 4
+                };
+                // Gradient colour, not a measured quantity — wrapping on overflow
+                // is fine, it just shifts where the pattern rolls over.
+                let v = u8::try_from(x.wrapping_add(y).wrapping_add(phase).wrapping_rem(256))
+                    .unwrap_or(0);
+                *b = v; // B
+                *g = 0x40; // G
+                *r = 0xFFu8.wrapping_sub(v); // R
+                *a = 0xFF; // A
             }
         }
         let surface = window.wl_surface();
-        surface.damage_buffer(0, 0, w as i32, h as i32);
+        surface.damage_buffer(0, 0, w_px, h_px);
         // Request the frame callback *before* committing so the compositor
         // sees it with this commit; otherwise the client free-runs and
         // swamps the socket instead of pacing to presentation.
@@ -145,7 +168,19 @@ impl LoadApp {
             return;
         }
         surface.commit();
-        self.frames += 1;
+        // Frame count over a bounded run; saturating is defensive, not load-bearing.
+        self.frames = self.frames.saturating_add(1);
+    }
+
+    /// Convert width/height to the `i32` + byte-stride triple `SlotPool::create_buffer`
+    /// wants. `w`/`h` come from `--size` or the compositor's `configure` event, neither
+    /// of which is bounded — `None` degrades to "skip this frame" rather than wrapping
+    /// the stride into a buffer smaller than the canvas.
+    fn buffer_geometry(w: u32, h: u32) -> Option<(i32, i32, i32)> {
+        let w_px = i32::try_from(w).ok()?;
+        let h_px = i32::try_from(h).ok()?;
+        let stride = w_px.checked_mul(4)?;
+        Some((w_px, h_px, stride))
     }
 }
 
@@ -220,7 +255,7 @@ impl WindowHandler for LoadApp {
         }
         // The pool has to be big enough for the configured size; growing
         // is cheap and happens at most a couple of times.
-        let need = (self.width * self.height * 4) as usize;
+        let need = pixel_buffer_size(self.width, self.height);
         let _ = self.pool.resize(need.max(4096));
         if !self.configured {
             self.configured = true;
@@ -250,7 +285,7 @@ delegate_xdg_shell!(LoadApp);
 delegate_xdg_window!(LoadApp);
 delegate_registry!(LoadApp);
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts = Opts::parse(std::env::args().skip(1));
     let conn = match Connection::connect_to_env() {
         Ok(c) => c,
@@ -259,18 +294,20 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let (globals, mut event_queue) =
-        registry_queue_init(&conn).expect("qos-loadclient: registry init");
+    let (globals, mut event_queue) = registry_queue_init(&conn)?;
     let qh = event_queue.handle();
 
-    let compositor_state =
-        CompositorState::bind(&globals, &qh).expect("qos-loadclient: wl_compositor missing");
-    let shm_state = Shm::bind(&globals, &qh).expect("qos-loadclient: wl_shm missing");
-    let xdg_shell_state = XdgShell::bind(&globals, &qh).expect("qos-loadclient: xdg_shell missing");
-    let pool = SlotPool::new((opts.width * opts.height * 4) as usize, &shm_state)
-        .expect("qos-loadclient: shm pool");
+    let compositor_state = CompositorState::bind(&globals, &qh)?;
+    let shm_state = Shm::bind(&globals, &qh)?;
+    let xdg_shell_state = XdgShell::bind(&globals, &qh)?;
+    let pool = SlotPool::new(pixel_buffer_size(opts.width, opts.height), &shm_state)?;
 
     let now = Instant::now();
+    // A `--seconds` pathological enough to overflow `Instant`'s range degrades to
+    // "already expired" instead of panicking — the harness just gets a 0-frame run.
+    let deadline = now
+        .checked_add(Duration::from_secs_f64(opts.seconds))
+        .unwrap_or(now);
     let mut app = LoadApp {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
@@ -284,7 +321,7 @@ fn main() {
         frames: 0,
         configured: false,
         started: now,
-        deadline: now + Duration::from_secs_f64(opts.seconds),
+        deadline,
         done: false,
     };
 
@@ -307,6 +344,12 @@ fn main() {
         }
     }
     let elapsed = app.started.elapsed().as_secs_f64();
+    // Reporting-only fps figure; a run would need to sustain >2^53 frames
+    // (decades at any real frame rate) before this cast could lose precision.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "reporting-only fps figure; frame counts never approach 2^53"
+    )]
     let fps = if elapsed > 0.0 {
         app.frames as f64 / elapsed
     } else {
@@ -317,6 +360,7 @@ fn main() {
         "LOADCLIENT frames={} seconds={elapsed:.3} fps={fps:.2}",
         app.frames
     );
+    Ok(())
 }
 
 #[cfg(test)]

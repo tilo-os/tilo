@@ -38,7 +38,9 @@ const PRIMARY_IDENTITY_FILE: &str = "primary.json";
 /// `$XDG_CONFIG_HOME` (falling back to `$HOME/.config`) and creates
 /// `quick-desktop/` under it. Returns `Ok(())` on success and on the "no HOME / no XDG" no-op path so boot continues.
 ///
-/// Errors surface only when directory creation itself fails (permission denied, ENOSPC); the caller (`main`) logs and continues.
+/// # Errors
+///
+/// Returns an error when directory creation itself fails (permission denied, ENOSPC); the caller (`main`) logs and continues.
 pub fn run() -> Result<(), Box<dyn Error>> {
     run_with_env(
         std::env::var_os("XDG_CONFIG_HOME"),
@@ -195,6 +197,10 @@ fn ensure_dirs(config_dir: &Path) -> std::io::Result<()> {
 /// into Secret Service or the explicitly reported private-file fallback.
 ///
 /// Idempotent: an existing file is returned as [`ProvisionOutcome::Existing`] with no modification.
+///
+/// # Errors
+///
+/// Returns an error if file system operations fail (permission denied, I/O error, etc.).
 pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, io::Error> {
     let path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     if path.exists() {
