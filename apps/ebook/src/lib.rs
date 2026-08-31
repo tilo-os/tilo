@@ -44,6 +44,7 @@ mod comment_overlay;
 pub mod content;
 pub mod doc;
 pub mod epub;
+mod input_controls;
 pub mod model;
 pub mod paginate;
 pub mod paint;
