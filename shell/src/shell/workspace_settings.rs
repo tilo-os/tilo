@@ -1621,6 +1621,12 @@ pub fn default_app_rows(
         .into_iter()
         .enumerate()
         .filter_map(|(index, resource)| {
+            // `index` is a row position in a pane-height-bounded list of
+            // deduplicated resource kinds — well under 2^53.
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "index is a small row position bounded by the resource-kind list, well under 2^53"
+            )]
             let y0 = pane.y0 + 52.0 + index as f64 * 72.0;
             let row_rect = Rect::new(x0, y0, x1, y0 + 64.0);
             (row_rect.y1 <= pane.y1 - 10.0).then(|| DefaultAppRow {
@@ -1645,16 +1651,29 @@ fn app_name<'a>(id: &str, candidates: &'a [desktop_policy::AppCandidate]) -> &'a
         .map_or("Unavailable app", |a| a.display_name.as_str())
 }
 
+/// Bundles the per-workspace inputs to [`draw_default_apps_pane`] so the
+/// call stays under clippy's argument-count budget, without disturbing
+/// the shared `scene`/`transform`/`text_renderer`/`theme` draw parameters
+/// every other pane drawer in this file takes in that same order.
+pub struct DefaultAppsCtx<'a> {
+    pub ws: &'a Workspace,
+    pub local_user: &'a UserId,
+    pub candidates: &'a [desktop_policy::AppCandidate],
+}
+
 pub fn draw_default_apps_pane(
     scene: &mut Scene,
     transform: Affine,
     pane: Rect,
-    ws: &Workspace,
-    local_user: &UserId,
-    candidates: &[desktop_policy::AppCandidate],
+    ctx: DefaultAppsCtx<'_>,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
+    let DefaultAppsCtx {
+        ws,
+        local_user,
+        candidates,
+    } = ctx;
     draw_section_header(
         scene,
         transform,
@@ -1669,7 +1688,7 @@ pub fn draw_default_apps_pane(
         "Workspace choice",
         theme.tokens.typography.scale.xs,
         theme.tokens.colors.text_dim,
-        transform * Affine::translate((pane.x1 - 404.0, pane.y0 + 34.0)),
+        at(transform, pane.x1 - 404.0, pane.y0 + 34.0),
         None,
     );
     text_renderer.draw_text(
@@ -1677,7 +1696,7 @@ pub fn draw_default_apps_pane(
         "Your choice",
         theme.tokens.typography.scale.xs,
         theme.tokens.colors.text_dim,
-        transform * Affine::translate((pane.x1 - 194.0, pane.y0 + 34.0)),
+        at(transform, pane.x1 - 194.0, pane.y0 + 34.0),
         None,
     );
     let can_admin = ws.may_administer(local_user);
@@ -1689,7 +1708,7 @@ pub fn draw_default_apps_pane(
             &label,
             theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((row.row_rect.x0 + 12.0, row.row_rect.y0 + 12.0)),
+            at(transform, row.row_rect.x0 + 12.0, row.row_rect.y0 + 12.0),
             None,
         );
         let policy = ws
@@ -1761,7 +1780,7 @@ pub fn next_workspace_default(
         desktop_policy::WorkspaceDefaultPolicy::App(id) => apps
             .iter()
             .position(|a| &a.package_id == id)
-            .and_then(|i| apps.get(i + 1))
+            .and_then(|i| apps.get(i.saturating_add(1)))
             .map_or(
                 desktop_policy::WorkspaceDefaultPolicy::FollowPersonal,
                 |a| desktop_policy::WorkspaceDefaultPolicy::App(a.package_id.clone()),
@@ -1787,7 +1806,7 @@ pub fn next_user_default(
         desktop_policy::UserWorkspaceChoice::App(id) => apps
             .iter()
             .position(|a| &a.package_id == id)
-            .and_then(|i| apps.get(i + 1))
+            .and_then(|i| apps.get(i.saturating_add(1)))
             .map_or(desktop_policy::UserWorkspaceChoice::FollowWorkspace, |a| {
                 desktop_policy::UserWorkspaceChoice::App(a.package_id.clone())
             }),

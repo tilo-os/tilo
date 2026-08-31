@@ -120,6 +120,43 @@ impl FilesProvider {
             .spawn(move || walk_home(&home, &name_index))
             .ok();
     }
+
+    /// Content hits from tantivy, appended to `out` and deduped against
+    /// `seen` name hits so a file matching both only shows once (the
+    /// higher score wins). Split out of [`SearchProvider::query`] to stay
+    /// under clippy's line budget.
+    fn push_content_hits(
+        &self,
+        needle: &str,
+        seen: &HashSet<PathBuf>,
+        out: &mut Vec<SearchResult>,
+    ) {
+        let Some(idx) = self.tantivy.as_ref() else {
+            return;
+        };
+        let content_hits = idx.query(needle, MAX_RESULTS);
+        for hit in content_hits {
+            if seen.contains(&hit.path) {
+                continue;
+            }
+            if out.len() >= MAX_RESULTS {
+                break;
+            }
+            let display = hit.path.strip_prefix(&self.home).map_or_else(
+                |_| hit.path.display().to_string(),
+                |p| format!("~/{}", p.display()),
+            );
+            let entry = NameEntry {
+                path: hit.path.clone(),
+                facts: NameFacts::new(&display, None),
+                display,
+                is_dir: false,
+            };
+            // Clamp BM25 into the band the name scale reserves for it.
+            let content = hit.score.clamp(CONTENT_SCORE_MIN, CONTENT_SCORE_MAX);
+            out.push(make_result(&entry, content, hit.snippet));
+        }
+    }
 }
 
 impl Default for FilesProvider {
@@ -191,7 +228,9 @@ impl SearchProvider for FilesProvider {
                 };
                 if let Some(c) = &reuse_candidates {
                     self.last_scanned.store(c.len(), Ordering::Relaxed);
-                    c.iter().for_each(|&i| consider(i));
+                    for &i in c {
+                        consider(i);
+                    }
                 } else {
                     self.last_scanned
                         .store(guard.entries.len(), Ordering::Relaxed);
@@ -200,7 +239,7 @@ impl SearchProvider for FilesProvider {
             }
             if let Ok(mut cache) = self.narrow.lock() {
                 cache.replace(NarrowCache {
-                    needle: needle_lower.clone(),
+                    needle: needle_lower,
                     candidates,
                     generation: guard.generation,
                 });
@@ -235,29 +274,8 @@ impl SearchProvider for FilesProvider {
 
         // Content hits from tantivy, deduped against name hits so a file
         // matching both only shows once (the higher score wins).
-        if want_file && let Some(idx) = self.tantivy.as_ref() {
-            let content_hits = idx.query(ctx.needle, MAX_RESULTS);
-            for hit in content_hits {
-                if seen.contains(&hit.path) {
-                    continue;
-                }
-                if out.len() >= MAX_RESULTS {
-                    break;
-                }
-                let display = hit.path.strip_prefix(&self.home).map_or_else(
-                    |_| hit.path.display().to_string(),
-                    |p| format!("~/{}", p.display()),
-                );
-                let entry = NameEntry {
-                    path: hit.path.clone(),
-                    facts: NameFacts::new(&display, None),
-                    display,
-                    is_dir: false,
-                };
-                // Clamp BM25 into the band the name scale reserves for it.
-                let content = hit.score.clamp(CONTENT_SCORE_MIN, CONTENT_SCORE_MAX);
-                out.push(make_result(&entry, content, hit.snippet));
-            }
+        if want_file {
+            self.push_content_hits(ctx.needle, &seen, &mut out);
         }
 
         // Final ordering across both backends: score, then shallower path.
@@ -888,7 +906,10 @@ mod tests {
     /// Facts for a path last modified `days` ago.
     fn aged_facts(display: &str, days: u64) -> NameFacts {
         let secs = days.saturating_mul(86_400).saturating_add(3_600);
-        NameFacts::new(display, Some(SystemTime::now() - Duration::from_secs(secs)))
+        NameFacts::new(
+            display,
+            SystemTime::now().checked_sub(Duration::from_secs(secs)),
+        )
     }
 
     #[test]
@@ -1244,12 +1265,9 @@ mod tests {
                     path: PathBuf::from(display.replace('~', "/home/tester")),
                     facts: NameFacts::new(
                         display,
-                        Some(
-                            SystemTime::now()
-                                - Duration::from_secs(
-                                    days.saturating_mul(86_400).saturating_add(3_600),
-                                ),
-                        ),
+                        SystemTime::now().checked_sub(Duration::from_secs(
+                            days.saturating_mul(86_400).saturating_add(3_600),
+                        )),
                     ),
                     display: display.to_string(),
                     is_dir,

@@ -114,11 +114,12 @@ fn tracing_subscriber() {
 /// C-callable trampoline that pokes a `static AtomicBool`.
 fn install_signal_handler(flag: &Arc<AtomicBool>) {
     static STOP: AtomicBool = AtomicBool::new(false);
-    let flag = Arc::clone(flag);
 
     extern "C" fn on_signal(_signum: libc::c_int) {
         STOP.store(true, Ordering::SeqCst);
     }
+
+    let flag = Arc::clone(flag);
     unsafe {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
         libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);

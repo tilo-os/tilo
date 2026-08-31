@@ -125,9 +125,10 @@ impl LocalIdentity {
 
 /// Lower-hex of the first 8 bytes.
 fn hex8(b: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut s = String::with_capacity(16);
     for byte in b.iter().take(8) {
-        s.push_str(&format!("{byte:02x}"));
+        let _ = write!(s, "{byte:02x}");
     }
     s
 }
@@ -148,10 +149,10 @@ pub fn color_index_for(bytes: &[u8]) -> usize {
 /// 64-bit FNV-1a — a tiny, dependency-free stable hash (never used for
 /// security; only to spread ids across the colour palette / host fallback).
 fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
         h ^= u64::from(b);
-        h = h.wrapping_mul(0x00000100000001B3);
+        h = h.wrapping_mul(0x0000_0100_0000_01B3);
     }
     h
 }

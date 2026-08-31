@@ -1,10 +1,11 @@
-//! Bluetooth settings backed directly by BlueZ over D-Bus. Settings starts
-//! operations; the compositor-owned BlueZ Agent owns security prompts.
+//! Bluetooth settings backed directly by `BlueZ` over D-Bus. Settings starts
+//! operations; the compositor-owned `BlueZ` Agent owns security prompts.
 
 use crate::widgets::{El, caption, card_with_action, rows, setting_row, value_row};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use qos_bluez::{DeviceInfo, PairOutcome};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use taffy::{NodeId, TaffyTree};
@@ -25,18 +26,70 @@ fn key(path: &str, action: &str) -> String {
 }
 
 pub trait BluetoothControl: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns the backend's error message if `BlueZ` cannot be reached over
+    /// D-Bus or the known device list cannot be enumerated.
     fn devices(&self) -> Result<Vec<DeviceInfo>, String>;
+    /// # Errors
+    ///
+    /// Returns the backend's error message if the adapter's powered state
+    /// cannot be read over D-Bus.
     fn powered(&self) -> Result<bool, String>;
+    /// # Errors
+    ///
+    /// Returns the backend's error message if the adapter's discovery state
+    /// cannot be read over D-Bus.
     fn scanning(&self) -> Result<bool, String>;
+    /// # Errors
+    ///
+    /// Returns the backend's error message if `BlueZ` refuses or fails to
+    /// change the adapter's powered state.
     fn set_powered(&self, on: bool) -> Result<(), String>;
+    /// # Errors
+    ///
+    /// Returns the backend's error message if `BlueZ` fails to start device
+    /// discovery.
     fn start_scan(&self) -> Result<(), String>;
+    /// # Errors
+    ///
+    /// Returns the backend's error message if `BlueZ` fails to stop device
+    /// discovery.
     fn stop_scan(&self) -> Result<(), String>;
+    /// # Errors
+    ///
+    /// Returns the backend's error message if the D-Bus pairing call fails
+    /// outright (a pairing that starts but does not connect is still `Ok`).
     fn pair(&self, path: &str) -> Result<PairOutcome, String>;
+    /// # Errors
+    ///
+    /// Returns the backend's error message if `BlueZ` fails to cancel an
+    /// in-progress pairing.
     fn cancel_pairing(&self, path: &str) -> Result<(), String>;
+    /// # Errors
+    ///
+    /// Returns the backend's error message if the device cannot be connected
+    /// to (e.g. it is out of range or rejects the connection).
     fn connect(&self, path: &str) -> Result<(), String>;
+    /// # Errors
+    ///
+    /// Returns the backend's error message if the device cannot be
+    /// disconnected.
     fn disconnect(&self, path: &str) -> Result<(), String>;
+    /// # Errors
+    ///
+    /// Returns the backend's error message if `BlueZ` fails to update the
+    /// device's trusted flag.
     fn set_trusted(&self, path: &str, trusted: bool) -> Result<(), String>;
+    /// # Errors
+    ///
+    /// Returns the backend's error message if `BlueZ` fails to rename the
+    /// device.
     fn set_alias(&self, path: &str, alias: &str) -> Result<(), String>;
+    /// # Errors
+    ///
+    /// Returns the backend's error message if `BlueZ` fails to remove the
+    /// device's pairing and keys.
     fn forget(&self, path: &str) -> Result<(), String>;
 }
 
@@ -83,6 +136,13 @@ impl BluetoothControl for RealBluetooth {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent lifecycle flags on a live pane (hardware powered, currently \
+              scanning, needs its initial CRDT seed, layout needs a rebuild) — not a \
+              flag-combination API, so an enum/bitflags would add indirection without \
+              reducing complexity"
+)]
 pub struct BluetoothPane {
     control: Arc<dyn BluetoothControl>,
     devices: Vec<DeviceInfo>,
@@ -145,106 +205,118 @@ impl BluetoothPane {
         self.powered = self.control.powered().unwrap_or(self.powered);
         self.structure_dirty = true;
     }
-    fn device_rows(&self) -> Vec<El> {
-        let mut out: Vec<El> = Vec::new();
-        for d in &self.devices {
-            let pairing = self.pending_pair.as_deref() == Some(&d.path);
-            let primary = if pairing {
-                "Cancel pairing"
-            } else if !d.paired {
-                "Pair"
-            } else if d.connected {
-                "Disconnect"
-            } else {
-                "Connect"
-            };
-            let action = if pairing {
-                "cancel"
-            } else if !d.paired {
-                "pair"
-            } else if d.connected {
-                "disconnect"
-            } else {
-                "connect"
-            };
-            let mut status = if d.connected {
-                "Connected".to_string()
-            } else if d.paired {
-                "Paired".into()
-            } else {
-                "Nearby".into()
-            };
-            if let Some(b) = d.battery {
-                status.push_str(&format!(" · Battery {b}%"));
-            }
-            let top = Row::new()
-                .push(Box::new(Text::new(&d.name).with_size(13.0)))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(Button::new(
-                    &format!("settings.bluetooth.{action}.{}", token(&d.path)),
-                    primary,
-                    Some(&key(&d.path, action)),
-                )))
-                .push(Box::new(Button::new(
-                    &format!("settings.bluetooth.details.{}", token(&d.path)),
-                    if self.expanded.as_deref() == Some(&d.path) {
-                        "Less"
-                    } else {
-                        "Details"
-                    },
-                    Some(&key(&d.path, "details")),
-                )));
-            let mut block: Vec<El> = vec![Box::new(top), caption(&status)];
-            if self.expanded.as_deref() == Some(&d.path) {
-                block.push(value_row("Address", &d.address));
-                if let Some(rssi) = d.rssi {
-                    block.push(value_row("Signal", &format!("{rssi} dBm")));
-                }
-                if d.paired {
-                    block.push(setting_row(
-                        "Trust this device",
-                        Box::new(Toggle::new(
-                            &format!("settings.bluetooth.trusted.{}", token(&d.path)),
-                            &key(&d.path, "trusted"),
-                        )),
-                    ));
-                    block.push(caption("A trusted device may use previously authorised services without another confirmation. This does not force reconnection."));
-                    block.push(Box::new(
-                        TextInput::new(Vec::new())
-                            .with_id(&format!("bluetooth.alias.{}", token(&d.path)))
-                            .with_on_change_path(&key(&d.path, "alias"))
-                            .with_placeholder(&d.name),
-                    ));
-                    block.push(Box::new(
-                        Row::new()
-                            .push(Box::new(Button::new(
-                                &format!("settings.bluetooth.rename.{}", token(&d.path)),
-                                "Rename",
-                                Some(&key(&d.path, "rename")),
-                            )))
-                            .push(Box::new(Button::new(
-                                &format!("settings.bluetooth.forget.{}", token(&d.path)),
-                                if self.confirm_forget.as_deref() == Some(&d.path) {
-                                    "Confirm forget"
-                                } else {
-                                    "Forget…"
-                                },
-                                Some(&key(&d.path, "forget")),
-                            )))
-                            .push(Box::new(Spacer::new())),
-                    ));
-                }
-                if d.icon.starts_with("audio-") {
-                    block.push(caption("Sound exposes profiles and codecs only when PipeWire reports selectable capabilities."));
-                }
-            }
-            out.push(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(rows(block)),
+    fn device_primary_action(&self, d: &DeviceInfo) -> (&'static str, &'static str) {
+        let pairing = self.pending_pair.as_deref() == Some(&d.path);
+        if pairing {
+            ("Cancel pairing", "cancel")
+        } else if !d.paired {
+            ("Pair", "pair")
+        } else if d.connected {
+            ("Disconnect", "disconnect")
+        } else {
+            ("Connect", "connect")
+        }
+    }
+    fn device_status_line(d: &DeviceInfo) -> String {
+        let mut status = if d.connected {
+            "Connected".to_string()
+        } else if d.paired {
+            "Paired".into()
+        } else {
+            "Nearby".into()
+        };
+        if let Some(b) = d.battery {
+            let _ = write!(status, " · Battery {b}%");
+        }
+        status
+    }
+    fn device_top_row(&self, d: &DeviceInfo) -> Row {
+        let (primary, action) = self.device_primary_action(d);
+        Row::new()
+            .push(Box::new(Text::new(&d.name).with_size(13.0)))
+            .push(Box::new(Spacer::new()))
+            .push(Box::new(Button::new(
+                &format!("settings.bluetooth.{action}.{}", token(&d.path)),
+                primary,
+                Some(&key(&d.path, action)),
+            )))
+            .push(Box::new(Button::new(
+                &format!("settings.bluetooth.details.{}", token(&d.path)),
+                if self.expanded.as_deref() == Some(&d.path) {
+                    "Less"
+                } else {
+                    "Details"
+                },
+                Some(&key(&d.path, "details")),
+            )))
+    }
+    fn device_detail_rows(&self, d: &DeviceInfo) -> Vec<El> {
+        let mut block: Vec<El> = Vec::new();
+        block.push(value_row("Address", &d.address));
+        if let Some(rssi) = d.rssi {
+            block.push(value_row("Signal", &format!("{rssi} dBm")));
+        }
+        if d.paired {
+            block.push(setting_row(
+                "Trust this device",
+                Box::new(Toggle::new(
+                    &format!("settings.bluetooth.trusted.{}", token(&d.path)),
+                    &key(&d.path, "trusted"),
+                )),
+            ));
+            block.push(caption(
+                "A trusted device may use previously authorised services without another \
+                 confirmation. This does not force reconnection.",
+            ));
+            block.push(Box::new(
+                TextInput::new(Vec::new())
+                    .with_id(&format!("bluetooth.alias.{}", token(&d.path)))
+                    .with_on_change_path(&key(&d.path, "alias"))
+                    .with_placeholder(&d.name),
+            ));
+            block.push(Box::new(
+                Row::new()
+                    .push(Box::new(Button::new(
+                        &format!("settings.bluetooth.rename.{}", token(&d.path)),
+                        "Rename",
+                        Some(&key(&d.path, "rename")),
+                    )))
+                    .push(Box::new(Button::new(
+                        &format!("settings.bluetooth.forget.{}", token(&d.path)),
+                        if self.confirm_forget.as_deref() == Some(&d.path) {
+                            "Confirm forget"
+                        } else {
+                            "Forget…"
+                        },
+                        Some(&key(&d.path, "forget")),
+                    )))
+                    .push(Box::new(Spacer::new())),
             ));
         }
+        if d.icon.starts_with("audio-") {
+            block.push(caption(
+                "Sound exposes profiles and codecs only when PipeWire reports selectable \
+                 capabilities.",
+            ));
+        }
+        block
+    }
+    fn device_row(&self, d: &DeviceInfo) -> El {
+        let top = self.device_top_row(d);
+        let status = Self::device_status_line(d);
+        let mut block: Vec<El> = vec![Box::new(top), caption(&status)];
+        if self.expanded.as_deref() == Some(&d.path) {
+            block.extend(self.device_detail_rows(d));
+        }
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(rows(block)),
+        )
+    }
+    fn device_rows(&self) -> Vec<El> {
+        let mut out: Vec<El> = self.devices.iter().map(|d| self.device_row(d)).collect();
         if out.is_empty() {
             out.push(caption(if self.scanning {
                 "Looking for nearby devices…"
@@ -296,11 +368,11 @@ impl BluetoothPane {
             "connect" => self
                 .control
                 .connect(&d.path)
-                .map(|_| format!("Connected {}.", d.name)),
+                .map(|()| format!("Connected {}.", d.name)),
             "disconnect" => self
                 .control
                 .disconnect(&d.path)
-                .map(|_| format!("Disconnected {}.", d.name)),
+                .map(|()| format!("Disconnected {}.", d.name)),
             _ => return,
         };
         self.notice = Some(result.unwrap_or_else(|e| {
@@ -311,12 +383,7 @@ impl BluetoothPane {
         }));
         self.refresh();
     }
-}
-pub fn build() -> Box<dyn Widget> {
-    Box::new(BluetoothPane::new())
-}
-impl Widget for BluetoothPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync_pair_result(&mut self) {
         if let Some(rx) = &self.pair_result
             && let Ok((path, result)) = rx.try_recv()
         {
@@ -324,8 +391,7 @@ impl Widget for BluetoothPane {
                 .devices
                 .iter()
                 .find(|d| d.path == path)
-                .map(|d| d.name.clone())
-                .unwrap_or_else(|| "Device".into());
+                .map_or_else(|| "Device".into(), |d| d.name.clone());
             self.notice = Some(match result {
                 Ok(PairOutcome::PairedAndConnected) => format!("{name} is paired and connected."),
                 Ok(PairOutcome::PairedNotConnected { reason }) => {
@@ -339,70 +405,84 @@ impl Widget for BluetoothPane {
             self.pair_result = None;
             self.refresh();
         }
-        if self.needs_seed {
-            let _ = state.put(root, BT_ENABLED_KEY, self.powered);
-            let _ = state.put(root, SCAN_KEY, false);
-            let _ = state.put(root, REFRESH_KEY, false);
-            for d in &self.devices {
-                for a in [
-                    "pair",
-                    "connect",
-                    "cancel",
-                    "disconnect",
-                    "details",
-                    "rename",
-                    "forget",
-                ] {
-                    let _ = state.put(root, key(&d.path, a), false);
-                }
-                let _ = state.put(root, key(&d.path, "trusted"), d.trusted);
-                let _ = crate::ensure_text_object(state, root, &key(&d.path, "alias"));
+    }
+    fn seed_if_needed(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !self.needs_seed {
+            return;
+        }
+        let _ = state.put(root, BT_ENABLED_KEY, self.powered);
+        let _ = state.put(root, SCAN_KEY, false);
+        let _ = state.put(root, REFRESH_KEY, false);
+        for d in &self.devices {
+            for a in [
+                "pair",
+                "connect",
+                "cancel",
+                "disconnect",
+                "details",
+                "rename",
+                "forget",
+            ] {
+                let _ = state.put(root, key(&d.path, a), false);
             }
-            self.needs_seed = false;
+            let _ = state.put(root, key(&d.path, "trusted"), d.trusted);
+            let _ = crate::ensure_text_object(state, root, &key(&d.path, "alias"));
         }
-        if let Some(on) = read_bool_opt(state, root, BT_ENABLED_KEY)
-            && on != self.powered
-        {
-            match self.control.set_powered(on) {
-                Ok(()) => {
-                    self.powered = on;
-                    self.notice = Some(if on {
-                        "Bluetooth is on.".into()
-                    } else {
-                        "Bluetooth is off.".into()
-                    })
-                }
-                Err(e) => {
-                    self.notice = Some(format!("Could not change Bluetooth power: {e}"));
-                    let _ = state.put(root, BT_ENABLED_KEY, self.powered);
-                }
+        self.needs_seed = false;
+    }
+    fn sync_power(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let Some(on) = read_bool_opt(state, root, BT_ENABLED_KEY) else {
+            return;
+        };
+        if on == self.powered {
+            return;
+        }
+        match self.control.set_powered(on) {
+            Ok(()) => {
+                self.powered = on;
+                self.notice = Some(if on {
+                    "Bluetooth is on.".into()
+                } else {
+                    "Bluetooth is off.".into()
+                });
             }
-            self.structure_dirty = true;
+            Err(e) => {
+                self.notice = Some(format!("Could not change Bluetooth power: {e}"));
+                let _ = state.put(root, BT_ENABLED_KEY, self.powered);
+            }
         }
-        if read_bool(state, root, SCAN_KEY) {
-            let _ = state.put(root, SCAN_KEY, false);
-            let r = if self.scanning {
-                self.control.stop_scan()
-            } else {
-                self.control.start_scan()
-            };
-            match r {
-                Ok(()) => {
-                    self.scanning = !self.scanning;
-                    self.notice = Some(if self.scanning {
-                        "Discovery started. Use Refresh as devices wake up.".into()
-                    } else {
-                        "Discovery stopped.".into()
-                    })
-                }
-                Err(e) => self.notice = Some(format!("Could not change discovery: {e}")),
-            };
-            self.refresh();
+        self.structure_dirty = true;
+    }
+    fn sync_scan(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, SCAN_KEY) {
+            return;
         }
+        let _ = state.put(root, SCAN_KEY, false);
+        let r = if self.scanning {
+            self.control.stop_scan()
+        } else {
+            self.control.start_scan()
+        };
+        match r {
+            Ok(()) => {
+                self.scanning = !self.scanning;
+                self.notice = Some(if self.scanning {
+                    "Discovery started. Use Refresh as devices wake up.".into()
+                } else {
+                    "Discovery stopped.".into()
+                });
+            }
+            Err(e) => self.notice = Some(format!("Could not change discovery: {e}")),
+        }
+        self.refresh();
+    }
+    fn sync_refresh(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if read_bool(state, root, REFRESH_KEY) {
             let _ = state.put(root, REFRESH_KEY, false);
             self.refresh();
         }
+    }
+    fn sync_devices(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let snapshot = self.devices.clone();
         for d in &snapshot {
             if read_bool(state, root, &key(&d.path, "pair")) {
@@ -448,7 +528,7 @@ impl Widget for BluetoothPane {
                             format!("{} is now trusted.", d.name)
                         } else {
                             format!("{} now requires service authorisation.", d.name)
-                        })
+                        });
                     }
                     Err(e) => {
                         self.notice = Some(format!("Could not change device trust: {e}"));
@@ -463,7 +543,7 @@ impl Widget for BluetoothPane {
                 match self.control.set_alias(&d.path, &alias) {
                     Ok(()) => self.notice = Some(format!("Renamed device to {}.", alias.trim())),
                     Err(e) => self.notice = Some(format!("Could not rename {}: {e}", d.name)),
-                };
+                }
                 self.refresh();
             }
             if read_bool(state, root, &key(&d.path, "forget")) {
@@ -473,10 +553,10 @@ impl Widget for BluetoothPane {
                         Ok(()) => {
                             self.notice =
                                 Some(format!("Forgot {}. Pair it again to reconnect.", d.name));
-                            self.confirm_forget = None
+                            self.confirm_forget = None;
                         }
                         Err(e) => self.notice = Some(format!("Could not forget {}: {e}", d.name)),
-                    };
+                    }
                     self.refresh();
                 } else {
                     self.confirm_forget = Some(d.path.clone());
@@ -488,6 +568,19 @@ impl Widget for BluetoothPane {
                 }
             }
         }
+    }
+}
+pub fn build() -> Box<dyn Widget> {
+    Box::new(BluetoothPane::new())
+}
+impl Widget for BluetoothPane {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.sync_pair_result();
+        self.seed_if_needed(state, root);
+        self.sync_power(state, root);
+        self.sync_scan(state, root);
+        self.sync_refresh(state, root);
+        self.sync_devices(state, root);
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
         }
@@ -514,12 +607,12 @@ impl Widget for BluetoothPane {
                 },
                 &[child],
             )
-            .unwrap();
+            .unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -710,22 +803,22 @@ mod tests {
     }
     #[test]
     fn forget_requires_confirmation() {
-        let m = Arc::new(Mock {
+        let mock = Arc::new(Mock {
             calls: Mutex::new(vec![]),
             devices: vec![dev()],
         });
-        let mut p = BluetoothPane::with_control(m.clone(), vec![dev()], true, false);
-        let mut d = AutoCommit::new();
-        let r = automerge::ROOT;
-        p.sync(&mut d, &r);
-        let k = key(&dev().path, "forget");
-        let _ = d.put(&r, &k, true);
-        p.sync(&mut d, &r);
-        assert!(m.calls.lock().unwrap().is_empty());
-        let _ = d.put(&r, &k, true);
-        p.sync(&mut d, &r);
+        let mut pane = BluetoothPane::with_control(mock.clone(), vec![dev()], true, false);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let forget_key = key(&dev().path, "forget");
+        let _ = doc.put(&root, &forget_key, true);
+        pane.sync(&mut doc, &root);
+        assert!(mock.calls.lock().unwrap().is_empty());
+        let _ = doc.put(&root, &forget_key, true);
+        pane.sync(&mut doc, &root);
         assert_eq!(
-            m.calls.lock().unwrap().as_slice(),
+            mock.calls.lock().unwrap().as_slice(),
             ["forget:/org/bluez/hci0/dev_AA"]
         );
     }

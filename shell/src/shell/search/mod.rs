@@ -226,6 +226,19 @@ pub struct SearchContext<'a> {
     pub doc_root: &'a ObjId,
 }
 
+/// Arguments for [`SearchRegistry::query`]/[`SearchRegistry::query_grouped`]
+/// — distinct from [`SearchContext`], which is the narrower, per-provider
+/// view built fresh for each provider inside the fan-out loop.
+pub struct QueryArgs<'a> {
+    pub needle: &'a str,
+    pub scope: SearchScope,
+    pub active_provider_id: Option<&'a str>,
+    pub wanted_kinds: &'a [ResourceKind],
+    pub chrome: &'a ChromeState,
+    pub doc: &'a AutoCommit,
+    pub doc_root: &'a ObjId,
+}
+
 /// A [`SearchResult::score`]/[`SearchProvider::max_score`] value as a
 /// fraction of `[0.0, 1.0]`-scale `f32`. Provider score scales are
 /// small (files top out at 120, apps at 100 — see `max_score`'s doc),
@@ -287,16 +300,16 @@ impl SearchRegistry {
     /// Fan out `needle` to every provider whose id passes the scope
     /// filter. `wanted_kinds` filters results by kind; empty means "any
     /// kind" so a naive caller can just pass `&[]`.
-    pub fn query(
-        &self,
-        needle: &str,
-        scope: SearchScope,
-        active_provider_id: Option<&str>,
-        wanted_kinds: &[ResourceKind],
-        chrome: &ChromeState,
-        doc: &AutoCommit,
-        doc_root: &ObjId,
-    ) -> Vec<SearchResult> {
+    pub fn query(&self, args: QueryArgs<'_>) -> Vec<SearchResult> {
+        let QueryArgs {
+            needle,
+            scope,
+            active_provider_id,
+            wanted_kinds,
+            chrome,
+            doc,
+            doc_root,
+        } = args;
         let effective_wanted: Vec<ResourceKind> = if wanted_kinds.is_empty() {
             self.registered_kinds()
         } else {
@@ -375,26 +388,8 @@ impl SearchRegistry {
     /// ~10 rows, and an outscoring kind (forty file hits) can otherwise
     /// push a correctly-ranked app off the bottom. A lone group is exempt
     /// — narrowing to one kind means "show me all of these".
-    pub fn query_grouped(
-        &self,
-        needle: &str,
-        scope: SearchScope,
-        active_provider_id: Option<&str>,
-        wanted_kinds: &[ResourceKind],
-        chrome: &ChromeState,
-        doc: &AutoCommit,
-        doc_root: &ObjId,
-        row_budget: usize,
-    ) -> Vec<KindGroup> {
-        let ranked = self.query(
-            needle,
-            scope,
-            active_provider_id,
-            wanted_kinds,
-            chrome,
-            doc,
-            doc_root,
-        );
+    pub fn query_grouped(&self, args: QueryArgs<'_>, row_budget: usize) -> Vec<KindGroup> {
+        let ranked = self.query(args);
         let mut groups: Vec<KindGroup> = Vec::new();
         for r in ranked {
             match groups.last_mut() {
@@ -535,15 +530,15 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(
-            "x",
-            SearchScope::All,
-            None,
-            &[],
-            &chrome.borrow(),
-            &doc,
-            &root,
-        );
+        let out = reg.query(QueryArgs {
+            needle: "x",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
         assert_eq!(out.len(), 3);
         // Notes' strongest hit (50) beats the action's (30).
         assert_eq!(out[0].kind, ResourceKind::Note);
@@ -570,15 +565,15 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(
-            "x",
-            SearchScope::All,
-            None,
-            &[],
-            &chrome.borrow(),
-            &doc,
-            &root,
-        );
+        let out = reg.query(QueryArgs {
+            needle: "x",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
         assert_eq!(out[0].kind, ResourceKind::Action);
     }
 
@@ -599,15 +594,15 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(
-            "x",
-            SearchScope::ActiveApp,
-            Some("notes"),
-            &[],
-            &chrome.borrow(),
-            &doc,
-            &root,
-        );
+        let out = reg.query(QueryArgs {
+            needle: "x",
+            scope: SearchScope::ActiveApp,
+            active_provider_id: Some("notes"),
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].provider_id, "notes");
     }
@@ -626,15 +621,15 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(
-            "x",
-            SearchScope::All,
-            None,
-            &[ResourceKind::Note],
-            &chrome.borrow(),
-            &doc,
-            &root,
-        );
+        let out = reg.query(QueryArgs {
+            needle: "x",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[ResourceKind::Note],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, ResourceKind::Note);
     }
@@ -667,15 +662,15 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(
-            "calculator",
-            SearchScope::Workspace,
-            None,
-            &[],
-            &chrome.borrow(),
-            &doc,
-            &root,
-        );
+        let out = reg.query(QueryArgs {
+            needle: "calculator",
+            scope: SearchScope::Workspace,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
         assert_eq!(
             out.first().map(|r| r.provider_id.as_str()),
             Some("applications"),
@@ -733,15 +728,15 @@ mod tests {
             }));
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
-            let out = reg.query(
+            let out = reg.query(QueryArgs {
                 needle,
-                SearchScope::Workspace,
-                None,
-                &[],
-                &chrome.borrow(),
-                &doc,
-                &root,
-            );
+                scope: SearchScope::Workspace,
+                active_provider_id: None,
+                wanted_kinds: &[],
+                chrome: &chrome.borrow(),
+                doc: &doc,
+                doc_root: &root,
+            });
             assert_eq!(
                 out.first().map(|r| r.provider_id.as_str()),
                 Some("applications"),
@@ -782,15 +777,15 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(
-            "workspace",
-            SearchScope::Workspace,
-            None,
-            &[],
-            &chrome.borrow(),
-            &doc,
-            &root,
-        );
+        let out = reg.query(QueryArgs {
+            needle: "workspace",
+            scope: SearchScope::Workspace,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
         assert_eq!(
             out.first().map(|r| r.provider_id.as_str()),
             Some("actions"),
@@ -835,15 +830,15 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(
-            "a",
-            SearchScope::Workspace,
-            None,
-            &[],
-            &chrome.borrow(),
-            &doc,
-            &root,
-        );
+        let out = reg.query(QueryArgs {
+            needle: "a",
+            scope: SearchScope::Workspace,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
         let kinds: Vec<&ResourceKind> = out.iter().map(|r| &r.kind).collect();
         let mut seen: Vec<&ResourceKind> = Vec::new();
         for k in &kinds {
@@ -905,15 +900,15 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(
-            "notes",
-            SearchScope::Workspace,
-            None,
-            &[],
-            &chrome.borrow(),
-            &doc,
-            &root,
-        );
+        let out = reg.query(QueryArgs {
+            needle: "notes",
+            scope: SearchScope::Workspace,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
         assert_eq!(
             out.first().map(|r| r.provider_id.as_str()),
             Some("applications"),
@@ -964,15 +959,15 @@ mod tests {
             SearchScope::Workspace,
             SearchScope::ActiveApp,
         ] {
-            let out = reg.query(
-                "calculator",
+            let out = reg.query(QueryArgs {
+                needle: "calculator",
                 scope,
-                None,
-                &[],
-                &chrome.borrow(),
-                &doc,
-                &root,
-            );
+                active_provider_id: None,
+                wanted_kinds: &[],
+                chrome: &chrome.borrow(),
+                doc: &doc,
+                doc_root: &root,
+            });
             let first = out
                 .first()
                 .unwrap_or_else(|| panic!("some result in {scope:?}"));
@@ -1025,13 +1020,15 @@ mod tests {
         // "editor" is a leaf-name prefix for all forty files but only a
         // substring of "Hex Editor", so Files legitimately outranks it.
         let groups = reg.query_grouped(
-            "editor",
-            SearchScope::Workspace,
-            None,
-            &[],
-            &chrome.borrow(),
-            &doc,
-            &root,
+            QueryArgs {
+                needle: "editor",
+                scope: SearchScope::Workspace,
+                active_provider_id: None,
+                wanted_kinds: &[],
+                chrome: &chrome.borrow(),
+                doc: &doc,
+                doc_root: &root,
+            },
             12,
         );
         let files = groups
@@ -1081,15 +1078,15 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(
-            "rs",
-            SearchScope::Workspace,
-            None,
-            &[],
-            &chrome.borrow(),
-            &doc,
-            &root,
-        );
+        let out = reg.query(QueryArgs {
+            needle: "rs",
+            scope: SearchScope::Workspace,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
         assert_eq!(
             out.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
             vec!["f1", "f2", "f3"],
@@ -1112,13 +1109,15 @@ mod tests {
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
         let groups = reg.query_grouped(
-            "x",
-            SearchScope::Workspace,
-            None,
-            &[ResourceKind::File],
-            &chrome.borrow(),
-            &doc,
-            &root,
+            QueryArgs {
+                needle: "x",
+                scope: SearchScope::Workspace,
+                active_provider_id: None,
+                wanted_kinds: &[ResourceKind::File],
+                chrome: &chrome.borrow(),
+                doc: &doc,
+                doc_root: &root,
+            },
             12,
         );
         assert_eq!(groups.len(), 1);

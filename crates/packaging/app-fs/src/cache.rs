@@ -19,12 +19,12 @@
 //! cache entries in one trip.
 
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use lru::LruCache;
 
-use crate::store::{BlobError, BlobStore};
+use crate::store::{BlobError, BlobStore, narrow_u32, narrow_usize};
 
 /// The cache's page size. Matches the kernel page size on the
 /// architectures qOS supports.
@@ -61,7 +61,7 @@ impl<S: BlobStore> PageCache<S> {
     /// pages. A 4 KiB page * 4096 capacity = 16 MiB of cache, the
     /// default the mount uses.
     pub fn new(store: S, capacity_pages: usize) -> Self {
-        let cap = NonZeroUsize::new(capacity_pages.max(1)).unwrap();
+        let cap = NonZeroUsize::new(capacity_pages.max(1)).unwrap_or(NonZeroUsize::MIN);
         Self {
             store,
             pages: Mutex::new(LruCache::new(cap)),
@@ -70,12 +70,24 @@ impl<S: BlobStore> PageCache<S> {
         }
     }
 
+    /// Lock the page table, recovering from a poisoned lock instead of
+    /// panicking — a panic elsewhere while the lock was held doesn't
+    /// invalidate the cached pages themselves.
+    fn pages_lock(&self) -> MutexGuard<'_, LruCache<PageKey, Vec<u8>>> {
+        self.pages.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Read `(offset, len)` from `hash`, going through the cache.
     /// The returned `Vec` is the concatenation of all pages
     /// touched, sliced down to the requested window.
     ///
     /// A short read (returned `Vec` shorter than `len`) signals
     /// end-of-blob — same contract as `BlobStore::get_range`.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the underlying [`BlobStore::get_range`]
+    /// returned for a page that had to be fetched.
     pub fn read(
         &self,
         hash: &[u8; 32],
@@ -87,23 +99,28 @@ impl<S: BlobStore> PageCache<S> {
             return Ok(Vec::new());
         }
         let end = offset.saturating_add(u64::from(len)).min(blob_size);
-        let want = (end - offset) as usize;
+        let want = narrow_usize(end.saturating_sub(offset), 0);
         let mut out = Vec::with_capacity(want);
 
-        let first_page = offset / u64::from(PAGE_SIZE);
-        let last_page = (end - 1) / u64::from(PAGE_SIZE);
+        let first_page = offset.div_euclid(u64::from(PAGE_SIZE));
+        let last_page = end.saturating_sub(1).div_euclid(u64::from(PAGE_SIZE));
         for page in first_page..=last_page {
-            let page_start = page * u64::from(PAGE_SIZE);
-            let page_end = (page_start + u64::from(PAGE_SIZE)).min(blob_size);
+            let page_start = page.saturating_mul(u64::from(PAGE_SIZE));
+            let page_end = page_start
+                .saturating_add(u64::from(PAGE_SIZE))
+                .min(blob_size);
             let page_bytes = self.fetch_page(hash, page, page_start, page_end)?;
             // Slice this page down to the requested window.
-            let slice_start = offset.saturating_sub(page_start) as usize;
-            let slice_end = (end - page_start).min(page_bytes.len() as u64) as usize;
+            let slice_start = narrow_usize(offset.saturating_sub(page_start), 0);
+            let slice_end = narrow_usize(
+                end.saturating_sub(page_start).min(page_bytes.len() as u64),
+                page_bytes.len(),
+            );
             // Bound `slice_start` so an interior page always
             // takes its full payload.
             let slice_start = slice_start.min(page_bytes.len());
-            if slice_start < slice_end {
-                out.extend_from_slice(&page_bytes[slice_start..slice_end]);
+            if let Some(slice) = page_bytes.get(slice_start..slice_end) {
+                out.extend_from_slice(slice);
             }
         }
         Ok(out)
@@ -121,17 +138,18 @@ impl<S: BlobStore> PageCache<S> {
     ) -> Result<Vec<u8>, BlobError> {
         let key = PageKey { hash: *hash, page };
         {
-            let mut pages = self.pages.lock().unwrap();
+            let mut pages = self.pages_lock();
             if let Some(bytes) = pages.get(&key) {
                 self.hits.fetch_add(1, Ordering::Relaxed);
                 return Ok(bytes.clone());
             }
         }
         self.misses.fetch_add(1, Ordering::Relaxed);
-        let want = (page_end - page_start) as u32;
+        let want = narrow_u32(page_end.saturating_sub(page_start), PAGE_SIZE);
         let bytes = self.store.get_range(hash, page_start, want)?;
-        let mut pages = self.pages.lock().unwrap();
+        let mut pages = self.pages_lock();
         pages.put(key, bytes.clone());
+        drop(pages);
         Ok(bytes)
     }
 
@@ -178,7 +196,7 @@ mod tests {
         let inner = MemoryBlobStore::new();
         let mut payload = Vec::with_capacity(PAGE_SIZE as usize * 3);
         for i in 0..PAGE_SIZE as usize * 3 {
-            payload.push((i & 0xff) as u8);
+            payload.push(u8::try_from(i & 0xff).unwrap_or(0));
         }
         let h = inner.put(&payload);
         let cache = PageCache::new(inner, 16);
@@ -204,8 +222,9 @@ mod tests {
         // 4 pages of distinct bytes.
         let mut payload = vec![0u8; PAGE_SIZE as usize * 4];
         for i in 0..4 {
+            let marker = u8::try_from(i).unwrap_or(0);
             for j in 0..PAGE_SIZE as usize {
-                payload[i * PAGE_SIZE as usize + j] = i as u8;
+                payload[i * PAGE_SIZE as usize + j] = marker;
             }
         }
         let h = inner.put(&payload);

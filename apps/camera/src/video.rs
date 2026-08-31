@@ -17,7 +17,7 @@
 //! and fully deterministic — while still being a real, widely-supported video
 //! codec rather than raw frames.
 
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 
 use image::{ExtendedColorType, ImageEncoder};
@@ -121,8 +121,8 @@ fn push_u32(buf: &mut Vec<u8>, v: u32) {
 fn push_u16(buf: &mut Vec<u8>, v: u16) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
-fn push_tag(buf: &mut Vec<u8>, tag: &[u8; 4]) {
-    buf.extend_from_slice(tag);
+fn push_tag(buf: &mut Vec<u8>, tag: [u8; 4]) {
+    buf.extend_from_slice(&tag);
 }
 
 /// Build the 56-byte `avih` main-header body.
@@ -147,8 +147,8 @@ fn avih(w: u32, h: u32, fps: u32, frames: u32, max_frame: u32) -> Vec<u8> {
 /// Build the 56-byte `strh` video stream-header body.
 fn strh(fps: u32, frames: u32, max_frame: u32, w: u32, h: u32) -> Vec<u8> {
     let mut b = Vec::with_capacity(56);
-    push_tag(&mut b, b"vids"); // fccType
-    push_tag(&mut b, b"MJPG"); // fccHandler
+    push_tag(&mut b, *b"vids"); // fccType
+    push_tag(&mut b, *b"MJPG"); // fccHandler
     push_u32(&mut b, 0); // dwFlags
     push_u16(&mut b, 0); // wPriority
     push_u16(&mut b, 0); // wLanguage
@@ -175,7 +175,7 @@ fn strf(w: u32, h: u32) -> Vec<u8> {
     push_u32(&mut b, h); // biHeight
     push_u16(&mut b, 1); // biPlanes
     push_u16(&mut b, 24); // biBitCount
-    push_tag(&mut b, b"MJPG"); // biCompression
+    push_tag(&mut b, *b"MJPG"); // biCompression
     push_u32(&mut b, w * h * 3); // biSizeImage
     push_u32(&mut b, 0); // biXPelsPerMeter
     push_u32(&mut b, 0); // biYPelsPerMeter
@@ -185,7 +185,7 @@ fn strf(w: u32, h: u32) -> Vec<u8> {
 }
 
 /// Wrap `body` as `tag <size> body` with the size field preceding it.
-fn chunk(tag: &[u8; 4], body: &[u8]) -> Vec<u8> {
+fn chunk(tag: [u8; 4], body: &[u8]) -> Vec<u8> {
     let mut b = Vec::with_capacity(body.len() + 8);
     push_tag(&mut b, tag);
     push_u32(&mut b, body.len() as u32);
@@ -207,7 +207,7 @@ fn encode_avi(frames: &[Vec<u8>], w: u32, h: u32, fps: u32) -> Vec<u8> {
         // chunks begin 4 bytes after it (right past the fourcc itself).
         let offset = movi.len() as u32 + 4;
         index.push((offset, jpeg.len() as u32));
-        push_tag(&mut movi, b"00dc");
+        push_tag(&mut movi, *b"00dc");
         push_u32(&mut movi, jpeg.len() as u32);
         movi.extend_from_slice(jpeg);
         if jpeg.len() % 2 == 1 {
@@ -218,7 +218,7 @@ fn encode_avi(frames: &[Vec<u8>], w: u32, h: u32, fps: u32) -> Vec<u8> {
     // --- idx1 body ---
     let mut idx = Vec::with_capacity(frames.len() * 16);
     for (offset, size) in &index {
-        push_tag(&mut idx, b"00dc");
+        push_tag(&mut idx, *b"00dc");
         push_u32(&mut idx, 0x10); // AVIIF_KEYFRAME
         push_u32(&mut idx, *offset);
         push_u32(&mut idx, *size);
@@ -226,46 +226,46 @@ fn encode_avi(frames: &[Vec<u8>], w: u32, h: u32, fps: u32) -> Vec<u8> {
 
     // --- hdrl list: avih + (strl: strh + strf) ---
     let mut strl = Vec::new();
-    push_tag(&mut strl, b"LIST");
+    push_tag(&mut strl, *b"LIST");
     // size filled below
     let strl_children = {
         let mut c = Vec::new();
-        c.extend_from_slice(&chunk(b"strh", &strh(fps, n, max_frame, w, h)));
-        c.extend_from_slice(&chunk(b"strf", &strf(w, h)));
+        c.extend_from_slice(&chunk(*b"strh", &strh(fps, n, max_frame, w, h)));
+        c.extend_from_slice(&chunk(*b"strf", &strf(w, h)));
         c
     };
     push_u32(&mut strl, (4 + strl_children.len()) as u32); // "strl" + children
-    push_tag(&mut strl, b"strl");
+    push_tag(&mut strl, *b"strl");
     strl.extend_from_slice(&strl_children);
 
     let mut hdrl = Vec::new();
-    push_tag(&mut hdrl, b"LIST");
+    push_tag(&mut hdrl, *b"LIST");
     let hdrl_children = {
         let mut c = Vec::new();
-        c.extend_from_slice(&chunk(b"avih", &avih(w, h, fps, n, max_frame)));
+        c.extend_from_slice(&chunk(*b"avih", &avih(w, h, fps, n, max_frame)));
         c.extend_from_slice(&strl);
         c
     };
     push_u32(&mut hdrl, (4 + hdrl_children.len()) as u32); // "hdrl" + children
-    push_tag(&mut hdrl, b"hdrl");
+    push_tag(&mut hdrl, *b"hdrl");
     hdrl.extend_from_slice(&hdrl_children);
 
     // --- movi list wrapper ---
     let mut movi_list = Vec::new();
-    push_tag(&mut movi_list, b"LIST");
+    push_tag(&mut movi_list, *b"LIST");
     push_u32(&mut movi_list, (4 + movi.len()) as u32); // "movi" + chunks
-    push_tag(&mut movi_list, b"movi");
+    push_tag(&mut movi_list, *b"movi");
     movi_list.extend_from_slice(&movi);
 
     // --- assemble RIFF ---
     let mut body = Vec::new();
-    push_tag(&mut body, b"AVI ");
+    push_tag(&mut body, *b"AVI ");
     body.extend_from_slice(&hdrl);
     body.extend_from_slice(&movi_list);
-    body.extend_from_slice(&chunk(b"idx1", &idx));
+    body.extend_from_slice(&chunk(*b"idx1", &idx));
 
     let mut out = Vec::with_capacity(body.len() + 8);
-    push_tag(&mut out, b"RIFF");
+    push_tag(&mut out, *b"RIFF");
     push_u32(&mut out, body.len() as u32);
     out.extend_from_slice(&body);
     out
@@ -281,11 +281,13 @@ pub fn probe_avi(path: &Path) -> Option<(u32, u32, i64)> {
     // The `avih` header lives near the top of the file; a small prefix is
     // enough. Read up to 512 bytes.
     let mut f = std::fs::File::open(path).ok()?;
-    use std::io::Read;
     let mut head = [0u8; 512];
     let read = f.read(&mut head).ok()?;
-    let head = &head[..read];
-    if head.len() < 12 || &head[0..4] != b"RIFF" || &head[8..12] != b"AVI " {
+    let head = head.get(..read)?;
+    if head.len() < 12
+        || head.get(0..4) != Some(&b"RIFF"[..])
+        || head.get(8..12) != Some(&b"AVI "[..])
+    {
         return None;
     }
     let pos = find(head, b"avih")?;
@@ -294,7 +296,9 @@ pub fn probe_avi(path: &Path) -> Option<(u32, u32, i64)> {
         return None;
     }
     let rd = |off: usize| -> u32 {
-        u32::from_le_bytes([head[off], head[off + 1], head[off + 2], head[off + 3]])
+        head.get(off..off + 4)
+            .and_then(|s| s.try_into().ok())
+            .map_or(0, u32::from_le_bytes)
     };
     let usec_per_frame = rd(body);
     let total_frames = rd(body + 16);
@@ -304,11 +308,9 @@ pub fn probe_avi(path: &Path) -> Option<(u32, u32, i64)> {
     // derive the duration as frames ÷ fps — how a player times an AVI — so it
     // matches `Recorder::duration_ms` exactly rather than drifting by the
     // microsecond-truncation of `dwMicroSecPerFrame`.
-    let fps = if usec_per_frame > 0 {
-        ((1_000_000 + usec_per_frame / 2) / usec_per_frame).max(1)
-    } else {
-        FPS
-    };
+    let fps = (1_000_000 + usec_per_frame / 2)
+        .checked_div(usec_per_frame)
+        .map_or(FPS, |v| v.max(1));
     let dur_ms = (i64::from(total_frames) * 1000) / i64::from(fps);
     Some((w, h, dur_ms))
 }
@@ -319,6 +321,11 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Persist an encoded clip to `dir` as a timestamped `.avi`, creating the
 /// directory on first use. Returns the written file name.
+///
+/// # Errors
+///
+/// Returns an error if `dir` cannot be created or the clip cannot be
+/// written to it.
 pub fn write_clip(dir: &Path, bytes: &[u8], stamp: &str) -> io::Result<String> {
     std::fs::create_dir_all(dir)?;
     let name = format!("VID_{stamp}.avi");
@@ -330,15 +337,19 @@ pub fn write_clip(dir: &Path, bytes: &[u8], stamp: &str) -> io::Result<String> {
 mod tests {
     use super::*;
 
-    fn solid_frame(w: u32, h: u32, r: u8, g: u8, b: u8) -> FrameBuf {
-        let mut rgba = vec![0u8; (w * h * 4) as usize];
+    fn solid_frame(width: u32, height: u32, red: u8, green: u8, blue: u8) -> FrameBuf {
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
         for px in rgba.chunks_exact_mut(4) {
-            px[0] = r;
-            px[1] = g;
-            px[2] = b;
+            px[0] = red;
+            px[1] = green;
+            px[2] = blue;
             px[3] = 255;
         }
-        FrameBuf { rgba, w, h }
+        FrameBuf {
+            rgba,
+            w: width,
+            h: height,
+        }
     }
 
     #[test]
@@ -403,7 +414,12 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("camera-vid-test-{}", std::process::id()));
         let name = write_clip(&dir, &bytes, "20260101_000000_000").unwrap();
-        assert!(name.starts_with("VID_") && name.ends_with(".avi"));
+        assert!(
+            name.starts_with("VID_")
+                && Path::new(&name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("avi"))
+        );
 
         let (w, h, dur) = probe_avi(&dir.join(&name)).expect("probe the written clip");
         assert_eq!((w, h), (48, 32));

@@ -977,14 +977,15 @@ impl Widget for Scrollable {
                     return;
                 }
             }
+            // A non-nav key (guard true, `on_navigation_key` false) falls
+            // through to the child below, same as an unfocused/released one.
             WindowEvent::KeyboardInput { event: ke, .. }
-                if self.focused && ke.state == ElementState::Pressed =>
+                if self.focused
+                    && ke.state == ElementState::Pressed
+                    && self.on_navigation_key(&ke.logical_key) =>
             {
-                if self.on_navigation_key(&ke.logical_key) {
-                    *handled = true;
-                    return;
-                }
-                // A non-nav key falls through to the child below.
+                *handled = true;
+                return;
             }
             _ => {}
         }

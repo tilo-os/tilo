@@ -17,13 +17,7 @@ pub const STRIP_COOLDOWN_MS: u64 = 600;
 /// this sidesteps the narrowing `f64 -> i32` cast and the negation
 /// entirely rather than relying on `-v.signum() as i32` to stay in range.
 fn wheel_sign(v: f64) -> i32 {
-    if v > 0.0 {
-        -1
-    } else if v < 0.0 {
-        1
-    } else {
-        0
-    }
+    if v > 0.0 { -1 } else { i32::from(v < 0.0) }
 }
 
 pub struct StripView {

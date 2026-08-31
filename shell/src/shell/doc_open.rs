@@ -28,7 +28,9 @@ use crate::shell::state::{GroupId, StripId, TabId, TileContent, WorkspaceId, Wor
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocumentTarget {
     App {
-        app: InstalledApp,
+        // Boxed: `InstalledApp` carries four `String`s, two `PathBuf`s and
+        // three `Vec<String>`s, dwarfing the other variants' payloads.
+        app: Box<InstalledApp>,
         /// `false` for a type an app claims that `qdoc` has no codec
         /// for — still a good open, just not a document one.
         editable_document: bool,
@@ -143,7 +145,7 @@ pub fn resolve_for(
         });
     match app {
         Some(app) => DocumentTarget::App {
-            app,
+            app: Box::new(app),
             editable_document,
         },
         None if editable_document => DocumentTarget::NoAppForDocument {
@@ -179,6 +181,15 @@ pub fn open_in_group(path: &Path, chrome: &Chrome, group: GroupId) -> Result<Ope
 }
 
 fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Opened, OpenError> {
+    // The guard feeds `resolve_for`'s `workspace_defaults` borrow directly
+    // and the block ends the moment that call returns; cloning the policy
+    // map out just to drop the guard a statement earlier would cost more
+    // than the (synchronous, non-blocking) call it's guarding against.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "guard's only use is the borrow passed into resolve_for, released \
+                  immediately after; nothing to tighten without cloning workspace policy"
+    )]
     let target = {
         let state = chrome.borrow();
         let tree = state.tree();
@@ -228,11 +239,16 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
         Some(Existing::Window(tab)) => {
             focus(chrome, tab);
             return Ok(Opened::Focused {
-                app,
+                app: *app,
                 tab: Some(tab.tab),
             });
         }
-        Some(Existing::Starting) => return Ok(Opened::Focused { app, tab: None }),
+        Some(Existing::Starting) => {
+            return Ok(Opened::Focused {
+                app: *app,
+                tab: None,
+            });
+        }
         None => {}
     }
 
@@ -703,7 +719,7 @@ mod tests {
             again,
             Opened::Focused {
                 app: match resolve(&doc) {
-                    DocumentTarget::App { app, .. } => app,
+                    DocumentTarget::App { app, .. } => *app,
                     other => panic!("expected an owning app, got {other:?}"),
                 },
                 tab: Some(adopted),

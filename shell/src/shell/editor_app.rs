@@ -788,7 +788,7 @@ impl Widget for EditorApp {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                self.handle_keyboard_input(key_event, modifiers, state, root, handled);
+                self.handle_keyboard_input(key_event, *modifiers, state, root, handled);
             }
             _ => {}
         }
@@ -848,7 +848,7 @@ impl EditorApp {
     fn handle_keyboard_input(
         &mut self,
         key_event: &KeyEvent,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,

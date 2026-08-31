@@ -44,13 +44,23 @@ pub struct RustyPipeBackend {
 impl RustyPipeBackend {
     /// Construct with the default (null) `PoToken` provider — audio resolves via
     /// the iOS/TV player clients, no token needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the tokio runtime or the rustypipe
+    /// client fails to build.
     pub fn new() -> Result<Self, BackendError> {
-        Self::with_potoken(Box::new(NullPoToken))
+        Self::with_potoken(&NullPoToken)
     }
 
     /// Construct with an explicit `PoToken` provider. A provider that cannot
     /// stream keeps rustypipe's `BotGuard` path disabled (`no_botguard`).
-    pub fn with_potoken(provider: Box<dyn PoTokenProvider>) -> Result<Self, BackendError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the tokio runtime or the rustypipe
+    /// client fails to build.
+    pub fn with_potoken(provider: &dyn PoTokenProvider) -> Result<Self, BackendError> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -202,11 +212,12 @@ fn cover_url(thumbs: &[Thumbnail], px: u32) -> String {
 /// smaller downloads, sharp tiles. URLs without that segment (e.g.
 /// `i.ytimg.com/vi/<id>/hqdefault.jpg`) are returned unchanged.
 fn resize_google_thumb(url: &str, px: u32) -> String {
-    if let Some(eq) = url.rfind('=') {
-        let tail = &url[eq + 1..];
-        if tail.starts_with('w') || tail.starts_with('s') {
-            return format!("{}=w{px}-h{px}-l90-rj", &url[..eq]);
-        }
+    if let Some(eq) = url.rfind('=')
+        && let Some(tail) = url.get(eq + 1..)
+        && (tail.starts_with('w') || tail.starts_with('s'))
+        && let Some(base) = url.get(..eq)
+    {
+        return format!("{base}=w{px}-h{px}-l90-rj");
     }
     url.to_string()
 }
@@ -275,7 +286,6 @@ fn codec_str(c: AudioCodec) -> &'static str {
         AudioCodec::Opus => "opus",
         AudioCodec::Ac3 => "ac-3",
         AudioCodec::Ec3 => "ec-3",
-        AudioCodec::Unknown => "unknown",
         _ => "unknown",
     }
 }

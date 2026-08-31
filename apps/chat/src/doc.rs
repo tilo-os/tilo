@@ -135,6 +135,14 @@ fn list_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     }
 }
 
+/// # Panics
+/// Never in practice: every caller passes `ROOT` or an object it just
+/// fetched-or-created moments earlier in the same synchronous call, so
+/// `put_object` on it only fails for an already-corrupted document.
+#[allow(
+    clippy::expect_used,
+    reason = "callers only ever pass ROOT or an object fetched-or-created earlier in the same call, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+)]
 fn get_or_map(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> ObjId {
     match doc.get(obj, key) {
         Ok(Some((Value::Object(ObjType::Map), o))) => o,
@@ -142,6 +150,14 @@ fn get_or_map(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> ObjId {
     }
 }
 
+/// # Panics
+/// Never in practice: every caller passes `ROOT` or an object it just
+/// fetched-or-created moments earlier in the same synchronous call, so
+/// `put_object` on it only fails for an already-corrupted document.
+#[allow(
+    clippy::expect_used,
+    reason = "callers only ever pass ROOT or an object fetched-or-created earlier in the same call, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+)]
 fn get_or_list(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> ObjId {
     match doc.get(obj, key) {
         Ok(Some((Value::Object(ObjType::List), o))) => o,
@@ -149,6 +165,14 @@ fn get_or_list(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> ObjId {
     }
 }
 
+/// # Panics
+/// Never in practice: every caller passes `ROOT` or an object it just
+/// fetched-or-created moments earlier in the same synchronous call, so
+/// `put_object` on it only fails for an already-corrupted document.
+#[allow(
+    clippy::expect_used,
+    reason = "callers only ever pass ROOT or an object fetched-or-created earlier in the same call, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
+)]
 fn get_or_text(doc: &mut AutoCommit, obj: &ObjId, key: &str) -> ObjId {
     match doc.get(obj, key) {
         Ok(Some((Value::Object(ObjType::Text), o))) => o,
@@ -231,7 +255,17 @@ impl ChatDoc {
         }
         let _ = doc.put(&ROOT, "seeded", true);
 
-        // --- users -------------------------------------------------------
+        Self::seed_demo_users(doc);
+        Self::seed_demo_workspaces(doc);
+        Self::seed_demo_categories(doc);
+        Self::seed_demo_channels(doc);
+        Self::seed_demo_voice_membership(doc);
+        Self::seed_demo_design_crit(doc);
+        Self::seed_demo_design_crit_thread(doc, "m_concept");
+        Self::seed_demo_general_welcome(doc);
+    }
+
+    fn seed_demo_users(doc: &mut AutoCommit) {
         for (id, name, initials, color, status) in [
             ("u_me", "You", "QD", 0usize, Presence::Online),
             ("u_aria", "Aria Chen", "AC", 1, Presence::Online),
@@ -242,8 +276,9 @@ impl ChatDoc {
         ] {
             Self::put_user(doc, id, name, initials, color, status);
         }
+    }
 
-        // --- workspaces --------------------------------------------------
+    fn seed_demo_workspaces(doc: &mut AutoCommit) {
         for (id, name, glyph, color, order) in [
             ("ws_acme", "Acme Design", "AD", 0usize, 0u32),
             ("ws_qos", "qOS Core", "QC", 1, 1),
@@ -251,10 +286,11 @@ impl ChatDoc {
         ] {
             Self::put_workspace(doc, id, name, glyph, color, order);
         }
+    }
 
-        // --- categories --------------------------------------------------
-        // Channels live under a named category; "" is the implicit
-        // uncategorised group rendered first.
+    /// Channels live under a named category; "" is the implicit
+    /// uncategorised group rendered first.
+    fn seed_demo_categories(doc: &mut AutoCommit) {
         for (id, ws, name, order) in [
             ("cat_acme_main", "ws_acme", "Channels", 0u32),
             ("cat_acme_voice", "ws_acme", "Voice", 1),
@@ -264,11 +300,12 @@ impl ChatDoc {
         ] {
             Self::put_category(doc, id, ws, name, order, false);
         }
+    }
 
-        // --- channels ----------------------------------------------------
-        // Unread badges are not seeded — they derive from genuinely unseen
-        // messages (the `read` watermark). #general carries a welcome message
-        // the demo peer hasn't opened, so it shows a real "1" out of the box.
+    /// Unread badges are not seeded — they derive from genuinely unseen
+    /// messages (the `read` watermark). #general carries a welcome message
+    /// the demo peer hasn't opened, so it shows a real "1" out of the box.
+    fn seed_demo_channels(doc: &mut AutoCommit) {
         let chans: &[(&str, &str, &str, &str, &str, ChannelKind, u32)] = &[
             (
                 "c_general",
@@ -391,10 +428,12 @@ impl ChatDoc {
         for (id, ws, cat, name, topic, kind, order) in chans {
             Self::put_channel(doc, id, ws, cat, name, topic, *kind, *order);
         }
+    }
 
-        // --- voice membership: a lively Design Huddle ---------------------
-        // Mirrors the call overlay's demo roster so the sidebar presence and
-        // the overlay agree out of the box. Aria is the active speaker.
+    /// A lively Design Huddle: mirrors the call overlay's demo roster so the
+    /// sidebar presence and the overlay agree out of the box. Aria is the
+    /// active speaker.
+    fn seed_demo_voice_membership(doc: &mut AutoCommit) {
         for (user, talking, muted, audio_only) in [
             ("u_aria", true, false, false),
             ("u_milo", false, true, false),
@@ -403,11 +442,12 @@ impl ChatDoc {
             Self::voice_join(doc, "c_huddle", user);
             Self::voice_set_state(doc, "c_huddle", user, talking, muted, false, audio_only);
         }
+    }
 
-        // --- a real conversation in #design-crit -------------------------
+    /// The first half of a real conversation in #design-crit.
+    fn seed_demo_design_crit_early() -> Vec<(&'static str, NewMessage)> {
         let m = |off_min: i64| NOW - off_min * 60;
-        let parent_id = "m_concept";
-        let convo: Vec<(&str, NewMessage)> = vec![
+        vec![
             (
                 "m_open",
                 NewMessage {
@@ -456,6 +496,13 @@ impl ChatDoc {
                     ..Default::default()
                 },
             ),
+        ]
+    }
+
+    /// The second half of the #design-crit conversation.
+    fn seed_demo_design_crit_late() -> Vec<(&'static str, NewMessage)> {
+        let m = |off_min: i64| NOW - off_min * 60;
+        vec![
             (
                 "m_devon",
                 NewMessage {
@@ -516,12 +563,20 @@ impl ChatDoc {
                     ..Default::default()
                 },
             ),
-        ];
+        ]
+    }
+
+    fn seed_demo_design_crit(doc: &mut AutoCommit) {
+        let mut convo = Self::seed_demo_design_crit_early();
+        convo.extend(Self::seed_demo_design_crit_late());
         for (id, nm) in convo {
             Self::push_message_with_id(doc, "c_crit", id, nm);
         }
+    }
 
-        // --- a thread hanging off the concept image ----------------------
+    /// A thread hanging off the concept image (`parent_id`).
+    fn seed_demo_design_crit_thread(doc: &mut AutoCommit, parent_id: &str) {
+        let m = |off_min: i64| NOW - off_min * 60;
         let thread: Vec<NewMessage> = vec![
             NewMessage {
                 author: "u_milo".into(),
@@ -549,8 +604,11 @@ impl ChatDoc {
         for nm in thread {
             Self::push_message(doc, "c_crit", nm);
         }
+    }
 
-        // a little life in #general too
+    /// A little life in #general too.
+    fn seed_demo_general_welcome(doc: &mut AutoCommit) {
+        let m = |off_min: i64| NOW - off_min * 60;
         Self::push_message(
             doc,
             "c_general",
@@ -654,26 +712,50 @@ impl ChatDoc {
 
     /// Append a message with a caller-chosen id (used by the seed so the
     /// thread parent / reaction targets are stable string keys).
+    ///
+    /// # Panics
+    /// Never in practice: every `put_object`/`insert_object` here targets
+    /// either the freshly inserted message map or a child object this call
+    /// itself just created a moment earlier, so it only fails for an
+    /// already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "every put_object/insert_object here targets the freshly inserted message block or a child object created moments earlier in this same call, so it cannot fail short of a corrupted document — there is no meaningful fallback"
+    )]
     pub fn push_message_with_id(
         doc: &mut AutoCommit,
         channel: &str,
         id: &str,
         nm: NewMessage,
     ) -> String {
+        let NewMessage {
+            author,
+            ts,
+            text,
+            parent,
+            reactions,
+            attachment,
+            history,
+            edited,
+            mentions,
+            reference,
+            work,
+        } = nm;
+
         let list = Self::messages_list_mut(doc, channel);
         let idx = doc.length(&list);
         let block = doc
             .insert_object(&list, idx, ObjType::Map)
             .expect("insert msg");
         let _ = doc.put(&block, "id", id);
-        let _ = doc.put(&block, "author", nm.author.as_str());
-        let _ = doc.put(&block, "ts", nm.ts);
-        let _ = doc.put(&block, "parent", nm.parent.clone().unwrap_or_default());
-        let _ = doc.put(&block, "edited", nm.edited);
+        let _ = doc.put(&block, "author", author.as_str());
+        let _ = doc.put(&block, "ts", ts);
+        let _ = doc.put(&block, "parent", parent.unwrap_or_default());
+        let _ = doc.put(&block, "edited", edited);
 
-        let text = doc.put_object(&block, "text", ObjType::Text).expect("text");
-        if !nm.text.is_empty() {
-            let _ = doc.splice_text(&text, 0, 0, &nm.text);
+        let text_obj = doc.put_object(&block, "text", ObjType::Text).expect("text");
+        if !text.is_empty() {
+            let _ = doc.splice_text(&text_obj, 0, 0, &text);
         }
 
         // reactions — an append-only List of {emoji,user} entries. Modelling
@@ -686,7 +768,7 @@ impl ChatDoc {
             .put_object(&block, "reactions", ObjType::List)
             .expect("rx");
         let mut ri = 0usize;
-        for (emoji, users) in &nm.reactions {
+        for (emoji, users) in &reactions {
             for u in users {
                 let e = doc.insert_object(&rx, ri, ObjType::Map).expect("rxentry");
                 let _ = doc.put(&e, "emoji", emoji.as_str());
@@ -698,12 +780,12 @@ impl ChatDoc {
         // mentions — an ordered List of resolved participant references. A
         // list (not a set) because two mentions of one person are two
         // references, and the order is the order they read in the body.
-        let mentions = doc
+        let mentions_obj = doc
             .put_object(&block, "mentions", ObjType::List)
             .expect("mentions");
-        for (i, m) in nm.mentions.iter().enumerate() {
+        for (i, m) in mentions.iter().enumerate() {
             let e = doc
-                .insert_object(&mentions, i, ObjType::Map)
+                .insert_object(&mentions_obj, i, ObjType::Map)
                 .expect("mention");
             let _ = doc.put(&e, "user", m.user.as_str());
             let _ = doc.put(&e, "start", m.start as i64);
@@ -719,7 +801,7 @@ impl ChatDoc {
         // buy convergence nobody needs and risk a half-written address that
         // still parses. Absent for an ordinary message, which is what keeps
         // `Message::reference` honest as "written about something".
-        if let Some(r) = &nm.reference
+        if let Some(r) = &reference
             && let Ok(json) = serde_json::to_string(r)
         {
             let _ = doc.put(&block, "reference", json.as_str());
@@ -730,7 +812,7 @@ impl ChatDoc {
         // one: the agent that took the summons is the only thing that ever
         // sets it, so a later state simply supersedes an earlier one and
         // there is nothing for a merge to reconcile.
-        if let Some(w) = &nm.work
+        if let Some(w) = &work
             && let Ok(json) = serde_json::to_string(w)
         {
             let _ = doc.put(&block, "work", json.as_str());
@@ -740,14 +822,14 @@ impl ChatDoc {
         let hist = doc
             .put_object(&block, "history", ObjType::List)
             .expect("hist");
-        for (i, rec) in nm.history.iter().enumerate() {
+        for (i, rec) in history.iter().enumerate() {
             let h = doc.insert_object(&hist, i, ObjType::Map).expect("hrec");
             let _ = doc.put(&h, "ts", rec.ts);
             let _ = doc.put(&h, "text", rec.text.as_str());
         }
 
         // attachment
-        if let Some(att) = &nm.attachment {
+        if let Some(att) = &attachment {
             let a = doc
                 .put_object(&block, "attachment", ObjType::Map)
                 .expect("att");
@@ -806,6 +888,14 @@ impl ChatDoc {
     /// Toggle `user`'s `emoji` reaction on a message. Creates the reactions
     /// map / emoji list as needed and prunes an emoji once its last reactor
     /// leaves — converges with the pure [`crate::model::toggle_reaction`].
+    ///
+    /// # Panics
+    /// Never in practice: `list` was just fetched-or-created above, so
+    /// `insert_object` on it only fails for an already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "list is a live List this call itself just fetched-or-created via get_or_list, so insert_object on it cannot fail short of a corrupted document — there is no meaningful fallback"
+    )]
     pub fn toggle_reaction(
         doc: &mut AutoCommit,
         channel: &str,
@@ -857,6 +947,14 @@ impl ChatDoc {
     /// the same `(emoji, user)` is a no-op, so replaying an add never
     /// double-counts. The counterpart of [`Self::remove_reaction`]; the on-screen
     /// toggle picks whichever the current state calls for at authoring time.
+    ///
+    /// # Panics
+    /// Never in practice: `list` was just fetched-or-created above, so
+    /// `insert_object` on it only fails for an already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "list is a live List this call itself just fetched-or-created via get_or_list, so insert_object on it cannot fail short of a corrupted document — there is no meaningful fallback"
+    )]
     pub fn add_reaction(
         doc: &mut AutoCommit,
         channel: &str,
@@ -930,6 +1028,14 @@ impl ChatDoc {
 
     /// Replace a message's body, archiving the previous text into its edit
     /// history and flagging it edited.
+    ///
+    /// # Panics
+    /// Never in practice: `hist` was just fetched-or-created above, so
+    /// `insert_object` on it only fails for an already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "hist is a live List this call itself just fetched-or-created via get_or_list, so insert_object on it cannot fail short of a corrupted document — there is no meaningful fallback"
+    )]
     pub fn edit_message(
         doc: &mut AutoCommit,
         channel: &str,
@@ -1274,14 +1380,19 @@ impl ChatDoc {
             pos.checked_add(1).filter(|&p| p < siblings.len())
         };
         let Some(swap) = swap else { return };
-        let a_order = siblings[pos].order;
-        let b_order = siblings[swap].order;
+        let (Some(a), Some(b)) = (siblings.get(pos), siblings.get(swap)) else {
+            return;
+        };
+        let a_order = a.order;
+        let b_order = b.order;
+        let a_id = a.id.clone();
+        let b_id = b.id.clone();
         let chans = map_at(doc, &ROOT, "channels").unwrap_or(ROOT);
-        if let Some(a) = map_at(doc, &chans, &siblings[pos].id) {
-            let _ = doc.put(&a, "order", i64::from(b_order));
+        if let Some(a_obj) = map_at(doc, &chans, &a_id) {
+            let _ = doc.put(&a_obj, "order", i64::from(b_order));
         }
-        if let Some(b) = map_at(doc, &chans, &siblings[swap].id) {
-            let _ = doc.put(&b, "order", i64::from(a_order));
+        if let Some(b_obj) = map_at(doc, &chans, &b_id) {
+            let _ = doc.put(&b_obj, "order", i64::from(a_order));
         }
     }
 
@@ -1320,7 +1431,11 @@ impl ChatDoc {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::fn_params_excessive_bools,
+        reason = "each bool maps 1:1 to a distinct CRDT field (talking/muted/deafened/audio_only) mirrored from the shared voice-membership state — grouping them in a struct would just relocate the boolean soup, not remove it, and callers already pass them as named locals"
+    )]
     pub fn voice_set_state(
         doc: &mut AutoCommit,
         channel: &str,
@@ -1468,7 +1583,9 @@ impl ChatDoc {
                     name: get_str(doc, &u, "name"),
                     initials: get_str(doc, &u, "initials"),
                     color_idx: get_i64(doc, &u, "color_idx") as usize,
-                    status: Presence::from_str(&get_str(doc, &u, "status")),
+                    status: get_str(doc, &u, "status")
+                        .parse()
+                        .unwrap_or(Presence::Online),
                     is_agent: get_bool(doc, &u, "agent"),
                 })
             })
@@ -1489,7 +1606,9 @@ impl ChatDoc {
                     category: get_str(doc, &c, "category"),
                     name: get_str(doc, &c, "name"),
                     topic: get_str(doc, &c, "topic"),
-                    kind: ChannelKind::from_str(&get_str(doc, &c, "kind")),
+                    kind: get_str(doc, &c, "kind")
+                        .parse()
+                        .unwrap_or(ChannelKind::Text),
                     order: get_i64(doc, &c, "order") as u32,
                     // Derived per-peer in `ChatApp::reload` from the read
                     // watermark; not stored in the shared document.

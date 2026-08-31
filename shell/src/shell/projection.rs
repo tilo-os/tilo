@@ -470,7 +470,9 @@ mod tests {
             controller.disconnect();
             settle(&mut controller);
         }
-        let log = calls.lock().unwrap();
+        // Clone out of the guard immediately rather than holding the lock
+        // for the length of the assertion loop below.
+        let log = calls.lock().unwrap().clone();
         for protocol in ProjectionProtocol::ALL {
             assert!(
                 log.iter().any(|line| line.contains(protocol.label())),

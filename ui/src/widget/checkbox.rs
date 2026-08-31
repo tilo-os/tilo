@@ -42,16 +42,19 @@ impl CheckboxFace {
         }
     }
 
+    #[must_use]
     pub fn hovered(mut self, hovered: bool) -> Self {
         self.interact.hovered = hovered;
         self
     }
 
+    #[must_use]
     pub fn focused(mut self, focused: bool) -> Self {
         self.interact.focused = focused;
         self
     }
 
+    #[must_use]
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.interact.disabled = disabled;
         self
@@ -59,6 +62,7 @@ impl CheckboxFace {
 
     /// Let the surrounding canvas provide the unchecked background. Useful
     /// for checkboxes embedded in rows and cards rather than standalone forms.
+    #[must_use]
     pub fn transparent_unchecked(mut self) -> Self {
         self.fill_unchecked = false;
         self

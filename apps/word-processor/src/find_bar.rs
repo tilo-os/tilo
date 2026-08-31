@@ -55,6 +55,15 @@ enum Action {
     ToggleRegex,
 }
 
+/// The three search-mode toggles, grouped so `FindBar` itself doesn't carry
+/// more than a handful of independent bools.
+#[derive(Default, Clone, Copy)]
+struct SearchOptions {
+    case_sensitive: bool,
+    whole_word: bool,
+    regex: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct FindBar {
     open: bool,
@@ -64,10 +73,18 @@ pub(crate) struct FindBar {
     matches: Vec<FindMatch>,
     index: usize,
     buttons: Vec<(Action, Rect)>,
-    case_sensitive: bool,
-    whole_word: bool,
-    regex: bool,
+    options: SearchOptions,
     regex_error: bool,
+}
+
+/// The render arguments [`FindBar::draw`] threads through its per-section
+/// helpers, so each one carries a handful of positions rather than the whole
+/// argument list.
+struct DrawCtx<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    tr: &'a mut TextRenderer,
+    palette: FindPalette,
 }
 
 impl FindBar {
@@ -194,15 +211,15 @@ impl FindBar {
                 FindEffect::None
             }
             Action::ToggleCase => {
-                self.case_sensitive = !self.case_sensitive;
+                self.options.case_sensitive = !self.options.case_sensitive;
                 self.recompute(blocks)
             }
             Action::ToggleWord => {
-                self.whole_word = !self.whole_word;
+                self.options.whole_word = !self.options.whole_word;
                 self.recompute(blocks)
             }
             Action::ToggleRegex => {
-                self.regex = !self.regex;
+                self.options.regex = !self.options.regex;
                 self.recompute(blocks)
             }
         }
@@ -225,7 +242,7 @@ impl FindBar {
             self.index = 0;
             return FindEffect::None;
         }
-        if self.regex {
+        if self.options.regex {
             self.recompute_regex(blocks);
         } else {
             self.recompute_literal(blocks);
@@ -241,7 +258,7 @@ impl FindBar {
     }
 
     fn recompute_literal(&mut self, blocks: &[BlockView]) {
-        let needle: Vec<char> = if self.case_sensitive {
+        let needle: Vec<char> = if self.options.case_sensitive {
             self.query.chars().collect()
         } else {
             self.query.to_lowercase().chars().collect()
@@ -251,7 +268,7 @@ impl FindBar {
         }
         for block in blocks {
             let raw: Vec<char> = block.text.chars().collect();
-            let haystack: Vec<char> = if self.case_sensitive {
+            let haystack: Vec<char> = if self.options.case_sensitive {
                 raw.clone()
             } else {
                 block.text.to_lowercase().chars().collect()
@@ -263,7 +280,7 @@ impl FindBar {
             while start + needle.len() <= haystack.len() {
                 let end = start + needle.len();
                 if haystack[start..end] == needle[..]
-                    && (!self.whole_word || is_word_match(&raw, start, end))
+                    && (!self.options.whole_word || is_word_match(&raw, start, end))
                 {
                     self.matches.push((block.id.clone(), start, end));
                     start = end;
@@ -275,13 +292,13 @@ impl FindBar {
     }
 
     fn recompute_regex(&mut self, blocks: &[BlockView]) {
-        let pattern = if self.whole_word {
+        let pattern = if self.options.whole_word {
             format!(r"\b(?:{})\b", self.query)
         } else {
             self.query.clone()
         };
         let Ok(regex) = regex::RegexBuilder::new(&pattern)
-            .case_insensitive(!self.case_sensitive)
+            .case_insensitive(!self.options.case_sensitive)
             .build()
         else {
             self.regex_error = true;
@@ -319,84 +336,108 @@ impl FindBar {
         );
         let cy = f64::midpoint(bar.y0, bar.y1);
         let field_y = cy - 13.0;
-        let mut x = bar.x0 + 12.0;
-
-        let find_rect = Rect::new(x, field_y, x + 188.0, field_y + 26.0);
-        draw_field(
+        let mut ctx = DrawCtx {
             scene,
             transform,
             tr,
             palette,
+        };
+        let mut x = bar.x0 + 12.0;
+        x = self.draw_find_field(&mut ctx, field_y, x);
+        x = self.draw_mode_toggles(&mut ctx, field_y, cy, x) + 8.0;
+        x = self.draw_replace_field(&mut ctx, field_y, x);
+        x = self.draw_match_count(&mut ctx, cy, x) + 78.0;
+        self.draw_action_buttons(&mut ctx, field_y, cy, x);
+    }
+
+    /// The find field itself, plus its bad-pattern outline. Returns the `x`
+    /// past it.
+    fn draw_find_field(&mut self, ctx: &mut DrawCtx, field_y: f64, x: f64) -> f64 {
+        let find_rect = Rect::new(x, field_y, x + 188.0, field_y + 26.0);
+        draw_field(
+            ctx.scene,
+            ctx.transform,
+            ctx.tr,
+            ctx.palette,
             find_rect,
             &self.query,
             &t("find-find"),
             !self.on_replace,
         );
-        if self.regex && self.regex_error {
-            scene.stroke(
+        if self.options.regex && self.regex_error {
+            ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(1.5),
-                transform,
-                palette.danger,
+                ctx.transform,
+                ctx.palette.danger,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(find_rect, 5.0),
             );
         }
         self.buttons.push((Action::FocusFind, find_rect));
-        x += 196.0;
+        x + 196.0
+    }
 
+    /// The case/word/regex toggle chips. Returns the `x` past the last one.
+    fn draw_mode_toggles(&mut self, ctx: &mut DrawCtx, field_y: f64, cy: f64, mut x: f64) -> f64 {
         for (action, label, width, active) in [
-            (Action::ToggleCase, "Aa", 30.0, self.case_sensitive),
-            (Action::ToggleWord, "W", 26.0, self.whole_word),
-            (Action::ToggleRegex, ".*", 30.0, self.regex),
+            (Action::ToggleCase, "Aa", 30.0, self.options.case_sensitive),
+            (Action::ToggleWord, "W", 26.0, self.options.whole_word),
+            (Action::ToggleRegex, ".*", 30.0, self.options.regex),
         ] {
             let rect = Rect::new(x, field_y, x + width, field_y + 26.0);
             let (background, foreground) = if active {
-                (palette.accent, palette.on_accent)
+                (ctx.palette.accent, ctx.palette.on_accent)
             } else {
-                (palette.chip, palette.text_dim)
+                (ctx.palette.chip, ctx.palette.text_dim)
             };
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                transform,
+                ctx.transform,
                 background,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(rect, 5.0),
             );
             let text_x =
                 rect.x0 + (width - num::f64_of_usize(label.chars().count()) * 7.2).max(4.0) / 2.0;
-            tr.draw_text(
-                scene,
+            ctx.tr.draw_text(
+                ctx.scene,
                 label,
                 12.5,
                 foreground,
-                transform * Affine::translate((text_x, cy - 8.0)),
+                ctx.transform * Affine::translate((text_x, cy - 8.0)),
                 None,
             );
             self.buttons.push((action, rect));
             x += width + 5.0;
         }
-        x += 8.0;
+        x
+    }
 
+    /// The replace field. Returns the `x` past it.
+    fn draw_replace_field(&mut self, ctx: &mut DrawCtx, field_y: f64, x: f64) -> f64 {
         let replace_rect = Rect::new(x, field_y, x + 188.0, field_y + 26.0);
         draw_field(
-            scene,
-            transform,
-            tr,
-            palette,
+            ctx.scene,
+            ctx.transform,
+            ctx.tr,
+            ctx.palette,
             replace_rect,
             &self.replacement,
             &t("find-replace-with"),
             self.on_replace,
         );
         self.buttons.push((Action::FocusReplace, replace_rect));
-        x += 196.0;
+        x + 196.0
+    }
 
+    /// The "N of M" (or error/empty) readout. Returns the `x` past it.
+    fn draw_match_count(&self, ctx: &mut DrawCtx, cy: f64, x: f64) -> f64 {
         let (count, count_color) = if self.query.is_empty() {
-            (String::new(), palette.text_dim)
-        } else if self.regex && self.regex_error {
-            (t("find-bad-pattern"), palette.danger)
+            (String::new(), ctx.palette.text_dim)
+        } else if self.options.regex && self.regex_error {
+            (t("find-bad-pattern"), ctx.palette.danger)
         } else if self.matches.is_empty() {
-            (t("find-no-results"), palette.text_dim)
+            (t("find-no-results"), ctx.palette.text_dim)
         } else {
             (
                 t_args(
@@ -406,19 +447,22 @@ impl FindBar {
                         arg("total", num::i64_of_usize(self.matches.len())),
                     ],
                 ),
-                palette.text_dim,
+                ctx.palette.text_dim,
             )
         };
-        tr.draw_text(
-            scene,
+        ctx.tr.draw_text(
+            ctx.scene,
             &count,
             12.5,
             count_color,
-            transform * Affine::translate((x, cy - 7.0)),
+            ctx.transform * Affine::translate((x, cy - 7.0)),
             None,
         );
-        x += 78.0;
+        x
+    }
 
+    /// Prev/Next/Replace/Replace All/Close.
+    fn draw_action_buttons(&mut self, ctx: &mut DrawCtx, field_y: f64, cy: f64, mut x: f64) {
         for (action, label, width) in [
             (Action::Prev, "↑".to_string(), 28.0),
             (Action::Next, "↓".to_string(), 28.0),
@@ -427,21 +471,21 @@ impl FindBar {
             (Action::Close, "✕".to_string(), 28.0),
         ] {
             let rect = Rect::new(x, field_y, x + width, field_y + 26.0);
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                transform,
-                palette.chip,
+                ctx.transform,
+                ctx.palette.chip,
                 None,
                 &vello::kurbo::RoundedRect::from_rect(rect, 5.0),
             );
             let text_x =
                 rect.x0 + (width - num::f64_of_usize(label.chars().count()) * 7.2).max(6.0) / 2.0;
-            tr.draw_text(
-                scene,
+            ctx.tr.draw_text(
+                ctx.scene,
                 &label,
                 13.0,
-                palette.text,
-                transform * Affine::translate((text_x, cy - 8.0)),
+                ctx.palette.text,
+                ctx.transform * Affine::translate((text_x, cy - 8.0)),
                 None,
             );
             self.buttons.push((action, rect));
@@ -535,14 +579,14 @@ mod tests {
         assert_eq!(bar.matches.len(), 1);
 
         bar.query = "cat".to_string();
-        bar.case_sensitive = false;
+        bar.options.case_sensitive = false;
         bar.recompute(&blocks);
         assert_eq!(bar.matches.len(), 2);
         bar.apply(Action::ToggleWord, &blocks);
         assert_eq!(bar.matches.len(), 1);
 
         bar.query = r"\d+".to_string();
-        bar.whole_word = false;
+        bar.options.whole_word = false;
         bar.apply(Action::ToggleRegex, &blocks);
         assert_eq!(bar.matches.len(), 2);
         bar.query = "(".to_string();

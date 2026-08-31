@@ -510,6 +510,11 @@ fn paint_dismiss_button(
 /// then the optional body — vertically centred in `rect` between its left
 /// pad and `text_right` (the dismiss button's left edge, or the card's own
 /// right pad when there is none).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "private helper with a single call site in `paint_card`, forwarding that \
+              function's own draw parameters plus the two values it already computed"
+)]
 fn paint_card_text(
     scene: &mut Scene,
     transform: Affine,

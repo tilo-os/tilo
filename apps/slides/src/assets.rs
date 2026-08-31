@@ -110,13 +110,11 @@ impl ImageStore {
 /// Decode an image file into straight-alpha RGBA8 wrapped for Vello. Returns
 /// [`ImageState::Failed`] on any read/decode error.
 fn decode(path: &str) -> ImageState {
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(_) => return ImageState::Failed,
+    let Ok(bytes) = std::fs::read(path) else {
+        return ImageState::Failed;
     };
-    let img = match image::load_from_memory(&bytes) {
-        Ok(i) => i,
-        Err(_) => return ImageState::Failed,
+    let Ok(img) = image::load_from_memory(&bytes) else {
+        return ImageState::Failed;
     };
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();

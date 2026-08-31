@@ -147,6 +147,11 @@ impl SessionLockHooks {
     }
 }
 
+/// One output's `(position, size, scale)` in the compositor's combined
+/// coordinate space — see [`State::output_layout`]. Factored into a named
+/// alias to keep that field (and every function taking a slice of it) readable.
+pub type OutputPlacement = ((i32, i32), (u32, u32), f64);
+
 /// The compositor's process-wide state.
 ///
 /// The single value the calloop event loop hands to every callback, so every Wayland global gets unsynchronised mutable access without `Rc`/`Arc` plumbing.
@@ -286,7 +291,7 @@ pub struct State {
     ///
     /// [`Self::scale`] is one number for the whole session, only right on a
     /// single-display machine — a docked laptop has a dense panel and a sparse one, and the wrong factor renders soft. This is what lets the preferred `wp_fractional_scale` be per-surface.
-    pub output_layout: Vec<((i32, i32), (u32, u32), f64)>,
+    pub output_layout: Vec<OutputPlacement>,
     /// Preferred scale per client surface id, derived from [`Self::output_layout`] + tile position; refreshed by the run loop, the only place with both.
     pub surface_scales: HashMap<u64, f64>,
     /// **Transient fullscreen surface** — the window group id of the
@@ -343,111 +348,13 @@ impl State {
         let mut seat_state = SeatState::new();
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
-        // `zwp_linux_dmabuf_v1`. Two things have to be right for a GPU client:
-        //
-        // 1. **A main device.** Mesa dropped `wl_drm`, so
-        //    `dmabuf_feedback.main_device` (protocol version 4) is the only
-        //    channel telling it which GPU to allocate on — a version-3
-        //    global leaves it with none, and EGL dies before mapping a toplevel.
-        // 2. **Only formats we can composite.** `foreign::import_dmabuf_rgba`
-        //    CPU-maps the plane fd — correct only for single-plane RGBA under `Modifier::Linear`, so that's what goes on the wire.
-        let dmabuf_formats: Vec<Format> = [
-            Fourcc::Argb8888,
-            Fourcc::Xrgb8888,
-            Fourcc::Abgr8888,
-            Fourcc::Xbgr8888,
-        ]
-        .into_iter()
-        .map(|code| Format {
-            code,
-            modifier: Modifier::Linear,
-        })
-        .collect();
         let mut dmabuf_state = DmabufState::new();
-        let dmabuf_device = crate::compositor::render_node::probe();
-        let dmabuf_global = match &dmabuf_device {
-            Ok(node) => {
-                match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
-                    Ok(feedback) => {
-                        // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
-                        crate::compositor::render_node::set_advertised(node.path.clone());
-                        tracing::info!(
-                            target: "shell::compositor::dmabuf",
-                            device = %node.path.display(),
-                            driver = node.driver.as_deref().unwrap_or("<unknown>"),
-                            dev = node.dev,
-                            formats = dmabuf_formats.len(),
-                            "advertising zwp_linux_dmabuf_v1 with feedback"
-                        );
-                        Some(dmabuf_state.create_global_with_default_feedback::<Self>(
-                            &display_handle,
-                            &feedback,
-                        ))
-                    }
-                    Err(e) => {
-                        // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
-                        tracing::error!(
-                            target: "shell::compositor::dmabuf",
-                            error = %e,
-                            "could not build dmabuf feedback; not advertising dmabuf — \
-                             GPU clients will fall back to wl_shm"
-                        );
-                        None
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    target: "shell::compositor::dmabuf",
-                    reason = %e,
-                    "not advertising zwp_linux_dmabuf_v1 — GPU clients will render \
-                     through wl_shm (software) instead"
-                );
-                None
-            }
-        };
+        let (dmabuf_device, dmabuf_global) = Self::init_dmabuf(&display_handle, &mut dmabuf_state);
 
         // Register a real seat with a pointer device for `apply_remote_input` to inject into; name matches the wayland.rs sibling for consistency.
         let mut seat = seat_state.new_wl_seat(&display_handle, "quick-desktop");
         seat.add_pointer();
-        // A keyboard on the seat is required for the on-screen keyboard's
-        // `virtual-keyboard-v1` client (and any future IME) to deliver keys
-        // to the focused surface. Guarded so a keymap-load failure degrades
-        // gracefully. Auto-repeat comes from the persisted `input.key_repeat` preference rather than a hard-coded pair.
-        let (repeat_delay, repeat_rate) =
-            crate::compositor::backend::drm::input_config::InputSettings::load()
-                .key_repeat_params();
-        let keyboard_settings =
-            crate::compositor::backend::drm::input_config::KeyboardSettings::load();
-        let initial_keyboard_index = match seat.add_keyboard(
-            XkbConfig {
-                layout: &keyboard_settings.layouts,
-                variant: &keyboard_settings.variants,
-                options: keyboard_settings.options.clone(),
-                ..Default::default()
-            },
-            repeat_delay.as_millis() as i32,
-            repeat_rate as i32,
-        ) {
-            Ok(_) => keyboard_settings.active_index,
-            Err(error) => {
-                tracing::warn!(?error, "seat: saved XKB sources failed; falling back to US");
-                if let Err(fallback_error) = seat.add_keyboard(
-                    XkbConfig {
-                        layout: "us",
-                        ..Default::default()
-                    },
-                    repeat_delay.as_millis() as i32,
-                    repeat_rate as i32,
-                ) {
-                    tracing::warn!(
-                        ?fallback_error,
-                        "seat: fallback keymap failed (text injection disabled)"
-                    );
-                }
-                0
-            }
-        };
+        let initial_keyboard_index = Self::init_seat_keyboard(&mut seat);
         // A touchscreen can't reach a client without this — chrome uses the synthesised pointer stream, but real multi-touch needs `wl_touch`.
         seat.add_touch();
         // Text fields are public; the input method and virtual keyboard are
@@ -519,11 +426,131 @@ impl State {
             session_lock_state,
             session_lock: SessionLockHooks::default(),
             pointer_gestures_state,
-            client_input: Default::default(),
+            client_input: crate::compositor::client_input::ClientInput::default(),
             osk_surface: None,
         };
         state.activate_keyboard_source(initial_keyboard_index);
         state
+    }
+
+    /// Advertise `zwp_linux_dmabuf_v1` when the probed render node is
+    /// composable, publishing the decision either way so the import side can rely on it. Split out of [`Self::new`] to keep that constructor under the line-count budget.
+    fn init_dmabuf(
+        display_handle: &DisplayHandle,
+        dmabuf_state: &mut DmabufState,
+    ) -> (Result<RenderNode, ProbeError>, Option<DmabufGlobal>) {
+        // `zwp_linux_dmabuf_v1`. Two things have to be right for a GPU client:
+        //
+        // 1. **A main device.** Mesa dropped `wl_drm`, so
+        //    `dmabuf_feedback.main_device` (protocol version 4) is the only
+        //    channel telling it which GPU to allocate on — a version-3
+        //    global leaves it with none, and EGL dies before mapping a toplevel.
+        // 2. **Only formats we can composite.** `foreign::import_dmabuf_rgba`
+        //    CPU-maps the plane fd — correct only for single-plane RGBA under `Modifier::Linear`, so that's what goes on the wire.
+        let dmabuf_formats: Vec<Format> = [
+            Fourcc::Argb8888,
+            Fourcc::Xrgb8888,
+            Fourcc::Abgr8888,
+            Fourcc::Xbgr8888,
+        ]
+        .into_iter()
+        .map(|code| Format {
+            code,
+            modifier: Modifier::Linear,
+        })
+        .collect();
+        let dmabuf_device = crate::compositor::render_node::probe();
+        let dmabuf_global =
+            match &dmabuf_device {
+                Ok(node) => {
+                    match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
+                        Ok(feedback) => {
+                            // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
+                            crate::compositor::render_node::set_advertised(node.path.clone());
+                            tracing::info!(
+                                target: "shell::compositor::dmabuf",
+                                device = %node.path.display(),
+                                driver = node.driver.as_deref().unwrap_or("<unknown>"),
+                                dev = node.dev,
+                                formats = dmabuf_formats.len(),
+                                "advertising zwp_linux_dmabuf_v1 with feedback"
+                            );
+                            Some(dmabuf_state.create_global_with_default_feedback::<Self>(
+                                display_handle,
+                                &feedback,
+                            ))
+                        }
+                        Err(e) => {
+                            // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
+                            tracing::error!(
+                                target: "shell::compositor::dmabuf",
+                                error = %e,
+                                "could not build dmabuf feedback; not advertising dmabuf — \
+                                 GPU clients will fall back to wl_shm"
+                            );
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "shell::compositor::dmabuf",
+                        reason = %e,
+                        "not advertising zwp_linux_dmabuf_v1 — GPU clients will render \
+                         through wl_shm (software) instead"
+                    );
+                    None
+                }
+            };
+        (dmabuf_device, dmabuf_global)
+    }
+
+    /// Add a keyboard device to `seat` from the persisted XKB settings,
+    /// falling back to a bare "us" layout if the saved sources fail to
+    /// compile. Returns the settings' `active_index` (or `0` on fallback)
+    /// for [`Self::activate_keyboard_source`]. Split out of [`Self::new`] to keep that constructor under the line-count budget.
+    fn init_seat_keyboard(seat: &mut Seat<Self>) -> usize {
+        // A keyboard on the seat is required for the on-screen keyboard's
+        // `virtual-keyboard-v1` client (and any future IME) to deliver keys
+        // to the focused surface. Guarded so a keymap-load failure degrades
+        // gracefully. Auto-repeat comes from the persisted `input.key_repeat` preference rather than a hard-coded pair.
+        let (repeat_delay, repeat_rate) =
+            crate::compositor::backend::drm::input_config::InputSettings::load()
+                .key_repeat_params();
+        let keyboard_settings =
+            crate::compositor::backend::drm::input_config::KeyboardSettings::load();
+        // Neither side of a repeat rate/delay can realistically reach i32::MAX; clamp rather than let a pathological config value wrap.
+        let repeat_delay_ms = i32::try_from(repeat_delay.as_millis()).unwrap_or(i32::MAX);
+        let repeat_rate_hz = i32::try_from(repeat_rate).unwrap_or(i32::MAX);
+        match seat.add_keyboard(
+            XkbConfig {
+                layout: &keyboard_settings.layouts,
+                variant: &keyboard_settings.variants,
+                options: keyboard_settings.options.clone(),
+                ..Default::default()
+            },
+            repeat_delay_ms,
+            repeat_rate_hz,
+        ) {
+            Ok(_) => keyboard_settings.active_index,
+            Err(error) => {
+                tracing::warn!(?error, "seat: saved XKB sources failed; falling back to US");
+                if let Err(fallback_error) = seat.add_keyboard(
+                    XkbConfig {
+                        layout: "us",
+                        ..Default::default()
+                    },
+                    repeat_delay_ms,
+                    repeat_rate_hz,
+                ) {
+                    tracing::warn!(
+                        ?fallback_error,
+                        "seat: fallback keymap failed (text injection disabled)"
+                    );
+                }
+                0
+            }
+        }
     }
 
     fn activate_keyboard_source(&mut self, index: usize) {
@@ -555,7 +582,11 @@ impl State {
                 let (delay, rate) =
                     crate::compositor::backend::drm::input_config::InputSettings::load()
                         .key_repeat_params();
-                keyboard.change_repeat_info(rate as i32, delay.as_millis() as i32);
+                // Neither side of a repeat rate/delay can realistically reach i32::MAX; clamp rather than let a pathological config value wrap.
+                keyboard.change_repeat_info(
+                    i32::try_from(rate).unwrap_or(i32::MAX),
+                    i32::try_from(delay.as_millis()).unwrap_or(i32::MAX),
+                );
                 tracing::info!(
                     sources = ?settings.source_ids,
                     active = settings.active_index,
@@ -647,7 +678,7 @@ impl State {
     /// Split out of [`CompositorHandler::commit`] to keep the hook a plain
     /// dispatch. `wl_shm` and dmabuf are both handled by
     /// [`crate::compositor::foreign::ForeignFrameStore::capture_commit`]; a buffer neither path can decode is recorded as an error the tile renders, never a silently stale frame.
-    fn capture_foreign_surface(&mut self, surface: &WlSurface, surface_id: u64) {
+    fn capture_foreign_surface(surface: &WlSurface, surface_id: u64) {
         use crate::compositor::foreign::{CaptureOutcome, store};
         wl_compositor::with_states(surface, |states| {
             let mut attrs = states
@@ -744,6 +775,19 @@ impl State {
     }
 
     /// [`Self::apply_remote_input`], reporting which rule refused the event rather than collapsing every refusal to `false`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Denial`] naming the first rule that refused the event:
+    /// a host override (kill switch, session lock, physical-input
+    /// priority), the share's `read_only` flag, the peer having no share
+    /// for `surface` at all, or the region/z-order/keyboard-scrubber/rate-limit checks in [`RemoteInputFirewall::review`].
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "event is only ever borrowed here, but this is the public review API; dozens \
+                  of call sites in network/input_firewall.rs and compositor/client_input.rs pass \
+                  it by value and are out of scope for this change"
+    )]
     pub fn review_remote_input(
         &mut self,
         peer: MsgPeerId,
@@ -828,112 +872,30 @@ impl State {
     ///
     /// `true` when it reached a live seat device, `false` otherwise (headless, or an unresolvable keysym).
     pub fn apply_remote_desktop_action(&mut self, action: RemoteAction) -> bool {
-        let time = self.start_time.elapsed().as_millis() as u32;
+        // A portal session can run for hours; clamp rather than let the millisecond count wrap.
+        let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
         let serial = self.next_serial();
         match action {
             RemoteAction::PointerMotionAbsolute { x, y, .. } => {
-                let Some(pointer) = self.seat.get_pointer() else {
-                    return false;
-                };
-                pointer.motion(
-                    self,
-                    None,
-                    &MotionEvent {
-                        location: (x, y).into(),
-                        serial,
-                        time,
-                    },
-                );
-                pointer.frame(self);
-                true
+                self.remote_pointer_motion_absolute(x, y, serial, time)
             }
             RemoteAction::PointerMotionRelative { dx, dy } => {
-                let Some(pointer) = self.seat.get_pointer() else {
-                    return false;
-                };
-                let loc = pointer.current_location();
-                pointer.motion(
-                    self,
-                    None,
-                    &MotionEvent {
-                        location: (loc.x + dx, loc.y + dy).into(),
-                        serial,
-                        time,
-                    },
-                );
-                // Also surface the raw delta for clients consuming `wp_relative_pointer` (games, pointer-locked apps).
-                pointer.relative_motion(
-                    self,
-                    None,
-                    &RelativeMotionEvent {
-                        delta: (dx, dy).into(),
-                        delta_unaccel: (dx, dy).into(),
-                        utime: u64::from(time) * 1000,
-                    },
-                );
-                pointer.frame(self);
-                true
+                self.remote_pointer_motion_relative(dx, dy, serial, time)
             }
             RemoteAction::PointerButton { button, pressed } => {
-                let Some(pointer) = self.seat.get_pointer() else {
-                    return false;
-                };
-                let state = if pressed {
-                    smithay::backend::input::ButtonState::Pressed
-                } else {
-                    smithay::backend::input::ButtonState::Released
-                };
-                pointer.button(
-                    self,
-                    &ButtonEvent {
-                        button: button as u32,
-                        state,
-                        serial,
-                        time,
-                    },
-                );
-                pointer.frame(self);
-                true
+                self.remote_pointer_button(button, pressed, serial, time)
             }
-            RemoteAction::PointerAxis { dx, dy } => {
-                let Some(pointer) = self.seat.get_pointer() else {
-                    return false;
-                };
-                let mut frame =
-                    AxisFrame::new(time).source(smithay::backend::input::AxisSource::Continuous);
-                if dx != 0.0 {
-                    frame = frame.value(smithay::backend::input::Axis::Horizontal, dx);
-                }
-                if dy != 0.0 {
-                    frame = frame.value(smithay::backend::input::Axis::Vertical, dy);
-                }
-                pointer.axis(self, frame);
-                pointer.frame(self);
-                true
-            }
+            RemoteAction::PointerAxis { dx, dy } => self.remote_pointer_axis(dx, dy, time),
             RemoteAction::PointerAxisDiscrete { axis, steps } => {
-                let Some(pointer) = self.seat.get_pointer() else {
-                    return false;
-                };
-                let ax = if axis == 1 {
-                    smithay::backend::input::Axis::Horizontal
-                } else {
-                    smithay::backend::input::Axis::Vertical
-                };
-                // One wheel detent == 120 in the `v120` convention; legacy `value` carries a 15px-per-step fallback for pre-v120 clients.
-                let frame = AxisFrame::new(time)
-                    .source(smithay::backend::input::AxisSource::Wheel)
-                    .v120(ax, steps * 120)
-                    .value(ax, f64::from(steps) * 15.0);
-                pointer.axis(self, frame);
-                pointer.frame(self);
-                true
+                self.remote_pointer_axis_discrete(axis, steps, time)
             }
             RemoteAction::KeyboardKeycode { keycode, pressed } => {
-                self.inject_seat_key(keycode as u32, pressed, serial, time)
+                // A negative evdev keycode can only come from a malformed/hostile portal message; treat it as "no such key" rather than wrap.
+                self.inject_seat_key(u32::try_from(keycode).unwrap_or(0), pressed, serial, time)
             }
             RemoteAction::KeyboardKeysym { keysym, pressed } => {
-                if let Some(kc) = self.keysym_to_keycode(keysym as u32) {
+                let keysym = u32::try_from(keysym).unwrap_or(0);
+                if let Some(kc) = self.keysym_to_keycode(keysym) {
                     self.inject_seat_key(kc, pressed, serial, time)
                 } else {
                     tracing::debug!(
@@ -944,6 +906,131 @@ impl State {
                 }
             }
         }
+    }
+
+    fn remote_pointer_motion_absolute(
+        &mut self,
+        x: f64,
+        y: f64,
+        serial: Serial,
+        time: u32,
+    ) -> bool {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return false;
+        };
+        pointer.motion(
+            self,
+            None,
+            &MotionEvent {
+                location: (x, y).into(),
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+        true
+    }
+
+    fn remote_pointer_motion_relative(
+        &mut self,
+        dx: f64,
+        dy: f64,
+        serial: Serial,
+        time: u32,
+    ) -> bool {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return false;
+        };
+        let loc = pointer.current_location();
+        pointer.motion(
+            self,
+            None,
+            &MotionEvent {
+                location: (loc.x + dx, loc.y + dy).into(),
+                serial,
+                time,
+            },
+        );
+        // Also surface the raw delta for clients consuming `wp_relative_pointer` (games, pointer-locked apps).
+        pointer.relative_motion(
+            self,
+            None,
+            &RelativeMotionEvent {
+                delta: (dx, dy).into(),
+                delta_unaccel: (dx, dy).into(),
+                utime: u64::from(time) * 1000,
+            },
+        );
+        pointer.frame(self);
+        true
+    }
+
+    fn remote_pointer_button(
+        &mut self,
+        button: i32,
+        pressed: bool,
+        serial: Serial,
+        time: u32,
+    ) -> bool {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return false;
+        };
+        let state = if pressed {
+            smithay::backend::input::ButtonState::Pressed
+        } else {
+            smithay::backend::input::ButtonState::Released
+        };
+        pointer.button(
+            self,
+            &ButtonEvent {
+                // A negative evdev button code can only come from a malformed/hostile portal message.
+                button: u32::try_from(button).unwrap_or(0),
+                state,
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+        true
+    }
+
+    fn remote_pointer_axis(&mut self, dx: f64, dy: f64, time: u32) -> bool {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return false;
+        };
+        let mut frame =
+            AxisFrame::new(time).source(smithay::backend::input::AxisSource::Continuous);
+        if dx != 0.0 {
+            frame = frame.value(smithay::backend::input::Axis::Horizontal, dx);
+        }
+        if dy != 0.0 {
+            frame = frame.value(smithay::backend::input::Axis::Vertical, dy);
+        }
+        pointer.axis(self, frame);
+        pointer.frame(self);
+        true
+    }
+
+    fn remote_pointer_axis_discrete(&mut self, axis: u32, steps: i32, time: u32) -> bool {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return false;
+        };
+        let ax = if axis == 1 {
+            smithay::backend::input::Axis::Horizontal
+        } else {
+            smithay::backend::input::Axis::Vertical
+        };
+        // One wheel detent == 120 in the `v120` convention; legacy `value`
+        // carries a 15px-per-step fallback for pre-v120 clients.
+        // `steps` rides in from the portal wire, so a hostile/buggy sender
+        // sending a huge value must saturate rather than overflow.
+        let frame = AxisFrame::new(time)
+            .source(smithay::backend::input::AxisSource::Wheel)
+            .v120(ax, steps.saturating_mul(120))
+            .value(ax, f64::from(steps) * 15.0);
+        pointer.axis(self, frame);
+        pointer.frame(self);
+        true
     }
 
     /// Deliver a raw keycode press/release to the seat keyboard. Shared by
@@ -1012,7 +1099,8 @@ impl RemoteInputSink for State {
         // Mirror the event into `last_remote_input` for legacy/test callers and per-user "typing" overlays to find the origin peer id.
         self.last_remote_input = Some((peer, surface, event.clone()));
 
-        let time = self.start_time.elapsed().as_millis() as u32;
+        // A peer's session can run for hours; clamp rather than let the millisecond count wrap.
+        let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
         let serial = self.next_serial();
         match event {
             InputEvent::PointerMotion { x, y } => {
@@ -1234,7 +1322,7 @@ impl CompositorHandler for State {
         let is_foreign_tab =
             tab_binding::group_id_for_surface(&self.workspace_tree, surface_id).is_some();
         if is_foreign_tab || self.osk_surface == Some(surface_id) {
-            self.capture_foreign_surface(surface, surface_id);
+            Self::capture_foreign_surface(surface, surface_id);
         }
         if !is_shared {
             return;
@@ -1718,8 +1806,11 @@ impl SessionLockHandler for State {
         // qOS renders its own lock overlay, so a client lock surface is accepted (no error/hang) but not composited; configured to the output size.
         let (w, h) = self.output_size;
         if w > 0 && h > 0 {
+            // Already checked positive above, so this never hits the fallback in practice.
+            let width = u32::try_from(w).unwrap_or(0);
+            let height = u32::try_from(h).unwrap_or(0);
             surface.with_pending_state(|state| {
-                state.size = Some((w as u32, h as u32).into());
+                state.size = Some((width, height).into());
             });
             surface.send_configure();
         }
@@ -1868,11 +1959,12 @@ mod tick_hook_tests {
     }
 
     fn gradient(w: u32, h: u32) -> Vec<u8> {
-        let mut v = Vec::with_capacity((w * h * 4) as usize);
+        let mut v = Vec::with_capacity(w.saturating_mul(h).saturating_mul(4) as usize);
         for y in 0..h {
             for x in 0..w {
-                v.push(((x * 255) / w.max(1)) as u8);
-                v.push(((y * 255) / h.max(1)) as u8);
+                // `x < w` and `y < h` always hold, so each channel is in 0..=255 and the `u8` conversion never hits its fallback.
+                v.push(u8::try_from(x.saturating_mul(255) / w.max(1)).unwrap_or(u8::MAX));
+                v.push(u8::try_from(y.saturating_mul(255) / h.max(1)).unwrap_or(u8::MAX));
                 v.push(0x80);
                 v.push(0xFF);
             }

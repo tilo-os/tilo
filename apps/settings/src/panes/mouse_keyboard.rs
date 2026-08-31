@@ -115,7 +115,17 @@ impl MouseKeyboardPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mouse = card(
+        crate::widgets::cards(vec![
+            self.pointer_card(),
+            self.advanced_pointer_card(),
+            self.keyboard_card(),
+            self.input_sources_card(),
+            Self::pen_card(),
+        ])
+    }
+
+    fn pointer_card(&self) -> Box<dyn Widget> {
+        card(
             "Pointer",
             rows(vec![
                 setting_row(
@@ -166,9 +176,11 @@ impl MouseKeyboardPane {
                     ),
                 ),
             ]),
-        );
+        )
+    }
 
-        let advanced_pointer = card(
+    fn advanced_pointer_card(&self) -> Box<dyn Widget> {
+        card(
             "Advanced pointer settings",
             rows(vec![
                 setting_row_described(
@@ -200,15 +212,17 @@ impl MouseKeyboardPane {
                     ),
                 ),
             ]),
-        );
+        )
+    }
 
+    fn keyboard_card(&self) -> Box<dyn Widget> {
         let active_sources: Vec<String> = self
             .last
             .keyboard_layouts
             .iter()
             .map(|id| self.source_label(id))
             .collect();
-        let keyboard = card(
+        card(
             "Keyboard",
             rows(vec![
                 choice_row(
@@ -253,8 +267,10 @@ impl MouseKeyboardPane {
                     ),
                 ),
             ]),
-        );
+        )
+    }
 
+    fn input_sources_card(&self) -> Box<dyn Widget> {
         let mut source_rows = Vec::new();
         for (index, id) in self.last.keyboard_layouts.iter().enumerate() {
             let mut row = Row::new()
@@ -319,16 +335,16 @@ impl MouseKeyboardPane {
                 "Up to four input sources can be active at once, matching the interoperable XKB group limit.",
             ));
         }
-        let input_sources = card("Input sources", rows(source_rows));
+        card("Input sources", rows(source_rows))
+    }
 
-        let pen = card(
+    fn pen_card() -> Box<dyn Widget> {
+        card(
             "Pen & tablet",
             rows(vec![caption(
                 "Absolute pen and tablet mapping follows the selected display connector. Controls appear only when a tablet is attached; pressure curves and button mappings are stored per device.",
             )]),
-        );
-
-        crate::widgets::cards(vec![mouse, advanced_pointer, keyboard, input_sources, pen])
+        )
     }
 
     /// Load prefs fresh, apply `f` to the input section, persist.
@@ -371,8 +387,8 @@ pub fn build() -> Box<dyn Widget> {
     Box::new(MouseKeyboardPane::new())
 }
 
-impl Widget for MouseKeyboardPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+impl MouseKeyboardPane {
+    fn seed_if_needed(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.needs_seed {
             let _ = state.put(
                 root,
@@ -433,7 +449,9 @@ impl Widget for MouseKeyboardPane {
             self.last = self.initial.clone();
             self.needs_seed = false;
         }
+    }
 
+    fn sync_simple_fields(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Some(v) = read_f64(state, root, POINTER_SPEED_KEY)
             && (v - self.last.pointer_speed).abs() > 0.001
         {
@@ -492,6 +510,9 @@ impl Widget for MouseKeyboardPane {
                 }
             }
         }
+    }
+
+    fn sync_choice_fields(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Some(label) = read_str(state, root, ACCEL_PROFILE_KEY) {
             let profile = if label == "Flat" { "flat" } else { "adaptive" };
             if profile != self.last.accel_profile {
@@ -523,7 +544,9 @@ impl Widget for MouseKeyboardPane {
             self.persist_keyboard_sources();
             self.structure_dirty = true;
         }
+    }
 
+    fn sync_add_source(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Some(label) = read_str(state, root, ADD_SOURCE_PICKER_KEY) {
             self.pending_add_id = self.source_id(&label);
         }
@@ -543,7 +566,9 @@ impl Widget for MouseKeyboardPane {
             self.persist_keyboard_sources();
             self.structure_dirty = true;
         }
+    }
 
+    fn sync_source_order(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let source_count = self.last.keyboard_layouts.len();
         for index in 0..source_count {
             let up = Self::source_action(index, "up");
@@ -564,21 +589,31 @@ impl Widget for MouseKeyboardPane {
             if source_count > 1 && Self::consume_action(state, root, &remove) {
                 let removed = self.last.keyboard_layouts.remove(index);
                 if removed == self.last.keyboard_layout {
-                    self.last.keyboard_layout = self.last.keyboard_layouts
-                        [index.min(self.last.keyboard_layouts.len() - 1)]
-                    .clone();
-                    let _ = state.put(
-                        root,
-                        LAYOUT_KEY,
-                        self.source_label(&self.last.keyboard_layout),
-                    );
+                    let fallback = index.min(self.last.keyboard_layouts.len().saturating_sub(1));
+                    if let Some(new_active) = self.last.keyboard_layouts.get(fallback) {
+                        self.last.keyboard_layout = new_active.clone();
+                        let _ = state.put(
+                            root,
+                            LAYOUT_KEY,
+                            self.source_label(&self.last.keyboard_layout),
+                        );
+                    }
                 }
                 self.persist_keyboard_sources();
                 self.structure_dirty = true;
                 break;
             }
         }
+    }
+}
 
+impl Widget for MouseKeyboardPane {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.seed_if_needed(state, root);
+        self.sync_simple_fields(state, root);
+        self.sync_choice_fields(state, root);
+        self.sync_add_source(state, root);
+        self.sync_source_order(state, root);
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
         }
@@ -602,13 +637,16 @@ impl Widget for MouseKeyboardPane {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap();
+        // `child` was just created in this same tree, so this call is not
+        // reachable to fail; if it (impossibly) did, wrap it in itself
+        // rather than panic this panic=abort process.
+        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

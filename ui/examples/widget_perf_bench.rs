@@ -148,7 +148,7 @@ fn build_tree() -> Box<dyn Widget> {
                 .push(Box::new(
                     Row::new()
                         .push(Box::new(DatePicker::new(
-                            NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(),
+                            NaiveDate::from_ymd_opt(2026, 5, 22).unwrap_or_default(),
                         )))
                         .push(Box::new(TimePicker::new(14, 30)))
                         .push(Box::new(TimePicker::new(9, 15).with_seconds(45))),
@@ -172,7 +172,7 @@ fn build_tree() -> Box<dyn Widget> {
 fn full_redraw(
     root: &mut Box<dyn Widget>,
     taffy: &mut TaffyTree<()>,
-    node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    node_map: &HashMap<NodeId, *mut dyn Widget>,
     root_node: NodeId,
     text_renderer: &mut TextRenderer,
     presence: &PresenceCtx,
@@ -188,24 +188,30 @@ fn full_redraw(
     // Repeat the App's lambda exactly — taffy borrows the node_map
     // immutably while letting the measure closure mutate the text
     // renderer.
-    let nm = &*node_map;
     let tr = &mut *text_renderer;
-    taffy
-        .compute_layout_with_measure(
-            root_node,
-            Size {
-                width: AvailableSpace::Definite(canvas_w as f32),
-                height: AvailableSpace::Definite(canvas_h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = nm.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    Size::ZERO
-                }
-            },
-        )
-        .unwrap();
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "canvas_w/canvas_h are small fixed pixel dimensions, exact in f32"
+    )]
+    let viewport = Size {
+        width: AvailableSpace::Definite(canvas_w as f32),
+        height: AvailableSpace::Definite(canvas_h as f32),
+    };
+    let layout_result = taffy.compute_layout_with_measure(
+        root_node,
+        viewport,
+        |known, available, node_id, _, _| {
+            if let Some(&ptr) = node_map.get(&node_id) {
+                unsafe { (*ptr).measure(known, available, tr) }
+            } else {
+                Size::ZERO
+            }
+        },
+    );
+    if let Err(e) = layout_result {
+        eprintln!("layout failed: {e}");
+        return;
+    }
     times.compute_us = t_compute.elapsed().as_micros();
 
     let t_apply = Instant::now();
@@ -230,6 +236,11 @@ fn full_redraw(
 }
 
 #[derive(Default, Clone)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the shared `_us` postfix states the unit (microseconds), matching every \
+              other timing field in this file; stripping it would lose that"
+)]
 struct Phases {
     handle_us: u128,
     compute_us: u128,
@@ -281,7 +292,7 @@ pub fn run(_args: &[String]) {
     full_redraw(
         &mut root,
         &mut taffy,
-        &mut node_map,
+        &node_map,
         root_node,
         &mut text_renderer,
         &presence,
@@ -313,98 +324,159 @@ pub fn run(_args: &[String]) {
 
     let mut hist: Vec<Phases> = Vec::with_capacity(iters);
     for _ in 0..iters {
-        // Drive a cursor-moved + mouse-press + mouse-release cycle so
-        // the ToggleGroup latches the click. Each event goes through
-        // `handle_event`, which is what the App calls in the live
-        // window on real input.
-        let mut phases = Phases::default();
-        let t_handle = Instant::now();
-        let mut handled = false;
-        let mut focus_target: Option<NodeId> = None;
-        let move_evt = WindowEvent::CursorMoved {
-            device_id,
-            position: PhysicalPosition::new(click_x, click_y),
-        };
-        root.handle_event(
-            &move_evt,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ObjId::Root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &taffy,
-        );
-        handled = false;
-        let press_evt = WindowEvent::MouseInput {
-            device_id,
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        root.handle_event(
-            &press_evt,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ObjId::Root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &taffy,
-        );
-        handled = false;
-        let release_evt = WindowEvent::MouseInput {
-            device_id,
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        };
-        root.handle_event(
-            &release_evt,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ObjId::Root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &taffy,
-        );
-        phases.handle_us = t_handle.elapsed().as_micros();
-
-        full_redraw(
+        let phases = run_one_cycle(
             &mut root,
             &mut taffy,
-            &mut node_map,
+            &node_map,
             root_node,
+            &mut doc,
             &mut text_renderer,
             &presence,
             &perms,
             &theme,
             &mut scene,
             &mut renderer,
+            (click_x, click_y),
+            &modifiers,
+            device_id,
             canvas_w,
             canvas_h,
-            &mut phases,
         );
-
         hist.push(phases);
     }
 
-    fn stats<F: Fn(&Phases) -> u128>(hist: &[Phases], f: F) -> (u128, u128, u128) {
-        let xs: Vec<u128> = hist.iter().map(&f).collect();
-        let min = xs.iter().min().copied().unwrap_or(0);
-        let max = xs.iter().max().copied().unwrap_or(0);
-        let mean = xs.iter().sum::<u128>() / xs.len().max(1) as u128;
-        (min, mean, max)
-    }
+    print_results(&hist, iters);
+}
 
-    let (hmin, hmean, hmax) = stats(&hist, |p| p.handle_us);
-    let (cmin, cmean, cmax) = stats(&hist, |p| p.compute_us);
-    let (amin, amean, amax) = stats(&hist, |p| p.apply_us);
-    let (dmin, dmean, dmax) = stats(&hist, |p| p.draw_us);
-    let (rmin, rmean, rmax) = stats(&hist, |p| p.render_us);
-    let total_mean = hmean + cmean + amean + dmean + rmean;
+/// One click → redraw cycle: a cursor-moved + mouse-press + mouse-release
+/// sequence through `handle_event` (what the App calls in the live window
+/// on real input), then a full `full_redraw`. Split out of `run` to keep
+/// that under the line cap.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each parameter is a distinct piece of frame state (widget tree, layout \
+              engine, render targets, click coordinates); bundling would trade named \
+              parameters for an equally large ad-hoc struct with no behavioural change"
+)]
+fn run_one_cycle(
+    root: &mut Box<dyn Widget>,
+    taffy: &mut TaffyTree<()>,
+    node_map: &HashMap<NodeId, *mut dyn Widget>,
+    root_node: NodeId,
+    doc: &mut AutoCommit,
+    text_renderer: &mut TextRenderer,
+    presence: &PresenceCtx,
+    perms: &PermissionContext,
+    theme: &Theme,
+    scene: &mut Scene,
+    renderer: &mut OffscreenRenderer,
+    click: (f64, f64),
+    modifiers: &Modifiers,
+    device_id: DeviceId,
+    canvas_w: u32,
+    canvas_h: u32,
+) -> Phases {
+    // Drive a cursor-moved + mouse-press + mouse-release cycle so the
+    // ToggleGroup latches the click.
+    let mut phases = Phases::default();
+    let t_handle = Instant::now();
+    let mut handled = false;
+    let mut focus_target: Option<NodeId> = None;
+    let (click_x, click_y) = click;
+    let move_evt = WindowEvent::CursorMoved {
+        device_id,
+        position: PhysicalPosition::new(click_x, click_y),
+    };
+    root.handle_event(
+        &move_evt,
+        1.0,
+        modifiers,
+        doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        taffy,
+    );
+    handled = false;
+    let press_evt = WindowEvent::MouseInput {
+        device_id,
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    };
+    root.handle_event(
+        &press_evt,
+        1.0,
+        modifiers,
+        doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        taffy,
+    );
+    handled = false;
+    let release_evt = WindowEvent::MouseInput {
+        device_id,
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    };
+    root.handle_event(
+        &release_evt,
+        1.0,
+        modifiers,
+        doc,
+        &automerge::ObjId::Root,
+        &mut handled,
+        &mut focus_target,
+        root_node,
+        taffy,
+    );
+    phases.handle_us = t_handle.elapsed().as_micros();
+
+    full_redraw(
+        root,
+        taffy,
+        node_map,
+        root_node,
+        text_renderer,
+        presence,
+        perms,
+        theme,
+        scene,
+        renderer,
+        canvas_w,
+        canvas_h,
+        &mut phases,
+    );
+    phases
+}
+
+fn stats<F: Fn(&Phases) -> u128>(hist: &[Phases], f: F) -> (u128, u128, u128) {
+    let xs: Vec<u128> = hist.iter().map(&f).collect();
+    let min = xs.iter().min().copied().unwrap_or(0);
+    let max = xs.iter().max().copied().unwrap_or(0);
+    let mean = xs
+        .iter()
+        .sum::<u128>()
+        .checked_div(xs.len().max(1) as u128)
+        .unwrap_or(0);
+    (min, mean, max)
+}
+
+/// Prints the min/mean/max table plus the approximate click-to-pixels
+/// latency. Split out of `run` to keep that under the line cap.
+fn print_results(hist: &[Phases], iters: usize) {
+    let (hmin, hmean, hmax) = stats(hist, |p| p.handle_us);
+    let (cmin, cmean, cmax) = stats(hist, |p| p.compute_us);
+    let (amin, amean, amax) = stats(hist, |p| p.apply_us);
+    let (dmin, dmean, dmax) = stats(hist, |p| p.draw_us);
+    let (rmin, rmean, rmax) = stats(hist, |p| p.render_us);
+    let total_mean = hmean
+        .saturating_add(cmean)
+        .saturating_add(amean)
+        .saturating_add(dmean)
+        .saturating_add(rmean);
 
     println!();
     println!("Steady-state phase timings ({iters} iterations, microseconds):");

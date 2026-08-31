@@ -119,8 +119,8 @@ fn parse_iso6709_coordinate(value: &str) -> Option<(i32, i32)> {
         .char_indices()
         .skip(1)
         .find_map(|(i, c)| matches!(c, '+' | '-').then_some(i))?;
-    let latitude = parse_coordinate_part(&value[..split], true)?;
-    let longitude = parse_coordinate_part(&value[split..], false)?;
+    let latitude = parse_coordinate_part(value.get(..split)?, true)?;
+    let longitude = parse_coordinate_part(value.get(split..)?, false)?;
     Some((
         (latitude * 1_000_000.0).round() as i32,
         (longitude * 1_000_000.0).round() as i32,
@@ -133,15 +133,15 @@ fn parse_coordinate_part(value: &str, latitude: bool) -> Option<f64> {
         b'-' => -1.0,
         _ => return None,
     };
-    let digits = &value[1..];
+    let digits = value.get(1..)?;
     let degree_digits = if latitude { 2 } else { 3 };
     if digits.len() != degree_digits + 2 && digits.len() != degree_digits + 4 {
         return None;
     }
-    let degrees: f64 = digits[..degree_digits].parse().ok()?;
-    let minutes: f64 = digits[degree_digits..degree_digits + 2].parse().ok()?;
+    let degrees: f64 = digits.get(..degree_digits)?.parse().ok()?;
+    let minutes: f64 = digits.get(degree_digits..degree_digits + 2)?.parse().ok()?;
     let seconds: f64 = if digits.len() == degree_digits + 4 {
-        digits[degree_digits + 2..].parse().ok()?
+        digits.get(degree_digits + 2..)?.parse().ok()?
     } else {
         0.0
     };
@@ -194,7 +194,9 @@ impl TimeZoneMap {
     }
 
     fn projected(&self, index: usize) -> Point {
-        let point = &self.points[index];
+        let Some(point) = self.points.get(index) else {
+            return Point::ZERO;
+        };
         let plot = self.plot_rect();
         Point::new(
             plot.x0 + ((point.longitude() + 180.0) / 360.0) * plot.width(),
@@ -232,7 +234,9 @@ impl TimeZoneMap {
             .cursor
             .or_else(|| self.selected_index())
             .unwrap_or_default();
-        let origin = &self.points[current];
+        let Some(origin) = self.points.get(current) else {
+            return;
+        };
         let target = self
             .points
             .iter()
@@ -269,11 +273,11 @@ impl TimeZoneMap {
     }
 
     fn active_label(&self) -> String {
-        let active = self.hover.or(self.cursor.filter(|_| self.focused));
-        active
-            .and_then(|index| self.points.get(index))
-            .map(|point| format!("{} — {}", point.city, point.region))
-            .unwrap_or_else(|| format!("Selected: {}", self.selected))
+        let active = self.hover.or_else(|| self.cursor.filter(|_| self.focused));
+        active.and_then(|index| self.points.get(index)).map_or_else(
+            || format!("Selected: {}", self.selected),
+            |point| format!("{} — {}", point.city, point.region),
+        )
     }
 }
 
@@ -293,6 +297,10 @@ impl Widget for TimeZoneMap {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -308,7 +316,7 @@ impl Widget for TimeZoneMap {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -570,7 +578,16 @@ impl Widget for TimeZoneMap {
 /// forwards to `os_actions::set_ntp` (`timedatectl set-ntp`); tests inject a
 /// recorder so the "auto → set-ntp" path is asserted without shelling out.
 pub trait NtpControl: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns the underlying `timedatectl set-ntp` failure text when the
+    /// automatic-time toggle could not be applied (e.g. denied by policy).
     fn set_ntp(&self, enabled: bool) -> Result<(), String>;
+
+    /// # Errors
+    ///
+    /// Returns the underlying `timedatectl set-timezone` failure text when
+    /// the requested zone could not be applied.
     fn set_timezone(&self, timezone: &str) -> Result<(), String> {
         os_actions::set_timezone(timezone)
     }
@@ -602,6 +619,10 @@ fn persist_time_format(h24: bool) {
 
 /// Read the configured time zone from `/etc/timezone`, falling back to a
 /// sample so the pane is never blank.
+/// Starting zone for [`TimeDatePane::with_ntp`]. Any real zone works so
+/// long as it is fixed; tests pick a different one to observe a change.
+const TEST_TIMEZONE: &str = "Europe/Amsterdam";
+
 fn timezone() -> String {
     for p in ["/etc/timezone"] {
         if let Ok(s) = fs::read_to_string(Path::new(p)) {
@@ -613,10 +634,13 @@ fn timezone() -> String {
     }
     // `/etc/localtime` is usually a symlink into zoneinfo; derive the zone
     // from its target when `/etc/timezone` is absent (common on Fedora).
-    if let Ok(target) = fs::read_link("/etc/localtime")
-        && let Some(idx) = target.to_string_lossy().find("zoneinfo/")
-    {
-        return target.to_string_lossy()[idx + "zoneinfo/".len()..].to_string();
+    if let Ok(target) = fs::read_link("/etc/localtime") {
+        let target = target.to_string_lossy();
+        if let Some(idx) = target.find("zoneinfo/")
+            && let Some(zone) = target.get(idx + "zoneinfo/".len()..)
+        {
+            return zone.to_string();
+        }
     }
     "Europe/Amsterdam".to_string()
 }
@@ -637,6 +661,14 @@ fn read_text_setting(state: &AutoCommit, root: &ObjId, key: &str) -> Option<Stri
 
 /// Time & Date pane. Stateful so it can drive `set-ntp` on toggle and
 /// re-render the live clock when the 24-hour preference flips.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independently-toggleable setting or a one-shot \
+              dirty bit, not a combined state; grouping them would obscure \
+              rather than clarify, and a bitflags/state-machine refactor \
+              would ripple through every read/write site for no behavioural \
+              gain"
+)]
 pub struct TimeDatePane {
     ntp: Arc<dyn NtpControl>,
     persist_format: FormatSink,
@@ -705,7 +737,12 @@ impl TimeDatePane {
     /// clock format starts at 24-hour and persists through a no-op sink, so the
     /// hermetic unit tests neither read the host's locale nor write to disk.
     pub fn with_ntp(ntp: Arc<dyn NtpControl>, initial_auto: bool) -> Self {
-        let timezone = timezone();
+        // A fixed zone rather than the host's. Reading `/etc/timezone` here
+        // made the pane's starting zone whatever the machine happened to be
+        // set to, and a test that switches *to* a zone silently asserts
+        // nothing when the pane already starts there — which is how a runner
+        // set to Etc/UTC failed a test that passed everywhere else.
+        let timezone = TEST_TIMEZONE.to_string();
         Self {
             ntp,
             persist_format: Arc::new(|_| {}),
@@ -925,13 +962,13 @@ impl Widget for TimeDatePane {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap();
+        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

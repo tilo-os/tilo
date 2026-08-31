@@ -125,6 +125,16 @@ impl AudioEngine {
     /// deployment is missing that runtime dependency rather than a condition
     /// callers can route around — this panics with a diagnostic rather than
     /// silently degrading to a stub that would claim to play and never sound.
+    ///
+    /// # Panics
+    ///
+    /// With the `audio` feature: if `playbin` (a core `GStreamer` element from
+    /// `gstreamer1-plugins-base`) fails to construct, meaning that runtime
+    /// dependency is missing from the deployment.
+    #[allow(
+        clippy::expect_used,
+        reason = "a missing playbin means the audio feature's runtime dependency isn't installed; panicking with a diagnostic is the intended behaviour, not a bug to route around (see doc comment above)"
+    )]
     pub fn new() -> Self {
         #[cfg(feature = "audio")]
         let inner = {
@@ -722,9 +732,8 @@ fn spawn_stream_download(
                 ready.store(true, Relaxed);
                 done.store(true, Relaxed);
             };
-            let mut file = match std::fs::File::create(&path) {
-                Ok(f) => f,
-                Err(_) => return finish(),
+            let Ok(mut file) = std::fs::File::create(&path) else {
+                return finish();
             };
             // Primary source (the rangeable proxy). If it yields no bytes at all
             // — a broken/rate-limited public proxy — fall back to the direct
@@ -756,16 +765,15 @@ fn download_into(
     ready: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> u64 {
     use std::sync::atomic::Ordering::Relaxed;
-    let client = match reqwest::blocking::Client::builder()
+    const CHUNK: u64 = 1_048_576;
+    let Ok(client) = reqwest::blocking::Client::builder()
         .user_agent(ua_for_uri(uri))
         .timeout(std::time::Duration::from_secs(30))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return 0,
+    else {
+        return 0;
     };
     let clen = parse_clen(uri);
-    const CHUNK: u64 = 1_048_576;
     let mut off = 0u64;
     loop {
         if let Some(c) = clen

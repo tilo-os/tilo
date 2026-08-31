@@ -75,7 +75,7 @@ fn run() -> Result<(), String> {
     // `paired_devices` does not list — the distinction the "nearby" and
     // "your devices" views rest on.
     let unpaired = found.iter().filter(|d| !d.paired).count();
-    if unpaired + paired.len() != found.len() {
+    if unpaired.saturating_add(paired.len()) != found.len() {
         return Err("the paired and unpaired lists do not partition the device list".into());
     }
     println!(

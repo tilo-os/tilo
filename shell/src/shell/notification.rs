@@ -331,6 +331,20 @@ struct PaintCtx<'a> {
     theme: &'a Theme,
 }
 
+/// Accumulates the y-extent of everything painted into the toast stack, so
+/// the caller can size `self.rect` to exactly what was drawn.
+struct StackBounds {
+    min_y: f64,
+    max_y: f64,
+}
+
+impl StackBounds {
+    fn expand(&mut self, y0: f64, y1: f64) {
+        self.min_y = self.min_y.min(y0);
+        self.max_y = self.max_y.max(y1);
+    }
+}
+
 impl NotificationStack {
     pub fn new(chrome: Chrome) -> Self {
         Self {
@@ -486,8 +500,7 @@ impl NotificationStack {
         now: Instant,
         x0_rest: f64,
         mut y: f64,
-        stack_min_y: &mut f64,
-        stack_max_y: &mut f64,
+        bounds: &mut StackBounds,
     ) {
         for n in snapshot {
             let (alpha, slide_dx) = Self::animation_state(n, now);
@@ -497,8 +510,7 @@ impl NotificationStack {
             }
             let card_x0 = x0_rest + slide_dx;
             let card_rect = Rect::new(card_x0, y, card_x0 + TOAST_WIDTH, y + TOAST_HEIGHT);
-            *stack_min_y = stack_min_y.min(card_rect.y0);
-            *stack_max_y = stack_max_y.max(card_rect.y1);
+            bounds.expand(card_rect.y0, card_rect.y1);
 
             // This stack owns what to show + click routing; the toast
             // widget owns the card's look and hands back the dismiss rect.
@@ -624,29 +636,22 @@ impl Widget for NotificationStack {
             return;
         }
 
-        let mut stack_min_y = f64::INFINITY;
-        let mut stack_max_y = f64::NEG_INFINITY;
+        let mut bounds = StackBounds {
+            min_y: f64::INFINITY,
+            max_y: f64::NEG_INFINITY,
+        };
 
         // Muted, no hit-rect — reads as a status chip, not a dismissible toast.
         if dnd {
             let pill_rect = Self::draw_dnd_pill(&mut ctx, x0_rest, y, radius, history_count);
-            stack_min_y = stack_min_y.min(pill_rect.y0);
-            stack_max_y = stack_max_y.max(pill_rect.y1);
+            bounds.expand(pill_rect.y0, pill_rect.y1);
             y += pill_rect.height() + TOAST_GAP;
         }
 
-        self.draw_toast_cards(
-            &mut ctx,
-            &snapshot,
-            now,
-            x0_rest,
-            y,
-            &mut stack_min_y,
-            &mut stack_max_y,
-        );
+        self.draw_toast_cards(&mut ctx, &snapshot, now, x0_rest, y, &mut bounds);
 
-        self.rect = if stack_min_y.is_finite() {
-            Rect::new(x0_rest, stack_min_y, x0_rest + TOAST_WIDTH, stack_max_y)
+        self.rect = if bounds.min_y.is_finite() {
+            Rect::new(x0_rest, bounds.min_y, x0_rest + TOAST_WIDTH, bounds.max_y)
         } else {
             Rect::ZERO
         };

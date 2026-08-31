@@ -8,11 +8,15 @@ use settings::shots::build_widget_scene;
 use ui::offscreen::OffscreenRenderer;
 use vello::peniko::Color;
 
-fn main() {
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "wide/narrow are small hardcoded example dimensions, nowhere near f32's 24-bit mantissa limit"
+)]
+fn main() -> std::io::Result<()> {
     let out = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "/tmp/settings-panes".to_string());
-    std::fs::create_dir_all(&out).unwrap();
+    std::fs::create_dir_all(&out)?;
 
     let wide = (1200u32, 760u32);
     let narrow = (440u32, 820u32);
@@ -55,4 +59,5 @@ fn main() {
         narrow_r.render_png(&scene, Color::TRANSPARENT, std::path::Path::new(&path));
         println!("wrote {path}");
     }
+    Ok(())
 }

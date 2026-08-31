@@ -307,7 +307,7 @@ impl Harness {
     fn sidebar_row_count(&self) -> usize {
         fn walk(w: &dyn Widget, n: &mut usize) {
             if w.name() == "SidebarRow" {
-                *n += 1;
+                *n = n.saturating_add(1);
             }
             for c in w.children() {
                 walk(c, n);

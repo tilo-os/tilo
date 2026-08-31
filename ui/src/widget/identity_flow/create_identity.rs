@@ -381,7 +381,7 @@ impl Widget for CreateIdentityScreen {
             None,
             &RoundedRect::from_rect(card, radius),
         );
-        self.draw_header(scene, transform, text_renderer, theme, card, card_pad);
+        Self::draw_header(scene, transform, text_renderer, theme, card, card_pad);
         self.draw_name_field(scene, transform, text_renderer, theme, card, card_pad);
         self.draw_accent_tiles(scene, transform, text_renderer, theme, card, card_pad);
         self.draw_submit_button(scene, transform, text_renderer, theme, card, card_pad);
@@ -427,7 +427,6 @@ impl Widget for CreateIdentityScreen {
 impl CreateIdentityScreen {
     /// Title + explanation lines at the top of the card.
     fn draw_header(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,

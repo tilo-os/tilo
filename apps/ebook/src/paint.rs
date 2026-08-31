@@ -4,6 +4,16 @@
 //! always sources it from the OS [`Theme`](ui::theme::Theme) or a reader
 //! palette — nothing here hard-codes a colour.
 
+// Every glyph helper below shares the same tiny geometry vocabulary: `t`
+// (transform), `w` (stroke width), `x`/`y`/`s` (the icon box's origin + side,
+// from `box_of`), plus the odd `r`/`p` local for a circle radius or path —
+// inventing longer names for a coordinate handful reused in nearly every
+// function here would only add noise.
+#![allow(
+    clippy::many_single_char_names,
+    reason = "shared geometry vocabulary (t/w/x/y/s/r/p) across this file's glyph helpers"
+)]
+
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -42,13 +52,16 @@ fn rstroke(w: f64) -> Stroke {
 }
 
 fn poly(scene: &mut Scene, t: Affine, pts: &[Point], color: Color, w: f64) {
-    if pts.len() < 2 {
+    let Some((&first, rest)) = pts.split_first() else {
+        return;
+    };
+    if rest.is_empty() {
         return;
     }
     let mut p = BezPath::new();
-    p.move_to(pts[0]);
-    for q in &pts[1..] {
-        p.line_to(*q);
+    p.move_to(first);
+    for &q in rest {
+        p.line_to(q);
     }
     scene.stroke(&rstroke(w), t, color, None, &p);
 }

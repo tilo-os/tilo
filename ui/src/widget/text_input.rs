@@ -191,6 +191,14 @@ pub(crate) const AUTHOR_MARK: &str = "author";
 /// One drawable multiline-body run: text, line-relative x offset, colour.
 type Seg = (String, f64, vello::peniko::Color);
 
+/// One visible body row's y offset and its drawable segments, as collected
+/// by [`TextInput::collect_ml_body_rows`].
+type RowDraws = Vec<(f64, Vec<Seg>)>;
+
+/// One gutter line number's y offset, label and "is a wrapped continuation"
+/// flag, as collected by [`TextInput::collect_ml_body_rows`].
+type GutterNums = Vec<(f64, String, bool)>;
+
 impl TextInput {
     /// Empty `path` opts the widget out of presence rendering.
     pub fn new(path: Vec<PathSegment>) -> Self {
@@ -445,28 +453,27 @@ impl TextInput {
             let end = consumed.saturating_add(span.text.len());
             if !inserted && at <= end {
                 let local = at.saturating_sub(consumed);
-                match (span.text.get(..local), span.text.get(local..)) {
-                    (Some(before_str), Some(after_str)) => {
-                        if !before_str.is_empty() {
-                            let mut before = span.clone();
-                            before.text = before_str.to_string();
-                            display.push(before);
-                        }
-                        display.push(RichSpan::new(&self.preedit));
-                        if !after_str.is_empty() {
-                            let mut after = span.clone();
-                            after.text = after_str.to_string();
-                            display.push(after);
-                        }
+                if let (Some(before_str), Some(after_str)) =
+                    (span.text.get(..local), span.text.get(local..))
+                {
+                    if !before_str.is_empty() {
+                        let mut before = span.clone();
+                        before.text = before_str.to_string();
+                        display.push(before);
                     }
-                    _ => {
-                        // `local` didn't land on a char boundary — shouldn't
-                        // happen since `cursor_pos` is always kept on one, but
-                        // fall back to keeping the span intact rather than
-                        // panicking on a slice.
-                        display.push(span);
-                        display.push(RichSpan::new(&self.preedit));
+                    display.push(RichSpan::new(&self.preedit));
+                    if !after_str.is_empty() {
+                        let mut after = span.clone();
+                        after.text = after_str.to_string();
+                        display.push(after);
                     }
+                } else {
+                    // `local` didn't land on a char boundary — shouldn't
+                    // happen since `cursor_pos` is always kept on one, but
+                    // fall back to keeping the span intact rather than
+                    // panicking on a slice.
+                    display.push(span);
+                    display.push(RichSpan::new(&self.preedit));
                 }
                 inserted = true;
             } else {
@@ -943,10 +950,7 @@ impl TextInput {
         let mut lines: Vec<VisualLine> = Vec::new();
         let mut y = 0.0f64;
         let mut para_start = 0usize;
-        loop {
-            let Some(tail) = self.text.get(para_start..) else {
-                break;
-            };
+        while let Some(tail) = self.text.get(para_start..) {
             let rel_nl = tail.find('\n');
             let para_end = rel_nl.map_or(self.text.len(), |i| para_start.saturating_add(i));
             self.wrap_paragraph(
@@ -1293,7 +1297,7 @@ impl TextInput {
         theme: &Theme,
         caret_position: TextPosition,
     ) {
-        if !(self.is_focused && !self.disabled) {
+        if !self.is_focused || self.disabled {
             return;
         }
         let Some(layout) = self.single_layout.as_ref() else {
@@ -1415,8 +1419,8 @@ impl TextInput {
     }
 
     /// Adjusts `self.scroll_y` so the caret row stays in view, re-centring
-    /// only on caret movement (matches [`update_ml_scroll`]'s policy for the
-    /// shaped path). [`update_ml_scroll`]: Self::update_ml_scroll
+    /// only on caret movement (matches [`Self::update_ml_scroll`]'s policy
+    /// for the shaped path).
     fn update_ml_body_scroll(&mut self, lh: f64) {
         let (caret_row, _) = self.locate_ml(self.cursor_pos);
         let caret_top = self.lines.get(caret_row).map_or(0.0, |r| r.y);
@@ -1514,9 +1518,9 @@ impl TextInput {
         text_color: vello::peniko::Color,
         theme: &Theme,
         gutter_w: f64,
-    ) -> (Vec<(f64, Vec<Seg>)>, Vec<(f64, String, bool)>) {
-        let mut row_draws: Vec<(f64, Vec<Seg>)> = Vec::new();
-        let mut gutter_nums: Vec<(f64, String, bool)> = Vec::new();
+    ) -> (RowDraws, GutterNums) {
+        let mut row_draws: RowDraws = Vec::new();
+        let mut gutter_nums: GutterNums = Vec::new();
         for (i, ((line, &li), &starts_new_line)) in self
             .lines
             .iter()
@@ -1941,7 +1945,7 @@ impl TextInput {
         let mut sig: u64 = 0xcbf2_9ce4_8422_2325;
         for &b in self.text.as_bytes() {
             sig ^= u64::from(b);
-            sig = sig.wrapping_mul(0x1_0000_0001_b3);
+            sig = sig.wrapping_mul(0x100_0000_01b3);
         }
         sig ^= self.text.len() as u64;
         if sig == self.hl_sig && !self.hl_line_starts.is_empty() {
@@ -2703,8 +2707,8 @@ impl Widget for TextInput {
                 ..
             } => {
                 self.handle_left_click(
-                    element_state,
-                    modifiers,
+                    *element_state,
+                    *modifiers,
                     state,
                     root,
                     focus_target,
@@ -2726,7 +2730,7 @@ impl Widget for TextInput {
                     logical_key,
                     text.as_deref(),
                     *element_state,
-                    modifiers,
+                    *modifiers,
                     state,
                     root,
                     handled,
@@ -3404,7 +3408,7 @@ impl TextInput {
         *handled = true;
     }
 
-    fn click_place_caret(&mut self, pos: usize, affinity: TextAffinity, modifiers: &Modifiers) {
+    fn click_place_caret(&mut self, pos: usize, affinity: TextAffinity, modifiers: Modifiers) {
         let anchor = if modifiers.state().shift_key() {
             let anchor = self.selection_anchor.unwrap_or(self.cursor_pos);
             self.selection_anchor = Some(anchor);
@@ -3442,7 +3446,7 @@ impl TextInput {
 
     fn handle_left_press(
         &mut self,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
         handled: &mut bool,
@@ -3485,8 +3489,8 @@ impl TextInput {
     #[allow(clippy::too_many_arguments, reason = "internal event-dispatch helper")]
     fn handle_left_click(
         &mut self,
-        element_state: &ElementState,
-        modifiers: &Modifiers,
+        element_state: ElementState,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         focus_target: &mut Option<NodeId>,
@@ -3495,7 +3499,7 @@ impl TextInput {
     ) {
         // A left press while the menu is open is routed to it, never to caret placement.
         if self.context_menu.is_open() {
-            if *element_state == ElementState::Pressed {
+            if element_state == ElementState::Pressed {
                 let point = [self.last_mouse_pos.x, self.last_mouse_pos.y];
                 if let Some(idx) = self.context_menu.item_at(point) {
                     let obj_id_opt = self.resolve_text_obj(state, root);
@@ -3750,7 +3754,7 @@ impl TextInput {
         logical_key: &Key,
         text: Option<&str>,
         element_state: ElementState,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
@@ -3790,7 +3794,7 @@ impl TextInput {
                 self.handle_tab_key(shift, state, obj_id, handled);
             }
             Key::Named(NamedKey::Backspace) => {
-                self.handle_backspace_key(ctrl, state, obj_id, handled)
+                self.handle_backspace_key(ctrl, state, obj_id, handled);
             }
             Key::Named(NamedKey::Delete) => self.handle_delete_key(ctrl, state, obj_id, handled),
             Key::Named(NamedKey::Space) => {
@@ -3798,7 +3802,7 @@ impl TextInput {
                 *handled = true;
             }
             Key::Character(c) if ctrl => {
-                self.handle_ctrl_shortcut(c.as_str(), state, obj_id, handled)
+                self.handle_ctrl_shortcut(c.as_str(), state, obj_id, handled);
             }
             _ => {
                 if let Some(t) = text

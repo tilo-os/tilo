@@ -31,6 +31,18 @@ pub fn draw_layout(
     }
 }
 
+/// `transform` shifted to `(x, y)`. Wrapped so the one
+/// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
+/// `Mul` is pure floating-point matrix composition and cannot panic or
+/// overflow.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
 fn draw_box(
     scene: &mut Scene,
     transform: Affine,
@@ -49,7 +61,7 @@ fn draw_box(
                 text,
                 *size,
                 color,
-                transform * Affine::translate((origin_x + math_box.x, origin_y + math_box.y)),
+                translated(transform, origin_x + math_box.x, origin_y + math_box.y),
                 None,
                 TextWeight::Regular,
                 false,
@@ -62,7 +74,7 @@ fn draw_box(
                 text,
                 *size,
                 color,
-                transform * Affine::translate((origin_x + math_box.x, origin_y + math_box.y)),
+                translated(transform, origin_x + math_box.x, origin_y + math_box.y),
                 None,
                 TextWeight::Regular,
                 false,
@@ -226,138 +238,180 @@ fn draw_delimiter(
     origin_y: f64,
     color: Color,
 ) {
-    // Construct delimiters in their final geometry. Stretching ordinary font
-    // glyphs around their baselines produces asymmetric matrix fences and
-    // visibly changes stroke weight as expressions grow.
     let left = origin_x + math_box.x;
     let top = origin_y + math_box.y;
     let right = left + math_box.w;
     let bottom = top + math_box.h;
     let middle = f64::midpoint(top, bottom);
-    let width = math_box.w;
-    let height = math_box.h;
-    let mut path = BezPath::new();
-    match ch {
-        '(' | ')' => {
-            let open = ch == '(';
-            let outer_x = if open {
-                left + width * 0.84
-            } else {
-                left + width * 0.16
-            };
-            let inner_x = if open {
-                left + width * 0.20
-            } else {
-                left + width * 0.80
-            };
-            path.move_to(Point::new(outer_x, top));
-            path.curve_to(
-                Point::new(inner_x, top + height * 0.16),
-                Point::new(inner_x, middle - height * 0.13),
-                Point::new(inner_x, middle),
-            );
-            path.curve_to(
-                Point::new(inner_x, middle + height * 0.13),
-                Point::new(inner_x, top + height * 0.84),
-                Point::new(outer_x, bottom),
-            );
-        }
-        '[' | '⌊' | '⌈' => {
-            let x = left + width * 0.28;
-            path.move_to(Point::new(left + width * 0.82, top));
-            if ch != '⌊' {
-                path.line_to(Point::new(x, top));
-            } else {
-                path.move_to(Point::new(x, top));
-            }
-            path.line_to(Point::new(x, bottom));
-            if ch != '⌈' {
-                path.line_to(Point::new(left + width * 0.82, bottom));
-            }
-        }
-        ']' | '⌋' | '⌉' => {
-            let x = left + width * 0.72;
-            path.move_to(Point::new(left + width * 0.18, top));
-            if ch != '⌋' {
-                path.line_to(Point::new(x, top));
-            } else {
-                path.move_to(Point::new(x, top));
-            }
-            path.line_to(Point::new(x, bottom));
-            if ch != '⌉' {
-                path.line_to(Point::new(left + width * 0.18, bottom));
-            }
-        }
-        '|' | '‖' => {
-            let count = if ch == '‖' { 2 } else { 1 };
-            for index in 0..count {
-                let x = if count == 1 {
-                    f64::midpoint(left, right)
-                } else {
-                    left + width * (0.35 + f64::from(index) * 0.30)
-                };
-                path.move_to(Point::new(x, top));
-                path.line_to(Point::new(x, bottom));
-            }
-        }
-        '⟨' | '<' => {
-            path.move_to(Point::new(right - width * 0.12, top));
-            path.line_to(Point::new(left + width * 0.18, middle));
-            path.line_to(Point::new(right - width * 0.12, bottom));
-        }
-        '⟩' | '>' => {
-            path.move_to(Point::new(left + width * 0.12, top));
-            path.line_to(Point::new(right - width * 0.18, middle));
-            path.line_to(Point::new(left + width * 0.12, bottom));
-        }
-        '{' | '}' => {
-            let open = ch == '{';
-            let outer = if open {
-                right - width * 0.12
-            } else {
-                left + width * 0.12
-            };
-            let inner = if open {
-                left + width * 0.18
-            } else {
-                right - width * 0.18
-            };
-            let cusp = if open {
-                right - width * 0.30
-            } else {
-                left + width * 0.30
-            };
-            path.move_to(Point::new(outer, top));
-            path.curve_to(
-                Point::new(inner, top + height * 0.08),
-                Point::new(inner, middle - height * 0.12),
-                Point::new(cusp, middle),
-            );
-            path.curve_to(
-                Point::new(inner, middle + height * 0.12),
-                Point::new(inner, bottom - height * 0.08),
-                Point::new(outer, bottom),
-            );
-        }
-        '/' | '\\' => {
-            if ch == '/' {
-                path.move_to(Point::new(left + width * 0.12, bottom));
-                path.line_to(Point::new(right - width * 0.12, top));
-            } else {
-                path.move_to(Point::new(left + width * 0.12, top));
-                path.line_to(Point::new(right - width * 0.12, bottom));
-            }
-        }
-        _ => {
-            // Unknown delimiter: a straight rule is preferable to silently
-            // dropping structural punctuation from a valid formula.
-            let x = f64::midpoint(left, right);
-            path.move_to(Point::new(x, top));
-            path.line_to(Point::new(x, bottom));
-        }
-    }
+    let geom = DelimGeom {
+        left,
+        top,
+        right,
+        bottom,
+        middle,
+        width: math_box.w,
+        height: math_box.h,
+    };
+    let path = delimiter_path(ch, geom);
     let stroke = Stroke::new((f64::from(size) * 0.065).max(1.25))
         .with_caps(Cap::Round)
         .with_join(Join::Round);
     scene.stroke(&stroke, transform, color, None, &path);
+}
+
+/// Shared box geometry for a delimiter glyph, passed as one value so the
+/// per-shape path builders below stay well under the argument-count lint.
+#[derive(Clone, Copy)]
+struct DelimGeom {
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+    middle: f64,
+    width: f64,
+    height: f64,
+}
+
+/// Construct delimiters in their final geometry. Stretching ordinary font
+/// glyphs around their baselines produces asymmetric matrix fences and
+/// visibly changes stroke weight as expressions grow.
+fn delimiter_path(ch: char, g: DelimGeom) -> BezPath {
+    let mut path = BezPath::new();
+    match ch {
+        '(' | ')' => paren_path(&mut path, ch == '(', g),
+        '[' | '⌊' | '⌈' => open_bracket_path(&mut path, ch, g),
+        ']' | '⌋' | '⌉' => close_bracket_path(&mut path, ch, g),
+        '|' | '‖' => bar_path(&mut path, ch, g),
+        '⟨' | '<' => angle_open_path(&mut path, g),
+        '⟩' | '>' => angle_close_path(&mut path, g),
+        '{' | '}' => brace_path(&mut path, ch, g),
+        '/' | '\\' => slash_path(&mut path, ch, g),
+        _ => default_path(&mut path, g),
+    }
+    path
+}
+
+fn paren_path(path: &mut BezPath, open: bool, g: DelimGeom) {
+    let outer_x = if open {
+        g.left + g.width * 0.84
+    } else {
+        g.left + g.width * 0.16
+    };
+    let inner_x = if open {
+        g.left + g.width * 0.20
+    } else {
+        g.left + g.width * 0.80
+    };
+    path.move_to(Point::new(outer_x, g.top));
+    path.curve_to(
+        Point::new(inner_x, g.top + g.height * 0.16),
+        Point::new(inner_x, g.middle - g.height * 0.13),
+        Point::new(inner_x, g.middle),
+    );
+    path.curve_to(
+        Point::new(inner_x, g.middle + g.height * 0.13),
+        Point::new(inner_x, g.top + g.height * 0.84),
+        Point::new(outer_x, g.bottom),
+    );
+}
+
+fn open_bracket_path(path: &mut BezPath, ch: char, g: DelimGeom) {
+    let x = g.left + g.width * 0.28;
+    path.move_to(Point::new(g.left + g.width * 0.82, g.top));
+    if ch == '⌊' {
+        path.move_to(Point::new(x, g.top));
+    } else {
+        path.line_to(Point::new(x, g.top));
+    }
+    path.line_to(Point::new(x, g.bottom));
+    if ch != '⌈' {
+        path.line_to(Point::new(g.left + g.width * 0.82, g.bottom));
+    }
+}
+
+fn close_bracket_path(path: &mut BezPath, ch: char, g: DelimGeom) {
+    let x = g.left + g.width * 0.72;
+    path.move_to(Point::new(g.left + g.width * 0.18, g.top));
+    if ch == '⌋' {
+        path.move_to(Point::new(x, g.top));
+    } else {
+        path.line_to(Point::new(x, g.top));
+    }
+    path.line_to(Point::new(x, g.bottom));
+    if ch != '⌉' {
+        path.line_to(Point::new(g.left + g.width * 0.18, g.bottom));
+    }
+}
+
+fn bar_path(path: &mut BezPath, ch: char, g: DelimGeom) {
+    let count = if ch == '‖' { 2 } else { 1 };
+    for index in 0..count {
+        let x = if count == 1 {
+            f64::midpoint(g.left, g.right)
+        } else {
+            g.left + g.width * (0.35 + f64::from(index) * 0.30)
+        };
+        path.move_to(Point::new(x, g.top));
+        path.line_to(Point::new(x, g.bottom));
+    }
+}
+
+fn angle_open_path(path: &mut BezPath, g: DelimGeom) {
+    path.move_to(Point::new(g.right - g.width * 0.12, g.top));
+    path.line_to(Point::new(g.left + g.width * 0.18, g.middle));
+    path.line_to(Point::new(g.right - g.width * 0.12, g.bottom));
+}
+
+fn angle_close_path(path: &mut BezPath, g: DelimGeom) {
+    path.move_to(Point::new(g.left + g.width * 0.12, g.top));
+    path.line_to(Point::new(g.right - g.width * 0.18, g.middle));
+    path.line_to(Point::new(g.left + g.width * 0.12, g.bottom));
+}
+
+fn brace_path(path: &mut BezPath, ch: char, g: DelimGeom) {
+    let open = ch == '{';
+    let outer = if open {
+        g.right - g.width * 0.12
+    } else {
+        g.left + g.width * 0.12
+    };
+    let inner = if open {
+        g.left + g.width * 0.18
+    } else {
+        g.right - g.width * 0.18
+    };
+    let cusp = if open {
+        g.right - g.width * 0.30
+    } else {
+        g.left + g.width * 0.30
+    };
+    path.move_to(Point::new(outer, g.top));
+    path.curve_to(
+        Point::new(inner, g.top + g.height * 0.08),
+        Point::new(inner, g.middle - g.height * 0.12),
+        Point::new(cusp, g.middle),
+    );
+    path.curve_to(
+        Point::new(inner, g.middle + g.height * 0.12),
+        Point::new(inner, g.bottom - g.height * 0.08),
+        Point::new(outer, g.bottom),
+    );
+}
+
+fn slash_path(path: &mut BezPath, ch: char, g: DelimGeom) {
+    if ch == '/' {
+        path.move_to(Point::new(g.left + g.width * 0.12, g.bottom));
+        path.line_to(Point::new(g.right - g.width * 0.12, g.top));
+    } else {
+        path.move_to(Point::new(g.left + g.width * 0.12, g.top));
+        path.line_to(Point::new(g.right - g.width * 0.12, g.bottom));
+    }
+}
+
+/// Unknown delimiter: a straight rule is preferable to silently dropping
+/// structural punctuation from a valid formula.
+fn default_path(path: &mut BezPath, g: DelimGeom) {
+    let x = f64::midpoint(g.left, g.right);
+    path.move_to(Point::new(x, g.top));
+    path.line_to(Point::new(x, g.bottom));
 }
