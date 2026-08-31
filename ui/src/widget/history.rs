@@ -389,7 +389,7 @@ mod tests {
             "2 h ago"
         );
         assert_eq!(
-            format_relative_time(base, base + Duration::from_secs(259200)),
+            format_relative_time(base, base + Duration::from_secs(259_200)),
             "3 d ago"
         );
     }

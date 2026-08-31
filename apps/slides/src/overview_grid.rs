@@ -9,7 +9,7 @@ use ui::theme::Theme;
 
 use crate::assets::ImageStore;
 use crate::chrome;
-use crate::model::{Deck, Palette, SLIDE_H, SLIDE_W};
+use crate::model::{Deck, Palette, SLIDE_H, SLIDE_W, Slide};
 use crate::render;
 
 pub(crate) struct OverviewGrid {
@@ -134,52 +134,8 @@ impl OverviewGrid {
             let Some(slide) = deck.slides.get(index) else {
                 continue;
             };
-            chrome::fill_rrect(
-                scene,
-                transform,
-                (rect + vello::kurbo::Vec2::new(0.0, 4.0)).inflate(1.0, 1.0),
-                8.0,
-                render::with_alpha(Color::BLACK, 60),
-            );
-            render::draw_slide(
-                scene, transform, text, theme, palette, slide, rect, 8.0, images,
-            );
-            chrome::stroke_rrect(
-                scene,
-                transform,
-                rect,
-                8.0,
-                if index == current {
-                    palette.accent
-                } else {
-                    render::with_alpha(colors.text_primary, 30)
-                },
-                if index == current { 2.5 } else { 1.0 },
-            );
-            let number = format!("{}", index + 1);
-            let y = rect.y1 + 7.0;
-            text.draw_text_weighted(
-                scene,
-                &number,
-                12.0,
-                if index == current {
-                    palette.accent
-                } else {
-                    colors.text_primary
-                },
-                transform * Affine::translate((rect.x0 + 2.0, y)),
-                None,
-                TextWeight::Bold,
-            );
-            let (number_w, _) = text.measure_weighted(&number, 12.0, None, TextWeight::Bold);
-            text.draw_text_weighted(
-                scene,
-                slide.layout.label(),
-                11.5,
-                colors.text_dim,
-                transform * Affine::translate((rect.x0 + f64::from(number_w) + 12.0, y + 0.5)),
-                None,
-                TextWeight::Regular,
+            Self::draw_thumb(
+                scene, transform, text, theme, palette, images, current, index, rect, slide,
             );
         }
         scene.pop_layer();
@@ -199,6 +155,75 @@ impl OverviewGrid {
                 render::with_alpha(colors.text_primary, 90),
             );
         }
+    }
+
+    /// One overview-grid thumbnail: drop shadow, the slide render, the
+    /// current-slide accent border, and its index/layout-label caption.
+    /// Part of [`Self::draw`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_thumb(
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        palette: &Palette,
+        images: &ImageStore,
+        current: usize,
+        index: usize,
+        rect: Rect,
+        slide: &Slide,
+    ) {
+        let colors = &theme.tokens.colors;
+        chrome::fill_rrect(
+            scene,
+            transform,
+            (rect + vello::kurbo::Vec2::new(0.0, 4.0)).inflate(1.0, 1.0),
+            8.0,
+            render::with_alpha(Color::BLACK, 60),
+        );
+        render::draw_slide(
+            scene, transform, text, theme, palette, slide, rect, 8.0, images,
+        );
+        chrome::stroke_rrect(
+            scene,
+            transform,
+            rect,
+            8.0,
+            if index == current {
+                palette.accent
+            } else {
+                render::with_alpha(colors.text_primary, 30)
+            },
+            if index == current { 2.5 } else { 1.0 },
+        );
+        let number = format!("{}", index + 1);
+        let y = rect.y1 + 7.0;
+        text.draw_text_weighted(
+            scene,
+            &number,
+            12.0,
+            if index == current {
+                palette.accent
+            } else {
+                colors.text_primary
+            },
+            transform * Affine::translate((rect.x0 + 2.0, y)),
+            None,
+            TextWeight::Bold,
+        );
+        let (number_w, _) = text.measure_weighted(&number, 12.0, None, TextWeight::Bold);
+        text.draw_text_weighted(
+            scene,
+            slide.layout.label(),
+            11.5,
+            colors.text_dim,
+            transform * Affine::translate((rect.x0 + f64::from(number_w) + 12.0, y + 0.5)),
+            None,
+            TextWeight::Regular,
+        );
     }
 }
 

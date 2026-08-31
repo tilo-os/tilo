@@ -437,8 +437,10 @@ mod tests {
     #[test]
     fn press_prefers_the_marker_drawn_in_the_pointer_zone() {
         let model = model();
-        let mut ruler = Ruler::default();
-        ruler.rect = model.band;
+        let mut ruler = Ruler {
+            rect: model.band,
+            ..Ruler::default()
+        };
         let x = Ruler::markers(&model)
             .into_iter()
             .find(|(m, _)| *m == RulerMarker::IndentLeft)
@@ -451,8 +453,10 @@ mod tests {
     #[test]
     fn dragging_a_tab_below_the_band_becomes_a_remove_commit() {
         let model = model();
-        let mut ruler = Ruler::default();
-        ruler.rect = model.band;
+        let mut ruler = Ruler {
+            rect: model.band,
+            ..Ruler::default()
+        };
         let x = Ruler::markers(&model)
             .into_iter()
             .find(|(m, _)| *m == RulerMarker::Tab(0))
@@ -473,8 +477,10 @@ mod tests {
     #[test]
     fn empty_space_inside_the_text_span_adds_a_tab() {
         let model = model();
-        let mut ruler = Ruler::default();
-        ruler.rect = model.band;
+        let mut ruler = Ruler {
+            rect: model.band,
+            ..Ruler::default()
+        };
         let point = Point::new(model.left_text_x() + 300.0, model.band.center().y);
         assert_eq!(ruler.press(point, &model), Some(RulerEffect::AddTab(300.0)));
         assert!(!ruler.is_dragging());

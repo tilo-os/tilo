@@ -1146,7 +1146,7 @@ impl ComposeWindow {
                     path,
                     node_id,
                     taffy,
-                )
+                );
             }
             ComposeHit::Body => self.dispatch_body_press(
                 pt,

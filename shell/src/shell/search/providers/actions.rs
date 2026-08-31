@@ -8,6 +8,7 @@
 //! from the chrome and has to be supplied and declared, so enumeration
 //! tells a caller what to pass rather than leaving it to be inferred.
 
+use std::fmt::Write as _;
 use std::rc::Rc;
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
@@ -69,6 +70,12 @@ const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the read guard's last use is the tuple that ends the block it's scoped to; \
+              there is nothing after it to hoist the drop past without cloning the \
+              workspace out for no real gain"
+)]
 fn active_identity(
     state: &ChromeState,
 ) -> Result<
@@ -99,6 +106,49 @@ fn active_identity(
         .map_err(|error| ActionError::Refused(error.to_string()))?
         .ok_or_else(|| ActionError::Refused("no identity selected".into()))?;
     Ok((room, profile))
+}
+
+/// The active workspace's id, room and the caller's own actor id, refusing
+/// up front if the caller may not administer it — shared by `identity.connect`
+/// and `identity.select`, which otherwise change identity via identical
+/// pre-checks. One lock scope reads and destructures the workspace
+/// (`WorkspaceId` and `RoomId` are `Copy`; `actor` is cloned out), so the
+/// tree's read guard is already gone before the caller does anything else.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the read guard's last use is the tuple that ends the block it's scoped to; \
+              there is nothing after it to hoist the drop past without cloning the \
+              workspace out for no real gain"
+)]
+fn active_admin_workspace(
+    state: &ChromeState,
+) -> Result<
+    (
+        crate::shell::state::WorkspaceId,
+        crate::shell::state::RoomId,
+        String,
+    ),
+    ActionError,
+> {
+    let (workspace_id, room, actor, may_administer) = {
+        let tree = state.tree();
+        let Some(workspace) = tree.active_workspace() else {
+            return Err(ActionError::Refused("no active workspace".into()));
+        };
+        let actor = state.local_user_for_room(&workspace.room);
+        (
+            workspace.id,
+            workspace.room,
+            actor.clone(),
+            workspace.may_administer(&actor),
+        )
+    };
+    if !may_administer {
+        return Err(ActionError::Refused(format!(
+            "{actor} may not change this workspace's identity"
+        )));
+    }
+    Ok((workspace_id, room, actor))
 }
 
 /// Current wall-clock time as nanoseconds since the epoch, clamped to
@@ -238,24 +288,7 @@ impl Action {
                 if path.is_empty() {
                     return Err(ActionError::Refused("identity path is required".into()));
                 }
-                let (workspace_id, room, actor, may_administer) = {
-                    let tree = st.tree();
-                    let Some(workspace) = tree.active_workspace() else {
-                        return Err(ActionError::Refused("no active workspace".into()));
-                    };
-                    let actor = st.local_user_for_room(&workspace.room);
-                    (
-                        workspace.id,
-                        workspace.room,
-                        actor.clone(),
-                        workspace.may_administer(&actor),
-                    )
-                };
-                if !may_administer {
-                    return Err(ActionError::Refused(format!(
-                        "{actor} may not change this workspace's identity"
-                    )));
-                }
+                let (workspace_id, room, actor) = active_admin_workspace(st)?;
                 let store = crate::identity_registry::IdentityRegistryStore::from_env()
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
                 let profile = store
@@ -270,9 +303,9 @@ impl Action {
                 crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), identity_paths)
                     .register_current_device(&profile.id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
-                {
+                let delegated = {
                     let mut tree = st.tree_mut();
-                    let delegated = tree.grant_in_workspace(
+                    tree.grant_in_workspace(
                         workspace_id,
                         &actor,
                         crate::shell::state::CapOverride::grant(
@@ -280,13 +313,13 @@ impl Action {
                             crate::shell::state::Scope::Workspace,
                             crate::shell::state::Verb::Admin,
                         ),
-                    );
-                    if delegated.is_none() {
-                        return Err(ActionError::Refused(
-                            "could not delegate workspace administration to the imported identity"
-                                .into(),
-                        ));
-                    }
+                    )
+                };
+                if delegated.is_none() {
+                    return Err(ActionError::Refused(
+                        "could not delegate workspace administration to the imported identity"
+                            .into(),
+                    ));
                 }
                 store
                     .bind_workspace(&room.to_string(), &profile.id)
@@ -303,24 +336,7 @@ impl Action {
             params: IDENTITY_SELECT_PARAMS,
             apply: |st, args| {
                 let identity_id = args.text("id").unwrap_or_default().trim();
-                let (workspace_id, room, actor, may_administer) = {
-                    let tree = st.tree();
-                    let Some(workspace) = tree.active_workspace() else {
-                        return Err(ActionError::Refused("no active workspace".into()));
-                    };
-                    let actor = st.local_user_for_room(&workspace.room);
-                    (
-                        workspace.id,
-                        workspace.room,
-                        actor.clone(),
-                        workspace.may_administer(&actor),
-                    )
-                };
-                if !may_administer {
-                    return Err(ActionError::Refused(format!(
-                        "{actor} may not change this workspace's identity"
-                    )));
-                }
+                let (workspace_id, room, actor) = active_admin_workspace(st)?;
                 let store = crate::identity_registry::IdentityRegistryStore::from_env()
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
                 let registry = store
@@ -369,11 +385,13 @@ impl Action {
                     .certificates
                     .iter()
                     .map(|cert| {
-                        let fingerprint = cert
-                            .device_public_key
-                            .iter()
-                            .map(|byte| format!("{byte:02x}"))
-                            .collect::<String>();
+                        let fingerprint = cert.device_public_key.iter().fold(
+                            String::new(),
+                            |mut fingerprint, byte| {
+                                let _ = write!(fingerprint, "{byte:02x}");
+                                fingerprint
+                            },
+                        );
                         format!(
                             "{}  {}  {}",
                             cert.device_label,

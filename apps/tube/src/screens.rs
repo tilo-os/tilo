@@ -2333,7 +2333,8 @@ mod search_screen_tests {
     /// `video_card` image path Home/Trending use.
     #[test]
     fn search_result_row_paints_the_fetched_thumbnail() {
-        let store = ui::ImageStore::new(Arc::new(|_u: &str| Some(px_png())));
+        let fetcher: ui::image_store::Fetcher = Arc::new(|_u: &str| Some(px_png()));
+        let store = ui::ImageStore::new(&fetcher);
 
         let mut model = crate::sample::model();
         let mut v = model.videos[0].clone();

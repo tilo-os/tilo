@@ -2361,7 +2361,7 @@ fn report_account_sync(
 /// The shared image store used for sender avatars in the **live** app: fetches
 /// real Gravatar images over HTTP when built with `live` (the default).
 pub fn avatar_store() -> ImageStore {
-    ImageStore::new(avatar_fetcher())
+    ImageStore::new(&avatar_fetcher())
 }
 
 /// The avatar store for the hermetic paths — `--shots`, the sample corpus, and
@@ -2371,7 +2371,7 @@ pub fn avatar_store() -> ImageStore {
 /// is the runtime half of "features compile the live code in; the runtime mode
 /// decides live vs sample".
 pub fn avatar_store_offline() -> ImageStore {
-    ImageStore::new(noop_avatar_fetcher())
+    ImageStore::new(&noop_avatar_fetcher())
 }
 
 /// A fetcher that never touches the network — the hermetic default.

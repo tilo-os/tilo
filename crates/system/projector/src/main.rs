@@ -1544,6 +1544,12 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::used_underscore_binding,
+        reason = "zbus::interface's generated dispatcher binds start_find's _options parameter \
+                  by name in dispatch code that lands in this module but outside the annotated \
+                  impl, so neither an impl- nor fn-level allow reaches it; the mock ignores it"
+    )]
     use super::*;
     use fcast_sender_sdk::IpAddr;
     use mdns_sd::{ServiceDaemon, ServiceInfo};
@@ -1586,10 +1592,6 @@ mod tests {
     #[allow(
         clippy::unused_self,
         reason = "zbus::interface dispatches by instance method, even for a stateless mock reply"
-    )]
-    #[allow(
-        clippy::used_underscore_binding,
-        reason = "zbus::interface's generated dispatcher binds start_find's _options parameter by name even though the mock ignores it"
     )]
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Device.WifiP2P")]
     impl SimulatedP2pDevice {

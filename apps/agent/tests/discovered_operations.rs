@@ -320,7 +320,7 @@ fn word_processor_and_photos_permissions() -> ui::permissions::PermissionContext
 fn drive_photo_peer(
     mut photo_peer: UnixStream,
     mut photo_replica: AutoCommit,
-    photo_ready_tx: std::sync::mpsc::SyncSender<()>,
+    photo_ready_tx: &std::sync::mpsc::SyncSender<()>,
 ) -> AutoCommit {
     photo_peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -452,7 +452,7 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
     // for it.
     let (photo_ready_tx, photo_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let photo_thread =
-        std::thread::spawn(move || drive_photo_peer(photo_peer, photo_replica, photo_ready_tx));
+        std::thread::spawn(move || drive_photo_peer(photo_peer, photo_replica, &photo_ready_tx));
 
     let (wp_replica, done) = drive_word_processor_peer(wp_peer, wp_replica, &photo_ready_rx);
 

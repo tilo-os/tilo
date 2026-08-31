@@ -77,6 +77,11 @@ impl DrillInList {
         self.back.center()
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, shared verbatim by every \
+                  drill-in pane (wifi/bluetooth/vpn) that opens with this header"
+    )]
     pub fn draw_header(
         &self,
         scene: &mut Scene,
@@ -143,6 +148,11 @@ impl DrillInList {
 
     /// Shared first-row/hover treatment and label placement for discovery
     /// lists. Returns the leading glyph box for the owning pane to paint.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, shared verbatim by every \
+                  drill-in pane (wifi/bluetooth/vpn) that paints rows with it"
+    )]
     pub fn draw_discovery_row(
         scene: &mut Scene,
         transform: Affine,

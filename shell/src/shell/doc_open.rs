@@ -180,16 +180,16 @@ pub fn open_in_group(path: &Path, chrome: &Chrome, group: GroupId) -> Result<Ope
     open(path, chrome, Some(Placement::TabIn(group)))
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "guard's only use is the borrow passed into resolve_for, released \
+              immediately after; nothing to tighten without cloning workspace policy"
+)]
 fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Opened, OpenError> {
     // The guard feeds `resolve_for`'s `workspace_defaults` borrow directly
     // and the block ends the moment that call returns; cloning the policy
     // map out just to drop the guard a statement earlier would cost more
     // than the (synchronous, non-blocking) call it's guarding against.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "guard's only use is the borrow passed into resolve_for, released \
-                  immediately after; nothing to tighten without cloning workspace policy"
-    )]
     let target = {
         let state = chrome.borrow();
         let tree = state.tree();

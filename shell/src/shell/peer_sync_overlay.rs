@@ -458,6 +458,12 @@ impl PeerSyncOverlay {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, matching draw_body's own \
+                  allow just above in this impl; a context struct would only move the \
+                  count rather than shrink it for a single call site"
+    )]
     fn draw_buttons(
         &mut self,
         scene: &mut Scene,

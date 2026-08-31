@@ -50,6 +50,11 @@ impl QuickSettingsWifiPane {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one positional argument per painted value, matching the sibling \
+                  bluetooth/vpn drill-in panes this is called alongside"
+    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -171,8 +176,10 @@ mod tests {
     fn protected_and_open_rows_take_distinct_paths() {
         let mut pane = QuickSettingsWifiPane::default();
         let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut state = QuickSettingsState::default();
-        state.wifi_networks = vec![network("Cafe", true), network("Open", false)];
+        let mut state = QuickSettingsState {
+            wifi_networks: vec![network("Cafe", true), network("Open", false)],
+            ..Default::default()
+        };
         let actions = RecordingActions::default();
         pane.list.layout(panel, 2);
         assert_eq!(
@@ -192,8 +199,10 @@ mod tests {
     fn back_and_empty_space_never_join_a_network() {
         let mut pane = QuickSettingsWifiPane::default();
         let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut state = QuickSettingsState::default();
-        state.wifi_networks = vec![network("Cafe", true)];
+        let mut state = QuickSettingsState {
+            wifi_networks: vec![network("Cafe", true)],
+            ..Default::default()
+        };
         let actions = RecordingActions::default();
         pane.list.layout(panel, 1);
         assert_eq!(

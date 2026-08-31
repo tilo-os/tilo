@@ -330,11 +330,13 @@ impl DeviceFleetStore {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
+    // `char::from_digit` with radix 16 only returns `None` for digits >= 16;
+    // both nibbles are masked to 0..=15, so the fallback never triggers —
+    // it exists only to avoid indexing a lookup table.
     let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
+        out.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+        out.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
     }
     out
 }

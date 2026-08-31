@@ -169,18 +169,20 @@ impl Sidebar {
 
         let pad = 18.0;
         let mut y = rect.y0 + 22.0;
-        self.draw_chrome_collapse_or_dismiss(
+        Self::draw_chrome_collapse_or_dismiss(
             scene, transform, theme, rect, window, overlay, pointer, pad, y, &mut hits,
         );
         y += 30.0;
 
         if overlay && !switcher_in_topbar {
-            y += self.draw_chrome_view_switcher(
+            y += Self::draw_chrome_view_switcher(
                 scene, transform, text, theme, rect, view, pointer, y, &mut hits,
             );
         }
 
-        self.draw_chrome_footer_buttons(scene, transform, text, theme, rect, y, pointer, &mut hits);
+        Self::draw_chrome_footer_buttons(
+            scene, transform, text, theme, rect, y, pointer, &mut hits,
+        );
 
         Some(Chrome {
             body_y: y + 46.0,
@@ -197,7 +199,6 @@ impl Sidebar {
         reason = "internal draw-step split of an over-length function"
     )]
     fn draw_chrome_collapse_or_dismiss(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -234,7 +235,6 @@ impl Sidebar {
         reason = "internal draw-step split of an over-length function"
     )]
     fn draw_chrome_view_switcher(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
@@ -307,7 +307,6 @@ impl Sidebar {
         reason = "internal draw-step split of an over-length function"
     )]
     fn draw_chrome_footer_buttons(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
