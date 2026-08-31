@@ -45,9 +45,40 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingIo {
+    OpenTyp,
+    SaveTyp,
+    ExportPdf,
+}
+
+fn typ_filter() -> FileFilter {
+    FileFilter::new("Typst source").glob("*.typ")
+}
+
+fn typ_open_request() -> PickRequest {
+    PickRequest::open("Open a Typst file", "Open")
+        .thread_name("typst-portal-open")
+        .filter(typ_filter())
+        .all_files()
+}
+
+fn typ_save_request(suggested: &str) -> PickRequest {
+    PickRequest::save("Save Typst file", "Save", suggested)
+        .thread_name("typst-portal-save")
+        .filter(typ_filter())
+}
+
+fn pdf_export_request(suggested: &str) -> PickRequest {
+    PickRequest::save("Export PDF", "Export", suggested)
+        .thread_name("typst-portal-pdf")
+        .filter(FileFilter::new("PDF document").glob("*.pdf"))
+}
 use ui::widget::Widget;
 
 use crate::compile::{self, CompileOutput, WorldParts};
@@ -148,7 +179,7 @@ pub struct TypstApp {
     /// An in-flight host file dialog: the operation and the channel its chosen
     /// path arrives on, drained once per frame in [`Self::drain_io`]. `None`
     /// when no Open / Save / Export chooser is open.
-    io: Option<(crate::portal::PendingIo, crate::portal::PortalChannel)>,
+    io: Option<(PendingIo, PortalChannel)>,
     /// Whether the first (synchronous) compile + worker spawn has happened.
     initialized: bool,
     /// Last source text we highlighted / compiled — drives change detection.
@@ -506,10 +537,7 @@ impl TypstApp {
             .documents
             .get(self.current)
             .map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
-        self.io = Some((
-            crate::portal::PendingIo::SaveTyp,
-            crate::portal::request_save(&name),
-        ));
+        self.io = Some((PendingIo::SaveTyp, typ_save_request(&name).send()));
         self.set_flash("Choose where to save…".into());
     }
 
@@ -550,10 +578,7 @@ impl TypstApp {
             .with_extension("pdf")
             .to_string_lossy()
             .to_string();
-        self.io = Some((
-            crate::portal::PendingIo::ExportPdf,
-            crate::portal::request_export_pdf(&pdf_name),
-        ));
+        self.io = Some((PendingIo::ExportPdf, pdf_export_request(&pdf_name).send()));
         self.set_flash("Choose where to export the PDF…".into());
     }
 
@@ -606,10 +631,7 @@ impl TypstApp {
         if self.io.is_some() {
             return;
         }
-        self.io = Some((
-            crate::portal::PendingIo::OpenTyp,
-            crate::portal::request_open(),
-        ));
+        self.io = Some((PendingIo::OpenTyp, typ_open_request().send()));
         self.set_flash("Choose a .typ file to open…".into());
     }
 
@@ -653,7 +675,6 @@ impl TypstApp {
     /// the last frame, and run it against the chosen path. The UI thread never
     /// blocks: the portal round-trip lives on its own worker.
     fn drain_io(&mut self, doc: &mut AutoCommit) {
-        use crate::portal::{PendingIo, PortalOutcome};
         let Some((op, rx)) = &self.io else { return };
         let op = *op;
         match rx.try_recv() {
@@ -2604,7 +2625,6 @@ mod tests {
     /// path.
     #[test]
     fn portal_open_then_save_round_trips_a_real_file() {
-        use crate::portal::{PendingIo, PortalOutcome};
         let (mut app, mut doc) = fresh();
         let dir = unique_dir("portal");
         std::fs::create_dir_all(&dir).unwrap();
@@ -2614,7 +2634,7 @@ mod tests {
         // Inject an Open outcome and sync: the file loads into the CRDT source.
         app.io = Some((
             PendingIo::OpenTyp,
-            crate::portal::inject_for_test(PortalOutcome::Opened(src_path)),
+            ui::portal::inject_for_test(PortalOutcome::Opened(src_path)),
         ));
         app.sync(&mut doc, &ROOT);
         assert!(
@@ -2631,7 +2651,7 @@ mod tests {
         let out_path = dir.join("saved.typ");
         app.io = Some((
             PendingIo::SaveTyp,
-            crate::portal::inject_for_test(PortalOutcome::Opened(out_path.clone())),
+            ui::portal::inject_for_test(PortalOutcome::Opened(out_path.clone())),
         ));
         app.sync(&mut doc, &ROOT);
         let written = std::fs::read_to_string(&out_path).expect("the save wrote the file");
@@ -2647,12 +2667,11 @@ mod tests {
     /// A cancelled chooser clears the in-flight dialog and changes nothing.
     #[test]
     fn portal_cancel_is_silent() {
-        use crate::portal::{PendingIo, PortalOutcome};
         let (mut app, mut doc) = fresh();
         let before = app.read_source(&doc);
         app.io = Some((
             PendingIo::OpenTyp,
-            crate::portal::inject_for_test(PortalOutcome::Cancelled),
+            ui::portal::inject_for_test(PortalOutcome::Cancelled),
         ));
         app.sync(&mut doc, &ROOT);
         assert!(app.io.is_none());

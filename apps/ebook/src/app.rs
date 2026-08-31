@@ -42,6 +42,7 @@ use std::time::{Duration, Instant};
 use ui::ColorCompat;
 use ui::animation::{Animated, Curve};
 use ui::gesture::{DragSelect, Granularity};
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Widget};
@@ -59,6 +60,17 @@ use crate::paint;
 use crate::reader_theme::ReaderPalette;
 
 const TOP_BAR: f64 = 54.0;
+
+fn book_open_request() -> PickRequest {
+    PickRequest::open("Open a book", "Open")
+        .thread_name("ebook-portal-open")
+        .filter(
+            FileFilter::new("EPUB books")
+                .mimetype("application/epub+zip")
+                .glob("*.epub"),
+        )
+        .all_files()
+}
 
 /// Pixels one wheel-line notch maps to, matching the toolkit's other scroll
 /// surfaces so a mouse wheel feels consistent across apps.
@@ -435,7 +447,7 @@ pub struct BooksApp {
     pending_open_path: Option<PathBuf>,
     /// An in-flight host file-picker request, drained once per frame in
     /// `sync`. `None` when no picker is open (the app never draws its own).
-    portal_rx: Option<crate::portal::PortalChannel>,
+    portal_rx: Option<PortalChannel>,
     /// Empty-state message when opening a book failed.
     load_error: Option<String>,
 
@@ -1482,7 +1494,7 @@ impl BooksApp {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(crate::portal::request_open());
+        self.portal_rx = Some(book_open_request().send());
         self.load_error = None;
         self.dirty = true;
     }
@@ -1497,10 +1509,10 @@ impl BooksApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    crate::portal::PortalOutcome::Opened(path) => self.import_and_open(doc, &path),
+                    PortalOutcome::Opened(path) => self.import_and_open(doc, &path),
                     // A cancel is not an error — leave the current view intact.
-                    crate::portal::PortalOutcome::Cancelled => {}
-                    crate::portal::PortalOutcome::Failed(reason) => {
+                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Failed(reason) => {
                         self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
                         self.dirty = true;
                     }
@@ -12035,9 +12047,7 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 720.0);
         assert!(app.library.is_empty(), "starts empty");
 
-        app.portal_rx = Some(crate::portal::inject_for_test(
-            crate::portal::PortalOutcome::Opened(path),
-        ));
+        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(path)));
         app.sync(&mut doc, &automerge::ROOT);
 
         assert_eq!(app.library.len(), 1, "the picked book joined the library");
