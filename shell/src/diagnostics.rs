@@ -159,7 +159,10 @@ impl PeerSurfaceMetrics {
 
     /// Record a successfully-decoded frame with its measured motion-to-photon latency (nanoseconds).
     pub fn record_received(&self, latency_ns: u64) {
-        let mut inner = self.inner.lock().expect("metrics mutex");
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.frames_received = inner.frames_received.saturating_add(1);
         // Insert into the ring: grow up to capacity, then overwrite the oldest slot via `latency_head`.
         if inner.latency_ring.len() < inner.latency_capacity {
@@ -167,56 +170,80 @@ impl PeerSurfaceMetrics {
         } else {
             let cap = inner.latency_capacity;
             let head = inner.latency_head;
-            inner.latency_ring[head] = latency_ns;
-            inner.latency_head = (head + 1) % cap;
+            if let Some(slot) = inner.latency_ring.get_mut(head) {
+                *slot = latency_ns;
+            }
+            inner.latency_head = head.wrapping_add(1).wrapping_rem(cap);
         }
     }
 
     /// Record a dropped frame — counter increments by one; latency ring untouched (a dropped frame has no valid latency).
     pub fn record_dropped(&self) {
-        let mut inner = self.inner.lock().expect("metrics mutex");
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.frames_dropped = inner.frames_dropped.saturating_add(1);
     }
 
     /// Record an encode wall-clock sample (nanoseconds); populates the p50/p99 fields the OSD renders.
     pub fn record_encode_wallclock(&self, ns: u64) {
-        let mut inner = self.inner.lock().expect("metrics mutex");
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if inner.encode_ring.len() < inner.encode_capacity {
             inner.encode_ring.push(ns);
         } else {
             let cap = inner.encode_capacity;
             let head = inner.encode_head;
-            inner.encode_ring[head] = ns;
-            inner.encode_head = (head + 1) % cap;
+            if let Some(slot) = inner.encode_ring.get_mut(head) {
+                *slot = ns;
+            }
+            inner.encode_head = head.wrapping_add(1).wrapping_rem(cap);
         }
     }
 
     /// Record that the just-encoded frame was a keyframe (SPS/PPS or IDR refresh).
     pub fn record_keyframe(&self) {
-        let mut inner = self.inner.lock().expect("metrics mutex");
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.keyframes = inner.keyframes.saturating_add(1);
     }
 
     /// Update the bitrate EWMA with a fresh sample (bytes/sec); alpha fixed
     /// at 0.2 so recent samples dominate but stay smooth across the ~5s window the OSD renders.
     pub fn record_bitrate(&self, bytes_per_sec: u64) {
-        let mut inner = self.inner.lock().expect("metrics mutex");
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let prev = inner.bitrate_bytes_per_sec_ewma;
         let alpha = 20u64; // 20% new sample weight
-        inner.bitrate_bytes_per_sec_ewma =
-            ((prev.saturating_mul(100 - alpha)) + bytes_per_sec.saturating_mul(alpha)) / 100;
+        inner.bitrate_bytes_per_sec_ewma = prev
+            .saturating_mul(100u64.saturating_sub(alpha))
+            .saturating_add(bytes_per_sec.saturating_mul(alpha))
+            .saturating_div(100);
     }
 
     /// Set the encoder chosen by the runtime probe at session start.
     pub fn set_chosen_encoder(&self, kind: EncoderKind) {
-        let mut inner = self.inner.lock().expect("metrics mutex");
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.chosen_encoder = kind;
     }
 
     /// Set the capture path for the most recent frame — the compositor
     /// commit hook calls this after routing the buffer to DMABUF direct or SHM readback.
     pub fn set_capture_path(&self, path: CapturePath) {
-        let mut inner = self.inner.lock().expect("metrics mutex");
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.capture_path = path;
     }
 
@@ -228,12 +255,17 @@ impl PeerSurfaceMetrics {
     /// (older peers, or `#[serde(default)]`); the offset is cleared rather
     /// than storing a bogus value, so downstream queries return `None` (OSD renders "—") instead of a nonsense number.
     pub fn set_clock_offset(&self, sender_ns_at_send: u64, receiver_ns_at_recv: u64) {
-        let mut inner = self.inner.lock().expect("metrics mutex");
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if sender_ns_at_send == 0 {
             inner.clock_offset_ns = None;
             return;
         }
-        let offset = i128::from(receiver_ns_at_recv) - i128::from(sender_ns_at_send);
+        // Both operands are widened from `u64`, so the difference can never approach
+        // i128's range; `saturating_sub` documents that rather than using a bare `-`.
+        let offset = i128::from(receiver_ns_at_recv).saturating_sub(i128::from(sender_ns_at_send));
         inner.clock_offset_ns = Some(offset);
     }
 
@@ -244,16 +276,24 @@ impl PeerSurfaceMetrics {
     /// arithmetic would underflow (clock skew against a frame predating the
     /// handshake) — callers skip the measurement rather than push a wrong one to the latency ring.
     pub fn end_to_end_latency_ns(&self, wire_ts_ns: u64, receiver_now_ns: u64) -> Option<u64> {
-        let inner = self.inner.lock().expect("metrics mutex");
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let offset = inner.clock_offset_ns?;
         // The sender's `ts` on the receiver's clock is `wire_ts_ns + offset` —
         // the "moment of capture" in the receiver's monotonic domain; latency is now minus that.
-        let capture_on_receiver = i128::from(wire_ts_ns) + offset;
-        let latency = i128::from(receiver_now_ns) - capture_on_receiver;
+        // `wire_ts_ns` and `receiver_now_ns` are peer/wall-clock supplied, not bounded by this
+        // function, so both steps saturate rather than risk overflowing i128.
+        let capture_on_receiver = i128::from(wire_ts_ns).saturating_add(offset);
+        let latency = i128::from(receiver_now_ns).saturating_sub(capture_on_receiver);
         if latency < 0 {
             None
         } else {
-            Some(latency as u64)
+            // A pathological clock offset can in principle push `latency` above
+            // `u64::MAX`; report the clamp rather than silently wrapping to a small,
+            // wrong-looking number.
+            Some(u64::try_from(latency).unwrap_or(u64::MAX))
         }
     }
 
@@ -261,24 +301,36 @@ impl PeerSurfaceMetrics {
     /// [`Self::end_to_end_latency_ns`] and rounding to the nearest u64; `None` for the same reasons.
     pub fn end_to_end_latency_ms(&self, wire_ts_ns: u64, receiver_now_ns: u64) -> Option<u64> {
         self.end_to_end_latency_ns(wire_ts_ns, receiver_now_ns)
-            .map(|ns| (ns + 500_000) / 1_000_000)
+            .map(|ns| ns.saturating_add(500_000).saturating_div(1_000_000))
     }
 
     /// Current learned clock offset, or `None` before the handshake —
     /// exposed so the OSD can show a huge offset (drifted NTP, unsync'd hosts) alongside the latency histogram.
     pub fn clock_offset_ns(&self) -> Option<i128> {
-        self.inner.lock().expect("metrics mutex").clock_offset_ns
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clock_offset_ns
     }
 
     /// Snapshot the counters for a read-only consumer.
     pub fn snapshot(&self) -> PeerSurfaceSnapshot {
-        let inner = self.inner.lock().expect("metrics mutex");
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let latency_samples = inner.latency_ring.len();
         let (latency_ns_mean, latency_ns_max) = if latency_samples == 0 {
             (0, 0)
         } else {
             let sum: u128 = inner.latency_ring.iter().map(|s| u128::from(*s)).sum();
-            let mean = (sum / latency_samples as u128) as u64;
+            // `latency_samples` is nonzero here; the chain still degrades to `0`
+            // instead of panicking if any step somehow fails.
+            let mean = u128::try_from(latency_samples)
+                .ok()
+                .and_then(|count| sum.checked_div(count))
+                .and_then(|m| u64::try_from(m).ok())
+                .unwrap_or(0);
             let max = inner.latency_ring.iter().copied().max().unwrap_or(0);
             (mean, max)
         };
@@ -323,7 +375,13 @@ fn percentile_50_99(ring: &[u64]) -> (u64, u64) {
     let mut sorted = ring.to_vec();
     sorted.sort_unstable();
     let p50_idx = sorted.len() / 2;
-    let p99_idx = ((sorted.len() as f64 * 0.99) as usize).min(sorted.len() - 1);
+    // Integer form of `(len as f64 * 0.99) as usize`: avoids the float round-trip
+    // and its truncation/precision-loss casts, with the same floor-toward-zero result.
+    let p99_idx = sorted
+        .len()
+        .saturating_mul(99)
+        .saturating_div(100)
+        .min(sorted.len().saturating_sub(1));
     (sorted[p50_idx], sorted[p99_idx])
 }
 

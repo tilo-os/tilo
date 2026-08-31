@@ -36,6 +36,7 @@ const TEXT_RUN_ID_BASE: u64 = 1u64 << 62;
 
 /// E.g. [`Role::Spinner`] becomes a busy [`AkRole::ProgressIndicator`] and
 /// [`Role::ToggleButton`] becomes [`AkRole::Button`] carrying `toggled` state.
+#[must_use]
 pub fn map_role(role: Role) -> AkRole {
     match role {
         Role::Window => AkRole::Window,
@@ -88,6 +89,7 @@ pub fn map_role(role: Role) -> AkRole {
 /// `ToggleCheck` has no dedicated verb — toggling is a `Click` at the
 /// platform level. `SetValue`/`SetSelection` payloads travel in `ActionData`
 /// on the round trip ([`accesskit_action_to_ours`]).
+#[must_use]
 pub fn map_action(action: &Action) -> AkAction {
     match action {
         Action::Activate => AkAction::Click,
@@ -106,6 +108,7 @@ pub fn map_action(action: &Action) -> AkAction {
 
 /// Inverse of [`map_action`]. `None` for actions we don't model
 /// (scroll-by-direction, custom actions, …).
+#[must_use]
 pub fn accesskit_action_to_ours(
     action: AkAction,
     data: Option<&accesskit::ActionData>,
@@ -138,11 +141,16 @@ pub fn accesskit_action_to_ours(
 /// Prefers `taffy_id` (offset by 1 so it can never be [`ROOT_ID`], since
 /// taffy ids start at 0); falls back to a high-range walk index for widgets
 /// with no `node_map` entry.
+#[must_use]
 fn widget_node_id(taffy_id: Option<TaffyNodeId>, walk_index: u64) -> AkNodeId {
     match taffy_id {
-        Some(id) => AkNodeId(u64::from(id) + 1),
-        // 1<<48 keeps fallback ids well clear of any realistic taffy id range.
-        None => AkNodeId((1u64 << 48) + walk_index),
+        // Bounded by the number of taffy nodes in one tree — nowhere near
+        // `u64::MAX`; saturating just makes that bound explicit.
+        Some(id) => AkNodeId(u64::from(id).saturating_add(1)),
+        // 1<<48 keeps fallback ids well clear of any realistic taffy id
+        // range, and `walk_index` is bounded by the number of widgets
+        // walked in one tree.
+        None => AkNodeId((1u64 << 48).saturating_add(walk_index)),
     }
 }
 
@@ -164,8 +172,13 @@ fn accessible_character_lengths(text: &str) -> Vec<u8> {
         let mut remaining = grapheme.len();
         while remaining > 0 {
             let chunk = remaining.min(u8::MAX as usize);
+            // `chunk` is clamped to `u8::MAX` above, so the cast never truncates.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "chunk is clamped to u8::MAX just above"
+            )]
             lengths.push(chunk as u8);
-            remaining -= chunk;
+            remaining = remaining.saturating_sub(chunk);
         }
     }
     lengths
@@ -178,9 +191,9 @@ fn accessible_character_lengths(text: &str) -> Vec<u8> {
 ///
 /// Always a full tree; AccessKit's adapters suppress events for unchanged
 /// nodes, so the cost is processing, not spurious AT chatter.
-pub fn build_tree_update(
+pub fn build_tree_update<S: std::hash::BuildHasher>(
     root: &dyn Widget,
-    node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
     scale: f64,
 ) -> TreeUpdate {
@@ -190,7 +203,8 @@ pub fn build_tree_update(
         ptr_to_taffy.insert(w_ptr as *const dyn Widget, taffy_id);
     }
 
-    let focused_ak = focused.map(|t| AkNodeId(u64::from(t) + 1));
+    // Same taffy-id-count bound as `widget_node_id` above.
+    let focused_ak = focused.map(|t| AkNodeId(u64::from(t).saturating_add(1)));
 
     let mut nodes: Vec<(AkNodeId, AkNode)> = Vec::new();
     let mut walk_counter: u64 = 0;
@@ -243,7 +257,7 @@ fn visit(
 
     if let Some(access_node) = access {
         let id = widget_node_id(taffy_id, *walk_counter);
-        *walk_counter += 1;
+        *walk_counter = walk_counter.saturating_add(1);
 
         let mut ak = AkNode::new(map_role(access_node.role));
         apply_semantics(&mut ak, &access_node, w, scale);
@@ -298,7 +312,7 @@ fn visit(
         parent_children.push(id);
     } else {
         // Presentational: collapse out, reparent children onto the parent.
-        *walk_counter += 1;
+        *walk_counter = walk_counter.saturating_add(1);
         for child in w.children() {
             visit(
                 child,
@@ -321,7 +335,7 @@ fn visit_synthetic(
     parent_children: &mut Vec<AkNodeId>,
 ) {
     let id = widget_node_id(None, *walk_counter);
-    *walk_counter += 1;
+    *walk_counter = walk_counter.saturating_add(1);
 
     let mut ak = AkNode::new(map_role(access.role));
     apply_semantics_common(&mut ak, access);
@@ -416,47 +430,47 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
 }
 
 fn apply_state(ak: &mut AkNode, access: &AccessNode) {
-    let s = &access.state;
+    let state = &access.state;
 
-    if s.focused {
+    if state.focused {
         // Focus is carried by the tree's `focus` field, nothing per-node here.
     }
-    if s.disabled {
+    if state.disabled {
         ak.set_disabled();
     }
-    if s.hidden {
+    if state.hidden {
         ak.set_hidden();
     }
-    if s.read_only {
+    if state.read_only {
         ak.set_read_only();
     }
-    if s.required {
+    if state.required {
         ak.set_required();
     }
-    if s.busy {
+    if state.busy {
         ak.set_busy();
     }
-    if s.modal {
+    if state.modal {
         ak.set_modal();
     }
     // AccessKit 0.24 has no `multiline` flag; expressed via `MultilineTextInput` (see `map_role`).
-    if let Some(checked) = s.checked {
-        ak.set_toggled(if s.mixed {
+    if let Some(checked) = state.checked {
+        ak.set_toggled(if state.mixed {
             Toggled::Mixed
         } else if checked {
             Toggled::True
         } else {
             Toggled::False
         });
-    } else if s.mixed {
+    } else if state.mixed {
         ak.set_toggled(Toggled::Mixed);
     }
-    if let Some(expanded) = s.expanded {
+    if let Some(expanded) = state.expanded {
         ak.set_expanded(expanded);
     }
     // Clear `selected` explicitly (not just omit) for selectable roles so an
     // AT doesn't read "not selected" on unrelated controls.
-    if s.selected {
+    if state.selected {
         ak.set_selected(true);
     } else if matches!(
         access.role,
@@ -464,7 +478,7 @@ fn apply_state(ak: &mut AkNode, access: &AccessNode) {
     ) {
         ak.set_selected(false);
     }
-    if s.invalid {
+    if state.invalid {
         ak.set_invalid(accesskit::Invalid::True);
     }
 }
@@ -522,7 +536,7 @@ mod tests {
             let node = taffy
                 .new_with_children(taffy::Style::default(), &child_nodes)
                 .unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(
@@ -555,7 +569,7 @@ mod tests {
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
-            self.kids.iter().map(|c| c.as_ref()).collect()
+            self.kids.iter().map(Box::as_ref).collect()
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             self.kids
@@ -960,7 +974,7 @@ mod tests {
         assert_eq!(run.value(), Some(value.as_str()));
         assert_eq!(
             run.character_lengths(),
-            [1, family.len() as u8, 1].as_slice(),
+            [1, u8::try_from(family.len()).unwrap(), 1].as_slice(),
             "AccessKit characters match the editor's extended graphemes"
         );
         assert_eq!(field_node.children(), &[*run_id]);

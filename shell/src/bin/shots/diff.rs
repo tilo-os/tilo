@@ -52,6 +52,10 @@ pub struct DiffReport {
 /// counts as different. Alpha is intentionally ignored — wgpu's
 /// premultiplied output can wobble in the bottom bits without changing
 /// what the user sees.
+///
+/// # Errors
+///
+/// Returns an error if the baseline directory does not exist or if any filesystem operations fail.
 pub fn compare_tree(baseline: &Path, current: &Path, threshold: u8) -> Result<DiffReport, String> {
     if !baseline.is_dir() {
         return Err(format!(
@@ -156,14 +160,19 @@ fn compare_png(a: &Path, b: &Path, threshold: u8) -> Result<u64, DiffError> {
 /// can drive it without round-tripping through the PNG codec.
 pub fn count_diff_pixels(a: &[u8], b: &[u8], threshold: u8) -> u64 {
     assert_eq!(a.len(), b.len(), "buffers must be the same length");
-    let mut n = 0u64;
-    let t = i32::from(threshold);
+    let mut n: u64 = 0;
     for (pa, pb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
-        let dr = (i32::from(pa[0]) - i32::from(pb[0])).abs();
-        let dg = (i32::from(pa[1]) - i32::from(pb[1])).abs();
-        let db = (i32::from(pa[2]) - i32::from(pb[2])).abs();
-        if dr > t || dg > t || db > t {
-            n += 1;
+        let &[ra, ga, ba, _] = pa else {
+            continue; // chunks_exact(4) guarantees len == 4
+        };
+        let &[rb, gb, bb, _] = pb else {
+            continue; // chunks_exact(4) guarantees len == 4
+        };
+        if ra.abs_diff(rb) > threshold || ga.abs_diff(gb) > threshold || ba.abs_diff(bb) > threshold
+        {
+            // A diff count is bounded by the pixel count of a real image; saturating
+            // is defensive rather than load-bearing here.
+            n = n.saturating_add(1);
         }
     }
     n
@@ -179,22 +188,24 @@ fn write_diff_overlay(baseline: &Path, current: &Path, threshold: u8) -> Result<
     if dims != c_dims {
         return Err(format!("size mismatch: {dims:?} vs {c_dims:?}"));
     }
-    let t = i32::from(threshold);
     for (a, b) in c_pix.chunks_exact_mut(4).zip(b_pix.chunks_exact(4)) {
-        let dr = (i32::from(a[0]) - i32::from(b[0])).abs();
-        let dg = (i32::from(a[1]) - i32::from(b[1])).abs();
-        let db = (i32::from(a[2]) - i32::from(b[2])).abs();
-        if dr > t || dg > t || db > t {
-            a[0] = 255;
-            a[1] = 0;
-            a[2] = 0;
-            a[3] = 255;
+        if let ([ra, ga, ba, aa], [rb, gb, bb, _ab]) = (a, b) {
+            if ra.abs_diff(*rb) > threshold || ga.abs_diff(*gb) > threshold || ba.abs_diff(*bb) > threshold
+            {
+                *ra = 255;
+                *ga = 0;
+                *ba = 0;
+                *aa = 255;
+            }
         }
     }
     let out_path = current.with_extension("diff.png");
     save_rgba(&out_path, &c_pix, dims.0, dims.1)
 }
 
+/// # Errors
+///
+/// Returns an error if the file cannot be opened, decoded, or has an unsupported color type.
 fn load_rgba(path: &Path) -> Result<(Vec<u8>, (u32, u32)), String> {
     let file = File::open(path).map_err(|e| format!("open '{}': {e}", path.display()))?;
     let decoder = png::Decoder::new(BufReader::new(file));
@@ -211,7 +222,7 @@ fn load_rgba(path: &Path) -> Result<(Vec<u8>, (u32, u32)), String> {
     let rgba = match info.color_type {
         png::ColorType::Rgba => buf,
         png::ColorType::Rgb => {
-            let mut out = Vec::with_capacity(buf.len() / 3 * 4);
+            let mut out = Vec::with_capacity(buf.len().saturating_div(3).saturating_mul(4));
             for chunk in buf.chunks_exact(3) {
                 out.extend_from_slice(chunk);
                 out.push(255);
@@ -219,16 +230,19 @@ fn load_rgba(path: &Path) -> Result<(Vec<u8>, (u32, u32)), String> {
             out
         }
         png::ColorType::Grayscale => {
-            let mut out = Vec::with_capacity(buf.len() * 4);
+            let mut out = Vec::with_capacity(buf.len().saturating_mul(4));
             for &g in &buf {
                 out.extend_from_slice(&[g, g, g, 255]);
             }
             out
         }
         png::ColorType::GrayscaleAlpha => {
-            let mut out = Vec::with_capacity(buf.len() * 2);
+            let mut out = Vec::with_capacity(buf.len().saturating_mul(2));
             for chunk in buf.chunks_exact(2) {
-                out.extend_from_slice(&[chunk[0], chunk[0], chunk[0], chunk[1]]);
+                let &[gray, alpha] = chunk else {
+                    continue; // chunks_exact(2) guarantees len == 2
+                };
+                out.extend_from_slice(&[gray, gray, gray, alpha]);
             }
             out
         }

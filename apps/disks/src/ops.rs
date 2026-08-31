@@ -157,6 +157,10 @@ pub fn eject_cli(dev_leaf: &str) -> Vec<CommandSpec> {
 
 /// Run each command in turn, returning on the first success. A missing
 /// program (or a non-zero exit) falls through to the next candidate.
+///
+/// # Errors
+///
+/// Returns an error if all commands fail.
 pub fn run_command_chain(specs: &[CommandSpec]) -> Result<String, String> {
     let mut last = String::from("no command available");
     for spec in specs {
@@ -177,6 +181,10 @@ pub fn run_command_chain(specs: &[CommandSpec]) -> Result<String, String> {
 }
 
 /// Invoke a udisks2 method over the system bus. Only compiled with `live`.
+///
+/// # Errors
+///
+/// Returns an error if the D-Bus call fails or the operation returns an error.
 #[cfg(feature = "live")]
 pub fn run_udisks(call: &UdisksCall) -> Result<String, String> {
     use std::collections::HashMap;
@@ -214,6 +222,10 @@ pub fn run_udisks(call: &UdisksCall) -> Result<String, String> {
 /// A real sequential-read + random-seek benchmark of a block device. Reads up
 /// to 64 MiB sequentially, then times 100 random 4 KiB reads. Needs read
 /// permission on `/dev/<leaf>` (root for most block devices).
+///
+/// # Errors
+///
+/// Returns an error if the device cannot be opened or read.
 pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
     let path = format!("/dev/{dev_leaf}");
     let mut f = File::open(&path).map_err(|e| format!("open {path}: {e}"))?;
@@ -256,6 +268,10 @@ pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
 
 /// Execute an operation for real. Tries udisks2 (D-Bus, when built with
 /// `live`) first, then the CLI chain. Returns a status message either way.
+///
+/// # Errors
+///
+/// Returns an error if the operation fails.
 pub fn run(op: Op, dev_leaf: &str, fstype: Option<&str>) -> Result<String, String> {
     match op {
         Op::Benchmark => benchmark(dev_leaf),

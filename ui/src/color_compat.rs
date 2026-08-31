@@ -42,12 +42,22 @@ pub fn rgba8(r: u8, g: u8, b: u8, a: u8) -> Color {
 /// Old `Color::rgba(r, g, b, a)` constructor — floats in `[0.0, 1.0]`.
 /// Preserves the old `f64`-typed signature so callers don't need `as f32` casts everywhere.
 #[inline]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "narrowing to f32 is this shim's entire purpose (peniko::Color stores f32); \
+              the doc-mandated [0.0, 1.0] range loses nothing meaningful at that precision"
+)]
 pub fn rgba(r: f64, g: f64, b: f64, a: f64) -> Color {
     Color::new([r as f32, g as f32, b as f32, a as f32])
 }
 
 /// Old `Color::rgb(r, g, b)` constructor — floats in `[0.0, 1.0]`, alpha defaults to 1.0.
 #[inline]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "narrowing to f32 is this shim's entire purpose (peniko::Color stores f32); \
+              the doc-mandated [0.0, 1.0] range loses nothing meaningful at that precision"
+)]
 pub fn rgb(r: f64, g: f64, b: f64) -> Color {
     Color::new([r as f32, g as f32, b as f32, 1.0])
 }

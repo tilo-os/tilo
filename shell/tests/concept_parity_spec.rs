@@ -21,6 +21,12 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::similar_names,
+    reason = "closure parameters 'avail' and 'known' are intentionally abbreviated for \
+              closure-level readability in taffy measure callbacks; the parameter names \
+              are terse by design and the pattern is consistent throughout"
+)]
 
 use std::collections::HashMap;
 
@@ -47,6 +53,7 @@ const H: f32 = 900.0;
 
 /// Build, lay out, and render the full `ShellOverlayHost` tree at (W, H) —
 /// the `e2e_shell_flows.rs` harness minus the PNG snapshot.
+#[must_use]
 fn render_overlay_host(tree: &WorkspaceTree) -> (Scene, Chrome) {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
     let theme = Theme::dark();
@@ -114,6 +121,7 @@ fn draw_data_words(tag: vello_encoding::DrawTag) -> Option<usize> {
 /// Every solid-colour brush in a `Scene`'s draw stream as `(r, g, b, a)`.
 /// peniko 0.6 / vello 0.9 pack as `[r, g, b, a]` LE; unpremultiplying is
 /// lossless here since alpha == 0xff for every spec-relevant fill.
+#[must_use]
 fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
     use vello_encoding::DrawTag;
     let enc = scene.encoding();
@@ -142,6 +150,7 @@ fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
 }
 
 /// True if any of `colors` is within `tol` per rgb channel of `target`.
+#[must_use]
 fn contains_color_close(colors: &[(u8, u8, u8, u8)], target: (u8, u8, u8), tol: u8) -> bool {
     colors.iter().any(|&(r, g, b, _a)| {
         r.abs_diff(target.0) <= tol && g.abs_diff(target.1) <= tol && b.abs_diff(target.2) <= tol
@@ -392,6 +401,7 @@ fn permissions_tab_body_is_invariant_to_the_name_edit_buffer() {
 
 /// Layout + draw an already-configured `ShellOverlayHost`, sharing plumbing
 /// with `render_with_ws_settings_tab`.
+#[must_use]
 fn render_host_to_scene<W: Widget + ?Sized>(host: &mut W) -> Scene {
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -437,6 +447,7 @@ fn render_host_to_scene<W: Widget + ?Sized>(host: &mut W) -> Scene {
 /// Active workspace with real membership (owner + 2 invitees) via
 /// `grant_as`, since `bootstrap_demo`'s workspace is ownerless (no members,
 /// the correct fail-closed default) — useless as a membership fixture.
+#[must_use]
 fn tree_with_seeded_roster() -> WorkspaceTree {
     use shell::shell::state::{CapOverride, Subject, Verb};
     let mut tree = WorkspaceTree::bootstrap_demo();
@@ -463,6 +474,7 @@ fn tree_with_seeded_roster() -> WorkspaceTree {
 
 /// Render with the modal open at the given tab. `ws_settings_tab` is the
 /// typed dispatch field, replacing an `editing_workspace_name` side-channel.
+#[must_use]
 fn render_with_ws_settings_tab(tree: &WorkspaceTree, tab: WsTab) -> (usize, Chrome) {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
     {
@@ -889,6 +901,7 @@ fn quick_settings_supports_wifi_drill_in_render() {
     );
 }
 
+#[must_use]
 fn render_quick_settings_open(
     tree: &WorkspaceTree,
     mutate_chrome: impl FnOnce(&Chrome),
@@ -1756,6 +1769,7 @@ mod overview_add_workspace {
     }
 
     /// Build the host, settle the overview open, layout+draw.
+    #[must_use]
     fn build_settled_overview() -> OverviewHarness {
         let tree = WorkspaceTree::bootstrap_demo();
         let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
@@ -1916,8 +1930,6 @@ mod overview_add_workspace {
             st.tree().workspaces.iter().any(|w| w.id == active_id),
             "active id must point at one of the workspaces in the tree"
         );
-
-        let _: Rect = rect;
     }
 }
 

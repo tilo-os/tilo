@@ -576,6 +576,11 @@ impl State {
     /// This is how `CollabEvent::CRDTIncremental` is actually merged on the
     /// receiver side — without it, incremental deltas broadcast by one peer
     /// would never reach another peer's CRDT.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `data` is not a valid incremental Automerge patch
+    /// (corrupt bytes, or bytes that don't apply to this document's history).
     pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
         let n = self.doc.load_incremental(data)?;
         // Keep the undo baseline aligned with the new, merged document state
@@ -645,7 +650,7 @@ pub fn write_patches(
     // so nested child patches target the new object.
     let mut remap: HashMap<ObjId, ObjId> = HashMap::new();
     for patch in patches {
-        let target = remap.get(&patch.obj).cloned().unwrap_or(patch.obj.clone());
+        let target = remap.get(&patch.obj).cloned().unwrap_or_else(|| patch.obj.clone());
         match patch.action {
             PatchAction::PutMap { key, value, .. } => match value.0 {
                 Value::Scalar(s) => {
@@ -744,10 +749,11 @@ fn live_insert_boundary(
     if index == 0 {
         return 0;
     }
-    match doc.get_cursor(obj, index - 1, Some(anchor_heads)) {
+    // `index >= 1` here (checked above), so this never underflows.
+    match doc.get_cursor(obj, index.saturating_sub(1), Some(anchor_heads)) {
         Ok(cursor) => doc
             .get_cursor_position(obj, &cursor, None)
-            .map_or(index, |p| p + 1),
+            .map_or(index, |p| p.saturating_add(1)),
         Err(_) => index,
     }
 }
@@ -757,7 +763,7 @@ mod tests {
     use super::*;
     use automerge::{ReadDoc, ScalarValue, transaction::Transactable};
 
-    /// A single commit_action → undo → redo round-trip must preserve the
+    /// A single `commit_action` → undo → redo round-trip must preserve the
     /// focus index and widget metadata captured on the stacks — that's
     /// what restores the caret in `EditorApp` after Ctrl+Shift+Z.
     #[test]
@@ -974,7 +980,8 @@ mod tests {
         state.doc.put(&ROOT, "a", 1).unwrap();
         state.commit_action_authored(None, None, Some(alice.clone()));
         state.doc.put(&ROOT, "b", 1).unwrap();
-        state.commit_action_authored(None, None, Some(bob.clone()));
+        // `bob` is never referenced again, so this is its last use.
+        state.commit_action_authored(None, None, Some(bob));
 
         // Alice hits Ctrl+Z. The newest entry is Bob's.
         let popped = state

@@ -43,7 +43,7 @@ struct ActionResult {
 impl ActionKind {
     /// The real operation this action maps to, if any (Eject/Mount/… all do;
     /// this is a total map today but kept explicit for clarity).
-    fn op(&self) -> Op {
+    fn op(self) -> Op {
         match self {
             ActionKind::Mount => Op::Mount,
             ActionKind::Unmount => Op::Unmount,
@@ -53,7 +53,7 @@ impl ActionKind {
         }
     }
     /// Present-tense verb for the "…in progress" status line.
-    fn gerund(&self) -> &'static str {
+    fn gerund(self) -> &'static str {
         match self {
             ActionKind::Mount => "Mounting",
             ActionKind::Unmount => "Unmounting",
@@ -63,7 +63,7 @@ impl ActionKind {
         }
     }
     /// Does completing this action change the mount/partition topology?
-    fn changes_topology(&self) -> bool {
+    fn changes_topology(self) -> bool {
         matches!(
             self,
             ActionKind::Mount | ActionKind::Unmount | ActionKind::Format | ActionKind::Eject
@@ -106,14 +106,14 @@ impl Tab {
     fn all() -> [Tab; 3] {
         [Tab::Overview, Tab::Smart, Tab::Partitions]
     }
-    fn key(&self) -> &'static str {
+    fn key(self) -> &'static str {
         match self {
             Tab::Overview => "overview",
             Tab::Smart => "smart",
             Tab::Partitions => "partitions",
         }
     }
-    fn title(&self) -> &'static str {
+    fn title(self) -> &'static str {
         match self {
             Tab::Overview => "Overview",
             Tab::Smart => "SMART & Health",
@@ -149,7 +149,7 @@ impl ActionKind {
             ActionKind::Eject,
         ]
     }
-    fn key(&self) -> &'static str {
+    fn key(self) -> &'static str {
         match self {
             ActionKind::Mount => "mount",
             ActionKind::Unmount => "unmount",
@@ -158,7 +158,7 @@ impl ActionKind {
             ActionKind::Eject => "eject",
         }
     }
-    fn label(&self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             ActionKind::Mount => "Mount",
             ActionKind::Unmount => "Unmount",
@@ -169,7 +169,7 @@ impl ActionKind {
     }
     /// One-line description of what the action does, shown under the action
     /// bar so every control is self-labelling (no unexplained buttons).
-    fn describe(&self) -> &'static str {
+    fn describe(self) -> &'static str {
         match self {
             ActionKind::Mount => "Attach the filesystem so its files become reachable.",
             ActionKind::Unmount => "Safely detach the filesystem before removing the device.",
@@ -189,10 +189,10 @@ impl ActionKind {
         }
     }
     /// Destructive actions require an explicit confirm dialog.
-    fn destructive(&self) -> bool {
+    fn destructive(self) -> bool {
         matches!(self, ActionKind::Format)
     }
-    fn confirm_title(&self, target: &str) -> String {
+    fn confirm_title(self, target: &str) -> String {
         match self {
             ActionKind::Format => format!("Format {target}?"),
             ActionKind::Unmount => format!("Unmount {target}?"),
@@ -201,7 +201,7 @@ impl ActionKind {
             ActionKind::Eject => format!("Eject {target}?"),
         }
     }
-    fn confirm_body(&self, target: &str, live: bool) -> String {
+    fn confirm_body(self, target: &str, live: bool) -> String {
         match self {
             // In the live binary Format really erases the device; only the
             // hermetic demo/--shots build is a no-op, so the "nothing is
@@ -1721,9 +1721,7 @@ impl DisksApp {
             TextWeight::Bold,
         );
 
-        let smart = if let Some(s) = &drive.smart {
-            s
-        } else {
+        let Some(smart) = &drive.smart else {
             self.txt(
                 scene,
                 tr,
@@ -1928,9 +1926,8 @@ impl DisksApp {
             TextWeight::Regular,
         );
 
-        let smart = match &drive.smart {
-            Some(s) => s,
-            None => return,
+        let Some(smart) = &drive.smart else {
+            return;
         };
 
         // Stat tiles row.

@@ -377,26 +377,35 @@ impl FrameHarness {
         if order.is_empty() {
             return None;
         }
+        // `order` is non-empty (checked above), so `order.len() - 1` never
+        // underflows and `next` always lands in `0..order.len()`; the
+        // arithmetic is still spelled with saturating/wrapping-safe ops so
+        // clippy can see that too.
         let next = match self
             .focused
             .and_then(|f| order.iter().position(|&x| x == f))
         {
             Some(idx) => {
                 if back {
-                    if idx == 0 { order.len() - 1 } else { idx - 1 }
+                    if idx == 0 {
+                        order.len().saturating_sub(1)
+                    } else {
+                        idx.saturating_sub(1)
+                    }
                 } else {
-                    (idx + 1) % order.len()
+                    idx.saturating_add(1) % order.len()
                 }
             }
             None => {
                 if back {
-                    order.len() - 1
+                    order.len().saturating_sub(1)
                 } else {
                     0
                 }
             }
         };
-        let target = order[next];
+        // `next` is constructed above from `0..order.len()` in every branch.
+        let target = *order.get(next)?;
         self.set_focused(Some(target));
         self.relayout();
         Some(target)
@@ -463,12 +472,12 @@ impl FrameHarness {
     }
 
     /// Deliver one event through the production dispatch path.
-    pub fn send(&mut self, event: WindowEvent) {
+    pub fn send(&mut self, event: &WindowEvent) {
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
         let t_event = self.profiler.as_ref().map(|_| std::time::Instant::now());
         self.root.handle_event(
-            &event,
+            event,
             1.0,
             &self.modifiers,
             &mut self.state.doc,
@@ -499,16 +508,16 @@ impl FrameHarness {
     /// Move the pointer to `(x, y)` and press+release the left button — the
     /// three events a real click produces, in order.
     pub fn click_at(&mut self, x: f64, y: f64) {
-        self.send(WindowEvent::CursorMoved {
+        self.send(&WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         });
-        self.send(WindowEvent::MouseInput {
+        self.send(&WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
-        self.send(WindowEvent::MouseInput {
+        self.send(&WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -518,6 +527,10 @@ impl FrameHarness {
     /// Click the centre of the named widget. `Err` names the target when it
     /// is not in the tree, so a stale scenario fails loudly instead of
     /// quietly doing nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the widget is not found or has a zero-sized rect.
     pub fn click_named(&mut self, name: &str) -> Result<(), String> {
         let rect = self
             .targets()
@@ -545,7 +558,7 @@ impl FrameHarness {
         }
         let key = parse_key(spec);
         for state in [ElementState::Pressed, ElementState::Released] {
-            self.send(key_event(key.clone(), state));
+            self.send(&key_event(&key, state));
         }
     }
 
@@ -560,9 +573,18 @@ impl FrameHarness {
     /// production event path. Content scrollables handle the wheel
     /// regardless of pointer position, so no prior cursor move is needed.
     pub fn scroll(&mut self, dx: f64, dy: f64) {
-        self.send(WindowEvent::MouseWheel {
+        // Deltas are line counts chosen by the driver's own caller (test
+        // code or an agent), always small integers; there is no fallible
+        // f64->f32 conversion to fall back to, and winit's own delta type
+        // is f32.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "line-delta counts are small integers; winit's `LineDelta` is f32 and there is no fallible f64->f32 conversion"
+        )]
+        let (dx, dy) = (dx as f32, dy as f32);
+        self.send(&WindowEvent::MouseWheel {
             device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(dx as f32, dy as f32),
+            delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
             phase: winit::event::TouchPhase::Moved,
         });
     }
@@ -610,10 +632,14 @@ impl FrameHarness {
             }
         }
         self.modifiers = winit::event::Modifiers::from(st);
-        self.send(WindowEvent::ModifiersChanged(self.modifiers));
+        self.send(&WindowEvent::ModifiersChanged(self.modifiers));
     }
 
     /// Run one action.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the action cannot be performed.
     pub fn perform(&mut self, action: &Action) -> Result<(), String> {
         match action {
             Action::ClickNamed(name) => self.click_named(name),
@@ -674,7 +700,9 @@ fn collect_targets(
     let sibling_key = format!("{parent_path}::{name}");
     let idx = sibling_counts.entry(sibling_key).or_insert(0);
     let my_index = *idx;
-    *idx += 1;
+    // Bounded by the number of sibling widgets under one parent, nowhere
+    // near `usize::MAX`; saturating just makes the bound explicit.
+    *idx = idx.saturating_add(1);
     let path = if parent_path.is_empty() {
         format!("{name}[{my_index}]")
     } else {
@@ -704,7 +732,7 @@ fn collect_targets(
 /// can't be built field-by-field from outside that crate. Zero-initialising
 /// and overwriting every field we care about is the same workaround the
 /// compositor's own driver uses (`shell/src/bin/shots/driver.rs`).
-fn key_event(key: Key, state: ElementState) -> WindowEvent {
+fn key_event(key: &Key, state: ElementState) -> WindowEvent {
     // SAFETY: `KeyEvent`'s only unwritten field is the platform payload,
     // which on Linux is a plain `Option`-shaped struct for which an
     // all-zero bit pattern is a valid value, and which nothing downstream
@@ -753,6 +781,16 @@ fn parse_key(spec: &str) -> Key {
 /// `{"key": "Enter"}`, `{"type": "hello"}`, `{"modifiers": ["ctrl"]}`),
 /// `dump` (path for the document JSON) and `targets` (path for the
 /// addressable-widget list).
+// Every app's `main` calls this before building any window state (see the
+// module doc), so exiting on a malformed `--headless-drive` payload is the
+// same "fail before anything is built" contract a CLI arg parser has —
+// there is nothing yet to unwind. Threading a `Result` through instead
+// would mean every one of the ~15 call sites across `apps/*` duplicates
+// this same exit, for no behavioural change.
+#[allow(
+    clippy::exit,
+    reason = "arg-parsing entry point mirrors a CLI flag parser: fails fast before any window/Drop state exists, exactly like the callers already do via `std::process::exit(ui::headless::run(..))`"
+)]
 pub fn spec_from_args(args: &[String]) -> Option<Spec> {
     let raw = value_arg(args, "--headless-drive")?;
     match parse_spec(&raw) {
@@ -779,6 +817,10 @@ fn value_arg(args: &[String], flag: &str) -> Option<String> {
 }
 
 /// Parse the `--headless-drive` payload.
+///
+/// # Errors
+///
+/// Returns an error if the JSON is invalid or does not conform to the expected structure.
 pub fn parse_spec(raw: &str) -> Result<Spec, String> {
     let v: serde_json::Value =
         serde_json::from_str(raw).map_err(|e| format!("invalid JSON: {e}"))?;
@@ -791,13 +833,15 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
             .as_array()
             .filter(|vp| vp.len() == 2)
             .ok_or("viewport must be [width, height]")?;
-        let width = vp[0]
-            .as_u64()
+        let width = vp
+            .first()
+            .and_then(serde_json::Value::as_u64)
             .and_then(|n| u32::try_from(n).ok())
             .filter(|n| *n > 0)
             .ok_or("viewport width must be a non-zero u32")?;
-        let height = vp[1]
-            .as_u64()
+        let height = vp
+            .get(1)
+            .and_then(serde_json::Value::as_u64)
             .and_then(|n| u32::try_from(n).ok())
             .filter(|n| *n > 0)
             .ok_or("viewport height must be a non-zero u32")?;
@@ -864,7 +908,7 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
 /// action succeeded, `1` when one did not (with the reason on stderr) and
 /// `3` when persistence itself was unavailable, which a sweep must not
 /// mistake for "nothing changed".
-pub fn run(spec: Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
+pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
     let (state, mut autosave) = crate::persist::open(manifest_id);
     if !autosave.is_enabled() {
         eprintln!(

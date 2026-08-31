@@ -115,9 +115,13 @@ impl std::fmt::Display for DecoderError {
 impl std::error::Error for DecoderError {}
 
 impl VideoDecoder {
-    /// Pick a decoder from the wire label. Returns
-    /// [`DecoderError::UnknownCodec`] for an unrecognised string,
-    /// [`DecoderError::FeatureDisabled`] when the build lacks the required feature.
+    /// Pick a decoder from the wire label.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecoderError::UnknownCodec`] for an unrecognised string,
+    /// [`DecoderError::FeatureDisabled`] when the build lacks the required feature, or
+    /// [`DecoderError::Backend`] if the backend fails to initialize.
     pub fn for_wire_codec(codec: &str) -> Result<Self, DecoderError> {
         match codec {
             "h264" => Ok(VideoDecoder::H264(H264Decoder::new())),
@@ -235,14 +239,17 @@ static FFMPEG_INIT: std::sync::Once = std::sync::Once::new();
 
 #[cfg(feature = "hdr-decode")]
 impl HevcDecoder {
-    /// Construct a new HEVC decoder. Errors with the libavcodec message when
-    /// the linked libavcodec has no HEVC decoder.
+    /// Construct a new HEVC decoder.
     ///
     /// That is the **expected** outcome on a stock qOS image: Fedora's
     /// `libavcodec-free` is configured `--disable-decoder='h264,hevc,vc1,vvc'`
     /// and carries no `hevc` entry at all. Only a host that replaced it
     /// (`libavcodec-freeworld`, or a self-built ffmpeg) can construct this
     /// decoder. Callers must treat the error as routine and fall back to SDR rather than dropping the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error with the libavcodec message when the linked libavcodec has no HEVC decoder.
     pub fn new() -> Result<Self, String> {
         FFMPEG_INIT.call_once(|| {
             let _ = ffmpeg_next::init();

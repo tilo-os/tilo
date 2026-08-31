@@ -59,6 +59,10 @@ impl Registry {
     /// Load from a TOML file. A missing file is treated as an empty registry —
     /// the host stays up with no providers and clients get clear
     /// "unsupported mime" errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or parsing the file fails (except for missing files).
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let raw = match std::fs::read_to_string(path) {
             Ok(s) => s,
@@ -69,6 +73,11 @@ impl Registry {
     }
 
     /// Parse the TOML body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if parsing the TOML fails or if a provider declares
+    /// an unknown priority tier.
     pub fn parse(toml_text: &str) -> anyhow::Result<Self> {
         let wire: WireRegistry = toml::from_str(toml_text)?;
         let mut providers = Vec::with_capacity(wire.provider.len());

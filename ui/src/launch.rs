@@ -232,7 +232,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     }
 
     if let Some(headless) = args.headless {
-        std::process::exit(headless::run(headless, (spec.live_root)(), spec.app_id));
+        std::process::exit(headless::run(&headless, (spec.live_root)(), spec.app_id));
     }
 
     let (state, autosave) = crate::persist::open(spec.app_id);
