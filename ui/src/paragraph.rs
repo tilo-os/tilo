@@ -355,8 +355,10 @@ fn compose_at_tolerance(
     // an abrupt loose-to-tight transition or consecutive hyphenated lines.
     let mut best = vec![[None; STATE_SLOTS]; count.saturating_add(1)];
     let initial_slot = state_slot(1, false);
-    if let Some(slot0) = best.get_mut(0) {
-        slot0[initial_slot] = Some(State {
+    if let Some(slot0) = best.get_mut(0)
+        && let Some(cell) = slot0.get_mut(initial_slot)
+    {
+        *cell = Some(State {
             demerits: 0.0,
             previous: 0,
             previous_slot: initial_slot,
@@ -372,55 +374,83 @@ fn compose_at_tolerance(
         if end != count && boxes.get(end).is_some_and(|item| !item.break_before) {
             continue;
         }
-        for start in 0..end {
-            let Some(previous_states) = best.get(start).copied() else {
+        accumulate_states_for_end(boxes, options, &mut best, count, end);
+    }
+
+    backtrack_composed_lines(&best, count, options)
+}
+
+/// The `start` sweep of [`compose_at_tolerance`]'s dynamic-programming
+/// step for one `end` boundary — split out to keep that function under
+/// the line-count limit. Mutates `best[end]` in place; every other slot
+/// it reads (`best[start]` for `start < end`) is already finalized.
+fn accumulate_states_for_end(
+    boxes: &[ParagraphBox],
+    options: ParagraphOptions,
+    best: &mut [[Option<State>; STATE_SLOTS]],
+    count: usize,
+    end: usize,
+) {
+    for start in 0..end {
+        let Some(previous_states) = best.get(start).copied() else {
+            continue;
+        };
+        for (previous_slot, previous) in previous_states.into_iter().enumerate() {
+            let Some(previous) = previous else {
                 continue;
             };
-            for (previous_slot, previous) in previous_states.into_iter().enumerate() {
-                let Some(previous) = previous else {
-                    continue;
-                };
-                let final_line = end == count;
-                let Some(metrics) = line_metrics(boxes, start, end, options, final_line) else {
-                    continue;
-                };
-                let badness = metrics.badness;
-                let boundary = if end < count {
-                    boxes.get(end).copied()
-                } else {
-                    None
-                };
-                let penalty = boundary.map_or(0.0, |item| f64::from(item.break_penalty));
-                let flagged = boundary.is_some_and(|item| item.flagged_break);
-                let mut demerits = previous.demerits
-                    + (options.line_penalty + badness).powi(2)
-                    + penalty.signum() * penalty.powi(2);
-                if previous.fitness.abs_diff(metrics.fitness) > 1 {
-                    demerits += options.fitness_demerit;
-                }
-                if previous.flagged && flagged {
-                    demerits += options.flagged_demerit;
-                }
-                let slot = state_slot(metrics.fitness, flagged);
-                let Some(slots) = best.get_mut(end) else {
-                    continue;
-                };
-                if slots[slot].is_none_or(|current| demerits < current.demerits) {
-                    slots[slot] = Some(State {
-                        demerits,
-                        previous: start,
-                        previous_slot,
-                        fitness: metrics.fitness,
-                        flagged,
-                        ratio: metrics.ratio,
-                        natural_width: metrics.natural,
-                        glyph_scale: metrics.glyph_scale,
-                    });
-                }
+            let final_line = end == count;
+            let Some(metrics) = line_metrics(boxes, start, end, options, final_line) else {
+                continue;
+            };
+            let badness = metrics.badness;
+            let boundary = if end < count {
+                boxes.get(end).copied()
+            } else {
+                None
+            };
+            let penalty = boundary.map_or(0.0, |item| f64::from(item.break_penalty));
+            let flagged = boundary.is_some_and(|item| item.flagged_break);
+            let mut demerits = previous.demerits
+                + (options.line_penalty + badness).powi(2)
+                + penalty.signum() * penalty.powi(2);
+            if previous.fitness.abs_diff(metrics.fitness) > 1 {
+                demerits += options.fitness_demerit;
+            }
+            if previous.flagged && flagged {
+                demerits += options.flagged_demerit;
+            }
+            let slot = state_slot(metrics.fitness, flagged);
+            let Some(slots) = best.get_mut(end) else {
+                continue;
+            };
+            let Some(cell) = slots.get_mut(slot) else {
+                continue;
+            };
+            if cell.is_none_or(|current| demerits < current.demerits) {
+                *cell = Some(State {
+                    demerits,
+                    previous: start,
+                    previous_slot,
+                    fitness: metrics.fitness,
+                    flagged,
+                    ratio: metrics.ratio,
+                    natural_width: metrics.natural,
+                    glyph_scale: metrics.glyph_scale,
+                });
             }
         }
     }
+}
 
+/// Walks [`compose_at_tolerance`]'s finished DP table backwards from the
+/// least-demerit final state to build the forward-ordered line list —
+/// split out to keep that function under the line-count limit.
+fn backtrack_composed_lines(
+    best: &[[Option<State>; STATE_SLOTS]],
+    count: usize,
+    options: ParagraphOptions,
+) -> Option<Vec<ComposedLine>> {
     let (mut slot, _) = best
         .get(count)?
         .iter()
@@ -430,14 +460,11 @@ fn compose_at_tolerance(
     let mut lines = Vec::new();
     let mut end = count;
     while end > 0 {
-        let Some(state) = best
+        let state = best
             .get(end)
             .and_then(|slots| slots.get(slot))
             .copied()
-            .flatten()
-        else {
-            return None;
-        };
+            .flatten()?;
         let final_line = end == count;
         let glue_scale = if final_line || !options.justify {
             1.0
