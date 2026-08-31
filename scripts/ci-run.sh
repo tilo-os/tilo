@@ -29,18 +29,42 @@ shift
 [ "$#" -gt 0 ] || { echo "ci-run.sh: no command given" >&2; exit 2; }
 
 log="$(mktemp -t "ci-${label//[^A-Za-z0-9_-]/_}-XXXXXX.log")"
+heartbeat_pid=""
+
+stop_heartbeat() {
+    if [ -n "$heartbeat_pid" ]; then
+        kill "$heartbeat_pid" 2>/dev/null || true
+        wait "$heartbeat_pid" 2>/dev/null || true
+        heartbeat_pid=""
+    fi
+}
+
+cleanup() {
+    stop_heartbeat
+    rm -f "$log" "/tmp/ci-run-distilled.$$"
+}
+trap cleanup EXIT
 
 echo "==> ${label}: $*"
 start=$(date +%s)
+# Forgejo's runner terminates a step after 15 minutes without output. Cargo can
+# legitimately be silent that long while linking a large workspace target, so
+# emit one compact progress line per minute until the command exits.
+(
+    while sleep 60; do
+        echo "==> ${label}: still running ($(( $(date +%s) - start ))s)"
+    done
+) &
+heartbeat_pid=$!
 # Stream and capture. PIPESTATUS[0] is the command's status, not tee's.
 "$@" 2>&1 | tee "$log"
 rc="${PIPESTATUS[0]}"
+stop_heartbeat
 elapsed=$(( $(date +%s) - start ))
 
 if [ "$rc" -eq 0 ]; then
     echo "==> ${label}: OK in ${elapsed}s"
     [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "- **${label}** — passed in ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"
-    rm -f "$log"
     exit 0
 fi
 
@@ -105,5 +129,4 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     } >> "$GITHUB_STEP_SUMMARY"
 fi
 
-rm -f "$log" "/tmp/ci-run-distilled.$$"
 exit "$rc"
