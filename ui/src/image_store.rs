@@ -52,8 +52,8 @@ pub struct ImageStore {
 
 impl ImageStore {
     /// Build a store with the default worker count.
-    pub fn new(fetch: Fetcher) -> Self {
-        Self::with_workers(&fetch, 6)
+    pub fn new(fetch: &Fetcher) -> Self {
+        Self::with_workers(fetch, 6)
     }
 
     /// Build a store with `workers` background fetch/decode threads (min 1).
@@ -265,7 +265,7 @@ mod tests {
             seen.fetch_add(1, Ordering::SeqCst);
             Some(bytes.clone())
         });
-        let store = ImageStore::new(fetch);
+        let store = ImageStore::new(&fetch);
 
         // First look: not cached → placeholder (None) + a load is scheduled.
         assert!(store.get("http://example.test/cover.png").is_none());
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn failed_fetch_settles_as_failed_not_pending() {
         let fetch: Fetcher = Arc::new(|_url: &str| None);
-        let store = ImageStore::new(fetch);
+        let store = ImageStore::new(&fetch);
         assert!(store.get("http://example.test/missing.jpg").is_none());
         store.block_until_idle(Duration::from_secs(5));
         assert!(store.is_idle(), "a failed fetch still settles");
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn empty_url_is_ignored() {
         let fetch: Fetcher = Arc::new(|_url: &str| Some(png_bytes(2, 2, [0, 0, 0])));
-        let store = ImageStore::new(fetch);
+        let store = ImageStore::new(&fetch);
         assert!(store.get("").is_none());
         assert!(store.is_idle(), "empty url schedules nothing");
     }

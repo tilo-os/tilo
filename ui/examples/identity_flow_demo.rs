@@ -164,6 +164,11 @@ pub fn run(args: &[String]) {
 /// Returns an error if any of the threshold-identity, record, or invite
 /// construction steps fail. Never happens with this hardcoded seed data,
 /// but each step is fallible in its real signature.
+#[allow(
+    clippy::similar_names,
+    reason = "sk/pk is the standard secret-key/public-key naming convention; \
+              distinguishing them further would reduce clarity"
+)]
 fn seed_flow(flow: &mut IdentityFlow) -> Result<(), IdentityFlowError> {
     let mut rng = OsRng;
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
@@ -181,11 +186,6 @@ fn seed_flow(flow: &mut IdentityFlow) -> Result<(), IdentityFlowError> {
     }
     flow.invite_mint
         .set_channel(ChannelId::new(), "engineering");
-    #[allow(
-        clippy::similar_names,
-        reason = "sk/pk is the standard secret-key/public-key naming convention; \
-                  distinguishing them further would reduce clarity"
-    )]
     let (owner_sk, owner_pk) = generate_keypair();
     // checked_add: SystemTime's Add<Duration> panics on overflow. One hour
     // from now never overflows; falling back to "now" keeps this a real

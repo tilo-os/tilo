@@ -380,11 +380,6 @@ impl BooksApp {
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent per-peer view-state flag (dirty, mouse_down, \
-              dragging_sel, ...), not a combinatorial state machine"
-)]
-#[allow(
-    clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag spanning unrelated \
               subsystems (library-load state, drag/selection gestures, popover \
               open/closed toggles, and a handful of --shots-only seams); \
@@ -3217,7 +3212,7 @@ impl Widget for BooksApp {
         if self.forward_shared_input_event(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             doc,
             path,
             node_id,
@@ -3304,7 +3299,7 @@ impl BooksApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &ObjId,
         node_id: NodeId,
@@ -3315,7 +3310,7 @@ impl BooksApp {
         let (note_text, submit) = self.note_composer.handle_event(
             event,
             scale_factor,
-            *modifiers,
+            modifiers,
             doc,
             path,
             node_id,
@@ -3333,7 +3328,7 @@ impl BooksApp {
         let changes = self.number_controls.handle_event(
             event,
             scale_factor,
-            *modifiers,
+            modifiers,
             doc,
             path,
             node_id,
@@ -3480,12 +3475,11 @@ impl BooksApp {
         }
     }
 
-    fn handle_left_press(
-        &mut self,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        handled: &mut bool,
-    ) {
+    /// Early-out hit-testing for the color picker and note composer, which
+    /// each own a private hit stack outside the app-wide `self.hits` list
+    /// and must be asked before it. Returns whether either consumed the
+    /// press, so the caller can return immediately without falling through.
+    fn handle_left_press_overlay(&mut self, doc: &mut AutoCommit, handled: &mut bool) -> bool {
         if let Some(action) = self.color_picker.press(self.cursor) {
             self.mouse_down = true;
             match action {
@@ -3497,7 +3491,7 @@ impl BooksApp {
             self.refresh_from_doc(doc);
             self.dirty = true;
             *handled = true;
-            return;
+            return true;
         }
         if let Some(action) = self.note_composer.hit_test(self.cursor) {
             match action {
@@ -3510,6 +3504,18 @@ impl BooksApp {
             self.refresh_from_doc(doc);
             self.dirty = true;
             *handled = true;
+            return true;
+        }
+        false
+    }
+
+    fn handle_left_press(
+        &mut self,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        if self.handle_left_press_overlay(doc, handled) {
             return;
         }
         // The comment panel owns a modal, private hit stack. Ask it
@@ -4223,7 +4229,7 @@ impl BooksApp {
         right_x: f64,
         cy: f64,
         value: f64,
-        field: NumberField,
+        field: &NumberField,
     ) -> f64 {
         let btn = 28.0;
         let vslot_w = 52.0;
@@ -4231,7 +4237,7 @@ impl BooksApp {
         let width = btn * 2.0 + vslot_w + 8.0;
         let minus_x = right_x - width;
         self.number_controls.draw(
-            &field,
+            field,
             value,
             Rect::new(minus_x, by, right_x, by + btn),
             scene,
@@ -5216,20 +5222,25 @@ impl BooksApp {
         );
 
         // Plus mark inside a soft accent disc.
-        let cx = x + w / 2.0;
+        let disc_cx = x + w / 2.0;
         let disc_cy = y + cover_h * 0.40;
         let disc_r = 24.0;
         paint::circle(
             scene,
             t,
-            Point::new(cx, disc_cy),
+            Point::new(disc_cx, disc_cy),
             disc_r,
             theme.accent_primary.with_alpha_factor(0.16),
         );
         paint::plus(
             scene,
             t,
-            Rect::new(cx - 11.0, disc_cy - 11.0, cx + 11.0, disc_cy + 11.0),
+            Rect::new(
+                disc_cx - 11.0,
+                disc_cy - 11.0,
+                disc_cx + 11.0,
+                disc_cy + 11.0,
+            ),
             theme.accent_primary,
             2.2,
         );
@@ -5242,7 +5253,7 @@ impl BooksApp {
             title,
             15.0,
             c.text_primary,
-            t * Affine::translate((cx - f64::from(title_w) / 2.0, disc_cy + disc_r + 16.0)),
+            t * Affine::translate((disc_cx - f64::from(title_w) / 2.0, disc_cy + disc_r + 16.0)),
             None,
             TextWeight::Semibold,
         );
@@ -5253,7 +5264,7 @@ impl BooksApp {
             hint,
             12.0,
             c.text_dim,
-            t * Affine::translate((cx - f64::from(hint_w) / 2.0, disc_cy + disc_r + 38.0)),
+            t * Affine::translate((disc_cx - f64::from(hint_w) / 2.0, disc_cy + disc_r + 38.0)),
             None,
         );
 
@@ -7187,7 +7198,7 @@ impl BooksApp {
             row_h,
             "Text size",
             f64::from(self.settings.font_scale) * 100.0,
-            NumberField::FontScale,
+            &NumberField::FontScale,
         );
         let y = y + row_h + 10.0;
         self.stepper_row(
@@ -7202,7 +7213,7 @@ impl BooksApp {
             row_h,
             "Line spacing",
             f64::from(self.settings.line_spacing),
-            NumberField::LineSpacing,
+            &NumberField::LineSpacing,
         );
         y + row_h + 22.0
     }
@@ -7451,7 +7462,7 @@ impl BooksApp {
         h: f64,
         label: &str,
         value: f64,
-        field: NumberField,
+        field: &NumberField,
     ) {
         tr.draw_text_weighted(
             scene,
@@ -7464,7 +7475,7 @@ impl BooksApp {
         );
         let width = (h * 2.0 + 62.0).min((x1 - x0) * 0.58);
         self.number_controls.draw(
-            &field,
+            field,
             value,
             Rect::new(x1 - width, y, x1, y + h),
             scene,
@@ -8574,7 +8585,7 @@ impl BooksApp {
             size_right,
             cy,
             f64::from(f.size_mult),
-            NumberField::FontMult(f.id.clone()),
+            &NumberField::FontMult(f.id.clone()),
         );
         // Enable/disable toggle (= whether it appears in quick settings).
         let tog_w = 40.0;

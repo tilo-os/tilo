@@ -163,6 +163,12 @@ impl GrantStoreHandle {
     /// of `kind` for `caller`. `None` means "no grant" → the portal will enqueue a prompt.
     ///
     /// Acquires a read lock; returns `None` if the workspace doesn't exist (drained workspace, racy portal request) — defaults safely to deny.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the read guard protects `ws`, which the closure inside `.collect()` needs \
+                  through the inner block's final statement — already dropped at the earliest \
+                  possible point"
+    )]
     pub fn lookup(&self, caller: &PortalCaller, kind: CapabilityKind) -> Option<GrantScope> {
         // Collect the matching expiries while the lock is held, then fold
         // them outside it — nothing past this point touches the tree.
@@ -724,6 +730,11 @@ mod tests {
     /// immediately visible to the shell chrome (the WS-Settings "Permissions"
     /// tab reads from `ChromeState`'s shared `WorkspaceTreeHandle`), not sitting in an independent clone.
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "st's only use is producing tree via tree(), read from through the inner \
+                  block's last statement; nothing to drop earlier"
+    )]
     fn grant_inserted_via_portal_is_visible_in_ws_settings() {
         use crate::shell::chrome_state::ChromeState;
         use crate::shell::state::WorkspaceTreeHandleExt;

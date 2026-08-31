@@ -1466,6 +1466,13 @@ impl HexView {
 
     /// Route an event into the active shared field, keeping only byte-search
     /// policy (kind cycling / match navigation / offset commit) in this app.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "OverlayLayoutCtx bundles a `&mut Option<NodeId>` and is built fresh at the \
+                  single call site purely to move its fields on into the active field's \
+                  Widget::handle_event; it isn't Copy and taking it by reference would still \
+                  need to move the mutable reference back out, so by-value is the real shape"
+    )]
     fn handle_overlay_event(
         &mut self,
         event: &WindowEvent,

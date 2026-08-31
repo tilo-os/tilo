@@ -494,10 +494,10 @@ impl ChromeState {
     /// Person principal selected for the active workspace, or the session
     /// fallback when no workspace is active.
     pub fn active_local_user(&self) -> crate::shell::state::UserId {
-        self.tree()
-            .active_workspace()
-            .map(|workspace| self.local_user_for_room(&workspace.room))
-            .unwrap_or_else(|| self.local_user_id.clone())
+        self.tree().active_workspace().map_or_else(
+            || self.local_user_id.clone(),
+            |workspace| self.local_user_for_room(&workspace.room),
+        )
     }
 
     pub fn records(&self) -> &RecordStore {

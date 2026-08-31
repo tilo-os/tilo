@@ -209,6 +209,12 @@ fn participant_names_use_room_then_handle_then_local_id_without_raw_peer_ids() {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "guard borrows out `state` and `records`, used through the compliance-record \
+              recheck after compaction at the end of the test, so the guard must stay held \
+              for the whole function"
+)]
 fn redaction_authorization_markers_filtering_and_persistence_are_one_policy() {
     let mut f = fixture();
     let target = signed_op(

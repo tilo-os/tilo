@@ -653,7 +653,7 @@ impl MusicApp {
             lyrics_for: None,
             lyrics_synced: false,
             shot_stage: None,
-            images: ImageStore::new(image_fetcher()),
+            images: ImageStore::new(&image_fetcher()),
             art_urls: HashMap::new(),
             home: None,
             home_requested: false,

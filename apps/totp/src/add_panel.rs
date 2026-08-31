@@ -1204,7 +1204,7 @@ impl AddAccountPanel {
             self.handle_cursor_moved(
                 event,
                 scale_factor,
-                modifiers,
+                *modifiers,
                 state,
                 path,
                 handled,
@@ -1248,7 +1248,7 @@ impl AddAccountPanel {
             self.handle_mouse_press(
                 event,
                 scale_factor,
-                modifiers,
+                *modifiers,
                 state,
                 path,
                 handled,
@@ -1287,7 +1287,7 @@ impl AddAccountPanel {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -1309,7 +1309,7 @@ impl AddAccountPanel {
             self.field_mut(field).handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -1367,7 +1367,7 @@ impl AddAccountPanel {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -1428,7 +1428,7 @@ impl AddAccountPanel {
                 self.field_mut(field).handle_event(
                     event,
                     scale_factor,
-                    modifiers,
+                    &modifiers,
                     state,
                     path,
                     handled,

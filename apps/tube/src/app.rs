@@ -2554,10 +2554,11 @@ mod tests {
         use std::time::Duration;
         // A fetcher that blocks briefly so a load is deterministically in
         // flight (pending ≥ 1) when we poll.
-        let store = ui::ImageStore::new(Arc::new(|_: &str| {
+        let fetcher: ui::image_store::Fetcher = Arc::new(|_: &str| {
             std::thread::sleep(Duration::from_millis(200));
             None
-        }));
+        });
+        let store = ui::ImageStore::new(&fetcher);
         let _ = store.get("http://x/a.png");
         assert!(store.pending() >= 1, "a load is in flight");
 

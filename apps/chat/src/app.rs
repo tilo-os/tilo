@@ -531,7 +531,7 @@ impl ChatApp {
             media: MediaEngine::simulated(),
             perms: ChatPermissions::permissive(),
             actions: ui::ActionHost::new(),
-            images: ui::ImageStore::new(crate::images::fetcher()),
+            images: ui::ImageStore::new(&crate::images::fetcher()),
             rect: Rect::ZERO,
             root_node: None,
             video_node: None,
