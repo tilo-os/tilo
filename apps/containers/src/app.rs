@@ -20,11 +20,14 @@ use std::time::Instant;
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
 use std::rc::Rc;
+use ui::PathSegment;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
-use ui::widget::{FlapState, ModalDialog, PromptBody, SearchField, SplitLayout, Text, Widget};
+use ui::widget::{
+    FlapState, ModalDialog, PromptBody, SearchField, SplitLayout, Text, TextInput, Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -206,8 +209,10 @@ pub struct ContainersApp {
     prompt_dialog: Option<PromptDlg>,
     /// Whether the create-container modal is open.
     pub(crate) create_open: bool,
-    /// Which create field has keyboard focus (index into `CreateField::ALL`).
-    pub(crate) create_focus: usize,
+    /// Which create field has keyboard focus.
+    pub(crate) create_focus: CreateField,
+    /// Shared CRDT-bound editors for the six dynamic create-form fields.
+    pub(crate) create_inputs: [TextInput; CreateField::COUNT],
     /// State of the typeable image combobox inside the create modal.
     pub(crate) combo: ComboState,
     /// Live pull progress overlay, if a pull is running.
@@ -261,6 +266,20 @@ impl ContainersApp {
         } else {
             (None, None)
         };
+        let create_inputs = std::array::from_fn(|index| {
+            let field = CreateField::ALL
+                .get(index)
+                .copied()
+                .unwrap_or(CreateField::Name);
+            TextInput::new(vec![
+                PathSegment::Field("container_create".into()),
+                PathSegment::Field(field.key().into()),
+            ])
+            .with_id(&format!("container_create_{}", field.key()))
+            .with_placeholder(field.placeholder())
+            .with_font_size(13.0)
+            .with_plain_chrome()
+        });
         Self {
             engine,
             rect: Rect::ZERO,
@@ -273,7 +292,8 @@ impl ContainersApp {
             prompt: None,
             prompt_dialog: None,
             create_open: false,
-            create_focus: 0,
+            create_focus: CreateField::Name,
+            create_inputs,
             combo: ComboState::default(),
             pull: None,
             search_field: SearchField::new()
@@ -1024,7 +1044,7 @@ impl Widget for ContainersApp {
                 "distrobox" => ViewDoc::set_section(doc, Section::Distrobox),
                 "create" | "combo" => {
                     self.create_open = true;
-                    self.create_focus = 1;
+                    self.create_focus = CreateField::Image;
                     ViewDoc::set_create_field(doc, CreateField::Name, "web-frontend");
                     ViewDoc::set_create_field(doc, CreateField::Image, "nginx");
                     ViewDoc::set_create_field(doc, CreateField::Ports, "8080:80, 8443:443");
@@ -1205,7 +1225,7 @@ impl Widget for ContainersApp {
 
         // --- Overlays ---
         if self.create_open {
-            self.draw_create_modal(scene, tr, theme, r, &view);
+            self.draw_create_modal(scene, tr, theme, presence, r);
         }
         if self.pull.is_some() {
             self.draw_pull_overlay(scene, tr, theme, r);
@@ -1251,6 +1271,10 @@ impl Widget for ContainersApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the top-level dispatcher coordinates overlays, shared inputs, and app navigation"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -1327,6 +1351,19 @@ impl Widget for ContainersApp {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                if self.create_open {
+                    for field in CreateField::ALL {
+                        self.route_create_input(
+                            field,
+                            event,
+                            scale_factor,
+                            *modifiers,
+                            doc,
+                            path,
+                            focus_target,
+                        );
+                    }
+                }
                 // Keep the launcher's pointer position current for its click test.
                 self.route_to_launcher(event, scale_factor, *modifiers, doc, path, focus_target);
                 // Hover changes button shading — request a redraw.
@@ -1358,12 +1395,47 @@ impl Widget for ContainersApp {
                     *handled = true;
                 } else {
                     self.on_click(doc, handled);
+                    if self.create_open {
+                        self.route_create_input(
+                            self.create_focus,
+                            event,
+                            scale_factor,
+                            *modifiers,
+                            doc,
+                            path,
+                            focus_target,
+                        );
+                    }
                 }
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                self.on_key(doc, key_event, *modifiers, handled);
+                self.on_key(
+                    doc,
+                    event,
+                    key_event,
+                    scale_factor,
+                    *modifiers,
+                    path,
+                    focus_target,
+                    handled,
+                );
+            }
+            WindowEvent::Ime(_) if self.create_open => {
+                let field = self.create_focus;
+                self.focus_create_field(field);
+                self.route_create_input(
+                    field,
+                    event,
+                    scale_factor,
+                    *modifiers,
+                    doc,
+                    path,
+                    focus_target,
+                );
+                self.after_create_input(field);
+                *handled = true;
             }
             _ => {}
         }
@@ -1403,7 +1475,6 @@ pub(crate) struct ViewState {
     pub selected: Option<String>,
     pub tab: DetailTab,
     pub search: String,
-    pub create: [String; CreateField::COUNT],
 }
 
 impl Default for ViewState {
@@ -1413,25 +1484,113 @@ impl Default for ViewState {
             selected: None,
             tab: DetailTab::Logs,
             search: String::new(),
-            create: Default::default(),
         }
     }
 }
 
 impl ContainersApp {
-    pub(crate) fn refresh_view(&mut self, doc: &mut AutoCommit) {
-        let mut create: [String; CreateField::COUNT] = Default::default();
-        for field in CreateField::ALL {
-            if let Some(slot) = create.get_mut(field.index()) {
-                *slot = ViewDoc::create_field(doc, field);
-            }
+    #[allow(
+        clippy::expect_used,
+        reason = "CreateField::COUNT and CreateField::ALL define the fixed six-slot form together"
+    )]
+    pub(crate) fn create_input_mut(&mut self, field: CreateField) -> &mut TextInput {
+        self.create_inputs
+            .get_mut(field.index())
+            .expect("every CreateField has one shared input")
+    }
+
+    #[allow(
+        clippy::expect_used,
+        reason = "CreateField::COUNT and CreateField::ALL define the fixed six-slot form together"
+    )]
+    pub(crate) fn create_input(&self, field: CreateField) -> &TextInput {
+        self.create_inputs
+            .get(field.index())
+            .expect("every CreateField has one shared input")
+    }
+
+    pub(crate) fn focus_create_field(&mut self, field: CreateField) {
+        self.create_focus = field;
+        let open = self.create_open;
+        for candidate in CreateField::ALL {
+            Widget::set_focus(self.create_input_mut(candidate), candidate == field && open);
         }
+    }
+
+    pub(crate) fn blur_create_fields(&mut self) {
+        for field in CreateField::ALL {
+            Widget::set_focus(self.create_input_mut(field), false);
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event for one embedded hand-laid field"
+    )]
+    pub(crate) fn route_create_input(
+        &mut self,
+        field: CreateField,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+    ) {
+        // `sync` normally binds these once per frame. Bind defensively here as
+        // well so an event arriving immediately after the modal opens still
+        // edits the native collaborative Text object.
+        let obj = ViewDoc::create_field_obj(doc, field);
+        let input = self.create_input_mut(field);
+        input.bind_text(obj);
+        Widget::sync(input, doc, path);
+        let mut taffy = TaffyTree::new();
+        let Ok(node) = taffy.new_leaf(Style::default()) else {
+            return;
+        };
+        let mut ignored = false;
+        Widget::handle_event(
+            self.create_input_mut(field),
+            event,
+            scale_factor,
+            &modifiers,
+            doc,
+            path,
+            &mut ignored,
+            focus_target,
+            node,
+            &taffy,
+        );
+    }
+
+    pub(crate) fn after_create_input(&mut self, field: CreateField) {
+        if self.create_input_mut(field).take_dirty().is_some() && field == CreateField::Image {
+            self.combo.open = true;
+            self.combo.highlight = 0;
+        }
+    }
+
+    fn sync_create_inputs(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+        for field in CreateField::ALL {
+            let obj = ViewDoc::create_field_obj(doc, field);
+            let input = self.create_input_mut(field);
+            input.bind_text(obj);
+            Widget::sync(input, doc, root);
+        }
+        if self.create_open {
+            self.focus_create_field(self.create_focus);
+        } else {
+            self.blur_create_fields();
+        }
+    }
+
+    pub(crate) fn refresh_view(&mut self, doc: &mut AutoCommit) {
+        self.sync_create_inputs(doc, &automerge::ROOT);
         self.view = ViewState {
             section: ViewDoc::section(doc),
             selected: ViewDoc::selected(doc),
             tab: ViewDoc::tab(doc),
             search: ViewDoc::search(doc),
-            create,
         };
     }
 
@@ -1475,7 +1634,7 @@ impl ContainersApp {
     /// dropdown shown (the create-with-combobox flow).
     pub fn open_create_with_combo(&mut self) {
         self.create_open = true;
-        self.create_focus = CreateField::Image.index();
+        self.focus_create_field(CreateField::Image);
         self.combo.open = true;
         self.combo.highlight = 0;
     }
