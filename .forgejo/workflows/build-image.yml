@@ -203,14 +203,50 @@ jobs:
 
       - name: Install, boot, and exercise the projection stack in a VM
         if: ${{ github.event_name == 'workflow_dispatch' }}
+        timeout-minutes: 45
         env:
           QOS_IMAGE_REF: code.podesta.ai/qos/qos@${{ steps.build.outputs.digest }}
           QOS_RUN: /tmp/qos-projection-vm
           QOS_OUTPUT: /tmp/qos-projection-image
           QOS_USER: quickuser
           QOS_PASS: quickdesktop
+          # CI has the tools directly in its job container; the developer
+          # default enters a named distrobox that does not exist on runners.
+          QOS_DISTROBOX: ""
+          QOS_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
+
+          # The job remains inside the runner's Kata VM. Its pod annotation
+          # loads kvm_amd in that disposable guest, so this is nested KVM—not a
+          # mount of the Kubernetes node's /dev/kvm into workflow code.
+          test -c /dev/kvm || {
+            echo "::error::Kata guest has no /dev/kvm; verify the runner kernel_modules annotation"
+            exit 1
+          }
+          grep -Eq '(^| )(svm|vmx)( |$)' /proc/cpuinfo || {
+            echo "::error::Kata guest does not expose hardware virtualization"
+            exit 1
+          }
+          sudo -n true || {
+            echo "::error::disk installation requires the runner's passwordless, Kata-confined sudo"
+            exit 1
+          }
+
+          # This is the only workflow that needs disk/firmware tooling. Keep it
+          # out of the general runner image and install it only for deliberate
+          # release validation; --no-install-recommends bounds download and
+          # unpack cost. The image build itself is not repeated.
+          export DEBIAN_FRONTEND=noninteractive
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends \
+            btrfs-progs dosfstools fuse-overlayfs openssh-client ovmf podman \
+            qemu-system-x86 qemu-utils slirp4netns socat sshpass sudo systemd \
+            uidmap util-linux
+          command -v podman qemu-img qemu-system-x86_64 sshpass socat systemd-repart >/dev/null
+
+          printf '%s' "$QOS_REGISTRY_TOKEN" | podman login code.podesta.ai \
+            --username "${{ github.actor }}" --password-stdin
           podman pull "$QOS_IMAGE_REF"
           mkdir -p "$QOS_OUTPUT/qcow2" "$QOS_RUN"
           ./os/dev/disk-image.sh "$QOS_IMAGE_REF" "$QOS_OUTPUT/qcow2" \
