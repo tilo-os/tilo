@@ -43,6 +43,7 @@ use crate::shell::peer_sync_overlay::{EventOutcome as PeerSyncEventOutcome, Peer
 pub use crate::shell::peer_sync_overlay::{PeerSyncRequest, PeerSyncSnapshot};
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::projection_overlay::ProjectionOverlay;
+use crate::shell::quick_settings_vpn::{QuickSettingsVpnPane, VpnPaneOutcome};
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{
     Capability, GRANT_ALWAYS, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
@@ -277,6 +278,9 @@ pub struct ShellOverlayHost {
     /// uses [`crate::shell::qs_actions::RealQsActions`]; tests swap in a
     /// recording impl via [`Self::with_qs_actions`].
     qs_actions: Box<dyn crate::shell::qs_actions::QsActions>,
+    /// VPN drill-in geometry, shared toggle painting, click routing and OS
+    /// dispatch. Chrome remains the source of the profile snapshot.
+    qs_vpn_pane: QuickSettingsVpnPane,
     /// Live battery/network/volume readings, or `None` when nothing
     /// polls — `--shots` and headless tests have no poller so their
     /// pixels don't depend on host hardware. See
@@ -913,6 +917,7 @@ impl ShellOverlayHost {
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
+            qs_vpn_pane: QuickSettingsVpnPane::default(),
             status_bridge: None,
             session_audio_policy: None,
             room_activity: crate::shell::room_activity::RoomActivityPane::new(),
@@ -5735,7 +5740,8 @@ impl ShellOverlayHost {
             // on the pane can be focused by a click.
             return;
         }
-        if back.contains(p) {
+        if back.contains(p) && !matches!(current_level, crate::shell::quick_settings::QsLevel::Vpn)
+        {
             if let Some(chrome) = self.chrome.clone() {
                 let mut st = chrome.borrow_mut();
                 st.quick_settings.pop_level();
@@ -5776,37 +5782,20 @@ impl ShellOverlayHost {
                 }
             }
         } else if matches!(current_level, crate::shell::quick_settings::QsLevel::Vpn) {
-            let rect = self.quick_settings_rect();
-            let row_h = 56.0_f64;
-            let list_y0 = rect.y0 + 56.0;
-            let vpns = self
-                .chrome
-                .as_ref()
-                .map(|c| c.borrow().quick_settings.vpns.clone())
-                .unwrap_or_default();
-            for (i, vpn) in vpns.iter().enumerate() {
-                let row_y = list_y0 + usize_to_f64_lossy(i) * row_h;
-                let row = Rect::new(rect.x0 + 12.0, row_y, rect.x1 - 12.0, row_y + row_h - 4.0);
-                if row.contains(p) {
-                    let next = !vpn.active;
-                    crate::shell::qs_actions::log_qs_result(
-                        "set_vpn_connection",
-                        self.qs_actions.set_vpn_connection(&vpn.name, next),
-                    );
-                    if let Some(chrome) = self.chrome.clone() {
-                        let mut st = chrome.borrow_mut();
-                        if let Some(item) = st
-                            .quick_settings
-                            .vpns
-                            .iter_mut()
-                            .find(|item| item.name == vpn.name)
-                        {
-                            item.active = next;
-                        }
-                        st.bump();
-                    }
-                    return;
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                let outcome = self.qs_vpn_pane.handle_click(
+                    p,
+                    self.quick_settings_rect(),
+                    &mut st.quick_settings.vpns,
+                    self.qs_actions.as_ref(),
+                );
+                match outcome {
+                    VpnPaneOutcome::Back => st.quick_settings.pop_level(),
+                    VpnPaneOutcome::Changed => {}
+                    VpnPaneOutcome::None => return,
                 }
+                st.bump();
             }
         } else if matches!(
             current_level,
@@ -10128,7 +10117,7 @@ impl ShellOverlayHost {
     }
 
     fn draw_quick_settings(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -10209,7 +10198,7 @@ impl ShellOverlayHost {
     /// Wifi/Bluetooth/VPN/Notifications levels replace the whole body
     /// with a header + list and return `true` so the caller stops.
     fn draw_quick_settings_drill_in(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -10228,7 +10217,17 @@ impl ShellOverlayHost {
                 true
             }
             crate::shell::quick_settings::QsLevel::Vpn => {
-                self.draw_qs_vpn_list(scene, transform, text_renderer, theme, qs);
+                let panel = self.quick_settings_rect();
+                let cursor = self.last_cursor;
+                self.qs_vpn_pane.draw(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    panel,
+                    cursor,
+                    &qs.vpns,
+                );
                 true
             }
             crate::shell::quick_settings::QsLevel::Notifications => {
@@ -11477,81 +11476,6 @@ impl ShellOverlayHost {
                 let dot = vello::kurbo::Circle::new(Point::new(cx, cy), 5.0);
                 scene.fill(Fill::NonZero, transform, colors.accent[5], None, &dot);
             }
-        }
-    }
-
-    /// VPN is a picker, never an ambiguous one-click toggle: every configured
-    /// profile keeps its own visible state and hit target.
-    fn draw_qs_vpn_list(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.quick_settings_rect();
-        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "VPN");
-        if qs.vpns.is_empty() {
-            self.draw_qs_drill_in_empty(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                "No VPN profiles yet · add one in Settings",
-            );
-            return;
-        }
-        let row_h = 56.0_f64;
-        for (i, vpn) in qs.vpns.iter().enumerate() {
-            let y = rect.y0 + 56.0 + usize_to_f64_lossy(i) * row_h;
-            let row = Rect::new(rect.x0 + 12.0, y, rect.x1 - 12.0, y + row_h - 4.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if vpn.active {
-                    colors.accent[5].with_alpha_factor(0.18)
-                } else {
-                    colors.neutral[2]
-                },
-                None,
-                &RoundedRect::from_rect(row, 12.0),
-            );
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(row.x0 + 12.0, row.y0 + 16.0, row.x0 + 32.0, row.y0 + 36.0),
-                ui::icons::Icon::Shield,
-                if vpn.active {
-                    colors.accent[5]
-                } else {
-                    colors.text_dim
-                },
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &vpn.name,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform.pre_translate((row.x0 + 44.0, row.y0 + 9.0).into()),
-                None,
-                TextWeight::Medium,
-            );
-            text_renderer.draw_text(
-                scene,
-                if vpn.active {
-                    "Connected · click to disconnect"
-                } else {
-                    "Click to connect"
-                },
-                tokens.typography.scale.xs,
-                colors.text_dim,
-                transform.pre_translate((row.x0 + 44.0, row.y0 + 29.0).into()),
-                None,
-            );
         }
     }
 
