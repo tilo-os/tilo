@@ -25,6 +25,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, MultiChannel, MultiOutcome, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -44,8 +45,33 @@ use crate::model::{
     Clip, ClipId, EffectKind, Filters, MediaId, MediaItem, MediaKind, Project, TrackId, TrackKind,
     Transition,
 };
-use crate::portal::{self, ImportChannel, ImportOutcome};
 use crate::preview::{self, CompositedFrame, Rgb};
+
+fn media_import_request() -> PickRequest {
+    PickRequest::open_multiple("Import media", "Import")
+        .thread_name("video-editor-import")
+        .filter(
+            FileFilter::new("Media")
+                .mimetype("video/mp4")
+                .mimetype("video/webm")
+                .mimetype("video/x-matroska")
+                .mimetype("video/quicktime")
+                .mimetype("audio/wav")
+                .mimetype("audio/mpeg")
+                .mimetype("image/png")
+                .mimetype("image/jpeg")
+                .glob("*.mp4")
+                .glob("*.mov")
+                .glob("*.webm")
+                .glob("*.mkv")
+                .glob("*.wav")
+                .glob("*.mp3")
+                .glob("*.png")
+                .glob("*.jpg")
+                .glob("*.jpeg"),
+        )
+        .all_files()
+}
 use crate::probe;
 use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
 
@@ -203,7 +229,7 @@ pub struct VideoEditorApp {
     export: ExportSettings,
     export_status: ExportStatus,
     /// A media-import portal request in flight, drained each `sync`.
-    import_rx: Option<ImportChannel>,
+    import_rx: Option<MultiChannel>,
     /// A short, honest status line shown after an import attempt (how many
     /// clips landed, or why the portal round-trip failed). Never a fake success.
     import_notice: Option<String>,
@@ -1281,7 +1307,7 @@ impl VideoEditorApp {
     /// build; the chosen files are drained each frame in [`Self::drain_import`].
     fn trigger_import(&mut self) {
         self.import_notice = Some("Choose media to import…".to_string());
-        self.import_rx = Some(portal::request_import());
+        self.import_rx = Some(media_import_request().send_multiple());
     }
 
     /// Drain any pending imports (queued deterministic files first, then a
@@ -1313,12 +1339,12 @@ impl VideoEditorApp {
             self.import_rx = None;
         }
         match outcome {
-            Some(ImportOutcome::Selected(paths)) => {
+            Some(MultiOutcome::Selected(paths)) => {
                 let n = self.import_files(doc, &paths);
                 self.import_notice = Some(import_summary(n, paths.len()));
             }
-            Some(ImportOutcome::Cancelled) => self.import_notice = None,
-            Some(ImportOutcome::Failed(reason)) => self.import_notice = Some(reason),
+            Some(MultiOutcome::Cancelled) => self.import_notice = None,
+            Some(MultiOutcome::Failed(reason)) => self.import_notice = Some(reason),
             None => {}
         }
     }
@@ -5136,16 +5162,16 @@ mod tests {
     fn portal_import_action_adds_the_clip_through_the_document() {
         // Drive the exact per-frame path a real portal pick feeds — an injected
         // multi-select outcome carrying one real file, installed on `import_rx`
-        // exactly as `portal::request_import()` would. This proves the import
+        // exactly as `ui::portal::PickRequest::send_multiple()` would. This proves the import
         // code path is compiled into the default build (no feature wall) and
         // that draining it routes the clip through the `UpsertMedia` action on
         // `ui::ActionHost`, so it lands in the shared document a peer replicates.
         let f = write_real_png(480, 270);
         let mut app = VideoEditorApp::new();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.import_rx = Some(portal::inject_for_test(ImportOutcome::Selected(vec![
-            f.clone(),
-        ])));
+        app.import_rx = Some(ui::portal::inject_multi_for_test(MultiOutcome::Selected(
+            vec![f.clone()],
+        )));
 
         let mut doc = AutoCommit::new();
         assert!(

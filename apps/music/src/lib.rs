@@ -65,7 +65,6 @@ pub mod lyrics;
 pub mod model;
 pub mod mpris;
 pub mod net;
-pub mod portal;
 pub mod relay;
 pub mod search_type;
 pub mod seed;

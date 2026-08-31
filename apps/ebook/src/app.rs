@@ -42,6 +42,7 @@ use std::time::{Duration, Instant};
 use ui::ColorCompat;
 use ui::animation::{Animated, Curve};
 use ui::gesture::{DragSelect, Granularity};
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Widget};
@@ -56,9 +57,22 @@ use crate::model::{
 };
 use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice, layout_chapter};
 use crate::paint;
+use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
+use crate::shelf_controls::{ShelfControlAction, ShelfControls};
 
 const TOP_BAR: f64 = 54.0;
+
+fn book_open_request() -> PickRequest {
+    PickRequest::open("Open a book", "Open")
+        .thread_name("ebook-portal-open")
+        .filter(
+            FileFilter::new("EPUB books")
+                .mimetype("application/epub+zip")
+                .glob("*.epub"),
+        )
+        .all_files()
+}
 
 /// Pixels one wheel-line notch maps to, matching the toolkit's other scroll
 /// surfaces so a mouse wheel feels consistent across apps.
@@ -344,11 +358,7 @@ enum Action {
     CloseFontPicker,
     AddSystemFont(String),
     BeginRenameFont(String),
-
     // --- library shelf ---------------------------------------------------
-    ToggleSortMenu,
-    SetSort(crate::model::LibrarySort),
-    ToggleHideRead,
 }
 
 /// What the colour picker is editing.
@@ -444,7 +454,7 @@ pub struct BooksApp {
     pending_open_path: Option<PathBuf>,
     /// An in-flight host file-picker request, drained once per frame in
     /// `sync`. `None` when no picker is open (the app never draws its own).
-    portal_rx: Option<crate::portal::PortalChannel>,
+    portal_rx: Option<PortalChannel>,
     /// Empty-state message when opening a book failed.
     load_error: Option<String>,
 
@@ -520,20 +530,8 @@ pub struct BooksApp {
     /// summoned by the "Aa" button in the top bar.
     type_popover: bool,
 
-    /// The floating page-indicator bubble ([`ui::StatusBubble`]) over the
-    /// bottom-centre of the reading column on a page change or hover.
-    page_bubble: ui::StatusBubble,
-    /// The (chapter, page) the bubble last announced, so a change re-pokes
-    /// it. `None` until the first draw (so opening a book doesn't poke it).
-    bubble_shown: Option<(usize, usize)>,
-    /// The bubble's pill + chevron rects, captured during draw for hover
-    /// detection and click hit-testing.
-    bubble_rect: Rect,
-    bubble_prev: Rect,
-    bubble_next: Rect,
-    /// Screenshot-only: force the page bubble hover-pinned open. Never set
-    /// at runtime.
-    shots_reader_bubble: bool,
+    /// Owns the transient page indicator's animation, drawing and hit-testing.
+    reader_bubble: ReaderBubble,
 
     cursor: Point,
     /// First block index visible on the current page (for bookmark targeting).
@@ -599,7 +597,9 @@ pub struct BooksApp {
     default_font_menu: bool,
     library_prefs: crate::model::LibraryPrefs,
     watched_folders: Vec<PathBuf>,
-    sort_menu: bool,
+    /// Library shelf sort/filter cluster. Owns dropdown state, drawing, and
+    /// its topmost hit stack; the app persists emitted preference actions.
+    shelf_controls: ShelfControls,
     /// Scheme id currently open in the colour editor, if any.
     editing_scheme: Option<String>,
     /// Whether the "add a system font" family picker is open.
@@ -738,12 +738,7 @@ impl BooksApp {
             scroll_to_cursor: false,
             turn_accum: 0.0,
             type_popover: false,
-            page_bubble: ui::StatusBubble::new(),
-            bubble_shown: None,
-            bubble_rect: Rect::ZERO,
-            bubble_prev: Rect::ZERO,
-            bubble_next: Rect::ZERO,
-            shots_reader_bubble: false,
+            reader_bubble: ReaderBubble::default(),
             cursor: Point::ZERO,
             page_top_block: 0,
             composing: None,
@@ -775,7 +770,7 @@ impl BooksApp {
             default_font_menu: false,
             library_prefs: crate::model::LibraryPrefs::default(),
             watched_folders: Vec::new(),
-            sort_menu: false,
+            shelf_controls: ShelfControls::default(),
             editing_scheme: None,
             font_picker: false,
             picker_scroll: 0.0,
@@ -818,8 +813,7 @@ impl BooksApp {
     /// a single still frame captures the transient indicator. Never armed at
     /// runtime.
     pub fn arm_reader_bubble_for_shots(&mut self) {
-        self.shots_reader_bubble = true;
-        self.page_bubble.poke(Instant::now());
+        self.reader_bubble.arm_for_shots();
     }
 
     fn num_chapters(&self) -> usize {
@@ -1491,7 +1485,7 @@ impl BooksApp {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(crate::portal::request_open());
+        self.portal_rx = Some(book_open_request().send());
         self.load_error = None;
         self.dirty = true;
     }
@@ -1506,10 +1500,10 @@ impl BooksApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    crate::portal::PortalOutcome::Opened(path) => self.import_and_open(doc, &path),
+                    PortalOutcome::Opened(path) => self.import_and_open(doc, &path),
                     // A cancel is not an error — leave the current view intact.
-                    crate::portal::PortalOutcome::Cancelled => {}
-                    crate::portal::PortalOutcome::Failed(reason) => {
+                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Failed(reason) => {
                         self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
                         self.dirty = true;
                     }
@@ -1654,11 +1648,6 @@ impl BooksApp {
             Action::CloseFontPicker => self.font_picker = false,
             Action::AddSystemFont(family) => self.on_add_system_font(&family, doc),
             Action::BeginRenameFont(id) => self.on_begin_rename_font(id, doc),
-
-            // --- library shelf -------------------------------------------
-            Action::ToggleSortMenu => self.sort_menu = !self.sort_menu,
-            Action::SetSort(sort) => self.on_set_sort(sort, doc),
-            Action::ToggleHideRead => self.on_toggle_hide_read(doc),
         }
     }
 
@@ -2187,7 +2176,7 @@ impl BooksApp {
         p.sort = sort;
         self.library_prefs = p;
         BooksDoc::write_library_prefs(doc, &p);
-        self.sort_menu = false;
+        self.shelf_controls.close_sort_menu();
     }
 
     fn on_toggle_hide_read(&mut self, doc: &mut AutoCommit) {
@@ -2195,6 +2184,15 @@ impl BooksApp {
         p.hide_read = !p.hide_read;
         self.library_prefs = p;
         BooksDoc::write_library_prefs(doc, &p);
+    }
+
+    fn dispatch_shelf_control(&mut self, action: ShelfControlAction, doc: &mut AutoCommit) {
+        match action {
+            ShelfControlAction::ToggleSortMenu => self.shelf_controls.toggle_sort_menu(),
+            ShelfControlAction::SetSort(sort) => self.on_set_sort(sort, doc),
+            ShelfControlAction::ToggleHideRead => self.on_toggle_hide_read(doc),
+            ShelfControlAction::Swallow => {}
+        }
     }
 
     fn dispatch_comment_action(&mut self, action: CommentAction, doc: &mut AutoCommit) {
@@ -3394,7 +3392,7 @@ impl Widget for BooksApp {
         // easing in, or the floating page bubble is lingering/fading.
         self.flaps_animating()
             || self.page_turn.is_some_and(|pt| !pt.done(Instant::now()))
-            || self.page_bubble.needs_frame(Instant::now())
+            || self.reader_bubble.needs_frame(Instant::now())
     }
 
     fn mark_drawn(&mut self) {
@@ -3608,13 +3606,25 @@ impl BooksApp {
         // before the app-wide regions so its card cannot fall through
         // to page selection or rail controls underneath.
         let comment_action = self.comment_overlay.hit_test(self.cursor);
+        let shelf_action = if comment_action.is_none() && self.view == View::Library {
+            self.shelf_controls.hit_test(self.cursor)
+        } else {
+            None
+        };
         // Topmost wins: later-recorded hits draw on top.
-        let top = if comment_action.is_none() {
+        let top = if comment_action.is_none() && shelf_action.is_none() {
             self.hits
                 .iter()
                 .rev()
                 .find(|h| h.rect.contains(self.cursor))
                 .cloned()
+        } else {
+            None
+        };
+        // The bubble is drawn below subsequent reader overlays. Their app-wide
+        // hits therefore keep precedence when geometry ever overlaps.
+        let bubble_action = if comment_action.is_none() && shelf_action.is_none() && top.is_none() {
+            self.reader_bubble.hit_test(self.cursor)
         } else {
             None
         };
@@ -3663,11 +3673,31 @@ impl BooksApp {
 
         // A press on page text runs through the shared
         // selection-gesture core: single → double (word) → triple.
-        let on_page = self.view == View::Reader && comment_action.is_none() && top.is_none();
+        let on_page = self.view == View::Reader
+            && comment_action.is_none()
+            && top.is_none()
+            && bubble_action.is_none();
         let consumed_page = self.resolve_page_press(on_page, modifiers.state().shift_key());
 
         if let Some(action) = comment_action {
             self.dispatch_comment_action(action, doc);
+            self.refresh_from_doc(doc);
+            self.persist_progress(doc);
+            self.dirty = true;
+            *handled = true;
+        } else if let Some(action) = shelf_action {
+            self.dispatch_shelf_control(action, doc);
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            *handled = true;
+        } else if let Some(action) = bubble_action {
+            self.dispatch(
+                match action {
+                    ReaderBubbleAction::PreviousPage => Action::PrevPage,
+                    ReaderBubbleAction::NextPage => Action::NextPage,
+                },
+                doc,
+            );
             self.refresh_from_doc(doc);
             self.persist_progress(doc);
             self.dirty = true;
@@ -4401,6 +4431,7 @@ struct ShelfGrid {
 
 impl BooksApp {
     fn draw_library(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        self.shelf_controls.begin_frame();
         let lib = std::mem::take(&mut self.library);
         let c = theme.tokens.colors.clone();
         let r = self.rect;
@@ -4414,7 +4445,16 @@ impl BooksApp {
             return;
         }
 
-        let sort_btn = self.draw_library_shelf_controls(scene, t, tr, theme, &c, r, open_x);
+        let sort_btn = self.shelf_controls.draw_bar(
+            scene,
+            t,
+            tr,
+            theme,
+            r,
+            open_x,
+            self.cursor,
+            self.library_prefs,
+        );
 
         // --- filter + sort the display order ------------------------------
         let order = self.shelf_display_order(&lib);
@@ -4423,14 +4463,31 @@ impl BooksApp {
         // Everything hidden by the "hide read" filter.
         if order.is_empty() {
             Self::draw_all_read_empty_state(scene, t, tr, &c, r);
-            if self.sort_menu {
-                self.draw_sort_menu(scene, t, tr, theme, &c, sort_btn);
-            }
+            self.shelf_controls.draw_menu(
+                scene,
+                t,
+                tr,
+                theme,
+                r,
+                sort_btn,
+                self.cursor,
+                self.library_prefs.sort,
+            );
             self.library = lib;
             return;
         }
 
-        self.draw_library_grid(scene, t, tr, theme, &lib, &order, &c, r, sort_btn);
+        self.draw_library_grid(scene, t, tr, theme, &lib, &order, &c, r);
+        self.shelf_controls.draw_menu(
+            scene,
+            t,
+            tr,
+            theme,
+            r,
+            sort_btn,
+            self.cursor,
+            self.library_prefs.sort,
+        );
         self.library = lib;
     }
 
@@ -4502,102 +4559,6 @@ impl BooksApp {
             Action::OpenViaPortal,
         );
         open_x
-    }
-
-    /// Sort dropdown + hide-read toggle, left of the "Open book" button —
-    /// only drawn once the shelf has books. Returns the sort button's rect
-    /// (the dropdown menu, drawn later, anchors to it).
-    #[allow(clippy::too_many_arguments)]
-    fn draw_library_shelf_controls(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        r: Rect,
-        open_x: f64,
-    ) -> Rect {
-        let cy = r.y0 + (TOP_BAR - 30.0) / 2.0;
-        let mut rx = open_x - 16.0;
-        // Sort dropdown.
-        let sort_label = format!("Sort · {}", self.library_prefs.sort.label());
-        let (slw, _) = tr.measure_weighted(&sort_label, 13.0, None, TextWeight::Medium);
-        let sb_w = f64::from(slw) + 26.0 + 20.0;
-        rx -= sb_w;
-        let sbtn = Rect::new(rx, cy, rx + sb_w, cy + 30.0);
-        let shover = self.sort_menu || self.is_hover(sbtn);
-        paint::fill_round(
-            scene,
-            t,
-            sbtn,
-            15.0,
-            if shover {
-                theme.bg_hover
-            } else {
-                c.surfaces.overlay
-            },
-        );
-        paint::stroke_round(
-            scene,
-            t,
-            sbtn,
-            15.0,
-            if self.sort_menu {
-                theme.border_focus
-            } else {
-                c.border_standard
-            },
-            1.0,
-        );
-        tr.draw_text_weighted(
-            scene,
-            &sort_label,
-            13.0,
-            c.text_primary,
-            t * Affine::translate((rx + 13.0, cy + 8.0)),
-            None,
-            TextWeight::Medium,
-        );
-        paint::chevron_down(
-            scene,
-            t,
-            Rect::new(rx + sb_w - 26.0, cy + 3.0, rx + sb_w - 4.0, cy + 27.0),
-            c.text_dim,
-            1.7,
-        );
-        self.push_hit(sbtn, Action::ToggleSortMenu);
-        let sort_btn = sbtn;
-        rx -= 18.0;
-        // Hide-read toggle + label.
-        let tog_w = 40.0;
-        let tog_h = 22.0;
-        rx -= tog_w;
-        self.switch(
-            scene,
-            t,
-            theme,
-            c,
-            rx,
-            cy + (30.0 - tog_h) / 2.0,
-            tog_w,
-            tog_h,
-            self.library_prefs.hide_read,
-            Action::ToggleHideRead,
-        );
-        let hl = "Hide read";
-        let (hlw, _) = tr.measure_weighted(hl, 13.0, None, TextWeight::Medium);
-        rx -= 8.0 + f64::from(hlw);
-        tr.draw_text_weighted(
-            scene,
-            hl,
-            13.0,
-            c.text_dim,
-            t * Affine::translate((rx, cy + 8.0)),
-            None,
-            TextWeight::Medium,
-        );
-        sort_btn
     }
 
     /// Everything hidden by the "hide read" filter: an empty-shelf message
@@ -4715,7 +4676,6 @@ impl BooksApp {
         order: &[usize],
         c: &ui::tokens::colors::Colors,
         r: Rect,
-        sort_btn: Rect,
     ) {
         let grid = self.shelf_grid_geometry(r, order.len());
 
@@ -4779,11 +4739,6 @@ impl BooksApp {
             let thumb_y = track_y0 + frac * (track_h - thumb_h);
             let thumb = Rect::new(track_x, thumb_y, track_x + 4.0, thumb_y + thumb_h);
             paint::fill_round(scene, t, thumb, 2.0, c.text_dim.with_alpha_factor(0.5));
-        }
-
-        // Sort dropdown menu floats above the shelf.
-        if self.sort_menu {
-            self.draw_sort_menu(scene, t, tr, theme, c, sort_btn);
         }
     }
 
@@ -4939,84 +4894,6 @@ impl BooksApp {
             }),
         }
         idx
-    }
-
-    /// The sort-order dropdown menu, anchored under the sort button.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_sort_menu(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        anchor: Rect,
-    ) {
-        use crate::model::LibrarySort;
-        let w = 190.0_f64.max(anchor.width());
-        let row_h = 34.0;
-        let x0 = (anchor.x1 - w).max(self.rect.x0 + 8.0);
-        let top = anchor.y1 + 6.0;
-        let menu = Rect::new(
-            x0,
-            top,
-            x0 + w,
-            top + LibrarySort::ALL.len() as f64 * row_h + 8.0,
-        );
-        let shadow = Rect::new(menu.x0 - 1.0, menu.y0 + 3.0, menu.x1 + 1.0, menu.y1 + 6.0);
-        paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 80));
-        paint::fill_round(
-            scene,
-            t,
-            menu,
-            f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            t,
-            menu,
-            f64::from(theme.tokens.radii.lg),
-            c.border_standard,
-            1.0,
-        );
-        self.push_hit(menu, Action::Swallow);
-        let mut my = top + 4.0;
-        for choice in LibrarySort::ALL {
-            let row = Rect::new(x0 + 6.0, my, x0 + w - 6.0, my + row_h - 4.0);
-            let sel = self.library_prefs.sort == choice;
-            if sel {
-                paint::fill_round(
-                    scene,
-                    t,
-                    row,
-                    8.0,
-                    theme.accent_primary.with_alpha_factor(0.16),
-                );
-            } else if self.is_hover(row) {
-                paint::fill_round(scene, t, row, 8.0, theme.bg_hover);
-            }
-            tr.draw_text_weighted(
-                scene,
-                choice.label(),
-                13.0,
-                if sel {
-                    theme.accent_primary
-                } else {
-                    c.text_primary
-                },
-                t * Affine::translate((x0 + 16.0, my + 8.0)),
-                None,
-                if sel {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Medium
-                },
-            );
-            self.push_hit(row, Action::SetSort(choice));
-            my += row_h;
-        }
     }
 
     /// Resolve a book's decoded cover into a cached, GPU-ready image handle.
@@ -5722,14 +5599,21 @@ impl BooksApp {
 
         // ---- chrome: top bar, floating page bubble, selection HUD, drawers -
         self.draw_reader_topbar(scene, t, tr, theme, &lib, c);
-        self.draw_reader_bubble(
+        self.reader_bubble.draw(
             scene,
             t,
             tr,
             theme,
+            self.rect,
+            self.cursor,
             geom.center_x0,
             geom.center_x1,
-            nchap.max(1),
+            ReaderPosition {
+                chapter: self.chapter,
+                page: self.page,
+                page_count: self.cur_page_count,
+                chapter_count: nchap.max(1),
+            },
         );
         // Floating selection toolbar over the page (under any overlay rail).
         self.draw_selection_hud(
@@ -5789,7 +5673,7 @@ impl BooksApp {
         let body_y0 = r.y0 + TOP_BAR;
         // The page renders to the window bottom now that the always-on bottom
         // strip is gone — the page indicator floats as a transient bubble
-        // (`draw_reader_bubble`) instead of costing a permanent strip of chrome.
+        // (the `ReaderBubble` component) instead of costing a permanent strip of chrome.
         let body_y1 = r.y1;
 
         // ---- paper rect + content box -----------------------------------
@@ -7152,153 +7036,6 @@ impl BooksApp {
             TextWeight::Semibold,
         );
         self.push_hit(aa_rect, Action::ToggleTypePopover);
-    }
-
-    /// The floating page-indicator bubble ([`ui::StatusBubble`]): surfaces on
-    /// a page change or pointer hover over the bottom-centre band, then
-    /// fades. Chevron hits are pushed only while visible, so an invisible
-    /// bubble never eats a click in the bottom band.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_reader_bubble(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        center_x0: f64,
-        center_x1: f64,
-        nchap: usize,
-    ) {
-        self.bubble_rect = Rect::ZERO;
-        self.bubble_prev = Rect::ZERO;
-        self.bubble_next = Rect::ZERO;
-
-        let now = Instant::now();
-        // A page/chapter change briefly floats the bubble. The first
-        // observation only records the position, so opening a book doesn't
-        // poke it open.
-        let pos = (self.chapter, self.page);
-        if let Some(prev) = self.bubble_shown
-            && prev != pos
-        {
-            self.page_bubble.poke(now);
-        }
-        self.bubble_shown = Some(pos);
-
-        let r = self.rect;
-        let text_size = 12.5f32;
-        let chev = 26.0;
-        let label = self.reader_bubble_label(tr, center_x0, center_x1, nchap);
-
-        let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, tr, text_size, chev);
-        let cx = f64::midpoint(center_x0, center_x1);
-        let by = r.y1 - 16.0 - pill_h;
-        let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
-
-        // Reveal zone: a band across the bottom-centre of the reading column
-        // (plus the pill itself), so approaching the bottom edge surfaces the
-        // indicator.
-        let zone = Rect::new(rect.x0 - 40.0, r.y1 - (pill_h + 32.0), rect.x1 + 40.0, r.y1);
-        let over =
-            self.shots_reader_bubble || zone.contains(self.cursor) || rect.contains(self.cursor);
-        self.page_bubble.set_hover(over, now);
-
-        let alpha = self.page_bubble.alpha(now);
-        if alpha <= 0.0 {
-            return;
-        }
-
-        // Capture geometry for hover + click hit-testing (the chevron slots), and
-        // route the chevrons through the same page-nav action path every other
-        // affordance uses — only while the bubble is actually up.
-        self.bubble_rect = rect;
-        self.bubble_prev = Rect::new(rect.x0, rect.y0, rect.x0 + chev + 8.0, rect.y1);
-        self.bubble_next = Rect::new(rect.x1 - chev - 8.0, rect.y0, rect.x1, rect.y1);
-        self.push_hit(self.bubble_prev, Action::PrevPage);
-        self.push_hit(self.bubble_next, Action::NextPage);
-
-        self.draw_reader_bubble_pill(scene, t, tr, theme, rect, &label, text_size, alpha);
-    }
-
-    /// The bubble's label: `"page / count"`, extended with the chapter
-    /// locator when the richer label still fits comfortably within the
-    /// reading column.
-    fn reader_bubble_label(
-        &self,
-        tr: &mut TextRenderer,
-        center_x0: f64,
-        center_x1: f64,
-        nchap: usize,
-    ) -> String {
-        let count = self.cur_page_count.max(1);
-        let base = format!("{} / {}", self.page + 1, count);
-        let with_chapter = format!(
-            "{}   ·   Chapter {} of {}",
-            base,
-            self.chapter + 1,
-            nchap.max(1)
-        );
-        let col_w = (center_x1 - center_x0).max(120.0);
-        // Prefer the richer label with the chapter locator, but only when the
-        // pill would still sit comfortably within the reading column.
-        let (rich_w, _) = ui::status_bubble::pill_size(&with_chapter, tr, 12.5, 26.0);
-        if nchap > 0 && rich_w <= col_w - 48.0 {
-            with_chapter
-        } else {
-            base
-        }
-    }
-
-    /// The pill background + label, and its prev/next chevrons.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_reader_bubble_pill(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label: &str,
-        text_size: f32,
-        alpha: f32,
-    ) {
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            alpha,
-            t,
-            &rect.inflate(12.0, 14.0),
-        );
-        ui::status_bubble::draw_pill(scene, t, tr, theme, rect, label, text_size);
-        let prev_hot = self.bubble_prev.contains(self.cursor);
-        let next_hot = self.bubble_next.contains(self.cursor);
-        let cyy = f64::midpoint(rect.y0, rect.y1);
-        let pc = Rect::new(rect.x0 + 8.0, cyy - 8.0, rect.x0 + 8.0 + 16.0, cyy + 8.0);
-        let nc = Rect::new(rect.x1 - 8.0 - 16.0, cyy - 8.0, rect.x1 - 8.0, cyy + 8.0);
-        ui::status_bubble::draw_chevron(
-            scene,
-            t,
-            pc,
-            if prev_hot {
-                theme.text_primary
-            } else {
-                theme.text_dim
-            },
-            true,
-        );
-        ui::status_bubble::draw_chevron(
-            scene,
-            t,
-            nc,
-            if next_hot {
-                theme.text_primary
-            } else {
-                theme.text_dim
-            },
-            false,
-        );
-        scene.pop_layer();
     }
 
     /// Horizontal bounds `(left, right)` for the reading-settings popover,
@@ -10346,6 +10083,18 @@ mod interaction_tests {
                 pred(&action)
             })
             .or_else(|| {
+                [
+                    (ReaderBubbleAction::PreviousPage, Action::PrevPage),
+                    (ReaderBubbleAction::NextPage, Action::NextPage),
+                ]
+                .into_iter()
+                .find_map(|(bubble_action, action)| {
+                    pred(&action)
+                        .then(|| app.reader_bubble.action_center(bubble_action))
+                        .flatten()
+                })
+            })
+            .or_else(|| {
                 app.hits
                     .iter()
                     .rev()
@@ -11393,7 +11142,7 @@ mod interaction_tests {
             "a page change surfaces the bubble's next chevron"
         );
         assert!(
-            app.page_bubble.needs_frame(Instant::now()),
+            app.reader_bubble.needs_frame(Instant::now()),
             "the visible bubble schedules its own fade-out frames"
         );
     }
@@ -12043,9 +11792,7 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 720.0);
         assert!(app.library.is_empty(), "starts empty");
 
-        app.portal_rx = Some(crate::portal::inject_for_test(
-            crate::portal::PortalOutcome::Opened(path),
-        ));
+        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(path)));
         app.sync(&mut doc, &automerge::ROOT);
 
         assert_eq!(app.library.len(), 1, "the picked book joined the library");
@@ -12919,10 +12666,16 @@ mod interaction_tests {
         );
 
         // The sort control + hide-read toggle are reachable in the shelf chrome.
-        let sort = find_hit(&app, |a| matches!(a, Action::ToggleSortMenu));
-        assert!(sort.is_some(), "a sort control is present");
-        let hide = find_hit(&app, |a| matches!(a, Action::ToggleHideRead));
-        assert!(hide.is_some(), "a hide-read toggle is present");
+        assert!(
+            app.shelf_controls
+                .has_action(ShelfControlAction::ToggleSortMenu),
+            "a sort control is present"
+        );
+        assert!(
+            app.shelf_controls
+                .has_action(ShelfControlAction::ToggleHideRead),
+            "a hide-read toggle is present"
+        );
     }
 
     /// Drive a real drag that starts *inside* a paragraph and ends in a later

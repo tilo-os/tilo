@@ -29,7 +29,6 @@ automerge.workspace = true
 serde.workspace = true
 uuid.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 zbus.workspace = true
 vello.workspace = true
 winit.workspace = true
@@ -42,7 +41,7 @@ taffy.workspace = true
 # sees GNOME's file chooser; on qOS the compositor's portal backend renders
 # qOS's picker (and hosts the per-cluster file-access prompt). The portal
 # call runs off the UI thread on its own small Tokio runtime and the chosen
-# paths come back over a channel (see `portal`). All three are already
+# paths come back over a shared `ui::portal` channel. All three are already
 # resolved in the shared workspace lockfile, so this adds no registry fetch.
 
 [dev-dependencies]

@@ -30,8 +30,8 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    CrossStripDetach, GroupRow, OutputSpan, PROMPT_HEIGHT, PermissionPrompt, PromptChoice,
-    TextInput, Widget, WindowGroup as UiWindowGroup,
+    Button, ButtonFace, CrossStripDetach, GroupRow, OutputSpan, PROMPT_HEIGHT, PermissionPrompt,
+    PromptChoice, Widget, WindowGroup as UiWindowGroup,
 };
 use ui::{CommandEntry, CommandPalette};
 
@@ -42,6 +42,11 @@ use crate::shell::notification::NotificationStack;
 use crate::shell::peer_sync_overlay::{EventOutcome as PeerSyncEventOutcome, PeerSyncOverlay};
 pub use crate::shell::peer_sync_overlay::{PeerSyncRequest, PeerSyncSnapshot};
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
+use crate::shell::projection_overlay::ProjectionOverlay;
+use crate::shell::quick_settings_bluetooth::QuickSettingsBluetoothPane;
+use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
+use crate::shell::quick_settings_vpn::QuickSettingsVpnPane;
+use crate::shell::quick_settings_wifi::QuickSettingsWifiPane;
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{
     Capability, GRANT_ALWAYS, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
@@ -276,6 +281,16 @@ pub struct ShellOverlayHost {
     /// uses [`crate::shell::qs_actions::RealQsActions`]; tests swap in a
     /// recording impl via [`Self::with_qs_actions`].
     qs_actions: Box<dyn crate::shell::qs_actions::QsActions>,
+    /// Wi-Fi network-list layout, painting and join hit-testing. The
+    /// specialised ephemeral password editor remains host-owned.
+    qs_wifi_pane: QuickSettingsWifiPane,
+    /// Bluetooth discovery list layout, painting and back hit-testing.
+    qs_bluetooth_pane: QuickSettingsBluetoothPane,
+    /// Shared drill-in chrome for host-owned notification/password panes.
+    qs_aux_drill_in: DrillInList,
+    /// VPN drill-in geometry, shared toggle painting, click routing and OS
+    /// dispatch. Chrome remains the source of the profile snapshot.
+    qs_vpn_pane: QuickSettingsVpnPane,
     /// Live battery/network/volume readings, or `None` when nothing
     /// polls — `--shots` and headless tests have no poller so their
     /// pixels don't depend on host hardware. See
@@ -301,21 +316,9 @@ pub struct ShellOverlayHost {
     /// isn't painted can't be clicked.
     collab_invite_row_rect: Rect,
     collab_join_row_rect: Rect,
-    /// Wireless display discovery/session controller. Protocol work stays on
-    /// its worker thread; this host only owns the normalized picker state.
-    projection: crate::shell::projection::ProjectionController,
-    projection_transition: ui::Transition,
-    projection_was_open: bool,
-    projection_device_rects: Vec<Rect>,
-    projection_mode_rects: [Rect; 3],
-    projection_refresh_rect: Rect,
-    projection_close_rect: Rect,
-    projection_audio_rect: Rect,
-    projection_adaptive_rect: Rect,
-    projection_resolution_rect: Rect,
-    projection_fps_rect: Rect,
-    projection_credential_input: TextInput,
-    projection_credential_rect: Rect,
+    /// Complete wireless projection picker, including controller, editor,
+    /// animation, painted geometry, and event routing.
+    projection_overlay: ProjectionOverlay,
 }
 
 /// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
@@ -924,6 +927,10 @@ impl ShellOverlayHost {
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
+            qs_wifi_pane: QuickSettingsWifiPane::default(),
+            qs_bluetooth_pane: QuickSettingsBluetoothPane::default(),
+            qs_aux_drill_in: DrillInList::default(),
+            qs_vpn_pane: QuickSettingsVpnPane::default(),
             status_bridge: None,
             session_audio_policy: None,
             room_activity: crate::shell::room_activity::RoomActivityPane::new(),
@@ -932,23 +939,7 @@ impl ShellOverlayHost {
             collab_activity_row_rect: Rect::ZERO,
             collab_invite_row_rect: Rect::ZERO,
             collab_join_row_rect: Rect::ZERO,
-            projection: crate::shell::projection::ProjectionController::default(),
-            projection_transition: ui::Transition::closed(),
-            projection_was_open: false,
-            projection_device_rects: Vec::new(),
-            projection_mode_rects: [Rect::ZERO; 3],
-            projection_refresh_rect: Rect::ZERO,
-            projection_close_rect: Rect::ZERO,
-            projection_audio_rect: Rect::ZERO,
-            projection_adaptive_rect: Rect::ZERO,
-            projection_resolution_rect: Rect::ZERO,
-            projection_fps_rect: Rect::ZERO,
-            projection_credential_input: TextInput::local()
-                .with_id("projection-airplay-credential")
-                .with_placeholder("PIN or receiver password")
-                .with_secret(true)
-                .with_enter_submits(true),
-            projection_credential_rect: Rect::ZERO,
+            projection_overlay: ProjectionOverlay::default(),
         }
     }
 
@@ -959,34 +950,18 @@ impl ShellOverlayHost {
         mut self,
         backend: Box<dyn crate::shell::projection::ProjectionBackend>,
     ) -> Self {
-        self.projection = crate::shell::projection::ProjectionController::new(backend);
+        self.projection_overlay = ProjectionOverlay::with_backend(backend);
         self
     }
 
     pub fn projection(&self) -> &crate::shell::projection::ProjectionController {
-        &self.projection
+        self.projection_overlay.controller()
     }
 
     /// Whether a receiver session is being established or is live. The
     /// compositor uses this to turn the frame encoder on only while needed.
     pub fn projection_capture_requested(&self) -> bool {
-        let (crate::shell::projection::ProjectionStatus::Connecting { device_id }
-        | crate::shell::projection::ProjectionStatus::Connected { device_id }) =
-            &self.projection.status
-        else {
-            return false;
-        };
-        self.projection
-            .devices
-            .iter()
-            .find(|device| &device.id == device_id)
-            .is_some_and(|device| {
-                matches!(
-                    device.protocol,
-                    crate::shell::projection::ProjectionProtocol::Chromecast
-                        | crate::shell::projection::ProjectionProtocol::FCast
-                )
-            })
+        self.projection_overlay.capture_requested()
     }
 
     /// Replace the QS action dispatcher. Tests use this to swap in a
@@ -4539,11 +4514,11 @@ impl ShellOverlayHost {
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
             || (f.room_activity && self.room_activity.rect().contains(p))
-            || (f.projection && self.projection_rect().contains(p))
+            || (f.projection && ProjectionOverlay::contains(self.rect, p))
     }
 
-    /// Route the modal projection sheet before application content. Returning
-    /// true means the open sheet consumed the event (including outside clicks).
+    /// Route the modal component before application content and apply its
+    /// visibility/invalidation requests to global chrome state.
     fn handle_projection_event(
         &mut self,
         event: &WindowEvent,
@@ -4553,284 +4528,29 @@ impl ShellOverlayHost {
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) -> bool {
-        use crate::shell::projection::ProjectionProtocol;
-
-        if !self.overlay_flags().projection {
-            return false;
-        }
-
-        let airplay_selected = self
-            .projection
-            .devices
-            .get(self.projection.selected)
-            .is_some_and(|device| device.protocol == ProjectionProtocol::AirPlay);
-        if airplay_selected
-            && let Some(handled) = self.handle_projection_airplay_credential_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-            )
-        {
-            return handled;
-        }
-        match event {
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                self.handle_projection_keyboard_shortcut(logical_key, modifiers);
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-                ..
-            } => {
-                let Some(p) = self.last_cursor else {
-                    return true;
-                };
-                self.handle_projection_click(p);
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.borrow_mut().bump();
-                }
-                true
-            }
-            // Pointer hover/release and wheel cannot leak through a modal sheet
-            // to the workspace beneath it.
-            WindowEvent::CursorMoved { .. }
-            | WindowEvent::MouseInput { .. }
-            | WindowEvent::MouseWheel { .. } => true,
-            _ => false,
-        }
-    }
-
-    /// Routes pointer/keyboard input to the AirPlay credential field before
-    /// the projection sheet's own shortcuts see it. `Some(_)` means the
-    /// field consumed (or acted on) the event and `handle_projection_event`
-    /// must return that value immediately; `None` means fall through to the
-    /// sheet's own shortcut handling.
-    fn handle_projection_airplay_credential_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-    ) -> Option<bool> {
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-            ..
-        } = event
-        {
-            self.projection_credential_input.set_focus(
-                self.last_cursor
-                    .is_some_and(|p| self.projection_credential_rect.contains(p)),
-            );
-        }
-        let mut input_handled = false;
-        let mut input_taffy = TaffyTree::<()>::new();
-        let Ok(input_node) = input_taffy.new_leaf(Style::default()) else {
-            return Some(false);
-        };
-        self.projection_credential_input.handle_event(
+        let open = self.overlay_flags().projection;
+        let outcome = self.projection_overlay.handle_event(
             event,
             scale_factor,
-            &modifiers,
+            modifiers,
             state,
             path,
-            &mut input_handled,
             focus_target,
-            input_node,
-            &input_taffy,
+            self.last_cursor,
+            self.rect,
+            open,
         );
-        if let Some(value) = self.projection_credential_input.take_dirty() {
-            self.projection.options.credential = (!value.is_empty()).then_some(value);
+        if outcome.close_requested {
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().overlays.projection = false;
+            }
         }
-        if self.projection_credential_input.take_submit() {
-            self.projection.connect_selected();
-            self.projection_credential_input.set_text("");
-            return Some(true);
-        }
-        if input_handled { Some(true) } else { None }
-    }
-
-    /// Closes the projection sheet — shared by every dismissal path
-    /// (Escape, super+P, a click outside the sheet).
-    fn close_projection(&self) {
-        if let Some(chrome) = self.chrome.as_ref() {
-            let mut st = chrome.borrow_mut();
-            st.overlays.projection = false;
-            st.bump();
-        }
-    }
-
-    /// The projection sheet's keyboard shortcuts, split out of
-    /// `handle_projection_event` (this arm alone was over half the
-    /// function's length).
-    fn handle_projection_keyboard_shortcut(
-        &mut self,
-        logical_key: &Key,
-        modifiers: winit::event::Modifiers,
-    ) {
-        use crate::shell::projection::{ProjectionMode, ProjectionStatus};
-
-        let super_down = modifiers.state().super_key();
-        match logical_key {
-            Key::Named(NamedKey::Escape) => self.close_projection(),
-            Key::Character(s) if super_down && s.eq_ignore_ascii_case("p") => {
-                self.close_projection();
-            }
-            Key::Named(NamedKey::ArrowUp) => self.projection.move_selection(-1),
-            Key::Named(NamedKey::ArrowDown) => self.projection.move_selection(1),
-            Key::Named(NamedKey::Enter) => {
-                let selected_id = self
-                    .projection
-                    .devices
-                    .get(self.projection.selected)
-                    .map(|d| d.id.as_str());
-                if matches!(&self.projection.status, ProjectionStatus::Connected { device_id } if Some(device_id.as_str()) == selected_id)
-                {
-                    self.projection.disconnect();
-                } else {
-                    self.projection.connect_selected();
-                }
-            }
-            Key::Named(NamedKey::Space) => {
-                self.projection.options.audio = !self.projection.options.audio;
-            }
-            Key::Character(s) if s.eq_ignore_ascii_case("r") => self.projection.refresh(),
-            Key::Character(s) if s.eq_ignore_ascii_case("a") => {
-                self.projection.options.stream_policy.adaptive =
-                    !self.projection.options.stream_policy.adaptive;
-            }
-            Key::Character(s) if s.eq_ignore_ascii_case("q") => {
-                let limits = crate::shell::projection::DisplayResolutionLimit::ALL;
-                let current = limits
-                    .iter()
-                    .position(|limit| {
-                        *limit == self.projection.options.stream_policy.resolution_limit
-                    })
-                    .unwrap_or(0);
-                // `limits.len()` is `DisplayResolutionLimit::ALL.len()`, a
-                // fixed non-empty list; `.max(1)` guards a divisor clippy
-                // cannot itself prove is nonzero.
-                #[allow(
-                    clippy::arithmetic_side_effects,
-                    reason = "divisor is `.max(1)`-guarded, so this modulo cannot panic"
-                )]
-                let next = current.wrapping_add(1) % limits.len().max(1);
-                if let Some(&limit) = limits.get(next) {
-                    self.projection.options.stream_policy.resolution_limit = limit;
-                }
-            }
-            Key::Character(s) if s.eq_ignore_ascii_case("f") => {
-                self.projection.options.stream_policy.max_fps =
-                    if self.projection.options.stream_policy.max_fps == 60 {
-                        30
-                    } else {
-                        60
-                    };
-            }
-            Key::Character(s) if matches!(s.as_str(), "1" | "2" | "3") => {
-                let i = s.parse::<usize>().unwrap_or(1).saturating_sub(1);
-                if let Some(mode) = ProjectionMode::ALL.get(i)
-                    && self.projection.selected_device_supports(*mode)
-                {
-                    self.projection.options.mode = *mode;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// A click inside the projection sheet, split out of
-    /// `handle_projection_event`.
-    fn handle_projection_click(&mut self, p: Point) {
-        use crate::shell::projection::{ProjectionMode, ProjectionProtocol, ProjectionStatus};
-
-        if self.projection_close_rect.contains(p) || !self.projection_rect().contains(p) {
-            self.close_projection();
-        } else if self.projection_refresh_rect.contains(p) {
-            self.projection.refresh();
-        } else if self.projection_audio_rect.contains(p) {
-            self.projection.options.audio = !self.projection.options.audio;
-        } else if self.projection_adaptive_rect.contains(p) {
-            self.projection.options.stream_policy.adaptive =
-                !self.projection.options.stream_policy.adaptive;
-        } else if self.projection_resolution_rect.contains(p) {
-            let limits = crate::shell::projection::DisplayResolutionLimit::ALL;
-            let current = limits
-                .iter()
-                .position(|limit| *limit == self.projection.options.stream_policy.resolution_limit)
-                .unwrap_or(0);
-            // Same guard as the keyboard shortcut above: `.max(1)` keeps
-            // the divisor nonzero, clippy just can't prove it statically.
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "divisor is `.max(1)`-guarded, so this modulo cannot panic"
-            )]
-            let next = current.wrapping_add(1) % limits.len().max(1);
-            if let Some(&limit) = limits.get(next) {
-                self.projection.options.stream_policy.resolution_limit = limit;
-            }
-        } else if self.projection_fps_rect.contains(p) {
-            self.projection.options.stream_policy.max_fps =
-                if self.projection.options.stream_policy.max_fps == 60 {
-                    30
-                } else {
-                    60
-                };
-        } else if let Some(i) = self
-            .projection_mode_rects
-            .iter()
-            .position(|rect| rect.area() > 0.0 && rect.contains(p))
+        if outcome.invalidate
+            && let Some(chrome) = self.chrome.as_ref()
         {
-            if let Some(&mode) = ProjectionMode::ALL.get(i)
-                && self.projection.selected_device_supports(mode)
-            {
-                self.projection.options.mode = mode;
-            }
-        } else if let Some(i) = self
-            .projection_device_rects
-            .iter()
-            .position(|rect| rect.contains(p))
-        {
-            let selection_changed = self.projection.selected != i;
-            self.projection.selected = i;
-            if selection_changed {
-                self.projection.options.credential = None;
-                self.projection_credential_input.set_text("");
-            }
-            let device_id = self.projection.devices.get(i).map(|d| d.id.as_str());
-            if matches!(&self.projection.status, ProjectionStatus::Connected { device_id: connected } if Some(connected.as_str()) == device_id)
-            {
-                self.projection.disconnect();
-            } else if !selection_changed
-                || self
-                    .projection
-                    .devices
-                    .get(i)
-                    .is_none_or(|d| d.protocol != ProjectionProtocol::AirPlay)
-            {
-                self.projection.connect_selected();
-                self.projection_credential_input.set_text("");
-            } else {
-                self.projection_credential_input.set_focus(true);
-            }
+            chrome.borrow_mut().bump();
         }
+        outcome.consumed
     }
 }
 
@@ -6033,7 +5753,14 @@ impl ShellOverlayHost {
             // on the pane can be focused by a click.
             return;
         }
-        if back.contains(p) {
+        if back.contains(p)
+            && !matches!(
+                current_level,
+                crate::shell::quick_settings::QsLevel::Wifi
+                    | crate::shell::quick_settings::QsLevel::Bluetooth
+                    | crate::shell::quick_settings::QsLevel::Vpn
+            )
+        {
             if let Some(chrome) = self.chrome.clone() {
                 let mut st = chrome.borrow_mut();
                 st.quick_settings.pop_level();
@@ -6042,69 +5769,54 @@ impl ShellOverlayHost {
             return;
         }
         if matches!(current_level, crate::shell::quick_settings::QsLevel::Wifi) {
-            // Mirrors `draw_qs_wifi_list`'s row geometry.
-            let rect = self.quick_settings_rect();
-            let row_h = 56.0_f64;
-            let list_y0 = rect.y0 + 56.0;
-            let nets = self
-                .chrome
-                .as_ref()
-                .map(|c| c.borrow().quick_settings.wifi_networks.clone())
-                .unwrap_or_default();
-            for (i, net) in nets.iter().enumerate() {
-                let row_y = list_y0 + usize_to_f64_lossy(i) * row_h;
-                let row_rect =
-                    Rect::new(rect.x0 + 12.0, row_y, rect.x1 - 12.0, row_y + row_h - 4.0);
-                if row_rect.contains(p) {
-                    let ssid = net.ssid.clone();
-                    // A protected network we're not on gets
-                    // the prompt — NetworkManager might
-                    // already hold a profile, but a
-                    // dismissable prompt beats a silent
-                    // failure if it doesn't.
-                    if net.secure && !net.connected {
-                        self.begin_wifi_password(&ssid);
-                    } else {
-                        crate::shell::qs_actions::log_qs_result(
-                            "connect_wifi",
-                            self.qs_actions.connect_wifi(&ssid, None),
-                        );
-                    }
-                    return;
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                let outcome = self.qs_wifi_pane.handle_click(
+                    p,
+                    self.quick_settings_rect(),
+                    &mut st.quick_settings,
+                    self.qs_actions.as_ref(),
+                );
+                match outcome {
+                    DrillInOutcome::Back => st.quick_settings.pop_level(),
+                    DrillInOutcome::Changed => {}
+                    DrillInOutcome::None => return,
                 }
+                st.bump();
+            }
+        } else if matches!(
+            current_level,
+            crate::shell::quick_settings::QsLevel::Bluetooth
+        ) {
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                let outcome = self.qs_bluetooth_pane.handle_click(
+                    p,
+                    self.quick_settings_rect(),
+                    &st.quick_settings.bt_devices,
+                );
+                match outcome {
+                    DrillInOutcome::Back => st.quick_settings.pop_level(),
+                    DrillInOutcome::Changed => {}
+                    DrillInOutcome::None => return,
+                }
+                st.bump();
             }
         } else if matches!(current_level, crate::shell::quick_settings::QsLevel::Vpn) {
-            let rect = self.quick_settings_rect();
-            let row_h = 56.0_f64;
-            let list_y0 = rect.y0 + 56.0;
-            let vpns = self
-                .chrome
-                .as_ref()
-                .map(|c| c.borrow().quick_settings.vpns.clone())
-                .unwrap_or_default();
-            for (i, vpn) in vpns.iter().enumerate() {
-                let row_y = list_y0 + usize_to_f64_lossy(i) * row_h;
-                let row = Rect::new(rect.x0 + 12.0, row_y, rect.x1 - 12.0, row_y + row_h - 4.0);
-                if row.contains(p) {
-                    let next = !vpn.active;
-                    crate::shell::qs_actions::log_qs_result(
-                        "set_vpn_connection",
-                        self.qs_actions.set_vpn_connection(&vpn.name, next),
-                    );
-                    if let Some(chrome) = self.chrome.clone() {
-                        let mut st = chrome.borrow_mut();
-                        if let Some(item) = st
-                            .quick_settings
-                            .vpns
-                            .iter_mut()
-                            .find(|item| item.name == vpn.name)
-                        {
-                            item.active = next;
-                        }
-                        st.bump();
-                    }
-                    return;
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                let outcome = self.qs_vpn_pane.handle_click(
+                    p,
+                    self.quick_settings_rect(),
+                    &mut st.quick_settings.vpns,
+                    self.qs_actions.as_ref(),
+                );
+                match outcome {
+                    DrillInOutcome::Back => st.quick_settings.pop_level(),
+                    DrillInOutcome::Changed => {}
+                    DrillInOutcome::None => return,
                 }
+                st.bump();
             }
         } else if matches!(
             current_level,
@@ -7447,12 +7159,7 @@ impl Widget for ShellOverlayHost {
         let palette_in_flight = self.palette_transition.is_animating(now);
         let power_menu_in_flight = self.power_menu.is_animating(now);
         let room_activity_in_flight = self.room_activity_transition.is_animating(now);
-        let projection_in_flight = self.projection_transition.is_animating(now);
-        let projection_working = matches!(
-            self.projection.status,
-            crate::shell::projection::ProjectionStatus::Scanning
-                | crate::shell::projection::ProjectionStatus::Connecting { .. }
-        );
+        let projection_needs_frame = self.projection_overlay.needs_animation_frame(now);
         let sidebar_frame = self
             .sidebar
             .as_ref()
@@ -7463,11 +7170,9 @@ impl Widget for ShellOverlayHost {
             || palette_in_flight
             || power_menu_in_flight
             || room_activity_in_flight
-            || projection_in_flight
-            // The worker cannot call winit directly. Keep a bounded frame pump
-            // while it is working so a response that lands after the entrance
-            // animation still becomes visible immediately.
-            || projection_working
+            // The projection component includes both its transition and the
+            // bounded worker-response frame pump in this signal.
+            || projection_needs_frame
             || self.content.needs_animation_frame()
             || sidebar_frame
             // A reading landing after the open animation settles still
@@ -8350,50 +8055,17 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        if self.projection.poll()
-            && let Some(chrome) = self.chrome.as_ref()
-        {
-            chrome.borrow_mut().bump();
-        }
-        if flags.projection && !self.projection_was_open {
-            self.projection.refresh();
-        }
-        self.projection_was_open = flags.projection;
-        self.projection_transition.set_open(
+        let changed = self.projection_overlay.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            self.rect,
             flags.projection,
-            Duration::from_millis(MODAL_OPEN_ANIM_MS),
-            ui::Curve::EaseOut,
         );
-        let projection_now = Instant::now();
-        if self.projection_transition.is_visible(projection_now) {
-            let openness = self.projection_transition.value(projection_now);
-            draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
-            let sheet = self.projection_rect();
-            let slide = (1.0 - f64::from(openness)) * (sheet.width() * 0.22);
-            let xform = transform.pre_translate((slide, 0.0).into());
-            if openness < 1.0 {
-                scene.push_layer(
-                    Fill::NonZero,
-                    BlendMode::default(),
-                    openness,
-                    transform,
-                    &self.rect,
-                );
-            }
-            self.draw_projection(scene, xform, text_renderer, theme, presence);
-            if openness < 1.0 {
-                scene.pop_layer();
-            }
-        } else {
-            self.projection_device_rects.clear();
-            self.projection_mode_rects = [Rect::ZERO; 3];
-            self.projection_refresh_rect = Rect::ZERO;
-            self.projection_close_rect = Rect::ZERO;
-            self.projection_audio_rect = Rect::ZERO;
-            self.projection_adaptive_rect = Rect::ZERO;
-            self.projection_resolution_rect = Rect::ZERO;
-            self.projection_fps_rect = Rect::ZERO;
-            self.projection_credential_rect = Rect::ZERO;
+        if changed && let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
         }
     }
 
@@ -10466,7 +10138,7 @@ impl ShellOverlayHost {
     }
 
     fn draw_quick_settings(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -10547,7 +10219,7 @@ impl ShellOverlayHost {
     /// Wifi/Bluetooth/VPN/Notifications levels replace the whole body
     /// with a header + list and return `true` so the caller stops.
     fn draw_quick_settings_drill_in(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -10557,16 +10229,50 @@ impl ShellOverlayHost {
         match qs.current_level() {
             crate::shell::quick_settings::QsLevel::Wifi
             | crate::shell::quick_settings::QsLevel::WifiDetails(_) => {
-                self.draw_qs_wifi_list(scene, transform, text_renderer, theme, qs);
+                if let Some(prompt) = qs.wifi_password.as_ref() {
+                    self.draw_qs_wifi_password(scene, transform, text_renderer, theme, prompt);
+                } else {
+                    let panel = self.quick_settings_rect();
+                    let cursor = self.last_cursor;
+                    self.qs_wifi_pane.draw(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        panel,
+                        cursor,
+                        &qs.wifi_networks,
+                    );
+                }
                 true
             }
             crate::shell::quick_settings::QsLevel::Bluetooth
             | crate::shell::quick_settings::QsLevel::BluetoothDetails(_) => {
-                self.draw_qs_bt_list(scene, transform, text_renderer, theme, qs);
+                let panel = self.quick_settings_rect();
+                let cursor = self.last_cursor;
+                self.qs_bluetooth_pane.draw(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    panel,
+                    cursor,
+                    &qs.bt_devices,
+                );
                 true
             }
             crate::shell::quick_settings::QsLevel::Vpn => {
-                self.draw_qs_vpn_list(scene, transform, text_renderer, theme, qs);
+                let panel = self.quick_settings_rect();
+                let cursor = self.last_cursor;
+                self.qs_vpn_pane.draw(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    panel,
+                    cursor,
+                    &qs.vpns,
+                );
                 true
             }
             crate::shell::quick_settings::QsLevel::Notifications => {
@@ -11001,685 +10707,27 @@ impl ShellOverlayHost {
         scene.fill(Fill::NonZero, transform, colors.text_dim, None, &chev);
     }
 
-    /// Win+P follows the familiar edge-sheet shape: close to the display edge,
-    /// tall enough to scan names, and narrow enough that the current work stays
-    /// recognizable behind it.
-    fn projection_rect(&self) -> Rect {
-        let margin = 20.0;
-        let width = 432.0_f64.min((self.rect.width() - margin * 2.0).max(280.0));
-        let top = self.rect.y0 + 56.0;
-        let bottom = (top + 620.0).min(self.rect.y1 - 24.0);
-        Rect::new(
-            self.rect.x1 - margin - width,
-            top,
-            self.rect.x1 - margin,
-            bottom,
-        )
-    }
-
-    fn projection_row_rect(&self, index: usize) -> Rect {
-        let r = self.projection_rect();
-        let y0 = self.projection_device_rows_top() + usize_to_f64_lossy(index) * 64.0;
-        Rect::new(r.x0 + 16.0, y0, r.x1 - 16.0, y0 + 56.0)
-    }
-
-    fn projection_airplay_selected(&self) -> bool {
-        self.projection
-            .devices
-            .get(self.projection.selected)
-            .is_some_and(|device| {
-                device.protocol == crate::shell::projection::ProjectionProtocol::AirPlay
-            })
-    }
-
-    fn projection_device_rows_top(&self) -> f64 {
-        self.projection_rect().y0
-            + if self.projection_airplay_selected() {
-                366.0
-            } else {
-                270.0
-            }
-    }
-
-    fn draw_projection(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        let r = self.projection_rect();
-        let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
-
-        self.draw_projection_header(scene, transform, text_renderer, theme, r);
-        self.draw_projection_mode_picker(scene, transform, text_renderer, theme, r);
-        self.draw_projection_audio_toggle(scene, transform, text_renderer, theme, r);
-        self.draw_projection_stream_chips(scene, transform, text_renderer, theme, r);
-        self.draw_projection_credential_field(scene, transform, text_renderer, theme, presence, r);
-        self.draw_projection_devices_heading(scene, transform, text_renderer, theme, r);
-
-        self.projection_device_rects.clear();
-        let rows_top = self.projection_device_rows_top();
-        let max_rows = f64_floor_to_usize_saturating((r.y1 - rows_top - 58.0) / 64.0).max(1);
-        if self.projection.devices.is_empty() {
-            self.draw_projection_devices_empty(scene, transform, text_renderer, theme, r);
-        } else {
-            self.draw_projection_devices_list(scene, transform, text_renderer, theme, max_rows);
-        }
-
-        let footer = "Miracast · Google Cast · AirPlay · FCast";
-        let (fw, _) = text_renderer.measure(footer, type_scale.xs, None);
-        text_renderer.draw_text(
-            scene,
-            footer,
-            type_scale.xs,
-            colors.text_dim,
-            transform.pre_translate((r.center().x - f64::from(fw) / 2.0, r.y1 - 28.0).into()),
-            None,
-        );
-    }
-
-    /// The projection sheet's card, title, subtitle and close button.
-    fn draw_projection_header(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-    ) {
-        let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
-        let radius = ui::chrome::ChromeRole::Panel.radius(theme, r.height());
-        let card = RoundedRect::from_rect(r, radius);
-        ui::chrome::shell::panel_shadow(scene, transform, r, radius, theme, 1.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            panel_surface(theme, POPOVER_SURFACE_ALPHA),
-            None,
-            &card,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &card,
-        );
-
-        text_renderer.draw_text_weighted(
-            scene,
-            "Project",
-            type_scale.xl,
-            colors.text_primary,
-            transform.pre_translate((r.x0 + 20.0, r.y0 + 18.0).into()),
-            None,
-            TextWeight::Semibold,
-        );
-        text_renderer.draw_text(
-            scene,
-            "Choose how this desktop appears, then pick a display.",
-            type_scale.xs,
-            colors.text_dim,
-            transform.pre_translate((r.x0 + 20.0, r.y0 + 49.0).into()),
-            Some(f64_to_f32_lossy(r.width() - 88.0)),
-        );
-
-        self.projection_close_rect = Rect::new(r.x1 - 48.0, r.y0 + 12.0, r.x1 - 12.0, r.y0 + 48.0);
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            self.projection_close_rect.inset(-9.0),
-            ui::icons::Icon::X,
-            colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-    }
-
-    /// Three familiar Win+P layout choices. A network stream is not
-    /// itself a compositor output, so unsupported choices are visibly
-    /// disabled.
-    fn draw_projection_mode_picker(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-    ) {
-        use crate::shell::projection::ProjectionMode;
-
-        let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
-        let modes_top = r.y0 + 82.0;
-        let gap = 8.0;
-        let cell_w = (r.width() - 40.0 - gap * 2.0) / 3.0;
-        for (i, mode) in ProjectionMode::ALL.iter().enumerate() {
-            let cell = Rect::new(
-                r.x0 + 20.0 + usize_to_f64_lossy(i) * (cell_w + gap),
-                modes_top,
-                r.x0 + 20.0 + usize_to_f64_lossy(i) * (cell_w + gap) + cell_w,
-                modes_top + 66.0,
-            );
-            if let Some(slot) = self.projection_mode_rects.get_mut(i) {
-                *slot = cell;
-            }
-            let selected = self.projection.options.mode == *mode;
-            let supported = self.projection.selected_device_supports(*mode);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if selected {
-                    colors.accent[5].with_alpha_factor(0.24)
-                } else {
-                    colors.surface_white_5
-                },
-                None,
-                &RoundedRect::from_rect(cell, 12.0),
-            );
-            if selected {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.5),
-                    transform,
-                    colors.accent[5],
-                    None,
-                    &RoundedRect::from_rect(cell, 12.0),
-                );
-            }
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(
-                    cell.x0 + 12.0,
-                    cell.y0 + 10.0,
-                    cell.x0 + 32.0,
-                    cell.y0 + 30.0,
-                ),
-                ui::icons::Icon::Monitor,
-                if selected {
-                    colors.accent[6]
-                } else if !supported {
-                    colors.text_dim.with_alpha_factor(0.42)
-                } else {
-                    colors.text_dim
-                },
-                1.5,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                mode.label(),
-                type_scale.xs,
-                if supported {
-                    colors.text_primary
-                } else {
-                    colors.text_dim.with_alpha_factor(0.52)
-                },
-                transform.pre_translate((cell.x0 + 12.0, cell.y0 + 39.0).into()),
-                Some(f64_to_f32_lossy(cell.width() - 18.0)),
-                TextWeight::Medium,
-            );
-        }
-    }
-
-    /// The "Share audio" row: glyph, label and an on/off toggle knob.
-    fn draw_projection_audio_toggle(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-    ) {
-        let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
-        self.projection_audio_rect =
-            Rect::new(r.x0 + 20.0, r.y0 + 164.0, r.x1 - 62.0, r.y0 + 202.0);
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            Rect::new(r.x0 + 22.0, r.y0 + 173.0, r.x0 + 42.0, r.y0 + 193.0),
-            if self.projection.options.audio {
-                ui::icons::Icon::Volume2
-            } else {
-                ui::icons::Icon::VolumeX
-            },
-            colors.text_dim,
-            1.5,
-        );
-        text_renderer.draw_text(
-            scene,
-            "Share audio",
-            type_scale.sm,
-            colors.text_primary,
-            transform.pre_translate((r.x0 + 52.0, r.y0 + 174.0).into()),
-            None,
-        );
-        let toggle = Rect::new(r.x1 - 58.0, r.y0 + 170.0, r.x1 - 20.0, r.y0 + 192.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if self.projection.options.audio {
-                colors.accent[5]
-            } else {
-                colors.neutral[3]
-            },
-            None,
-            &RoundedRect::from_rect(toggle, 11.0),
-        );
-        let knob_x = if self.projection.options.audio {
-            toggle.x1 - 11.0
-        } else {
-            toggle.x0 + 11.0
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.text_primary,
-            None,
-            &vello::kurbo::Circle::new(Point::new(knob_x, toggle.center().y), 8.0),
-        );
-    }
-
-    /// The Stream row's three chips: Auto/Fixed, resolution limit, fps.
-    fn draw_projection_stream_chips(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-    ) {
-        let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
-        text_renderer.draw_text_weighted(
-            scene,
-            "Stream",
-            type_scale.xs,
-            colors.text_dim,
-            transform.pre_translate((r.x0 + 20.0, r.y0 + 218.0).into()),
-            None,
-            TextWeight::Medium,
-        );
-        let x0 = r.x0 + 76.0;
-        let labels = [
-            if self.projection.options.stream_policy.adaptive {
-                "Auto".to_owned()
-            } else {
-                "Fixed".to_owned()
-            },
-            self.projection
-                .options
-                .stream_policy
-                .resolution_limit
-                .label()
-                .to_owned(),
-            format!("{} fps", self.projection.options.stream_policy.max_fps),
-        ];
-        let widths = [76.0, 88.0, 76.0];
-        let mut chip_x = x0;
-        for (i, (label, width)) in labels.iter().zip(widths).enumerate() {
-            let chip = Rect::new(chip_x, r.y0 + 208.0, chip_x + width, r.y0 + 238.0);
-            match i {
-                0 => self.projection_adaptive_rect = chip,
-                1 => self.projection_resolution_rect = chip,
-                _ => self.projection_fps_rect = chip,
-            }
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if i == 0 && self.projection.options.stream_policy.adaptive {
-                    colors.accent[5].with_alpha_factor(0.24)
-                } else {
-                    colors.surface_white_5
-                },
-                None,
-                &RoundedRect::from_rect(chip, 9.0),
-            );
-            let (label_w, label_h) = text_renderer.measure(label, type_scale.xs, None);
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                type_scale.xs,
-                colors.text_primary,
-                transform.pre_translate(
-                    (
-                        chip.center().x - f64::from(label_w) / 2.0,
-                        chip.center().y - f64::from(label_h) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-                TextWeight::Medium,
-            );
-            chip_x += width + 6.0;
-        }
-    }
-
-    /// The AirPlay-only credential field, shown when the selected device
-    /// needs a PIN or password; cleared and unfocused otherwise.
-    fn draw_projection_credential_field(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        r: Rect,
-    ) {
-        let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
-        let airplay_selected = self.projection_airplay_selected();
-        if airplay_selected {
-            text_renderer.draw_text_weighted(
-                scene,
-                "Receiver PIN or password",
-                type_scale.xs,
-                colors.text_primary,
-                transform.pre_translate((r.x0 + 20.0, r.y0 + 253.0).into()),
-                None,
-                TextWeight::Semibold,
-            );
-            self.projection_credential_rect =
-                Rect::new(r.x0 + 20.0, r.y0 + 274.0, r.x1 - 20.0, r.y0 + 316.0);
-            self.projection_credential_input
-                .apply_layout_external(self.projection_credential_rect);
-            self.projection_credential_input
-                .draw(scene, transform, text_renderer, theme, presence);
-            text_renderer.draw_text(
-                scene,
-                "Leave blank unless the receiver asks. Enter connects.",
-                type_scale.xs,
-                colors.text_dim,
-                transform.pre_translate((r.x0 + 20.0, r.y0 + 324.0).into()),
-                Some(f64_to_f32_lossy(r.width() - 40.0)),
-            );
-        } else {
-            self.projection_credential_rect = Rect::ZERO;
-            self.projection_credential_input.set_focus(false);
-        }
-    }
-
-    /// "Available displays" heading plus the refresh button beside it.
-    fn draw_projection_devices_heading(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-    ) {
-        let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
-        let devices_heading_y = self.projection_device_rows_top() - 16.0;
-        text_renderer.draw_text_weighted(
-            scene,
-            "Available displays",
-            type_scale.sm,
-            colors.text_primary,
-            transform.pre_translate((r.x0 + 20.0, devices_heading_y).into()),
-            None,
-            TextWeight::Semibold,
-        );
-        self.projection_refresh_rect = Rect::new(
-            r.x1 - 48.0,
-            devices_heading_y - 8.0,
-            r.x1 - 12.0,
-            devices_heading_y + 28.0,
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            self.projection_refresh_rect.inset(-9.0),
-            ui::icons::Icon::Refresh,
-            colors.text_dim,
-            1.5,
-        );
-    }
-
-    /// An honest zero-state for the device list: what's happening
-    /// (scanning / errored / nothing found) and what to do about it.
-    fn draw_projection_devices_empty(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-    ) {
-        use crate::shell::projection::ProjectionStatus;
-
-        let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
-        let (message, detail) = match &self.projection.status {
-            ProjectionStatus::Scanning => (
-                "Looking for displays…",
-                "Keep the receiver awake and on the same network.",
-            ),
-            ProjectionStatus::Error(error) => ("Couldn't scan", error.as_str()),
-            _ => (
-                "No displays found",
-                "Try Refresh, or check Wi-Fi and the receiver's casting mode.",
-            ),
-        };
-        let icon = Rect::new(
-            r.center().x - 22.0,
-            r.y0 + 274.0,
-            r.center().x + 22.0,
-            r.y0 + 318.0,
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            icon,
-            ui::icons::Icon::Monitor,
-            colors.text_dim,
-            1.5,
-        );
-        let (mw, _) = text_renderer.measure(message, type_scale.sm, None);
-        text_renderer.draw_text_weighted(
-            scene,
-            message,
-            type_scale.sm,
-            colors.text_primary,
-            transform.pre_translate((r.center().x - f64::from(mw) / 2.0, r.y0 + 330.0).into()),
-            None,
-            TextWeight::Medium,
-        );
-        let detail =
-            text_renderer.elide_to_width(detail, type_scale.xs, f64_to_f32_lossy(r.width() - 56.0));
-        let (dw, _) = text_renderer.measure(&detail, type_scale.xs, None);
-        text_renderer.draw_text(
-            scene,
-            &detail,
-            type_scale.xs,
-            colors.text_dim,
-            transform.pre_translate((r.center().x - f64::from(dw) / 2.0, r.y0 + 354.0).into()),
-            None,
-        );
-    }
-
-    /// One row per discovered device, up to `max_rows`: icon, name,
-    /// status sub-line and a Connect/Stop/Wait action pill.
-    fn draw_projection_devices_list(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        max_rows: usize,
-    ) {
-        use crate::shell::projection::ProjectionStatus;
-
-        let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
-        for (i, device) in self.projection.devices.iter().take(max_rows).enumerate() {
-            let row = self.projection_row_rect(i);
-            self.projection_device_rects.push(row);
-            let selected = self.projection.selected == i;
-            let connected = matches!(&self.projection.status, ProjectionStatus::Connected { device_id } if device_id == &device.id);
-            let connecting = matches!(&self.projection.status, ProjectionStatus::Connecting { device_id } if device_id == &device.id);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if selected {
-                    colors.accent[5].with_alpha_factor(0.18)
-                } else {
-                    colors.surface_white_5
-                },
-                None,
-                &RoundedRect::from_rect(row, 12.0),
-            );
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(row.x0 + 12.0, row.y0 + 17.0, row.x0 + 34.0, row.y0 + 39.0),
-                ui::icons::Icon::Monitor,
-                if connected {
-                    colors.semantic.success
-                } else {
-                    colors.text_dim
-                },
-                1.5,
-            );
-            let name = text_renderer.elide_to_width(
-                &device.name,
-                type_scale.sm,
-                f64_to_f32_lossy(row.width() - 142.0),
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &name,
-                type_scale.sm,
-                colors.text_primary,
-                transform.pre_translate((row.x0 + 46.0, row.y0 + 8.0).into()),
-                None,
-                TextWeight::Medium,
-            );
-            let sub = if connected {
-                "Connected".to_string()
-            } else if connecting {
-                "Connecting…".to_string()
-            } else if device.detail.is_empty() {
-                device.protocol.label().to_string()
-            } else {
-                format!("{} · {}", device.protocol.label(), device.detail)
-            };
-            text_renderer.draw_text(
-                scene,
-                &sub,
-                type_scale.xs,
-                if connected {
-                    colors.semantic.success
-                } else {
-                    colors.text_dim
-                },
-                transform.pre_translate((row.x0 + 46.0, row.y0 + 31.0).into()),
-                Some(f64_to_f32_lossy(row.width() - 142.0)),
-            );
-            Self::draw_projection_device_action(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                row,
-                connected,
-                connecting,
-            );
-        }
-    }
-
-    /// The Connect/Stop/Wait action pill on a device row.
-    fn draw_projection_device_action(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        row: Rect,
-        connected: bool,
-        connecting: bool,
-    ) {
-        let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
-        let action = Rect::new(row.x1 - 86.0, row.y0 + 11.0, row.x1 - 10.0, row.y1 - 11.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if connected {
-                colors.semantic.danger.with_alpha_factor(0.16)
-            } else {
-                colors.accent[5].with_alpha_factor(0.24)
-            },
-            None,
-            &RoundedRect::from_rect(action, 10.0),
-        );
-        let label = if connected {
-            "Stop"
-        } else if connecting {
-            "Wait"
-        } else {
-            "Connect"
-        };
-        let (lw, lh) = text_renderer.measure(label, type_scale.xs, None);
-        text_renderer.draw_text_weighted(
-            scene,
-            label,
-            type_scale.xs,
-            if connected {
-                colors.semantic.danger
-            } else {
-                colors.text_primary
-            },
-            transform.pre_translate(
-                (
-                    action.center().x - f64::from(lw) / 2.0,
-                    action.center().y - f64::from(lh) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-            TextWeight::Medium,
-        );
-    }
-
     /// Draw the `QuickSettings` drill-in header — back-chevron on the left
     /// and a centred title. Used for both `WiFi` and Bluetooth panes; the
     /// back-chevron's hit rect is exposed via [`Self::qs_back_chevron_rect`].
     fn draw_qs_drill_in_header(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         title: &str,
     ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.quick_settings_rect();
-        let header_h = 48.0_f64;
-        let chev_rect = self.qs_back_chevron_rect();
-        ui::icons::draw_icon(
+        let panel = self.quick_settings_rect();
+        self.qs_aux_drill_in.layout(panel, 0);
+        self.qs_aux_drill_in.draw_header(
             scene,
             transform,
-            chev_rect,
-            ui::icons::Icon::ChevronLeft,
-            colors.text_primary,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-
-        let (tw, th) = text_renderer.measure(title, tokens.typography.scale.sm, None);
-        let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
-        let ty = rect.y0 + (header_h - f64::from(th)) / 2.0;
-        text_renderer.draw_text_weighted(
-            scene,
+            text_renderer,
+            theme,
+            panel,
+            self.last_cursor,
             title,
-            tokens.typography.scale.sm,
-            colors.text_primary,
-            transform.pre_translate((tx, ty).into()),
-            None,
-            TextWeight::Semibold,
         );
     }
 
@@ -11693,18 +10741,13 @@ impl ShellOverlayHost {
         theme: &Theme,
         message: &str,
     ) {
-        let tokens = &theme.tokens;
-        let rect = self.quick_settings_rect();
-        let (tw, th) = text_renderer.measure(message, tokens.typography.scale.sm, None);
-        let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
-        let ty = rect.y0 + 56.0 + 24.0 - f64::from(th) / 2.0;
-        text_renderer.draw_text(
+        DrillInList::draw_empty(
             scene,
+            transform,
+            text_renderer,
+            theme,
+            self.quick_settings_rect(),
             message,
-            tokens.typography.scale.sm,
-            tokens.colors.text_dim,
-            transform.pre_translate((tx, ty).into()),
-            None,
         );
     }
 
@@ -11718,7 +10761,7 @@ impl ShellOverlayHost {
     /// while the shell is the only authority that actually received and
     /// retired these notifications.
     fn draw_qs_notification_history(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -11832,119 +10875,6 @@ impl ShellOverlayHost {
         let cx = card.x1 - 16.0;
         let cy = card.y0 + 22.0;
         Rect::new(cx - 16.0, cy - 16.0, cx + 16.0, cy + 16.0)
-    }
-
-    /// Render the `WiFi` drill-in pane: header + list of `wifi_networks`
-    /// rows (SSID + signal-bars + active-radio dot).
-    fn draw_qs_wifi_list(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.quick_settings_rect();
-
-        // A passphrase prompt takes over the pane rather than pushing a
-        // nav level — the user is still "in Wi-Fi", and a second
-        // back-chevron would mean something different from the first.
-        if let Some(prompt) = qs.wifi_password.as_ref() {
-            self.draw_qs_wifi_password(scene, transform, text_renderer, theme, prompt);
-            return;
-        }
-
-        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Wi-Fi");
-
-        if qs.wifi_networks.is_empty() {
-            self.draw_qs_drill_in_empty(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                "Scanning for networks…",
-            );
-            return;
-        }
-
-        let row_h = 56.0_f64;
-        let list_y0 = rect.y0 + 56.0;
-        for (i, net) in qs.wifi_networks.iter().enumerate() {
-            let row_y = list_y0 + usize_to_f64_lossy(i) * row_h;
-            let row_rect = Rect::new(rect.x0 + 12.0, row_y, rect.x1 - 12.0, row_y + row_h - 4.0);
-            // First row reads as "primary" with a subtle wash; the rest
-            // stay transparent until there's hover tracking.
-            if i == 0 {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.neutral[2].with_alpha_factor(0.50),
-                    None,
-                    &RoundedRect::from_rect(row_rect, 12.0),
-                );
-            }
-
-            let glyph_box = Rect::new(
-                row_rect.x0 + 12.0,
-                row_rect.y0 + (row_rect.height() - 20.0) / 2.0,
-                row_rect.x0 + 12.0 + 20.0,
-                row_rect.y0 + f64::midpoint(row_rect.height(), 20.0),
-            );
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                glyph_box,
-                ui::icons::Icon::Wifi,
-                colors.text_primary,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-
-            let label_x = glyph_box.x1 + 12.0;
-            let label_y = row_rect.y0 + (row_rect.height() - 14.0) / 2.0;
-            text_renderer.draw_text_weighted(
-                scene,
-                &net.ssid,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform.pre_translate((label_x, label_y).into()),
-                None,
-                TextWeight::Medium,
-            );
-
-            // `signal` bars out of 4, growing right→left.
-            let bars_x1 = row_rect.x1 - 36.0;
-            let bars_w = 14.0_f64;
-            let bars_h_max = 12.0_f64;
-            let bars_baseline = row_rect.y0 + row_rect.height() / 2.0 + bars_h_max / 2.0;
-            for b in 0..4u8 {
-                let x = bars_x1 - bars_w + f64::from(b) * 4.0 - 12.0;
-                let h = f64::from(b.saturating_add(1)) * (bars_h_max / 4.0);
-                let bar_rect = Rect::new(x, bars_baseline - h, x + 3.0, bars_baseline);
-                let on = b < net.signal;
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if on {
-                        colors.text_primary.with_alpha_factor(0.85)
-                    } else {
-                        colors.text_primary.with_alpha_factor(0.20)
-                    },
-                    None,
-                    &RoundedRect::from_rect(bar_rect, 1.0),
-                );
-            }
-
-            // Indigo dot for the connected network, standing in for a
-            // check-in-ring until that path lands.
-            if net.connected {
-                let cx = row_rect.x1 - 14.0;
-                let cy = row_rect.y0 + row_rect.height() / 2.0;
-                let dot = vello::kurbo::Circle::new(Point::new(cx, cy), 5.0);
-                scene.fill(Fill::NonZero, transform, colors.accent[5], None, &dot);
-            }
-        }
     }
 
     /// Raise the passphrase prompt for `ssid`.
@@ -12095,7 +11025,7 @@ impl ShellOverlayHost {
 
     /// The "join this protected network" prompt.
     fn draw_qs_wifi_password(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -12281,259 +11211,37 @@ impl ShellOverlayHost {
         theme: &Theme,
         prompt: &crate::shell::quick_settings::WifiPasswordPrompt,
     ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let text_size = tokens.typography.scale.sm;
         let (cancel, connect) = self.qs_password_button_rects();
-        let cancel_shape = RoundedRect::from_rect(cancel, 10.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surface_white_5,
-            None,
-            &cancel_shape,
-        );
-        Self::draw_centred_label(
+        Button::paint(
             scene,
             transform,
             text_renderer,
-            cancel,
-            "Cancel",
-            text_size,
-            colors.text_dim,
+            theme,
+            &ButtonFace::new(cancel, "Cancel")
+                .radius(10.0)
+                .hovered(self.last_cursor.is_some_and(|point| cancel.contains(point))),
         );
-
-        let live = prompt.can_submit();
-        let connect_shape = RoundedRect::from_rect(connect, 10.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if live {
-                colors.accent[5]
-            } else {
-                // Not merely dim: a disabled primary button that still
-                // looks primary invites the click it will ignore.
-                colors.accent[5].with_alpha_factor(0.28)
-            },
-            None,
-            &connect_shape,
-        );
-        Self::draw_centred_label(
+        Button::paint(
             scene,
             transform,
             text_renderer,
-            connect,
-            if prompt.connecting {
-                "Connecting…"
-            } else {
-                "Connect"
-            },
-            text_size,
-            if live {
-                colors.text_primary
-            } else {
-                colors.text_primary.with_alpha_factor(0.5)
-            },
-        );
-    }
-
-    /// Centres a label inside `rect` (factored out to stop copies drifting).
-    fn draw_centred_label(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        rect: Rect,
-        label: &str,
-        size: f32,
-        color: vello::peniko::Color,
-    ) {
-        let (w, h) = text_renderer.measure_weighted(label, size, None, TextWeight::Semibold);
-        text_renderer.draw_text_weighted(
-            scene,
-            label,
-            size,
-            color,
-            transform.pre_translate(
-                (
-                    rect.center().x - f64::from(w) / 2.0,
-                    rect.center().y - f64::from(h) / 2.0,
-                )
-                    .into(),
+            theme,
+            &ButtonFace::new(
+                connect,
+                if prompt.connecting {
+                    "Connecting…"
+                } else {
+                    "Connect"
+                },
+            )
+            .primary()
+            .radius(10.0)
+            .disabled(!prompt.can_submit())
+            .hovered(
+                self.last_cursor
+                    .is_some_and(|point| connect.contains(point)),
             ),
-            None,
-            TextWeight::Semibold,
         );
-    }
-
-    /// Renders the Bluetooth drill-in pane: header + `bt_devices` rows
-    /// (name + battery-icon + active-radio dot).
-    fn draw_qs_bt_list(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.quick_settings_rect();
-
-        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Bluetooth");
-
-        if qs.bt_devices.is_empty() {
-            self.draw_qs_drill_in_empty(scene, transform, text_renderer, theme, "No devices found");
-            return;
-        }
-
-        let row_h = 56.0_f64;
-        let list_y0 = rect.y0 + 56.0;
-        for (i, dev) in qs.bt_devices.iter().enumerate() {
-            let row_y = list_y0 + usize_to_f64_lossy(i) * row_h;
-            let row_rect = Rect::new(rect.x0 + 12.0, row_y, rect.x1 - 12.0, row_y + row_h - 4.0);
-            if i == 0 {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.neutral[2].with_alpha_factor(0.50),
-                    None,
-                    &RoundedRect::from_rect(row_rect, 12.0),
-                );
-            }
-
-            // Placeholder ring — no lucide Bluetooth glyph yet.
-            let glyph_box = Rect::new(
-                row_rect.x0 + 12.0,
-                row_rect.y0 + (row_rect.height() - 20.0) / 2.0,
-                row_rect.x0 + 12.0 + 20.0,
-                row_rect.y0 + f64::midpoint(row_rect.height(), 20.0),
-            );
-            let cx = f64::midpoint(glyph_box.x0, glyph_box.x1);
-            let cy = f64::midpoint(glyph_box.y0, glyph_box.y1);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.5),
-                transform,
-                colors.text_primary,
-                None,
-                &vello::kurbo::Circle::new(Point::new(cx, cy), 7.0),
-            );
-
-            let label_x = glyph_box.x1 + 12.0;
-            let label_y = row_rect.y0 + (row_rect.height() - 14.0) / 2.0;
-            text_renderer.draw_text_weighted(
-                scene,
-                &dev.name,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform.pre_translate((label_x, label_y).into()),
-                None,
-                TextWeight::Medium,
-            );
-
-            let bat_box = Rect::new(
-                row_rect.x1 - 64.0,
-                row_rect.y0 + (row_rect.height() - 18.0) / 2.0,
-                row_rect.x1 - 64.0 + 22.0,
-                row_rect.y0 + f64::midpoint(row_rect.height(), 18.0),
-            );
-            let bat_color = if dev.battery > 50 {
-                colors.semantic.success
-            } else if dev.battery > 20 {
-                colors.text_primary
-            } else {
-                colors.semantic.danger
-            };
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                bat_box,
-                ui::icons::Icon::Battery,
-                bat_color,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-
-            if dev.connected {
-                let cx = row_rect.x1 - 14.0;
-                let cy = row_rect.y0 + row_rect.height() / 2.0;
-                let dot = vello::kurbo::Circle::new(Point::new(cx, cy), 5.0);
-                scene.fill(Fill::NonZero, transform, colors.accent[5], None, &dot);
-            }
-        }
-    }
-
-    /// VPN is a picker, never an ambiguous one-click toggle: every configured
-    /// profile keeps its own visible state and hit target.
-    fn draw_qs_vpn_list(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.quick_settings_rect();
-        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "VPN");
-        if qs.vpns.is_empty() {
-            self.draw_qs_drill_in_empty(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                "No VPN profiles yet · add one in Settings",
-            );
-            return;
-        }
-        let row_h = 56.0_f64;
-        for (i, vpn) in qs.vpns.iter().enumerate() {
-            let y = rect.y0 + 56.0 + usize_to_f64_lossy(i) * row_h;
-            let row = Rect::new(rect.x0 + 12.0, y, rect.x1 - 12.0, y + row_h - 4.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if vpn.active {
-                    colors.accent[5].with_alpha_factor(0.18)
-                } else {
-                    colors.neutral[2]
-                },
-                None,
-                &RoundedRect::from_rect(row, 12.0),
-            );
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(row.x0 + 12.0, row.y0 + 16.0, row.x0 + 32.0, row.y0 + 36.0),
-                ui::icons::Icon::Shield,
-                if vpn.active {
-                    colors.accent[5]
-                } else {
-                    colors.text_dim
-                },
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &vpn.name,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform.pre_translate((row.x0 + 44.0, row.y0 + 9.0).into()),
-                None,
-                TextWeight::Medium,
-            );
-            text_renderer.draw_text(
-                scene,
-                if vpn.active {
-                    "Connected · click to disconnect"
-                } else {
-                    "Click to connect"
-                },
-                tokens.typography.scale.xs,
-                colors.text_dim,
-                transform.pre_translate((row.x0 + 44.0, row.y0 + 29.0).into()),
-                None,
-            );
-        }
     }
 
     /// Collaborators dropdown: a peer-roster popover anchored under the
@@ -15370,28 +14078,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn airplay_selection_exposes_a_masked_pairing_field_in_the_projection_sheet() {
-        let mut h = build_harness();
-        h.host.projection.devices = vec![crate::shell::projection::ProjectionDevice {
-            id: "airplay:test".to_owned(),
-            name: "Living Room".to_owned(),
-            protocol: crate::shell::projection::ProjectionProtocol::AirPlay,
-            detail: "Apple TV".to_owned(),
-            modes: vec![crate::shell::projection::ProjectionMode::Mirror],
-            addresses: vec!["192.0.2.8".to_owned()],
-            port: 7000,
-        }];
-        h.host.projection.selected = 0;
-        assert!(h.host.projection_airplay_selected());
-        assert!(h.host.projection_credential_input.is_secret());
-        assert_eq!(
-            h.host.projection_device_rows_top(),
-            h.host.projection_rect().y0 + 366.0,
-            "the receiver list must make room for the pairing control instead of overlapping it"
-        );
-    }
-
     /// Escape dismisses a summoned wheel, and takes priority over the
     /// rest of the dismissal ladder because it is the most transient
     /// thing the shell puts up.
@@ -16489,7 +15175,7 @@ mod maximize_harvest_tests {
             name: "Test".into(),
             strips: vec![strip],
             collaborators: vec![],
-            shared_surfaces: StdHashMap::new(),
+            shared_surfaces: Default::default(),
         };
         let mut active_strip = StdHashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -16671,7 +15357,7 @@ mod resync_strips_tests {
             name: "Test".into(),
             strips: vec![strip],
             collaborators: vec![],
-            shared_surfaces: StdHashMap::new(),
+            shared_surfaces: Default::default(),
         };
         let mut active_strip = StdHashMap::new();
         active_strip.insert(ws_id, strip_id);
