@@ -29,7 +29,6 @@ automerge.workspace = true
 serde.workspace = true
 uuid.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 zbus.workspace = true
 vello.workspace = true
 winit.workspace = true
