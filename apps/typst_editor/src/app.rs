@@ -383,7 +383,7 @@ impl TypstApp {
             // Text degrades to a no-op instead of crashing the app.
             let id = doc
                 .put_object(&ROOT, "source", ObjType::Text)
-                .unwrap_or_else(|_| ROOT);
+                .unwrap_or(ROOT);
             let seed = self
                 .documents
                 .get(self.current)
@@ -582,11 +582,7 @@ impl TypstApp {
     /// the open document with a `.pdf` extension. Returns the written path.
     /// Split out so a test can drive it against a scratch directory.
     #[cfg(test)]
-    fn export_pdf_to(
-        &mut self,
-        doc: &mut AutoCommit,
-        dir: &std::path::Path,
-    ) -> Result<PathBuf, String> {
+    fn export_pdf_to(&self, doc: &AutoCommit, dir: &std::path::Path) -> Result<PathBuf, String> {
         let stem = self
             .documents
             .get(self.current)
@@ -1992,7 +1988,7 @@ impl TypstApp {
         &mut self,
         position: &winit::dpi::PhysicalPosition<f64>,
         scale_factor: f64,
-        doc: &mut AutoCommit,
+        doc: &AutoCommit,
         src_id: &ObjId,
         handled: &mut bool,
     ) {
@@ -2586,7 +2582,7 @@ mod tests {
     /// touches the user's documents folder.
     #[test]
     fn export_pdf_writes_a_real_pdf_file() {
-        let (mut app, mut doc) = fresh();
+        let (app, mut doc) = fresh();
         let dir = unique_dir("pdf");
         let path = app
             .export_pdf_to(&mut doc, &dir)

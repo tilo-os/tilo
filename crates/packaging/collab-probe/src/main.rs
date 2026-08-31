@@ -199,11 +199,8 @@ async fn read(channel: &str, timeout_secs: u64) -> ExitCode {
                 eprintln!("probe: received {} bytes that did not load", event.op.len());
                 continue;
             }
-            match doc.get(&ROOT, FIELD) {
-                Ok(Some((value, _))) => {
-                    return Some(value.to_str().unwrap_or_default().to_string());
-                }
-                _ => {}
+            if let Ok(Some((value, _))) = doc.get(&ROOT, FIELD) {
+                return Some(value.to_str().unwrap_or_default().to_string());
             }
         }
     })

@@ -1875,7 +1875,7 @@ impl FirewallApp {
         };
         let inset_x = card.x0 + 18.0;
         self.draw_summary_title(scene, t, tr, theme, card, inset_x);
-        self.draw_summary_chips(scene, t, tr, theme, card, inset_x, z);
+        Self::draw_summary_chips(scene, t, tr, theme, card, inset_x, z);
         self.draw_summary_set_active(scene, t, tr, theme, l);
     }
 
@@ -1933,7 +1933,6 @@ impl FirewallApp {
     /// Stat chips row: laid out left-to-right, wrapping onto further rows so
     /// a narrow card never runs them off its right edge.
     fn draw_summary_chips(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,

@@ -339,6 +339,7 @@ impl ConnectModal {
     }
 
     /// Engine selector segmented control. Returns the Y position beneath it.
+    #[allow(clippy::too_many_arguments)]
     fn draw_engine_selector(
         &mut self,
         scene: &mut Scene,
@@ -395,6 +396,7 @@ impl ConnectModal {
 
     /// The engine-dependent field set (`SQLite` file path, or the network
     /// host/port/db/user/password rows). Returns the Y position beneath it.
+    #[allow(clippy::too_many_arguments)]
     fn draw_fields(
         &mut self,
         scene: &mut Scene,

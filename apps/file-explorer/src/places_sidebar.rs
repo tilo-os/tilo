@@ -411,125 +411,10 @@ impl Widget for PlacesSidebar {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let tokens = &theme.tokens;
-        // Panel background (a hair lighter than the content) + a quiet divider.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tokens.colors.surface_white_5,
-            None,
-            &self.rect,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            tokens.colors.border_white_10,
-            None,
-            &Line::new((self.rect.x1, self.rect.y0), (self.rect.x1, self.rect.y1)),
-        );
-
-        // Favourites header — only when there are favourites to head (an empty
-        // section header reads as a bug).
-        if self.fav_count() > 0 {
-            self.draw_header(
-                scene,
-                transform,
-                tr,
-                theme,
-                self.rect.y0 + TOP,
-                "Favourites",
-            );
-        }
-
-        // Favourite rows (with live reflow + ghost while dragging). Compute the
-        // list geometry BEFORE borrowing the store (metrics reads the store).
-        let metrics = self.metrics();
-        let (drag_active, from_idx) = {
-            let mut favs = self.favs.borrow_mut();
-            let active = favs.drag.is_active();
-            if active {
-                favs.drag.sync_insertion(&metrics);
-            }
-            (active, favs.drag.from_index())
-        };
-        {
-            let favs = self.favs.borrow();
-            for (i, fav) in favs.favorites.iter().enumerate() {
-                if drag_active && Some(i) == from_idx {
-                    continue; // painted as the floating ghost below
-                }
-                let shift = if drag_active {
-                    favs.drag.item_shift(i, &metrics)
-                } else {
-                    0.0
-                };
-                let mut rect = self.fav_row_rect(i);
-                rect = Rect::new(rect.x0, rect.y0 + shift, rect.x1, rect.y1 + shift);
-                let active = !drag_active && fav.path == self.active;
-                let hovered = self.hover_fav == Some(i) && !active;
-                Self::draw_row(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    rect,
-                    RowVisual {
-                        icon: fav.icon(),
-                        label: &fav.label,
-                        active,
-                        hovered,
-                        ghost: false,
-                    },
-                );
-            }
-        }
-
-        // System header + rows.
-        self.draw_header(scene, transform, tr, theme, self.sys_header_y(), "System");
-        for (i, (icon, label, path)) in self.system.iter().enumerate() {
-            let rect = self.sys_row_rect(i);
-            let active = *path == self.active;
-            let hovered = self.hover_sys == Some(i) && !active;
-            Self::draw_row(
-                scene,
-                transform,
-                tr,
-                theme,
-                rect,
-                RowVisual {
-                    icon: *icon,
-                    label,
-                    active,
-                    hovered,
-                    ghost: false,
-                },
-            );
-        }
-
-        // Floating ghost of the dragged favourite.
-        if drag_active {
-            let favs = self.favs.borrow();
-            if let (Some(fi), Some(ghost)) = (
-                from_idx,
-                favs.drag.ghost_rect(self.row_x0(), self.row_x1(), &metrics),
-            ) && let Some(fav) = favs.favorites.get(fi)
-            {
-                Self::draw_row(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    ghost,
-                    RowVisual {
-                        icon: fav.icon(),
-                        label: &fav.label,
-                        active: false,
-                        hovered: false,
-                        ghost: true,
-                    },
-                );
-            }
-        }
+        self.draw_panel_bg(scene, transform, theme);
+        self.draw_favourites_section(scene, transform, tr, theme);
+        self.draw_system_section(scene, transform, tr, theme);
+        self.draw_drag_ghost(scene, transform, tr, theme);
     }
 
     fn handle_event(
@@ -638,6 +523,157 @@ impl Widget for PlacesSidebar {
     }
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl PlacesSidebar {
+    /// Panel background (a hair lighter than the content) + a quiet divider.
+    fn draw_panel_bg(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let tokens = &theme.tokens;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surface_white_5,
+            None,
+            &self.rect,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tokens.colors.border_white_10,
+            None,
+            &Line::new((self.rect.x1, self.rect.y0), (self.rect.x1, self.rect.y1)),
+        );
+    }
+
+    /// Favourites header (only when there are favourites to head — an empty
+    /// section header reads as a bug) plus the favourite rows, with live
+    /// reflow while dragging.
+    fn draw_favourites_section(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.fav_count() > 0 {
+            self.draw_header(
+                scene,
+                transform,
+                tr,
+                theme,
+                self.rect.y0 + TOP,
+                "Favourites",
+            );
+        }
+
+        // Compute the list geometry BEFORE borrowing the store (metrics reads
+        // the store).
+        let metrics = self.metrics();
+        let (drag_active, from_idx) = {
+            let mut favs = self.favs.borrow_mut();
+            let active = favs.drag.is_active();
+            if active {
+                favs.drag.sync_insertion(&metrics);
+            }
+            (active, favs.drag.from_index())
+        };
+        let favs = self.favs.borrow();
+        for (i, fav) in favs.favorites.iter().enumerate() {
+            if drag_active && Some(i) == from_idx {
+                continue; // painted as the floating ghost below
+            }
+            let shift = if drag_active {
+                favs.drag.item_shift(i, &metrics)
+            } else {
+                0.0
+            };
+            let mut rect = self.fav_row_rect(i);
+            rect = Rect::new(rect.x0, rect.y0 + shift, rect.x1, rect.y1 + shift);
+            let active = !drag_active && fav.path == self.active;
+            let hovered = self.hover_fav == Some(i) && !active;
+            Self::draw_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                rect,
+                RowVisual {
+                    icon: fav.icon(),
+                    label: &fav.label,
+                    active,
+                    hovered,
+                    ghost: false,
+                },
+            );
+        }
+    }
+
+    fn draw_system_section(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.draw_header(scene, transform, tr, theme, self.sys_header_y(), "System");
+        for (i, (icon, label, path)) in self.system.iter().enumerate() {
+            let rect = self.sys_row_rect(i);
+            let active = *path == self.active;
+            let hovered = self.hover_sys == Some(i) && !active;
+            Self::draw_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                rect,
+                RowVisual {
+                    icon: *icon,
+                    label,
+                    active,
+                    hovered,
+                    ghost: false,
+                },
+            );
+        }
+    }
+
+    /// Floating ghost of the dragged favourite, if a drag is active. Reads
+    /// the drag state [`Self::draw_favourites_section`] already synced this
+    /// frame, so call order matters: favourites first, then the ghost.
+    fn draw_drag_ghost(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let favs = self.favs.borrow();
+        if !favs.drag.is_active() {
+            return;
+        }
+        let metrics = self.metrics();
+        let from_idx = favs.drag.from_index();
+        if let (Some(fi), Some(ghost)) = (
+            from_idx,
+            favs.drag.ghost_rect(self.row_x0(), self.row_x1(), &metrics),
+        ) && let Some(fav) = favs.favorites.get(fi)
+        {
+            Self::draw_row(
+                scene,
+                transform,
+                tr,
+                theme,
+                ghost,
+                RowVisual {
+                    icon: fav.icon(),
+                    label: &fav.label,
+                    active: false,
+                    hovered: false,
+                    ghost: true,
+                },
+            );
+        }
     }
 }
 

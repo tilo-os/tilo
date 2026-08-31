@@ -256,7 +256,7 @@ impl SchemaTree {
             None,
         );
         // Table count.
-        if let Some(s) = session.schema.schemas.iter().find(|s| &s.name == name) {
+        if let Some(s) = session.schema.schemas.iter().find(|s| s.name == *name) {
             let cnt = format!("{}", s.tables.len());
             let (cw, _) = tr.measure(&cnt, 11.0, None);
             tr.draw_text(

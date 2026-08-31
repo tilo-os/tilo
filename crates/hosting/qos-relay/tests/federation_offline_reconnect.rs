@@ -18,7 +18,10 @@
     clippy::string_slice,
     clippy::panic,
     clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard; the arithmetic \
+              here is a synthetic per-delta timestamp counter bounded by a \
+              3-item literal array, not real user data"
 )]
 
 use std::path::PathBuf;
