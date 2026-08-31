@@ -14,6 +14,22 @@
 //! interrogated the registry. "There was no hardware decoder available" is a
 //! conclusion the test proves and prints, never an assumption it makes to get
 //! out of asserting.
+//!
+//! That covenant is why this module panics on purpose. `assert!` and `panic!`
+//! here are the check, not a hazard — clippy's exemption for test code only
+//! reaches `#[test]` functions, and every one of these is called from one.
+#![allow(
+    clippy::panic,
+    reason = "a fixture helper that cannot observe its subject must fail loudly; \
+              see the module docs above"
+)]
+#![allow(
+    dead_code,
+    reason = "each integration test binary compiles this whole module but uses \
+              only the fixtures it needs — `hardware_decode` never measures a \
+              seek drift, `software_fallback` never diffs two pictures. The \
+              unused half is live in a sibling binary, not dead"
+)]
 
 // Everything below is reached only from the decode-gated test modules, so it
 // carries the same gate they do: without it a hermetic build (no gstreamer dev
@@ -108,7 +124,7 @@ pub fn has_hardware_h264() -> bool {
 ///
 /// This clip's video track does not start at zero: its first buffer carries a
 /// PTS of 66.67ms (two frames), an offset the container's edit list hides from
-/// `ffprobe` but which GStreamer reports verbatim. Seeking to `T` therefore
+/// `ffprobe` but which `GStreamer` reports verbatim. Seeking to `T` therefore
 /// lands on a picture stamped `T + base`, and that is *correct* — the frame
 /// really is T into the stream.
 ///
@@ -125,6 +141,57 @@ pub fn stream_pts_base_ms(engine: &mut media::MediaEngine) -> u64 {
         first.pts_ms
     );
     first.pts_ms
+}
+
+/// How far a decoded picture landed from the time that was asked for.
+///
+/// Millisecond timestamps are unsigned and a drift is a difference between two
+/// of them, so the magnitude comes from `abs_diff` and the direction is carried
+/// alongside. Routing a PTS through `i64` to subtract would put a cast inside
+/// the assertion itself, which is the one place a silent wrap must not be.
+#[cfg(feature = "decode")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Drift {
+    /// Absolute distance in milliseconds.
+    pub ms: u64,
+    /// Whether the picture landed *before* the requested time.
+    pub early: bool,
+}
+
+#[cfg(feature = "decode")]
+impl Drift {
+    /// The drift of `actual` from `target`.
+    pub fn between(actual: u64, target: u64) -> Self {
+        Self {
+            ms: actual.abs_diff(target),
+            early: actual < target,
+        }
+    }
+}
+
+#[cfg(feature = "decode")]
+impl std::fmt::Display for Drift {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", if self.early { "-" } else { "+" }, self.ms)
+    }
+}
+
+/// `part` as a percentage of `whole`, for a diagnostic line.
+///
+/// Byte counts are `usize`; widening them to `f64` here is exact for any
+/// picture that fits in memory, and the result is printed, never asserted on.
+#[cfg(feature = "decode")]
+pub fn percent_of(part: usize, whole: usize) -> f64 {
+    if whole == 0 {
+        return 0.0;
+    }
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "byte counts of one decoded picture — far below 2^53, and the \
+                  result only ever reaches a println"
+    )]
+    let pct = part as f64 / whole as f64 * 100.0;
+    pct
 }
 
 /// Open the fixture, seek to `target_ms`, and pump until a picture lands.

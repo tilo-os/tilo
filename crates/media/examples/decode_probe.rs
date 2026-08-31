@@ -18,9 +18,10 @@ fn main() {
 #[cfg(feature = "decode")]
 fn main() {
     let mut args = std::env::args().skip(1);
-    let path = args
-        .next()
-        .expect("usage: decode_probe <path> [seek_ms] [native|rgba] [sw]");
+    let Some(path) = args.next() else {
+        eprintln!("usage: decode_probe <path> [seek_ms] [native|rgba] [sw]");
+        std::process::exit(2);
+    };
     let seek_ms: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(12_500);
     let rest: Vec<String> = args.collect();
     let native = rest.iter().any(|a| a == "native");
@@ -50,7 +51,7 @@ fn main() {
 
     let mut engine = media::MediaEngine::with_config(config);
     println!("  real decode: {}", engine.is_real_decode());
-    engine.open(media::Source::LocalFile(path.clone().into()));
+    engine.open(media::Source::LocalFile(path.into()));
 
     let started = std::time::Instant::now();
     let ok = engine.seek_and_wait(seek_ms, std::time::Duration::from_secs(15));
@@ -69,8 +70,9 @@ fn main() {
             println!("  frame: {}x{} pts={}ms", f.width, f.height, f.pts_ms);
             println!("  payload: {:?}", f.payload);
             println!(
-                "  drift from request: {}ms",
-                f.pts_ms as i64 - seek_ms as i64
+                "  drift from request: {}{}ms",
+                if f.pts_ms < seek_ms { "-" } else { "+" },
+                f.pts_ms.abs_diff(seek_ms)
             );
         }
         None => println!("  frame: none"),

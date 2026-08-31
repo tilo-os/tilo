@@ -22,7 +22,7 @@ mod real {
     use super::common::*;
     use media::{DecoderKind, EngineConfig, FramePayload, MediaEngine};
 
-    /// The decoder GStreamer chose for the fixture must be a hardware one
+    /// The decoder `GStreamer` chose for the fixture must be a hardware one
     /// whenever this machine has a hardware decoder that can take H.264.
     #[test]
     fn the_decoder_that_ran_is_the_hardware_one_when_the_machine_has_one() {
@@ -271,7 +271,12 @@ mod real {
                 "a revisited time must come from the cache, not a second seek"
             );
             assert_eq!(a.pts_ms, b.pts_ms, "the same time yields the same picture");
-            println!("decoder: {}", s.hw_report().describe());
+            // Read the description out and release the session before printing:
+            // every other holder of this pool entry blocks on that lock, and
+            // formatting is not decode work.
+            let decoder = s.hw_report().describe();
+            drop(s);
+            println!("decoder: {decoder}");
         }
 
         // A second request for the same source reuses the pipeline.
