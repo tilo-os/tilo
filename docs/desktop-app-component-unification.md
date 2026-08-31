@@ -40,6 +40,8 @@ controls without growing `ShellOverlayHost` again.
 | Surface | Owner | Host contract |
 |---|---|---|
 | Wireless projection sheet | `shell/src/shell/projection_overlay.rs` (`ProjectionOverlay`) | The component owns discovery/session state, animation, AirPlay credential input, geometry, drawing, keyboard handling, and pointer hit-testing. `overlay_host.rs` only supplies visibility and maps `EventOutcome` close/invalidate requests into `Chrome`. |
+| Quick-settings drill-in scaffold | `shell/src/shell/quick_settings_drill_in.rs` (`DrillInList`) | Wi-Fi, Bluetooth, and VPN share one source of truth for header/back, empty-state and 56px row geometry; host-owned notifications/password reuse its header/empty paint. Discovery-row background/label painting is shared only by Wi-Fi and Bluetooth; VPN retains its distinct two-line toggle row. |
+| Quick-settings Bluetooth list | `shell/src/shell/quick_settings_bluetooth.rs` (`QuickSettingsBluetoothPane`) | The component owns discovery-row drawing and exact back/row hit geometry. Device rows remain informational because `os_actions::Dispatcher` has no typed pair/connect operation; the extraction does not invent a control that cannot work. |
 | Quick-settings Wi-Fi list | `shell/src/shell/quick_settings_wifi.rs` (`QuickSettingsWifiPane`) | The component owns network-row/header geometry, shared Back-button painting, pointer hit-testing, protected-network prompt selection, and open-network dispatch. The ephemeral password editor stays host-owned until shared `TextInput` can bind a short-lived secret without CRDT persistence. |
 | Quick-settings VPN drill-in | `shell/src/shell/quick_settings_vpn.rs` (`QuickSettingsVpnPane`) | The component owns header/back and row geometry, shared `Button`/`Toggle` painting, pointer hit-testing, optimistic connection state and `QsActions::set_vpn_connection` dispatch. The host supplies the latest OS profile snapshot and maps `Back`/`Changed` into navigation/invalidation. |
 
@@ -117,8 +119,10 @@ dedicated component owns the exact painted hit geometry and OS dispatch.
 The Wi-Fi network list is now extracted too: it preserves signal bars,
 connected state, protected-network routing and whole-row targets while using
 the shared ghost Back button. Its password editor is intentionally retained
-until `TextInput` has an ephemeral-secret binding. Bluetooth rows and the root
-sliders/tiles remain for later slices.
+until `TextInput` has an ephemeral-secret binding. Bluetooth is extracted with
+the same real drill-in scaffold while retaining its battery/radio context; its
+rows intentionally stay informational until the OS action layer exposes a
+pair/connect contract. Root sliders/tiles remain for later slices.
 
 ### Wave 4 — `draw_ws_settings` internals → the widget stack
 #8. One ~457-LOC function reimplements a whole modal: scrim (Wave 2), tab bar
