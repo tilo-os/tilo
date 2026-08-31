@@ -218,5 +218,34 @@ fn main() -> anyhow::Result<()> {
     report("load_project", load);
     report("get_heads", heads);
 
+    // The other half of a frame: compositing the picture. This is the
+    // production compositor, the one the preview and the export both call, so
+    // the number is the per-frame render cost of an export as well as of a
+    // scrub. Sources are stubbed, which isolates the composite from decode —
+    // decode is the media engine's cost and is measured where it lives.
+    println!("\ncompositing a 1080p frame (production compositor, no decode):");
+    match video_editor::gpu::HeadlessCompositor::new() {
+        Ok(mut c) => {
+            let project = video_editor::doc::sample_project();
+            let mut sources = video_editor::gpu::NoSources;
+            for _ in 0..4 {
+                std::hint::black_box(c.frame(&project, 6.0, 1920, 1080, &mut sources));
+            }
+            let mut us = Vec::with_capacity(60);
+            for i in 0..60 {
+                // Walk the playhead so no frame is a repeat of the last.
+                let t = 2.0 + f64::from(i) * 0.05;
+                let start = Instant::now();
+                let rgba = c.frame(&project, t, 1920, 1080, &mut sources);
+                us.push(start.elapsed().as_micros());
+                std::hint::black_box(&rgba);
+            }
+            report("composite 1080p", us);
+        }
+        // A probe, not a test: on a machine with no adapter this is a fact
+        // worth printing, not a failure.
+        Err(e) => println!("  no wgpu adapter here, so nothing to measure: {e}"),
+    }
+
     Ok(())
 }
