@@ -37,6 +37,27 @@ use vello::peniko::Color;
 const W: u32 = 1600;
 const H: u32 = 900;
 
+/// `v as u32`: Rust's float-to-int `as` cast saturates (NaN/negative → 0,
+/// huge → `u32::MAX`), so it can't wrap or panic — this just narrows a rect
+/// coordinate to the pixel index used for sampling/configure math.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "float-to-int `as` saturates in Rust (no UB/wrap/panic); nothing here can misbehave"
+)]
+fn as_u32(v: f64) -> u32 {
+    v as u32
+}
+
+/// Same saturating cast as [`as_u32`], for the wire configure sizes (`i32`).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-int `as` saturates in Rust (no UB/wrap/panic); nothing here can misbehave"
+)]
+fn as_i32(v: f64) -> i32 {
+    v as i32
+}
+
 /// Surface ids are the process-wide key into the frame store, so each
 /// test picks its own to stay independent under parallel execution.
 fn shot(name: &str, renderer: &mut OffscreenRenderer, scene: &vello::Scene) -> Vec<u8> {
@@ -73,7 +94,9 @@ fn settle(fb: &mut FrameBuilder) {
     // the live tree and lays them out, so it must run even when nothing
     // is animating yet.
     let _ = frame(fb);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(3))
+        .unwrap_or_else(std::time::Instant::now);
     let settled = |fb: &mut FrameBuilder| !fb.needs_animation_frame() || fb.any_tile_opening();
     while !settled(fb) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(8));
@@ -91,7 +114,9 @@ fn settle(fb: &mut FrameBuilder) {
 /// so the frame right after a commit is mostly still the card — sampling
 /// there measures the dissolve, not the client's pixels.
 fn quiesce(fb: &mut FrameBuilder) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(3))
+        .unwrap_or_else(std::time::Instant::now);
     while fb.needs_animation_frame() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(8));
         let _ = frame(fb);
@@ -104,8 +129,10 @@ fn quiesce(fb: &mut FrameBuilder) {
 
 /// A solid opaque RGBA image, as a client filling its surface would commit.
 fn solid(width: u32, height: u32, rgb: (u8, u8, u8)) -> Vec<u8> {
-    let mut out = Vec::with_capacity((width * height * 4) as usize);
-    for _ in 0..(width * height) {
+    let pixel_count = width.saturating_mul(height);
+    let byte_len = usize::try_from(pixel_count.saturating_mul(4)).unwrap_or(usize::MAX);
+    let mut out = Vec::with_capacity(byte_len);
+    for _ in 0..pixel_count {
         out.extend_from_slice(&[rgb.0, rgb.1, rgb.2, 0xFF]);
     }
     out
@@ -192,14 +219,14 @@ fn client_buffer_pixels_are_composited_into_the_tab_rect() {
         rect.width() > 100.0 && rect.height() > 100.0,
         "the foreign tile must occupy real area; got {rect:?}"
     );
-    let (cx, cy) = (rect.center().x as u32, rect.center().y as u32);
+    let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
 
     let viewport = store()
         .viewport(surface_id)
         .expect("apply_layout must publish the tab rect into the frame store");
     assert_eq!(
         viewport,
-        (rect.width().round() as u32, rect.height().round() as u32),
+        (as_u32(rect.width().round()), as_u32(rect.height().round())),
         "the published viewport is the tab's on-screen extent"
     );
 
@@ -235,7 +262,7 @@ fn client_buffer_pixels_are_composited_into_the_tab_rect() {
     );
 
     // A point well outside the tile keeps the shell's own chrome.
-    let outside_y = (rect.y0 as u32).saturating_sub(30).max(1);
+    let outside_y = as_u32(rect.y0).saturating_sub(30).max(1);
     let out = OffscreenRenderer::sample(&after, W, cx, outside_y);
     assert!(
         !(out.0.abs_diff(0xE0) <= 4 && out.1.abs_diff(0x18) <= 4 && out.2.abs_diff(0xA0) <= 4),
@@ -261,7 +288,7 @@ fn tab_layout_drives_the_client_configure_size() {
     let rect = tile_rect(&mut fb, surface_id);
     assert_eq!(
         first,
-        (rect.width().round() as i32, rect.height().round() as i32),
+        (as_i32(rect.width().round()), as_i32(rect.height().round())),
         "the configure carries the tab's laid-out size"
     );
     assert_eq!(
@@ -280,8 +307,8 @@ fn tab_layout_drives_the_client_configure_size() {
     assert_eq!(
         resized,
         (
-            rect_after.width().round() as i32,
-            rect_after.height().round() as i32
+            as_i32(rect_after.width().round()),
+            as_i32(rect_after.height().round())
         ),
         "the re-configure carries the tab's new laid-out size"
     );
@@ -314,7 +341,7 @@ fn unmap_stops_painting_and_destroy_releases_the_frame() {
     let scene = frame(&mut fb);
     let mapped = shot("foreign-lifecycle-mapped", &mut renderer, &scene);
     let rect = tile_rect(&mut fb, surface_id);
-    let (cx, cy) = (rect.center().x as u32, rect.center().y as u32);
+    let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
     let px = OffscreenRenderer::sample(&mapped, W, cx, cy);
     assert!(
         px.0.abs_diff(0x22) <= 4 && px.1.abs_diff(0xC0) <= 4 && px.2.abs_diff(0x40) <= 4,
@@ -459,7 +486,7 @@ fn a_background_foreign_tab_neither_paints_nor_wakes_the_paint_loop() {
     settle(&mut fb);
 
     let rect = tile_rect(&mut fb, front);
-    let (cx, cy) = (rect.center().x as u32, rect.center().y as u32);
+    let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
 
     let (bw, bh) = store()
         .viewport(front)

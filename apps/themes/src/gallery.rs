@@ -31,6 +31,23 @@ const HEADER_H: f64 = 34.0;
 const PAD: f32 = 14.0;
 const GAP: f32 = 8.0;
 
+/// Panic-free node construction for [`Widget::build_layout`].
+/// `TaffyTree::new_with_children` is typed `-> TaffyResult<NodeId>` for API
+/// generality, but only fails for a child `NodeId` belonging to a
+/// *different* tree — never the case here, since every child passed in was
+/// just built in this same `taffy` tree by the calls immediately above.
+/// `Widget::build_layout` returns a bare `NodeId` (not a `Result`) across
+/// every implementor, so surfacing a theoretical error here would mean
+/// threading a `Result` through the whole toolkit for a branch that can't
+/// be taken.
+#[allow(
+    clippy::unwrap_used,
+    reason = "new_with_children cannot fail for children built in this same tree; see doc comment"
+)]
+fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> NodeId {
+    taffy.new_with_children(style, children).unwrap()
+}
+
 pub struct Gallery {
     rows: Vec<ThemeRow>,
     /// Inline editor for the selected custom theme's name (local mode; the
@@ -228,37 +245,36 @@ impl Widget for Gallery {
             self.name_input_node = None;
         }
 
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    gap: Size {
-                        width: length(0.0_f32),
-                        height: length(GAP),
-                    },
-                    padding: taffy::Rect {
-                        left: length(PAD),
-                        right: length(PAD),
-                        top: length(HEADER_H as f32),
-                        bottom: length(PAD),
-                    },
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
+        let node = parent_node(
+            taffy,
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Column,
+                gap: Size {
+                    width: length(0.0_f32),
+                    height: length(GAP),
                 },
-                &child_nodes,
-            )
-            .unwrap();
+                padding: taffy::Rect {
+                    left: length(PAD),
+                    right: length(PAD),
+                    top: length(HEADER_H as f32),
+                    bottom: length(PAD),
+                },
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            },
+            &child_nodes,
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else { return };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

@@ -315,7 +315,7 @@ fn paced_burst_profile(
         if let Some(wait) = due.checked_sub(start.elapsed()) {
             std::thread::sleep(wait);
         }
-        driver.send(press(ch));
+        driver.send(&press(ch));
         done_at.push(start.elapsed());
     }
 

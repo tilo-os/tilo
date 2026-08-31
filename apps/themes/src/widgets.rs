@@ -20,6 +20,16 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::draw;
 use crate::model::{self, Rgb, ThemeSpec};
 
+/// Panic-free leaf construction for [`Widget::build_layout`]. `new_leaf`
+/// always inserts and returns `Ok`; `Widget::build_layout` returns a bare
+/// `NodeId` (not a `Result`) across every implementor, so surfacing a
+/// theoretical error here would mean threading a `Result` through the whole
+/// toolkit for a branch that can't be taken.
+#[allow(clippy::unwrap_used, reason = "new_leaf cannot fail; see doc comment")]
+fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
+    taffy.new_leaf(style).unwrap()
+}
+
 /// Height of one sidebar theme row (logical px). Mirrors weather's
 /// saved-place chip height so the two apps' sidebars read the same.
 pub const ROW_H: f32 = 58.0;
@@ -33,17 +43,36 @@ pub const ROW_H: f32 = 58.0;
 pub struct ThemeRow {
     id: String,
     name: String,
-    builtin: bool,
-    dark_base: bool,
+    /// Static properties mirrored from the [`ThemeSpec`] this row
+    /// represents, used only to paint the "Preset · Dark" tag.
+    kind: ThemeKind,
     /// [base, raised, accent, success, warning, danger].
     swatch: [Rgb; 6],
-    selected: bool,
-    /// This row is the applied OS theme.
-    active: bool,
+    /// Transient view-state, read together when painting the row
+    /// background and the "Active" badge.
+    view: RowView,
     /// The gallery is drawing an inline name editor over this row, so the
     /// row must not paint its own static name.
     suppress_name: bool,
     rect: Rect,
+}
+
+/// Static per-theme properties mirrored from the [`ThemeSpec`] a
+/// [`ThemeRow`] represents — whether it's a built-in preset, and its base
+/// contrast profile.
+#[derive(Clone, Copy)]
+struct ThemeKind {
+    builtin: bool,
+    dark_base: bool,
+}
+
+/// Transient per-row view-state for a [`ThemeRow`]: selection, the applied
+/// OS theme, and pointer hover.
+#[derive(Clone, Copy, Default)]
+struct RowView {
+    selected: bool,
+    /// This row is the applied OS theme.
+    active: bool,
     hover: bool,
 }
 
@@ -52,14 +81,17 @@ impl ThemeRow {
         Self {
             id: spec.id.clone(),
             name: spec.name.clone(),
-            builtin: spec.builtin,
-            dark_base: spec.dark_base,
+            kind: ThemeKind {
+                builtin: spec.builtin,
+                dark_base: spec.dark_base,
+            },
             swatch: Self::swatch_of(spec),
-            selected,
-            active: false,
+            view: RowView {
+                selected,
+                ..RowView::default()
+            },
             suppress_name: false,
             rect: Rect::ZERO,
-            hover: false,
         }
     }
 
@@ -78,7 +110,7 @@ impl ThemeRow {
         &self.id
     }
     pub fn is_custom(&self) -> bool {
-        !self.builtin
+        !self.kind.builtin
     }
     pub fn get_rect(&self) -> Rect {
         self.rect
@@ -88,11 +120,11 @@ impl ThemeRow {
     /// can push fresh state every frame without flicker).
     pub fn update(&mut self, spec: &ThemeSpec, selected: bool, active: bool, suppress_name: bool) {
         self.name = spec.name.clone();
-        self.builtin = spec.builtin;
-        self.dark_base = spec.dark_base;
+        self.kind.builtin = spec.builtin;
+        self.kind.dark_base = spec.dark_base;
         self.swatch = Self::swatch_of(spec);
-        self.selected = selected;
-        self.active = active;
+        self.view.selected = selected;
+        self.view.active = active;
         self.suppress_name = suppress_name;
     }
 
@@ -118,22 +150,23 @@ impl Widget for ThemeRow {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
+        let node = leaf_node(
+            taffy,
+            Style {
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::length(ROW_H),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
-            })
-            .unwrap();
+            },
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else { return };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -153,15 +186,15 @@ impl Widget for ThemeRow {
         let radius = theme.radius_standard.min(12.0);
         // Row background: selected → accent-tinted; else hover / raised —
         // the same tiering weather's saved-place chip uses.
-        let bg = if self.selected {
+        let bg = if self.view.selected {
             lerp(theme.bg_app, theme.accent_primary, 0.18)
-        } else if self.hover {
+        } else if self.view.hover {
             theme.bg_hover
         } else {
             theme.bg_primary
         };
         draw::fill_rrect(scene, t, self.rect, radius, bg);
-        let (border, bw) = if self.selected {
+        let (border, bw) = if self.view.selected {
             (theme.accent_primary, 1.5)
         } else {
             (theme.border_standard.multiply_alpha(0.6), 1.0)
@@ -218,8 +251,12 @@ impl Widget for ThemeRow {
                 TextWeight::Semibold,
             );
         }
-        let tag = if self.builtin { "Preset" } else { "Custom" };
-        let base = if self.dark_base { "Dark" } else { "Light" };
+        let tag = if self.kind.builtin {
+            "Preset"
+        } else {
+            "Custom"
+        };
+        let base = if self.kind.dark_base { "Dark" } else { "Light" };
         draw::text(
             tr,
             scene,
@@ -232,7 +269,7 @@ impl Widget for ThemeRow {
         );
 
         // Applied-theme badge on the right edge.
-        if self.active {
+        if self.view.active {
             let lab = "Active";
             let (w, _) = tr.measure(lab, 10.0, None);
             let pw = f64::from(w) + 16.0;
@@ -276,8 +313,8 @@ impl Widget for ThemeRow {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale, position.y / scale);
                 let h = self.rect.contains(p);
-                if h != self.hover {
-                    self.hover = h;
+                if h != self.view.hover {
+                    self.view.hover = h;
                     *handled = true;
                 }
             }
@@ -285,7 +322,7 @@ impl Widget for ThemeRow {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.hover => {
+            } if self.view.hover => {
                 crate::doc::put_str(
                     state,
                     path,
