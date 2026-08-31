@@ -5026,7 +5026,7 @@ impl ShellOverlayHost {
                 let st = chrome.borrow();
                 let mut tree = st.tree_mut();
                 self.room_activity
-                    .handle_event(event, scale_factor, modifiers, cursor, &mut tree)
+                    .handle_event(event, scale_factor, &modifiers, cursor, &mut tree)
             };
             if outcome.reverted {
                 let mut st = chrome.borrow_mut();
@@ -5134,7 +5134,7 @@ impl ShellOverlayHost {
         prompt.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             handled,
@@ -6793,7 +6793,7 @@ impl ShellOverlayHost {
             self.palette.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -6846,7 +6846,7 @@ impl ShellOverlayHost {
                 sidebar.handle_event(
                     event,
                     scale_factor,
-                    modifiers,
+                    &modifiers,
                     state,
                     path,
                     handled,
@@ -6875,7 +6875,7 @@ impl ShellOverlayHost {
             self.content.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
