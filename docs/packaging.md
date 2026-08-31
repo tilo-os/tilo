@@ -10,7 +10,8 @@ boot chain, greeter, or package manager.
 
 | Distribution | Release files | Architectures |
 | --- | --- | --- |
-| Ubuntu / Debian | `qos-session_*.deb`, `qos-session-devel_*.deb` | `amd64`, `arm64` |
+| Ubuntu 24.04 | `qos-session_*+ubuntu24.04*.deb` | `amd64`, `arm64` |
+| Debian 13 | `qos-session_*+deb13*.deb` | `amd64`, `arm64` |
 | Fedora | `qos-session-*.rpm`, `qos-session-devel-*.rpm` | `x86_64`, `aarch64` |
 | Arch / Arch Linux ARM | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64`, `aarch64` |
 | Nix / NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux`, `aarch64-linux` |
@@ -36,8 +37,55 @@ test-control socket and ffmpeg-backed HDR decoding so the login-session binary
 does not acquire a distribution-specific libavcodec ABI.
 
 The package version has one source of truth: `dist/VERSION`. Before tagging,
-update it together with the package changelogs, then create a matching `vX.Y.Z`
-tag.
+update it, then create a matching `vX.Y.Z` tag. Debian and Ubuntu receive
+separate package revisions because each binary is linked and dependency-scanned
+inside its own distribution build root.
+
+## Install from code.podesta.ai
+
+Tagged releases are uploaded both as release assets and to Forgejo's native
+package registries under the `qos` organization. Once the organization is
+public, Debian 13 (`trixie`) and Ubuntu 24.04 (`noble`) users can add the apt
+repository with:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSL https://code.podesta.ai/api/packages/qos/debian/repository.key \
+  -o /etc/apt/keyrings/forgejo-qos.asc
+echo "deb [signed-by=/etc/apt/keyrings/forgejo-qos.asc] https://code.podesta.ai/api/packages/qos/debian noble main" \
+  | sudo tee /etc/apt/sources.list.d/qos.list
+sudo apt update
+sudo apt install qos-session
+```
+
+Use `trixie` instead of `noble` on Debian 13. Fedora 42 users can add the RPM
+registry and install directly with `dnf`:
+
+```bash
+sudo dnf config-manager addrepo \
+  --from-repofile=https://code.podesta.ai/api/packages/qos/rpm/fedora/42.repo
+sudo dnf install qos-session
+```
+
+For Arch or Arch Linux ARM, add this repository to `/etc/pacman.conf`:
+
+```ini
+[qos.stable.code.podesta.ai]
+SigLevel = Required
+Server = https://code.podesta.ai/api/packages/qos/arch/stable/$arch
+```
+
+Import and locally trust the registry key once, then install normally:
+
+```bash
+curl -fsSL https://code.podesta.ai/api/packages/qos/arch/repository.key -o qos-forgejo.gpg
+sudo pacman-key --add qos-forgejo.gpg
+sudo pacman-key --lsign-key 'qos@noreply.code.podesta.ai'
+sudo pacman -Sy qos-session
+```
+
+While the organization remains private, use a Forgejo username and personal
+access token in the repository URL. Do not put a token in this repository.
 
 ## NixOS
 
@@ -60,14 +108,18 @@ The flake exposes both a package and a module:
 The module registers the display-manager session, PAM policy, and portal. Using
 the package alone is useful for nested development, but a real login session
 should use the module so `/etc/pam.d/qos-unlock` is activated declaratively.
+Tagged builds also publish an exact Nix store closure as a generic Forgejo
+package for disaster recovery; normal installations should use the flake so
+Nix can build or substitute the package declaratively.
 
 ## CI and publishing
 
 `.forgejo/workflows/package-desktop.yml` is the release gate. Pull requests
-that touch packaging or build inputs execute the complete matrix. Version tags
-execute it regardless of changed paths, wait for every install test, download
-the artifacts, and create the Forgejo release only after all eight native jobs
-succeed.
+that touch packaging or the packaged binaries execute the complete matrix.
+Version tags execute it regardless of changed paths, wait for every install
+test, download the artifacts, require all 16 unique outputs, and only then
+publish the apt, RPM, pacman, and generic Nix registries plus a checksummed
+Forgejo release. Ubuntu 24.04 and Debian 13 are independent build/test jobs.
 
 The workflow uses these native Forgejo runner labels:
 
@@ -78,11 +130,12 @@ Native runners are required because qOS links the distribution's DRM, input,
 seat, graphics, PipeWire, and portal libraries. QEMU builds would be much slower
 and would not test the package against the actual target ABI. Each runner must
 support job containers. No publishing secret beyond the existing
-`REGISTRY_TOKEN` is introduced; it must have repository write permission for
-tag releases.
+`REGISTRY_TOKEN` is introduced; it must have repository and package write
+permission for tag releases.
 
-Every distro job builds inside its target distribution and then installs the
-result with that distribution's package manager. The Nix job builds the flake,
-checks the session entry and ELF architecture, and exports the complete store
-closure as a `.nar.gz`. Tagged release assets therefore contain only artifacts
-that passed their native install test.
+Every distro job first rejects a mismatched runner architecture, builds inside
+its target distribution, and then installs the result with that distribution's
+package manager. The Nix job builds the flake, checks the session entry and ELF
+architecture, and exports the complete store closure as a `.nar.gz`. Tagged
+release assets therefore contain only artifacts that passed their native
+install test.
