@@ -100,6 +100,16 @@ enum CtxAction {
     Review(ReviewAction),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DocumentAutocorrection {
+    block: String,
+    start: usize,
+    end: usize,
+    boundary_end: usize,
+    original: String,
+    replacement: String,
+}
+
 // Paper-context colors (the document sheet): document ink assumes a light sheet
 // (`STYLE_PALETTE[0]` is near-black), so paper stays light in both themes — only
 // chrome follows the theme. `ChromeColors::for_theme` derives `paper` from the
@@ -1360,8 +1370,13 @@ fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64)
 /// means on every keystroke, and a correction nobody has asked for is not worth
 /// searching the dictionary for. The right-click menu asks for one when it has
 /// a word to ask about — see `suggestions_for_word`.
-fn spell_spans(dict: &spellcheck::Dictionary, text: &str) -> Vec<(usize, usize)> {
-    spellcheck::spans(dict, text)
+fn spell_spans(dict: &spellcheck::Dictionary, language: &str, text: &str) -> Vec<(usize, usize)> {
+    let mut spans = spellcheck::spans_for_language(language, text);
+    spans.retain(|&(start, end)| {
+        text.get(start..end)
+            .is_some_and(|word| !dict.contains(word))
+    });
+    spans
 }
 
 /// Hash everything that feeds into `RichTextLayout::shape` into a single `u64`.
@@ -1651,6 +1666,9 @@ pub struct WordProcessorWidget {
     dict: Option<spellcheck::Dictionary>,
     /// Whether spell-checking (the red squiggles) is enabled. Default ON.
     spellcheck_on: bool,
+    /// Document/session dictionary selected for multilingual checking.
+    spell_language: String,
+    last_autocorrection: Option<DocumentAutocorrection>,
     /// Per-block spell-check cache: block id → (text, misspelled byte spans). Keyed
     /// by the block's text so an edit (which changes the text) invalidates the
     /// entry and re-checks; an unchanged block reuses the spans for free.
@@ -1777,6 +1795,8 @@ impl WordProcessorWidget {
             notes: Vec::new(),
             dict: None,
             spellcheck_on: true,
+            spell_language: spellcheck::default_language(),
+            last_autocorrection: None,
             spell_cache: HashMap::new(),
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
@@ -2032,8 +2052,9 @@ impl WordProcessorWidget {
         {
             return spans.clone();
         }
+        let language = self.spell_language.clone();
         let dict = self.dictionary();
-        let spans = spell_spans(dict, text);
+        let spans = spell_spans(dict, &language, text);
         self.spell_cache
             .insert(id.to_string(), (text.to_string(), spans.clone()));
         spans
@@ -2048,7 +2069,13 @@ impl WordProcessorWidget {
 
     /// Whether the spell-check squiggles are currently enabled.
     pub fn spellcheck_enabled(&self) -> bool {
-        self.spellcheck_on
+        self.spellcheck_on && ui::text_assistance::preferences().check_spelling
+    }
+
+    pub fn set_spell_language(&mut self, language: &str) {
+        self.spell_language = language.to_string();
+        self.spell_cache.clear();
+        self.dirty = true;
     }
 
     /// Toggle comment + tracked-change markup on/off (default ON). View-only;
@@ -5684,7 +5711,7 @@ impl WordProcessorWidget {
         // borrow conflict. Cheap: cached per block keyed by text (an edit
         // re-checks), and culled to a band around the visible canvas.
         let mut spell_by_block: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
-        if self.spellcheck_on {
+        if self.spellcheck_enabled() {
             // A generous band around the canvas (one screenful above/below) so a
             // block scrolling into view is already checked; everything else is
             // skipped to keep the pass cheap on long documents.
@@ -6988,6 +7015,88 @@ impl WordProcessorWidget {
     /// Ctrl+<char> shortcut have both passed it through: motion keys extend
     /// or clear the selection, editing keys mutate the document, and any
     /// other printable text is inserted.
+    fn autocorrect_before_boundary(
+        &mut self,
+        state: &mut AutoCommit,
+    ) -> Option<DocumentAutocorrection> {
+        if !ui::text_assistance::preferences().auto_correct || self.inner.has_selection() {
+            return None;
+        }
+        let text = self.inner.current_text(state);
+        let chars: Vec<char> = text.chars().collect();
+        let end = self.inner.caret.offset.min(chars.len());
+        let mut start = end;
+        while start > 0
+            && chars
+                .get(start.saturating_sub(1))
+                .is_some_and(|character| character.is_alphabetic() || *character == '\'')
+        {
+            start = start.saturating_sub(1);
+        }
+        if start == end {
+            return None;
+        }
+        let original: String = chars.iter().skip(start).take(end - start).collect();
+        let dict = self.dictionary();
+        if dict.contains(&original) {
+            return None;
+        }
+        let replacement = spellcheck::probable_correction(&self.spell_language, &original)?;
+        let block = self.inner.caret.block.clone();
+        self.inner
+            .splice_block(state, &block, start, end, &replacement);
+        let replacement_end = start.saturating_add(replacement.chars().count());
+        self.inner.caret.offset = replacement_end;
+        Some(DocumentAutocorrection {
+            block,
+            start,
+            end: replacement_end,
+            boundary_end: replacement_end,
+            original,
+            replacement,
+        })
+    }
+
+    fn undo_document_autocorrection(&mut self, state: &mut AutoCommit) -> bool {
+        let Some(mut correction) = self.last_autocorrection.clone() else {
+            return false;
+        };
+        // Enter commits a word by splitting the block. Immediate Backspace
+        // first rejoins that empty/new block, then restores the spelling.
+        if self.inner.caret.block != correction.block && self.inner.caret.offset == 0 {
+            self.inner.backspace(state);
+            correction.boundary_end = self.inner.caret.offset;
+        }
+        if self.inner.caret.block != correction.block
+            || self.inner.caret.offset != correction.boundary_end
+        {
+            self.last_autocorrection = None;
+            return false;
+        }
+        let text = self.inner.current_text(state);
+        let corrected: String = text
+            .chars()
+            .skip(correction.start)
+            .take(correction.end.saturating_sub(correction.start))
+            .collect();
+        if corrected != correction.replacement {
+            self.last_autocorrection = None;
+            return false;
+        }
+        self.inner.splice_block(
+            state,
+            &correction.block,
+            correction.start,
+            correction.boundary_end,
+            &correction.original,
+        );
+        self.inner.caret.offset = correction
+            .start
+            .saturating_add(correction.original.chars().count());
+        self.last_autocorrection = None;
+        true
+    }
+
     fn handle_key_press(
         &mut self,
         state: &mut AutoCommit,
@@ -7003,6 +7112,9 @@ impl WordProcessorWidget {
         if ctrl && let Key::Character(s) = logical_key {
             self.handle_ctrl_shortcut(state, s, shift, handled);
             return;
+        }
+        if !matches!(logical_key, Key::Named(NamedKey::Backspace)) {
+            self.last_autocorrection = None;
         }
         let mut changed = true;
         let mut motion = false;
@@ -7020,8 +7132,16 @@ impl WordProcessorWidget {
                     self.inner.insert_str(state, "    ");
                 }
             }
-            Key::Named(NamedKey::Enter) => self.inner.enter(state),
-            Key::Named(NamedKey::Backspace) => self.inner.backspace(state),
+            Key::Named(NamedKey::Enter) => {
+                let correction = self.autocorrect_before_boundary(state);
+                self.inner.enter(state);
+                self.last_autocorrection = correction;
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if !self.undo_document_autocorrection(state) {
+                    self.inner.backspace(state);
+                }
+            }
             Key::Named(NamedKey::Delete) => self.inner.delete_forward(state),
             Key::Named(NamedKey::ArrowLeft) => {
                 self.extend_or_clear(shift);
@@ -7060,9 +7180,14 @@ impl WordProcessorWidget {
                 motion = true;
             }
             Key::Named(NamedKey::Space) => {
+                let correction = self.autocorrect_before_boundary(state);
                 if !self.inner.autoformat_on_space(state) {
                     self.inner.insert_str(state, " ");
                 }
+                self.last_autocorrection = correction.map(|mut correction| {
+                    correction.boundary_end = self.inner.caret.offset;
+                    correction
+                });
             }
             _ => {
                 let typed: String = text
@@ -7071,7 +7196,16 @@ impl WordProcessorWidget {
                 if typed.is_empty() {
                     changed = false;
                 } else {
+                    let correction = typed
+                        .chars()
+                        .next()
+                        .filter(|character| character.is_ascii_punctuation() && *character != '\'')
+                        .and_then(|_| self.autocorrect_before_boundary(state));
                     self.inner.insert_str(state, &typed);
+                    self.last_autocorrection = correction.map(|mut correction| {
+                        correction.boundary_end = self.inner.caret.offset;
+                        correction
+                    });
                 }
             }
         }
@@ -8565,12 +8699,12 @@ impl WordProcessorWidget {
         if word.is_empty() {
             return None;
         }
+        let language = self.spell_language.clone();
         let dict = self.dictionary();
-        let flagged = spellcheck::check(dict, word);
-        // `check` skips numbers/URLs/acronyms; a flagged single-word input means
-        // the whole word is misspelled.
-        let m = flagged.into_iter().find(|m| m.word == word)?;
-        Some(m.suggestions)
+        if dict.contains(word) || spellcheck::spans_for_language(&language, word).is_empty() {
+            return None;
+        }
+        Some(spellcheck::suggestions_for_language(&language, word, 5))
     }
 
     /// Build + open the right-click context menu at screen `pos`. Selects the word
@@ -8703,7 +8837,7 @@ impl WordProcessorWidget {
         wstart: usize,
         wend: usize,
     ) {
-        if !self.spellcheck_on {
+        if !self.spellcheck_enabled() {
             return;
         }
         let Some(suggestions) = self.suggestions_for_word(word) else {
@@ -11808,6 +11942,27 @@ mod tests {
             wp.dict.is_none(),
             "spell-check off skips dictionary construction"
         );
+    }
+
+    #[test]
+    fn document_autocorrect_is_reversible_at_a_space_boundary() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "teh");
+
+        let correction = wp
+            .autocorrect_before_boundary(&mut state.doc)
+            .expect("‘teh’ is a high-confidence correction");
+        wp.model_mut().insert_str(&mut state.doc, " ");
+        wp.last_autocorrection = Some(DocumentAutocorrection {
+            boundary_end: wp.inner.caret.offset,
+            ..correction
+        });
+        assert_eq!(wp.inner.current_text(&state.doc), "the ");
+
+        assert!(wp.undo_document_autocorrection(&mut state.doc));
+        assert_eq!(wp.inner.current_text(&state.doc), "teh");
     }
 
     // ---- right-click context menu -----------------------------------------

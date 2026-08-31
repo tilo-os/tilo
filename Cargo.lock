@@ -15429,6 +15429,7 @@ dependencies = [
  "sha2 0.10.9",
  "skrifa 0.40.0",
  "smithay-clipboard",
+ "spellcheck",
  "taffy",
  "tempfile",
  "thiserror 2.0.18",
