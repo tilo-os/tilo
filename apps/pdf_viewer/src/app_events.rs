@@ -100,8 +100,14 @@ impl PdfApp {
     /// the page edge and clamp naturally).
     fn page_point(&self, page: usize, p: Point) -> (f64, f64) {
         let origins = self.page_origins();
-        let origin = origins.get(page.saturating_sub(1)).copied().unwrap_or(Point::ZERO);
-        ((p.x - origin.x) / self.zoom(), (p.y - origin.y) / self.zoom())
+        let origin = origins
+            .get(page.saturating_sub(1))
+            .copied()
+            .unwrap_or(Point::ZERO);
+        (
+            (p.x - origin.x) / self.zoom(),
+            (p.y - origin.y) / self.zoom(),
+        )
     }
 
     // ---- pointer hit-testing ----------------------------------------
@@ -156,13 +162,16 @@ impl PdfApp {
         Some(ToolbarHit::Tool(self.tool))
     }
 
-    fn apply_toolbar(&mut self, hit: ToolbarHit, state: &mut AutoCommit) {
+    fn apply_toolbar(&mut self, hit: &ToolbarHit, state: &mut AutoCommit) {
         match hit {
-            ToolbarHit::Tool(t) => self.set_tool(t),
+            ToolbarHit::Tool(t) => self.set_tool(*t),
             ToolbarHit::Swatch(s) => {
-                self.swatch = s;
+                self.swatch = *s;
                 if let Some(id) = self.selected_anno.clone() {
-                    self.perform_action(state, crate::actions::set_annotation_color_action(&id, s));
+                    self.perform_action(
+                        state,
+                        &crate::actions::set_annotation_color_action(&id, *s),
+                    );
                     self.reload(state);
                 }
                 self.dirty = true;
@@ -195,7 +204,9 @@ impl PdfApp {
             if r.contains(p) {
                 match hit {
                     SearchHit::ToggleWholeWord => self.search_whole_word = !self.search_whole_word,
-                    SearchHit::ToggleCaseSensitive => self.search_case_sensitive = !self.search_case_sensitive,
+                    SearchHit::ToggleCaseSensitive => {
+                        self.search_case_sensitive = !self.search_case_sensitive
+                    }
                 }
                 self.recompute_matches();
                 self.dirty = true;
@@ -252,15 +263,15 @@ impl PdfApp {
                 if let Some(c) = self.comments.iter().find(|c| c.id == id) {
                     let body = c.body.clone();
                     self.selected_anno = c.anno_id.clone();
-                    self.begin_edit(EditTarget::CommentBody(id), body);
+                    self.begin_edit(EditTarget::CommentBody(id), &body);
                 }
             }
             SidebarHit::ReplyField(id) => {
-                self.begin_edit(EditTarget::Reply(id), String::new());
+                self.begin_edit(EditTarget::Reply(id), "");
             }
             SidebarHit::EditSigner => {
                 let cur = self.signer_name.clone();
-                self.begin_edit(EditTarget::Signer, cur);
+                self.begin_edit(EditTarget::Signer, &cur);
             }
             SidebarHit::Resolve(id) => {
                 let cur = self
@@ -268,7 +279,10 @@ impl PdfApp {
                     .iter()
                     .find(|c| c.id == id)
                     .is_some_and(|c| c.resolved);
-                self.perform_action(state, crate::actions::set_comment_resolved_action(&id, !cur));
+                self.perform_action(
+                    state,
+                    &crate::actions::set_comment_resolved_action(&id, !cur),
+                );
                 self.reload(state);
             }
             SidebarHit::DeleteComment(id) => {
@@ -331,51 +345,57 @@ impl PdfApp {
             }
             return true;
         }
-        if let Some((page, pt)) = self.hit_page(p) { match self.tool {
-            // Select arms one of three gestures. Over real text on a raster
-            // page it begins a text selection; otherwise it is a pan-or-click
-            // (a press that doesn't move is a selection of markup under it; a
-            // press that drags pans the canvas).
-            Tool::Select => {
-                if let Some((id, nx, ny)) = self.note_marker_at(page, pt) {
-                    // A press on a sticky-note marker begins a reposition drag
-                    // (draggable annotation markers), taking priority over text
-                    // selection or a pan. A press that doesn't move still just
-                    // selects the note (handled on release).
-                    self.clear_selection();
-                    self.selected_anno = Some(id.clone());
-                    self.marker_drag = Some(ui::MarkerDrag::begin(id, pt, (nx, ny)));
-                } else if self.shift_down && self.raster.is_some() {
-                    // Shift + Select drags a rubber-band image-region marquee
-                    // to copy; it never pans or selects text.
-                    self.clear_selection();
-                    self.region = Some(RegionSelect { page, start: pt, cur: pt });
-                } else if self.raster.is_some() && self.begin_selection(page, pt, p) {
-                    // Text selection armed; motion extends it, release ends it.
-                } else {
-                    self.clear_selection();
-                    self.pan = Some(PanState {
-                        start: p,
-                        scroll_x0: self.scroll_x(),
-                        scroll_y0: self.scroll_y(),
-                        moved: false,
-                    });
+        if let Some((page, pt)) = self.hit_page(p) {
+            match self.tool {
+                // Select arms one of three gestures. Over real text on a raster
+                // page it begins a text selection; otherwise it is a pan-or-click
+                // (a press that doesn't move is a selection of markup under it; a
+                // press that drags pans the canvas).
+                Tool::Select => {
+                    if let Some((id, nx, ny)) = self.note_marker_at(page, pt) {
+                        // A press on a sticky-note marker begins a reposition drag
+                        // (draggable annotation markers), taking priority over text
+                        // selection or a pan. A press that doesn't move still just
+                        // selects the note (handled on release).
+                        self.clear_selection();
+                        self.selected_anno = Some(id.clone());
+                        self.marker_drag = Some(ui::MarkerDrag::begin(id, pt, (nx, ny)));
+                    } else if self.shift_down && self.raster.is_some() {
+                        // Shift + Select drags a rubber-band image-region marquee
+                        // to copy; it never pans or selects text.
+                        self.clear_selection();
+                        self.region = Some(RegionSelect {
+                            page,
+                            start: pt,
+                            cur: pt,
+                        });
+                    } else if self.raster.is_some() && self.begin_selection(page, pt, p) {
+                        // Text selection armed; motion extends it, release ends it.
+                    } else {
+                        self.clear_selection();
+                        self.pan = Some(PanState {
+                            start: p,
+                            scroll_x0: self.scroll_x(),
+                            scroll_y0: self.scroll_y(),
+                            moved: false,
+                        });
+                    }
+                    self.dirty = true;
                 }
-                self.dirty = true;
+                Tool::Highlight | Tool::Ink => {
+                    self.drag = Some(DragState {
+                        tool: self.tool,
+                        page,
+                        start: pt,
+                        cur: pt,
+                        points: vec![pt],
+                    });
+                    self.dirty = true;
+                }
+                Tool::Note => self.create_note(state, page, pt),
+                Tool::Sign => self.place_signature(state, page, pt),
             }
-            Tool::Highlight | Tool::Ink => {
-                self.drag = Some(DragState {
-                    tool: self.tool,
-                    page,
-                    start: pt,
-                    cur: pt,
-                    points: vec![pt],
-                });
-                self.dirty = true;
-            }
-            Tool::Note => self.create_note(state, page, pt),
-            Tool::Sign => self.place_signature(state, page, pt),
-        } } else {
+        } else {
             // Empty canvas: with Select, start a pan; otherwise clear.
             self.clear_selection();
             if matches!(self.tool, Tool::Select) {
@@ -397,11 +417,16 @@ impl PdfApp {
     /// Resolve a right-click into a context menu over a deletable item.
     fn open_context_menu(&mut self, p: Point) -> bool {
         if let Some((page, pt)) = self.hit_page(p)
-            && let Some(target) = self.delete_target_at(page, pt) {
-                self.context_menu = Some(ContextMenu { at: p, target, item_rect: Rect::ZERO });
-                self.dirty = true;
-                return true;
-            }
+            && let Some(target) = self.delete_target_at(page, pt)
+        {
+            self.context_menu = Some(ContextMenu {
+                at: p,
+                target,
+                item_rect: Rect::ZERO,
+            });
+            self.dirty = true;
+            return true;
+        }
         // A right-click elsewhere just dismisses any open menu.
         if self.context_menu.take().is_some() {
             self.dirty = true;
@@ -429,7 +454,9 @@ impl PdfApp {
                 if self.sig_stroke.is_some() {
                     let n = self.sig_pad_norm(p);
                     if let Some(st) = self.sig_stroke.as_mut() {
-                        let far = st.last().is_none_or(|l| (l.0 - n.0).abs() + (l.1 - n.1).abs() > 0.004);
+                        let far = st
+                            .last()
+                            .is_none_or(|l| (l.0 - n.0).abs() + (l.1 - n.1).abs() > 0.004);
                         if far {
                             st.push(n);
                         }
@@ -498,18 +525,20 @@ impl PdfApp {
                 // pointer onto the selection's page even past the card edge so
                 // the drag can reach the end of a line.
                 if let Some(sel) = self.selection
-                    && sel.dragging {
-                        let pt = self.page_point(sel.page, p);
-                        self.update_selection(sel.page, pt);
-                        return;
-                    }
+                    && sel.dragging
+                {
+                    let pt = self.page_point(sel.page, p);
+                    self.update_selection(sel.page, pt);
+                    return;
+                }
 
                 // Drag-to-pan (Select tool).
                 if let Some(pan) = self.pan {
                     let dx = p.x - pan.start.x;
                     let dy = p.y - pan.start.y;
                     if dx.hypot(dy) > PAN_SLOP {
-                        self.viewport.set_scroll(pan.scroll_x0 - dx, pan.scroll_y0 - dy);
+                        self.viewport
+                            .set_scroll(pan.scroll_x0 - dx, pan.scroll_y0 - dy);
                         self.current_page = self.nearest_page();
                         if let Some(pan) = self.pan.as_mut() {
                             pan.moved = true;
@@ -570,7 +599,7 @@ impl PdfApp {
                     return;
                 }
                 if let Some(hit) = self.toolbar_hit(p) {
-                    self.apply_toolbar(hit, state);
+                    self.apply_toolbar(&hit, state);
                     *handled = true;
                     return;
                 }
@@ -609,7 +638,10 @@ impl PdfApp {
                 }
                 // On a narrow window a click on the scrim (canvas area not
                 // covered by an open overlay panel) dismisses the panels.
-                if self.overlay_mode && (self.show_rail || self.show_sidebar) && self.canvas_rect.contains(p) {
+                if self.overlay_mode
+                    && (self.show_rail || self.show_sidebar)
+                    && self.canvas_rect.contains(p)
+                {
                     self.show_rail = false;
                     self.show_sidebar = false;
                     self.reflow();
@@ -664,13 +696,17 @@ impl PdfApp {
                         if let Some((x, y)) = self.note_pos(&mdrag.id) {
                             self.perform_action(
                                 state,
-                                crate::actions::set_annotation_position_action(&mdrag.id, x, y),
+                                &crate::actions::set_annotation_position_action(&mdrag.id, x, y),
                             );
                             self.reload(state);
                         }
                     } else {
                         // A tap on the marker reveals its comment thread.
-                        if let Some(c) = self.comments.iter().find(|c| c.anno_id.as_deref() == Some(mdrag.id.as_str())) {
+                        if let Some(c) = self
+                            .comments
+                            .iter()
+                            .find(|c| c.anno_id.as_deref() == Some(mdrag.id.as_str()))
+                        {
                             let cid = c.id.clone();
                             self.focus_sidebar(SidebarTab::Comments, cid);
                         }
@@ -700,10 +736,9 @@ impl PdfApp {
                     // nothing textual, so also let it pick markup underneath.
                     let was_active = self.selection.is_some_and(|s| s.is_active());
                     self.finish_selection();
-                    if !was_active
-                        && let Some((page, pt)) = self.hit_page(self.last_mouse) {
-                            self.select_at(page, pt);
-                        }
+                    if !was_active && let Some((page, pt)) = self.hit_page(self.last_mouse) {
+                        self.select_at(page, pt);
+                    }
                     *handled = true;
                 } else if self.rail_drag.take().is_some() {
                     self.dirty = true;
@@ -750,14 +785,23 @@ impl PdfApp {
             WindowEvent::MouseWheel { delta, .. } => {
                 let p = self.last_mouse;
                 let (raw_x, raw_y) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 56.0, f64::from(*y) * 56.0),
-                    MouseScrollDelta::PixelDelta(pos) => (pos.x / scale_factor, pos.y / scale_factor),
+                    MouseScrollDelta::LineDelta(x, y) => {
+                        (f64::from(*x) * 56.0, f64::from(*y) * 56.0)
+                    }
+                    MouseScrollDelta::PixelDelta(pos) => {
+                        (pos.x / scale_factor, pos.y / scale_factor)
+                    }
                 };
                 let mods = modifiers.state();
                 let ctrl = mods.control_key() || mods.super_key();
                 tracing::debug!(
-                    kind = match delta { MouseScrollDelta::LineDelta(..) => "line", MouseScrollDelta::PixelDelta(..) => "pixel" },
-                    raw_x, raw_y, ctrl,
+                    kind = match delta {
+                        MouseScrollDelta::LineDelta(..) => "line",
+                        MouseScrollDelta::PixelDelta(..) => "pixel",
+                    },
+                    raw_x,
+                    raw_y,
+                    ctrl,
                     shift = mods.shift_key(),
                     "pdf MouseWheel"
                 );
@@ -783,7 +827,11 @@ impl PdfApp {
 
                 if ctrl {
                     // Ctrl+wheel zooms, centred on the cursor.
-                    let factor = if raw_y > 0.0 { 1.0 + raw_y / 240.0 } else { 1.0 / (1.0 - raw_y / 240.0) };
+                    let factor = if raw_y > 0.0 {
+                        1.0 + raw_y / 240.0
+                    } else {
+                        1.0 / (1.0 - raw_y / 240.0)
+                    };
                     self.zoom_at(factor, p);
                     *handled = true;
                     return;
@@ -818,9 +866,9 @@ impl PdfApp {
                 }
             }
 
-            WindowEvent::KeyboardInput { event: key_event, .. }
-                if key_event.state == ElementState::Pressed =>
-            {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if key_event.state == ElementState::Pressed => {
                 self.on_key(event, key_event, modifiers, scale_factor, state, handled);
             }
 
@@ -845,7 +893,14 @@ impl PdfApp {
             let mut handled = false;
             let mut ft: Option<NodeId> = None;
             e.input.handle_event(
-                event, scale, modifiers, state, &automerge::ROOT, &mut handled, &mut ft, node,
+                event,
+                scale,
+                modifiers,
+                state,
+                &automerge::ROOT,
+                &mut handled,
+                &mut ft,
+                node,
                 &taffy,
             );
         }
@@ -875,8 +930,7 @@ impl PdfApp {
                 return;
             }
             self.drive_editor(event, scale, modifiers, state);
-            let submitted =
-                self.editing.as_mut().is_some_and(|e| e.input.take_submit());
+            let submitted = self.editing.as_mut().is_some_and(|e| e.input.take_submit());
             if submitted {
                 self.commit_edit(state);
             }
@@ -920,50 +974,49 @@ impl PdfApp {
 
         // Ctrl/Cmd shortcuts: find, and zoom (+ / − / 0). Handled up front so
         // the bare-key fallbacks below can keep their own meanings.
-        if ctrl
-            && let Key::Character(c) = &key_event.logical_key {
-                match c.as_str() {
-                    "o" | "O" => {
-                        self.request_open_via_portal();
-                        *handled = true;
-                        return;
-                    }
-                    "f" | "F" => {
-                        self.open_search();
-                        *handled = true;
-                        return;
-                    }
-                    "+" | "=" => {
-                        self.zoom_by(1.15);
-                        *handled = true;
-                        return;
-                    }
-                    "-" | "_" => {
-                        self.zoom_by(1.0 / 1.15);
-                        *handled = true;
-                        return;
-                    }
-                    "0" => {
-                        self.reset_zoom();
-                        *handled = true;
-                        return;
-                    }
-                    "c" | "C" => {
-                        // Copy the live text selection, if any. Falls through
-                        // when nothing is selected so the key is a harmless no-op.
-                        if self.copy_selection() {
-                            *handled = true;
-                            return;
-                        }
-                    }
-                    "s" | "S" => {
-                        self.request_save_via_portal();
-                        *handled = true;
-                        return;
-                    }
-                    _ => {}
+        if ctrl && let Key::Character(c) = &key_event.logical_key {
+            match c.as_str() {
+                "o" | "O" => {
+                    self.request_open_via_portal();
+                    *handled = true;
+                    return;
                 }
+                "f" | "F" => {
+                    self.open_search();
+                    *handled = true;
+                    return;
+                }
+                "+" | "=" => {
+                    self.zoom_by(1.15);
+                    *handled = true;
+                    return;
+                }
+                "-" | "_" => {
+                    self.zoom_by(1.0 / 1.15);
+                    *handled = true;
+                    return;
+                }
+                "0" => {
+                    self.reset_zoom();
+                    *handled = true;
+                    return;
+                }
+                "c" | "C" => {
+                    // Copy the live text selection, if any. Falls through
+                    // when nothing is selected so the key is a harmless no-op.
+                    if self.copy_selection() {
+                        *handled = true;
+                        return;
+                    }
+                }
+                "s" | "S" => {
+                    self.request_save_via_portal();
+                    *handled = true;
+                    return;
+                }
+                _ => {}
             }
+        }
 
         match &key_event.logical_key {
             Key::Character(c) => {
@@ -1072,10 +1125,9 @@ impl PdfApp {
                 self.go_to_page(self.doc.page_count());
                 *handled = true;
             }
-            Key::Named(NamedKey::Delete | NamedKey::Backspace)
-                if self.delete_selected(state) => {
-                    *handled = true;
-                }
+            Key::Named(NamedKey::Delete | NamedKey::Backspace) if self.delete_selected(state) => {
+                *handled = true;
+            }
             _ => {}
         }
     }
@@ -1103,7 +1155,7 @@ mod event_tests {
         for (tool, r) in lay.tools {
             let p = Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1));
             let hit = app.toolbar_hit(p).expect("a toolbar hit");
-            app.apply_toolbar(hit, &mut st.doc);
+            app.apply_toolbar(&hit, &mut st.doc);
             assert_eq!(app.tool, tool, "clicking {tool:?} should arm it");
         }
     }
@@ -1120,7 +1172,7 @@ mod event_tests {
             .clone();
         app.selected_anno = Some(hl.id.clone());
         app.tool = Tool::Highlight;
-        app.apply_toolbar(ToolbarHit::Swatch(Swatch::Green), &mut st.doc);
+        app.apply_toolbar(&ToolbarHit::Swatch(Swatch::Green), &mut st.doc);
         let after = app.annotations.iter().find(|a| a.id == hl.id).unwrap();
         assert_eq!(after.color, Swatch::Green);
         assert!(
@@ -1136,7 +1188,11 @@ mod event_tests {
     fn annotation_delete_affordance_matches_palette_action() {
         use qos_actions::ActionInput;
         let (mut app, mut st) = app();
-        let anno = app.annotations.first().expect("sample seeds annotations").clone();
+        let anno = app
+            .annotations
+            .first()
+            .expect("sample seeds annotations")
+            .clone();
 
         // The EncodedAction the palette would dispatch for this annotation's delete.
         let resources = Widget::resources(&app, &st.doc);
@@ -1154,10 +1210,16 @@ mod event_tests {
 
         // The real affordance path (Delete key / rail button / context menu).
         app.delete_target(&DeleteTarget::Annotation(anno.id.clone()), &mut st.doc);
-        let dispatched =
-            app.actions.last_dispatched().cloned().expect("the affordance dispatched an action");
+        let dispatched = app
+            .actions
+            .last_dispatched()
+            .cloned()
+            .expect("the affordance dispatched an action");
         assert_eq!(dispatched.type_id, spec_encoded.type_id);
-        assert_eq!(dispatched.payload, spec_encoded.payload, "one source of truth");
+        assert_eq!(
+            dispatched.payload, spec_encoded.payload,
+            "one source of truth"
+        );
         assert!(
             app.annotations.iter().all(|a| a.id != anno.id),
             "the annotation was deleted via the dispatched action"
@@ -1190,32 +1252,55 @@ mod event_tests {
         // Pointer parked in the canvas so the wheel isn't captured by a panel.
         app.last_mouse = app.canvas_rect.center();
 
-        let wheel = |app: &mut PdfApp, st: &mut ui::State, dy: f32, mods: &winit::event::Modifiers| {
-            let ev = WindowEvent::MouseWheel {
-                device_id: dummy_device_id(),
-                delta: MouseScrollDelta::LineDelta(0.0, dy),
-                phase: TouchPhase::Moved,
+        let wheel =
+            |app: &mut PdfApp, st: &mut ui::State, dy: f32, mods: &winit::event::Modifiers| {
+                let ev = WindowEvent::MouseWheel {
+                    device_id: dummy_device_id(),
+                    delta: MouseScrollDelta::LineDelta(0.0, dy),
+                    phase: TouchPhase::Moved,
+                };
+                let mut handled = false;
+                let mut focus = None;
+                app.handle_event(
+                    &ev,
+                    1.0,
+                    mods,
+                    &mut st.doc,
+                    &st.root,
+                    &mut handled,
+                    &mut focus,
+                    node,
+                    &taffy,
+                );
             };
-            let mut handled = false;
-            let mut focus = None;
-            app.handle_event(&ev, 1.0, mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
-        };
 
         let z0 = app.zoom();
         wheel(&mut app, &mut st, 1.0, &ctrl_mods());
         let z_in = app.zoom();
-        assert!(z_in > z0 + 1e-3, "Ctrl+wheel-up zooms in through the event path ({z0} -> {z_in})");
+        assert!(
+            z_in > z0 + 1e-3,
+            "Ctrl+wheel-up zooms in through the event path ({z0} -> {z_in})"
+        );
 
         wheel(&mut app, &mut st, -1.0, &ctrl_mods());
         let z_out = app.zoom();
-        assert!(z_out < z_in - 1e-3, "Ctrl+wheel-down zooms back out ({z_in} -> {z_out})");
+        assert!(
+            z_out < z_in - 1e-3,
+            "Ctrl+wheel-down zooms back out ({z_in} -> {z_out})"
+        );
 
         // Without Ctrl the same wheel scrolls the document, leaving zoom alone.
         let z_before_scroll = app.zoom();
         let sy0 = app.scroll_y();
         wheel(&mut app, &mut st, -1.0, &winit::event::Modifiers::default());
-        assert!((app.zoom() - z_before_scroll).abs() < 1e-6, "a bare wheel must not change zoom");
-        assert!(app.scroll_y() > sy0, "a bare wheel scrolls the document instead");
+        assert!(
+            (app.zoom() - z_before_scroll).abs() < 1e-6,
+            "a bare wheel must not change zoom"
+        );
+        assert!(
+            app.scroll_y() > sy0,
+            "a bare wheel scrolls the document instead"
+        );
     }
 
     /// A touchpad pinch (`WindowEvent::PinchGesture`) zooms through the real
@@ -1240,7 +1325,17 @@ mod event_tests {
             };
             let mut handled = false;
             let mut focus = None;
-            app.handle_event(&ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+            app.handle_event(
+                &ev,
+                1.0,
+                &mods,
+                &mut st.doc,
+                &st.root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
         };
 
         let z0 = app.zoom();
@@ -1249,7 +1344,11 @@ mod event_tests {
         assert!(z_in > z0 + 1e-3, "pinch-open zooms in ({z0} -> {z_in})");
 
         pinch(&mut app, &mut st, -0.25);
-        assert!(app.zoom() < z_in - 1e-3, "pinch-close zooms out ({z_in} -> {})", app.zoom());
+        assert!(
+            app.zoom() < z_in - 1e-3,
+            "pinch-close zooms out ({z_in} -> {})",
+            app.zoom()
+        );
     }
 
     /// The gesture the user actually gets on Wayland/GNOME: winit's Wayland
@@ -1269,10 +1368,23 @@ mod event_tests {
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mods_none = winit::event::Modifiers::default();
 
-        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent, mods: &winit::event::Modifiers| {
+        let feed = |app: &mut PdfApp,
+                    st: &mut ui::State,
+                    ev: &WindowEvent,
+                    mods: &winit::event::Modifiers| {
             let mut handled = false;
             let mut focus = None;
-            app.handle_event(ev, 1.0, mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+            app.handle_event(
+                ev,
+                1.0,
+                mods,
+                &mut st.doc,
+                &st.root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
         };
 
         // Park the cursor over the page canvas via a real CursorMoved, so the
@@ -1282,7 +1394,15 @@ mod event_tests {
         // axis can track the cursor — at the centre both axes hold, giving a
         // clean full cursor-centred check.
         let cursor = Point::new(app.canvas_rect.center().x, app.canvas_rect.y0 + 220.0);
-        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dummy_device_id(), position: PhysicalPosition::new(cursor.x, cursor.y) }, &mods_none);
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::CursorMoved {
+                device_id: dummy_device_id(),
+                position: PhysicalPosition::new(cursor.x, cursor.y),
+            },
+            &mods_none,
+        );
 
         let doc_under_cursor_0 = app.viewport.screen_to_content(cursor);
         let z0 = app.zoom();
@@ -1296,12 +1416,18 @@ mod event_tests {
         };
         feed(&mut app, &mut st, &pixel_up, &ctrl_mods());
         let z_in = app.zoom();
-        assert!(z_in > z0 + 1e-3, "Ctrl + PixelDelta scroll zooms in ({z0} -> {z_in})");
+        assert!(
+            z_in > z0 + 1e-3,
+            "Ctrl + PixelDelta scroll zooms in ({z0} -> {z_in})"
+        );
 
         // Cursor-centred: the document point beneath the cursor did not drift.
         let doc_under_cursor_1 = app.viewport.screen_to_content(cursor);
         let drift = (doc_under_cursor_1 - doc_under_cursor_0).hypot();
-        assert!(drift < 0.5, "zoom stays centred on the cursor (doc-point drift {drift:.3}pt)");
+        assert!(
+            drift < 0.5,
+            "zoom stays centred on the cursor (doc-point drift {drift:.3}pt)"
+        );
 
         // Same scroll without Ctrl scrolls the document instead of zooming.
         let z_before = app.zoom();
@@ -1312,8 +1438,14 @@ mod event_tests {
             phase: TouchPhase::Moved,
         };
         feed(&mut app, &mut st, &pixel_down, &mods_none);
-        assert!((app.zoom() - z_before).abs() < 1e-6, "a bare two-finger scroll must not zoom");
-        assert!(app.scroll_y() > sy0, "a bare two-finger scroll pans the document");
+        assert!(
+            (app.zoom() - z_before).abs() < 1e-6,
+            "a bare two-finger scroll must not zoom"
+        );
+        assert!(
+            app.scroll_y() > sy0,
+            "a bare two-finger scroll pans the document"
+        );
     }
 
     #[test]
@@ -1328,19 +1460,19 @@ mod event_tests {
         let hits = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
         app.sidebar_hits = hits;
         // Find a resolve chip and click its centre.
-        let chip = app
-            .sidebar_hits
-            .iter()
-            .find_map(|(h, r)| match h {
-                SidebarHit::Resolve(id) => Some((id.clone(), *r)),
-                _ => None,
-            });
+        let chip = app.sidebar_hits.iter().find_map(|(h, r)| match h {
+            SidebarHit::Resolve(id) => Some((id.clone(), *r)),
+            _ => None,
+        });
         if let Some((id, r)) = chip {
             let before = app.comments.iter().find(|c| c.id == id).unwrap().resolved;
             let p = Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1));
             assert!(app.apply_sidebar(p, &mut st.doc));
             let after = app.comments.iter().find(|c| c.id == id).unwrap().resolved;
-            assert_ne!(before, after, "resolve chip should toggle, not open the card");
+            assert_ne!(
+                before, after,
+                "resolve chip should toggle, not open the card"
+            );
         }
     }
 
@@ -1371,7 +1503,8 @@ mod event_tests {
         app.sidebar_tab = SidebarTab::Signatures;
         let mut scene2 = vello::Scene::new();
         let mut er2 = Rect::ZERO;
-        app.sidebar_hits = app.draw_sidebar(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &mut er2);
+        app.sidebar_hits =
+            app.draw_sidebar(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &mut er2);
         let dels = app.sidebar_hits.iter().find_map(|(h, r)| match h {
             SidebarHit::DeleteSignature(id) => Some((id.clone(), *r)),
             _ => None,
@@ -1394,7 +1527,11 @@ mod event_tests {
         app.query = "the".into();
         app.recompute_matches();
         app.recompute_regions();
-        for tab in [SidebarTab::Comments, SidebarTab::Outline, SidebarTab::Signatures] {
+        for tab in [
+            SidebarTab::Comments,
+            SidebarTab::Outline,
+            SidebarTab::Signatures,
+        ] {
             app.sidebar_tab = tab;
             let mut scene = vello::Scene::new();
             app.prepare_sidebar_scroll(&mut tr);
@@ -1402,8 +1539,12 @@ mod event_tests {
             let _ = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
             let shits = app.draw_search(&mut scene, Affine::IDENTITY, &mut tr, &theme);
             assert!(
-                shits.iter().any(|(h, _)| matches!(h, SearchHit::ToggleWholeWord))
-                    && shits.iter().any(|(h, _)| matches!(h, SearchHit::ToggleCaseSensitive)),
+                shits
+                    .iter()
+                    .any(|(h, _)| matches!(h, SearchHit::ToggleWholeWord))
+                    && shits
+                        .iter()
+                        .any(|(h, _)| matches!(h, SearchHit::ToggleCaseSensitive)),
                 "search strip exposes both option toggles"
             );
         }
@@ -1439,33 +1580,102 @@ mod event_tests {
         let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
             let mut handled = false;
             let mut focus = None;
-            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+            app.handle_event(
+                ev,
+                1.0,
+                &mods,
+                &mut st.doc,
+                &st.root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
         };
 
         // Arm the Highlight tool by clicking its real toolbar button.
         let lay = app.toolbar_layout();
-        let (_, hb) = lay.tools.iter().find(|(t, _)| *t == Tool::Highlight).unwrap();
+        let (_, hb) = lay
+            .tools
+            .iter()
+            .find(|(t, _)| *t == Tool::Highlight)
+            .unwrap();
         let btn = (f64::midpoint(hb.x0, hb.x1), f64::midpoint(hb.y0, hb.y1));
-        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(btn.0, btn.1) });
-        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
-        assert_eq!(app.tool, Tool::Highlight, "clicking the toolbar arms the tool");
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(btn.0, btn.1),
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(
+            app.tool,
+            Tool::Highlight,
+            "clicking the toolbar arms the tool"
+        );
 
         // Drag across page one to lay down a highlight.
         let origin = app.page_origins()[0];
         let p0 = (origin.x + 80.0 * app.zoom(), origin.y + 200.0 * app.zoom());
         let p1 = (origin.x + 320.0 * app.zoom(), origin.y + 214.0 * app.zoom());
         let before = app.annotations.len();
-        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(p0.0, p0.1) });
-        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
-        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(p1.0, p1.1) });
-        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Released, button: MouseButton::Left });
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(p0.0, p0.1),
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(p1.0, p1.1),
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
 
-        assert!(app.annotations.len() > before, "a highlight drag through handle_event adds an annotation");
+        assert!(
+            app.annotations.len() > before,
+            "a highlight drag through handle_event adds an annotation"
+        );
         assert!(
             app.take_committed_action().is_some(),
             "the new highlight dispatched an action and stashed one undo boundary"
         );
-        assert!(PdfDoc::list_annotations(&st.doc).len() > before, "and it landed in the shared document");
+        assert!(
+            PdfDoc::list_annotations(&st.doc).len() > before,
+            "and it landed in the shared document"
+        );
     }
 
     /// Build a real `WindowEvent::KeyboardInput` for `key`. winit's
@@ -1489,7 +1699,11 @@ mod event_tests {
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = text;
-        WindowEvent::KeyboardInput { device_id: dummy_device_id(), event: ev, is_synthetic: false }
+        WindowEvent::KeyboardInput {
+            device_id: dummy_device_id(),
+            event: ev,
+            is_synthetic: false,
+        }
     }
 
     #[test]
@@ -1513,25 +1727,76 @@ mod event_tests {
         let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
             let mut handled = false;
             let mut focus = None;
-            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+            app.handle_event(
+                ev,
+                1.0,
+                &mods,
+                &mut st.doc,
+                &st.root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
         };
 
         // Arm the Note tool via its real toolbar button.
         let lay = app.toolbar_layout();
         let (_, nb) = lay.tools.iter().find(|(t, _)| *t == Tool::Note).unwrap();
         let btn = (f64::midpoint(nb.x0, nb.x1), f64::midpoint(nb.y0, nb.y1));
-        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(btn.0, btn.1) });
-        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
-        assert_eq!(app.tool, Tool::Note, "clicking the toolbar arms the note tool");
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(btn.0, btn.1),
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(
+            app.tool,
+            Tool::Note,
+            "clicking the toolbar arms the note tool"
+        );
 
         // Click a page to drop the note; the caret should land in its thread.
         let origin = app.page_origins()[0];
         let click = (origin.x + 200.0 * app.zoom(), origin.y + 260.0 * app.zoom());
         let comments_before = app.comments.len();
-        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(click.0, click.1) });
-        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
-        assert_eq!(app.comments.len(), comments_before + 1, "placing a note opens a new thread");
-        assert!(matches!(&app.editing, Some(e) if matches!(e.target, EditTarget::CommentBody(_))), "the note's body is focused for typing");
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(click.0, click.1),
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(
+            app.comments.len(),
+            comments_before + 1,
+            "placing a note opens a new thread"
+        );
+        assert!(
+            matches!(&app.editing, Some(e) if matches!(e.target, EditTarget::CommentBody(_))),
+            "the note's body is focused for typing"
+        );
 
         // Type a real sentence through the keyboard event path.
         for ch in "Relay path".chars() {
@@ -1576,13 +1841,30 @@ mod event_tests {
         let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
             let mut handled = false;
             let mut focus = None;
-            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+            app.handle_event(
+                ev,
+                1.0,
+                &mods,
+                &mut st.doc,
+                &st.root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
         };
 
         let sy0 = app.scroll_y();
-        feed(&mut app, &mut st, &key_event(Key::Named(NamedKey::ArrowDown)));
+        feed(
+            &mut app,
+            &mut st,
+            &key_event(Key::Named(NamedKey::ArrowDown)),
+        );
         let after_down = app.scroll_y();
-        assert!(after_down > sy0, "ArrowDown scrolls down ({sy0} -> {after_down})");
+        assert!(
+            after_down > sy0,
+            "ArrowDown scrolls down ({sy0} -> {after_down})"
+        );
         assert!(
             (after_down - sy0) <= KEY_SCROLL_STEP + 0.5,
             "ArrowDown is a small nudge (~{KEY_SCROLL_STEP}px), not a page jump: moved {}",
@@ -1591,11 +1873,21 @@ mod event_tests {
 
         // ArrowUp reverses it.
         feed(&mut app, &mut st, &key_event(Key::Named(NamedKey::ArrowUp)));
-        assert!((app.scroll_y() - sy0).abs() < 0.5, "ArrowUp returns to the start");
+        assert!(
+            (app.scroll_y() - sy0).abs() < 0.5,
+            "ArrowUp returns to the start"
+        );
 
         // PageDown scrolls far more than a single arrow nudge.
-        feed(&mut app, &mut st, &key_event(Key::Named(NamedKey::PageDown)));
-        assert!(app.scroll_y() > sy0 + KEY_SCROLL_STEP, "PageDown scrolls a viewport-ful");
+        feed(
+            &mut app,
+            &mut st,
+            &key_event(Key::Named(NamedKey::PageDown)),
+        );
+        assert!(
+            app.scroll_y() > sy0 + KEY_SCROLL_STEP,
+            "PageDown scrolls a viewport-ful"
+        );
     }
 
     #[test]
@@ -1619,16 +1911,22 @@ mod event_tests {
         app.sidebar_tab = SidebarTab::Comments;
         let body = app.comments[0].body.clone();
         let cid = app.comments[0].id.clone();
-        app.begin_edit(EditTarget::CommentBody(cid), body);
+        app.begin_edit(EditTarget::CommentBody(cid), &body);
         let theme = ui::theme::Theme::dark();
         let mut tr = ui::text_render::TextRenderer::new();
         app.prepare_sidebar_scroll(&mut tr);
         let mut scene = vello::Scene::new();
         let mut er = Rect::ZERO;
         let _ = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
-        assert!(er.area() > 1.0, "the focused comment field's rect is captured");
+        assert!(
+            er.area() > 1.0,
+            "the focused comment field's rect is captured"
+        );
         // A click inside that rect must keep the edit alive; outside commits.
-        assert!(app.edit_rect.area() < 1.0, "edit_rect is only set by draw_all, not draw_sidebar");
+        assert!(
+            app.edit_rect.area() < 1.0,
+            "edit_rect is only set by draw_all, not draw_sidebar"
+        );
     }
 
     #[test]
@@ -1637,11 +1935,19 @@ mod event_tests {
         // Pick a seeded comment and compose a reply into it.
         let cid = app.comments[0].id.clone();
         let replies_before = app.comments[0].replies.len();
-        app.begin_edit(EditTarget::Reply(cid.clone()), String::new());
-        app.editing.as_mut().unwrap().input.insert_at_cursor("Looks good");
+        app.begin_edit(EditTarget::Reply(cid.clone()), "");
+        app.editing
+            .as_mut()
+            .unwrap()
+            .input
+            .insert_at_cursor("Looks good");
         app.commit_edit(&mut st.doc);
         let after = app.comments.iter().find(|c| c.id == cid).unwrap();
-        assert_eq!(after.replies.len(), replies_before + 1, "reply landed in the thread");
+        assert_eq!(
+            after.replies.len(),
+            replies_before + 1,
+            "reply landed in the thread"
+        );
         assert_eq!(after.replies.last().unwrap().body, "Looks good");
     }
 
@@ -1656,7 +1962,10 @@ mod event_tests {
 
         // Hit-test: the toolbar Open (folder) button resolves to Open.
         let open = app.toolbar_layout().open;
-        let c = Point::new(f64::midpoint(open.x0, open.x1), f64::midpoint(open.y0, open.y1));
+        let c = Point::new(
+            f64::midpoint(open.x0, open.x1),
+            f64::midpoint(open.y0, open.y1),
+        );
         assert!(
             matches!(app.toolbar_hit(c), Some(ToolbarHit::Open)),
             "the folder button hit-tests to the Open action"
@@ -1666,7 +1975,7 @@ mod event_tests {
         // dialog during the test; the in-flight guard must preserve it.
         let sentinel = crate::portal::inject_for_test(crate::portal::PortalOutcome::Cancelled);
         app.portal_rx = Some(sentinel);
-        app.apply_toolbar(ToolbarHit::Open, &mut st.doc);
+        app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
         assert!(
             app.portal_rx.is_some(),
             "Open routes to the host portal request path (not an in-app dialog)"
@@ -1687,8 +1996,10 @@ mod event_tests {
         app.sync_viewport_frame();
         assert!(!app.has_document, "empty app starts with no document");
 
-        let path =
-            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf"));
+        let path = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/sample.pdf"
+        ));
         app.portal_rx = Some(crate::portal::inject_for_test(
             crate::portal::PortalOutcome::Opened(path),
         ));
@@ -1696,9 +2007,15 @@ mod event_tests {
         // The per-frame sync drains the portal channel and loads the doc.
         app.sync(&mut st.doc, &st.root);
 
-        assert!(app.has_document, "a portal-chosen PDF loads through the frame drain");
+        assert!(
+            app.has_document,
+            "a portal-chosen PDF loads through the frame drain"
+        );
         assert_eq!(app.doc_name, "sample.pdf");
-        assert!(app.portal_rx.is_none(), "the portal channel clears after delivering");
+        assert!(
+            app.portal_rx.is_none(),
+            "the portal channel clears after delivering"
+        );
         assert!(app.doc.page_count() >= 1, "the loaded document has pages");
     }
 
@@ -1713,9 +2030,18 @@ mod event_tests {
             crate::portal::PortalOutcome::Cancelled,
         ));
         app.sync(&mut st.doc, &st.root);
-        assert_eq!(app.has_document, before, "cancel does not change the open state");
-        assert_eq!(app.doc_name, name_before, "cancel keeps the current document");
-        assert!(app.portal_rx.is_none(), "the portal channel clears after a cancel");
+        assert_eq!(
+            app.has_document, before,
+            "cancel does not change the open state"
+        );
+        assert_eq!(
+            app.doc_name, name_before,
+            "cancel keeps the current document"
+        );
+        assert!(
+            app.portal_rx.is_none(),
+            "the portal channel clears after a cancel"
+        );
     }
 
     #[test]
@@ -1734,7 +2060,10 @@ mod event_tests {
         let mut tr = ui::text_render::TextRenderer::new();
         // resolve_tooltip runs inside the draw; drive it directly.
         app.resolve_tooltip();
-        assert!(!app.needs_animation_frame(), "idle app must settle to zero animation frames");
+        assert!(
+            !app.needs_animation_frame(),
+            "idle app must settle to zero animation frames"
+        );
         let _ = (&theme, &mut tr);
     }
 
@@ -1744,11 +2073,18 @@ mod event_tests {
         let theme = ui::theme::Theme::dark();
         let mut tr = ui::text_render::TextRenderer::new();
         let target = DeleteTarget::Annotation("anno".into());
-        app.context_menu = Some(ContextMenu { at: Point::new(400.0, 400.0), target, item_rect: Rect::ZERO });
+        app.context_menu = Some(ContextMenu {
+            at: Point::new(400.0, 400.0),
+            target,
+            item_rect: Rect::ZERO,
+        });
         let mut scene = vello::Scene::new();
         app.draw_context_menu(&mut scene, Affine::IDENTITY, &mut tr, &theme);
         let menu = app.context_menu.as_ref().unwrap();
-        assert!(menu.item_rect.area() > 1.0, "the Delete item rect is captured for hit-testing");
+        assert!(
+            menu.item_rect.area() > 1.0,
+            "the Delete item rect is captured for hit-testing"
+        );
     }
 
     /// A ctrl-held `Modifiers`, mirroring the workspace convention (see
@@ -1794,16 +2130,44 @@ mod event_tests {
         let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
             let mut handled = false;
             let mut focus = None;
-            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+            app.handle_event(
+                ev,
+                1.0,
+                &mods,
+                &mut st.doc,
+                &st.root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
         };
 
         let origin = app.page_origins()[0];
         let screen = (origin.x + nx * app.zoom(), origin.y + ny * app.zoom());
 
         // Right-click over the note opens the context menu targeting it.
-        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(screen.0, screen.1) });
-        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Right });
-        assert!(app.context_menu.is_some(), "right-click over the note opens its delete menu");
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(screen.0, screen.1),
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+            },
+        );
+        assert!(
+            app.context_menu.is_some(),
+            "right-click over the note opens its delete menu"
+        );
 
         // A draw pass captures the Delete item rect (exactly as it does live).
         let theme = ui::theme::Theme::dark();
@@ -1815,15 +2179,45 @@ mod event_tests {
 
         // Left-click the Delete item removes the annotation from the doc.
         let before = app.annotations.len();
-        let ic = (f64::midpoint(item.x0, item.x1), f64::midpoint(item.y0, item.y1));
-        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(ic.0, ic.1) });
-        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
+        let ic = (
+            f64::midpoint(item.x0, item.x1),
+            f64::midpoint(item.y0, item.y1),
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(ic.0, ic.1),
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
 
-        assert!(app.context_menu.is_none(), "the menu closes after the delete");
-        assert_eq!(app.annotations.len(), before - 1, "the targeted annotation is removed");
-        assert!(!app.annotations.iter().any(|a| a.id == note.id), "specifically the right-clicked note");
         assert!(
-            !PdfDoc::list_annotations(&st.doc).iter().any(|a| a.id == note.id),
+            app.context_menu.is_none(),
+            "the menu closes after the delete"
+        );
+        assert_eq!(
+            app.annotations.len(),
+            before - 1,
+            "the targeted annotation is removed"
+        );
+        assert!(
+            !app.annotations.iter().any(|a| a.id == note.id),
+            "specifically the right-clicked note"
+        );
+        assert!(
+            !PdfDoc::list_annotations(&st.doc)
+                .iter()
+                .any(|a| a.id == note.id),
             "and it is gone from the shared document"
         );
     }
@@ -1851,7 +2245,17 @@ mod event_tests {
         let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
             let mut handled = false;
             let mut focus = None;
-            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+            app.handle_event(
+                ev,
+                1.0,
+                &mods,
+                &mut st.doc,
+                &st.root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
         };
 
         // --- press + drag upward past PAN_SLOP = pan (scroll moves, nothing selected). ---
@@ -1861,12 +2265,49 @@ mod event_tests {
         let a = (app.canvas_rect.x0 + 200.0, app.canvas_rect.y0 + 300.0);
         let b = (a.0, a.1 - 200.0); // drag up -> content scrolls down
         let sy0 = app.scroll_y();
-        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(a.0, a.1) });
-        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
-        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(b.0, b.1) });
-        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Released, button: MouseButton::Left });
-        assert!(app.scroll_y() > sy0 + 1.0, "a Select drag pans the canvas ({sy0} -> {})", app.scroll_y());
-        assert!(app.selected_anno.is_none(), "a pan does not select an annotation");
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(a.0, a.1),
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(b.0, b.1),
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
+        assert!(
+            app.scroll_y() > sy0 + 1.0,
+            "a Select drag pans the canvas ({sy0} -> {})",
+            app.scroll_y()
+        );
+        assert!(
+            app.selected_anno.is_none(),
+            "a pan does not select an annotation"
+        );
 
         // --- press + release without moving, over the seeded highlight = select. ---
         app.go_to_page(1);
@@ -1883,9 +2324,32 @@ mod event_tests {
         let origin = app.page_origins()[0];
         let (cx, cy) = rect.center();
         let p = (origin.x + cx * app.zoom(), origin.y + cy * app.zoom());
-        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(p.0, p.1) });
-        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
-        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Released, button: MouseButton::Left });
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(p.0, p.1),
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
         assert_eq!(
             app.selected_anno.as_deref(),
             Some(hl.id.as_str()),
@@ -1920,14 +2384,42 @@ mod event_tests {
         let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent| {
             let mut handled = false;
             let mut focus = None;
-            app.handle_event(ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+            app.handle_event(
+                ev,
+                1.0,
+                &mods,
+                &mut st.doc,
+                &st.root,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
         };
 
         // Click the scrim: a canvas point on the far left, clear of the panel.
         let scrim = (app.canvas_rect.x0 + 8.0, app.canvas_rect.y0 + 40.0);
-        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(scrim.0, scrim.1) });
-        feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Pressed, button: MouseButton::Left });
-        assert!(!app.show_sidebar && !app.show_rail, "clicking the scrim closes the overlay panels");
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(scrim.0, scrim.1),
+            },
+        );
+        feed(
+            &mut app,
+            &mut st,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        assert!(
+            !app.show_sidebar && !app.show_rail,
+            "clicking the scrim closes the overlay panels"
+        );
     }
 
     /// Ctrl+C / Ctrl+X in the inline editor are real clipboard chords, not
@@ -1953,29 +2445,67 @@ mod event_tests {
         let ctrl = ctrl_mods();
 
         let cid = app.comments[0].id.clone();
-        app.begin_edit(EditTarget::CommentBody(cid), "hello".into());
+        app.begin_edit(EditTarget::CommentBody(cid), "hello");
         // Select the whole field first (Ctrl+A) so copy/cut act on the text —
         // the shared TextInput has a real selection model, unlike the old
         // whole-buffer hack.
         let ev = key_event(winit::keyboard::Key::Character("a".into()));
         let mut handled = false;
         let mut focus = None;
-        app.handle_event(&ev, 1.0, &ctrl, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        app.handle_event(
+            &ev,
+            1.0,
+            &ctrl,
+            &mut st.doc,
+            &st.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
 
         // Ctrl+C is a clipboard chord, not a keystroke: the field stays "hello".
         let ev = key_event(winit::keyboard::Key::Character("c".into()));
         let mut handled = false;
         let mut focus = None;
-        app.handle_event(&ev, 1.0, &ctrl, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        app.handle_event(
+            &ev,
+            1.0,
+            &ctrl,
+            &mut st.doc,
+            &st.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
         assert!(handled, "the editor consumes the chord");
-        assert_eq!(app.editing.as_ref().unwrap().text(), "hello", "Ctrl+C does not type a literal 'c'");
+        assert_eq!(
+            app.editing.as_ref().unwrap().text(),
+            "hello",
+            "Ctrl+C does not type a literal 'c'"
+        );
 
         // Ctrl+X cuts the selection: the whole field clears.
         let ev = key_event(winit::keyboard::Key::Character("x".into()));
         let mut handled = false;
         let mut focus = None;
-        app.handle_event(&ev, 1.0, &ctrl, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
-        assert_eq!(app.editing.as_ref().unwrap().text(), "", "Ctrl+X clears the selected field");
+        app.handle_event(
+            &ev,
+            1.0,
+            &ctrl,
+            &mut st.doc,
+            &st.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        assert_eq!(
+            app.editing.as_ref().unwrap().text(),
+            "",
+            "Ctrl+X clears the selected field"
+        );
     }
 
     /// Paste inserts the system clipboard's text at the caret via the real
@@ -1993,7 +2523,7 @@ mod event_tests {
     fn editor_paste_inserts_clipboard_text_at_caret() {
         let (mut app, mut st) = app();
         let cid = app.comments[0].id.clone();
-        app.begin_edit(EditTarget::CommentBody(cid), "AB".into()); // caret at end
+        app.begin_edit(EditTarget::CommentBody(cid), "AB"); // caret at end
 
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
@@ -2005,7 +2535,17 @@ mod event_tests {
         let ev = key_event(winit::keyboard::Key::Character("v".into()));
         let mut handled = false;
         let mut focus = None;
-        app.handle_event(&ev, 1.0, &ctrl, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        app.handle_event(
+            &ev,
+            1.0,
+            &ctrl,
+            &mut st.doc,
+            &st.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
         let after = app.editing.as_ref().unwrap().text().to_string();
 
         // The pasted text is the clipboard's current content (control chars
@@ -2020,7 +2560,11 @@ mod event_tests {
         if clip.is_empty() {
             assert_eq!(after, "AB", "paste with no clipboard is a safe no-op");
         } else {
-            assert_eq!(after, format!("AB{clip}"), "Ctrl+V inserts the clipboard text at the caret");
+            assert_eq!(
+                after,
+                format!("AB{clip}"),
+                "Ctrl+V inserts the clipboard text at the caret"
+            );
             // Where a working clipboard round-trips our own write, it is "XY".
             if ui::clipboard_paste().as_deref() == Some("XY") {
                 assert_eq!(after, "ABXY", "the pasted text is exactly what was copied");

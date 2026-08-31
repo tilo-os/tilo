@@ -44,36 +44,41 @@ const BODY_BREAKPOINT_PX: f64 = 640.0;
 /// toolkit's `TextInput` binds to (and writes into) an existing `Text`
 /// object but never creates one, so the app must seed it — otherwise
 /// keystrokes mutate only the input's local string and never reach the CRDT.
+/// `None` if `root` is not a live object in `state` (seeding then simply
+/// does not happen for this sync pass).
 fn ensure_text_obj(
     state: &mut automerge::AutoCommit,
     root: &automerge::ObjId,
     key: &str,
-) -> automerge::ObjId {
+) -> Option<automerge::ObjId> {
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ReadDoc, Value};
     if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, key) {
-        return id;
+        return Some(id);
     }
-    state
-        .put_object(root, key, ObjType::Text)
-        .expect("put_object Text never fails")
+    state.put_object(root, key, ObjType::Text).ok()
 }
 
 /// Build the file manager's thumbnail service. The content-addressed cache
 /// lives under the app's persistence dir (a tempdir in tests, so they stay
 /// isolated) so previews survive across launches; it falls back to a temp dir
-/// when there is no persistence dir.
-fn build_thumb_service(config_dir: Option<&Path>) -> ThumbnailService {
+/// when there is no persistence dir. `None` when neither location is
+/// writable — previews then fall back to type badges (see [`ThumbCtx`]).
+fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
     let dir = config_dir.map_or_else(
         || std::env::temp_dir().join("qos-file-explorer-thumbnails"),
         |d| d.join("thumbnails"),
     );
-    ThumbnailService::open(&dir, 4).unwrap_or_else(|_| {
+    ThumbnailService::open(&dir, 4).ok().or_else(|| {
         let fallback = std::env::temp_dir().join("qos-file-explorer-thumbnails");
-        ThumbnailService::open(&fallback, 4).expect("a temp thumbnail cache dir is creatable")
+        ThumbnailService::open(&fallback, 4).ok()
     })
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent piece of widget state (loading, clipboard mode, rename phase, shots/layout bookkeeping), always set by name rather than a confusing positional constructor"
+)]
 pub struct FileExplorerWidget {
     current_path: PathBuf,
     home_path: Option<PathBuf>,
@@ -222,8 +227,10 @@ pub struct FileExplorerWidget {
     /// The shared, off-thread thumbnail service (content-addressed cache +
     /// worker pool). Cloned into each rebuilt file view so a folder of images /
     /// PDFs / ebooks shows real previews (and workspace files show the host's
-    /// gossiped preview) without janking on the UI thread.
-    thumbs: Arc<ThumbnailService>,
+    /// gossiped preview) without janking on the UI thread. `None` when no
+    /// writable cache directory could be found — the file view then falls
+    /// back to type badges.
+    thumbs: Option<Arc<ThumbnailService>>,
     /// App-lived memo turning a decoded thumbnail into a `peniko` image once, so
     /// a scrolling grid never rebuilds the GPU blob per frame.
     thumb_imgs: Rc<RefCell<HashMap<ThumbKey, PenikoImage>>>,
@@ -286,7 +293,7 @@ impl FileExplorerWidget {
         }
         sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
         let cmds = new_sink();
-        let thumbs = Arc::new(build_thumb_service(config_dir.as_deref()));
+        let thumbs = build_thumb_service(config_dir.as_deref()).map(Arc::new);
         Self {
             current_path: cwd,
             home_path: home,
@@ -358,10 +365,11 @@ impl FileExplorerWidget {
     }
 
     /// The thumbnail context (service + peniko memo) handed to each rebuilt file
-    /// view.
+    /// view. `None` when no thumbnail service could be opened — the view then
+    /// falls back to type badges.
     fn thumb_ctx(&self) -> Option<ThumbCtx> {
         Some(ThumbCtx {
-            service: self.thumbs.clone(),
+            service: self.thumbs.clone()?,
             imgs: self.thumb_imgs.clone(),
         })
     }
@@ -391,7 +399,9 @@ impl FileExplorerWidget {
     /// pre-warm so a headless grid captures the real previews, never the
     /// placeholders. Never call on a live UI thread.
     pub fn prewarm_thumbnails(&self, timeout: std::time::Duration) {
-        self.thumbs.block_until_idle(timeout);
+        if let Some(thumbs) = self.thumbs.as_deref() {
+            thumbs.block_until_idle(timeout);
+        }
     }
 
     /// Refresh the persistent top bar with the current navigation context
@@ -541,7 +551,7 @@ impl FileExplorerWidget {
         let now = std::time::Instant::now();
         let label = self.footer_label();
         if label != self.last_status_label {
-            self.last_status_label = label.clone();
+            label.clone_into(&mut self.last_status_label);
             self.status_bubble.poke(now);
         }
         if label.is_empty() {
@@ -770,63 +780,10 @@ impl FileExplorerWidget {
                 self.refresh();
                 true
             }
-            FileCommand::Click { index, ctrl, shift } => {
-                if ctrl || shift {
-                    self.selection.apply_click(index, ctrl, shift);
-                    self.last_click = None;
-                } else {
-                    // Capture a multi-selection the press lands inside *before*
-                    // the click collapses it, so a drag that starts here carries
-                    // the whole set (drag a multi-selection). A press outside the
-                    // multi-selection seeds nothing.
-                    let sel = self.selection.selected();
-                    self.drag_seed = if sel.len() > 1 && sel.contains(&index) {
-                        self.selected_paths()
-                    } else {
-                        Vec::new()
-                    };
-                    if let Some(path) = self.select(Some(index)) {
-                        // Double-click → open / enter.
-                        self.open_path(path);
-                    }
-                }
-                true
-            }
-            FileCommand::ContextSelect(target) => {
-                match target {
-                    // A right-press on a row that isn't already part of the
-                    // selection selects just it; one inside an existing
-                    // multi-selection leaves that selection intact so the menu
-                    // action applies to every highlighted item.
-                    Some(i) if !self.selection.is_selected(i) => self.selection.select_only(i),
-                    Some(_) => {}
-                    // Right-press on empty space clears the selection.
-                    None => self.selection.clear(),
-                }
-                self.last_click = None;
-                true
-            }
-            FileCommand::Activate(index) => {
-                let disp = self.displayed_entries();
-                if let Some(e) = disp.get(index) {
-                    self.open_path(e.path.clone());
-                }
-                true
-            }
-            FileCommand::SortColumn(col) => {
-                let by = match col {
-                    1 => SortBy::Name,
-                    2 => SortBy::Size,
-                    3 => SortBy::Modified,
-                    _ => return false,
-                };
-                if self.sort_by == by {
-                    self.toggle_sort_order();
-                } else {
-                    self.set_sort_by(by);
-                }
-                true
-            }
+            FileCommand::Click { index, ctrl, shift } => self.apply_click(index, ctrl, shift),
+            FileCommand::ContextSelect(target) => self.apply_context_select(target),
+            FileCommand::Activate(index) => self.apply_activate(index),
+            FileCommand::SortColumn(col) => self.apply_sort_column(col),
             FileCommand::SetView(m) => {
                 self.set_view_mode(m);
                 true
@@ -847,24 +804,7 @@ impl FileExplorerWidget {
                 let _ = self.open_terminal(&mut SystemRunner);
                 false
             }
-            FileCommand::NewFolder => {
-                match fileops::new_folder(&self.current_path, "New Folder") {
-                    Ok(path) => {
-                        self.refresh();
-                        // Select the freshly-created folder and drop into
-                        // inline-rename so the user names it right away.
-                        if let Some(i) =
-                            self.displayed_entries().iter().position(|e| e.path == path)
-                        {
-                            self.selection.select_only(i);
-                            self.begin_rename();
-                        }
-                        self.status = Some("Created folder".to_string());
-                    }
-                    Err(e) => self.status = Some(format!("New folder failed: {e}")),
-                }
-                true
-            }
+            FileCommand::NewFolder => self.apply_new_folder(),
             FileCommand::Rename => {
                 self.begin_rename();
                 true
@@ -877,189 +817,22 @@ impl FileExplorerWidget {
                 self.cancel_rename();
                 true
             }
-            FileCommand::Delete => {
-                let paths = self.selected_paths();
-                if !paths.is_empty() {
-                    if self.is_trash_view() {
-                        // Already in the Trash — a second delete is a permanent
-                        // purge, not a re-trash.
-                        match fileops::purge_entries(&paths) {
-                            Ok(n) => {
-                                self.refresh();
-                                self.status = Some(format!("Permanently deleted {n}"));
-                            }
-                            Err(e) => self.status = Some(format!("Delete failed: {e}")),
-                        }
-                    } else {
-                        match fileops::delete_to_trash(&paths) {
-                            Ok(()) => {
-                                self.refresh();
-                                self.status = Some(format!("Moved {} to Trash", paths.len()));
-                            }
-                            Err(e) => self.status = Some(format!("Delete failed: {e}")),
-                        }
-                    }
-                }
-                true
-            }
-            FileCommand::RestoreFromTrash => {
-                let paths = self.selected_paths();
-                if !paths.is_empty() {
-                    match fileops::restore_entries(&paths) {
-                        Ok(n) => {
-                            self.refresh();
-                            self.status = Some(format!("Restored {n}"));
-                        }
-                        Err(e) => self.status = Some(format!("Restore failed: {e}")),
-                    }
-                }
-                true
-            }
-            FileCommand::EmptyTrash => {
-                match fileops::empty_trash() {
-                    Ok(n) => {
-                        self.refresh();
-                        self.status = Some(if n == 0 {
-                            "Trash is already empty".to_string()
-                        } else {
-                            format!("Emptied Trash ({n})")
-                        });
-                    }
-                    Err(e) => self.status = Some(format!("Empty Trash failed: {e}")),
-                }
-                true
-            }
-            FileCommand::Copy => {
-                self.clipboard = self.selected_paths();
-                self.clipboard_cut = false;
-                self.status = Some(format!("Copied {}", self.clipboard.len()));
-                true
-            }
-            FileCommand::Cut => {
-                self.clipboard = self.selected_paths();
-                self.clipboard_cut = true;
-                self.status = Some(format!("Cut {}", self.clipboard.len()));
-                true
-            }
+            FileCommand::Delete => self.apply_delete(),
+            FileCommand::RestoreFromTrash => self.apply_restore_from_trash(),
+            FileCommand::EmptyTrash => self.apply_empty_trash(),
+            FileCommand::Copy => self.apply_copy(),
+            FileCommand::Cut => self.apply_cut(),
             FileCommand::Paste => {
                 self.paste();
                 true
             }
-            FileCommand::OpenTemplatesMenu => {
-                // Opened from the menu-routing path with real geometry; if it
-                // arrives via the command queue just open it at the cursor.
-                self.open_templates_submenu(self.last_cursor);
-                true
-            }
-            FileCommand::NewFromTemplate(template) => {
-                match templates::create_from_template(&template, &self.current_path) {
-                    Ok(path) => {
-                        self.refresh();
-                        if let Some(i) =
-                            self.displayed_entries().iter().position(|e| e.path == path)
-                        {
-                            self.selection.select_only(i);
-                            self.begin_rename();
-                        }
-                        self.status = Some("Created file".to_string());
-                    }
-                    Err(e) => self.status = Some(format!("New file failed: {e}")),
-                }
-                true
-            }
-            FileCommand::ArmDrag { path, is_dir, at } => {
-                tracing::debug!(target: "file_explorer::drag", ?path, ?at, "drag armed");
-                self.armed_drag = Some((at, path, is_dir));
-                true
-            }
-            FileCommand::BeginDrag { path, is_dir } => {
-                if self.pin_drag.is_some() {
-                    // Already carrying — the view and the app both arm the
-                    // same press, and whichever fires second is redundant.
-                    return true;
-                }
-                self.armed_drag = None;
-                tracing::debug!(target: "file_explorer::drag", ?path, "drag begins");
-                // Start carrying the row(s); the ghost + the drop are owned by
-                // `handle_event`. Drag the whole multi-selection when the press
-                // landed inside it (captured in `drag_seed` before the click
-                // collapsed it, Finder/Nautilus behaviour), else just this row.
-                let seed = std::mem::take(&mut self.drag_seed);
-                self.drag_paths = if seed.contains(&path) {
-                    seed
-                } else {
-                    vec![path.clone()]
-                };
-                self.drag_origin_is_dir = is_dir;
-                self.pin_drag = Some(path);
-                self.drag_hover = None;
-                // Tell the host what is being carried: if the pointer
-                // reaches another application's window, the host turns
-                // this into a real drag-and-drop for that client.
-                //
-                // That is the path when Files is a widget inside the
-                // compositor. When it is a packaged app — its own
-                // process, its own sandbox, a Wayland client like any
-                // other — there is no host holding the gesture, so it
-                // opens the drag itself. Only one of the two can be
-                // true in a given process, and each reports whether it
-                // applied, so both are offered the gesture and at most
-                // one takes it.
-                crate::external_drag::begin(self.drag_paths.clone());
-                if ui::dnd::start_file_drag(&self.drag_paths) {
-                    tracing::debug!(
-                        target: "file_explorer::drag",
-                        paths = ?self.drag_paths,
-                        "carrying the drag out of this app as a client drag"
-                    );
-                    // The gesture now belongs to the compositor's
-                    // drag grab, and this window will not see the rest
-                    // of it: no more motion, and no release. Anything
-                    // kept here would be state waiting for an end that
-                    // never arrives — a ghost pinned to the last place
-                    // the pointer was, and a drop this app would try to
-                    // resolve against its own folders. So it is let go
-                    // of here, and the picture from this point on is
-                    // the compositor's to draw.
-                    self.pin_drag = None;
-                    self.drag_paths.clear();
-                    self.drag_hover = None;
-                    self.armed_drag = None;
-                    crate::external_drag::end();
-                }
-                true
-            }
-            FileCommand::AddFavorite(path) => {
-                let added = {
-                    let home = self.home_path.clone().unwrap_or_else(|| PathBuf::from("/"));
-                    let mut favs = self.favs.borrow_mut();
-                    favorites::add(&mut favs.favorites, path, &home, &self.user_dirs)
-                };
-                if added {
-                    self.save_favorites();
-                    self.status = Some("Added to Favourites".to_string());
-                }
-                true
-            }
-            FileCommand::RemoveFavorite(path) => {
-                let removed = {
-                    let mut favs = self.favs.borrow_mut();
-                    favorites::remove(&mut favs.favorites, &path)
-                };
-                if removed {
-                    self.save_favorites();
-                    self.status = Some("Removed from Favourites".to_string());
-                }
-                true
-            }
-            FileCommand::ReorderFavorite { from, to } => {
-                {
-                    let mut favs = self.favs.borrow_mut();
-                    favorites::reorder(&mut favs.favorites, from, to);
-                }
-                self.save_favorites();
-                true
-            }
+            FileCommand::OpenTemplatesMenu => self.apply_open_templates_menu(),
+            FileCommand::NewFromTemplate(template) => self.apply_new_from_template(&template),
+            FileCommand::ArmDrag { path, is_dir, at } => self.apply_arm_drag(path, is_dir, at),
+            FileCommand::BeginDrag { path, is_dir } => self.apply_begin_drag(path, is_dir),
+            FileCommand::AddFavorite(path) => self.apply_add_favorite(path),
+            FileCommand::RemoveFavorite(path) => self.apply_remove_favorite(&path),
+            FileCommand::ReorderFavorite { from, to } => self.apply_reorder_favorite(from, to),
             FileCommand::ZoomIn => {
                 self.set_zoom(self.zoom_level + 1);
                 true
@@ -1073,17 +846,7 @@ impl FileExplorerWidget {
                 self.refresh();
                 true
             }
-            FileCommand::OpenPath(p) => {
-                // A typed/accepted path from the editable path bar: open a file,
-                // navigate into a directory (or a not-yet-existing path, so the
-                // error affordance surfaces rather than silently doing nothing).
-                if p.is_file() {
-                    self.open_path(p);
-                } else {
-                    self.navigate(p);
-                }
-                true
-            }
+            FileCommand::OpenPath(p) => self.apply_open_path(p),
             FileCommand::OpenViewMenu => {
                 self.open_view_menu();
                 true
@@ -1092,19 +855,333 @@ impl FileExplorerWidget {
                 self.open_sort_menu();
                 true
             }
-            FileCommand::SetSortOrder(order) => {
-                if self.sort_order != order {
-                    self.toggle_sort_order();
-                }
-                true
-            }
-            FileCommand::OpenFavoriteMenu(path) => {
-                // Remember the target; the right-press handler opens the menu at
-                // the cursor once this event's commands are drained.
-                self.pending_fav_menu = Some(path);
-                false
+            FileCommand::SetSortOrder(order) => self.apply_set_sort_order(order),
+            FileCommand::OpenFavoriteMenu(path) => self.apply_open_favorite_menu(path),
+        }
+    }
+
+    /// `FileCommand::Click` — drives selection and, via the app's
+    /// double-click detection, opening.
+    fn apply_click(&mut self, index: usize, ctrl: bool, shift: bool) -> bool {
+        if ctrl || shift {
+            self.selection.apply_click(index, ctrl, shift);
+            self.last_click = None;
+        } else {
+            // Capture a multi-selection the press lands inside *before*
+            // the click collapses it, so a drag that starts here carries
+            // the whole set (drag a multi-selection). A press outside the
+            // multi-selection seeds nothing.
+            let sel = self.selection.selected();
+            self.drag_seed = if sel.len() > 1 && sel.contains(&index) {
+                self.selected_paths()
+            } else {
+                Vec::new()
+            };
+            if let Some(path) = self.select(Some(index)) {
+                // Double-click → open / enter.
+                self.open_path(path);
             }
         }
+        true
+    }
+
+    /// `FileCommand::ContextSelect` — selects the right-press target so the
+    /// context menu that follows acts on what was clicked.
+    fn apply_context_select(&mut self, target: Option<usize>) -> bool {
+        match target {
+            // A right-press on a row that isn't already part of the
+            // selection selects just it; one inside an existing
+            // multi-selection leaves that selection intact so the menu
+            // action applies to every highlighted item.
+            Some(i) if !self.selection.is_selected(i) => self.selection.select_only(i),
+            Some(_) => {}
+            // Right-press on empty space clears the selection.
+            None => self.selection.clear(),
+        }
+        self.last_click = None;
+        true
+    }
+
+    /// `FileCommand::NewFolder` — create, refresh, then drop into
+    /// inline-rename so the user names it right away.
+    fn apply_new_folder(&mut self) -> bool {
+        match fileops::new_folder(&self.current_path, "New Folder") {
+            Ok(path) => {
+                self.refresh();
+                if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
+                    self.selection.select_only(i);
+                    self.begin_rename();
+                }
+                self.status = Some("Created folder".to_string());
+            }
+            Err(e) => self.status = Some(format!("New folder failed: {e}")),
+        }
+        true
+    }
+
+    /// `FileCommand::Delete` — trash the selection, or (already in the
+    /// Trash) permanently purge it.
+    fn apply_delete(&mut self) -> bool {
+        let paths = self.selected_paths();
+        if !paths.is_empty() {
+            if self.is_trash_view() {
+                // Already in the Trash — a second delete is a permanent
+                // purge, not a re-trash.
+                match fileops::purge_entries(&paths) {
+                    Ok(n) => {
+                        self.refresh();
+                        self.status = Some(format!("Permanently deleted {n}"));
+                    }
+                    Err(e) => self.status = Some(format!("Delete failed: {e}")),
+                }
+            } else {
+                match fileops::delete_to_trash(&paths) {
+                    Ok(()) => {
+                        self.refresh();
+                        self.status = Some(format!("Moved {} to Trash", paths.len()));
+                    }
+                    Err(e) => self.status = Some(format!("Delete failed: {e}")),
+                }
+            }
+        }
+        true
+    }
+
+    /// `FileCommand::RestoreFromTrash` — restore the selection to its
+    /// original location.
+    fn apply_restore_from_trash(&mut self) -> bool {
+        let paths = self.selected_paths();
+        if !paths.is_empty() {
+            match fileops::restore_entries(&paths) {
+                Ok(n) => {
+                    self.refresh();
+                    self.status = Some(format!("Restored {n}"));
+                }
+                Err(e) => self.status = Some(format!("Restore failed: {e}")),
+            }
+        }
+        true
+    }
+
+    /// `FileCommand::EmptyTrash` — permanently empty the Trash.
+    fn apply_empty_trash(&mut self) -> bool {
+        match fileops::empty_trash() {
+            Ok(n) => {
+                self.refresh();
+                self.status = Some(if n == 0 {
+                    "Trash is already empty".to_string()
+                } else {
+                    format!("Emptied Trash ({n})")
+                });
+            }
+            Err(e) => self.status = Some(format!("Empty Trash failed: {e}")),
+        }
+        true
+    }
+
+    /// `FileCommand::NewFromTemplate` — copy `template`, refresh, then drop
+    /// into inline-rename.
+    fn apply_new_from_template(&mut self, template: &Path) -> bool {
+        match templates::create_from_template(template, &self.current_path) {
+            Ok(path) => {
+                self.refresh();
+                if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
+                    self.selection.select_only(i);
+                    self.begin_rename();
+                }
+                self.status = Some("Created file".to_string());
+            }
+            Err(e) => self.status = Some(format!("New file failed: {e}")),
+        }
+        true
+    }
+
+    /// `FileCommand::BeginDrag` — start carrying the row(s) as a floating
+    /// ghost, and hand the gesture to the host or the toolkit's own
+    /// client-side drag.
+    fn apply_begin_drag(&mut self, path: PathBuf, is_dir: bool) -> bool {
+        if self.pin_drag.is_some() {
+            // Already carrying — the view and the app both arm the
+            // same press, and whichever fires second is redundant.
+            return true;
+        }
+        self.armed_drag = None;
+        tracing::debug!(target: "file_explorer::drag", ?path, "drag begins");
+        // Start carrying the row(s); the ghost + the drop are owned by
+        // `handle_event`. Drag the whole multi-selection when the press
+        // landed inside it (captured in `drag_seed` before the click
+        // collapsed it, Finder/Nautilus behaviour), else just this row.
+        let seed = std::mem::take(&mut self.drag_seed);
+        self.drag_paths = if seed.contains(&path) {
+            seed
+        } else {
+            vec![path.clone()]
+        };
+        self.drag_origin_is_dir = is_dir;
+        self.pin_drag = Some(path);
+        self.drag_hover = None;
+        // Tell the host what is being carried: if the pointer
+        // reaches another application's window, the host turns
+        // this into a real drag-and-drop for that client.
+        //
+        // That is the path when Files is a widget inside the
+        // compositor. When it is a packaged app — its own
+        // process, its own sandbox, a Wayland client like any
+        // other — there is no host holding the gesture, so it
+        // opens the drag itself. Only one of the two can be
+        // true in a given process, and each reports whether it
+        // applied, so both are offered the gesture and at most
+        // one takes it.
+        crate::external_drag::begin(self.drag_paths.clone());
+        if ui::dnd::start_file_drag(&self.drag_paths) {
+            tracing::debug!(
+                target: "file_explorer::drag",
+                paths = ?self.drag_paths,
+                "carrying the drag out of this app as a client drag"
+            );
+            // The gesture now belongs to the compositor's
+            // drag grab, and this window will not see the rest
+            // of it: no more motion, and no release. Anything
+            // kept here would be state waiting for an end that
+            // never arrives — a ghost pinned to the last place
+            // the pointer was, and a drop this app would try to
+            // resolve against its own folders. So it is let go
+            // of here, and the picture from this point on is
+            // the compositor's to draw.
+            self.pin_drag = None;
+            self.drag_paths.clear();
+            self.drag_hover = None;
+            self.armed_drag = None;
+            crate::external_drag::end();
+        }
+        true
+    }
+
+    /// `FileCommand::AddFavorite` — pin `path` to the places list.
+    fn apply_add_favorite(&mut self, path: PathBuf) -> bool {
+        let added = {
+            let home = self.home_path.clone().unwrap_or_else(|| PathBuf::from("/"));
+            let mut favs = self.favs.borrow_mut();
+            favorites::add(&mut favs.favorites, path, &home, &self.user_dirs)
+        };
+        if added {
+            self.save_favorites();
+            self.status = Some("Added to Favourites".to_string());
+        }
+        true
+    }
+
+    /// `FileCommand::RemoveFavorite` — unpin `path` from the places list.
+    fn apply_remove_favorite(&mut self, path: &Path) -> bool {
+        let removed = {
+            let mut favs = self.favs.borrow_mut();
+            favorites::remove(&mut favs.favorites, path)
+        };
+        if removed {
+            self.save_favorites();
+            self.status = Some("Removed from Favourites".to_string());
+        }
+        true
+    }
+
+    /// `FileCommand::ReorderFavorite` — move favourite `from` to index `to`
+    /// (drag-to-reorder drop).
+    fn apply_reorder_favorite(&mut self, from: usize, to: usize) -> bool {
+        {
+            let mut favs = self.favs.borrow_mut();
+            favorites::reorder(&mut favs.favorites, from, to);
+        }
+        self.save_favorites();
+        true
+    }
+
+    /// `FileCommand::Activate` — activate entry `index` directly (keyboard
+    /// Enter / grid double-click).
+    fn apply_activate(&mut self, index: usize) -> bool {
+        let disp = self.displayed_entries();
+        if let Some(e) = disp.get(index) {
+            self.open_path(e.path.clone());
+        }
+        true
+    }
+
+    /// `FileCommand::SortColumn` — a sortable list header at `col` was
+    /// clicked; toggles order on a repeat click of the active column.
+    fn apply_sort_column(&mut self, col: usize) -> bool {
+        let by = match col {
+            1 => SortBy::Name,
+            2 => SortBy::Size,
+            3 => SortBy::Modified,
+            _ => return false,
+        };
+        if self.sort_by == by {
+            self.toggle_sort_order();
+        } else {
+            self.set_sort_by(by);
+        }
+        true
+    }
+
+    /// `FileCommand::Copy` — copy the selection into the clipboard.
+    fn apply_copy(&mut self) -> bool {
+        self.clipboard = self.selected_paths();
+        self.clipboard_cut = false;
+        self.status = Some(format!("Copied {}", self.clipboard.len()));
+        true
+    }
+
+    /// `FileCommand::Cut` — cut the selection into the clipboard.
+    fn apply_cut(&mut self) -> bool {
+        self.clipboard = self.selected_paths();
+        self.clipboard_cut = true;
+        self.status = Some(format!("Cut {}", self.clipboard.len()));
+        true
+    }
+
+    /// `FileCommand::OpenTemplatesMenu` — opened from the menu-routing path
+    /// with real geometry; if it arrives via the command queue just open it
+    /// at the cursor.
+    fn apply_open_templates_menu(&mut self) -> bool {
+        self.open_templates_submenu(self.last_cursor);
+        true
+    }
+
+    /// `FileCommand::ArmDrag` — a plain press landed on a row: arm a drag of
+    /// `path` from `at`, started once the held pointer travels far enough.
+    fn apply_arm_drag(&mut self, path: PathBuf, is_dir: bool, at: Point) -> bool {
+        tracing::debug!(target: "file_explorer::drag", ?path, ?at, "drag armed");
+        self.armed_drag = Some((at, path, is_dir));
+        true
+    }
+
+    /// `FileCommand::OpenPath` — a typed/accepted path from the editable
+    /// path bar: open a file, navigate into a directory (or a
+    /// not-yet-existing path, so the error affordance surfaces rather than
+    /// silently doing nothing).
+    fn apply_open_path(&mut self, p: PathBuf) -> bool {
+        if p.is_file() {
+            self.open_path(p);
+        } else {
+            self.navigate(p);
+        }
+        true
+    }
+
+    /// `FileCommand::SetSortOrder` — set the sort direction explicitly
+    /// (from the grid "Sort by" menu).
+    fn apply_set_sort_order(&mut self, order: SortOrder) -> bool {
+        if self.sort_order != order {
+            self.toggle_sort_order();
+        }
+        true
+    }
+
+    /// `FileCommand::OpenFavoriteMenu` — remember the target; the
+    /// right-press handler opens the menu at the cursor once this event's
+    /// commands are drained.
+    fn apply_open_favorite_menu(&mut self, path: PathBuf) -> bool {
+        self.pending_fav_menu = Some(path);
+        false
     }
 
     /// Set the zoom level (clamped) and persist it.
@@ -1482,7 +1559,7 @@ impl FileExplorerWidget {
             && let Some(e) = disp.get(i)
         {
             self.renaming = Some(i);
-            self.rename_buffer = e.name.clone();
+            e.name.clone_into(&mut self.rename_buffer);
             self.rename_seed_pending = true;
             self.rename_select_pending = true;
             self.rename_input.set_focus(true);
@@ -2432,8 +2509,10 @@ impl Widget for FileExplorerWidget {
         let rename_obj = ensure_text_obj(state, path, RENAME_QUERY_PATH);
 
         // A just-started rename seeds the field with the entry's current name.
-        if self.rename_seed_pending {
-            ui::doc::splice_text_diffed(state, &rename_obj, &self.rename_buffer);
+        if let Some(obj) = rename_obj.as_ref()
+            && self.rename_seed_pending
+        {
+            ui::doc::splice_text_diffed(state, obj, &self.rename_buffer);
             self.rename_seed_pending = false;
         }
 
@@ -2452,7 +2531,8 @@ impl Widget for FileExplorerWidget {
         // While renaming, mirror the field's live text into our buffer so a
         // commit renames to what the user actually typed.
         if self.renaming.is_some()
-            && let Ok(text) = state.text(&rename_obj)
+            && let Some(obj) = rename_obj.as_ref()
+            && let Ok(text) = state.text(obj)
         {
             self.rename_buffer = text;
         }
@@ -2809,10 +2889,12 @@ impl Widget for FileExplorerWidget {
                                 // Pull the freshest field text from the CRDT, then
                                 // commit — the last keystroke may not have synced.
                                 let rename_obj = ensure_text_obj(state, path, RENAME_QUERY_PATH);
-                                if let Ok(text) = {
-                                    use automerge::ReadDoc;
-                                    state.text(&rename_obj)
-                                } {
+                                if let Some(obj) = rename_obj.as_ref()
+                                    && let Ok(text) = {
+                                        use automerge::ReadDoc;
+                                        state.text(obj)
+                                    }
+                                {
                                     self.rename_buffer = text;
                                 }
                                 self.commit_rename();
@@ -3418,7 +3500,7 @@ mod command_path_tests {
         }
         let grown = doc.save().len() - baseline;
 
-        let obj = ensure_text_obj(&mut doc, &root, RENAME_QUERY_PATH);
+        let obj = ensure_text_obj(&mut doc, &root, RENAME_QUERY_PATH).unwrap();
         assert_eq!(
             doc.text(&obj).unwrap(),
             "report-039.txt",

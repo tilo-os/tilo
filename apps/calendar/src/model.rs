@@ -152,7 +152,12 @@ impl Palette {
     }
 
     pub fn from_index(i: usize) -> Self {
-        Self::ALL[i % Self::ALL.len()]
+        // `i % Self::ALL.len()` is always in bounds since `ALL` is a fixed,
+        // non-empty array; `Self::ALL[0]` is a compile-time-safe fallback.
+        Self::ALL
+            .get(i % Self::ALL.len())
+            .copied()
+            .unwrap_or(Self::ALL[0])
     }
     pub fn index(self) -> usize {
         Self::ALL.iter().position(|p| *p == self).unwrap_or(0)

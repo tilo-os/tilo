@@ -677,7 +677,7 @@ mod tests {
             color: Swatch::Green,
             author: "You".into(),
         };
-        app.perform_action(&mut state.doc, add_annotation_action(&a));
+        app.perform_action(&mut state.doc, &add_annotation_action(&a));
 
         // The host drains the stashed heads and records one undo boundary.
         let boundary =

@@ -9,14 +9,14 @@
 //! is the notes editor, positioned absolutely inside the detail panel.
 //!
 //! Five-pass `Widget` contract:
-//! - `sync`   — seed the CRDT on first frame, bind the notes editor to
-//!              the selected item's block list, run the editor's sync.
+//! - `sync` — seed the CRDT on first frame, bind the notes editor to
+//!   the selected item's block list, run the editor's sync.
 //! - `build_layout` — register the editor node, return a full-bleed root.
 //! - `apply_layout` — compute region rects, place the editor.
-//! - `draw`   — paint sidebar + toolbar + the active view + detail panel,
-//!              rebuilding the click hit-map.
+//! - `draw` — paint sidebar + toolbar + the active view + detail panel,
+//!   rebuilding the click hit-map.
 //! - `handle_event` — route clicks against the hit-map, keyboard
-//!              shortcuts, and forward to the editor when notes are active.
+//!   shortcuts, and forward to the editor when notes are active.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -341,6 +341,15 @@ impl TimelineDrag {
     }
 }
 
+/// Payload delivered by a finished background `CalDAV` sync worker: the pull
+/// result, the merged outcome, the ids that uploaded successfully, and the
+/// ids the server confirmed deleted.
+type SyncWorkerResult = (caldav::SyncResult, SyncOutcome, Vec<Id>, Vec<Id>);
+
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, unrelated flag (demo mode, sidebar state, sync status, form scratch state); grouping them into enums would not express any real invariant between them and would touch every read/write site across this file"
+)]
 pub struct CalendarApp {
     model: Model,
     today: NaiveDate,
@@ -464,13 +473,10 @@ pub struct CalendarApp {
     /// Receiver for an in-flight background `CalDAV` pull. The live sync runs on a
     /// worker thread (the `ui` event loop is synchronous and must never block on
     /// the network); its result is drained here on the next `sync` pass.
-    /// A finished background pass delivers `(pull result, outcome, pushed ids)`
-    /// — the queued events that uploaded successfully, so they can be cleared
-    /// from the outbox.
     /// Delivers `(pull result, outcome, pushed uids, deleted uids)` — the
     /// events that uploaded and the ones the server confirmed removed, so both
     /// outboxes can be cleared.
-    sync_rx: Option<std::sync::mpsc::Receiver<(caldav::SyncResult, SyncOutcome, Vec<Id>, Vec<Id>)>>,
+    sync_rx: Option<std::sync::mpsc::Receiver<SyncWorkerResult>>,
     /// True while a background sync is running, which keeps the event loop
     /// ticking (`needs_animation_frame`) so the worker's result lands promptly
     /// without waiting for the next unrelated input.
@@ -886,7 +892,7 @@ impl CalendarApp {
 
     // --- CRDT plumbing ---------------------------------------------------
 
-    fn notes_list_for(&self, doc: &mut AutoCommit, sel: Sel) -> Option<ObjId> {
+    fn notes_list_for(doc: &mut AutoCommit, sel: Sel) -> Option<ObjId> {
         match sel {
             Sel::Event(id) => CalDoc::event_notes(doc, id),
             Sel::Task(id) => CalDoc::task_notes(doc, id),
@@ -944,7 +950,7 @@ impl CalendarApp {
         if self.bound == Some(sel) {
             return;
         }
-        if let Some(list) = self.notes_list_for(doc, sel) {
+        if let Some(list) = Self::notes_list_for(doc, sel) {
             let mut ed = BlockEditor::new().with_empty_hint(NOTES_PLACEHOLDER);
             ed.bind_blocks(doc, list);
             // Install the freshly-bound editor through the single notes-editor
@@ -1008,7 +1014,7 @@ impl CalendarApp {
             None
         };
         if let Some(snap) = snap {
-            self.perform_action(doc, crate::actions::upsert_event_action(&snap));
+            self.perform_action(doc, &crate::actions::upsert_event_action(&snap));
             self.force_persist = true;
             self.dirty = true;
         }
@@ -1071,9 +1077,9 @@ impl CalendarApp {
     /// palette does. The in-memory model is updated by the caller for immediate UI
     /// feedback and reconciled from the document on the next `sync`. This app
     /// supplies only its domain: the action and its type.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::CalendarAction) {
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::CalendarAction) {
         self.actions
-            .dispatch(doc, crate::actions::CALENDAR_ACTION_TYPE, &action);
+            .dispatch(doc, crate::actions::CALENDAR_ACTION_TYPE, action);
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
@@ -1199,7 +1205,7 @@ impl CalendarApp {
         self.model.events.retain(|e| e.id != id);
         self.perform_action(
             doc,
-            crate::actions::delete_event_action(id.to_string(), remote_delete),
+            &crate::actions::delete_event_action(id.to_string(), remote_delete),
         );
         if self.selection == Some(Sel::Event(id)) {
             self.close_after_delete();
@@ -1225,7 +1231,7 @@ impl CalendarApp {
         self.model.tasks.retain(|t| !victims.contains(&t.id));
         self.perform_action(
             doc,
-            crate::actions::delete_task_action(
+            &crate::actions::delete_task_action(
                 id.to_string(),
                 subtasks
                     .iter()
@@ -1292,7 +1298,7 @@ impl CalendarApp {
             false
         };
         if exists {
-            self.perform_action(doc, crate::actions::toggle_task_action(id.to_string()));
+            self.perform_action(doc, &crate::actions::toggle_task_action(id.to_string()));
             self.dirty = true;
         }
     }
@@ -1330,7 +1336,7 @@ impl CalendarApp {
     /// placeholder until the user types.
     fn spawn_event(&mut self, ev: Event, doc: &mut AutoCommit) {
         let id = ev.id;
-        self.perform_action(doc, crate::actions::upsert_event_action(&ev));
+        self.perform_action(doc, &crate::actions::upsert_event_action(&ev));
         self.model.events.push(ev);
         self.model.events.sort_by_key(|e| e.start);
         self.select_event(id);
@@ -1397,7 +1403,7 @@ impl CalendarApp {
             None
         };
         if let Some(snap) = snap {
-            self.perform_action(doc, crate::actions::upsert_event_action(&snap));
+            self.perform_action(doc, &crate::actions::upsert_event_action(&snap));
             self.status = Some("Event rescheduled".into());
             self.force_persist = true;
             self.dirty = true;
@@ -1421,7 +1427,7 @@ impl CalendarApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
@@ -1433,7 +1439,7 @@ impl CalendarApp {
         self.timeline_scroll.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             &mut handled,
@@ -1456,7 +1462,7 @@ impl CalendarApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
@@ -1706,7 +1712,7 @@ impl CalendarApp {
     }
 
     /// The display label for an event's current calendar target.
-    fn calendar_label(&self, calendar_id: &Option<String>) -> String {
+    fn calendar_label(&self, calendar_id: Option<&String>) -> String {
         match calendar_id {
             None => "On this device".to_string(),
             Some(id) => self
@@ -1725,13 +1731,13 @@ impl CalendarApp {
     /// File the selected event on `target`. A remote target tags the event
     /// with the calendar id, adopts that calendar's colour, and queues it for
     /// upload; the local target clears the tag and drops it from the queue.
-    fn set_event_calendar(&mut self, target: CalTarget, doc: &mut AutoCommit) {
+    fn set_event_calendar(&mut self, target: &CalTarget, doc: &mut AutoCommit) {
         let Some(Sel::Event(id)) = self.selection else {
             return;
         };
         // Resolve the remote calendar's palette up front (immutable borrow of
         // `self.accounts`) so the mutable event borrow below doesn't overlap.
-        let remote_color = match &target {
+        let remote_color = match target {
             CalTarget::Remote(cid) => self
                 .accounts
                 .accounts
@@ -1742,7 +1748,7 @@ impl CalendarApp {
             CalTarget::Local => None,
         };
         let snap = if let Some(e) = self.model.event_mut(id) {
-            match &target {
+            match target {
                 CalTarget::Local => e.calendar_id = None,
                 CalTarget::Remote(cid) => {
                     e.calendar_id = Some(cid.clone());
@@ -1761,7 +1767,7 @@ impl CalendarApp {
             let enqueue = matches!(target, CalTarget::Remote(_));
             self.perform_action(
                 doc,
-                crate::actions::set_event_calendar_action(&snap, enqueue),
+                &crate::actions::set_event_calendar_action(&snap, enqueue),
             );
         }
         self.popover = FormPopover::None;
@@ -1876,7 +1882,7 @@ impl CalendarApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -1926,7 +1932,7 @@ impl CalendarApp {
                 self.date_picker.handle_event(
                     event,
                     scale_factor,
-                    modifiers,
+                    &modifiers,
                     state,
                     path,
                     handled,
@@ -1959,7 +1965,7 @@ impl CalendarApp {
                     picker.handle_event(
                         event,
                         scale_factor,
-                        modifiers,
+                        &modifiers,
                         state,
                         path,
                         handled,
@@ -2131,7 +2137,7 @@ impl CalendarApp {
                 None
             };
             if let Some(snap) = snap {
-                self.perform_action(doc, crate::actions::upsert_event_action(&snap));
+                self.perform_action(doc, &crate::actions::upsert_event_action(&snap));
                 self.dirty = true;
             }
         }
@@ -2562,7 +2568,7 @@ impl CalendarApp {
             }
             Action::ToggleAllDay => self.toggle_all_day(doc),
             Action::OpenPopover(which) => self.open_popover(which),
-            Action::PickCalendar(target) => self.set_event_calendar(target, doc),
+            Action::PickCalendar(target) => self.set_event_calendar(&target, doc),
             Action::FocusField(field) => self.focus_field(field),
             Action::ClosePopover => {
                 self.popover = FormPopover::None;
@@ -4423,7 +4429,7 @@ impl CalendarApp {
                 None,
                 &Circle::new(Point::new(r.x0 + 16.0, r.center().y), 5.0),
             );
-            let label = self.calendar_label(&e.calendar_id);
+            let label = self.calendar_label(e.calendar_id.as_ref());
             let disp = elide_to_width(tr, &label, 14.0, (r.width() - 56.0).max(0.0));
             tr.draw_text(
                 scene,
@@ -4996,7 +5002,7 @@ impl Widget for CalendarApp {
         path: &ObjId,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
         // Track the pointer in logical coordinates.
@@ -5020,12 +5026,12 @@ impl Widget for CalendarApp {
             self.handle_popover_event(
                 event,
                 scale_factor,
-                modifiers,
+                *modifiers,
                 state,
                 path,
                 handled,
                 focus_target,
-                _node_id,
+                node_id,
                 taffy,
             );
             if *handled {
@@ -5054,11 +5060,11 @@ impl Widget for CalendarApp {
         if self.handle_timeline_input(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             focus_target,
-            _node_id,
+            node_id,
             taffy,
         ) {
             self.dirty = true;
@@ -5213,7 +5219,7 @@ impl Widget for CalendarApp {
                     path,
                     handled,
                     focus_target,
-                    _node_id,
+                    node_id,
                     taffy,
                 );
                 *handled = true;
@@ -5232,7 +5238,7 @@ impl Widget for CalendarApp {
                     path,
                     handled,
                     focus_target,
-                    _node_id,
+                    node_id,
                     taffy,
                 );
                 *handled = true;
@@ -5281,7 +5287,7 @@ impl Widget for CalendarApp {
                 path,
                 handled,
                 focus_target,
-                _node_id,
+                node_id,
                 taffy,
             );
             self.flush_form_edits(state);
@@ -5298,7 +5304,7 @@ impl Widget for CalendarApp {
                 path,
                 handled,
                 focus_target,
-                _node_id,
+                node_id,
                 taffy,
             );
             self.flush_form_edits(state);
@@ -8122,9 +8128,9 @@ mod tests {
         let id = selected_event_id(&h.app);
         // File it remote first (queued), then move it back to the device.
         h.app
-            .set_event_calendar(CalTarget::Remote("work/default".into()), &mut h.doc);
+            .set_event_calendar(&CalTarget::Remote("work/default".into()), &mut h.doc);
         assert!(CalDoc::outbox(&h.doc).contains(&id));
-        h.app.set_event_calendar(CalTarget::Local, &mut h.doc);
+        h.app.set_event_calendar(&CalTarget::Local, &mut h.doc);
         assert!(h.app.model.event(id).unwrap().calendar_id.is_none());
         assert!(
             !CalDoc::outbox(&h.doc).contains(&id),

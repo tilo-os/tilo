@@ -95,6 +95,11 @@ impl UnixCapnpClient {
     /// Wrap an owned `RawFd` for a connected Unix stream socket; takes
     /// ownership, so the caller must not close it afterwards. `side` is which
     /// end of the two-party protocol we are — SDK clients are `Client`, services are `Server`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::ConnectionFailed`] if the fd cannot be put in
+    /// non-blocking mode or handed to tokio's reactor.
     pub fn from_connected_fd(
         fd: RawFd,
         side: rpc_twoparty_capnp::Side,
@@ -116,7 +121,7 @@ impl UnixCapnpClient {
             read_compat,
             write_compat,
             side,
-            Default::default(),
+            capnp::message::ReaderOptions::default(),
         ));
         let rpc_system = RpcSystem::new(network, None);
         Ok(Self {
@@ -148,6 +153,12 @@ impl UnixCapnpClient {
 
 /// Helper for service crates: probe an fd, lift it to capnp, and pull out
 /// the bootstrap. [`NotAvailable::ServiceFdMissing`] if the env var isn't there.
+///
+/// # Errors
+///
+/// Returns [`NotAvailable::ServiceFdMissing`] if no fd is open for `name`,
+/// or [`NotAvailable::ConnectionFailed`] if the fd can't be lifted to an RPC
+/// connection.
 pub fn try_open_service<C>(name: &str) -> Result<C, NotAvailable>
 where
     C: capnp::capability::FromClientHook,
@@ -162,6 +173,11 @@ where
 /// launched process; a caller with its own connection reaching for the
 /// environment anyway risks two clients racing `set_var`, which is unsound
 /// while any other thread reads the environment.
+///
+/// # Errors
+///
+/// Returns [`NotAvailable::ConnectionFailed`] if `fd` can't be lifted to an
+/// RPC connection.
 pub fn open_service_on_fd<C>(fd: RawFd) -> Result<C, NotAvailable>
 where
     C: capnp::capability::FromClientHook,

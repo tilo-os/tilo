@@ -613,20 +613,26 @@ impl RemoteApp {
                 } else {
                     c.user.clone()
                 };
-                LiveSession::Ssh(Box::new(SshSession::connect(SshConfig {
+                match SshSession::connect(SshConfig {
                     host: c.host.clone(),
                     port: c.port,
                     user,
                     auth,
                     cols: 80,
                     rows: 24,
-                })))
+                }) {
+                    Ok(s) => LiveSession::Ssh(Box::new(s)),
+                    Err(e) => LiveSession::Error(e.to_string()),
+                }
             }
-            ConnectionKind::Vnc => LiveSession::Vnc(VncSession::connect(VncConfig {
+            ConnectionKind::Vnc => match VncSession::connect(VncConfig {
                 host: c.host.clone(),
                 port: c.port,
                 password: std::env::var("REMOTE_VNC_PASSWORD").ok(),
-            })),
+            }) {
+                Ok(s) => LiveSession::Vnc(s),
+                Err(e) => LiveSession::Error(e.to_string()),
+            },
             other => LiveSession::Error(format!(
                 "{} transport is not implemented yet",
                 other.label()
