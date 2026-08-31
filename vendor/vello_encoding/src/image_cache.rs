@@ -178,7 +178,7 @@ impl ImageCache {
     }
 
     pub(crate) fn record_omission(&mut self) {
-        self.omitted_in_resolve += 1;
+        self.omitted_in_resolve = self.omitted_in_resolve.saturating_add(1);
         self.omitted_total = self.omitted_total.saturating_add(1);
     }
 

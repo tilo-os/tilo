@@ -228,7 +228,7 @@ impl Render {
                 );
             }
         }
-        // Warn only when every recorded omission occurred in this pass.
+        // Warn on the first resolve pass that omits any images.
         if images.omitted != 0 && images.omitted_total == images.omitted as u64 {
             log::warn!(
                 "image atlas {}x{} omitted {} image(s); further omissions will not be logged",
