@@ -62,7 +62,15 @@ jobs:
             diagnostic=portal-contract
           fi
           echo "diagnostic=$diagnostic" >> "$GITHUB_OUTPUT"
-          [[ $diagnostic == success ]]
+      - name: Enforce packaging preflight result
+        shell: bash
+        env:
+          PREFLIGHT_DIAGNOSTIC: ${{ steps.preflight.outputs.diagnostic }}
+        run: |
+          if [[ $PREFLIGHT_DIAGNOSTIC != success ]]; then
+            echo "packaging preflight failed: $PREFLIGHT_DIAGNOSTIC" >&2
+            exit 1
+          fi
 
   package:
     needs: validate
