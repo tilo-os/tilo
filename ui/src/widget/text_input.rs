@@ -76,6 +76,10 @@ pub struct TextInput {
     is_hovered: bool,
     is_focused: bool,
     text: String,
+    /// Optional per-character admission rule for domain-specific single-line
+    /// fields (for example a spreadsheet cell-reference box). Applied to
+    /// keyboard, IME, paste, accessibility, and programmatic insertion alike.
+    char_filter: Option<fn(char) -> bool>,
     /// Always on a char boundary.
     cursor_pos: usize,
     /// Visual side of `cursor_pos` when a `BiDi` boundary or soft wrap has two.
@@ -209,6 +213,7 @@ impl TextInput {
             is_hovered: false,
             is_focused: false,
             text: String::new(),
+            char_filter: None,
             cursor_pos: 0,
             caret_affinity: TextAffinity::Before,
             selection_anchor: None,
@@ -492,6 +497,19 @@ impl TextInput {
         let mut s = Self::new(Vec::new());
         s.crdt_bound = false;
         s
+    }
+
+    /// Admit only characters accepted by `filter` on every insertion path.
+    ///
+    /// This is deliberately a character predicate, not a validator for the
+    /// whole value: callers still own domain parsing and error reporting when
+    /// the field is submitted.
+    #[must_use]
+    pub fn with_char_filter(mut self, filter: fn(char) -> bool) -> Self {
+        self.char_filter = Some(filter);
+        self.text.retain(filter);
+        self.clamp_to_text();
+        self
     }
 
     /// Cursor parks at the end; dirty stays false (programmatic seed).
@@ -2181,6 +2199,16 @@ impl TextInput {
     }
 
     fn insert_str(&mut self, s: &str, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+        let filtered;
+        let s = if let Some(filter) = self.char_filter {
+            filtered = s.chars().filter(|ch| filter(*ch)).collect::<String>();
+            filtered.as_str()
+        } else {
+            s
+        };
+        if s.is_empty() {
+            return;
+        }
         // Char index the inserted text lands at, to stamp the authorship mark over it.
         let insert_char_at;
         if let Some((start, end)) = self.selection_range() {
@@ -3838,8 +3866,14 @@ impl TextInput {
         if !self.is_focused {
             return;
         }
-        t.clone_into(&mut self.preedit);
-        self.preedit_cursor = cursor;
+        if let Some(filter) = self.char_filter {
+            let filtered = t.chars().filter(|ch| filter(*ch)).collect::<String>();
+            self.preedit_cursor = if filtered == t { cursor } else { None };
+            self.preedit = filtered;
+        } else {
+            t.clone_into(&mut self.preedit);
+            self.preedit_cursor = cursor;
+        }
         *handled = true;
     }
 }
@@ -4728,6 +4762,18 @@ mod tests {
             Some("hi there world"),
             "the edit is observable"
         );
+    }
+
+    #[test]
+    fn character_filter_applies_before_replacing_the_selection() {
+        let mut ti = TextInput::local()
+            .with_initial_value("A1")
+            .with_char_filter(|ch| !ch.is_whitespace());
+        ti.select_all();
+        ti.insert_at_cursor(" B 2 : D 4 ");
+        assert_eq!(ti.value(), "B2:D4");
+        assert_eq!(ti.cursor_pos(), "B2:D4".len());
+        assert_eq!(ti.take_dirty().as_deref(), Some("B2:D4"));
     }
 
     /// The path Ctrl+V uses when pasting over selected text.

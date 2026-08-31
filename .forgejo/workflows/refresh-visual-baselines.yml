@@ -16,7 +16,6 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_TERM_COLOR: never
   SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-  SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
   WGPU_BACKEND: vulkan
   # Match required checks exactly. Without an adapter selector wgpu chooses
   # from whatever the particular runner exposes, so a successful refresh can

@@ -743,13 +743,12 @@ impl Renderer {
         let mut render = Render::new();
         let encoding = scene.encoding();
         self.budget.set_viewport(params.width, params.height);
-        // This path awaits the bump counters between the coarse and fine
-        // stages anyway, so it always reads them: the reservation for the
-        // next frame comes from this one, exactly as in the sync path.
-        // (Upstream gated this on `debug_layers`, when the counters were
-        // only ever used for debug visualisation.)
-        let measure_bump = true;
         let capture_debug = cfg!(feature = "debug_layers");
+        // Debug layers require these counters. Otherwise only the adaptive
+        // GPU path pays for the awaited readback; pinned and CPU-dispatch
+        // rendering do not need it for sizing.
+        let measure_bump =
+            capture_debug || (!self.options.use_cpu && self.budget.wants_measurement());
         let recording = render.render_encoding_coarse(
             encoding,
             &mut self.resolver,
@@ -783,10 +782,9 @@ impl Renderer {
             let mapped = buf_slice.get_mapped_range();
             bump = Some(bytemuck::pod_read_unaligned(&mapped));
         }
-        // Size the next frame from this one. Re-running coarse for the
-        // *current* frame is still not done: it would mean discarding a
-        // recording's worth of buffers mid-flight, where growing here
-        // costs at worst the one frame that outgrew its reservation.
+        // Size later frames from this one. Re-running coarse for the current
+        // frame is not attempted; a failure can therefore affect this output,
+        // and convergence can require more than one subsequent render.
         if let Some(bump) = bump.as_ref()
             && self.budget.observe_now(bump)
         {

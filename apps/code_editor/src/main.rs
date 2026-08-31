@@ -89,6 +89,10 @@ fn requested_path(args: &LaunchArgs) -> Option<std::path::PathBuf> {
         .or_else(|| args.positionals().first().map(std::path::PathBuf::from))
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::LaunchSpec::live_root_with_args"
+)]
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let path = requested_path(args);
     Ok(code_editor::app_root_at(path.as_deref()))
