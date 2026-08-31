@@ -45,6 +45,7 @@ pub mod app;
 pub mod canvas;
 pub mod doc;
 pub mod draw;
+mod endpoint_editor;
 pub mod geo;
 pub mod livetest;
 pub mod location;
