@@ -97,9 +97,9 @@ impl Scene {
     ///
     /// **However, the transforms are *not* saved or modified by the layer stack.**
     /// That is, the `transform` argument to this function only applies a transform to the `clip` shape.
-    #[expect(
+    #[allow(
         single_use_lifetimes,
-        reason = "False positive: https://github.com/rust-lang/rust/issues/129255"
+        reason = "False positive through Rust 1.96; fixed by rust-lang/rust#129255"
     )]
     #[track_caller]
     pub fn push_layer<'a>(
@@ -147,9 +147,9 @@ impl Scene {
     /// This issue only occurs if there are no intermediate opaque layers, so can be worked around
     /// by drawing something opaque (or having an opaque `base_color`), then putting a layer around your entire scene
     /// with a [`Compose::SrcOver`].
-    #[expect(
+    #[allow(
         single_use_lifetimes,
-        reason = "False positive: https://github.com/rust-lang/rust/issues/129255"
+        reason = "False positive through Rust 1.96; fixed by rust-lang/rust#129255"
     )]
     pub fn push_luminance_mask_layer<'a>(
         &mut self,
@@ -185,9 +185,9 @@ impl Scene {
     ///
     /// **However, the transforms are *not* saved or modified by the layer stack.**
     /// That is, the `transform` argument to this function only applies a transform to the `clip` shape.
-    #[expect(
+    #[allow(
         single_use_lifetimes,
-        reason = "False positive: https://github.com/rust-lang/rust/issues/129255"
+        reason = "False positive through Rust 1.96; fixed by rust-lang/rust#129255"
     )]
     pub fn push_clip_layer<'a>(
         &mut self,
@@ -309,9 +309,9 @@ impl Scene {
     }
 
     /// Fills a shape using the specified style and brush.
-    #[expect(
+    #[allow(
         single_use_lifetimes,
-        reason = "False positive: https://github.com/rust-lang/rust/issues/129255"
+        reason = "False positive through Rust 1.96; fixed by rust-lang/rust#129255"
     )]
     pub fn fill<'b>(
         &mut self,
@@ -340,9 +340,9 @@ impl Scene {
     }
 
     /// Strokes a shape using the specified style and brush.
-    #[expect(
+    #[allow(
         single_use_lifetimes,
-        reason = "False positive: https://github.com/rust-lang/rust/issues/129255"
+        reason = "False positive through Rust 1.96; fixed by rust-lang/rust#129255"
     )]
     pub fn stroke<'b>(
         &mut self,
