@@ -264,7 +264,7 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
             Event::Empty(e) => match e.name().as_ref() {
                 b"w:tab" => splice_one_char(region, doc, cur.as_deref(), &mut cur_len, '\t'),
                 b"w:br" | b"w:cr" => {
-                    splice_one_char(region, doc, cur.as_deref(), &mut cur_len, '\n')
+                    splice_one_char(region, doc, cur.as_deref(), &mut cur_len, '\n');
                 }
                 b"w:fldSimple" => {
                     let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();

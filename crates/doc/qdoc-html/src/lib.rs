@@ -144,18 +144,13 @@ fn style_prop_to_css(prop: &str, val: &AttrVal) -> Option<String> {
         "font" | "fontFamily" => format!("font-family: {};", css_font_family(&attr_as_str(val))),
         "size" | "fontSize" => format!("font-size: {};", css_size(val)),
         "align" => format!("text-align: {};", css_value(&attr_as_str(val))),
-        "bold" | "strong" => {
-            if matches!(val, AttrVal::Bool(true)) {
-                "font-weight: bold;".to_string()
-            } else {
+        "bold" | "strong" | "italic" | "em" => {
+            if !matches!(val, AttrVal::Bool(true)) {
                 return None;
             }
-        }
-        "italic" | "em" => {
-            if matches!(val, AttrVal::Bool(true)) {
-                "font-style: italic;".to_string()
-            } else {
-                return None;
+            match prop {
+                "bold" | "strong" => "font-weight: bold;".to_string(),
+                _ => "font-style: italic;".to_string(),
             }
         }
         // `name` is metadata, not a visual property; anything else is unrecognised.
