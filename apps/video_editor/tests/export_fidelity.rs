@@ -906,10 +906,42 @@ fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
     // A file with no audio stream never links the sink, so nothing is ever
     // pulled and `pull_sample` would block. Bounded pulls turn that into an
     // empty result — "this file has no audio" — rather than a hang.
+    //
+    // But an empty pull is only evidence of that *after* the decoder has
+    // finished finding streams. `uridecodebin` has to typefind the container
+    // and autoplug a decoder first, and on a loaded machine that takes longer
+    // than one 500ms pull — so treating the first empty pull as proof of
+    // silence reported "no audio" for files that had plenty. It made this
+    // test pass on an idle box and fail beside a build, which is the worst
+    // way for a test to be wrong: it looks like the code broke.
+    //
+    // `no-more-pads` is the decoder saying it has finished. Until it fires,
+    // "the sink produced nothing" is a statement about the clock, not about
+    // the file. The production decoder learned this already; this is its
+    // copy of the same loop.
+    let settled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let settled_in = settled.clone();
+    src.connect_no_more_pads(move |_| {
+        settled_in.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let bus = pipeline.bus();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     loop {
         if std::time::Instant::now() >= deadline {
             panic!("decoding audio from {} timed out", path.display());
+        }
+        // A pipeline that has failed will never produce a sample, so stop
+        // waiting on one rather than sitting out the whole deadline.
+        let mut failed = None;
+        if let Some(bus) = bus.as_ref() {
+            while let Some(msg) = bus.pop() {
+                if let gst::MessageView::Error(e) = msg.view() {
+                    failed = Some(e.error().to_string());
+                }
+            }
+        }
+        if let Some(reason) = failed {
+            panic!("decoding audio from {} failed: {reason}", path.display());
         }
         match sink.try_pull_sample(gst::ClockTime::from_mseconds(500)) {
             Some(sample) => {
@@ -924,7 +956,12 @@ fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
                 }
             }
             None => {
-                if sink.is_eos() || out.is_empty() {
+                if sink.is_eos() {
+                    break;
+                }
+                // Nothing yet, and the decoder has finished finding streams:
+                // there is genuinely no audio here.
+                if out.is_empty() && settled.load(std::sync::atomic::Ordering::SeqCst) {
                     break;
                 }
             }
