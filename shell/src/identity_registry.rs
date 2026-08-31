@@ -35,6 +35,7 @@ pub struct IdentityProfile {
 
 impl IdentityProfile {
     /// Capability-model person id for this identity.
+    #[must_use]
     pub fn principal_id(&self) -> String {
         match collab_types::caps::Principal::person_from_key(
             collab_types::crypto::Ed25519PublicKey::from_bytes(self.user_public_key),
@@ -70,6 +71,11 @@ impl Default for IdentityRegistry {
 
 impl IdentityRegistry {
     /// Register a validated record already stored at `record_path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record cannot be loaded from the provided path or if
+    /// the record disappears immediately after registration (should not occur).
     pub fn register_record(&mut self, record_path: &Path) -> io::Result<&IdentityProfile> {
         let record = runtime_identity::load_from_path(record_path.to_path_buf())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
@@ -96,6 +102,11 @@ impl IdentityRegistry {
     }
 
     /// Import an existing record into the managed identity directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading or loading the source record fails, if creating
+    /// the identity directory fails, or if the destination exists with a different key.
     pub fn import_record(
         &mut self,
         source: &Path,
@@ -135,6 +146,10 @@ impl IdentityRegistry {
     }
 
     /// Select an identity for a durable workspace room.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity_id is not registered.
     pub fn bind_workspace(&mut self, room: impl Into<String>, identity_id: &str) -> io::Result<()> {
         if !self.identities.contains_key(identity_id) {
             return Err(io::Error::new(
@@ -160,6 +175,10 @@ impl IdentityRegistry {
     }
 
     /// Change the default identity after validating it exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity_id is not registered.
     pub fn set_default(&mut self, identity_id: &str) -> io::Result<()> {
         if !self.identities.contains_key(identity_id) {
             return Err(io::Error::new(
@@ -184,6 +203,7 @@ impl IdentityRegistryStore {
         Ok(Self::at(resolve_identity_dir()?))
     }
 
+    #[must_use]
     pub fn at(identity_dir: impl Into<PathBuf>) -> Self {
         let identity_dir = identity_dir.into();
         let registry_path = identity_dir.join(REGISTRY_FILE);
@@ -193,14 +213,22 @@ impl IdentityRegistryStore {
         }
     }
 
+    #[must_use]
     pub fn identity_dir(&self) -> &Path {
         &self.identity_dir
     }
 
+    #[must_use]
     pub fn registry_path(&self) -> &Path {
         &self.registry_path
     }
 
+    /// Load the identity registry from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading the registry file fails, if the JSON is invalid,
+    /// or if the schema version is unsupported.
     pub fn load(&self) -> io::Result<IdentityRegistry> {
         if !self.registry_path.exists() {
             return Ok(IdentityRegistry::default());
@@ -220,6 +248,12 @@ impl IdentityRegistryStore {
         Ok(registry)
     }
 
+    /// Save the identity registry to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if creating the identity directory, setting permissions,
+    /// serializing the registry, or writing the file fails.
     pub fn save(&self, registry: &IdentityRegistry) -> io::Result<()> {
         fs::create_dir_all(&self.identity_dir)?;
         set_private_dir_mode(&self.identity_dir)?;
@@ -229,6 +263,11 @@ impl IdentityRegistryStore {
     }
 
     /// Register the old single-record layout on first load. Idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if loading the registry, listing identities, loading a record,
+    /// setting permissions, or saving the registry fails.
     pub fn migrate_legacy_primary(&self) -> io::Result<IdentityRegistry> {
         let mut registry = self.load()?;
         fs::create_dir_all(&self.identity_dir)?;
@@ -268,6 +307,11 @@ impl IdentityRegistryStore {
         Ok(registry)
     }
 
+    /// Import a new identity record and return its profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if migration, importing the record, or saving the registry fails.
     pub fn import(&self, source: &Path) -> io::Result<IdentityProfile> {
         let mut registry = self.migrate_legacy_primary()?;
         let profile = registry.import_record(source, &self.identity_dir)?.clone();
@@ -275,6 +319,11 @@ impl IdentityRegistryStore {
         Ok(profile)
     }
 
+    /// Bind an identity to a workspace in the registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if migration, binding the workspace, or saving the registry fails.
     pub fn bind_workspace(&self, room: &str, identity_id: &str) -> io::Result<()> {
         let mut registry = self.migrate_legacy_primary()?;
         registry.bind_workspace(room, identity_id)?;
@@ -284,6 +333,10 @@ impl IdentityRegistryStore {
 
 /// Resolve the selected private record for a room. Registry failure is an
 /// error rather than a silent fallback to another person's identity.
+///
+/// # Errors
+///
+/// Returns an error if loading the registry or migration fails.
 pub fn selected_identity_path(room: &str) -> io::Result<Option<PathBuf>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.migrate_legacy_primary()?;
@@ -293,6 +346,10 @@ pub fn selected_identity_path(room: &str) -> io::Result<Option<PathBuf>> {
 }
 
 /// Resolve the selected person principal for a room.
+///
+/// # Errors
+///
+/// Returns an error if loading the registry or migration fails.
 pub fn selected_principal_id(room: &str) -> io::Result<Option<String>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.migrate_legacy_primary()?;
@@ -302,6 +359,10 @@ pub fn selected_principal_id(room: &str) -> io::Result<Option<String>> {
 }
 
 /// Public profile selected for a room, for shell chrome/settings.
+///
+/// # Errors
+///
+/// Returns an error if loading the registry or migration fails.
 pub fn selected_identity_profile(room: &str) -> io::Result<Option<IdentityProfile>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.migrate_legacy_primary()?;
@@ -311,6 +372,10 @@ pub fn selected_identity_profile(room: &str) -> io::Result<Option<IdentityProfil
 /// Select the next registered identity for `room`. This small operation is
 /// used by workspace settings; importing a new record remains a deliberate
 /// identity ceremony.
+///
+/// # Errors
+///
+/// Returns an error if loading the registry, migration, or saving fails.
 pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile>> {
     let store = IdentityRegistryStore::from_env()?;
     let mut registry = store.migrate_legacy_primary()?;
@@ -331,6 +396,11 @@ pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile
     Ok(profile)
 }
 
+/// Resolve the identity directory from environment variables.
+///
+/// # Errors
+///
+/// Returns an error if neither XDG_CONFIG_HOME nor HOME is set.
 fn resolve_identity_dir() -> io::Result<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
         && !xdg.is_empty()
@@ -351,6 +421,11 @@ fn resolve_identity_dir() -> io::Result<PathBuf> {
     ))
 }
 
+/// Convert a relative path to absolute, or return unchanged if already absolute.
+///
+/// # Errors
+///
+/// Returns an error if getting the current directory fails.
 fn absolute_path(path: &Path) -> io::Result<PathBuf> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
@@ -358,6 +433,11 @@ fn absolute_path(path: &Path) -> io::Result<PathBuf> {
     Ok(std::env::current_dir()?.join(path))
 }
 
+/// Set directory permissions to 0o700 on Unix systems.
+///
+/// # Errors
+///
+/// Returns an error if setting permissions fails.
 fn set_private_dir_mode(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;

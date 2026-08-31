@@ -4472,11 +4472,13 @@ impl CalendarApp {
             false,
         );
         hits.push((rec_chip, Action::CycleRecurrence));
+        #[allow(clippy::similar_names, reason = "rem_label and rem_chip serve distinct purposes")]
         let rem_label = match e.reminder_min {
             None => "No reminder".to_string(),
             Some(m) if m >= 60 => format!("⏰ {}h before", m / 60),
             Some(m) => format!("⏰ {m}m before"),
         };
+        #[allow(clippy::similar_names, reason = "rem_label and rem_chip serve distinct purposes")]
         let rem_chip = chip(
             scene,
             t,
@@ -7369,9 +7371,6 @@ mod tests {
         app.model.events.push(ev);
         app.model.events.sort_by_key(|e| e.start);
 
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-
         fn draws(app: &mut CalendarApp, tr: &mut TextRenderer, theme: &Theme, eid: Id) -> bool {
             let mut scene = Scene::new();
             app.draw(
@@ -7385,6 +7384,9 @@ mod tests {
                 .iter()
                 .any(|(_, a)| matches!(a, Action::OpenEvent(id) if *id == eid))
         }
+
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
 
         assert!(
             draws(&mut app, &mut tr, &theme, eid),
@@ -7430,9 +7432,8 @@ mod tests {
         );
         // A locally-created event stays untagged, so it is always visible.
         app.apply_action(Action::NewEvent, &mut state);
-        let new_id = match app.selection {
-            Some(Sel::Event(id)) => id,
-            _ => panic!("NewEvent selects the created event"),
+        let Some(Sel::Event(new_id)) = app.selection else {
+            panic!("NewEvent selects the created event");
         };
         let new = app.model.event(new_id).unwrap();
         assert!(
@@ -7475,8 +7476,6 @@ mod tests {
         app.sync(&mut state, &automerge::ROOT);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
         app.relayout();
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
 
         fn cal_rows(app: &mut CalendarApp, tr: &mut TextRenderer, theme: &Theme) -> usize {
             let mut scene = Scene::new();
@@ -7492,6 +7491,9 @@ mod tests {
                 .filter(|(_, a)| matches!(a, Action::ToggleCalendarVisible(_)))
                 .count()
         }
+
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
 
         let acc_id = app.accounts.accounts[0].id.clone();
         let acc_cals = app.accounts.accounts[0].calendars.len();
@@ -7539,9 +7541,8 @@ mod tests {
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
-        let id = match app.selection {
-            Some(Sel::Event(id)) => id,
-            _ => panic!("the demo opens with an event selected"),
+        let Some(Sel::Event(id)) = app.selection else {
+            panic!("the demo opens with an event selected");
         };
         let before = app.model.event(id).unwrap().recurrence;
         app.apply_action(Action::CycleRecurrence, &mut state);
@@ -7569,9 +7570,8 @@ mod tests {
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
-        let id = match app.selection {
-            Some(Sel::Event(id)) => id,
-            _ => panic!("event selected"),
+        let Some(Sel::Event(id)) = app.selection else {
+            panic!("event selected");
         };
         let before = app.model.event(id).unwrap().color;
         app.apply_action(Action::CycleColor, &mut state);
@@ -7587,9 +7587,8 @@ mod tests {
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
-        let id = match app.selection {
-            Some(Sel::Event(id)) => id,
-            _ => panic!("event selected"),
+        let Some(Sel::Event(id)) = app.selection else {
+            panic!("event selected");
         };
         // Drive the reminder from a known rung: None → 10m → 30m.
         if let Some(e) = app.model.event_mut(id) {
@@ -7739,9 +7738,8 @@ mod tests {
         app.sync(&mut doc, &root);
         // Create an event and open its detail (which seeds a notes block).
         app.apply_action(Action::NewEvent, &mut doc);
-        let eid = match app.selection {
-            Some(Sel::Event(id)) => id,
-            _ => panic!("the new event is selected"),
+        let Some(Sel::Event(eid)) = app.selection else {
+            panic!("the new event is selected");
         };
 
         // Lay out wide so the notes editor is active, and build the editor node

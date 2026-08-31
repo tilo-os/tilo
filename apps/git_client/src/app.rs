@@ -1232,7 +1232,7 @@ impl GitClientApp {
 
         if let Some((old_path, path, adds, dels)) = info {
             self.draw_diff_header_file(
-                scene, tr, t, theme, header, old_path, path, adds, dels, staged,
+                scene, tr, t, theme, header, &old_path, path, adds, dels, staged,
             );
         } else {
             draw::text(
@@ -1248,7 +1248,7 @@ impl GitClientApp {
             );
         }
 
-        self.draw_diff_body(scene, tr, t, theme, pane, header, key, staged);
+        self.draw_diff_body(scene, tr, t, theme, pane, header, &key, staged);
     }
 
     /// Draw the diff-pane header for the selected file: title, +/− summary,
@@ -1265,7 +1265,7 @@ impl GitClientApp {
         t: Affine,
         theme: &Theme,
         header: Rect,
-        old_path: Option<String>,
+        old_path: &Option<String>,
         path: String,
         adds: u32,
         dels: u32,
@@ -1374,7 +1374,7 @@ impl GitClientApp {
         theme: &Theme,
         pane: Rect,
         header: Rect,
-        key: Option<DiffKey>,
+        key: &Option<DiffKey>,
         staged: bool,
     ) {
         let c = &theme.tokens.colors;

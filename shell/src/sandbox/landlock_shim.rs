@@ -325,20 +325,15 @@ fn exec_real_command(command: &[String]) -> ! {
         std::process::exit(2);
     };
 
-    let cprogram = if let Ok(c) = CString::new(program.as_bytes()) {
-        c
-    } else {
+    let Ok(cprogram) = CString::new(program.as_bytes()) else {
         eprintln!("qos-sandbox-exec: program path contains an interior NUL");
         std::process::exit(2);
     };
 
-    let cargs: Vec<CString> = if let Ok(v) = command
+    let Ok(cargs) = command
         .iter()
         .map(|a| CString::new(a.as_bytes()))
-        .collect::<Result<_, _>>()
-    {
-        v
-    } else {
+        .collect::<Result<Vec<_>, _>>() else {
         eprintln!("qos-sandbox-exec: argument contains an interior NUL");
         std::process::exit(2);
     };
