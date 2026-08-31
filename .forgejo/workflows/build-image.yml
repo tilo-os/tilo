@@ -177,6 +177,17 @@ jobs:
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             QOS_WITH_BROWSER=${{ github.event.inputs.with_browser || '1' }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
+            SCCACHE_BUCKET=sccache
+            SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
+            SCCACHE_REGION=auto
+            SCCACHE_S3_KEY_PREFIX=quickdesktop/image/v1
+            SCCACHE_S3_USE_SSL=false
+          # The runner injects these two environment variables from a
+          # least-privilege Kubernetes Secret. BuildKit exposes them only to
+          # the Rust compile RUN; they never enter an image layer or build arg.
+          secret-envs: |
+            aws_access_key_id=AWS_ACCESS_KEY_ID
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
           # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
           # reproducible image digests.
           provenance: false
