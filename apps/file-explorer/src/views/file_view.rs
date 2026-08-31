@@ -89,6 +89,7 @@ pub type DropTargets = Rc<RefCell<Vec<FolderDropTarget>>>;
 
 /// Per-item inputs to [`FileView::draw_file_visual`], bundled into one
 /// argument so the paint call stays under clippy's argument-count limit.
+#[derive(Clone, Copy)]
 struct FileVisual<'a> {
     rect: Rect,
     entry: &'a Entry,
@@ -100,6 +101,7 @@ struct FileVisual<'a> {
 /// Layout already resolved by [`FileView::draw_list_row`], handed to
 /// [`FileView::draw_list_row_text`] so that helper stays under clippy's
 /// argument-count limit.
+#[derive(Clone, Copy)]
 struct RowTextLayout {
     i: usize,
     row: Rect,

@@ -33,9 +33,9 @@ fn default_workspace_hosts_terminal_and_files_and_browser_stub() {
 
     let kinds: Vec<AppKind> = tabs
         .iter()
-        .filter_map(|t| match t {
-            TileContent::App(a) => Some(a.app_kind()),
-            TileContent::Stub { kind, .. } => Some(*kind),
+        .map(|t| match t {
+            TileContent::App(a) => a.app_kind(),
+            TileContent::Stub { kind, .. } => *kind,
         })
         .collect();
 

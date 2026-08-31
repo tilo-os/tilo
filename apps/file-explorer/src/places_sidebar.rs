@@ -93,6 +93,7 @@ impl FavState {
 
 /// The variable part of a row's paint — bundled so [`PlacesSidebar::draw_row`]
 /// stays under clippy's argument-count limit.
+#[derive(Clone, Copy)]
 struct RowVisual<'a> {
     icon: Icon,
     label: &'a str,
