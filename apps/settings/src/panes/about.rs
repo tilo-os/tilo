@@ -102,16 +102,24 @@ impl AboutInfo {
         }
     }
 
-    /// A short, stable identity fingerprint derived from the hostname.
-    /// In a real deployment this is the device's P2P public-key handle;
-    /// derived deterministically here so the panel always shows one.
+    /// A short, stable workspace identity fingerprint.
+    ///
+    /// Connected workspaces use the public group key that identifies the
+    /// person. The hostname-derived value is only a fallback for workspaces
+    /// without an identity.
     pub fn fingerprint(&self) -> String {
-        let mut hash: u64 = 1_469_598_103_934_665_603;
-        for b in self.hostname.bytes() {
-            hash ^= u64::from(b);
-            hash = hash.wrapping_mul(1_099_511_628_211);
-        }
-        let hex = format!("{hash:016x}");
+        let fingerprint = self.identity_public_key.map_or_else(
+            || {
+                let mut hash: u64 = 1_469_598_103_934_665_603;
+                for b in self.hostname.bytes() {
+                    hash ^= u64::from(b);
+                    hash = hash.wrapping_mul(1_099_511_628_211);
+                }
+                hash
+            },
+            |[a, b, c, d, e, f, g, h, ..]| u64::from_be_bytes([a, b, c, d, e, f, g, h]),
+        );
+        let hex = format!("{fingerprint:016x}");
         format!(
             "{}·{}·{}·{}",
             hex.get(0..4).unwrap_or_default(),
