@@ -43,6 +43,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -55,82 +56,35 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
-/// # Errors
-/// Only under `--shots`: propagates a `taffy` layout error if building or
-/// computing the offscreen frame's layout tree fails. The live winit path
-/// and `--headless-drive` never return here at all — they exit the process
-/// directly.
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
-        let scenario = parse_value_arg(&args, "--scenario").unwrap_or_default();
-        let viewport = parse_value_arg(&args, "--viewport")
-            .and_then(|s| parse_viewport(&s))
-            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        let mut app = chat::ChatApp::new_ephemeral();
-        app.seed_shot_scenario(&scenario);
-        render_shot_to_png(app, viewport, &out)?;
-        return Ok(());
-    }
-
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(&spec, chat::app_root(), "dev.qos.chat"));
-    }
-
+fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
     // An older release kept the workspace in its own file. Hand that path to
     // `open_migrating` so existing history is merged into the shared store on
     // first launch rather than orphaned; the merge is idempotent.
-    let (state, autosave) = match chat::storage::data_dir() {
-        Some(dir) => {
-            ui::persist::open_migrating("dev.qos.chat", &chat::storage::workspace_path(&dir))
-        }
-        None => ui::persist::open("dev.qos.chat"),
-    };
-    let mut app = ui::App::new(state, chat::app_root()).with_autosave(autosave);
-    // Register Chat's actions so the shell's Ctrl+K palette can decode + replay
-    // the same message/channel mutations the on-screen affordances dispatch.
-    chat::actions::register(app.action_registry_mut());
-    app.run();
-    Ok(())
-}
-
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
+    match chat::storage::data_dir() {
+        Some(dir) => ui::persist::open_migrating(app_id, &chat::storage::workspace_path(&dir)),
+        None => ui::persist::open(app_id),
     }
-    None
 }
 
-/// Parse `--flag VALUE` or `--flag=VALUE` out of the argv.
-fn parse_value_arg(args: &[String], flag: &str) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    let eq = format!("{flag}=");
-    while let Some(arg) = iter.next() {
-        if arg == flag {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix(&eq) {
-            return Some(rest.to_string());
-        }
-    }
-    None
+fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args
+        .shots
+        .as_deref()
+        .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
+    let mut app = chat::ChatApp::new_ephemeral();
+    app.seed_shot_scenario(args.scenario.as_deref().unwrap_or_default());
+    render_shot_to_png(app, args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT), out)
+        .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
-/// Parse a `WIDTHxHEIGHT` viewport spec.
-fn parse_viewport(s: &str) -> Option<(u32, u32)> {
-    let (w, h) = s.split_once(['x', 'X'])?;
-    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+pub fn main() {
+    ui::launch::run_or_exit(
+        LaunchSpec::new("dev.qos.chat", chat::app_root)
+            .shot_handler(shot_handler)
+            .scenarios(&["narrow", "compact", "starter", "context", "attach"])
+            .open_state(open_state)
+            .configure_app(|app| chat::actions::register(app.action_registry_mut())),
+    );
 }
 
 /// Run one offscreen frame against `app` and write RGBA to `out` as PNG.
