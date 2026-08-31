@@ -36,6 +36,9 @@ use crate::WpFormat;
 use crate::find_bar::{FindBar, FindEffect, FindPalette};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
+#[cfg(test)]
+use crate::recovery_banner::AUTOSAVE_EDIT_THRESHOLD;
+use crate::recovery_banner::{RecoveryBanner, RecoveryDecision, RecoveryPalette};
 use crate::style_color_picker::StyleColorPicker;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use ui::portal;
@@ -1808,20 +1811,8 @@ pub struct WordProcessorWidget {
     /// hard-coded colours, so the editor honours light/dark mode + the OS
     /// palette. Initialised to the dark theme's mapping for off-frame use.
     chrome: ChromeColors,
-    /// OS-theme-driven chrome palette, resolved at the top of every `draw` so
-    /// chrome helpers honour light/dark mode instead of hard-coding colours.
-    /// is available in the headless test path, so the trigger is edit-count based).
-    edits_since_autosave: u32,
-    /// A pending crash-recovery offer: a newer recovery copy was found on disk for
-    /// the open document. Surfaced as a banner with Restore / Discard. `None` when
-    /// there is nothing to recover (the common case).
-    recovery: Option<RecoveryOffer>,
-    /// Clickable recovery-banner controls this frame: `(action, rect)`.
-    recovery_buttons: Vec<(RecoveryAction, Rect)>,
-    /// Test/override base directory for recovery copies. When set it takes
-    /// precedence over the `$QOS_WP_RECOVERY_DIR` / `$XDG_STATE_HOME` resolution so
-    /// a test can point recovery at a temp dir without touching the real home.
-    recovery_base: Option<PathBuf>,
+    /// Crash-recovery persistence and its Restore/Discard surface.
+    recovery: RecoveryBanner,
     // ---- new-from-template picker -----------------------------------------
     /// The "New ▾" template picker menu (reuses the shared [`ContextMenu`]). Open
     /// only while the user is choosing a template; a selection replaces the open
@@ -1850,35 +1841,6 @@ pub struct WordProcessorWidget {
     /// layout, drawing, and modal input routing; this editor applies its result.
     color_picker: StyleColorPicker,
 }
-
-/// A crash-recovery offer: a recovery copy exists on disk for the open document
-/// and is newer than (or present without) a clean save. Holds the recovery
-/// file's path + the Markdown to restore so Restore is a pure in-memory re-import.
-#[derive(Clone, Debug)]
-struct RecoveryOffer {
-    /// The on-disk recovery file (deleted on Discard / a successful real save).
-    path: PathBuf,
-    /// The recovered document's Markdown bytes (re-imported in place on Restore).
-    markdown: Vec<u8>,
-}
-
-/// A clickable control in the crash-recovery banner.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum RecoveryAction {
-    /// Re-import the recovery copy over the current (just-opened) document.
-    Restore,
-    /// Dismiss the banner and delete the recovery copy.
-    Discard,
-}
-
-/// Write a recovery copy after this many document-modifying edits. Small enough
-/// that little work is lost on a crash, large enough that the codec export isn't
-/// run on literally every keystroke.
-const AUTOSAVE_EDIT_THRESHOLD: u32 = 24;
-
-/// Height of the crash-recovery banner (drawn just under the toolbar, like the
-/// Find bar).
-const RECOVERY_BANNER_H: f64 = 40.0;
 
 /// One process-wide built-in dictionary, shared across every word-processor
 /// widget so the ~75k-word list is parsed at most once per process.
@@ -1967,10 +1929,7 @@ impl WordProcessorWidget {
             history: crate::history_panel::HistoryPanel::new(),
             // Overwritten at the top of every `draw` from the live theme.
             chrome: ChromeColors::for_theme(&Theme::dark()),
-            edits_since_autosave: 0,
-            recovery: None,
-            recovery_buttons: Vec::new(),
-            recovery_base: None,
+            recovery: RecoveryBanner::default(),
             new_menu: ContextMenu::new(),
             new_menu_templates: Vec::new(),
             portal_rx: None,
@@ -5295,16 +5254,24 @@ impl WordProcessorWidget {
         canvas_right: f64,
         tb_bottom: f64,
     ) -> (f64, f64) {
-        let recovery_h = if self.recovery.is_some() {
-            RECOVERY_BANNER_H
-        } else {
-            0.0
-        };
+        let recovery_h = self.recovery.height();
         if recovery_h > 0.0 {
             let rbar = Rect::new(canvas_left, tb_bottom, canvas_right, tb_bottom + recovery_h);
-            self.draw_recovery_banner(scene, transform, text_renderer, theme, rbar);
-        } else {
-            self.recovery_buttons.clear();
+            let cc = self.chrome;
+            self.recovery.draw(
+                scene,
+                transform,
+                text_renderer,
+                RecoveryPalette {
+                    border: cc.border,
+                    chip: cc.chip,
+                    text: cc.text,
+                    on_accent: cc.on_accent,
+                    accent: theme.accent_primary,
+                    notice: with_alpha(theme.accent_primary, 0x22),
+                },
+                rbar,
+            );
         }
         let find_h = self.find.height();
         if find_h > 0.0 {
@@ -7653,16 +7620,15 @@ impl WordProcessorWidget {
     ) -> bool {
         // Crash-recovery banner (just under the toolbar): a click on
         // Restore / Discard resolves the offer before any other hit-test.
-        if self.recovery.is_some()
-            && let Some(action) = self
-                .recovery_buttons
-                .iter()
-                .find(|(_, r)| r.contains(self.pointer))
-                .map(|(a, _)| *a)
-        {
-            match action {
-                RecoveryAction::Restore => self.restore_recovery(state),
-                RecoveryAction::Discard => self.discard_recovery(),
+        if let Some(decision) = self.recovery.handle_click(self.pointer) {
+            if let RecoveryDecision::Restore(markdown) = decision
+                && self.inner.replace_with_markdown(state, &markdown)
+            {
+                self.refresh_blocks(state);
+                self.layout_cache.clear();
+                self.spell_cache.clear();
+                self.modified = true;
+                self.needs_commit = true;
             }
             self.dirty = true;
             *handled = true;
@@ -7718,11 +7684,7 @@ impl WordProcessorWidget {
         // The recovery banner (when shown) sits above the find bar, so the
         // find band starts below it.
         if self.find.is_open() {
-            let recovery_h = if self.recovery.is_some() {
-                RECOVERY_BANNER_H
-            } else {
-                0.0
-            };
+            let recovery_h = self.recovery.height();
             let fbar_top = self.rect.y0 + tb_h + recovery_h;
             let fbar_bot = fbar_top + crate::find_bar::HEIGHT;
             if self.pointer.y >= fbar_top && self.pointer.y < fbar_bot {
@@ -9857,185 +9819,43 @@ impl WordProcessorWidget {
 
     // ---- autosave / crash-recovery ----------------------------------------
 
-    /// The recovery base directory this widget uses: the per-instance override if
-    /// set (tests), else the library default ([`crate::recovery::base_dir`]).
-    fn recovery_dir(&self) -> PathBuf {
-        self.recovery_base
-            .clone()
-            .unwrap_or_else(crate::recovery::base_dir)
-    }
-
-    /// The recovery file path for the open document (stable per document path; a
-    /// single shared slot for an untitled doc). Honours the per-instance override.
+    /// Recovery path for the currently open document (exposed for focused tests).
+    #[cfg(test)]
     fn recovery_path(&self) -> PathBuf {
-        let name = crate::recovery::recovery_path_for(self.path.as_deref());
-        // Re-root onto this widget's base dir so the override applies even though
-        // `recovery_path_for` only consults the env/default.
-        match name.file_name() {
-            Some(f) => self.recovery_dir().join(f),
-            None => name,
-        }
+        self.recovery.path_for(self.path.as_deref())
     }
 
-    /// Point this widget's recovery store at `dir` (used by tests + callers that
-    /// want to relocate the store). Takes effect immediately for the next write.
+    /// Point this widget's recovery store at `dir`.
     pub fn set_recovery_dir(&mut self, dir: PathBuf) {
-        self.recovery_base = Some(dir);
+        self.recovery.set_base_dir(dir);
     }
 
-    /// Count one document-modifying edit toward the autosave debounce; when the
-    /// running count crosses [`AUTOSAVE_EDIT_THRESHOLD`], write a recovery copy and
-    /// reset. Best-effort — a failed write never disturbs editing.
+    /// Export one Markdown snapshot and hand it to the recovery component when
+    /// the edit debounce reaches its threshold.
     fn note_edit_for_autosave(&mut self, state: &AutoCommit) {
-        self.edits_since_autosave = self.edits_since_autosave.saturating_add(1);
-        if self.edits_since_autosave >= AUTOSAVE_EDIT_THRESHOLD {
-            self.write_recovery(state);
-        }
+        let inner = &self.inner;
+        let document_path = self.path.clone();
+        self.recovery.note_edit(document_path.as_deref(), || {
+            inner.containers.as_ref().and_then(|c| {
+                WpFormat::Markdown
+                    .export(qdoc::DocRef { doc: state, c })
+                    .ok()
+            })
+        });
     }
 
-    /// Write a recovery copy of the current document (Markdown) to the stable
-    /// recovery path and reset the edit counter. Best-effort: no panic if the
-    /// directory is unwritable or the document has no schema yet.
-    fn write_recovery(&mut self, state: &AutoCommit) {
-        self.edits_since_autosave = 0;
-        let Some(c) = self.inner.containers.as_ref() else {
-            return;
-        };
-        let dr = qdoc::DocRef { doc: state, c };
-        let Ok(bytes) = WpFormat::Markdown.export(dr) else {
-            return;
-        };
-        let path = self.recovery_path();
-        if let Some(parent) = path.parent()
-            && std::fs::create_dir_all(parent).is_err()
-        {
-            return;
-        }
-        let _ = std::fs::write(&path, bytes);
-    }
-
-    /// Delete the recovery copy for the open document (called after a successful
-    /// real save — the on-disk file is now authoritative). Resets the autosave
-    /// counter so the next edit starts a fresh debounce window.
+    /// Delete a recovery copy superseded by a successful open/save.
     fn clear_recovery(&mut self) {
-        let _ = std::fs::remove_file(self.recovery_path());
-        self.edits_since_autosave = 0;
+        self.recovery.clear(self.path.as_deref());
     }
 
-    /// Check for an existing recovery copy of the open document and, if one is
-    /// present (a previous session crashed before saving), stage a recovery offer
-    /// so the banner surfaces with Restore / Discard. Idempotent and best-effort.
-    /// Call after binding a freshly-opened document. Returns whether an offer was
-    /// staged.
+    /// Stage a recovery offer for the currently open document, if one exists.
     pub fn check_for_recovery(&mut self) -> bool {
-        let path = self.recovery_path();
-        match std::fs::read(&path) {
-            Ok(markdown) if !markdown.is_empty() => {
-                self.recovery = Some(RecoveryOffer { path, markdown });
-                self.dirty = true;
-                true
-            }
-            _ => false,
+        let staged = self.recovery.check(self.path.as_deref());
+        if staged {
+            self.dirty = true;
         }
-    }
-
-    /// Restore the staged recovery copy: re-import its Markdown over the open
-    /// document in place, mark the document modified (the restored content is not
-    /// yet on disk), dismiss the banner, and delete the recovery file (the live
-    /// document now holds its content).
-    fn restore_recovery(&mut self, state: &mut AutoCommit) {
-        let Some(offer) = self.recovery.take() else {
-            return;
-        };
-        if self.inner.replace_with_markdown(state, &offer.markdown) {
-            self.refresh_blocks(state);
-            self.layout_cache.clear();
-            self.spell_cache.clear();
-            self.modified = true;
-            self.needs_commit = true;
-        }
-        let _ = std::fs::remove_file(&offer.path);
-        self.dirty = true;
-    }
-
-    /// Discard the staged recovery copy: dismiss the banner and delete the file
-    /// (the user prefers the on-disk document as opened).
-    fn discard_recovery(&mut self) {
-        if let Some(offer) = self.recovery.take() {
-            let _ = std::fs::remove_file(&offer.path);
-        }
-        self.dirty = true;
-    }
-
-    /// Draw the crash-recovery banner (a prominent strip under the toolbar with
-    /// Restore / Discard buttons), registering its controls for hit-testing.
-    fn draw_recovery_banner(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        bar: Rect,
-    ) {
-        self.recovery_buttons.clear();
-        let cc = self.chrome;
-        let accent = theme.accent_primary;
-        // A tinted strip so it reads as a transient notice, not chrome.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            with_alpha(accent, 0x22),
-            None,
-            &bar,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.border,
-            None,
-            &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
-        );
-        let cy = f64::midpoint(bar.y0, bar.y1);
-        tr.draw_text(
-            scene,
-            &t("recovery-banner"),
-            13.0,
-            cc.text,
-            transform * Affine::translate((bar.x0 + 14.0, cy - 8.0)),
-            None,
-        );
-        // Right-aligned Restore / Discard buttons.
-        let mut x = bar.x1 - 12.0;
-        for (action, label, w, primary) in [
-            (RecoveryAction::Discard, t("recovery-discard"), 80.0, false),
-            (RecoveryAction::Restore, t("recovery-restore"), 80.0, true),
-        ] {
-            x -= w;
-            let r = Rect::new(x, cy - 13.0, x + w, cy + 13.0);
-            let (bg, fg) = if primary {
-                (accent, cc.on_accent)
-            } else {
-                (cc.chip, cc.text)
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                bg,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(r, 6.0),
-            );
-            let tx = r.x0 + (w - num::f64_of_usize(label.chars().count()) * 7.4).max(6.0) / 2.0;
-            tr.draw_text(
-                scene,
-                &label,
-                13.0,
-                fg,
-                transform * Affine::translate((tx, cy - 8.0)),
-                None,
-            );
-            self.recovery_buttons.push((action, r));
-            x -= 8.0;
-        }
+        staged
     }
 
     /// Act on a tracked-change / comment review affordance (from a margin-card
@@ -14213,15 +14033,14 @@ mod tests {
             wp.check_for_recovery(),
             "a present recovery copy stages an offer"
         );
-        assert!(wp.recovery.is_some(), "the recovery banner is now active");
+        assert!(wp.recovery.is_active(), "the recovery banner is now active");
 
         // Draw so the banner's Restore/Discard buttons are registered, then click
         // Restore through the production handler.
         pipeline_draw(&mut wp, &mut state, 1200, 700);
-        let (_, rrect) = *wp
-            .recovery_buttons
-            .iter()
-            .find(|(a, _)| *a == RecoveryAction::Restore)
+        let rrect = wp
+            .recovery
+            .restore_button_rect()
             .expect("Restore button is drawn");
         left_click(
             &mut wp,
@@ -14233,7 +14052,7 @@ mod tests {
         );
 
         assert!(
-            wp.recovery.is_none(),
+            !wp.recovery.is_active(),
             "the banner is dismissed after Restore"
         );
         assert_eq!(
@@ -14263,10 +14082,9 @@ mod tests {
         assert!(wp.check_for_recovery());
 
         pipeline_draw(&mut wp, &mut state, 1200, 700);
-        let (_, drect) = *wp
-            .recovery_buttons
-            .iter()
-            .find(|(a, _)| *a == RecoveryAction::Discard)
+        let drect = wp
+            .recovery
+            .discard_button_rect()
             .expect("Discard button is drawn");
         left_click(
             &mut wp,
@@ -14277,7 +14095,7 @@ mod tests {
             ),
         );
 
-        assert!(wp.recovery.is_none(), "Discard dismisses the banner");
+        assert!(!wp.recovery.is_active(), "Discard dismisses the banner");
         assert!(!rp.exists(), "Discard deletes the recovery file");
         assert_eq!(
             first_block(&wp, &state).map(|b| b.text),
