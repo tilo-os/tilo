@@ -32,8 +32,10 @@ pub const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
 
 /// Render a fourcc back to its four characters, for logs and error text.
 pub fn fourcc_str(v: u32) -> String {
-    let b = [v as u8, (v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8];
-    b.iter()
+    // A fourcc *is* its four little-endian bytes, so ask for them directly
+    // rather than shifting and truncating a copy at a time.
+    v.to_le_bytes()
+        .iter()
         .map(|c| {
             if c.is_ascii_graphic() {
                 *c as char
@@ -44,7 +46,7 @@ pub fn fourcc_str(v: u32) -> String {
         .collect()
 }
 
-/// 8-bit 4:2:0, two planes: Y then interleaved CbCr. What essentially every
+/// 8-bit 4:2:0, two planes: Y then interleaved `CbCr`. What essentially every
 /// hardware H.264/HEVC decoder produces.
 pub const DRM_FORMAT_NV12: u32 = fourcc(b'N', b'V', b'1', b'2');
 /// 10-bit 4:2:0 in 16-bit containers, two planes. HDR / 10-bit HEVC + AV1.
@@ -160,22 +162,17 @@ impl DmabufImage {
     /// importer allocates one `VkDeviceMemory` and binds each plane image at
     /// its own offset; when false, each plane is imported separately.
     ///
-    /// Compares fds by identity via `fstat` on the first two planes only when
-    /// there is more than one plane — a single-plane image is trivially
-    /// "shared" and reports `true`.
+    /// Compares every plane's fd against the first by identity (`fstat`
+    /// device + inode). An image with fewer than two planes has nothing to
+    /// disagree with and reports `true`.
     pub fn planes_share_one_buffer(&self) -> bool {
-        match self.planes.len() {
-            0 | 1 => true,
-            _ => {
-                let first = self.planes[0].fd.try_clone().ok();
-                match first {
-                    Some(_) => self.planes[1..]
-                        .iter()
-                        .all(|p| same_file(&self.planes[0], p)),
-                    None => false,
-                }
-            }
-        }
+        // `split_first` rather than `planes[0]` / `planes[1..]`: no index is
+        // computed, so the empty case is a branch of the pattern instead of an
+        // invariant someone has to remember.
+        let Some((first, rest)) = self.planes.split_first() else {
+            return true;
+        };
+        rest.iter().all(|p| same_file(first, p))
     }
 
     /// A short human description for logs: `NV12 1920x1080 mod=0x0 planes=2`.
@@ -200,7 +197,7 @@ fn same_file(a: &DmabufPlane, b: &DmabufPlane) -> bool {
         // call; `stat` is zero-initialised POSIX plain-old-data.
         unsafe {
             let mut st: libc_stat = std::mem::zeroed();
-            if fstat_raw(fd, &mut st) == 0 {
+            if fstat_raw(fd, &raw mut st) == 0 {
                 Some((st.st_dev, st.st_ino))
             } else {
                 None
@@ -239,7 +236,9 @@ pub fn dmabuf_size(fd: &OwnedFd) -> Option<u64> {
     // Safety: `fd` is a live owned descriptor; `lseek` on it has no effect on
     // any mapping and does not transfer ownership.
     let end = unsafe { lseek_raw(fd.as_raw_fd(), 0, SEEK_END) };
-    if end < 0 { None } else { Some(end as u64) }
+    // `lseek` reports failure as -1 and a size otherwise, so `try_from` is the
+    // error check: anything negative is the error path, not a huge buffer.
+    u64::try_from(end).ok()
 }
 
 const SEEK_END: i32 = 2;

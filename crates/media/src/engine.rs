@@ -76,6 +76,7 @@ impl EngineConfig {
 
     /// Start muted — the editor's preview and every thumbnail decode, which
     /// must never make a sound.
+    #[must_use]
     pub fn silent(mut self) -> Self {
         self.volume = 0.0;
         self
@@ -84,12 +85,14 @@ impl EngineConfig {
     /// Decode in software regardless of what hardware is present. The escape
     /// hatch for a driver that misbehaves, and what the fallback path is
     /// tested through.
+    #[must_use]
     pub fn software_only(mut self) -> Self {
         self.hw_policy = HwPolicy::Off;
         self
     }
 
     /// Force one decoder family to the top of autoplugging.
+    #[must_use]
     pub fn with_hw_policy(mut self, policy: HwPolicy) -> Self {
         self.hw_policy = policy;
         self
@@ -104,12 +107,40 @@ const DEFAULT_SYNTH_DURATION_MS: u64 = 120_000;
 /// frame, large enough to read as "a video" in a `--shots` capture.
 const SYNTH_W: u32 = 480;
 const SYNTH_H: u32 = 270;
+/// The same dimensions as byte counts. Derived once, at compile time, so the
+/// render loop below carries no size arithmetic that could be got wrong.
+const SYNTH_ROW_BYTES: usize = SYNTH_W as usize * 4;
+const SYNTH_RGBA_BYTES: usize = SYNTH_ROW_BYTES * SYNTH_H as usize;
+
+/// One channel of the synthesized gradient: `n` scaled to a byte across
+/// `span`, rolling over at 256.
+///
+/// The roll-over is the animation. `n` carries the playhead-driven hue shift,
+/// which grows without bound, and letting the scaled value wrap is what makes
+/// the gradient cycle instead of pinning at white.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the truncation is the feature, not an accident: `& 0xff` on the \
+              same line asks for the low byte, and rolling over at 256 is what \
+              cycles the hue. Widening the result would pin the gradient at \
+              white instead"
+)]
+fn gradient_byte(n: usize, span: usize) -> u8 {
+    // `span` is a picture dimension. `.max(1)` keeps zero out of the divisor
+    // and `checked_div` is how that guarantee is stated rather than assumed,
+    // so the fallback below never runs.
+    let scaled = n.saturating_mul(255).checked_div(span.max(1)).unwrap_or(0);
+    (scaled & 0xff) as u8
+}
 
 /// Process-monotonic millisecond clock for the fallback playhead. A lazily
 /// pinned `Instant` base keeps it cheap and immune to wall-clock jumps.
 fn mono_now_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
-    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+    // `as_millis` is `u128`. Saturating rather than truncating: a process that
+    // has been up for 584 million years should report "a very long time", not
+    // wrap its playhead back to zero.
+    u64::try_from(START.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// A collaborative, source-agnostic media engine. Construct with [`Self::new`],
@@ -232,12 +263,15 @@ impl MediaEngine {
     /// duration surfaces on the next [`Self::poll`] as
     /// [`MediaEvent::DurationKnown`].
     pub fn open(&mut self, source: Source) {
-        self.source = Some(source.clone());
         match &mut self.backend {
             Backend::Synth(s) => s.open(&source, self.volume),
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.open(&source, self.volume),
         }
+        // Handed over rather than cloned: the backend only borrows it, and no
+        // backend reads `self.source`, so recording it afterwards is the same
+        // observable state without the copy.
+        self.source = Some(source);
     }
 
     /// Start (or resume) playback.
@@ -313,7 +347,12 @@ impl MediaEngine {
     /// or settling a scrub before a screenshot. An interactive preview should
     /// keep using `seek_ms` + [`Self::poll`] and stay non-blocking.
     pub fn seek_and_wait(&mut self, ms: u64, timeout: std::time::Duration) -> bool {
-        let deadline = Instant::now() + timeout;
+        // `Instant + Duration` panics on overflow, and the only way to reach
+        // that is a `timeout` of hundreds of billions of years — a caller
+        // spelling "wait as long as it takes" as `Duration::MAX`. `None` here
+        // is that request honoured: pump until the frame lands. Aborting the
+        // process instead would be the one answer nobody asked for.
+        let deadline = Instant::now().checked_add(timeout);
         // A pipeline that has not finished prerolling refuses seeks, so the
         // request has to be repeated until it is taken. Waiting on a seek that
         // was never accepted is the difference between "the frame is coming"
@@ -333,7 +372,7 @@ impl MediaEngine {
             if accepted && self.frame_is_current() {
                 return true;
             }
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|d| Instant::now() >= d) {
                 return false;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -374,7 +413,7 @@ impl MediaEngine {
     }
 
     /// The audio sink element, for routing or monitoring this source's output
-    /// — setting a PipeWire target node, attaching a level meter, or tapping a
+    /// — setting a `PipeWire` target node, attaching a level meter, or tapping a
     /// tee into a mixer. `None` on the synthesized backend (no audio at all)
     /// and when the audio chain could not be built.
     ///
@@ -524,6 +563,14 @@ impl Default for MediaEngine {
 // Synthesized fallback backend
 // =====================================================================
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent latches, not a state machine: `opened` and \
+              `ended` are stream lifecycle, `playing` is transport, and \
+              `announced_duration` records that one event has been emitted. \
+              An enum would have to represent combinations this backend never \
+              enters, and would say less than the four names do"
+)]
 struct SynthState {
     /// Whether a source has been opened. Until it has, the backend produces no
     /// frame at all so a freshly launched player shows a clean empty surface
@@ -673,44 +720,70 @@ impl SynthState {
         events
     }
 
+    /// Where the playhead sits in the stream, `0.0..=1.0`. Zero while the
+    /// duration is still unknown.
+    fn playhead_fraction(&self) -> f64 {
+        if self.duration == 0 {
+            return 0.0;
+        }
+        // Both are millisecond counts, and `f64` holds every integer below
+        // 2^53 — 285 000 years of milliseconds — exactly, so no stream that
+        // can be played loses precision here.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "millisecond counts; f64 is exact to 2^53 ms, far past any playable stream"
+        )]
+        let frac = self.position as f64 / self.duration as f64;
+        frac.clamp(0.0, 1.0)
+    }
+
     /// Draw the synthesized test pattern for the current playhead: a slowly
     /// drifting hue gradient with diagonal content stripes and a bright scan
     /// bar at the playhead fraction, so a capture unmistakably shows a moving
     /// picture and the correct progress.
     fn render_frame(&mut self) {
-        let w = SYNTH_W as usize;
-        let h = SYNTH_H as usize;
-        let mut rgba = vec![0u8; w * h * 4];
-        let frac = if self.duration > 0 {
-            (self.position as f64 / self.duration as f64).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let scan_x = (frac * (w as f64 - 1.0)) as usize;
-        let hue_shift = (self.position / 40) as usize;
-        for y in 0..h {
-            for x in 0..w {
-                let i = (y * w + x) * 4;
+        let width = SYNTH_W as usize;
+        let height = SYNTH_H as usize;
+        let mut rgba = vec![0u8; SYNTH_RGBA_BYTES];
+        let frac = self.playhead_fraction();
+        // `frac` is clamped to 0.0..=1.0, so this lands inside the picture.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            reason = "frac is 0.0..=1.0 and SYNTH_W is 480, so the product is \
+                      a non-negative value no larger than 479"
+        )]
+        let scan_x = (frac * (f64::from(SYNTH_W) - 1.0)) as usize;
+        // The playhead drives the hue. Saturating so an absurd position slides
+        // the gradient to its limit instead of overflowing the products below;
+        // the synthesized backend clamps its own duration to an hour, so a real
+        // shift is at most 90 000.
+        let hue_shift = usize::try_from(self.position / 40).unwrap_or(usize::MAX);
+        for (y, row) in rgba.chunks_exact_mut(SYNTH_ROW_BYTES).enumerate() {
+            for (x, px) in row.chunks_exact_mut(4).enumerate() {
                 // Base gradient: x drives red/green, y drives blue; hue_shift
-                // slides it so the pattern visibly animates over time.
-                let r = (((x + hue_shift) * 255) / w) as u8;
-                let g = ((y * 255) / h) as u8;
-                let b = (((x + y + hue_shift) * 255) / (w + h)) as u8;
+                // slides it so the pattern visibly animates over time. The
+                // scaled values are reduced mod 256 rather than clipped —
+                // rolling over is what makes the hue cycle.
+                let red = gradient_byte(x.saturating_add(hue_shift), width);
+                let green = gradient_byte(y, height);
+                let blue = gradient_byte(
+                    x.saturating_add(y).saturating_add(hue_shift),
+                    width.saturating_add(height),
+                );
                 // Diagonal content stripes for texture.
-                let stripe = if ((x + y + hue_shift) / 24).is_multiple_of(2) {
-                    24
-                } else {
-                    0
-                };
-                rgba[i] = r.saturating_add(stripe);
-                rgba[i + 1] = g;
-                rgba[i + 2] = b;
-                rgba[i + 3] = 255;
-                // Bright scan bar at the playhead.
+                let stripe =
+                    if (x.saturating_add(y).saturating_add(hue_shift) / 24).is_multiple_of(2) {
+                        24
+                    } else {
+                        0
+                    };
+                // Bright scan bar at the playhead, otherwise the gradient.
                 if x.abs_diff(scan_x) <= 1 {
-                    rgba[i] = 255;
-                    rgba[i + 1] = 255;
-                    rgba[i + 2] = 255;
+                    px.copy_from_slice(&[255, 255, 255, 255]);
+                } else {
+                    px.copy_from_slice(&[red.saturating_add(stripe), green, blue, 255]);
                 }
             }
         }
@@ -729,6 +802,22 @@ impl SynthState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn waiting_without_a_deadline_is_a_wait_not_an_abort() {
+        // "Block until the frame lands, however long that takes" is spelled
+        // `Duration::MAX`. Turning that into a deadline overflows `Instant`,
+        // and `Instant + Duration` panics rather than saturating — so the one
+        // caller who asked hardest to be patient was the one who got killed.
+        let mut e = MediaEngine::new_synthesized();
+        e.open(Source::Remote {
+            url: "https://x/v.mp4".into(),
+        });
+        assert!(
+            e.seek_and_wait(1_000, std::time::Duration::MAX),
+            "an unbounded wait still returns the frame it waited for"
+        );
+    }
 
     #[test]
     fn opens_and_orders_duration_before_position() {
