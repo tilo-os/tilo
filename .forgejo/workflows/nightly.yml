@@ -29,6 +29,8 @@ jobs:
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
       WGPU_BACKEND: vulkan
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      WGPU_ADAPTER_NAME: llvmpipe
       XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
       # Keep this identical to the nextest gpu-golden override. These tests
       # need an idle software Vulkan renderer, not merely serialization with
@@ -57,6 +59,7 @@ jobs:
 
       - name: Prepare runtime and cache metrics
         run: |
+          test -r "$VK_DRIVER_FILES"
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
           bash tools/ci-sccache.sh prepare
