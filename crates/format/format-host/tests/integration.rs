@@ -104,7 +104,7 @@ fn client_for(stream: tokio::net::UnixStream) -> format_router::Client {
         futures::io::BufReader::new(reader),
         futures::io::BufWriter::new(writer),
         rpc_twoparty_capnp::Side::Client,
-        Default::default(),
+        capnp::message::ReaderOptions::default(),
     ));
     let mut rpc_system = RpcSystem::new(network, None);
     let client: format_router::Client = rpc_system.bootstrap(rpc_twoparty_capnp::Side::Server);

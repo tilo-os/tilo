@@ -570,7 +570,7 @@ pub(super) fn spool_from_fd(fd: zbus::zvariant::OwnedFd) -> Result<Vec<u8>, Stri
     let _ = file.seek(SeekFrom::Start(0));
 
     let mut buf = Vec::new();
-    file.take(MAX_SPOOL_BYTES as u64 + 1)
+    file.take((MAX_SPOOL_BYTES as u64).saturating_add(1))
         .read_to_end(&mut buf)
         .map_err(|e| format!("reading document: {e}"))?;
     if buf.len() > MAX_SPOOL_BYTES {
@@ -600,7 +600,7 @@ pub fn sanitise_title(raw: &str) -> String {
     let mut out = String::new();
     for ch in raw.chars() {
         let safe = if is_unsafe_title_char(ch) { ' ' } else { ch };
-        if out.len() + safe.len_utf8() > MAX_TITLE_BYTES {
+        if out.len().saturating_add(safe.len_utf8()) > MAX_TITLE_BYTES {
             break;
         }
         out.push(safe);

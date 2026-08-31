@@ -73,6 +73,90 @@ fn install_crash_log_hook() {
     }));
 }
 
+/// Landlock launcher shim short-circuit: `shell __sandbox-exec --ro <p>… --rw
+/// <p>… [--net-restricted] -- <app argv>`, execed by bwrap from inside the
+/// sandbox. Applies the in-kernel Landlock ruleset and `execvp`s the real
+/// app when `raw_args` is that invocation; otherwise a no-op. Split out of
+/// `main` to keep it short.
+fn maybe_run_sandbox_exec(raw_args: &[String]) {
+    if raw_args
+        .get(1)
+        .is_some_and(|a| a == shell::sandbox::SANDBOX_EXEC_SUBCOMMAND)
+    {
+        tracing_subscriber::fmt::init();
+        shell::sandbox::run_sandbox_exec(raw_args.get(2..).unwrap_or(&[]));
+    }
+}
+
+/// Log the GPU-pin decision taken before the tracing subscriber existed.
+/// Split out of `main` to keep it short.
+fn log_gpu_pin(gpu_pin: &Option<compositor::render_node::ProcessPin>) {
+    let Some(pin) = gpu_pin else {
+        return;
+    };
+    tracing::info!(
+        target: "shell::compositor::gpu",
+        node = %pin.node.display(),
+        driver = pin.driver.as_deref().unwrap_or("<unknown>"),
+        "session pinned to render node: {}",
+        if pin.applied.is_empty() {
+            "no loader variables derived".to_string()
+        } else {
+            pin.applied
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    );
+    for note in &pin.notes {
+        tracing::warn!(target: "shell::compositor::gpu", "{note}");
+    }
+}
+
+/// Resolve/create the qOS signing identity for this session, matching
+/// `--provision-identity`'s "run the ceremony and exit" contract. Returns
+/// `true` if `main` should return immediately (the ceremony ran, or a
+/// migration path exited). Split out of `main` to keep it short.
+fn resolve_identity(provision_identity_requested: bool) -> bool {
+    match identity_provisioning::DiskIdentityStore::from_env() {
+        Ok(store) if identity_provisioning::needs_first_run_flow(&store) => {
+            if provision_identity_requested {
+                run_identity_onboarding(store.path().parent().map(std::path::Path::to_path_buf));
+                return true;
+            }
+            tracing::warn!(
+                "no qOS identity found at {}; the desktop will boot without a signing \
+                 identity. Nothing you do will be attributable to you until \
+                 qos-identity.service has run in this session.",
+                store.path().display()
+            );
+        }
+        Ok(store) if provision_identity_requested => {
+            // Migrate older installs which have the personal signing record
+            // but not yet the certified device/Iroh identity chain.
+            let Some(identity_dir) = store.path().parent() else {
+                tracing::error!("identity record has no parent directory");
+                std::process::exit(1);
+            };
+            let paths = firstboot::collaboration_identity_paths();
+            if let Err(e) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
+                tracing::error!("could not provision collaboration identity: {e}");
+                std::process::exit(1);
+            }
+            tracing::info!("qOS collaboration identity is provisioned");
+            return true;
+        }
+        Ok(store) => {
+            tracing::info!("loaded qOS identity from {}", store.path().display());
+        }
+        Err(e) => {
+            tracing::warn!("could not initialise identity store: {e}");
+        }
+    }
+    false
+}
+
 fn main() {
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
@@ -108,42 +192,13 @@ fn main() {
         });
     let _warmup_handle = ui::warmup::spawn_warmup(!want_vello);
 
-    // Landlock launcher shim: bwrap execs us as `shell __sandbox-exec --ro
-    // <p>… --rw <p>… [--net-restricted] -- <app argv>` from inside the
-    // sandbox; we apply an in-kernel Landlock ruleset and `execvp` the real app. Must short-circuit before any compositor setup.
+    // Landlock launcher shim: must short-circuit before any compositor setup.
     let raw_args: Vec<String> = std::env::args().collect();
-    if raw_args
-        .get(1)
-        .is_some_and(|a| a == shell::sandbox::SANDBOX_EXEC_SUBCOMMAND)
-    {
-        tracing_subscriber::fmt::init();
-        shell::sandbox::run_sandbox_exec(&raw_args[2..]);
-    }
+    maybe_run_sandbox_exec(&raw_args);
 
     tracing_subscriber::fmt::init();
     install_crash_log_hook();
-
-    // Replay the GPU decision taken before the subscriber existed.
-    if let Some(pin) = &gpu_pin {
-        tracing::info!(
-            target: "shell::compositor::gpu",
-            node = %pin.node.display(),
-            driver = pin.driver.as_deref().unwrap_or("<unknown>"),
-            "session pinned to render node: {}",
-            if pin.applied.is_empty() {
-                "no loader variables derived".to_string()
-            } else {
-                pin.applied
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            }
-        );
-        for note in &pin.notes {
-            tracing::warn!(target: "shell::compositor::gpu", "{note}");
-        }
-    }
+    log_gpu_pin(&gpu_pin);
 
     let portal_only = compositor::parse_portal_server_only_from_args();
     let firstboot_requested = compositor::parse_firstboot_from_args();
@@ -175,40 +230,8 @@ fn main() {
     // has logged in. `--provision-identity` is `qos-identity.service`'s
     // **user**-unit entry point: it runs the ceremony and exits. Reaching
     // this point without an identity and without that flag means something started the desktop directly.
-    match identity_provisioning::DiskIdentityStore::from_env() {
-        Ok(store) if identity_provisioning::needs_first_run_flow(&store) => {
-            if provision_identity_requested {
-                run_identity_onboarding(store.path().parent().map(std::path::Path::to_path_buf));
-                return;
-            }
-            tracing::warn!(
-                "no qOS identity found at {}; the desktop will boot without a signing \
-                 identity. Nothing you do will be attributable to you until \
-                 qos-identity.service has run in this session.",
-                store.path().display()
-            );
-        }
-        Ok(store) if provision_identity_requested => {
-            // Migrate older installs which have the personal signing record
-            // but not yet the certified device/Iroh identity chain.
-            let Some(identity_dir) = store.path().parent() else {
-                tracing::error!("identity record has no parent directory");
-                std::process::exit(1);
-            };
-            let paths = firstboot::collaboration_identity_paths();
-            if let Err(e) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
-                tracing::error!("could not provision collaboration identity: {e}");
-                std::process::exit(1);
-            }
-            tracing::info!("qOS collaboration identity is provisioned");
-            return;
-        }
-        Ok(store) => {
-            tracing::info!("loaded qOS identity from {}", store.path().display());
-        }
-        Err(e) => {
-            tracing::warn!("could not initialise identity store: {e}");
-        }
+    if resolve_identity(provision_identity_requested) {
+        return;
     }
 
     let enable_peer_sync = compositor::peer_sync_enabled_from_env_or_marker();

@@ -480,8 +480,8 @@ mod tests {
             .map_or(0, |(i, _)| i);
         let end = held[at..]
             .char_indices()
-            .nth(needle.chars().count() + 70)
-            .map_or(held.len(), |(i, _)| at + i);
+            .nth(needle.chars().count().saturating_add(70))
+            .map_or(held.len(), |(i, _)| at.saturating_add(i));
         panic!(
             "{what} ({needle:?}) leaked to a guest invited only to room A.\n\
              Found in the guest's own state at byte {at}:\n…{}…",
