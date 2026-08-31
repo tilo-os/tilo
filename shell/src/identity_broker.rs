@@ -30,6 +30,13 @@ impl Drop for IdentityBrokerHandle {
     }
 }
 
+/// Start the identity broker's unix-socket listener at `path`, serving
+/// clients on their own thread until the returned handle drops.
+///
+/// # Errors
+///
+/// Returns an error if binding the unix socket at `path` or putting it into
+/// non-blocking mode fails, or if the listener thread cannot be spawned.
 pub fn spawn(path: PathBuf, tree: WorkspaceTreeHandle) -> io::Result<IdentityBrokerHandle> {
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path)?;
@@ -45,7 +52,7 @@ pub fn spawn(path: PathBuf, tree: WorkspaceTreeHandle) -> io::Result<IdentityBro
                         let tree = tree.clone();
                         if let Err(error) = thread::Builder::new()
                             .name("qos-identity-client".into())
-                            .spawn(move || serve(stream, tree))
+                            .spawn(move || serve(stream, &tree))
                         {
                             tracing::warn!(%error, "identity broker could not spawn client worker");
                         }
@@ -67,7 +74,7 @@ pub fn spawn(path: PathBuf, tree: WorkspaceTreeHandle) -> io::Result<IdentityBro
     })
 }
 
-fn serve(mut stream: UnixStream, tree: WorkspaceTreeHandle) {
+fn serve(mut stream: UnixStream, tree: &WorkspaceTreeHandle) {
     let Ok(handshake) = read_frame::<Handshake>(&mut stream) else {
         return;
     };
@@ -82,7 +89,7 @@ fn serve(mut stream: UnixStream, tree: WorkspaceTreeHandle) {
         let response = match request {
             Request::Metadata => metadata(&room),
             Request::Sign { action, message } => {
-                sign(&tree, &room, &handshake.app_id, &action, &message)
+                sign(tree, &room, &handshake.app_id, &action, &message)
             }
         };
         if write_frame(&mut stream, &response).is_err() {
@@ -121,6 +128,12 @@ fn metadata(room: &RoomId) -> Response {
     }
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the read guard protects `workspace`, which the capability decision borrows \
+              right up to the block's tail expression; there's no earlier point to drop it \
+              without cloning the workspace's capability list out first"
+)]
 fn sign(
     tree: &WorkspaceTreeHandle,
     room: &RoomId,

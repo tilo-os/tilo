@@ -23,7 +23,7 @@ use crate::shell::state::{CapOverride, RoomId};
 
 /// Much longer than the installed-apps TTL: that re-reads two local
 /// files, this talks to a network service.
-const CATALOGUE_TTL: Duration = Duration::from_mins(2);
+const CATALOGUE_TTL: Duration = Duration::from_secs(120);
 
 /// Without this an unreachable registry would start a fresh HTTP
 /// attempt every time the palette opened.

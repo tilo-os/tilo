@@ -301,12 +301,19 @@ impl SelectionHud {
             14.0,
             if copy_hover { style.hover } else { style.pill },
         );
+        // `Affine`'s `Mul` composes two transforms; it has no failure mode, but
+        // clippy can't see that for a non-primitive operator overload.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine's Mul composes transform matrices and cannot overflow/panic"
+        )]
+        let copy_label_transform = transform * Affine::translate((copy_x + 12.0, m.cyc - 7.0));
         tr.draw_text_weighted(
             scene,
             "Copy",
             13.0,
             style.text,
-            transform * Affine::translate((copy_x + 12.0, m.cyc - 7.0)),
+            copy_label_transform,
             None,
             TextWeight::Medium,
         );
@@ -324,12 +331,17 @@ impl SelectionHud {
                 14.0,
                 if note_hover { style.hover } else { style.pill },
             );
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine's Mul composes transform matrices and cannot overflow/panic"
+            )]
+            let note_label_transform = transform * Affine::translate((note_x + 12.0, m.cyc - 7.0));
             tr.draw_text_weighted(
                 scene,
                 "Note",
                 13.0,
                 style.text,
-                transform * Affine::translate((note_x + 12.0, m.cyc - 7.0)),
+                note_label_transform,
                 None,
                 TextWeight::Medium,
             );

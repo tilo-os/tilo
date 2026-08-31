@@ -2502,6 +2502,11 @@ mod tests {
 
     /// The remote-input firewall's z-order check and local pointer routing must never disagree about what is on top — the disagreement *is* the clickjacking hole; they share [`foreign_tiles`].
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "tree is read for every probe in the loop below; the block already ends \
+                  right after the loop, so there's no earlier point to drop the guard"
+    )]
     fn the_firewall_view_and_local_hit_testing_resolve_the_same_surface() {
         use crate::network::input_firewall::ShellView;
 
@@ -2559,11 +2564,6 @@ mod tests {
 
         // Wherever local input would land on a client, the firewall must name that same client; wherever it lands on chrome, the firewall must name nothing.
         let mut inside = 0;
-        #[allow(
-            clippy::significant_drop_tightening,
-            reason = "tree is read for every probe in the loop below; the block already ends \
-                      right after the loop, so there's no earlier point to drop the guard"
-        )]
         {
             let chrome = fb.chrome();
             let tree = chrome.tree();
@@ -2821,7 +2821,7 @@ mod tests {
             toast.body,
         );
         assert!(
-            toast.dismiss_after >= std::time::Duration::from_mins(1),
+            toast.dismiss_after >= std::time::Duration::from_secs(60),
             "a stop that lasts until the host lifts it cannot be confirmed by a \
              toast that slides away in five seconds",
         );

@@ -4,7 +4,7 @@ use smithay::{
     desktop::{Space, Window},
     input::{
         Seat, SeatHandler, SeatState,
-        keyboard::FilterResult,
+        keyboard::{FilterResult, XkbConfig},
         pointer::{CursorImageStatus, MotionEvent},
     },
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
@@ -135,7 +135,7 @@ impl WaylandServer {
         let data_device_state = DataDeviceState::new::<Self>(dh);
         let mut seat = seat_state.new_wl_seat(dh, "quick-desktop");
         seat.add_pointer();
-        seat.add_keyboard(Default::default(), 200, 25)
+        seat.add_keyboard(XkbConfig::default(), 200, 25)
             .map_err(|e| format!("failed to add keyboard: {e}"))?;
         let output = Output::new(
             "quick-desktop-0".into(),
@@ -180,7 +180,7 @@ impl WaylandServer {
         Serial::from(self.serial_counter)
     }
 
-    pub fn handle_input(&mut self, input: WaylandInput) {
+    pub fn handle_input(&mut self, input: &WaylandInput) {
         // Wall-clock ms since server start, for the Wayland event timestamp field.
         // Masked to the low 32 bits (identical to the truncating `as u32` this
         // replaces) so the cast below is provably lossless; the field wraps every
@@ -190,7 +190,7 @@ impl WaylandServer {
             reason = "masked to the low 32 bits immediately above, so it always fits u32"
         )]
         let time = (self.start_time.elapsed().as_millis() & u128::from(u32::MAX)) as u32;
-        match input {
+        match *input {
             WaylandInput::Motion {
                 x,
                 y,
@@ -321,7 +321,7 @@ impl WaylandServer {
     /// keep that dispatcher short. `width`/`height` come from the input
     /// channel rather than the wire, but are still degraded (clamped) rather
     /// than allowed to wrap into a negative configure size.
-    fn handle_resize_input(&mut self, surface_id: u32, width: u32, height: u32) {
+    fn handle_resize_input(&self, surface_id: u32, width: u32, height: u32) {
         if let Some(surface) = self.find_surface_by_id(surface_id)
             && let Some(window) = self
                 .space
@@ -349,7 +349,7 @@ impl WaylandServer {
         None
     }
 
-    fn activate_window_by_surface(&mut self, surface: &WlSurface) {
+    fn activate_window_by_surface(&self, surface: &WlSurface) {
         for window in self.space.elements() {
             let is_target = window.wl_surface().as_deref() == Some(surface);
             if let Some(toplevel) = window.toplevel() {
@@ -367,17 +367,26 @@ impl CompositorHandler for WaylandServer {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
     }
+    #[allow(
+        clippy::panic,
+        reason = "the trait requires a direct reference, so there is no Option/Result to \
+                  hand back to a caller; every accepted client is initialised with a \
+                  ClientState in WaylandServer::new's insertion path, so this can't miss \
+                  in practice — the panic documents that invariant rather than hiding a bug"
+    )]
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        // The trait requires a direct reference, so there is no `Option`/`Result` to
-        // hand back to a caller; every accepted client is initialised with a
-        // `ClientState` in `WaylandServer::new`'s insertion path, so this "can't miss"
-        // in practice — `unwrap_or_else` (not `.expect()`) keeps that an explicit,
-        // named panic rather than a bare assertion.
         &client
             .get_data::<ClientState>()
             .unwrap_or_else(|| panic!("client missing ClientState user-data"))
             .compositor_state
     }
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the `buffer` reference below borrows from the `attrs` cached-state guard \
+                  and is used for the rest of the closure, including the network send inside \
+                  with_buffer_contents; dropping `attrs` earlier would require cloning the \
+                  buffer handle out first"
+    )]
     fn commit(&mut self, surface: &WlSurface) {
         if let Some(window) = self
             .space

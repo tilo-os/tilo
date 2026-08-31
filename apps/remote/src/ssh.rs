@@ -217,7 +217,7 @@ async fn run_session(
     mut input_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
 ) -> anyhow::Result<()> {
     let config = Arc::new(client::Config {
-        inactivity_timeout: Some(Duration::from_hours(1)),
+        inactivity_timeout: Some(Duration::from_secs(3600)),
         ..Default::default()
     });
 

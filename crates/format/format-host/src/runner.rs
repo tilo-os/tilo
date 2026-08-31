@@ -103,7 +103,7 @@ impl LoadedComponent {
     pub fn from_path(engine: &Engine, path: &Path) -> anyhow::Result<Self> {
         let component = Component::from_file(engine, path)
             .map_err(|e| anyhow::anyhow!("loading {}: {e:#}", path.display()))?;
-        Self::wrap(engine.clone(), component)
+        Ok(Self::wrap(engine.clone(), component))
     }
 
     /// Load a component from in-memory bytes (used by tests + `.wat` fixtures).
@@ -114,21 +114,21 @@ impl LoadedComponent {
     pub fn from_bytes(engine: &Engine, bytes: &[u8]) -> anyhow::Result<Self> {
         let component = Component::new(engine, bytes)
             .map_err(|e| anyhow::anyhow!("loading component bytes: {e:#}"))?;
-        Self::wrap(engine.clone(), component)
+        Ok(Self::wrap(engine.clone(), component))
     }
 
-    fn wrap(engine: Engine, component: Component) -> anyhow::Result<Self> {
+    fn wrap(engine: Engine, component: Component) -> Self {
         let mut linker: Linker<WasiHostState> = Linker::new(&engine);
         // WASI imports — some component bindgen artifacts unconditionally
         // pull in WASI even when the guest doesn't use it; wire it up
         // pre-emptively. Best-effort: in older wasmtime-wasi builds the
         // function may live behind a different module path.
         let _ = wasmtime_wasi::p2::add_to_linker_sync(&mut linker);
-        Ok(Self {
+        Self {
             engine,
             component,
             linker: Arc::new(linker),
-        })
+        }
     }
 
     /// Build a fresh Store with our resource caps applied.

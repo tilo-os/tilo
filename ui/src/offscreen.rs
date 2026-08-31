@@ -229,6 +229,12 @@ impl OffscreenRenderer {
         // immediately, rather than holding the shared context locked for
         // every other `OffscreenRenderer` through the whole render + readback.
         let (device, queue) = {
+            #[allow(
+                clippy::significant_drop_tightening,
+                reason = "already as tight as the borrow allows: `handle` below borrows from \
+                          `ctx`, so `ctx` can't drop until the clones are taken, and the block \
+                          already ends (dropping it) right after that"
+            )]
             let ctx = self.context.lock().expect("shared RenderContext poisoned");
             let handle = ctx
                 .devices

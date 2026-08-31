@@ -488,7 +488,7 @@ fn grant_read_for_open(package_id: &str, path: &Path, chrome: &Chrome) -> Result
     }
     store.insert(
         &caller,
-        Capability::Filesystem {
+        &Capability::Filesystem {
             path: path.to_path_buf(),
             mode: FsMode::Read,
             scope: GRANT_SESSION,

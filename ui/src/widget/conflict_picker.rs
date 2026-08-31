@@ -791,7 +791,7 @@ mod tests {
             summary: format!("{author} chose {label}"),
             author: author.into(),
             timestamp: SystemTime::UNIX_EPOCH
-                .checked_add(Duration::from_mins(1))
+                .checked_add(Duration::from_secs(60))
                 .unwrap_or(SystemTime::UNIX_EPOCH),
             payload: Arc::from(Vec::<u8>::new()),
         }

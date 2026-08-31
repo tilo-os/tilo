@@ -187,7 +187,7 @@ fn run_fwupd_transaction(
     drop(line_tx);
 
     let started = Instant::now();
-    let deadline = Duration::from_mins(45);
+    let deadline = Duration::from_secs(2700);
     let mut last_lines = Vec::new();
     loop {
         while let Ok(line) = line_rx.try_recv() {

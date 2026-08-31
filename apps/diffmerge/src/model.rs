@@ -476,13 +476,11 @@ impl MergeModel {
             let oi = ours_align
                 .inserts_before
                 .get(i)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+                .map_or(&[][..], Vec::as_slice);
             let ti = theirs_align
                 .inserts_before
                 .get(i)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+                .map_or(&[][..], Vec::as_slice);
             builder.push_gap(oi, ti);
 
             let Some(base_line) = base_lines.get(i) else {

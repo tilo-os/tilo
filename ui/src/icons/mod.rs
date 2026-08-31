@@ -141,6 +141,11 @@ fn path_from_d(d: &str) -> BezPath {
 }
 
 /// Build the stroked outline of a lucide `<rect>`, with optional corner radius.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "x/y/w/h/p mirror the SVG <rect> attributes and the point being built; \
+              spelling them out would just repeat rect/point field names"
+)]
 fn rect_path(x: f64, y: f64, w: f64, h: f64, rx: f64) -> BezPath {
     let rect = Rect::new(x, y, x + w, y + h);
     if rx > 0.0 {
@@ -180,14 +185,15 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         .or_else(|| icon_subpaths_group3(icon))
         .or_else(|| icon_subpaths_group4(icon))
         .or_else(|| icon_subpaths_group5(icon))
-        // Every `Icon` variant is listed across the five groups above;
+        .or_else(|| icon_subpaths_group6(icon))
+        // Every `Icon` variant is listed across the six groups above;
         // this is only reached by a variant added to the enum without a
         // matching arm in any group, so an empty (invisible) icon is a
         // safer degrade than a panic.
         .unwrap_or_default()
 }
 
-/// Group 1/5 of `icon_subpaths`'s data table, split for `too_many_lines`.
+/// Group 1/6 of `icon_subpaths`'s data table, split for `too_many_lines`.
 /// `None` means `icon` belongs to a different group.
 fn icon_subpaths_group1(icon: Icon) -> Option<Vec<BezPath>> {
     Some(match icon {
@@ -256,7 +262,7 @@ fn icon_subpaths_group1(icon: Icon) -> Option<Vec<BezPath>> {
     })
 }
 
-/// Group 2/5 of `icon_subpaths`'s data table, split for `too_many_lines`.
+/// Group 2/6 of `icon_subpaths`'s data table, split for `too_many_lines`.
 /// `None` means `icon` belongs to a different group.
 fn icon_subpaths_group2(icon: Icon) -> Option<Vec<BezPath>> {
     Some(match icon {
@@ -355,7 +361,7 @@ fn icon_subpaths_group2(icon: Icon) -> Option<Vec<BezPath>> {
     })
 }
 
-/// Group 3/5 of `icon_subpaths`'s data table, split for `too_many_lines`.
+/// Group 3/6 of `icon_subpaths`'s data table, split for `too_many_lines`.
 /// `None` means `icon` belongs to a different group.
 fn icon_subpaths_group3(icon: Icon) -> Option<Vec<BezPath>> {
     Some(match icon {
@@ -461,7 +467,7 @@ fn icon_subpaths_group3(icon: Icon) -> Option<Vec<BezPath>> {
     })
 }
 
-/// Group 4/5 of `icon_subpaths`'s data table, split for `too_many_lines`.
+/// Group 4/6 of `icon_subpaths`'s data table, split for `too_many_lines`.
 /// `None` means `icon` belongs to a different group.
 fn icon_subpaths_group4(icon: Icon) -> Option<Vec<BezPath>> {
     Some(match icon {
@@ -528,6 +534,14 @@ fn icon_subpaths_group4(icon: Icon) -> Option<Vec<BezPath>> {
             line_path(10.0, 11.0, 10.0, 17.0),
             line_path(14.0, 11.0, 14.0, 17.0),
         ],
+        _ => return None,
+    })
+}
+
+/// Group 5/6 of `icon_subpaths`'s data table, split for `too_many_lines`.
+/// `None` means `icon` belongs to a different group.
+fn icon_subpaths_group5(icon: Icon) -> Option<Vec<BezPath>> {
+    Some(match icon {
         Icon::Copy => vec![
             rect_path(8.0, 8.0, 14.0, 14.0, 2.0),
             path_from_d("M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"),
@@ -584,9 +598,9 @@ fn icon_subpaths_group4(icon: Icon) -> Option<Vec<BezPath>> {
     })
 }
 
-/// Group 5/5 of `icon_subpaths`'s data table, split for `too_many_lines`.
+/// Group 6/6 of `icon_subpaths`'s data table, split for `too_many_lines`.
 /// `None` means `icon` belongs to a different group.
-fn icon_subpaths_group5(icon: Icon) -> Option<Vec<BezPath>> {
+fn icon_subpaths_group6(icon: Icon) -> Option<Vec<BezPath>> {
     Some(match icon {
         Icon::HardDrive => vec![
             line_path(22.0, 12.0, 2.0, 12.0),

@@ -795,10 +795,10 @@ impl BodyState {
                 }
             }
             b"text:tab" if self.in_text => {
-                append(doc, self.cur.as_deref(), &mut self.cur_len, "\t")
+                append(doc, self.cur.as_deref(), &mut self.cur_len, "\t");
             }
             b"text:line-break" if self.in_text => {
-                append(doc, self.cur.as_deref(), &mut self.cur_len, "\n")
+                append(doc, self.cur.as_deref(), &mut self.cur_len, "\n");
             }
             b"text:s" if self.in_text => {
                 let n = attr_val(e, b"text:c")

@@ -386,9 +386,9 @@ impl ThemesApp {
     /// document heads captured just before the first action of the batch are
     /// stashed so the host records **one** undo boundary bracketing it
     /// ([`Widget::take_committed_action`]); Ctrl+Z then reverts it.
-    fn perform_action(&mut self, state: &mut AutoCommit, action: crate::actions::ThemesAction) {
+    fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::ThemesAction) {
         self.actions
-            .dispatch(state, crate::actions::THEMES_ACTION_TYPE, &action);
+            .dispatch(state, crate::actions::THEMES_ACTION_TYPE, action);
     }
 
     /// Route one command-bus signal. Presentation-only commands (selection, the
@@ -455,7 +455,7 @@ impl ThemesApp {
         let id = Self::new_id();
         let order = crate::actions::max_order(&catalog) + 1;
         let spec = crate::actions::new_theme_spec(&id, "New theme", order);
-        self.perform_action(state, crate::actions::upsert_custom_theme_action(&spec));
+        self.perform_action(state, &crate::actions::upsert_custom_theme_action(&spec));
         doc::put_str(state, path, doc::KEY_SELECTED, &id);
         self.status = "Created a new theme".to_string();
         self.structure_dirty = true;
@@ -469,7 +469,7 @@ impl ThemesApp {
             let new_id = Self::new_id();
             let order = crate::actions::max_order(&catalog) + 1;
             let spec = crate::actions::duplicate_spec(&src, &new_id, order);
-            self.perform_action(state, crate::actions::upsert_custom_theme_action(&spec));
+            self.perform_action(state, &crate::actions::upsert_custom_theme_action(&spec));
             doc::put_str(state, path, doc::KEY_SELECTED, &new_id);
             self.status = format!("Duplicated “{}”", src.name);
             self.structure_dirty = true;
@@ -494,7 +494,7 @@ impl ThemesApp {
             return;
         }
         let name = entry.name.clone();
-        self.perform_action(state, crate::actions::delete_custom_theme_action(id));
+        self.perform_action(state, &crate::actions::delete_custom_theme_action(id));
         // Move the selection onto a surviving theme: the row that slides
         // into `idx`, or the new last row when `idx` was the tail.
         let survivors: Vec<String> = catalog
@@ -530,7 +530,7 @@ impl ThemesApp {
         if let Some(src) = catalog.iter().find(|s| s.id == id).cloned() {
             match store::save(&src) {
                 Ok(_) => {
-                    self.perform_action(state, crate::actions::set_active_theme_action(&src.id));
+                    self.perform_action(state, &crate::actions::set_active_theme_action(&src.id));
                     self.status = format!("Applied “{}” as the system theme", src.name);
                 }
                 Err(e) => self.status = format!("Couldn't apply theme: {e}"),
@@ -544,7 +544,7 @@ impl ThemesApp {
         let catalog = doc::load_catalog(state, &automerge::ROOT).unwrap_or_default();
         if let Some(current) = catalog.iter().find(|s| s.id == id && !s.builtin).cloned() {
             let spec = crate::actions::reset_spec(&current);
-            self.perform_action(state, crate::actions::upsert_custom_theme_action(&spec));
+            self.perform_action(state, &crate::actions::upsert_custom_theme_action(&spec));
             self.status = "Reset to defaults".to_string();
             // Force a control reload next frame.
             self.bound_key = None;
@@ -1137,7 +1137,7 @@ impl ThemesApp {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        m: &winit::event::Modifiers,
+        m: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -1153,7 +1153,7 @@ impl ThemesApp {
             b.handle_event(
                 event,
                 scale,
-                m,
+                &m,
                 state,
                 path,
                 handled,
@@ -1180,7 +1180,7 @@ impl ThemesApp {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        m: &winit::event::Modifiers,
+        m: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -1192,7 +1192,7 @@ impl ThemesApp {
         // The gallery only receives events when docked, or when its overlay
         // flap is open. While open, any pointer press landing inside the flap
         // is consumed so it can't fall through to the content beneath.
-        if !(!overlay || gallery_open) {
+        if overlay && !gallery_open {
             return false;
         }
         let Some(n) = self.gallery_node else {
@@ -1201,7 +1201,7 @@ impl ThemesApp {
         self.gallery.handle_event(
             event,
             scale,
-            m,
+            &m,
             state,
             path,
             handled,
@@ -1491,7 +1491,7 @@ impl Widget for ThemesApp {
             return;
         }
 
-        self.handle_topbar_buttons(event, scale, m, state, path, handled, focus_target, taffy);
+        self.handle_topbar_buttons(event, scale, *m, state, path, handled, focus_target, taffy);
         if *handled {
             return;
         }
@@ -1499,7 +1499,7 @@ impl Widget for ThemesApp {
         if self.handle_gallery_event(
             event,
             scale,
-            m,
+            *m,
             state,
             path,
             handled,

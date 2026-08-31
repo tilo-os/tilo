@@ -195,10 +195,9 @@ fn scan_tag(chars: &[char], i: usize) -> Option<(String, usize)> {
         let cj = char_at(chars, j);
         match quote {
             Some(q) if cj == q => quote = None,
-            Some(_) => {}
             None if cj == '"' || cj == '\'' => quote = Some(cj),
             None if cj == '>' => break j,
-            None => {}
+            _ => {}
         }
         j = j.saturating_add(1);
     };
@@ -267,14 +266,15 @@ fn unescape_entities(s: &str) -> String {
         {
             j = j.saturating_add(1);
         }
-        if j < len && char_at(&chars, j) == ';' {
-            if let Some(ent_chars) = chars.get(i.saturating_add(1)..j) {
-                let ent: String = ent_chars.iter().collect();
-                if let Some(decoded) = decode_entity(&ent) {
-                    out.push_str(&decoded);
-                    i = j.saturating_add(1);
-                    continue;
-                }
+        if j < len
+            && char_at(&chars, j) == ';'
+            && let Some(ent_chars) = chars.get(i.saturating_add(1)..j)
+        {
+            let ent: String = ent_chars.iter().collect();
+            if let Some(decoded) = decode_entity(&ent) {
+                out.push_str(&decoded);
+                i = j.saturating_add(1);
+                continue;
             }
         }
         out.push('&');
@@ -640,7 +640,6 @@ fn handle_open_tag(
                 st.cur_len = st.cur_len.saturating_add(1);
             }
         }
-        "hr" => { /* no modeled construct; ignore */ }
         "ul" => st.lists.push(ListCtx { ordered: false }),
         "ol" => st.lists.push(ListCtx { ordered: true }),
         "li" => {
@@ -666,8 +665,9 @@ fn handle_open_tag(
         }
         "strong" | "b" | "em" | "i" | "u" | "ins" | "s" | "strike" | "del" | "sup" | "sub"
         | "mark" | "code" | "a" | "span" | "font" => open_inline_tag(st, name, attrs),
-        // Structural containers (html/body/div/section/…) and unknown/other
-        // tags: no modeled construct, so their text just flows through.
+        // Structural containers (html/body/div/section/…), `hr`, and
+        // unknown/other tags: no modeled construct, so their text just
+        // flows through.
         _ => {}
     }
 }

@@ -32,6 +32,10 @@ impl AccessBackend {
 #[interface(name = "org.freedesktop.impl.portal.Access")]
 impl AccessBackend {
     /// `AccessDialog` — generic consent prompt the host portal uses for Camera, Background, and similar capability gates.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Access.AccessDialog D-Bus signature"
+    )]
     async fn access_dialog(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,

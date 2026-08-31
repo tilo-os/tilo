@@ -428,11 +428,6 @@ impl BooksApp {
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent per-peer view-state flag (dirty, mouse_down, \
-              dragging_sel, ...), not a combinatorial state machine"
-)]
-#[allow(
-    clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag spanning unrelated \
               subsystems (library-load state, drag/selection gestures, popover \
               open/closed toggles, and a handful of --shots-only seams); \
@@ -3323,7 +3318,7 @@ impl Widget for BooksApp {
         if self.forward_shared_input_event(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             doc,
             path,
             node_id,
@@ -3404,13 +3399,22 @@ impl Widget for BooksApp {
     }
 }
 
+/// The comment/shelf/app-wide-hit/reader-bubble hit-test results from
+/// [`BooksApp::resolve_left_press_hits`], in topmost-wins priority order.
+type LeftPressHits = (
+    Option<CommentAction>,
+    Option<ShelfControlAction>,
+    Option<Hit>,
+    Option<ReaderBubbleAction>,
+);
+
 impl BooksApp {
     #[allow(clippy::too_many_arguments)]
     fn forward_shared_input_event(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &ObjId,
         node_id: NodeId,
@@ -3583,25 +3587,10 @@ impl BooksApp {
         }
     }
 
-    fn handle_left_press(
-        &mut self,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        handled: &mut bool,
-    ) {
-        if let Some(action) = self.note_composer.hit_test(self.cursor) {
-            match action {
-                NoteAction::Swallow => {}
-                NoteAction::Save => {
-                    self.finish_composing(doc);
-                }
-                NoteAction::Delete(id) => self.on_delete_annotation(id, doc),
-            }
-            self.refresh_from_doc(doc);
-            self.dirty = true;
-            *handled = true;
-            return;
-        }
+    /// Hit-test the comment overlay, shelf controls, app-wide hit stack, and
+    /// reader bubble, in topmost-wins priority order (part of
+    /// [`Self::handle_left_press`]).
+    fn resolve_left_press_hits(&self) -> LeftPressHits {
         // The comment panel owns a modal, private hit stack. Ask it
         // before the app-wide regions so its card cannot fall through
         // to page selection or rail controls underneath.
@@ -3628,57 +3617,63 @@ impl BooksApp {
         } else {
             None
         };
-        self.mouse_down = true;
-        self.dragging_sel = false;
-        self.press_pos = self.cursor;
+        (comment_action, shelf_action, top, bubble_action)
+    }
 
-        // Colour-picker SV/hue press begins a drag and steers immediately,
-        // taking priority over the panel's tap-swallow.
-        if self.picker.is_some() {
-            let part = if self.pick_sv.contains(self.cursor) {
-                Some(PickPart::Sv)
-            } else if self.pick_hue.contains(self.cursor) {
-                Some(PickPart::Hue)
-            } else {
-                None
-            };
-            if let Some(part) = part {
-                self.pick_drag = Some(part);
-                self.apply_pick_drag(self.cursor, doc);
-                self.refresh_from_doc(doc);
-                self.dirty = true;
-                *handled = true;
-                return;
-            }
+    /// Begin a colour-picker SV/hue drag if the press landed on one, taking
+    /// priority over the panel's tap-swallow (part of
+    /// [`Self::handle_left_press`]). Returns whether it did.
+    fn begin_pick_drag(&mut self, doc: &mut AutoCommit, handled: &mut bool) -> bool {
+        if self.picker.is_none() {
+            return false;
         }
+        let part = if self.pick_sv.contains(self.cursor) {
+            Some(PickPart::Sv)
+        } else if self.pick_hue.contains(self.cursor) {
+            Some(PickPart::Hue)
+        } else {
+            None
+        };
+        let Some(part) = part else {
+            return false;
+        };
+        self.pick_drag = Some(part);
+        self.apply_pick_drag(self.cursor, doc);
+        self.refresh_from_doc(doc);
+        self.dirty = true;
+        *handled = true;
+        true
+    }
 
-        // A press on a highlight's margin marker begins a re-anchor
-        // drag, taking priority over text selection. A press that
-        // doesn't move opens the highlight's comments on release instead.
-        if self.view == View::Reader
-            && comment_action.is_none()
-            && top.is_none()
-            && let Some((group, origin)) = self.marker_at(self.cursor)
-        {
-            self.marker_drag = Some(ui::MarkerDrag::begin(
-                group.to_string(),
-                (self.cursor.x, self.cursor.y),
-                origin,
-            ));
-            self.marker_group = Some(group);
-            self.dirty = true;
-            *handled = true;
-            return;
-        }
+    /// Begin a highlight margin-marker re-anchor drag if the press landed on
+    /// one (part of [`Self::handle_left_press`]). A press that doesn't move
+    /// opens the highlight's comments on release instead. Returns whether a
+    /// drag began.
+    fn begin_marker_drag(&mut self, handled: &mut bool) -> bool {
+        let Some((group, origin)) = self.marker_at(self.cursor) else {
+            return false;
+        };
+        self.marker_drag = Some(ui::MarkerDrag::begin(
+            group.to_string(),
+            (self.cursor.x, self.cursor.y),
+            origin,
+        ));
+        self.marker_group = Some(group);
+        self.dirty = true;
+        *handled = true;
+        true
+    }
 
-        // A press on page text runs through the shared
-        // selection-gesture core: single → double (word) → triple.
-        let on_page = self.view == View::Reader
-            && comment_action.is_none()
-            && top.is_none()
-            && bubble_action.is_none();
-        let consumed_page = self.resolve_page_press(on_page, modifiers.state().shift_key());
-
+    /// Dispatch whichever hit-tested action won priority, or the page-text
+    /// selection gesture if none did (part of [`Self::handle_left_press`]).
+    fn dispatch_left_press_action(
+        &mut self,
+        hits: LeftPressHits,
+        consumed_page: bool,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        let (comment_action, shelf_action, top, bubble_action) = hits;
         if let Some(action) = comment_action {
             self.dispatch_comment_action(action, doc);
             self.refresh_from_doc(doc);
@@ -3712,6 +3707,64 @@ impl BooksApp {
             self.dirty = true;
             *handled = true;
         }
+    }
+
+    fn handle_left_press(
+        &mut self,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        if let Some(action) = self.note_composer.hit_test(self.cursor) {
+            match action {
+                NoteAction::Swallow => {}
+                NoteAction::Save => {
+                    self.finish_composing(doc);
+                }
+                NoteAction::Delete(id) => self.on_delete_annotation(id, doc),
+            }
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+
+        let (comment_action, shelf_action, top, bubble_action) = self.resolve_left_press_hits();
+
+        self.mouse_down = true;
+        self.dragging_sel = false;
+        self.press_pos = self.cursor;
+
+        // Colour-picker SV/hue press begins a drag and steers immediately,
+        // taking priority over the panel's tap-swallow.
+        if self.begin_pick_drag(doc, handled) {
+            return;
+        }
+
+        // A press on a highlight's margin marker begins a re-anchor
+        // drag, taking priority over text selection.
+        if self.view == View::Reader
+            && comment_action.is_none()
+            && top.is_none()
+            && self.begin_marker_drag(handled)
+        {
+            return;
+        }
+
+        // A press on page text runs through the shared
+        // selection-gesture core: single → double (word) → triple.
+        let on_page = self.view == View::Reader
+            && comment_action.is_none()
+            && top.is_none()
+            && bubble_action.is_none();
+        let consumed_page = self.resolve_page_press(on_page, modifiers.state().shift_key());
+
+        self.dispatch_left_press_action(
+            (comment_action, shelf_action, top, bubble_action),
+            consumed_page,
+            doc,
+            handled,
+        );
     }
 
     /// Route a left-press that landed on page text (`on_page`) through the
@@ -4342,7 +4395,7 @@ impl BooksApp {
         let width = btn * 2.0 + vslot_w + 8.0;
         let minus_x = right_x - width;
         self.number_controls.draw(
-            field,
+            &field,
             value,
             Rect::new(minus_x, by, right_x, by + btn),
             scene,
@@ -5346,14 +5399,14 @@ impl BooksApp {
         );
 
         // Title + hint, centred under the mark.
-        let title = "Add a book";
-        let (title_w, _) = tr.measure_weighted(title, 15.0, None, TextWeight::Semibold);
+        let card_title = "Add a book";
+        let (card_title_w, _) = tr.measure_weighted(card_title, 15.0, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
-            title,
+            card_title,
             15.0,
             c.text_primary,
-            t * Affine::translate((cx - f64::from(title_w) / 2.0, disc_cy + disc_r + 16.0)),
+            t * Affine::translate((cx - f64::from(card_title_w) / 2.0, disc_cy + disc_r + 16.0)),
             None,
             TextWeight::Semibold,
         );
@@ -7575,7 +7628,7 @@ impl BooksApp {
         );
         let width = (h * 2.0 + 62.0).min((x1 - x0) * 0.58);
         self.number_controls.draw(
-            field,
+            &field,
             value,
             Rect::new(x1 - width, y, x1, y + h),
             scene,

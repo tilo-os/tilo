@@ -280,6 +280,12 @@ pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> Ca
 
 /// Priority: explicit override > manifest declaration (per-user, then
 /// system) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
+///
+/// # Errors
+///
+/// Returns [`RunError`] if the manifest's runtime reference is malformed, if
+/// the resolved bundle fails signature/publisher verification, or if no
+/// bundle is found and `opts.allow_missing_runtime` is unset.
 pub fn resolve_runtime_test_helper(
     manifest: &crate::manifest::MinimalManifest,
     opts: &RunOptions,
@@ -383,6 +389,14 @@ pub fn resolve_gpu_selection(
     Some(selection)
 }
 
+/// Priority: explicit override > manifest declaration (per-user, then
+/// system) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
+///
+/// # Errors
+///
+/// Returns [`RunError`] if the manifest's runtime reference is malformed, if
+/// the resolved bundle fails signature/publisher verification, or if no
+/// bundle is found and `opts.allow_missing_runtime` is unset.
 pub fn resolve_runtime(
     manifest: &crate::manifest::MinimalManifest,
     opts: &RunOptions,
@@ -434,6 +448,7 @@ pub fn resolve_runtime(
 ///      (`/etc/qos/runtime-bundle-trusted-publishers.txt`, or
 ///      `QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE`).
 ///   3. Else any signed publisher is accepted.
+///
 /// Layering lets the OS image bake and pin a fresh key at build time.
 fn enforce_bundle_policy(path: &Path, opts: &RunOptions) -> Result<(), RunError> {
     let require_publisher = match opts.require_runtime_publisher.clone() {
@@ -509,6 +524,11 @@ fn load_trusted_publisher_list() -> Option<Vec<String>> {
 
 /// Top-level entry: reads the manifest, builds the sandbox, execs.
 /// Does not call `process::exit` — that's `main.rs`'s job.
+///
+/// # Errors
+///
+/// Returns [`RunError`] if `manifest_path` can't be read or parsed, or if
+/// [`run_with`] fails resolving the runtime/sandbox or execing the payload.
 pub fn run(
     manifest_path: &Path,
     payload_root: &Path,
@@ -688,7 +708,7 @@ fn splice_cli_setenv(argv: &mut Vec<String>, extra_setenv: Option<(String, Strin
 }
 
 /// Narrow dynamic-loader binds only (not all of `/usr`), for a plain
-/// dynamically-linked execve(). Skipped when a runtime bundle (which already
+/// dynamically-linked `execve()`. Skipped when a runtime bundle (which already
 /// carries the loader) is mounted. Returns the extra ro paths bound, needed
 /// again by the shim's Landlock plan.
 fn splice_minimal_libs(
@@ -790,7 +810,7 @@ fn splice_wayland(
 /// Egress gate socket, spliced like Wayland — the app's only route out of an
 /// otherwise empty network namespace. Shared by `run_with` and
 /// `run_with_captured`.
-fn splice_net_gate_bind(argv: &mut Vec<String>, net_gate: &Option<crate::sandbox::NetGateBind>) {
+fn splice_net_gate_bind(argv: &mut Vec<String>, net_gate: Option<&crate::sandbox::NetGateBind>) {
     if let Some(bind) = net_gate {
         let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
         crate::sandbox::push_net_gate(argv, bind);
@@ -978,7 +998,7 @@ fn spawn_and_wait(
     seccomp_fd: OwnedFd,
     resolved: Vec<crate::services::ResolvedService>,
     egress: &crate::netgate::EgressDecision,
-    net_gate: &Option<crate::sandbox::NetGateBind>,
+    net_gate: Option<&crate::sandbox::NetGateBind>,
     identity_broker: (
         Option<UnixStream>,
         Option<UnixStream>,
@@ -1118,18 +1138,21 @@ fn stage_seccomp(manifest: &MinimalManifest) -> Result<OwnedFd, RunError> {
 /// then mint one app-scoped broker connection. Returns `identity_host`
 /// alongside the broker handles since `identity_arg` (a presence marker for
 /// the argv builder, computed by the caller) borrows from it.
+/// Broker handles + `identity_host` returned by [`resolve_identity_broker`]:
+/// the app- and control-side ends of the identity broker socketpair, the
+/// thread serving the control side, and the host path `identity_arg`
+/// borrows from.
+type IdentityBrokerResolution = (
+    Option<UnixStream>,
+    Option<UnixStream>,
+    Option<std::thread::JoinHandle<()>>,
+    Option<PathBuf>,
+);
+
 fn resolve_identity_broker(
     capabilities: &CapabilityPlan,
     opts: &RunOptions,
-) -> Result<
-    (
-        Option<UnixStream>,
-        Option<UnixStream>,
-        Option<std::thread::JoinHandle<()>>,
-        Option<PathBuf>,
-    ),
-    RunError,
-> {
+) -> Result<IdentityBrokerResolution, RunError> {
     let identity_host = resolve_identity_host_path(opts);
     let (app, control, thread) = if capabilities.participation.carries_identity() {
         match identity_host.as_deref() {
@@ -1209,6 +1232,17 @@ fn build_initial_argv(
     }
 }
 
+/// Build and exec the sandbox for an already-parsed `manifest`: validates the
+/// launch-mode/fs policy, resolves service/identity binds, the runtime
+/// bundle, the app's writable directory and its network egress gate, then
+/// spawns `bwrap` and waits for it.
+///
+/// # Errors
+///
+/// Returns [`RunError`] if the launch is refused by policy (a host app
+/// reached the sandbox path, or the manifest names a filesystem path), if
+/// any bind/runtime/identity/egress resolution step fails, or if spawning or
+/// waiting on the sandboxed process fails.
 pub fn run_with(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -1294,7 +1328,7 @@ pub fn run_with(
     splice_tool_context(&mut argv);
     splice_app_dir(&mut argv, &app_dir, &capabilities);
     let wayland_bind = splice_wayland(&mut argv, opts);
-    splice_net_gate_bind(&mut argv, &net_gate);
+    splice_net_gate_bind(&mut argv, net_gate.as_ref());
     let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities);
     splice_sandbox_shim(
         &mut argv,
@@ -1319,7 +1353,7 @@ pub fn run_with(
         seccomp_fd,
         resolved,
         &egress,
-        &net_gate,
+        net_gate.as_ref(),
         (
             identity_broker_app,
             identity_broker_control,
@@ -1334,12 +1368,11 @@ fn validated_tool_context_from_env() -> Option<String> {
         tracing::warn!("dropping oversized QOS_TOOL_CONTEXT");
         return None;
     }
-    match serde_json::from_str::<serde_json::Value>(&context) {
-        Ok(serde_json::Value::Object(_)) => Some(context),
-        _ => {
-            tracing::warn!("dropping malformed QOS_TOOL_CONTEXT");
-            None
-        }
+    if let Ok(serde_json::Value::Object(_)) = serde_json::from_str::<serde_json::Value>(&context) {
+        Some(context)
+    } else {
+        tracing::warn!("dropping malformed QOS_TOOL_CONTEXT");
+        None
     }
 }
 
@@ -1455,6 +1488,22 @@ fn spawn_and_capture(
     Ok((status, buf))
 }
 
+/// Lighter sibling of [`run_with`] that skips Landlock + minimal-libs and
+/// captures the child's stdout instead of inheriting it, for callers that
+/// need the sandboxed process's output rather than a live session.
+///
+/// # Errors
+///
+/// Returns [`RunError`] under the same conditions as [`run_with`]: launch
+/// refused by policy, a bind/runtime/identity/egress resolution failure, or
+/// a failure spawning or waiting on the sandboxed process.
+///
+/// # Panics
+///
+/// Panics if [`crate::sandbox::build_bwrap_argv_for_entry`] ever returns an
+/// empty argv — it always appends the entrypoint binary as the last
+/// element, so this would indicate a bug in that builder, not a runtime
+/// condition.
 pub fn run_with_captured(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -1517,7 +1566,7 @@ pub fn run_with_captured(
         &entry_bin,
         &capabilities,
     );
-    splice_net_gate_bind(&mut argv, &net_gate);
+    splice_net_gate_bind(&mut argv, net_gate.as_ref());
     splice_workspace_id_bind(&mut argv, opts);
     {
         let app_dir = resolve_app_dir(manifest, opts)?;

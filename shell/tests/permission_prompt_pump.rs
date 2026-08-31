@@ -27,7 +27,7 @@ use shell::shell::state::{
 use ui::widget::{PermissionPrompt, PromptChoice, Widget};
 
 use automerge::AutoCommit;
-use taffy::TaffyTree;
+use taffy::{Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 
@@ -57,7 +57,7 @@ fn left_press() -> WindowEvent {
 /// `pump_permission_prompt`.
 fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
     let mut tree = TaffyTree::<()>::new();
-    let node = tree.new_leaf(Default::default()).unwrap();
+    let node = tree.new_leaf(Style::default()).unwrap();
     let mut handled = false;
     let mut focus_target = None;
     let mut doc = AutoCommit::new();
@@ -109,7 +109,7 @@ impl ui::widget::Widget for StubContent {
         _theme: &ui::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
     ) -> taffy::NodeId {
-        let n = taffy.new_leaf(Default::default()).unwrap();
+        let n = taffy.new_leaf(Style::default()).unwrap();
         node_map.insert(n, std::ptr::from_mut::<dyn ui::widget::Widget>(self));
         n
     }
@@ -150,6 +150,11 @@ fn host_with_chrome(chrome: std::rc::Rc<std::cell::RefCell<ChromeState>>) -> She
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the pending_grants assert and tree() both need st held; there is nothing \
+              to narrow between them"
+)]
 fn pump_drains_pending_grant_after_choice() {
     let (chrome, _ws_id) =
         chrome_with_pending_grant("org.example.app", Capability::Camera { scope: GRANT_ONCE });
@@ -190,7 +195,7 @@ fn pump_drains_pending_grant_after_choice() {
     let tree = st.tree();
     let ws = tree.active_workspace().expect("active workspace");
     assert!(
-        ws.app_grants_snapshot().get("org.example.app").is_none(),
+        !ws.app_grants_snapshot().contains_key("org.example.app"),
         "Once doesn't persist on the workspace's grants map — \
          got: {:?}",
         ws.app_grants_snapshot().get("org.example.app"),
@@ -198,6 +203,11 @@ fn pump_drains_pending_grant_after_choice() {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the pending_grants assert and tree() both need st held; there is nothing \
+              to narrow between them"
+)]
 fn pump_persists_session_grant_to_workspace_grants_map() {
     let (chrome, _ws_id) =
         chrome_with_pending_grant("org.example.app", Capability::Camera { scope: GRANT_ONCE });
@@ -331,6 +341,11 @@ fn scratch_dir() -> PathBuf {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the pending_grants assert and tree() both need st held; there is nothing \
+              to narrow between them"
+)]
 fn pump_deny_drops_pending_grant_without_persisting() {
     let (chrome, _ws_id) = chrome_with_pending_grant(
         "org.example.app",
@@ -356,7 +371,7 @@ fn pump_deny_drops_pending_grant_without_persisting() {
     let tree = st.tree();
     let ws = tree.active_workspace().expect("active workspace");
     assert!(
-        ws.app_grants_snapshot().get("org.example.app").is_none(),
+        !ws.app_grants_snapshot().contains_key("org.example.app"),
         "Deny must not persist any grant — got {:?}",
         ws.app_grants_snapshot().get("org.example.app"),
     );

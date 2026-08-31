@@ -755,8 +755,13 @@ impl BackupsApp {
         // Main column: the drawer's resolved content rect (inset by the docked
         // rail, or full width in overlay). A small gap keeps it off a docked rail.
         let docked_gap = if self.drawer.is_docked() { 18.0 } else { 0.0 };
-        let cr = self.drawer.content_rect();
-        let main = Rect::new(cr.x0 + docked_gap, content.y0, content.x1, content.y1);
+        let drawer_rect = self.drawer.content_rect();
+        let main = Rect::new(
+            drawer_rect.x0 + docked_gap,
+            content.y0,
+            content.x1,
+            content.y1,
+        );
 
         // Summary stat tiles — reflow from four abreast down to a 2×2 grid so
         // they never crush at narrow widths.
@@ -1058,6 +1063,10 @@ impl BackupsApp {
     }
 
     #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/y/h/c/d are the standard graphics convention: transform, position, row height, colour tokens, and this row's Destination"
+    )]
     fn draw_dest_compact(
         &mut self,
         scene: &mut Scene,
@@ -1167,9 +1176,9 @@ impl BackupsApp {
         ];
         for (i, (label, value, accent)) in tiles.iter().enumerate() {
             let col = i % cols;
-            let rowi = i / cols;
+            let tile_row = i / cols;
             let x0 = region.x0 + col as f64 * (tile_w + gap);
-            let y0 = region.y0 + rowi as f64 * (tile_h + gap);
+            let y0 = region.y0 + tile_row as f64 * (tile_h + gap);
             let tile = Rect::new(x0, y0, x0 + tile_w, y0 + tile_h);
             paint::card(scene, t, tile, 12.0, c.surfaces.raised, c.border_white_10);
             // accent ticker on the left edge
@@ -1399,11 +1408,17 @@ impl BackupsApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        det: Rect,
+        detail_rect: Rect,
         s: &Snapshot,
     ) {
         let c = &theme.tokens.colors;
-        paint::fill_rrect(scene, t, det, 10.0, c.neutral[0].with_alpha_factor(0.5));
+        paint::fill_rrect(
+            scene,
+            t,
+            detail_rect,
+            10.0,
+            c.neutral[0].with_alpha_factor(0.5),
+        );
         let dest = self.catalog.destination(&s.dest_id);
         let dest_name = dest.map(|found| found.name.clone()).unwrap_or_default();
         let dest_kind = dest.map_or("", |found| found.kind.label());
@@ -1414,8 +1429,8 @@ impl BackupsApp {
             &format!("Stored on {dest_name}  ·  {dest_kind}"),
             12.0,
             c.text_dim,
-            det.x0 + 16.0,
-            det.y0 + 12.0,
+            detail_rect.x0 + 16.0,
+            detail_rect.y0 + 12.0,
         );
         let enc = if dest.is_some_and(|found| found.encrypted) {
             "encrypted"
@@ -1434,8 +1449,8 @@ impl BackupsApp {
             ),
             11.5,
             c.text_dim,
-            det.x0 + 16.0,
-            det.y0 + 33.0,
+            detail_rect.x0 + 16.0,
+            detail_rect.y0 + 33.0,
         );
 
         // Action buttons, right-aligned.
@@ -1448,9 +1463,9 @@ impl BackupsApp {
                 c.semantic.danger.with_alpha_factor(0.18),
             ),
         ];
-        let mut btn_x = det.x1 - 12.0;
+        let mut btn_x = detail_rect.x1 - 12.0;
         let btn_h = 32.0;
-        let btn_y = det.y0 + (det.height() - btn_h) / 2.0;
+        let btn_y = detail_rect.y0 + (detail_rect.height() - btn_h) / 2.0;
         for (label, hit, fill) in btns.iter().rev() {
             let (label_w, _) = tr.measure(label, 12.5, None);
             let btn_w = f64::from(label_w) + 28.0;
@@ -2815,6 +2830,10 @@ impl BackupsApp {
         );
     }
 
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/c/p/n/r/k are the standard graphics convention: transform, colour tokens, the RetentionPolicy, dot count, dot radius, and the dot loop index"
+    )]
     fn draw_retention_ruler(
         scene: &mut Scene,
         t: Affine,
@@ -3420,6 +3439,10 @@ impl BackupsApp {
 
     // ---- little vector icons -------------------------------------------
 
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/x/y/r/k/a are the standard graphics convention: transform, position, radius, loop index, angle"
+    )]
     fn draw_source_icon(
         scene: &mut Scene,
         t: Affine,

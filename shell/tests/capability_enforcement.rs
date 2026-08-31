@@ -553,7 +553,7 @@ fn the_portal_denies_an_app_a_path_it_was_never_granted() {
 
     assert!(store.insert(
         &caller,
-        Capability::Filesystem {
+        &Capability::Filesystem {
             path: "/var/workspace/books".into(),
             mode: FsMode::Read,
             scope: GRANT_ALWAYS,

@@ -250,7 +250,7 @@ pub(crate) fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Ra
                 let [first, second] = window else {
                     return None;
                 };
-                second.1.is_word_like().then(|| first.0..second.0)
+                second.1.is_word_like().then_some(first.0..second.0)
             })
             .collect::<Vec<_>>()
             .into_iter()

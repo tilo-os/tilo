@@ -74,7 +74,7 @@ pub const DEFAULT_DISMISS_AFTER: Duration = Duration::from_secs(5);
 /// `critical`-urgency (freedesktop spec: must not time out). A long
 /// finite duration rather than `Option<Duration>` keeps the expiry
 /// arithmetic a single code path.
-pub const PERSISTENT_DISMISS: Duration = Duration::from_hours(24);
+pub const PERSISTENT_DISMISS: Duration = Duration::from_secs(86400);
 
 /// In/out animation duration; matches `overlay_host.rs`'s modal entry timing.
 const ANIM_MS: u64 = 220;

@@ -2141,9 +2141,8 @@ impl CalendarApp {
     fn step_period(&mut self, dir: i32) {
         self.anchor = match self.view {
             View::Month => date::add_months(self.anchor, dir),
-            View::Week => self.anchor + Duration::days(7 * i64::from(dir)),
+            View::Week | View::Agenda => self.anchor + Duration::days(7 * i64::from(dir)),
             View::Day => self.anchor + Duration::days(i64::from(dir)),
-            View::Agenda => self.anchor + Duration::days(7 * i64::from(dir)),
         };
         self.dirty = true;
     }
@@ -2339,6 +2338,11 @@ impl CalendarApp {
     /// event's all-day flag, so `draw`, the hit map, and the embedded widgets
     /// all read identical geometry. Returns a zeroed layout when no event is
     /// being edited.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "f is the result being built, r is the source rect, and x/y/w are the \
+                  conventional position/size names for a geometry layout pass"
+    )]
     fn form_layout(&self) -> FormRects {
         let mut f = FormRects::default();
         let r = self.detail_rect;
@@ -2619,6 +2623,10 @@ impl CalendarApp {
 
         hits
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
     fn draw_sidebar_lists(
         &self,
         scene: &mut Scene,
@@ -2728,7 +2736,7 @@ impl CalendarApp {
         y
     }
 
-    /// CalDAV calendars from the shared OS accounts store. Each account's
+    /// `CalDAV` calendars from the shared OS accounts store. Each account's
     /// calendars are listed with a visibility checkbox; a Sync affordance in
     /// the heading pulls events from every visible calendar (part of
     /// [`Self::draw_sidebar`]). Returns the `y` the footer should start at.
@@ -3709,6 +3717,12 @@ impl CalendarApp {
 
     /// Resolve a live create drag to `(day, start_min, end_min)` — snapped to the
     /// drag grid and ordered so `start <= end`, with a one-slot minimum span.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "g is the timeline geometry and a/b/s/e are the raw/ordered minute \
+                  endpoints being snapped — conventional short names for this kind of \
+                  interval math"
+    )]
     fn timeline_create_range(
         &self,
         area: Rect,
@@ -3897,6 +3911,12 @@ impl CalendarApp {
         clippy::too_many_arguments,
         reason = "internal draw-step split of an over-length function"
     )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, g is the timeline geometry, c is the theme's \
+                  colour set, and h/i/x/y are the gridline hour/index/position — \
+                  conventional short names for this draw step"
+    )]
     fn draw_timeline_grid(
         &self,
         scene: &mut Scene,
@@ -3979,6 +3999,12 @@ impl CalendarApp {
     #[allow(
         clippy::too_many_arguments,
         reason = "internal draw-step split of an over-length function"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, g is the timeline geometry, c is the theme's \
+                  colour set, and i is the day-column index — conventional short names \
+                  for this draw step"
     )]
     fn draw_timeline_events(
         &self,
@@ -4085,6 +4111,12 @@ impl CalendarApp {
         clippy::too_many_arguments,
         reason = "each parameter is an independently-meaningful piece of the timeline's own geometry"
     )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, g is the timeline geometry, c is the theme's \
+                  colour set, and s/e are the drag's start/end minute — conventional \
+                  short names for this draw step"
+    )]
     fn draw_timeline_drag_ghost(
         &self,
         scene: &mut Scene,
@@ -4172,6 +4204,11 @@ impl CalendarApp {
         scene.pop_layer();
     }
 
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform and r/x/y/w are the detail card's rect/body \
+                  position/width — conventional short names for this draw step"
+    )]
     fn draw_detail(
         &self,
         scene: &mut Scene,
@@ -4331,6 +4368,12 @@ impl CalendarApp {
         clippy::too_many_arguments,
         reason = "internal draw-step split of an over-length function"
     )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, x/y/w are the body column's position/width, \
+                  and c is the theme's colour set — conventional short names for this \
+                  draw step"
+    )]
     fn draw_detail_selection(
         &self,
         scene: &mut Scene,
@@ -4373,6 +4416,12 @@ impl CalendarApp {
     #[allow(
         clippy::too_many_arguments,
         reason = "internal draw-step split of an over-length function"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, x/y/w are the body column's position/width, \
+                  and c is the theme's colour set — conventional short names for this \
+                  draw step"
     )]
     fn draw_detail_task(
         &self,
@@ -4476,6 +4525,12 @@ impl CalendarApp {
         clippy::too_many_arguments,
         reason = "internal draw-step split of an over-length function"
     )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, r/x/w are the detail card's rect/body \
+                  position/width, and c is the theme's colour set — conventional short \
+                  names for this draw step"
+    )]
     fn draw_detail_notes_header(
         &self,
         scene: &mut Scene,
@@ -4577,6 +4632,12 @@ impl CalendarApp {
         clippy::too_many_arguments,
         reason = "internal draw-step split of an over-length function"
     )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, f is the form layout, e is the event being \
+                  edited, and c is the theme's colour set — conventional short names for \
+                  this draw step"
+    )]
     fn draw_event_form_dates(
         &self,
         scene: &mut Scene,
@@ -4674,12 +4735,12 @@ impl CalendarApp {
                 c.surfaces.raised
             };
             fill_round(scene, t, bg, r, 8.0);
-            let (bw, border) = if cal_active {
+            let (border_w, border) = if cal_active {
                 (2.0, c.border_focus)
             } else {
                 (1.0, c.border_standard)
             };
-            stroke_round(scene, t, border, r, 8.0, bw);
+            stroke_round(scene, t, border, r, 8.0, border_w);
             scene.fill(
                 Fill::NonZero,
                 t,
@@ -4910,7 +4971,7 @@ impl CalendarApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -4921,7 +4982,7 @@ impl CalendarApp {
         self.handle_popover_event(
             event,
             scale_factor,
-            *modifiers,
+            modifiers,
             state,
             path,
             handled,
@@ -4954,7 +5015,7 @@ impl CalendarApp {
     fn handle_keyboard(
         &mut self,
         event: &WindowEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
@@ -4976,67 +5037,22 @@ impl CalendarApp {
         let field_focused = self.title_input.is_focused() || self.location_input.is_focused();
         let notes_focused = editor_active && self.notes_editor.is_focused();
 
-        // Escape: cancel a live timeline drag first (it commits nothing),
-        // then blur a focused field, then dismiss the overlay flap, then pop
-        // the narrow detail screen, then close the detail.
-        if matches!(logical_key, Key::Named(NamedKey::Escape)) {
-            if self.timeline_drag.take().is_some() {
-                *handled = true;
-                self.dirty = true;
-                return true;
-            }
-            if field_focused {
-                self.title_input.set_focus(false);
-                self.location_input.set_focus(false);
-                *handled = true;
-                self.dirty = true;
-                return true;
-            }
-            if matches!(self.sidebar.mode(), SidebarMode::Overlay) && self.sidebar.is_open() {
-                self.sidebar.set_open(false);
-                *handled = true;
-                self.dirty = true;
-                return true;
-            }
-            if matches!(self.detail_mode, DetailMode::FullScreen)
-                && matches!(self.narrow_screen, NarrowScreen::Detail)
-            {
-                self.narrow_screen = NarrowScreen::Calendar;
-                self.notes_editor.set_focus(false);
-                *handled = true;
-                self.dirty = true;
-                return true;
-            }
-            if self.detail_open {
-                self.detail_open = false;
-                self.selection = None;
-                self.narrow_screen = NarrowScreen::Calendar;
-                self.notes_editor.set_focus(false);
-                *handled = true;
-                self.dirty = true;
-                return true;
-            }
+        if matches!(logical_key, Key::Named(NamedKey::Escape))
+            && self.handle_keyboard_escape(field_focused, handled)
+        {
+            return true;
         }
 
-        // Delete removes the on-screen event/task — but only when the caret
-        // isn't in a text field or the notes editor (where Delete edits
-        // text). Mirrors the editor's trash button through the same action.
         if matches!(logical_key, Key::Named(NamedKey::Delete))
-            && editor_active
-            && !field_focused
-            && !notes_focused
+            && self.handle_keyboard_delete(
+                state,
+                editor_active,
+                field_focused,
+                notes_focused,
+                handled,
+            )
         {
-            let act = match self.selection {
-                Some(Sel::Event(id)) => Some(Action::DeleteEvent(id)),
-                Some(Sel::Task(id)) => Some(Action::DeleteTask(id)),
-                None => None,
-            };
-            if let Some(a) = act {
-                self.apply_action(a, state);
-                *handled = true;
-                self.dirty = true;
-                return true;
-            }
+            return true;
         }
 
         // Tab / Shift+Tab move between the form fields (title → location →
@@ -5051,40 +5067,126 @@ impl CalendarApp {
         // Global letter/arrow shortcuts fire only when NOT typing into a
         // text field or the notes editor.
         if !field_focused && !notes_focused {
-            if let Key::Character(ch) = logical_key {
-                let key = ch.to_lowercase();
-                let act = match key.as_str() {
-                    "m" => Some(Action::View(View::Month)),
-                    "w" => Some(Action::View(View::Week)),
-                    "d" => Some(Action::View(View::Day)),
-                    "a" => Some(Action::View(View::Agenda)),
-                    "t" => Some(Action::Today),
-                    "n" => Some(Action::NewEvent),
-                    "e" => Some(Action::Export),
-                    "i" => Some(Action::Import),
-                    "[" => Some(Action::Prev),
-                    "]" => Some(Action::Next),
-                    _ => None,
-                };
-                if let Some(a) = act {
-                    self.apply_action(a, state);
-                    *handled = true;
-                    return true;
-                }
+            return self.handle_keyboard_shortcut(logical_key, state, handled);
+        }
+        false
+    }
+
+    /// Escape: cancel a live timeline drag first (it commits nothing), then
+    /// blur a focused field, then dismiss the overlay flap, then pop the
+    /// narrow detail screen, then close the detail. Split out of
+    /// `handle_keyboard` to keep that under the line cap.
+    fn handle_keyboard_escape(&mut self, field_focused: bool, handled: &mut bool) -> bool {
+        if self.timeline_drag.take().is_some() {
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        if field_focused {
+            self.title_input.set_focus(false);
+            self.location_input.set_focus(false);
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        if matches!(self.sidebar.mode(), SidebarMode::Overlay) && self.sidebar.is_open() {
+            self.sidebar.set_open(false);
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        if matches!(self.detail_mode, DetailMode::FullScreen)
+            && matches!(self.narrow_screen, NarrowScreen::Detail)
+        {
+            self.narrow_screen = NarrowScreen::Calendar;
+            self.notes_editor.set_focus(false);
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        if self.detail_open {
+            self.detail_open = false;
+            self.selection = None;
+            self.narrow_screen = NarrowScreen::Calendar;
+            self.notes_editor.set_focus(false);
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        false
+    }
+
+    /// Delete removes the on-screen event/task — but only when the caret
+    /// isn't in a text field or the notes editor (where Delete edits text).
+    /// Mirrors the editor's trash button through the same action. Split out
+    /// of `handle_keyboard` to keep that under the line cap.
+    fn handle_keyboard_delete(
+        &mut self,
+        state: &mut AutoCommit,
+        editor_active: bool,
+        field_focused: bool,
+        notes_focused: bool,
+        handled: &mut bool,
+    ) -> bool {
+        if !editor_active || field_focused || notes_focused {
+            return false;
+        }
+        let act = match self.selection {
+            Some(Sel::Event(id)) => Some(Action::DeleteEvent(id)),
+            Some(Sel::Task(id)) => Some(Action::DeleteTask(id)),
+            None => None,
+        };
+        let Some(a) = act else {
+            return false;
+        };
+        self.apply_action(a, state);
+        *handled = true;
+        self.dirty = true;
+        true
+    }
+
+    /// Global letter/arrow shortcuts, fired only when not typing into a text
+    /// field or the notes editor. Split out of `handle_keyboard` to keep
+    /// that under the line cap.
+    fn handle_keyboard_shortcut(
+        &mut self,
+        logical_key: &Key,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        if let Key::Character(ch) = logical_key {
+            let key = ch.to_lowercase();
+            let act = match key.as_str() {
+                "m" => Some(Action::View(View::Month)),
+                "w" => Some(Action::View(View::Week)),
+                "d" => Some(Action::View(View::Day)),
+                "a" => Some(Action::View(View::Agenda)),
+                "t" => Some(Action::Today),
+                "n" => Some(Action::NewEvent),
+                "e" => Some(Action::Export),
+                "i" => Some(Action::Import),
+                "[" => Some(Action::Prev),
+                "]" => Some(Action::Next),
+                _ => None,
+            };
+            if let Some(a) = act {
+                self.apply_action(a, state);
+                *handled = true;
+                return true;
             }
-            if let Key::Named(named) = logical_key {
-                let days = match named {
-                    NamedKey::ArrowLeft => Some(-1),
-                    NamedKey::ArrowRight => Some(1),
-                    NamedKey::ArrowUp => Some(-7),
-                    NamedKey::ArrowDown => Some(7),
-                    _ => None,
-                };
-                if let Some(d) = days {
-                    self.move_anchor(d);
-                    *handled = true;
-                    return true;
-                }
+        }
+        if let Key::Named(named) = logical_key {
+            let days = match named {
+                NamedKey::ArrowLeft => Some(-1),
+                NamedKey::ArrowRight => Some(1),
+                NamedKey::ArrowUp => Some(-7),
+                NamedKey::ArrowDown => Some(7),
+                _ => None,
+            };
+            if let Some(d) = days {
+                self.move_anchor(d);
+                *handled = true;
+                return true;
             }
         }
         false
@@ -5101,7 +5203,7 @@ impl CalendarApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -5128,7 +5230,7 @@ impl CalendarApp {
             self.title_input.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -5147,7 +5249,7 @@ impl CalendarApp {
             self.location_input.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -5167,7 +5269,7 @@ impl CalendarApp {
                 self.notes_editor.handle_event(
                     event,
                     scale_factor,
-                    modifiers,
+                    &modifiers,
                     state,
                     path,
                     handled,
@@ -5203,7 +5305,7 @@ impl CalendarApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -5215,7 +5317,7 @@ impl CalendarApp {
             self.title_input.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -5230,7 +5332,7 @@ impl CalendarApp {
             self.location_input.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -5572,7 +5674,7 @@ impl Widget for CalendarApp {
             self.handle_popover_priority(
                 event,
                 scale_factor,
-                modifiers,
+                *modifiers,
                 state,
                 path,
                 handled,
@@ -5600,14 +5702,14 @@ impl Widget for CalendarApp {
             return;
         }
 
-        if self.handle_keyboard(event, modifiers, state, handled) {
+        if self.handle_keyboard(event, *modifiers, state, handled) {
             return;
         }
 
         if self.handle_mouse_click(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -5625,7 +5727,7 @@ impl Widget for CalendarApp {
         if self.handle_form_field_input(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -5776,6 +5878,12 @@ pub(crate) fn stroke_line(scene: &mut Scene, t: Affine, color: Color, a: Point, 
     scene.stroke(&Stroke::new(w), t, color, None, &Line::new(a, b));
 }
 
+#[allow(
+    clippy::many_single_char_names,
+    reason = "t is the paint transform, r is the rect being centred in, and w/x/y are the \
+              measured width and centred position — conventional short names for this \
+              draw step"
+)]
 pub(crate) fn center_text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -6042,6 +6150,11 @@ fn draw_count_badge(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "t is the paint transform, x/y/w are the field's position/width, and c is \
+              the theme's colour set — conventional short names for this draw step"
+)]
 fn field_row(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -6197,6 +6310,12 @@ fn draw_switch(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, on: bool) {
 #[allow(
     clippy::too_many_arguments,
     reason = "each parameter is an independently-meaningful piece of the chip's own geometry/label"
+)]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "t is the paint transform, x/y are the chip's position, and c/r are the \
+              theme's colour set and the resulting rect — conventional short names for \
+              this draw step"
 )]
 fn chip(
     scene: &mut Scene,
@@ -7746,6 +7865,20 @@ mod tests {
         // events on the spot (and re-checking must bring them back with no
         // re-sync). Assert on the real draw path — the Day timeline's click
         // hit-map, which is exactly what a user clicks.
+        fn draws(app: &mut CalendarApp, tr: &mut TextRenderer, theme: &Theme, eid: Id) -> bool {
+            let mut scene = Scene::new();
+            app.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                tr,
+                theme,
+                &PresenceCtx::empty(),
+            );
+            app.hits
+                .iter()
+                .any(|(_, a)| matches!(a, Action::OpenEvent(id) if *id == eid))
+        }
+
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
@@ -7777,20 +7910,6 @@ mod tests {
         let eid = ev.id;
         app.model.events.push(ev);
         app.model.events.sort_by_key(|e| e.start);
-
-        fn draws(app: &mut CalendarApp, tr: &mut TextRenderer, theme: &Theme, eid: Id) -> bool {
-            let mut scene = Scene::new();
-            app.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                tr,
-                theme,
-                &PresenceCtx::empty(),
-            );
-            app.hits
-                .iter()
-                .any(|(_, a)| matches!(a, Action::OpenEvent(id) if *id == eid))
-        }
 
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -7878,12 +7997,6 @@ mod tests {
 
     #[test]
     fn collapsing_an_account_hides_its_calendar_rows_in_the_sidebar() {
-        let mut app = CalendarApp::new_demo();
-        let mut state = AutoCommit::new();
-        app.sync(&mut state, &automerge::ROOT);
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
-        app.relayout();
-
         fn cal_rows(app: &mut CalendarApp, tr: &mut TextRenderer, theme: &Theme) -> usize {
             let mut scene = Scene::new();
             app.draw(
@@ -7898,6 +8011,12 @@ mod tests {
                 .filter(|(_, a)| matches!(a, Action::ToggleCalendarVisible(_)))
                 .count()
         }
+
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
+        app.relayout();
 
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();

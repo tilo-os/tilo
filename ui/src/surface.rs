@@ -752,9 +752,8 @@ mod tests {
             (i32::from(peak) - expected).abs() <= 6,
             "full-intensity white shadow must peak at ~{expected}/255 \
              (the sprite's own alpha envelope); got {peak}. A peak near \
-             {} means the premultiplied sprite is being premultiplied a \
+             {double_premultiplied} means the premultiplied sprite is being premultiplied a \
              second time.",
-            double_premultiplied,
         );
 
         let expected_dx = rect.width() / 2.0 - (1.0 - 2.0 * SHADOW_PEAK_RADIUS) * spread;

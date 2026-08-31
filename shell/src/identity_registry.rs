@@ -149,7 +149,7 @@ impl IdentityRegistry {
     ///
     /// # Errors
     ///
-    /// Returns an error if the identity_id is not registered.
+    /// Returns an error if the `identity_id` is not registered.
     pub fn bind_workspace(&mut self, room: impl Into<String>, identity_id: &str) -> io::Result<()> {
         if !self.identities.contains_key(identity_id) {
             return Err(io::Error::new(
@@ -178,7 +178,7 @@ impl IdentityRegistry {
     ///
     /// # Errors
     ///
-    /// Returns an error if the identity_id is not registered.
+    /// Returns an error if the `identity_id` is not registered.
     pub fn set_default(&mut self, identity_id: &str) -> io::Result<()> {
         if !self.identities.contains_key(identity_id) {
             return Err(io::Error::new(
@@ -199,6 +199,12 @@ pub struct IdentityRegistryStore {
 }
 
 impl IdentityRegistryStore {
+    /// Open the identity registry rooted at the environment's identity
+    /// directory (`XDG_CONFIG_HOME` or `HOME`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set.
     pub fn from_env() -> io::Result<Self> {
         Ok(Self::at(resolve_identity_dir()?))
     }
@@ -388,7 +394,9 @@ pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile
         .map(|profile| profile.id.as_str());
     let next_index = current
         .and_then(|id| ids.iter().position(|candidate| candidate == id))
-        .map_or(0, |index| index.wrapping_add(1).wrapping_rem(ids.len()));
+        .map_or(0, |index| {
+            index.wrapping_add(1).checked_rem(ids.len()).unwrap_or(0)
+        });
     let next_id = &ids[next_index];
     registry.bind_workspace(room.to_string(), next_id)?;
     let profile = registry.identities.get(next_id).cloned();
@@ -400,7 +408,7 @@ pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile
 ///
 /// # Errors
 ///
-/// Returns an error if neither XDG_CONFIG_HOME nor HOME is set.
+/// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set.
 fn resolve_identity_dir() -> io::Result<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
         && !xdg.is_empty()
@@ -449,8 +457,8 @@ fn short_fingerprint(hex: &str) -> String {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
     const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
         out.push(HEX[(byte >> 4) as usize] as char);
         out.push(HEX[(byte & 0x0f) as usize] as char);

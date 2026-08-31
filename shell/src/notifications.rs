@@ -299,6 +299,12 @@ impl NotificationService {
     /// Args (freedesktop spec): `app_name s`, `replaces_id u`, `app_icon s`,
     /// `summary s`, `body s`, `actions as`, `hints a{sv}`, `expire_timeout i`. Returns the assigned id `u`.
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::used_underscore_binding,
+        reason = "the D-Bus `Notify` signature requires app_icon; the zbus `#[interface]` \
+                  macro deserialises it into this named parameter and forwards it into the \
+                  generated dispatcher even though this handler has no use for the value"
+    )]
     async fn notify(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -368,13 +374,13 @@ impl NotificationService {
 
     /// `CloseNotification` — ask the server to close a notification by id.
     /// The compositor pump removes the toast and the emitter fires `NotificationClosed(id, 3)`.
-    async fn close_notification(&self, id: u32) {
+    fn close_notification(&self, id: u32) {
         self.bridge.request_close(id);
     }
 
     /// `GetCapabilities` — advertise the optional features we honour:
     /// `body` (multi-line text), `actions` (default-action activate), `persistence` (critical toasts stay until closed).
-    async fn get_capabilities(&self) -> Vec<String> {
+    fn get_capabilities(&self) -> Vec<String> {
         vec![
             "body".to_string(),
             "actions".to_string(),
@@ -383,7 +389,7 @@ impl NotificationService {
     }
 
     /// `GetServerInformation` — `(name, vendor, version, spec_version)`.
-    async fn get_server_information(&self) -> (String, String, String, String) {
+    fn get_server_information(&self) -> (String, String, String, String) {
         (
             "qOS Notifications".to_string(),
             "qOS".to_string(),
@@ -425,6 +431,12 @@ impl ServerHandle {
 ///
 /// **Production** passes `zbus::Connection::session()`. **Tests** pass an
 /// in-process p2p connection; `request_name` is best-effort there since p2p connections have no broker.
+///
+/// # Errors
+///
+/// Returns an error if registering [`NotificationService`] at
+/// [`OBJECT_PATH`] fails. A failed [`BUS_NAME`] request is logged, not
+/// propagated.
 pub async fn serve_notifications(
     connection: zbus::Connection,
     service: NotificationService,

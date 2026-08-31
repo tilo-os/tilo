@@ -117,8 +117,9 @@ impl PlayerApp {
 
     /// Open a filesystem `path` immediately (used by `--open PATH` and the
     /// portal outcome). Autoplays.
+    #[must_use]
     pub fn with_open_path(mut self, path: PathBuf) -> Self {
-        self.open_path(path);
+        self.open_path(&path);
         self
     }
 
@@ -136,7 +137,7 @@ impl PlayerApp {
     pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
         let mut app = Self::new();
         if let Some(path) = open {
-            app.open_path(path);
+            app.open_path(&path);
         } else {
             // The demo shot must stay hermetic: pin the deterministic
             // synthesized-frame engine so no real GStreamer pipeline is
@@ -212,6 +213,7 @@ impl PlayerApp {
     /// Attach collaborative playback: a live collab socket plus the host/
     /// follower role from the environment. Only the live run path calls this —
     /// `--shots` and tests stay local so no thread/socket is created.
+    #[must_use]
     pub fn with_collab(mut self) -> Self {
         self.collab = Some(CollabPlayback::new(Role::from_env()));
         self.manager = Some(CollaborationManager::new());
@@ -231,8 +233,8 @@ impl PlayerApp {
         self.player.latest_frame().is_some()
     }
 
-    fn open_path(&mut self, path: PathBuf) {
-        let source = source_for_path(&path);
+    fn open_path(&mut self, path: &Path) {
+        let source = source_for_path(path);
         self.title = path.file_name().map_or_else(
             || path.to_string_lossy().into_owned(),
             |n| n.to_string_lossy().into_owned(),
@@ -258,16 +260,16 @@ impl PlayerApp {
                     chosen = Some(p);
                     clear = true;
                 }
-                Ok(PortalOutcome::Cancelled | PortalOutcome::Failed(_)) => clear = true,
+                Ok(PortalOutcome::Cancelled | PortalOutcome::Failed(_))
+                | Err(std::sync::mpsc::TryRecvError::Disconnected) => clear = true,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => clear = true,
             }
         }
         if clear {
             self.portal_rx = None;
         }
         if let Some(p) = chosen {
-            self.open_path(p);
+            self.open_path(&p);
         }
     }
 
@@ -575,7 +577,7 @@ mod tests {
     #[test]
     fn opening_a_path_sets_title_and_loads_the_engine() {
         let mut app = PlayerApp::new();
-        app.open_path(PathBuf::from("/tmp/Holiday.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Holiday.mp4"));
         assert_eq!(app.title, "Holiday.mp4");
         assert!(app.player.is_playing(), "autoplay on open");
         assert_eq!(
@@ -627,7 +629,7 @@ mod tests {
     #[test]
     fn opening_a_file_then_syncing_lands_a_frame_and_duration() {
         let mut app = synth_app();
-        app.open_path(PathBuf::from("/tmp/Clip.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Clip.mp4"));
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &root());
         assert!(
@@ -644,7 +646,7 @@ mod tests {
     #[test]
     fn playhead_advances_while_playing_and_a_mid_play_seek_holds() {
         let mut app = synth_app();
-        app.open_path(PathBuf::from("/tmp/Clip.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Clip.mp4"));
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &root()); // baseline the synth clock
         std::thread::sleep(std::time::Duration::from_millis(40));
@@ -671,7 +673,7 @@ mod tests {
     #[test]
     fn volume_and_mute_propagate_to_the_engine() {
         let mut app = synth_app();
-        app.open_path(PathBuf::from("/tmp/Clip.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Clip.mp4"));
         app.player.set_volume(0.3);
         assert!((app.player.volume() - 0.3).abs() < 1e-6);
         assert!((app.player.engine().unwrap().volume() - 0.3).abs() < 1e-6);
@@ -685,7 +687,7 @@ mod tests {
     #[test]
     fn space_key_routed_through_the_app_toggles_playback() {
         let mut app = synth_app();
-        app.open_path(PathBuf::from("/tmp/Clip.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Clip.mp4"));
 
         // Lay the app out so `handle_event` can find the player child node.
         let theme = Theme::dark();

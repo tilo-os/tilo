@@ -1553,7 +1553,7 @@ impl ShellNetwork {
             }
         }
         self.peer_identities
-            .set_revocations(cert.user_public_key, list);
+            .set_revocations(cert.user_public_key, &list);
         let was_known = self.peer_identities.get(origin).is_some();
         let now_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -197,21 +197,25 @@ impl FilePickerOptions {
         }
     }
 
+    #[must_use]
     pub fn multiple(mut self, multiple: bool) -> Self {
         self.multiple = multiple;
         self
     }
 
+    #[must_use]
     pub fn accept_label(mut self, label: Option<String>) -> Self {
         self.accept_label = label;
         self
     }
 
+    #[must_use]
     pub fn current_name(mut self, name: Option<String>) -> Self {
         self.current_name = name;
         self
     }
 
+    #[must_use]
     pub fn filters(mut self, filters: Vec<PickerFilter>) -> Self {
         self.filters = filters;
         self

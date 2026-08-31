@@ -106,9 +106,7 @@ impl Codec {
             (Codec::H264, EncoderKind::NvEnc) => Some("h264_nvenc"),
             (Codec::HevcMain10, EncoderKind::NvEnc) => Some("hevc_nvenc"),
             // Openh264 is not a libavcodec encoder — it has its own in-tree wrapper.
-            (Codec::H264, EncoderKind::Openh264) | (Codec::HevcMain10, EncoderKind::Openh264) => {
-                None
-            }
+            (Codec::H264 | Codec::HevcMain10, EncoderKind::Openh264) => None,
         }
     }
 

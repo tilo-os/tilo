@@ -3307,11 +3307,12 @@ fn draw_inline_editor(
     text_origin: Point,
     content_size: (f32, f64),
 ) {
-    let (wrap, text_h) = content_size;
     // Mirror `ui::widget::text_input`'s multiline content inset so the widget's
     // first glyph aligns with the static text position.
     const ML_PAD_X: f64 = 10.0;
     const ML_PAD_Y: f64 = 8.0;
+
+    let (wrap, text_h) = content_size;
     let rect = Rect::new(
         text_origin.x - ML_PAD_X,
         text_origin.y - ML_PAD_Y,
