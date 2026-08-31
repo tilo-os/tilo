@@ -573,11 +573,45 @@ fn immediate(id: &str, label: &str, action: &VideoEditorAction) -> ActionSpec {
         .expect("encode video-editor action")
 }
 
-/// Parse a slider value (`0..1`) from a palette argument, else the neutral
-/// midpoint — a malformed number never wedges the build.
-fn parse_unit(s: &str) -> f64 {
-    s.trim().parse::<f64>().unwrap_or(0.5).clamp(0.0, 1.0)
-}
+/// Every spelling `EffectKind::from_str` accepts, in the exact form a caller
+/// has to send it.
+///
+/// The declared set is the *parser's* vocabulary, not the shorter list the old
+/// placeholder narrated: "greyscale" and "negative" have always been accepted,
+/// and declaring a type must not quietly take away a name that worked. What it
+/// does take away is the guess — an unknown name is now refused by name
+/// instead of adding nothing and reporting success.
+const EFFECT_CHOICES: [&str; 11] = [
+    "grayscale",
+    "greyscale",
+    "gray",
+    "grey",
+    "b&w",
+    "sepia",
+    "invert",
+    "negative",
+    "warm",
+    "cool",
+    "vignette",
+];
+
+/// Every spelling `parse_transition` accepts, on the same rule as
+/// [`EFFECT_CHOICES`]: the placeholder listed five names, the parser takes
+/// twelve, so the declaration has to be the parser's set.
+const TRANSITION_CHOICES: [&str; 12] = [
+    "cut",
+    "none",
+    "dissolve",
+    "cross dissolve",
+    "crossdissolve",
+    "fade",
+    "fade in",
+    "fadein",
+    "dip",
+    "dip to black",
+    "diptoblack",
+    "wipe",
+];
 
 /// Parse a title colour: `#rrggbb` / `rrggbb`, or three comma-separated
 /// `0..1` components. `None` for anything else, so a typo leaves the colour
@@ -623,15 +657,23 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     // Project-level: rename (settings live in the doc).
     {
         let snap = p.clone();
-        root = root.with_action(ActionSpec::prompted(
+        root = root.with_action(ActionSpec::typed(
             "rename-project",
             "Rename project",
-            "Name",
             "project name…",
             ExecutionLocus::ClientLocal,
-            move |name: &str| {
+            vec![ActionParam::required(
+                "name",
+                ParamType::Text,
+                "what the project is called",
+            )],
+            move |args: &ActionArgs| {
                 let mut next = snap.clone();
-                next.name = name.trim().to_string();
+                // Text is the one type the palette can always produce, so the
+                // fallback is unreachable from either door; the name it
+                // already has is the harmless answer if that ever changes.
+                let name = args.text("name").unwrap_or(&next.name).trim().to_string();
+                next.name = name;
                 encode(&set_project_meta_action(&next))
             },
         ));
@@ -641,19 +683,20 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     {
         let snap = p.clone();
         let at = ctx.playhead;
-        root = root.with_action(ActionSpec::prompted(
+        root = root.with_action(ActionSpec::typed(
             "add-marker",
             "Add marker at playhead",
-            "Marker name",
             "Marker",
             ExecutionLocus::ClientLocal,
-            move |name: &str| {
+            vec![ActionParam::required(
+                "name",
+                ParamType::Text,
+                "what the marker is called; an empty name reads as “Marker”",
+            )],
+            move |args: &ActionArgs| {
                 let mut next = snap.clone();
-                let name = if name.trim().is_empty() {
-                    "Marker"
-                } else {
-                    name.trim()
-                };
+                let name = args.text("name").unwrap_or("").trim();
+                let name = if name.is_empty() { "Marker" } else { name };
                 next.add_marker(at, name, 1);
                 encode(&set_project_meta_action(&next))
             },
@@ -674,18 +717,19 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     // byte-identically on a peer.
     {
         let palette = (p.media.len() as u8) % 7;
-        root = root.with_action(ActionSpec::prompted(
+        root = root.with_action(ActionSpec::typed(
             "add-title",
             "Add title",
-            "The words",
             "Title",
             ExecutionLocus::ClientLocal,
-            move |text: &str| {
-                let content = if text.trim().is_empty() {
-                    "Title"
-                } else {
-                    text.trim()
-                };
+            vec![ActionParam::required(
+                "text",
+                ParamType::Text,
+                "the words the title shows; empty reads as “Title”",
+            )],
+            move |args: &ActionArgs| {
+                let words = args.text("text").unwrap_or("").trim();
+                let content = if words.is_empty() { "Title" } else { words };
                 let item = MediaItem {
                     id: Uuid::new_v4(),
                     name: content.lines().next().unwrap_or("Title").to_string(),
@@ -749,15 +793,20 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         // Track-level: rename, toggle mute (deterministic flip against the
         // snapshot), delete (with its clips).
         let rename_snap = track.clone();
-        tr = tr.with_action(ActionSpec::prompted(
+        tr = tr.with_action(ActionSpec::typed(
             "rename-track",
             "Rename track",
-            "Name",
             "track name…",
             ExecutionLocus::ClientLocal,
-            move |name: &str| {
+            vec![ActionParam::required(
+                "name",
+                ParamType::Text,
+                "what the track is called in the timeline",
+            )],
+            move |args: &ActionArgs| {
                 let mut next = rename_snap.clone();
-                next.name = name.trim().to_string();
+                let name = args.text("name").unwrap_or(&next.name).trim().to_string();
+                next.name = name;
                 encode(&upsert_track_action(&next))
             },
         ));
@@ -883,15 +932,28 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
 
             // Effects stack — add one by name, or clear them all.
             let add_base = clip.clone();
-            cr = cr.with_action(ActionSpec::prompted(
+            // The vocabulary is declared, not narrated. `EffectKind::from_str`
+            // answers `None` for a name it does not know, which the old
+            // prompt turned into "the action ran and added nothing" — a
+            // typo that reported success. Binding refuses it by name now.
+            cr = cr.with_action(ActionSpec::typed(
                 "add-effect",
                 "Add effect",
-                "grayscale / sepia / invert / warm / cool / vignette",
                 "grayscale",
                 ExecutionLocus::ClientLocal,
-                move |arg: &str| {
+                vec![
+                    ActionParam::required(
+                        "effect",
+                        ParamType::Text,
+                        "which effect to append to the clip's stack",
+                    )
+                    .with_choices(EFFECT_CHOICES),
+                ],
+                move |args: &ActionArgs| {
                     let mut next = add_base.clone();
-                    if let Some(k) = EffectKind::from_str(arg) {
+                    // A bound value is one of `EFFECT_CHOICES`, so `from_str`
+                    // cannot fail here; an unbound one adds nothing.
+                    if let Some(k) = args.text("effect").and_then(EffectKind::from_str) {
                         next.add_effect(k);
                     }
                     encode(&upsert_clip_action(&next))
@@ -910,19 +972,24 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             // Speed. The rate is prompted; reverse is a toggle, because
             // "play it backwards" is a decision, not a number.
             let speed_base = clip.clone();
-            cr = cr.with_action(ActionSpec::prompted(
+            cr = cr.with_action(ActionSpec::typed(
                 "set-speed",
                 "Set speed",
-                "Rate, e.g. 0.5 / 1 / 2",
                 "2",
                 ExecutionLocus::ClientLocal,
-                move |arg: &str| {
+                vec![ActionParam::required(
+                    "rate",
+                    ParamType::Number,
+                    "playback rate: 1 is normal, 0.5 half speed, 2 double",
+                )],
+                move |args: &ActionArgs| {
                     let mut next = speed_base.clone();
-                    let rate = arg
-                        .trim()
-                        .trim_end_matches(['x', 'X', '\u{d7}'])
-                        .parse()
-                        .unwrap_or(1.0);
+                    // Out of range is still clamped, by `Speed::new` — asking
+                    // for 100× is a legible "as fast as it goes". Unreadable
+                    // is no longer 1×: a word cannot bind to a number, so a
+                    // slowed clip stays slowed instead of silently snapping
+                    // back to normal speed.
+                    let rate = args.number("rate").unwrap_or(next.speed.rate());
                     next.set_speed(rate, next.speed.reverse);
                     encode(&upsert_clip_action(&next))
                 },
@@ -967,31 +1034,51 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 ("set-rotation", "Set rotation (degrees)", GeomAxis::Rotation),
             ] {
                 let base = clip.clone();
-                cr = cr.with_action(ActionSpec::prompted(
+                // Every geometry channel is a real number on `Transform` —
+                // degrees included, because a 12.5° tilt is an ordinary
+                // value — so each declares `Number` under the name of the
+                // quantity it carries rather than a generic "value". The old
+                // prompt read an unparseable word as `0.0`, which for scale
+                // meant the picture silently disappeared.
+                let (param, description) = match axis {
+                    GeomAxis::Scale => (
+                        "factor",
+                        "size relative to the fitted picture; 1 leaves it as placed",
+                    ),
+                    GeomAxis::Rotation => ("degrees", "clockwise rotation about the anchor"),
+                    GeomAxis::PosX => ("offset", "offset right of centre, in frame widths"),
+                    GeomAxis::PosY => ("offset", "offset below centre, in frame heights"),
+                };
+                cr = cr.with_action(ActionSpec::typed(
                     id,
                     label,
-                    match axis {
-                        GeomAxis::Rotation => "Degrees, e.g. -15",
-                        GeomAxis::Scale => "Multiplier, e.g. 0.5",
-                        _ => "Frame widths, e.g. -0.25",
-                    },
                     match axis {
                         GeomAxis::Scale => "0.5",
                         GeomAxis::Rotation => "15",
                         _ => "0.25",
                     },
                     ExecutionLocus::ClientLocal,
-                    move |arg: &str| {
-                        let v: f64 = arg.trim().parse().unwrap_or_default();
+                    vec![ActionParam::required(param, ParamType::Number, description)],
+                    move |args: &ActionArgs| {
                         let mut next = base.clone();
                         match axis {
                             GeomAxis::Scale => {
+                                let v = args.number("factor").unwrap_or(next.transform.scale_x);
                                 next.transform.scale_x = v;
                                 next.transform.scale_y = v;
                             }
-                            GeomAxis::PosX => next.transform.pos_x = v,
-                            GeomAxis::PosY => next.transform.pos_y = v,
-                            GeomAxis::Rotation => next.transform.rotation = v,
+                            GeomAxis::PosX => {
+                                next.transform.pos_x =
+                                    args.number("offset").unwrap_or(next.transform.pos_x);
+                            }
+                            GeomAxis::PosY => {
+                                next.transform.pos_y =
+                                    args.number("offset").unwrap_or(next.transform.pos_y);
+                            }
+                            GeomAxis::Rotation => {
+                                next.transform.rotation =
+                                    args.number("degrees").unwrap_or(next.transform.rotation);
+                            }
                         }
                         encode(&upsert_clip_action(&next))
                     },
@@ -1006,21 +1093,30 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 ("crop-bottom", "Crop bottom edge", CropEdge::Bottom),
             ] {
                 let base = clip.clone();
-                cr = cr.with_action(ActionSpec::prompted(
+                cr = cr.with_action(ActionSpec::typed(
                     id,
                     label,
-                    "Fraction cut off, e.g. 0.1",
                     "0.1",
                     ExecutionLocus::ClientLocal,
-                    move |arg: &str| {
-                        let v = parse_unit(arg);
+                    vec![ActionParam::required(
+                        "fraction",
+                        ParamType::Number,
+                        "how much of this edge to cut away, 0 to 1",
+                    )],
+                    move |args: &ActionArgs| {
                         let mut next = base.clone();
-                        match edge {
-                            CropEdge::Left => next.transform.crop_left = v,
-                            CropEdge::Right => next.transform.crop_right = v,
-                            CropEdge::Top => next.transform.crop_top = v,
-                            CropEdge::Bottom => next.transform.crop_bottom = v,
-                        }
+                        let cut = match edge {
+                            CropEdge::Left => &mut next.transform.crop_left,
+                            CropEdge::Right => &mut next.transform.crop_right,
+                            CropEdge::Top => &mut next.transform.crop_top,
+                            CropEdge::Bottom => &mut next.transform.crop_bottom,
+                        };
+                        // Half of `parse_unit` survives: 1.4 still clamps to
+                        // "all of it", which is a legible intent. The other
+                        // half — answering 0.5 for a word, a real crop nobody
+                        // asked for — is unreachable now that the parameter
+                        // is a declared number, so the edge keeps its value.
+                        *cut = args.number("fraction").unwrap_or(*cut).clamp(0.0, 1.0);
                         encode(&upsert_clip_action(&next))
                     },
                 ));
@@ -1065,19 +1161,20 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 }
                 // A marker on the clip, named.
                 let marker_base = clip.clone();
-                cr = cr.with_action(ActionSpec::prompted(
+                cr = cr.with_action(ActionSpec::typed(
                     "add-clip-marker",
                     "Add marker on this clip",
-                    "Marker name",
                     "Marker",
                     ExecutionLocus::ClientLocal,
-                    move |arg: &str| {
+                    vec![ActionParam::required(
+                        "name",
+                        ParamType::Text,
+                        "what the marker is called; an empty name reads as “Marker”",
+                    )],
+                    move |args: &ActionArgs| {
                         let mut next = marker_base.clone();
-                        let name = if arg.trim().is_empty() {
-                            "Marker"
-                        } else {
-                            arg.trim()
-                        };
+                        let name = args.text("name").unwrap_or("").trim();
+                        let name = if name.is_empty() { "Marker" } else { name };
                         next.add_marker(at, name, next.palette);
                         encode(&upsert_clip_action(&next))
                     },
@@ -1086,15 +1183,29 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
 
             // Transition at the head cut — prompted by name.
             let base = clip.clone();
-            cr = cr.with_action(ActionSpec::prompted(
+            cr = cr.with_action(ActionSpec::typed(
                 "set-transition",
                 "Set transition",
-                "cut / dissolve / fade / dip / wipe",
                 "dissolve",
                 ExecutionLocus::ClientLocal,
-                move |arg: &str| {
+                vec![
+                    ActionParam::required(
+                        "transition",
+                        ParamType::Text,
+                        "the edit-point transition at this clip's head",
+                    )
+                    .with_choices(TRANSITION_CHOICES),
+                ],
+                move |args: &ActionArgs| {
                     let mut next = base.clone();
-                    next.transition = parse_transition(arg);
+                    // `parse_transition` falls through to a hard cut for a
+                    // name it does not know, so "swipe" used to silently
+                    // remove the dissolve that was there. Declaring the
+                    // vocabulary puts that branch out of reach of a bound
+                    // value, and an unbound one leaves the cut alone.
+                    if let Some(name) = args.text("transition") {
+                        next.transition = parse_transition(name);
+                    }
                     encode(&upsert_clip_action(&next))
                 },
             ));
@@ -1115,47 +1226,72 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         let rename_snap = m.clone();
         if let Some(text) = m.text.clone() {
             let base = m.clone();
-            mr = mr.with_action(ActionSpec::prompted(
+            mr = mr.with_action(ActionSpec::typed(
                 "set-title-text",
                 "Set title text",
-                "The words",
                 &text.content,
                 ExecutionLocus::ClientLocal,
-                move |arg: &str| {
+                vec![ActionParam::required(
+                    "text",
+                    ParamType::Text,
+                    "the words the title shows; its first line names it in the bin",
+                )],
+                move |args: &ActionArgs| {
                     let mut next = base.clone();
                     let mut t = next.text.clone().unwrap_or_default();
-                    t.content = arg.to_string();
-                    next.name = arg.lines().next().unwrap_or("Title").to_string();
+                    let words = args.text("text").unwrap_or(&t.content).to_string();
+                    next.name = words.lines().next().unwrap_or("Title").to_string();
+                    t.content = words;
                     next.text = Some(t);
                     encode(&upsert_media_action(&next))
                 },
             ));
             let size_base = m.clone();
-            mr = mr.with_action(ActionSpec::prompted(
+            mr = mr.with_action(ActionSpec::typed(
                 "set-title-size",
                 "Set title size",
-                "Fraction of the frame height, e.g. 0.12",
                 "0.12",
                 ExecutionLocus::ClientLocal,
-                move |arg: &str| {
+                vec![ActionParam::required(
+                    "size",
+                    ParamType::Number,
+                    "cap height as a fraction of the frame height",
+                )],
+                move |args: &ActionArgs| {
                     let mut next = size_base.clone();
                     let mut t = next.text.clone().unwrap_or_default();
-                    t.size = arg.trim().parse().unwrap_or(t.size);
+                    // This one never invented a size — an unreadable one left
+                    // it alone — and that is exactly what an unbound argument
+                    // still means.
+                    t.size = args.number("size").unwrap_or(t.size);
                     next.text = Some(t);
                     encode(&upsert_media_action(&next))
                 },
             ));
             let align_base = m.clone();
-            mr = mr.with_action(ActionSpec::prompted(
+            mr = mr.with_action(ActionSpec::typed(
                 "set-title-align",
                 "Set title alignment",
-                "left / center / right",
                 "center",
                 ExecutionLocus::ClientLocal,
-                move |arg: &str| {
+                vec![
+                    ActionParam::required(
+                        "align",
+                        ParamType::Text,
+                        "where the title's lines sit in the frame",
+                    )
+                    .with_choices(crate::model::TextAlign::ALL.map(|a| a.as_str())),
+                ],
+                move |args: &ActionArgs| {
                     let mut next = align_base.clone();
                     let mut t = next.text.clone().unwrap_or_default();
-                    t.align = crate::model::TextAlign::from_str(arg.trim());
+                    // `TextAlign::from_str` reads *everything* it does not
+                    // recognise as `Center`, so "centre" and "banana" were
+                    // both a silent re-centring. The three declared names are
+                    // the only ones that can reach it now.
+                    if let Some(name) = args.text("align") {
+                        t.align = crate::model::TextAlign::from_str(name);
+                    }
                     next.text = Some(t);
                     encode(&upsert_media_action(&next))
                 },
@@ -1164,16 +1300,25 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             // a real value rather than a palette slot: a title's colour is
             // authored content and has to survive a theme change.
             let color_base = m.clone();
-            mr = mr.with_action(ActionSpec::prompted(
+            mr = mr.with_action(ActionSpec::typed(
                 "set-title-colour",
                 "Set title colour",
-                "#ffcc00, or r,g,b in 0..1",
                 "#ffffff",
                 ExecutionLocus::ClientLocal,
-                move |arg: &str| {
+                vec![ActionParam::required(
+                    "colour",
+                    ParamType::Text,
+                    "#rrggbb, or r,g,b (optionally a) components in 0..1",
+                )],
+                move |args: &ActionArgs| {
                     let mut next = color_base.clone();
                     let mut t = next.text.clone().unwrap_or_default();
-                    if let Some(rgb) = parse_colour(arg) {
+                    // Text with no choices, because a colour is not an
+                    // enumeration — and `parse_colour`'s leniency stays: it
+                    // answers `None` rather than a colour it guessed, so a
+                    // typo leaves the title as it was instead of blanking it
+                    // to black.
+                    if let Some(rgb) = args.text("colour").and_then(parse_colour) {
                         t.color = rgb;
                     }
                     next.text = Some(t);
@@ -1181,16 +1326,21 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 },
             ));
             let backdrop_base = m.clone();
-            mr = mr.with_action(ActionSpec::prompted(
+            mr = mr.with_action(ActionSpec::typed(
                 "set-title-backdrop",
                 "Set title backdrop",
-                "Opacity 0-1 of the plate behind the words",
                 "0.3",
                 ExecutionLocus::ClientLocal,
-                move |arg: &str| {
+                vec![ActionParam::required(
+                    "opacity",
+                    ParamType::Number,
+                    "opacity of the plate behind the words, 0 to 1",
+                )],
+                move |args: &ActionArgs| {
                     let mut next = backdrop_base.clone();
                     let mut t = next.text.clone().unwrap_or_default();
-                    t.backdrop = parse_unit(arg);
+                    // Clamped, not guessed — the other half of `parse_unit`.
+                    t.backdrop = args.number("opacity").unwrap_or(t.backdrop).clamp(0.0, 1.0);
                     next.text = Some(t);
                     encode(&upsert_media_action(&next))
                 },
@@ -1216,15 +1366,20 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             }
         }
 
-        mr = mr.with_action(ActionSpec::prompted(
+        mr = mr.with_action(ActionSpec::typed(
             "rename-media",
             "Rename media",
-            "Name",
             "clip name…",
             ExecutionLocus::ClientLocal,
-            move |name: &str| {
+            vec![ActionParam::required(
+                "name",
+                ParamType::Text,
+                "what this source is called in the bin",
+            )],
+            move |args: &ActionArgs| {
                 let mut next = rename_snap.clone();
-                next.name = name.trim().to_string();
+                let name = args.text("name").unwrap_or(&next.name).trim().to_string();
+                next.name = name;
                 encode(&upsert_media_action(&next))
             },
         ));
@@ -2050,6 +2205,349 @@ mod tests {
         )
         .expect("a number binds");
         assert_eq!(bound.number("value"), Some(0.8));
+    }
+
+    /// The fixture with a title in the bin, so the media resource exports the
+    /// title actions as well as the rename.
+    fn ctx_with_title() -> VideoResourceCtx {
+        let (ctx, _) = ctx_fixture();
+        let with_title = run(&ctx.project, &spec(&ctx, "add-title"), Some("Chapter One"));
+        VideoResourceCtx {
+            project: with_title,
+            ..ctx
+        }
+    }
+
+    /// The title source in the bin, whichever media item it turned out to be.
+    fn title_of(p: &Project) -> TextSource {
+        p.media
+            .iter()
+            .find(|m| m.kind == MediaKind::Text)
+            .and_then(|m| m.text.clone())
+            .expect("a title in the bin")
+    }
+
+    /// Every action that takes an argument, with the name and type it
+    /// declares. One table, so a new parameterised action has to be added
+    /// here — and the test below proves nothing parameterised is missing.
+    const DECLARED: [(&str, &str, ParamType); 25] = [
+        ("rename-project", "name", ParamType::Text),
+        ("add-marker", "name", ParamType::Text),
+        ("add-title", "text", ParamType::Text),
+        ("rename-track", "name", ParamType::Text),
+        ("set-brightness", "value", ParamType::Number),
+        ("set-contrast", "value", ParamType::Number),
+        ("set-saturation", "value", ParamType::Number),
+        ("add-effect", "effect", ParamType::Text),
+        ("set-speed", "rate", ParamType::Number),
+        ("set-scale", "factor", ParamType::Number),
+        ("set-pos-x", "offset", ParamType::Number),
+        ("set-pos-y", "offset", ParamType::Number),
+        ("set-rotation", "degrees", ParamType::Number),
+        ("crop-left", "fraction", ParamType::Number),
+        ("crop-right", "fraction", ParamType::Number),
+        ("crop-top", "fraction", ParamType::Number),
+        ("crop-bottom", "fraction", ParamType::Number),
+        ("add-clip-marker", "name", ParamType::Text),
+        ("set-transition", "transition", ParamType::Text),
+        ("set-title-text", "text", ParamType::Text),
+        ("set-title-size", "size", ParamType::Number),
+        ("set-title-align", "align", ParamType::Text),
+        ("set-title-colour", "colour", ParamType::Text),
+        ("set-title-backdrop", "opacity", ParamType::Number),
+        ("rename-media", "name", ParamType::Text),
+    ];
+
+    /// Every action that takes an argument names it and declares its type.
+    ///
+    /// That declaration is the whole surface for a caller with no screen: a
+    /// screen reader, a script and an agent read the enumeration and nothing
+    /// else, so a type stated only in placeholder prose ("Value 0-1", "Rate,
+    /// e.g. 0.5 / 1 / 2") is a type none of them can see. The second half of
+    /// the test is the one that keeps it honest — an action that takes an
+    /// argument and is not in the table fails here rather than shipping as
+    /// another untyped prompt.
+    #[test]
+    fn every_parameterised_action_declares_its_argument() {
+        let ctx = ctx_with_title();
+        for (id, name, ty) in DECLARED {
+            let sp = spec(&ctx, id);
+            assert_eq!(sp.params().len(), 1, "{id} declares exactly one parameter");
+            let p = &sp.params()[0];
+            assert_eq!(p.name.as_ref(), name, "{id} names its argument");
+            assert_eq!(p.ty, ty, "{id} declares its type");
+            assert!(p.required, "{id} needs its argument");
+            assert!(
+                !p.description.is_empty(),
+                "{id} says what the argument means",
+            );
+        }
+
+        for (id, sp) in all_specs(&ctx) {
+            if sp.params().is_empty() {
+                continue;
+            }
+            assert!(
+                DECLARED.iter().any(|(known, ..)| *known == id),
+                "{id} takes an argument but declares nothing this test has read",
+            );
+        }
+    }
+
+    /// A word is refused wherever a number is declared, everywhere — not only
+    /// on the grade.
+    ///
+    /// Each of these used to be a free-text prompt with a lenient parser
+    /// behind it: `parse_unit` answered 0.5, the geometry parse answered 0.0
+    /// (for scale, an invisible clip), the speed parse answered 1x. All three
+    /// were a real edit reported as success. Declaring `Number` makes the bad
+    /// call a refusal, before the document is touched.
+    #[test]
+    fn a_word_is_refused_wherever_a_number_is_declared() {
+        use qos_actions::params::ArgValue;
+
+        let ctx = ctx_with_title();
+        for (id, name, ty) in DECLARED {
+            if ty != ParamType::Number {
+                continue;
+            }
+            let sp = spec(&ctx, id);
+            assert!(
+                ActionArgs::bind(
+                    sp.params(),
+                    [(name.to_string(), ArgValue::Text("banana".into()))],
+                )
+                .is_err(),
+                "{id} must refuse a word where it declares a number",
+            );
+            let bound = ActionArgs::bind(sp.params(), [(name.to_string(), ArgValue::Number(0.25))])
+                .unwrap_or_else(|e| panic!("{id} takes a number: {e}"));
+            assert_eq!(bound.number(name), Some(0.25));
+            // An integer widens — JSON spells 1.0 as 1, and a rate of 1 has
+            // to stay passable.
+            assert!(
+                ActionArgs::bind(sp.params(), [(name.to_string(), ArgValue::Integer(1))]).is_ok(),
+                "{id} takes an integer literal as a number",
+            );
+            // And an argument by a name it never declared is refused rather
+            // than dropped, so a caller cannot believe it asked for something
+            // it did not get.
+            assert!(
+                ActionArgs::bind(sp.params(), [("v".to_string(), ArgValue::Number(0.25))]).is_err(),
+                "{id} refuses an argument it never declared",
+            );
+        }
+    }
+
+    /// A name outside the declared vocabulary is refused, and every name the
+    /// vocabulary lists binds.
+    ///
+    /// The prose list used to be the entire specification — "grayscale /
+    /// sepia / invert / warm / cool / vignette" in a placeholder — with the
+    /// parser answering "nothing happened" for a name it did not know, and
+    /// `parse_transition` answering "hard cut". Declared choices are the same
+    /// list a caller can read *and* be held to.
+    #[test]
+    fn a_name_outside_the_declared_choices_is_refused() {
+        use qos_actions::params::ArgValue;
+
+        let ctx = ctx_with_title();
+        for (id, name, never_offered) in [
+            ("add-effect", "effect", "chrome"),
+            ("set-transition", "transition", "swipe"),
+            ("set-title-align", "align", "centre"),
+        ] {
+            let sp = spec(&ctx, id);
+            let choices = &sp.params()[0].choices;
+            assert!(!choices.is_empty(), "{id} enumerates its vocabulary");
+            for c in choices {
+                ActionArgs::bind(
+                    sp.params(),
+                    [(name.to_string(), ArgValue::Text(c.to_string()))],
+                )
+                .unwrap_or_else(|e| panic!("{id} accepts its own choice {c:?}: {e}"));
+            }
+            assert!(
+                ActionArgs::bind(
+                    sp.params(),
+                    [(name.to_string(), ArgValue::Text(never_offered.into()))],
+                )
+                .is_err(),
+                "{id} refuses {never_offered:?}, a name it never offered",
+            );
+            assert!(
+                ActionArgs::bind(sp.params(), [(name.to_string(), ArgValue::Number(1.0))]).is_err(),
+                "{id} refuses a number where it declares a name",
+            );
+        }
+
+        // The declared set is the parser's set, in both directions: nothing is
+        // offered that the parser cannot read, and nothing the model can be is
+        // unreachable through the names offered. That is what stops the
+        // vocabulary and the parser drifting apart once they are two lists.
+        let effect = spec(&ctx, "add-effect");
+        let effects = &effect.params()[0].choices;
+        for c in effects {
+            assert!(
+                EffectKind::from_str(c).is_some(),
+                "{c:?} is offered, so the parser has to know it",
+            );
+        }
+        for k in EffectKind::ALL {
+            assert!(
+                effects.iter().any(|c| EffectKind::from_str(c) == Some(k)),
+                "{} is reachable by name",
+                k.as_str(),
+            );
+        }
+        let transition = spec(&ctx, "set-transition");
+        let transitions = &transition.params()[0].choices;
+        for t in Transition::ALL {
+            assert!(
+                transitions.iter().any(|c| parse_transition(c) == t),
+                "{} is reachable by name",
+                t.as_str(),
+            );
+        }
+    }
+
+    /// Valid input still lands, and unreadable input now changes nothing
+    /// instead of inventing a plausible edit.
+    #[test]
+    fn an_unreadable_value_no_longer_invents_an_edit() {
+        let (ctx, cid) = ctx_fixture();
+
+        // `parse_unit("half")` answered 0.5 — half the frame cropped away, on
+        // a typo. The word cannot bind now, so the edge keeps its value.
+        let cropped = run(&ctx.project, &spec(&ctx, "crop-left"), Some("half"));
+        assert_eq!(cropped.clip(cid).unwrap().transform.crop_left, 0.0);
+        // A number still lands, and out of range still clamps: asking to cut
+        // 1.4 of the frame is a legible "all of it".
+        let cropped = run(&ctx.project, &spec(&ctx, "crop-left"), Some("1.4"));
+        assert_eq!(cropped.clip(cid).unwrap().transform.crop_left, 1.0);
+        let cropped = run(&ctx.project, &spec(&ctx, "crop-bottom"), Some("0.25"));
+        assert_eq!(cropped.clip(cid).unwrap().transform.crop_bottom, 0.25);
+
+        // The geometry parse answered 0.0, which for scale is a clip that is
+        // no longer on screen.
+        let scaled = run(&ctx.project, &spec(&ctx, "set-scale"), Some("banana"));
+        assert_eq!(scaled.clip(cid).unwrap().transform.scale_x, 1.0);
+        let scaled = run(&ctx.project, &spec(&ctx, "set-scale"), Some("0.5"));
+        assert_eq!(scaled.clip(cid).unwrap().transform.scale_y, 0.5);
+        // Rotation is a real number and stays one — degrees are not integers.
+        let turned = run(&ctx.project, &spec(&ctx, "set-rotation"), Some("-12.5"));
+        assert_eq!(turned.clip(cid).unwrap().transform.rotation, -12.5);
+
+        // The speed parse answered 1.0, so a bad rate silently returned a
+        // slowed clip to normal. Now a slowed clip stays slowed.
+        let fast = run(&ctx.project, &spec(&ctx, "set-speed"), Some("2"));
+        let ctx2 = VideoResourceCtx {
+            project: fast,
+            ..ctx
+        };
+        let still_fast = run(&ctx2.project, &spec(&ctx2, "set-speed"), Some("quickly"));
+        assert_eq!(still_fast.clip(cid).unwrap().speed.rate(), 2.0);
+    }
+
+    /// A named transition and effect still land; a name the action never
+    /// offered leaves the clip alone instead of quietly cutting.
+    #[test]
+    fn a_named_transition_and_effect_land_and_an_unknown_name_does_not() {
+        let (ctx, cid) = ctx_fixture();
+
+        let dipped = run(
+            &ctx.project,
+            &spec(&ctx, "set-transition"),
+            Some("dip to black"),
+        );
+        assert_eq!(dipped.clip(cid).unwrap().transition, Transition::DipToBlack);
+        let ctx2 = VideoResourceCtx {
+            project: dipped,
+            ..ctx
+        };
+        let kept = run(&ctx2.project, &spec(&ctx2, "set-transition"), Some("swipe"));
+        assert_eq!(
+            kept.clip(cid).unwrap().transition,
+            Transition::DipToBlack,
+            "an unoffered name no longer falls through to a hard cut",
+        );
+
+        // An alias the placeholder never listed but the parser has always
+        // taken still works — declaring the type must not take a working name
+        // away.
+        let inverted = run(&ctx.project, &spec(&ctx, "add-effect"), Some("negative"));
+        assert_eq!(
+            inverted.clip(cid).unwrap().effects.last().map(|e| e.kind),
+            Some(EffectKind::Invert),
+        );
+        let none = run(&ctx.project, &spec(&ctx, "add-effect"), Some("chrome"));
+        assert!(none.clip(cid).unwrap().effects.is_empty());
+    }
+
+    /// The title's own arguments: three declared names for alignment, numbers
+    /// for size and backdrop, and free text for the colour — which keeps its
+    /// leniency deliberately.
+    #[test]
+    fn the_title_actions_hold_their_declared_shapes() {
+        let ctx = ctx_with_title();
+
+        let left = run(&ctx.project, &spec(&ctx, "set-title-align"), Some("left"));
+        assert_eq!(title_of(&left).align, crate::model::TextAlign::Left);
+        let ctx2 = VideoResourceCtx {
+            project: left,
+            ..ctx
+        };
+        // "centre" used to be read as `Center` — an edit, from a spelling the
+        // action never offered, indistinguishable from a real one.
+        let same = run(
+            &ctx2.project,
+            &spec(&ctx2, "set-title-align"),
+            Some("centre"),
+        );
+        assert_eq!(title_of(&same).align, crate::model::TextAlign::Left);
+
+        let big = run(&ctx2.project, &spec(&ctx2, "set-title-size"), Some("0.3"));
+        assert_eq!(title_of(&big).size, 0.3);
+        let plate = run(
+            &ctx2.project,
+            &spec(&ctx2, "set-title-backdrop"),
+            Some("1.4"),
+        );
+        assert_eq!(title_of(&plate).backdrop, 1.0, "clamped, not invented");
+
+        // A colour is free text with no set to enumerate, and `parse_colour`
+        // still answers `None` for a word rather than guessing: the title
+        // keeps the colour it had instead of going black.
+        let before = title_of(&ctx2.project).color;
+        let unchanged = run(
+            &ctx2.project,
+            &spec(&ctx2, "set-title-colour"),
+            Some("puce"),
+        );
+        assert_eq!(title_of(&unchanged).color, before);
+        let red = run(
+            &ctx2.project,
+            &spec(&ctx2, "set-title-colour"),
+            Some("#ff0000"),
+        );
+        assert_eq!(title_of(&red).color, [1.0, 0.0, 0.0, 1.0]);
+    }
+
+    /// The three renames still rename, through a parameter that now has a
+    /// name of its own rather than the generic prompted one.
+    #[test]
+    fn the_renames_still_rename_through_their_named_parameter() {
+        let (ctx, _) = ctx_fixture();
+        let renamed = run(
+            &ctx.project,
+            &spec(&ctx, "rename-project"),
+            Some("  Cut 3  "),
+        );
+        assert_eq!(renamed.name, "Cut 3");
+        let tracks = run(&ctx.project, &spec(&ctx, "rename-track"), Some("B-roll"));
+        assert_eq!(tracks.tracks[0].name, "B-roll");
+        let media = run(&ctx.project, &spec(&ctx, "rename-media"), Some("hero"));
+        assert_eq!(media.media[0].name, "hero");
     }
 
     /// The Ctrl+K "Add effect" prompt appends the named effect to the clip's
