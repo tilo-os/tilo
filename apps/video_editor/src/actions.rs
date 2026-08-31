@@ -46,8 +46,8 @@ use qos_actions::{
 
 use crate::doc::VideoDoc;
 use crate::model::{
-    Clip, EffectKind, Filters, MaskShape, MediaItem, MediaKind, Project, TextSource, Track,
-    TrackKind, Transition,
+    Clip, EffectKind, Filters, MAX_GAIN_DB, MIN_GAIN_DB, MaskShape, MediaItem, MediaKind, Project,
+    TextSource, Track, TrackKind, Transition,
 };
 use crate::param::{Interp, Param};
 
@@ -207,7 +207,10 @@ impl ClipData {
 }
 
 /// A serializable snapshot of a track's scalar fields, in the document's shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `PartialEq` but not `Eq`: the fader and the pan are real numbers, and
+/// there is no total order on those worth pretending to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackData {
     pub id: String,
     pub name: String,
@@ -219,6 +222,14 @@ pub struct TrackData {
     /// makes that read as "not soloed" rather than failing the decode.
     #[serde(default)]
     pub solo: bool,
+    /// The lane's fader in decibels, and where it sits across the stereo
+    /// field. Absent on the wire for a peer that predates the mixer, which
+    /// `serde(default)` reads as unity and centre — the level that peer is
+    /// already hearing, so the two do not diverge.
+    #[serde(default)]
+    pub gain_db: f64,
+    #[serde(default)]
+    pub pan: f64,
 }
 
 impl TrackData {
@@ -231,6 +242,8 @@ impl TrackData {
             muted: t.muted,
             locked: t.locked,
             solo: t.solo,
+            gain_db: t.gain_db,
+            pan: t.pan,
         }
     }
 
@@ -243,6 +256,11 @@ impl TrackData {
             muted: self.muted,
             locked: self.locked,
             solo: self.solo,
+            // Clamped on the way in: a payload from a peer built with a wider
+            // ceiling must not put this lane at a level no control here can
+            // reach — the fader would then be unable to undo what arrived.
+            gain_db: self.gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB),
+            pan: self.pan.clamp(-1.0, 1.0),
         })
     }
 }
@@ -1044,6 +1062,8 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         };
         let (id, label) = if kind == TrackKind::Video {
             ("add-video-track", "Add video track")
@@ -1092,6 +1112,67 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             },
             &upsert_track_action(&muted),
         ));
+        // The lane's fader, in decibels. Typed rather than prompted so a
+        // caller can *read* that it takes a number and what the stops are,
+        // instead of parsing a range out of a placeholder — and so
+        // `set-gain loud` is refused before the document is touched.
+        //
+        // Decibels reach the action surface for the same reason they reach
+        // the panel: an automation that wants "6 dB under" should say so, and
+        // a linear multiplier would make every caller do the log itself.
+        let gain_snap = track.clone();
+        tr = tr.with_action(ActionSpec::typed(
+            "set-gain",
+            "Set track gain",
+            "0",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required(
+                "db",
+                ParamType::Number,
+                "decibels; 0 is unity, +12 is the loudest, -60 is off",
+            )],
+            move |args: &ActionArgs| {
+                let mut next = gain_snap.clone();
+                // Out of range is clamped rather than refused: +40 is a
+                // legible intent ("as loud as it goes") the way a word is
+                // not, and a word never reaches here.
+                next.gain_db = args
+                    .number("db")
+                    .unwrap_or(next.gain_db)
+                    .clamp(MIN_GAIN_DB, MAX_GAIN_DB);
+                encode(&upsert_track_action(&next))
+            },
+        ));
+        let pan_snap = track.clone();
+        tr = tr.with_action(ActionSpec::typed(
+            "set-pan",
+            "Set track pan",
+            "0",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required(
+                "pan",
+                ParamType::Number,
+                "-1 hard left, 0 centre, 1 hard right",
+            )],
+            move |args: &ActionArgs| {
+                let mut next = pan_snap.clone();
+                next.pan = args.number("pan").unwrap_or(next.pan).clamp(-1.0, 1.0);
+                encode(&upsert_track_action(&next))
+            },
+        ));
+        // Back to unity and centre in one step. Not reachable by `set-gain 0`
+        // alone — that leaves the pan where it was — and "put this lane back"
+        // is one intent, so it is one action and one undo boundary.
+        if track.mix_is_set() {
+            let mut flat = track.clone();
+            flat.gain_db = 0.0;
+            flat.pan = 0.0;
+            tr = tr.with_action(immediate(
+                "reset-mix",
+                "Reset gain and pan",
+                &upsert_track_action(&flat),
+            ));
+        }
         let track_clip_ids: Vec<Uuid> = p.clips_on(tid).iter().map(|c| c.id).collect();
         tr = tr.with_action(immediate(
             "delete-track",
@@ -1597,6 +1678,8 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                                 muted: false,
                                 locked: false,
                                 solo: false,
+                                gain_db: 0.0,
+                                pan: 0.0,
                             };
                             let id = t.id;
                             next.tracks.push(t.clone());
@@ -3133,7 +3216,7 @@ mod tests {
 
     /// The rest of the table. Split only because a single array literal past
     /// thirty entries stopped being readable; the test walks both.
-    const DECLARED_MORE: [(&str, &[(&str, ParamType)]); 15] = [
+    const DECLARED_MORE: [(&str, &[(&str, ParamType)]); 17] = [
         // Linking names the partner by id, and the ids that exist are the
         // declared choices — so a clip that is not there is refused rather
         // than silently linking nothing.
@@ -3153,6 +3236,11 @@ mod tests {
         ("set-mask-height", &[("fraction", ParamType::Number)]),
         ("set-mask-rotation", &[("degrees", ParamType::Number)]),
         ("set-mask-feather", &[("value", ParamType::Number)]),
+        // The lane's fader and its pan. Decibels reach the action surface as
+        // decibels: an automation that wants "6 under" should be able to say
+        // so, and a linear multiplier would make every caller do the log.
+        ("set-gain", &[("db", ParamType::Number)]),
+        ("set-pan", &[("pan", ParamType::Number)]),
     ];
 
     /// Both halves of the table, as one list.

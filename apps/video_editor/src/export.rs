@@ -1150,6 +1150,8 @@ mod tests {
             muted,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         });
         let ac = p.add_clip(tid, aid, 0.0).unwrap();
         {
@@ -2016,6 +2018,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 0.2;
@@ -2103,6 +2107,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         {

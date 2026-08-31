@@ -256,6 +256,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         });
         id
     }
@@ -1491,6 +1493,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 57.0;
@@ -1805,6 +1809,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 57.0;
@@ -1910,6 +1916,8 @@ mod tests {
                 muted: false,
                 locked: false,
                 solo: false,
+                gain_db: 0.0,
+                pan: 0.0,
             });
             id
         };

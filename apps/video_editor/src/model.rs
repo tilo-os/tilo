@@ -994,6 +994,24 @@ pub struct Track {
     /// written before solo existed still loads.
     #[serde(default)]
     pub solo: bool,
+    /// The lane's fader, in **decibels**, `0.0` being unity.
+    ///
+    /// Decibels rather than a linear fraction because a linear fader is the
+    /// wrong control for level: half way along a `0..1` track is -6 dB, which
+    /// is most of the useful range crushed into the top fifth, and a `0..2`
+    /// track is worse — it reads as "200%", which is not a thing loudness
+    /// does. Every mixing desk anyone has used is marked in dB, and a person
+    /// mixing a voice under music thinks "bring the music down 6" rather than
+    /// "multiply it by 0.501".
+    ///
+    /// Defaults to `0.0` and `#[serde(default)]`, so a project written before
+    /// faders existed loads at unity and sounds exactly as it did.
+    #[serde(default)]
+    pub gain_db: f64,
+    /// Where the lane sits across the stereo field: `-1` hard left, `0`
+    /// centre, `+1` hard right. Defaults to centre for the same reason.
+    #[serde(default)]
+    pub pan: f64,
 }
 
 impl Default for Track {
@@ -1006,7 +1024,111 @@ impl Default for Track {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         }
+    }
+}
+
+/// The quietest fader position, below which the lane is **off** rather than
+/// merely quiet. -60 dB is a thousandth of full scale: past it nothing is
+/// audible under anything else, and a fader that crawled on toward -∞ would
+/// spend most of its travel on differences nobody can hear.
+pub const MIN_GAIN_DB: f64 = -60.0;
+
+/// The loudest. **+12 dB is four times unity**, and the reason there is a
+/// ceiling at all is that a fader with none is a way to destroy a mix by
+/// accident: at +30 dB every source is square-wave clipped and there is no
+/// position on the track that is not.
+///
+/// +12 is where the desks land (Pro Tools and Reaper both stop there) because
+/// it is the most a *recorded* signal usefully takes: a lav that peaked at
+/// -12 dBFS reaches full scale here, and anything needing more than that
+/// wants re-recording or normalising, not a fader. Above unity has to be
+/// reachable — a voiceover under music is unmixable if the only direction is
+/// down — and this is how far it reaches.
+pub const MAX_GAIN_DB: f64 = 12.0;
+
+/// A fader position as a linear amplitude multiplier.
+///
+/// At or below [`MIN_GAIN_DB`] this is exactly `0.0`: the bottom of the track
+/// is silence, not a very small number, so a lane turned all the way down
+/// contributes nothing at all rather than a rounding error.
+pub fn db_to_linear(db: f64) -> f64 {
+    if !db.is_finite() || db <= MIN_GAIN_DB {
+        return 0.0;
+    }
+    10f64.powf(db / 20.0)
+}
+
+/// The inverse, for a readout. Silence reads as [`MIN_GAIN_DB`] rather than
+/// `-inf`, which is what the track's bottom stop means.
+pub fn linear_to_db(gain: f64) -> f64 {
+    if gain <= 0.0 {
+        return MIN_GAIN_DB;
+    }
+    (20.0 * gain.log10()).max(MIN_GAIN_DB)
+}
+
+impl Track {
+    /// This lane's fader as a linear multiplier, clamped to the range the
+    /// control offers. A value outside it can only arrive from a peer running
+    /// a build with a different ceiling, and honouring it would let one
+    /// participant hear a mix nobody else can reach.
+    pub fn gain(&self) -> f64 {
+        db_to_linear(self.gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB))
+    }
+
+    /// The pan matrix: what this lane's signal is multiplied by in the left
+    /// and the right channel.
+    ///
+    /// This is the **0 dB pan law** — the channel you pan toward stays at
+    /// unity and the one you pan away from is attenuated to nothing. The
+    /// alternative, a constant-power law, keeps a mono source's *perceived*
+    /// loudness even across the sweep, but it does so by making the ends
+    /// 3 dB louder than the centre, and a law that can raise a level is a law
+    /// that can turn a mix that was just under full scale into one that
+    /// clips. Given that silent clipping is the fault this whole surface
+    /// exists to end, pan here can never add gain. The price is real and
+    /// worth naming: a hard-panned mono source is about 3 dB quieter than the
+    /// same source centred.
+    ///
+    /// On stereo material this acts as a balance, which is what a lane fader's
+    /// pan does everywhere.
+    pub fn pan_gains(&self) -> (f64, f64) {
+        let p = self.pan.clamp(-1.0, 1.0);
+        (1.0 - p.max(0.0), 1.0 + p.min(0.0))
+    }
+
+    /// How the fader reads on screen: `"0.0 dB"`, `"+4.5 dB"`, `"-12.0 dB"`,
+    /// and `"-∞"` at the bottom stop, where the lane is off.
+    pub fn gain_words(&self) -> String {
+        let db = self.gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB);
+        if db <= MIN_GAIN_DB {
+            return "-∞ dB".into();
+        }
+        format!("{db:+.1} dB")
+    }
+
+    /// How the pan reads: `"C"` at centre, `"L40"` / `"R25"` either side —
+    /// the notation every desk uses, and shorter than any sentence.
+    pub fn pan_words(&self) -> String {
+        let p = self.pan.clamp(-1.0, 1.0);
+        let n = (p.abs() * 100.0).round();
+        if n < 0.5 {
+            return "C".into();
+        }
+        if p < 0.0 {
+            format!("L{n:.0}")
+        } else {
+            format!("R{n:.0}")
+        }
+    }
+
+    /// Whether this lane is anywhere other than unity and centre — what a
+    /// summary line has to mention and a resting lane does not.
+    pub fn mix_is_set(&self) -> bool {
+        self.gain_db.abs() > 1e-9 || self.pan.abs() > 1e-9
     }
 }
 
@@ -3539,6 +3661,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         };
         let tid = t.id;
         p.tracks.push(t);
@@ -3618,6 +3742,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         };
         let t2id = t2.id;
         p.tracks.push(t2);
@@ -3643,6 +3769,8 @@ mod tests {
                 muted: false,
                 locked: false,
                 solo: false,
+                gain_db: 0.0,
+                pan: 0.0,
             });
         }
         let order: Vec<&str> = p.display_tracks().iter().map(|t| t.name.as_str()).collect();
@@ -3783,6 +3911,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         };
         let a1 = Track {
             id: Uuid::new_v4(),
@@ -3792,6 +3922,8 @@ mod tests {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         };
         let (v, a) = (v2.id, a1.id);
         p.tracks.push(v2);
