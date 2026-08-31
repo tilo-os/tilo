@@ -41,6 +41,7 @@ use crate::actions;
 use crate::assets::ImageStore;
 use crate::chrome;
 use crate::doc::SlidesDoc;
+use crate::help_overlay::HelpOverlay;
 use crate::model::{
     Background, Deck, Element, ElementKind, FILL_ROLES, Id, Layout, Palette, PaletteKind, SLIDE_H,
     SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, seed_deck, starter_deck,
@@ -447,8 +448,9 @@ pub struct SlidesApp {
     /// Transient state and input policy for a running talk.
     presentation: Presentation,
 
-    /// Keyboard-shortcuts overlay visibility (toggled with `?`).
-    show_help: bool,
+    /// Modal keyboard-shortcuts overlay. Owns its visibility, drawing, and
+    /// pointer/keyboard capture policy in every editor and presentation mode.
+    help_overlay: HelpOverlay,
     /// Snap-to-guides toggle (G in edit mode would clash with overview, so
     /// snapping is always on, but the active guide lines computed during the
     /// current drag live here so `draw` can paint them).
@@ -678,7 +680,7 @@ impl SlidesApp {
             editing_title: false,
             title_caret: 0,
             presentation: Presentation::default(),
-            show_help: false,
+            help_overlay: HelpOverlay::default(),
             active_guides: Vec::new(),
             last_mouse: Point::ZERO,
             drag: Drag::None,
@@ -759,7 +761,7 @@ impl SlidesApp {
                 self.presentation.start();
                 self.presentation.set_blank(Blank::White);
             }
-            "help" => self.show_help = true,
+            "help" => self.help_overlay.show(),
             // A long deck so the rail overflows its viewport — proves the rail
             // scrolls (scrolled to the end here) and the pinned Add/Dup/Del row
             // is never overlapped by thumbnails.
@@ -5149,140 +5151,6 @@ impl SlidesApp {
             chrome::fill_rrect(scene, t, thumb, 3.0, render::with_alpha(c.text_primary, 90));
         }
     }
-
-    // --- keyboard-shortcuts overlay ----------------------------------------
-
-    /// Whether the keyboard-shortcuts overlay should paint this frame. It is
-    /// shown in **every** mode (including Present): suppressing it in Present
-    /// while `on_key` still routed keys to it would soft-lock navigation.
-    fn help_overlay_visible(&self) -> bool {
-        self.show_help
-    }
-
-    fn draw_help(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let c = &theme.tokens.colors;
-        let pal = self.palette(theme);
-        // Scrim.
-        chrome::fill_rect(scene, t, self.rect, render::with_alpha(Color::BLACK, 150));
-        // Centered card.
-        let cw = 580.0_f64.min(self.rect.width() - 80.0);
-        let ch = 588.0_f64.min(self.rect.height() - 60.0);
-        let cx = self.rect.x0 + (self.rect.width() - cw) / 2.0;
-        let cy = self.rect.y0 + (self.rect.height() - ch) / 2.0;
-        let card = Rect::new(cx, cy, cx + cw, cy + ch);
-        chrome::fill_rrect(scene, t, card, 16.0, c.surfaces.raised);
-        chrome::stroke_rrect(
-            scene,
-            t,
-            card,
-            16.0,
-            render::with_alpha(c.text_primary, 30),
-            1.0,
-        );
-
-        let px = card.x0 + 32.0;
-        tr.draw_text_weighted(
-            scene,
-            "Keyboard shortcuts",
-            20.0,
-            c.text_primary,
-            t * Affine::translate((px, card.y0 + 24.0)),
-            None,
-            TextWeight::Bold,
-        );
-        tr.draw_text_weighted(
-            scene,
-            "Press ?  or Esc to close",
-            12.0,
-            c.text_dim,
-            t * Affine::translate((px, card.y0 + 50.0)),
-            None,
-            TextWeight::Regular,
-        );
-
-        Self::draw_help_rows(scene, t, tr, c, &pal, card, px);
-    }
-
-    /// The keyboard-shortcut rows (key(s) → description), including the
-    /// "Present mode" section divider. An empty description renders the row
-    /// as a dim small-caps section header instead of a key/description pair.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the help card's own geometry; bundling them \
-                  would only re-create this argument list as a throwaway struct"
-    )]
-    fn draw_help_rows(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
-        card: Rect,
-        px: f64,
-    ) {
-        let rows: [(&str, &str); 20] = [
-            ("N", "New slide"),
-            ("Click title", "Rename the deck"),
-            ("P", "Present from current slide"),
-            ("G", "Slide-sorter overview"),
-            ("T / R / O / L", "Insert text · rect · ellipse · line"),
-            ("Tab", "Cycle selection on the slide"),
-            ("Enter", "Edit selected text box"),
-            ("Drag", "Move · resize (snaps to guides)"),
-            ("Arrows", "Nudge selection (Shift = 1px)"),
-            ("[  /  ]", "Send back · bring to front"),
-            ("Ctrl-D", "Duplicate element"),
-            ("Del / Backspace", "Delete element"),
-            ("Ctrl-Z / Ctrl-Y", "Undo · redo"),
-            ("Present mode", ""),
-            ("← → / Space / click", "Previous · next slide"),
-            ("Home / End / 1-9", "First · last · jump to slide N"),
-            ("P", "Toggle presenter dashboard"),
-            ("S  ·  B / W", "Speaker notes · black / white out"),
-            ("K  ·  0", "Pause timer · reset timer"),
-            ("?", "Toggle this help"),
-        ];
-        let cw = card.width();
-        let mut y = card.y0 + 84.0;
-        let key_w = 186.0;
-        for (k, d) in rows {
-            // A row with an empty description is a section divider (e.g.
-            // "Present mode") — render it as a dim small-caps header.
-            if d.is_empty() {
-                y += 6.0;
-                tr.draw_text_weighted(
-                    scene,
-                    &k.to_uppercase(),
-                    11.0,
-                    c.text_dim,
-                    t * Affine::translate((px, y + 2.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
-                y += 22.0;
-                continue;
-            }
-            tr.draw_text_weighted(
-                scene,
-                k,
-                13.0,
-                pal.accent,
-                t * Affine::translate((px, y)),
-                Some(key_w as f32),
-                TextWeight::Semibold,
-            );
-            tr.draw_text_weighted(
-                scene,
-                d,
-                13.0,
-                c.text_primary,
-                t * Affine::translate((px + key_w, y)),
-                Some((cw - key_w - 64.0) as f32),
-                TextWeight::Regular,
-            );
-            y += 25.0;
-        }
-    }
 }
 
 /// Make `title` safe as a filename stem: keep alphanumerics, dash and
@@ -5628,9 +5496,9 @@ impl Widget for SlidesApp {
         // The help overlay draws over every mode — including Present, where it
         // must appear (and be dismissable), otherwise a `?` press would set the
         // flag, suppress the overlay, and swallow all later navigation keys.
-        if self.help_overlay_visible() {
-            self.draw_help(scene, transform, text_renderer, theme);
-        }
+        let palette = self.palette(theme);
+        self.help_overlay
+            .draw(scene, transform, text_renderer, theme, self.rect, &palette);
         // Right-click context menu floats above everything else.
         self.ctx_menu
             .draw(scene, transform, text_renderer, theme, presence);
@@ -6156,8 +6024,7 @@ impl SlidesApp {
 
     fn on_press(&mut self, doc: &mut AutoCommit, p: Point, handled: &mut bool) {
         // The help overlay swallows the next click (to dismiss).
-        if self.show_help {
-            self.show_help = false;
+        if self.help_overlay.on_pointer_press(p, self.rect) {
             *handled = true;
             return;
         }
@@ -6930,24 +6797,10 @@ impl SlidesApp {
             return;
         }
 
-        // Help overlay owns all keys while open.
-        if self.show_help {
-            match key {
-                Key::Named(NamedKey::Escape) => self.show_help = false,
-                Key::Character(c) if c == "?" => self.show_help = false,
-                _ => {}
-            }
-            *handled = true;
-            return;
-        }
-        // `?` opens help from any non-text context.
-        if !self.editing_text
-            && !self.editing_notes
-            && !self.editing_title
-            && let Key::Character(c) = key
-            && c.as_str() == "?"
-        {
-            self.show_help = true;
+        // The help overlay owns every key while visible. It can be opened from
+        // any non-text context; active editors reserve `?` for typing.
+        let allow_help = !self.editing_text && !self.editing_notes && !self.editing_title;
+        if self.help_overlay.on_key(key, allow_help) {
             *handled = true;
             return;
         }
@@ -8949,7 +8802,7 @@ mod tests {
         app_dispatch(&mut app, &mut doc, &char_ev("!"));
         app_dispatch(&mut app, &mut doc, &char_ev("?"));
         assert!(
-            !app.show_help,
+            !app.help_overlay.is_visible(),
             "'?' while renaming types into the title, not the help overlay"
         );
         // Enter commits the rename.
@@ -9023,18 +8876,26 @@ mod tests {
     fn help_overlay_is_visible_and_dismissable_in_present_mode() {
         let mut app = presenting_app();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
-        assert!(!app.help_overlay_visible());
+        assert!(!app.help_overlay.is_visible());
         // '?' opens the overlay even while presenting.
         assert!(press_char(&mut app, "?"));
         assert!(
-            app.help_overlay_visible(),
+            app.help_overlay.is_visible(),
             "the help overlay is shown in Present mode (the exact gate `draw` uses)"
         );
         // And it actually paints over the present surface without panicking.
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        app.draw_help(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let palette = app.palette(&theme);
+        app.help_overlay.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            app.rect,
+            &palette,
+        );
 
         // While open it is modal (a nav key is swallowed, does not advance).
         let before = app.cur_slide;
@@ -9045,7 +8906,7 @@ mod tests {
         );
         // Dismiss with '?', and navigation resumes — no soft-lock.
         assert!(press_char(&mut app, "?"));
-        assert!(!app.help_overlay_visible(), "'?' dismisses the overlay");
+        assert!(!app.help_overlay.is_visible(), "'?' dismisses the overlay");
         assert!(press_named(&mut app, NamedKey::ArrowRight));
         assert_eq!(
             app.cur_slide,
