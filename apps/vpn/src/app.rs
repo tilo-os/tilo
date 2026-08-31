@@ -2284,34 +2284,8 @@ impl VpnApp {
             return;
         };
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = cd.dialog.build_layout(&mut taffy, &theme, &mut node_map);
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_with_children only errors for a NodeId from a different tree, and `node` was just created in this same fresh `taffy`"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(rect.width() as f32),
-                        height: Dimension::length(rect.height() as f32),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            )
-            .unwrap();
-        let _ = taffy.compute_layout(
-            root,
-            Size {
-                width: taffy::AvailableSpace::Definite(rect.width() as f32),
-                height: taffy::AvailableSpace::Definite(rect.height() as f32),
-            },
-        );
-        cd.dialog
-            .apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
+        let mut text_renderer = TextRenderer::new();
+        cd.dialog.layout_in(rect, &theme, &mut text_renderer);
     }
 
     /// Route an event into the open confirm dialog, then apply the flags its
@@ -2352,29 +2326,13 @@ impl VpnApp {
         }
         self.ensure_confirm_dialog();
         self.layout_confirm_dialog();
-        let root = automerge::ROOT;
         let (ok, cancel) = {
             let Some(cd) = self.confirm_dialog.as_mut() else {
                 return;
             };
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            #[allow(
-                clippy::unwrap_used,
-                reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
-            )]
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut focus_target = None;
-            cd.dialog.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                doc,
-                &root,
-                handled,
-                &mut focus_target,
-                node,
-                &taffy,
-            );
+            *handled =
+                cd.dialog
+                    .handle_detached(event, scale_factor, modifiers, doc, &automerge::ROOT);
             (cd.confirm.replace(false), cd.cancel.replace(false))
         };
         if ok {
