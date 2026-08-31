@@ -38,39 +38,12 @@ use crate::model::{Category, LatLon, MapModel, Panel, TransitMode, TransitTimeMo
 use crate::net::{self, NetMsg};
 use crate::offline_panel::{OfflineAction, OfflineFrame, OfflinePanel};
 use crate::sample::{self, Basemap};
+use crate::search_box::{
+    SearchBox, SearchEffect, SearchHit, SearchKeyEffect, SearchOverlay, drive_text_input,
+};
 use crate::tiles::{GeoBounds, TileId, TileLayer, TileStyle};
 use crate::traffic::{Congestion, TrafficData};
 use ui::widget::TextInput;
-
-/// Feed one raw winit event into an embedded [`TextInput`]. The search /
-/// endpoint fields live outside the taffy tree (the app lays them out by hand),
-/// so a throwaway leaf node + doc satisfy `Widget::handle_event`; the fields are
-/// local-mode, so the doc is never touched.
-fn drive_text_input(
-    ti: &mut TextInput,
-    event: &WindowEvent,
-    scale: f64,
-    modifiers: winit::event::Modifiers,
-) {
-    let mut doc = AutoCommit::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let Ok(node) = taffy.new_leaf(Style::default()) else {
-        return;
-    };
-    let mut handled = false;
-    let mut focus_target: Option<NodeId> = None;
-    ti.handle_event(
-        event,
-        scale,
-        &modifiers,
-        &mut doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus_target,
-        node,
-        &taffy,
-    );
-}
 
 /// Which Directions endpoint field (From / To) currently has keyboard focus for
 /// typed geocoding. `None` when neither is being edited.
@@ -103,11 +76,8 @@ const NAV_OVERLAY_BELOW: f64 = 720.0;
 /// Widest the panel is ever drawn (docked, or as an overlay drawer).
 const PANEL_MAX_W: f64 = 384.0;
 const PANEL_MIN_W: f64 = 300.0;
-/// Idle gap after the last search keystroke before firing a live Nominatim
-/// geocode. Short enough to feel instant, long enough not to query per-char.
-const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(280);
-/// Cap on rows shown in the floating search-results overlay.
-const SEARCH_OVERLAY_MAX: usize = 6;
+const ENDPOINT_SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(280);
+const ENDPOINT_OVERLAY_MAX: usize = 6;
 /// Idle gap after the last pan/zoom before refetching viewport POIs (Overpass).
 const POI_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(450);
 /// Only fetch POIs at city-block scale and closer — a whole-country viewport
@@ -131,10 +101,7 @@ const PERSIST_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(1
 enum Hit {
     /// Swallow the click (panel chrome) — don't pan the map.
     Consume,
-    FocusSearch,
-    ClearSearch,
-    /// Choose the Nth result from the floating search-results overlay.
-    PickSearch(usize),
+    Search(SearchHit),
     /// Collapse / expand the side panel (docked layouts).
     ToggleCollapse,
     /// Return from the Directions view to the plain places list.
@@ -203,11 +170,9 @@ pub struct MapsApp {
     /// Floating zoom/location/traffic stack. Owns geometry, drawing,
     /// hit-testing, traffic UI state, and shared tooltip timing.
     map_controls: MapControls,
-    search_focused: bool,
-    /// The top search field — a shared single-line [`TextInput`] (Enter runs
-    /// the search) so it gets real caret, selection, clipboard, focus ring,
-    /// a11y, and theming. Its value mirrors `model.query`.
-    search_input: TextInput,
+    /// Top-level place search: text input, focus, debounce, results overlay,
+    /// drawing, and hot regions are one component.
+    search: SearchBox,
     /// The Directions From / To endpoint fields, likewise shared `TextInput`s
     /// (Enter geocodes that endpoint). While editing, each mirrors its
     /// `model.*_query`; otherwise it shows the resolved endpoint name.
@@ -219,15 +184,8 @@ pub struct MapsApp {
     origin_results: Vec<crate::model::Place>,
     /// Geocoded dropdown results for the "To" field (render cache).
     dest_results: Vec<crate::model::Place>,
-    /// Ranked live-search results for the floating overlay under the search
-    /// field (render cache; proximity-ordered, never reflows the panel).
-    search_results: Vec<crate::model::Place>,
-    /// Debounce deadline for the search-as-you-type geocode: set on each
-    /// keystroke, fired once from `sync` when it elapses so we query Nominatim
-    /// after typing settles rather than on every character.
-    search_debounce: Option<Instant>,
     /// Debounce deadline for the live endpoint (From/To) geocode. Same shape as
-    /// `search_debounce`: armed on each keystroke, fired once typing settles so
+    /// Same debounce pattern as the top-level search: armed on each keystroke,
     /// the start/end fields search-as-you-type (no Enter) just like the top bar.
     endpoint_debounce: Option<Instant>,
     /// Screen rects of the last-drawn From / To endpoint fields, so the floating
@@ -365,15 +323,7 @@ impl MapsApp {
             actions: ui::ActionHost::new(),
             last_mouse: Point::ZERO,
             map_controls: MapControls::default(),
-            search_focused: false,
-            search_input: {
-                let mut t = TextInput::local()
-                    .with_enter_submits(true)
-                    .with_font_size(15.0);
-                t.set_plain_chrome(true);
-                t.set_placeholder("Search places, addresses…");
-                t
-            },
+            search: SearchBox::new(),
             origin_input: {
                 let mut t = TextInput::local()
                     .with_enter_submits(true)
@@ -393,8 +343,6 @@ impl MapsApp {
             edit_field: None,
             origin_results: Vec::new(),
             dest_results: Vec::new(),
-            search_results: Vec::new(),
-            search_debounce: None,
             endpoint_debounce: None,
             origin_field_rect: None,
             dest_field_rect: None,
@@ -516,11 +464,11 @@ impl MapsApp {
     /// captured headlessly. Offline local data only — no network.
     pub fn set_demo_search(&mut self) {
         self.model.panel = Panel::Explore;
-        self.search_focused = true;
+        self.search.set_focused(true);
         self.model.query = "Marienplatz".to_string();
         let mut results = self.model.places.clone();
         self.rank_by_proximity(&mut results);
-        self.search_results = results;
+        self.search.replace_results(results);
     }
 
     /// Screenshot-only hook: open Directions in Transit mode anchored to an
@@ -1038,30 +986,17 @@ impl MapsApp {
     /// settles. This is the search-as-you-type entry point — no Enter needed.
     fn on_search_input(&mut self) {
         let q = self.model.query.trim().to_string();
-        if q.is_empty() {
-            self.search_results.clear();
-            self.search_debounce = None;
-        } else {
-            self.search_results = self.ranked_matches(&q);
-            self.search_debounce = Some(Instant::now() + SEARCH_DEBOUNCE);
-        }
+        let matches = self.ranked_matches(&q);
+        self.search.query_changed(&q, matches, Instant::now());
         self.mark_dirty();
     }
 
     /// Fire the debounced live geocode if the quiet period has elapsed. Called
     /// once per frame from `sync` (the search field keeps the frame loop awake).
     fn tick_search_debounce(&mut self, now: Instant) {
-        let Some(deadline) = self.search_debounce else {
+        let Some(q) = self.search.take_due_query(now, &self.model.query) else {
             return;
         };
-        if now < deadline {
-            return;
-        }
-        self.search_debounce = None;
-        let q = self.model.query.trim().to_string();
-        if q.is_empty() {
-            return;
-        }
         // Best-effort live augmentation; instant local matches already show.
         self.pending += 1;
         self.model.status = "Searching…".to_string();
@@ -1072,23 +1007,6 @@ impl MapsApp {
                 let _ = tx.send(NetMsg::Search { query: q, results });
             });
         }
-    }
-
-    /// Adopt a result chosen from the floating search overlay: select it (which
-    /// recentres the map), put its proper human name in the search field, and
-    /// dismiss the overlay. Fixes the label bug where the field showed a bare
-    /// house number instead of the place name.
-    fn pick_search_result(&mut self, idx: usize) {
-        let Some(p) = self.search_results.get(idx).cloned() else {
-            return;
-        };
-        self.model.upsert_place(p.clone());
-        p.name.clone_into(&mut self.model.query);
-        self.model.push_recent(&p.name);
-        self.search_results.clear();
-        self.search_debounce = None;
-        self.search_focused = false;
-        self.select_place(&p.id);
     }
 
     /// Local (offline) search: substring match over known places. Also kicks
@@ -1110,8 +1028,7 @@ impl MapsApp {
         self.scroll = 0.0;
         // Enter commits the search: dismiss the floating overlay and stop the
         // pending debounce (the live augmentation below supersedes it).
-        self.search_results.clear();
-        self.search_debounce = None;
+        self.search.dismiss_results();
         // Results just landed — reveal the drawer on narrow layouts.
         self.nav_open = true;
 
@@ -1137,7 +1054,7 @@ impl MapsApp {
     /// the user types fresh (a placeholder shows), and drop the top-search focus.
     fn focus_endpoint(&mut self, field: EndField) {
         self.edit_field = Some(field);
-        self.search_focused = false;
+        self.search.set_focused(false);
         self.endpoint_debounce = None;
         match field {
             EndField::Origin => {
@@ -1190,7 +1107,7 @@ impl MapsApp {
         if q.is_empty() {
             self.endpoint_debounce = None;
         } else {
-            self.endpoint_debounce = Some(Instant::now() + SEARCH_DEBOUNCE);
+            self.endpoint_debounce = Some(Instant::now() + ENDPOINT_SEARCH_DEBOUNCE);
         }
         self.mark_dirty();
     }
@@ -1783,11 +1700,11 @@ impl MapsApp {
                             self.model.upsert_place(p.clone());
                         }
                         self.rank_results(&mut ranked, &query);
-                        if self.search_focused {
+                        if self.search.is_focused() {
                             // Search-as-you-type: fill the floating overlay only.
                             // Never reflow the panel or recentre the map while
                             // the user is still typing.
-                            self.search_results = ranked.clone();
+                            self.search.replace_results(ranked.clone());
                         } else {
                             // A committed search (Enter): populate the panel and
                             // centre on the top (nearest) match.
@@ -1954,15 +1871,20 @@ impl MapsApp {
     fn dispatch(&mut self, hit: &Hit, doc: &mut AutoCommit) {
         match hit {
             Hit::Consume => {}
-            Hit::FocusSearch => self.search_focused = true,
-            Hit::ClearSearch => {
-                self.model.query.clear();
-                self.model.results.clear();
-                self.search_results.clear();
-                self.search_debounce = None;
-                self.mark_dirty();
-            }
-            Hit::PickSearch(i) => self.pick_search_result(*i),
+            Hit::Search(hit) => match self.search.handle_hit(hit) {
+                SearchEffect::None => {}
+                SearchEffect::Clear => {
+                    self.model.query.clear();
+                    self.model.results.clear();
+                    self.mark_dirty();
+                }
+                SearchEffect::Pick(place) => {
+                    self.model.upsert_place(place.clone());
+                    place.name.clone_into(&mut self.model.query);
+                    self.model.push_recent(&place.name);
+                    self.select_place(&place.id);
+                }
+            },
             Hit::ToggleCollapse => {
                 self.panel_collapsed = !self.panel_collapsed;
                 self.mark_dirty();
@@ -2520,69 +2442,19 @@ impl MapsApp {
 
     fn draw_search(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let r = self.search_rect();
-        // Focus target first so it sits above the drawer scrim but below the
-        // clear (×) button, which is pushed later and therefore wins its area.
-        self.click_targets.push((r, Hit::FocusSearch));
-        let c = &theme.tokens.colors;
-        let border = if self.search_focused {
-            theme.border_focus
-        } else {
-            c.border_standard
-        };
-        draw::card(scene, t, r, 12.0, c.surfaces.raised, border);
-        // Search glyph (a magnifier drawn as a circle + handle).
-        let gx = r.x0 + 22.0;
-        let gy = r.y0 + r.height() / 2.0;
-        draw::stroke_circle(scene, t, Point::new(gx, gy - 1.0), 6.0, 2.0, theme.text_dim);
-        draw::line(
-            scene,
-            t,
-            Point::new(gx + 4.5, gy + 3.5),
-            Point::new(gx + 9.0, gy + 8.0),
-            2.0,
-            theme.text_dim,
+        self.search
+            .draw_field(scene, t, tr, theme, r, &self.model.query);
+        self.click_targets.extend(
+            self.search
+                .take_targets()
+                .into_iter()
+                .map(|(rect, hit)| (rect, Hit::Search(hit))),
         );
-
-        // The shared TextInput owns the text, caret, selection, and placeholder
-        // inside the field. Its value mirrors `model.query`; a `/`-focus or click
-        // sets `search_focused`, which drives the widget's focus (caret) here.
-        let text_x = r.x0 + 40.0;
-        let text_rect = Rect::new(text_x - 4.0, r.y0, r.x1 - 34.0, r.y1);
-        self.search_input.set_text(&self.model.query);
-        self.search_input.set_focus(self.search_focused);
-        self.search_input.apply_layout_external(text_rect);
-        self.search_input
-            .draw(scene, t, tr, theme, &PresenceCtx::empty());
-        // Clear (×) button, shown whenever there is text to clear.
-        if !self.model.query.is_empty() {
-            let cb = Rect::new(r.x1 - 32.0, r.y0 + 10.0, r.x1 - 10.0, r.y1 - 10.0);
-            draw::fill_circle(scene, t, cb.center(), 10.0, c.surfaces.base);
-            let cc = cb.center();
-            draw::line(
-                scene,
-                t,
-                Point::new(cc.x - 4.0, cc.y - 4.0),
-                Point::new(cc.x + 4.0, cc.y + 4.0),
-                1.8,
-                theme.text_dim,
-            );
-            draw::line(
-                scene,
-                t,
-                Point::new(cc.x + 4.0, cc.y - 4.0),
-                Point::new(cc.x - 4.0, cc.y + 4.0),
-                1.8,
-                theme.text_dim,
-            );
-            self.click_targets.push((cb, Hit::ClearSearch));
-        }
     }
 
     /// Whether the floating search-results overlay is currently on screen.
     fn search_overlay_active(&self) -> bool {
-        self.search_focused
-            && !self.model.query.trim().is_empty()
-            && !self.search_results.is_empty()
+        self.search.overlay_active(&self.model.query)
     }
 
     /// Floating results overlay anchored directly under the search field. It
@@ -2590,12 +2462,6 @@ impl MapsApp {
     /// panel) as a dropdown — it deliberately never reflows the panel or the
     /// map to make room. Rows are proximity-ordered with a distance chip, so
     /// the nearest match to where the user is looking reads first.
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "conventional short names for the shared drawing context (scene, t: transform, \
-              tr: text renderer, c: theme colours, r: rect) used consistently across every \
-              draw_* method in this file"
-    )]
     fn draw_search_overlay(
         &mut self,
         scene: &mut Scene,
@@ -2603,86 +2469,26 @@ impl MapsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if !self.search_overlay_active() {
-            return;
-        }
-        let c = &theme.tokens.colors;
-        let sr = self.search_rect();
-        let x = sr.x0;
-        let w = sr.width();
-        let row_h = 46.0;
-        let pad = 6.0;
-        let n = self.search_results.len().min(SEARCH_OVERLAY_MAX);
-        let h = pad * 2.0 + n as f64 * row_h;
-        let top = sr.y1 + 6.0;
-        let card = Rect::new(x, top, x + w, top + h);
-        draw::card(scene, t, card, 12.0, c.surfaces.raised, c.border_standard);
-        // Swallow clicks that land on the card gaps (not on a row).
-        self.click_targets.push((card, Hit::Consume));
-
-        let results = self.search_results.clone();
+        let rect = self.search_rect();
         let anchor = self.search_anchor();
-        let mut y = top + pad;
-        for (i, p) in results.iter().enumerate().take(n) {
-            let r = Rect::new(x + pad, y, x + w - pad, y + row_h - 2.0);
-            let selected = self.model.selected.as_deref() == Some(p.id.as_str());
-            if selected {
-                draw::fill_rrect(scene, t, r, 8.0, draw::alpha(theme.accent_primary, 0.12));
-            }
-            let cat_col = canvas::category_color(theme, p.category);
-            draw::fill_circle(
-                scene,
-                t,
-                Point::new(r.x0 + 14.0, r.center().y),
-                6.0,
-                cat_col,
-            );
-            draw::fill_circle(
-                scene,
-                t,
-                Point::new(r.x0 + 14.0, r.center().y),
-                2.4,
-                draw::mix(c.surfaces.base, Color::WHITE, 0.7),
-            );
-            let tx = r.x0 + 30.0;
-            // Distance chip on the trailing edge makes the proximity order legible.
-            let dist = geo::fmt_distance(geo::haversine_m(p.pos, anchor));
-            let dw = draw::measure_w(tr, &dist, 11.0) + 8.0;
-            draw::text_clip(
-                scene,
-                tr,
-                t,
-                &p.name,
-                tx,
-                r.y0 + 6.0,
-                13.0,
-                theme.text_primary,
-                r.x1 - tx - dw,
-            );
-            draw::text_clip(
-                scene,
-                tr,
-                t,
-                &p.address,
-                tx,
-                r.y0 + 24.0,
-                11.0,
-                theme.text_dim,
-                r.x1 - tx - dw,
-            );
-            draw::text_right(
-                scene,
-                tr,
-                t,
-                &dist,
-                r.x1 - 8.0,
-                r.y0 + 8.0,
-                11.0,
-                theme.accent_primary,
-            );
-            self.click_targets.push((r, Hit::PickSearch(i)));
-            y += row_h;
-        }
+        self.search.draw_overlay(
+            scene,
+            t,
+            tr,
+            theme,
+            SearchOverlay {
+                rect,
+                query: &self.model.query,
+                selected_id: self.model.selected.as_deref(),
+                anchor,
+            },
+        );
+        self.click_targets.extend(
+            self.search
+                .take_targets()
+                .into_iter()
+                .map(|(rect, hit)| (rect, Hit::Search(hit))),
+        );
     }
 
     /// Whether the floating endpoint (From/To) results overlay is on screen.
@@ -2762,7 +2568,7 @@ impl MapsApp {
 
         let row_h = 46.0;
         let pad = 6.0;
-        let n = results.len().min(SEARCH_OVERLAY_MAX);
+        let n = results.len().min(ENDPOINT_OVERLAY_MAX);
         let h = pad * 2.0 + n as f64 * row_h;
         let card = Rect::new(x, top, x + w, top + h);
         draw::card(scene, t, card, 12.0, c.surfaces.raised, c.border_standard);
@@ -4869,8 +4675,8 @@ impl Widget for MapsApp {
                     .map(|(_, h)| h.clone())
                 {
                     // Clicking outside the search bar unfocuses it.
-                    if !matches!(hit, Hit::FocusSearch) {
-                        self.search_focused = false;
+                    if !matches!(hit, Hit::Search(SearchHit::Field)) {
+                        self.search.set_focused(false);
                     }
                     // Clicking anything other than an endpoint field (or its
                     // dropdown) ends endpoint editing.
@@ -4884,14 +4690,17 @@ impl Widget for MapsApp {
                     // A click that focused a text field forwards the press so the
                     // shared TextInput places its caret at the click point (the
                     // preceding CursorMoved already set its hover flag).
-                    if matches!(hit, Hit::FocusSearch | Hit::EditOrigin | Hit::EditDest) {
+                    if matches!(
+                        hit,
+                        Hit::Search(SearchHit::Field) | Hit::EditOrigin | Hit::EditDest
+                    ) {
                         self.forward_press_to_field(&hit, event, scale_factor, *modifiers);
                     }
                     consumed = true;
                     *handled = true;
                 }
                 if !consumed {
-                    self.search_focused = false;
+                    self.search.set_focused(false);
                     self.edit_field = None;
                     // The standalone control stack is below modal/panel targets
                     // above, but above the actual map surface.
@@ -4977,7 +4786,7 @@ impl Widget for MapsApp {
                 // A focused text field (search or an endpoint) owns the
                 // keystroke via the shared TextInput; otherwise the map-level
                 // shortcuts apply.
-                let field_focused = self.edit_field.is_some() || self.search_focused;
+                let field_focused = self.edit_field.is_some() || self.search.is_focused();
                 if field_focused {
                     if self.route_field_key(event, scale_factor, *modifiers) {
                         *handled = true;
@@ -5046,8 +4855,8 @@ impl Widget for MapsApp {
         // `has_inflight()`, so a viewport of unfetchable tiles no longer pins
         // the loop at 60 Hz.
         self.pending > 0
-            || self.search_focused
-            || self.search_debounce.is_some()
+            || self.search.is_focused()
+            || self.search.has_pending_query()
             || self.endpoint_debounce.is_some()
             || self.poi_debounce.is_some()
             || self.edit_field.is_some()
@@ -5128,20 +4937,15 @@ impl MapsApp {
             }
             return true;
         }
-        if self.search_focused {
-            if is_escape {
-                self.search_focused = false;
-                self.mark_dirty();
-                return true;
-            }
-            self.search_input.set_focus(true);
-            drive_text_input(&mut self.search_input, event, scale, modifiers);
-            if self.search_input.take_submit() {
-                self.search_focused = false;
-                self.run_search();
-            } else if let Some(text) = self.search_input.take_dirty() {
-                self.model.query = text;
-                self.on_search_input();
+        if self.search.is_focused() {
+            match self.search.handle_key(event, scale, modifiers) {
+                SearchKeyEffect::None => {}
+                SearchKeyEffect::Changed(text) => {
+                    self.model.query = text;
+                    self.on_search_input();
+                }
+                SearchKeyEffect::Submit => self.run_search(),
+                SearchKeyEffect::Dismissed => self.mark_dirty(),
             }
             return true;
         }
@@ -5198,7 +5002,7 @@ impl MapsApp {
         scale: f64,
         modifiers: winit::event::Modifiers,
     ) {
-        drive_text_input(&mut self.search_input, event, scale, modifiers);
+        self.search.forward_pointer(event, scale, modifiers);
         drive_text_input(&mut self.origin_input, event, scale, modifiers);
         drive_text_input(&mut self.dest_input, event, scale, modifiers);
     }
@@ -5212,8 +5016,11 @@ impl MapsApp {
         scale: f64,
         modifiers: winit::event::Modifiers,
     ) {
+        if matches!(which, Hit::Search(SearchHit::Field)) {
+            self.search.forward_press(event, scale, modifiers);
+            return;
+        }
         let input = match which {
-            Hit::FocusSearch => &mut self.search_input,
             Hit::EditOrigin => &mut self.origin_input,
             Hit::EditDest => &mut self.dest_input,
             _ => return,
@@ -5236,7 +5043,7 @@ impl MapsApp {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         match key {
             Key::Character(s) if s.as_str() == "/" => {
-                self.search_focused = true;
+                self.search.set_focused(true);
                 true
             }
             Key::Character(s) if s.as_str() == "+" || s.as_str() == "=" => {
@@ -5566,7 +5373,7 @@ mod tests {
         use ui::profiling::{PerfScenario, PerfStep, run_scenario_on};
         let mut app = MapsApp::offline();
         app.seed_perf_tiles(1280.0, 800.0);
-        app.search_focused = true;
+        app.search.set_focused(true);
         let scenario = PerfScenario {
             name: "maps-search-typing".into(),
             viewport: (1280, 800),
@@ -5690,45 +5497,6 @@ mod tests {
 
     // --- Search-as-you-type + overlay + ranking ----------------------------
 
-    /// Typing shows instant local matches immediately and arms a debounce; the
-    /// live geocode fires only after the quiet period elapses (not per-char).
-    #[test]
-    fn search_as_you_type_debounces_then_fires() {
-        let mut a = app_at(1280.0, 720.0);
-        a.search_focused = true;
-        a.model.query = "caf".to_string();
-        a.on_search_input();
-        assert!(
-            !a.search_results.is_empty(),
-            "instant matches show before any fetch"
-        );
-        assert!(
-            a.search_debounce.is_some(),
-            "a live query is armed on input"
-        );
-
-        let pending_before = a.pending;
-        a.tick_search_debounce(Instant::now());
-        assert_eq!(
-            a.pending, pending_before,
-            "no live query before the debounce elapses"
-        );
-        assert!(a.search_debounce.is_some());
-
-        a.tick_search_debounce(
-            Instant::now() + SEARCH_DEBOUNCE + std::time::Duration::from_millis(1),
-        );
-        assert_eq!(
-            a.pending,
-            pending_before + 1,
-            "debounce fires exactly one live query"
-        );
-        assert!(
-            a.search_debounce.is_none(),
-            "the debounce clears after firing"
-        );
-    }
-
     /// Search results are ordered by proximity to the search anchor (map centre
     /// or the user's location), nearest first.
     #[test]
@@ -5774,16 +5542,16 @@ mod tests {
     #[test]
     fn picking_search_result_sets_place_name_label() {
         let mut a = app_at(1280.0, 720.0);
-        a.search_focused = true;
-        a.search_results = vec![crate::model::Place::new(
+        a.search.set_focused(true);
+        a.search.replace_results(vec![crate::model::Place::new(
             "osm-w-1",
             "Theatinerstraße 18",
             Category::Shop,
             "18, Theatinerstraße, München",
             LatLon::new(48.141, 11.577),
-        )];
+        )]);
         a.model.query = "theat".to_string();
-        a.pick_search_result(0);
+        tap(&mut a, &Hit::Search(SearchHit::Result(0)));
         assert_eq!(
             a.model.query, "Theatinerstraße 18",
             "field shows the human place-name"
@@ -5794,8 +5562,8 @@ mod tests {
             Some("osm-w-1"),
             "the pick is selected"
         );
-        assert!(!a.search_focused, "picking dismisses the overlay");
-        assert!(a.search_results.is_empty(), "overlay clears after a pick");
+        assert!(!a.search.is_focused(), "picking dismisses the overlay");
+        assert!(a.search.results().is_empty(), "overlay clears after a pick");
         assert!(
             (a.model.center.lat - 48.141).abs() < 1e-9,
             "map navigated to the pick"
@@ -5819,7 +5587,7 @@ mod tests {
             .click_targets
             .iter()
             .rev()
-            .find(|(_, h)| matches!(h, Hit::PickSearch(_)))
+            .find(|(_, h)| matches!(h, Hit::Search(SearchHit::Result(_))))
             .map(|(r, _)| *r)
             .expect("overlay records PickSearch hot-regions");
         // Anchored below the search field (a dropdown, not a reflow).
@@ -5841,7 +5609,7 @@ mod tests {
             .find(|(r, _)| r.contains(row.center()))
             .map(|(_, h)| h.clone());
         assert!(
-            matches!(topmost, Some(Hit::PickSearch(_))),
+            matches!(topmost, Some(Hit::Search(SearchHit::Result(_)))),
             "overlay row is the topmost target"
         );
     }
@@ -5869,7 +5637,7 @@ mod tests {
         let has_pick = a
             .click_targets
             .iter()
-            .any(|(_, h)| matches!(h, Hit::PickSearch(_)));
+            .any(|(_, h)| matches!(h, Hit::Search(SearchHit::Result(_))));
         let has_panel_rows = a
             .click_targets
             .iter()
@@ -5881,7 +5649,7 @@ mod tests {
         );
 
         // Dismiss the results → the panel list returns.
-        a.search_focused = false;
+        a.search.set_focused(false);
         assert!(!a.search_overlay_active());
         let mut scene2 = Scene::new();
         a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
@@ -6429,7 +6197,7 @@ mod tests {
 
         let sc = a.search_rect().center();
         assert!(
-            matches!(topmost(&a, sc), Some(Hit::FocusSearch)),
+            matches!(topmost(&a, sc), Some(Hit::Search(SearchHit::Field))),
             "search tap must focus, not close the drawer"
         );
         let mc = a.menu_rect().unwrap().center();
@@ -7302,9 +7070,9 @@ mod tests {
     fn ctrl_v_pastes_into_the_search_field() {
         let mut a = app_at(1280.0, 720.0);
         a.model.query.clear();
-        a.search_focused = false;
+        a.search.set_focused(false);
         key_char(&mut a, "/"); // focus the search field
-        assert!(a.search_focused);
+        assert!(a.search.is_focused());
 
         let sentinel = "Alexanderplatz";
         ui::clipboard_copy(sentinel);
@@ -7363,9 +7131,9 @@ mod tests {
     fn slash_and_typing_drive_search_via_key_event() {
         let mut a = app_at(1280.0, 720.0);
         a.model.query.clear();
-        a.search_focused = false;
+        a.search.set_focused(false);
         assert!(key_char(&mut a, "/"), "'/' handled");
-        assert!(a.search_focused, "'/' focuses search");
+        assert!(a.search.is_focused(), "'/' focuses search");
         key_char(&mut a, "h");
         key_char(&mut a, "i");
         assert_eq!(
@@ -7375,7 +7143,7 @@ mod tests {
         key_named(&mut a, NamedKey::Backspace);
         assert_eq!(a.model.query, "h", "Backspace deletes a char");
         key_named(&mut a, NamedKey::Escape);
-        assert!(!a.search_focused, "Escape unfocuses search");
+        assert!(!a.search.is_focused(), "Escape unfocuses search");
     }
 
     /// `+`/`-` zoom the map through the key path.
@@ -7481,7 +7249,7 @@ mod tests {
         a.model.query = "café".to_string();
         a.run_search();
         assert!(!a.model.results.is_empty(), "search populated results");
-        tap(&mut a, &Hit::ClearSearch);
+        tap(&mut a, &Hit::Search(SearchHit::Clear));
         assert!(a.model.query.is_empty(), "clear empties the query");
         assert!(a.model.results.is_empty(), "clear empties the results");
     }
