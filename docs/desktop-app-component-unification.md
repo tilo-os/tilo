@@ -30,6 +30,17 @@ shape for everything below:
 | Transient file-access / permission prompt | `ui::widget::permission_prompt::PermissionPrompt` | mounted by `overlay_host.rs`; `set_rect` + `draw` only |
 | **Notification / toast stack** | **`ui::widget::toast` (`paint_card`)** | **done this pass — see below** |
 
+### Overlay ownership boundaries already extracted
+
+These components are not necessarily finished with the shared-widget migration,
+but their state, rendering, and hit-testing no longer live in the global overlay
+router. This is the prerequisite boundary for replacing their remaining painted
+controls without growing `ShellOverlayHost` again.
+
+| Surface | Owner | Host contract |
+|---|---|---|
+| Wireless projection sheet | `shell/src/shell/projection_overlay.rs` (`ProjectionOverlay`) | The component owns discovery/session state, animation, AirPlay credential input, geometry, drawing, keyboard handling, and pointer hit-testing. `overlay_host.rs` only supplies visibility and maps `EventOutcome` close/invalidate requests into `Chrome`. |
+
 ---
 
 ## Duplication inventory (hand-rolled desktop chrome)
