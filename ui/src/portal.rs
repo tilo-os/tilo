@@ -95,6 +95,14 @@ impl FileFilter {
     }
 
     /// Match files by shell glob, e.g. `*.png`.
+    /// The globs this filter offers, so an app can assert that its chooser
+    /// advertises everything it can actually open — a filter narrower than
+    /// the reader behind it hides a user's file with no way to discover the
+    /// app would have taken it.
+    pub fn globs(&self) -> &[String] {
+        &self.globs
+    }
+
     pub fn glob(mut self, g: &str) -> Self {
         self.globs.push(g.to_string());
         self

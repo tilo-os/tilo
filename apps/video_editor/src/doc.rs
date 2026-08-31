@@ -8,7 +8,8 @@
 //! root
 //! ├── "project" (Map)  name / fps / width / height
 //! ├── "media"   (Map keyed by MediaId)  → { name,kind,duration,w,h,fps,palette }
-//! ├── "tracks"  (Map keyed by TrackId)  → { name,kind,index,muted,locked,solo }
+//! ├── "tracks"  (Map keyed by TrackId)  → { name,kind,index,muted,locked,solo,
+//!                                            gain_db,pan }
 //! └── "clips"   (Map keyed by ClipId)   → { track,media,start,in,out,opacity,
 //!                                            volume,transition,transition_duration,
 //!                                            palette,filters,fades,effects }
@@ -189,6 +190,8 @@ impl VideoDoc {
         let _ = doc.put(&obj, "muted", t.muted);
         let _ = doc.put(&obj, "locked", t.locked);
         let _ = doc.put(&obj, "solo", t.solo);
+        let _ = doc.put(&obj, "gain_db", t.gain_db);
+        let _ = doc.put(&obj, "pan", t.pan);
     }
 
     pub fn upsert_clip(doc: &mut AutoCommit, c: &Clip) {
@@ -422,6 +425,12 @@ impl VideoDoc {
                     // Absent in documents written before solo existed, which
                     // `get_bool` reads as false — the right default.
                     solo: Self::get_bool(doc, &obj, "solo"),
+                    // Absent in every document written before the lane had a
+                    // fader. `0.0` is unity and centre, so such a project
+                    // plays back at exactly the level it always did rather
+                    // than arriving silent or hard-panned.
+                    gain_db: Self::get_f64(doc, &obj, "gain_db").unwrap_or(0.0),
+                    pan: Self::get_f64(doc, &obj, "pan").unwrap_or(0.0),
                 });
             }
         }
@@ -645,6 +654,8 @@ pub fn sample_project() -> Project {
         muted: false,
         locked: false,
         solo: false,
+        gain_db: 0.0,
+        pan: 0.0,
     };
     let v1 = mk_track("V1", TrackKind::Video, 1);
     let v2 = mk_track("V2", TrackKind::Video, 2);

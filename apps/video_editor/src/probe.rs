@@ -299,16 +299,16 @@ fn image_probe(w: u32, h: u32, codec: &str) -> ProbedMedia {
 
 /// Media containers we do not parse but which are unquestionably media, so an
 /// import of one is honest with unknown numbers rather than refused.
-const VIDEO_EXTS: &[&str] = &[
+pub(crate) const VIDEO_EXTS: &[&str] = &[
     "mp4", "m4v", "mov", "qt", "mkv", "webm", "avi", "flv", "f4v", "wmv", "asf", "mpg", "mpeg",
     "mpe", "m1v", "m2v", "ts", "m2ts", "mts", "ogv", "3gp", "3g2", "vob", "mxf", "divx", "rm",
     "rmvb", "y4m",
 ];
-const AUDIO_EXTS: &[&str] = &[
+pub(crate) const AUDIO_EXTS: &[&str] = &[
     "wav", "wave", "mp3", "flac", "aac", "ogg", "oga", "opus", "m4a", "m4b", "wma", "aiff", "aif",
     "aifc", "ape", "mka", "amr", "au", "caf", "dsf", "wv", "ac3", "dts",
 ];
-const IMAGE_EXTS: &[&str] = &[
+pub(crate) const IMAGE_EXTS: &[&str] = &[
     "png", "jpg", "jpeg", "jpe", "gif", "webp", "bmp", "tif", "tiff", "avif", "heic", "heif",
     "ico", "jxl", "tga",
 ];

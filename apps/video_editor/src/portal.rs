@@ -32,24 +32,47 @@ pub use ui::portal::inject_multi_for_test as inject_for_test;
 /// and MIME types are supplied because portal backends differ in which they
 /// honour.
 fn media_filter() -> FileFilter {
-    FileFilter::new("Media")
+    // Built from the very lists the probe accepts, so the chooser cannot
+    // advertise less than the editor can open. It used to name five video
+    // extensions, two audio and three image while `probe` recognised
+    // twenty-eight, twenty-three and fifteen — so a `.flac`, an `.avi` or a
+    // `.heic` was filtered out of the picker entirely, and a user with one had
+    // no way to discover the editor would have taken it happily.
+    //
+    // MIME types stay hand-written: they are a small, stable set covering the
+    // formats whose types portal backends actually honour, and there is no
+    // extension-to-MIME table here to derive them from. The globs are the
+    // authoritative half — a backend that honours neither shows everything,
+    // which is also fine.
+    let mut f = FileFilter::new("Media")
         .mimetype("video/mp4")
         .mimetype("video/webm")
         .mimetype("video/x-matroska")
         .mimetype("video/quicktime")
+        .mimetype("video/x-msvideo")
+        .mimetype("video/mpeg")
         .mimetype("audio/wav")
         .mimetype("audio/mpeg")
+        .mimetype("audio/flac")
+        .mimetype("audio/ogg")
+        .mimetype("audio/opus")
+        .mimetype("audio/mp4")
+        .mimetype("audio/aac")
         .mimetype("image/png")
         .mimetype("image/jpeg")
-        .glob("*.mp4")
-        .glob("*.mov")
-        .glob("*.webm")
-        .glob("*.mkv")
-        .glob("*.wav")
-        .glob("*.mp3")
-        .glob("*.png")
-        .glob("*.jpg")
-        .glob("*.jpeg")
+        .mimetype("image/webp")
+        .mimetype("image/gif")
+        .mimetype("image/tiff")
+        .mimetype("image/avif")
+        .mimetype("image/heif");
+    for ext in crate::probe::VIDEO_EXTS
+        .iter()
+        .chain(crate::probe::AUDIO_EXTS)
+        .chain(crate::probe::IMAGE_EXTS)
+    {
+        f = f.glob(&format!("*.{ext}"));
+    }
+    f
 }
 
 /// Open the host multi-select chooser for media to import, on a worker thread.
@@ -291,5 +314,39 @@ mod tests {
     fn inject_drives_the_same_drain_path_the_worker_feeds() {
         let rx = inject_for_test(ImportOutcome::Cancelled);
         assert_eq!(rx.try_recv(), Ok(ImportOutcome::Cancelled));
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+
+    /// The chooser must offer everything the editor can actually open.
+    ///
+    /// It used to name five video extensions against the probe's twenty-eight,
+    /// so a `.flac`, an `.avi` or a `.heic` was filtered out of the picker and
+    /// the user had no way to learn the editor would have taken it. Deriving
+    /// the globs from the probe's own lists is what keeps the two honest; this
+    /// asserts they have not drifted apart again.
+    #[test]
+    fn the_chooser_offers_every_format_the_probe_accepts() {
+        let f = media_filter();
+        let globs: Vec<&str> = f.globs().iter().map(String::as_str).collect();
+        for ext in crate::probe::VIDEO_EXTS
+            .iter()
+            .chain(crate::probe::AUDIO_EXTS)
+            .chain(crate::probe::IMAGE_EXTS)
+        {
+            let want = format!("*.{ext}");
+            assert!(
+                globs.contains(&want.as_str()),
+                "the probe reads {ext} but the chooser hides it: {globs:?}",
+            );
+        }
+        // And a few by name, so the test says something even if the lists are
+        // ever restructured.
+        for want in ["*.flac", "*.avi", "*.heic", "*.opus", "*.mkv"] {
+            assert!(globs.contains(&want), "missing {want}");
+        }
     }
 }
