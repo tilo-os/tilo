@@ -1990,6 +1990,12 @@ fn bind_and_publish_wayland_socket() -> (
               inspection (backend construction, the wayland socket bind+publish) is factored out \
               into `build_backend`/`bind_and_publish_wayland_socket` below"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "rooms and here below are each fully chained from the workspace tree read guard; \
+              nothing to drop earlier without cloning the tree data out for no real gain, and \
+              the block already ends right after both are computed"
+)]
 pub fn run() -> ! {
     // Calloop drives the whole compositor; smithay is callback-oriented and
     // expects every wakeup to fan out from a single `EventLoop::<State>`.
@@ -2935,12 +2941,6 @@ pub fn run() -> ! {
             // The pointer as the input state knows it — "nowhere", not the origin, for
             // a session that never moved one; being level-triggered, `cursor()` would paint a cursor for nobody.
             relay.set_cursor_position(state.client_input.pointer_position());
-            #[allow(
-                clippy::significant_drop_tightening,
-                reason = "rooms and here are each fully chained from tree; nothing to drop \
-                          earlier without cloning the tree data out for no real gain, and the \
-                          block already ends right after both are computed"
-            )]
             let (rooms, here) = {
                 // Clone the tree handle and drop the `ChromeState` borrow before
                 // locking the tree — nothing here needs the RefCell guard itself.
@@ -4174,7 +4174,9 @@ fn apply_shell_gesture(
         GestureAction::SwitchWorkspace(dir) => {
             st.switch_workspace(dir);
         }
-        GestureAction::StepAlongStrip(_) => unreachable!("handled above"),
+        // Handled (and returned on) above; a panic here would take down the
+        // whole session for a gesture that already did its job.
+        GestureAction::StepAlongStrip(_) => {}
         GestureAction::ShowOverview => {
             if !st.overlays.overview {
                 st.overlays.overview = true;

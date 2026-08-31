@@ -34,7 +34,10 @@ use std::time::{Duration, Instant};
 /// The filtering function is opaque to the cache; consumers pass a
 /// closure-free key so different filters of the same directory get
 /// independent cache slots.
-static SCAN_MEMO: LazyLock<Mutex<HashMap<(PathBuf, &'static str), (Vec<PathBuf>, Instant)>>> =
+type ScanMemoKey = (PathBuf, &'static str);
+/// Cached entries for a [`ScanMemoKey`], plus when they were captured.
+type ScanMemoEntry = (Vec<PathBuf>, Instant);
+static SCAN_MEMO: LazyLock<Mutex<HashMap<ScanMemoKey, ScanMemoEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// TTL for cached `/dev` and `XDG_RUNTIME_DIR` scans.
@@ -277,7 +280,7 @@ impl SandboxProfile {
                     // a one-shot into a longer-lived sandbox would
                     // over-persist it.
                     if !matches!(scope, Expiry::AfterUse) {
-                        self.grant_filesystem_path(path, mode.clone());
+                        self.grant_filesystem_path(path, mode);
                     }
                 }
                 Capability::Network { hosts, scope } => {
@@ -322,7 +325,7 @@ impl SandboxProfile {
     pub fn grant_filesystem_path(
         &mut self,
         path: &std::path::Path,
-        mode: crate::shell::state::FsMode,
+        mode: &crate::shell::state::FsMode,
     ) {
         use crate::shell::state::FsMode;
         let target = match mode {
@@ -350,20 +353,21 @@ impl SandboxProfile {
         // restrict the *sandbox-side* (destination) paths — `/work`,
         // `/usr`, … — not the host source paths.
         let landlock_shim = self.landlock_shim.clone();
-        let (ro_targets, rw_targets): (Vec<PathBuf>, Vec<PathBuf>) = if landlock_shim.is_some() {
-            (
-                self.binds_ro
-                    .iter()
-                    .map(|(_, sandbox)| sandbox.clone())
-                    .collect(),
-                self.binds_rw
-                    .iter()
-                    .map(|(_, sandbox)| sandbox.clone())
-                    .collect(),
-            )
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        let (readonly_targets, readwrite_targets): (Vec<PathBuf>, Vec<PathBuf>) =
+            if landlock_shim.is_some() {
+                (
+                    self.binds_ro
+                        .iter()
+                        .map(|(_, sandbox)| sandbox.clone())
+                        .collect(),
+                    self.binds_rw
+                        .iter()
+                        .map(|(_, sandbox)| sandbox.clone())
+                        .collect(),
+                )
+            } else {
+                (Vec::new(), Vec::new())
+            };
         let net_restricted = self.net_isolated;
 
         // Pre-size: each bind is 3 args, each env entry is 3 args, plus
@@ -378,10 +382,10 @@ impl SandboxProfile {
                 .saturating_add(self.env.len().saturating_mul(3))
                 .saturating_add(8)
                 .saturating_add(if landlock_shim.is_some() {
-                    ro_targets
+                    readonly_targets
                         .len()
                         .saturating_mul(2)
-                        .saturating_add(rw_targets.len().saturating_mul(2))
+                        .saturating_add(readwrite_targets.len().saturating_mul(2))
                         .saturating_add(3)
                 } else {
                     0
@@ -439,11 +443,11 @@ impl SandboxProfile {
             Some(shim) => {
                 argv.push(path_to_string(&shim));
                 argv.push(crate::sandbox::SANDBOX_EXEC_SUBCOMMAND.to_string());
-                for sandbox_path in &ro_targets {
+                for sandbox_path in &readonly_targets {
                     argv.push("--ro".to_string());
                     argv.push(path_to_string(sandbox_path));
                 }
-                for sandbox_path in &rw_targets {
+                for sandbox_path in &readwrite_targets {
                     argv.push("--rw".to_string());
                     argv.push(path_to_string(sandbox_path));
                 }
@@ -606,11 +610,11 @@ mod tests {
         use crate::shell::state::FsMode;
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
-        let before_ro = p.binds_ro.len();
-        let before_rw = p.binds_rw.len();
-        p.grant_filesystem_path(Path::new("/home/u/notes"), FsMode::Read);
-        assert_eq!(p.binds_ro.len(), before_ro + 1);
-        assert_eq!(p.binds_rw.len(), before_rw);
+        let before_readonly = p.binds_ro.len();
+        let before_readwrite = p.binds_rw.len();
+        p.grant_filesystem_path(Path::new("/home/u/notes"), &FsMode::Read);
+        assert_eq!(p.binds_ro.len(), before_readonly + 1);
+        assert_eq!(p.binds_rw.len(), before_readwrite);
     }
 
     #[test]
@@ -618,7 +622,7 @@ mod tests {
         use crate::shell::state::FsMode;
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
-        p.grant_filesystem_path(Path::new("/home/u/work"), FsMode::ReadWrite);
+        p.grant_filesystem_path(Path::new("/home/u/work"), &FsMode::ReadWrite);
         assert!(
             p.binds_rw
                 .iter()
@@ -631,9 +635,9 @@ mod tests {
         use crate::shell::state::FsMode;
         let mut p =
             SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
-        p.grant_filesystem_path(Path::new("/home/u/notes"), FsMode::Read);
+        p.grant_filesystem_path(Path::new("/home/u/notes"), &FsMode::Read);
         let count_after_first = p.binds_ro.len();
-        p.grant_filesystem_path(Path::new("/home/u/notes"), FsMode::Read);
+        p.grant_filesystem_path(Path::new("/home/u/notes"), &FsMode::Read);
         assert_eq!(
             p.binds_ro.len(),
             count_after_first,
@@ -1016,30 +1020,30 @@ mod tests {
 
         // `--ro /usr` and `--ro /run/user/1000/wayland-0` are sandbox-side
         // (destination) bind paths from the default profile.
-        let ro_paths: Vec<&String> = argv
+        let readonly_paths: Vec<&String> = argv
             .windows(2)
             .filter(|w| w[0] == "--ro")
             .map(|w| &w[1])
             .collect();
         assert!(
-            ro_paths.iter().any(|p| p.as_str() == "/usr"),
+            readonly_paths.iter().any(|p| p.as_str() == "/usr"),
             "expected `--ro /usr` (sandbox-side ro bind): {argv:?}"
         );
 
         // `--rw /work` is the sandbox-side destination of the ws-root bind
         // (NOT the host `/tmp/ws` source) — Landlock runs inside the
         // namespace where `/work` is what exists.
-        let rw_paths: Vec<&String> = argv
+        let readwrite_paths: Vec<&String> = argv
             .windows(2)
             .filter(|w| w[0] == "--rw")
             .map(|w| &w[1])
             .collect();
         assert!(
-            rw_paths.iter().any(|p| p.as_str() == "/work"),
+            readwrite_paths.iter().any(|p| p.as_str() == "/work"),
             "expected `--rw /work` (sandbox-side rw bind): {argv:?}"
         );
         assert!(
-            !rw_paths.iter().any(|p| p.as_str() == "/tmp/ws"),
+            !readwrite_paths.iter().any(|p| p.as_str() == "/tmp/ws"),
             "Landlock rules must use sandbox-side paths, not host sources: {argv:?}"
         );
 

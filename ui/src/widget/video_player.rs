@@ -708,7 +708,7 @@ impl VideoPlayer {
     pub fn reveal_controls(&mut self) {
         // `checked_add` rather than `+`: `Instant` addition panics on
         // overflow, though `now + 1h` cannot realistically overflow.
-        self.controls_visible_until = Instant::now().checked_add(Duration::from_hours(1));
+        self.controls_visible_until = Instant::now().checked_add(Duration::from_secs(3600));
         self.dirty = true;
     }
 

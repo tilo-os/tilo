@@ -144,13 +144,13 @@ impl Compositor {
         };
         assert!(
             this.wayland_socket.exists(),
-            "compositor announced {:?} but no socket exists there",
-            this.wayland_socket
+            "compositor announced {} but no socket exists there",
+            this.wayland_socket.display()
         );
         assert!(
             this.privileged_socket.exists(),
-            "compositor announced a privileged socket at {:?} but none exists",
-            this.privileged_socket
+            "compositor announced a privileged socket at {} but none exists",
+            this.privileged_socket.display()
         );
         this
     }
@@ -279,14 +279,14 @@ impl Compositor {
         found
     }
 
-    fn control(&self, request: serde_json::Value) -> serde_json::Value {
+    fn control(&self, request: &serde_json::Value) -> serde_json::Value {
         use std::io::Write;
         let mut stream =
             UnixStream::connect(&self.control_socket).expect("connect to the test-control socket");
         stream
             .set_read_timeout(Some(DEADLINE))
             .expect("set control read timeout");
-        let mut line = serde_json::to_vec(&request).expect("encode control request");
+        let mut line = serde_json::to_vec(request).expect("encode control request");
         line.push(b'\n');
         stream.write_all(&line).expect("write control request");
         let mut reader = BufReader::new(stream);
@@ -299,7 +299,7 @@ impl Compositor {
     }
 
     fn chrome_copy(&self, text: &str, primary: bool) {
-        let resp = self.control(serde_json::json!({
+        let resp = self.control(&serde_json::json!({
             "op": "clipboard_copy", "text": text, "primary": primary,
         }));
         assert!(
@@ -309,7 +309,7 @@ impl Compositor {
     }
 
     fn chrome_paste(&self, primary: bool) -> Option<String> {
-        let resp = self.control(serde_json::json!({
+        let resp = self.control(&serde_json::json!({
             "op": "clipboard_paste", "primary": primary,
         }));
         let clipboard = resp
@@ -335,7 +335,7 @@ impl Compositor {
     /// messages. A focus or adoption problem is unreadable from "timed out";
     /// it is obvious from the tab list.
     fn debug_state(&self) -> String {
-        let resp = self.control(serde_json::json!({"op": "state_dump"}));
+        let resp = self.control(&serde_json::json!({"op": "state_dump"}));
         let Some(tree) = resp.get("state").and_then(|s| s.get("workspace_tree")) else {
             return format!("<no workspace_tree in {resp}>");
         };
@@ -375,16 +375,16 @@ impl Compositor {
     /// Open a client connection on the public socket — the one a sandboxed app
     /// gets, and the only one the launcher bind-mounts into a sandbox.
     fn connect(&self) -> Connection {
-        self.connect_to(&self.wayland_socket)
+        Self::connect_to(&self.wayland_socket)
     }
 
     fn connect_privileged(&self) -> Connection {
-        self.connect_to(&self.privileged_socket)
+        Self::connect_to(&self.privileged_socket)
     }
 
-    fn connect_to(&self, path: &Path) -> Connection {
+    fn connect_to(path: &Path) -> Connection {
         let stream = UnixStream::connect(path)
-            .unwrap_or_else(|e| panic!("connect to the compositor socket {path:?}: {e}"));
+            .unwrap_or_else(|e| panic!("connect to the compositor socket {}: {e}", path.display()));
         Connection::from_socket(stream).expect("wayland connection from socket")
     }
 }
@@ -428,6 +428,12 @@ fn next_id() -> u64 {
 // Wayland test client
 
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool tracks an independent, orthogonal piece of Wayland protocol state \
+              (documented individually below), not a set of mutually exclusive variants an \
+              enum would express better"
+)]
 struct ClientState {
     globals: Vec<(String, u32, u32)>,
     compositor: Option<WlCompositor>,
@@ -643,6 +649,7 @@ impl TestClient {
     /// Attach an opaque `wl_shm` buffer and commit, so the compositor has real
     /// content to size and composite the tile from.
     fn attach_buffer(&mut self, width: i32, height: i32) {
+        use std::os::unix::io::AsFd;
         let shm = self
             .state
             .shm
@@ -671,7 +678,6 @@ impl TestClient {
             file.write_at(&pixels, 0).expect("fill the shm pool");
         }
 
-        use std::os::unix::io::AsFd;
         let pool = shm.create_pool(
             file.as_fd(),
             i32::try_from(len).unwrap_or(i32::MAX),
@@ -1100,7 +1106,6 @@ impl Dispatch<WlDataDevice, ()> for ClientState {
             wl_data_device::Event::Drop => {
                 state.dnd_dropped = true;
             }
-            wl_data_device::Event::Leave => {}
             _ => {}
         }
     }
@@ -1592,7 +1597,7 @@ impl Compositor {
     /// Open the next window of `app_id` in its own group, so two client windows
     /// can be on screen at once.
     fn place_next_window(&self, app_id: &str) {
-        let resp = self.control(serde_json::json!({
+        let resp = self.control(&serde_json::json!({
             "op": "place_next_window", "app_id": app_id,
         }));
         assert!(
@@ -1602,18 +1607,18 @@ impl Compositor {
     }
 
     fn pointer_move(&self, x: f64, y: f64) {
-        let resp = self.control(serde_json::json!({"op": "pointer_move", "x": x, "y": y}));
+        let resp = self.control(&serde_json::json!({"op": "pointer_move", "x": x, "y": y}));
         assert!(resp.get("ok").is_some(), "pointer_move failed: {resp:?}");
     }
 
     fn pointer_button(&self, pressed: bool) {
-        let resp = self.control(serde_json::json!({"op": "pointer_button", "pressed": pressed}));
+        let resp = self.control(&serde_json::json!({"op": "pointer_button", "pressed": pressed}));
         assert!(resp.get("ok").is_some(), "pointer_button failed: {resp:?}");
     }
 
     /// The on-screen rect `[x, y, w, h]` of a named chrome target this frame.
     fn named_rect(&self, name: &str) -> Option<[f64; 4]> {
-        let resp = self.control(serde_json::json!({"op": "list_targets"}));
+        let resp = self.control(&serde_json::json!({"op": "list_targets"}));
         let targets = resp.get("targets")?.as_array()?;
         targets.iter().find_map(|t| {
             (t.get("name")?.as_str()? == name).then(|| {
@@ -1646,7 +1651,7 @@ impl Compositor {
     }
 
     fn target_names(&self) -> Vec<String> {
-        let resp = self.control(serde_json::json!({"op": "list_targets"}));
+        let resp = self.control(&serde_json::json!({"op": "list_targets"}));
         resp.get("targets")
             .and_then(|t| t.as_array())
             .map(|ts| {
@@ -1658,7 +1663,7 @@ impl Compositor {
     }
 
     fn snapshot(&self, path: &Path) {
-        let resp = self.control(serde_json::json!({"op": "snapshot", "path": path}));
+        let resp = self.control(&serde_json::json!({"op": "snapshot", "path": path}));
         assert!(resp.get("ok").is_some(), "snapshot failed: {resp:?}");
     }
 
@@ -1679,7 +1684,7 @@ const TINY_PNG: [u8; 67] = [
 ];
 
 fn files_tab_is_active(compositor: &Compositor) -> bool {
-    let dump = compositor.control(serde_json::json!({"op": "state_dump"}));
+    let dump = compositor.control(&serde_json::json!({"op": "state_dump"}));
     let mut active = false;
     walk_json(&dump, &mut |v| {
         let (Some(active_tab), Some(tabs)) = (
@@ -1703,10 +1708,10 @@ fn files_tab_is_active(compositor: &Compositor) -> bool {
 /// full output width). Split out of the drag-and-drop tests below to keep
 /// each one short.
 fn narrow_demo_group_for_files(compositor: &Compositor) {
+    const NARROW_BY: f64 = 1100.0;
     let seam = compositor.named_center("group_resize_handle[0]");
     compositor.pointer_move(seam.0, seam.1);
     compositor.pointer_button(true);
-    const NARROW_BY: f64 = 1100.0;
     for i in 1..=10 {
         compositor.pointer_move(seam.0 - NARROW_BY * (f64::from(i) / 10.0), seam.1);
         std::thread::sleep(Duration::from_millis(30));
@@ -1755,9 +1760,9 @@ fn drag_file_row_onto_client(
     row: (f64, f64),
     target_point: (f64, f64),
 ) {
+    const STEPS: u32 = 12;
     compositor.pointer_move(row.0, row.1);
     compositor.pointer_button(true);
-    const STEPS: u32 = 12;
     for i in 1..=STEPS {
         let t = f64::from(i) / f64::from(STEPS);
         compositor.pointer_move(
@@ -1782,11 +1787,11 @@ fn drag_file_row_onto_client(
          file_view={:?} row_rect={:?}).\nState:\n{}\nCompositor log:\n{}",
         compositor.named_rect("file_view"),
         compositor.named_rect("file_row:photo.png"),
-        compositor.control(serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
+        compositor.control(&serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
             .get("files_drag")
             .map(|v| format!(
                 "files_drag={v} handed_off={}",
-                compositor.control(serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
+                compositor.control(&serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
                     ["files_drag_handed_off"]
             ))
             .unwrap_or_default(),
@@ -1980,6 +1985,7 @@ fn wait_for_word_processor_mapped(compositor: &Compositor, app_log: &Arc<Mutex<V
 /// hermetic CI stays green.
 #[test]
 fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
+    const STEPS: u32 = 16;
     if std::env::var_os("QOS_LIVE_APP_DND").is_none() {
         eprintln!("skipping: set QOS_LIVE_APP_DND=1 to run the word-processor drop lane");
         return;
@@ -2042,7 +2048,6 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
 
     compositor.pointer_move(row.0, row.1);
     compositor.pointer_button(true);
-    const STEPS: u32 = 16;
     for i in 1..=STEPS {
         let t = f64::from(i) / f64::from(STEPS);
         compositor.pointer_move(row.0 + (drop_x - row.0) * t, row.1 + (drop_y - row.1) * t);

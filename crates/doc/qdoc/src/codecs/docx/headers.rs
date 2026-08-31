@@ -125,15 +125,15 @@ fn attr_r_id(e: &quick_xml::events::BytesStart) -> Option<String> {
 fn splice_page_placeholder(
     region: Region,
     doc: &mut DocMut,
-    cur: &Option<String>,
+    cur: Option<&str>,
     cur_len: &mut usize,
     field_marks: &mut Vec<(String, usize)>,
 ) {
-    if let Some(b) = cur.clone() {
+    if let Some(b) = cur {
         let start = *cur_len;
-        doc.splice_text_in(region, &b, *cur_len, 0, &FIELD_PLACEHOLDER.to_string());
+        doc.splice_text_in(region, b, *cur_len, 0, &FIELD_PLACEHOLDER.to_string());
         *cur_len = cur_len.saturating_add(1);
-        field_marks.push((b, start));
+        field_marks.push((b.to_string(), start));
     }
 }
 
@@ -143,7 +143,7 @@ fn emit_page_field(
     instr: &str,
     region: Region,
     doc: &mut DocMut,
-    cur: &Option<String>,
+    cur: Option<&str>,
     cur_len: &mut usize,
     field_marks: &mut Vec<(String, usize)>,
 ) {
@@ -170,13 +170,13 @@ fn open_region_block(
 fn splice_one_char(
     region: Region,
     doc: &mut DocMut,
-    cur: &Option<String>,
+    cur: Option<&str>,
     cur_len: &mut usize,
     ch: char,
 ) {
-    if let Some(b) = cur.clone() {
+    if let Some(b) = cur {
         let mut buf = [0u8; 4];
-        doc.splice_text_in(region, &b, *cur_len, 0, ch.encode_utf8(&mut buf));
+        doc.splice_text_in(region, b, *cur_len, 0, ch.encode_utf8(&mut buf));
         *cur_len = cur_len.saturating_add(1);
     }
 }
@@ -190,7 +190,7 @@ fn handle_fld_char(
     e: &quick_xml::events::BytesStart,
     region: Region,
     doc: &mut DocMut,
-    cur: &Option<String>,
+    cur: Option<&str>,
     cur_len: &mut usize,
     field_pending: &mut bool,
     field_in_progress: &mut bool,
@@ -250,22 +250,38 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                     // Emit the field once at its start, then skip its cached result-run text until it closes.
                     fldsimple_depth = fldsimple_depth.saturating_add(1);
                     let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
-                    emit_page_field(&instr, region, doc, &cur, &mut cur_len, &mut field_marks);
+                    emit_page_field(
+                        &instr,
+                        region,
+                        doc,
+                        cur.as_deref(),
+                        &mut cur_len,
+                        &mut field_marks,
+                    );
                 }
                 _ => {}
             },
             Event::Empty(e) => match e.name().as_ref() {
-                b"w:tab" => splice_one_char(region, doc, &cur, &mut cur_len, '\t'),
-                b"w:br" | b"w:cr" => splice_one_char(region, doc, &cur, &mut cur_len, '\n'),
+                b"w:tab" => splice_one_char(region, doc, cur.as_deref(), &mut cur_len, '\t'),
+                b"w:br" | b"w:cr" => {
+                    splice_one_char(region, doc, cur.as_deref(), &mut cur_len, '\n')
+                }
                 b"w:fldSimple" => {
                     let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
-                    emit_page_field(&instr, region, doc, &cur, &mut cur_len, &mut field_marks);
+                    emit_page_field(
+                        &instr,
+                        region,
+                        doc,
+                        cur.as_deref(),
+                        &mut cur_len,
+                        &mut field_marks,
+                    );
                 }
                 b"w:fldChar" => handle_fld_char(
                     &e,
                     region,
                     doc,
-                    &cur,
+                    cur.as_deref(),
                     &mut cur_len,
                     &mut field_pending,
                     &mut field_in_progress,

@@ -119,7 +119,7 @@ impl OnboardingView {
 
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         let body: Box<dyn Widget> = match self.flow.screen() {
-            Screen::Intro => self.intro(theme),
+            Screen::Intro => Self::intro(theme),
             Screen::Connect => self.connect(theme),
             Screen::NoRecovery => self.no_recovery(theme),
             Screen::Done => self.done(theme),
@@ -127,7 +127,7 @@ impl OnboardingView {
         Box::new(Column::new().with_no_padding().with_gap(16.0).push(body))
     }
 
-    fn intro(&self, theme: &Theme) -> Box<dyn Widget> {
+    fn intro(theme: &Theme) -> Box<dyn Widget> {
         let mut list = Column::new().with_no_padding().with_gap(10.0);
         for point in INTRO_POINTS {
             list = list.push(bullet(point));

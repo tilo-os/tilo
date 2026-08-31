@@ -393,7 +393,8 @@ impl FrameHarness {
                         idx.saturating_sub(1)
                     }
                 } else {
-                    idx.saturating_add(1) % order.len()
+                    let next = idx.saturating_add(1);
+                    if next < order.len() { next } else { 0 }
                 }
             }
             None => {
@@ -921,8 +922,11 @@ pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
     // document, not the room index — see `records` on `Driver`.
     let mut driver = Driver::new(state, root, spec.viewport.unwrap_or(DEFAULT_VIEWPORT));
     if driver.root_record_intent().is_some() {
-        let (room, _) = crate::persist::open(manifest_id);
-        driver = driver.with_records(crate::record::RecordSet::open(manifest_id), room.doc);
+        let (records_state, _) = crate::persist::open(manifest_id);
+        driver = driver.with_records(
+            crate::record::RecordSet::open(manifest_id),
+            records_state.doc,
+        );
     }
 
     let mut failure: Option<String> = None;

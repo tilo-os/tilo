@@ -30,13 +30,13 @@ impl OverlayStack {
     }
     pub fn push_modal(&mut self, m: Modal) -> OverlayId {
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self.next_id.saturating_add(1);
         self.entries.push((id, OverlayEntry::Modal(m)));
         id
     }
     pub fn push_popover(&mut self, p: Popover) -> OverlayId {
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self.next_id.saturating_add(1);
         self.entries.push((id, OverlayEntry::Popover(p)));
         id
     }

@@ -94,6 +94,11 @@ impl WorkspaceTreeReplica {
     /// Stash one `SyncReq` per room this machine is in, each carrying that
     /// room's current heads — asked room by room so an answer can't merge
     /// several rooms into one undifferentiated document.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `pending_outgoing`'s mutex is poisoned (a prior holder
+    /// panicked while holding the lock).
     pub fn request_sync(&self) {
         let mut tree = self.tree.write();
         let rooms = tree.rooms();
@@ -122,6 +127,11 @@ impl WorkspaceTreeReplica {
     }
 
     /// Drain pending outbound messages so a test (or Hub-driver) can broadcast them; stable FIFO order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `pending_outgoing`'s mutex is poisoned (a prior holder
+    /// panicked while holding the lock).
     pub fn drain_outgoing(&self) -> Vec<NeighbourMsg> {
         std::mem::take(&mut *self.pending_outgoing.lock().unwrap())
     }
@@ -148,6 +158,11 @@ impl WorkspaceTreeReplica {
     /// governance based on **who** sent it, and the hub's `u64` id (a
     /// `DefaultHasher` digest in production) isn't safe for that. Live wiring
     /// calls this with the peer's own identity ([`PeerOrigin::peer`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `pending_outgoing`'s mutex is poisoned (a prior holder
+    /// panicked while holding the lock).
     pub fn handle_from(&mut self, from: &PeerOrigin, msg: &NeighbourMsg) {
         let sender = from;
         match msg {
@@ -193,7 +208,8 @@ impl WorkspaceTreeReplica {
                     );
                     return;
                 };
-                if let Err(err) = self.tree.write().apply_room_changes(room_id, changes, from) {
+                let result = self.tree.write().apply_room_changes(room_id, changes, from);
+                if let Err(err) = result {
                     tracing::error!(
                         target: "shell::network::replica",
                         sender = %sender,
@@ -221,6 +237,8 @@ mod tests {
     //! pattern `hub.rs`'s tests use.
     //!
     //! [`Hub`]: crate::network::hub::Hub
+    use std::fmt::Write as _;
+
     use super::*;
     use crate::network::hub::Hub;
     use automerge::{ROOT, ReadDoc, ScalarValue};
@@ -339,7 +357,10 @@ mod tests {
             Value::Scalar(s) => match s.as_ref() {
                 ScalarValue::Str(t) => out.push_str(t),
                 ScalarValue::Bytes(b) => out.push_str(&String::from_utf8_lossy(b)),
-                other => out.push_str(&format!("{other:?}")),
+                // `String`'s `Write` impl is infallible.
+                other => {
+                    let _ = write!(out, "{other:?}");
+                }
             },
             Value::Object(ObjType::List | ObjType::Text) => {
                 for i in 0..doc.length(id) {
@@ -363,13 +384,13 @@ mod tests {
         initiator.lock().unwrap().request_sync();
         let from = initiator.lock().unwrap().id();
         let outbound = initiator.lock().unwrap().drain_outgoing();
-        for msg in outbound {
+        for msg in &outbound {
             hub.broadcast(from, msg);
         }
         for other in others {
             let id = other.lock().unwrap().id();
             let replies = other.lock().unwrap().drain_outgoing();
-            for msg in replies {
+            for msg in &replies {
                 hub.broadcast(id, msg);
             }
         }
@@ -618,6 +639,7 @@ mod tests {
         );
         // Nowhere in what the host now holds — including the room document it will hand to the next peer that asks.
         let held = holdings(&mut tree);
+        drop(tree);
         assert!(
             !held.contains(ROGUE_OWNER) && !held.contains(ROGUE_PATH),
             "the refused governance is still somewhere in the host's state: \
@@ -708,6 +730,7 @@ mod tests {
                 .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROOM_A_PATH)),
             "the room's capabilities arrived"
         );
+        drop(guest);
     }
 
     /// What arrived has to be *announceable*, not just present: the shell

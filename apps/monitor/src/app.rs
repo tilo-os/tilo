@@ -206,6 +206,7 @@ struct TableGeom {
 /// Static face spec for one detail-pane action button (Stop/Kill), bundled
 /// so `draw_action_button` takes one struct instead of three label/icon/style
 /// arguments.
+#[derive(Clone, Copy)]
 struct ActionButtonSpec<'a> {
     label: &'a str,
     icon: Icon,
@@ -458,7 +459,7 @@ impl MonitorApp {
         // A `last_refresh` well in the past makes the first `maybe_refresh`
         // fire on the first draw, replacing the empty seed with real data.
         let stale = Instant::now()
-            .checked_sub(Duration::from_hours(1))
+            .checked_sub(Duration::from_secs(3600))
             .unwrap_or_else(Instant::now);
         Self::build(MonitorModel::empty(), None, stale)
     }
@@ -2937,6 +2938,10 @@ impl MonitorApp {
 
     /// The two-column MEMORY/VIRTUAL/THREADS/OPEN FILES/STATUS/RUNNING FOR
     /// stat grid, starting at `y`.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/y/c/p/v are the standard graphics convention: transform, position, colour tokens, and this row's process/value"
+    )]
     fn draw_detail_stat_grid(
         scene: &mut Scene,
         t: Affine,
@@ -4179,13 +4184,6 @@ impl Widget for MonitorApp {
         self.draw_overlays(scene, t, text_renderer, theme, presence);
     }
 
-    /// Page scrollbar down the right edge of the body viewport — a
-    /// draggable thumb over a page-able track.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the render context plus this frame's scroll geometry through a single draw call"
-    )]
-
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -4208,7 +4206,7 @@ impl Widget for MonitorApp {
         if self.route_search(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             doc,
             path,
             handled,
@@ -4218,18 +4216,8 @@ impl Widget for MonitorApp {
         ) {
             return;
         }
-        self.dispatch_event(event, scale_factor, modifiers, doc, path, handled);
+        self.dispatch_event(event, scale_factor, *modifiers, doc, path, handled);
     }
-
-    /// Resolve search-box focus for this event, and either dispatch it into
-    /// the search box or hand back control. Returns whether `handle_event`
-    /// should return immediately — either because the search box consumed
-    /// the event, or because a reserved global chord is deliberately left
-    /// unhandled so it bubbles to the host.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the full event-dispatch context (event, modifiers, doc, focus, taffy) through one call, mirroring the Widget::handle_event signature it routes"
-    )]
 
     fn name(&self) -> &'static str {
         "MonitorApp"
@@ -4348,7 +4336,12 @@ impl MonitorApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Page scrollbar down the right edge of the body viewport — a
+    /// draggable thumb over a page-able track.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "threads the render context plus this frame's scroll geometry through a single draw call"
+    )]
     fn draw_page_scrollbar(
         &mut self,
         scene: &mut Scene,
@@ -4467,12 +4460,20 @@ impl MonitorApp {
         self.context.draw(scene, t, text_renderer, theme, presence);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Resolve search-box focus for this event, and either dispatch it into
+    /// the search box or hand back control. Returns whether `handle_event`
+    /// should return immediately — either because the search box consumed
+    /// the event, or because a reserved global chord is deliberately left
+    /// unhandled so it bubbles to the host.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "threads the full event-dispatch context (event, modifiers, doc, focus, taffy) through one call, mirroring the Widget::handle_event signature it routes"
+    )]
     fn route_search(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         doc: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -4534,7 +4535,7 @@ impl MonitorApp {
         self.search_input.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             doc,
             path,
             &mut input_handled,
@@ -4559,7 +4560,7 @@ impl MonitorApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         doc: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,

@@ -84,7 +84,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         tab: args.value("--tab").map(str::to_owned),
         pending: args.value("--pending").map(str::to_owned),
     };
-    render_shot_to_png(DisksApp::new(), viewport, narrow, preset, out)
+    render_shot_to_png(DisksApp::new(), viewport, narrow, &preset, out)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
@@ -101,7 +101,7 @@ fn live_root() -> Box<dyn Widget> {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.disks", live_root)
+        &LaunchSpec::new("dev.qos.disks", live_root)
             .shot_handler(shot_handler)
             .allowed_flags(&["--live", "--narrow"])
             .allowed_options(&["--drive", "--part", "--tab", "--pending"]),
@@ -127,7 +127,7 @@ fn render_shot_to_png(
     mut widget: DisksApp,
     viewport: (u32, u32),
     narrow: bool,
-    preset: Preset,
+    preset: &Preset,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;

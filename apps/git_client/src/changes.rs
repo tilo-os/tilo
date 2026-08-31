@@ -304,6 +304,10 @@ impl ChangesColumn {
         clippy::too_many_arguments,
         reason = "internal draw-step split of an over-length function"
     )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/y/c follow this file's graphics convention (transform, position, colour tokens); f/i are the iterated FileChange and its index"
+    )]
     fn section_row(
         scene: &mut Scene,
         tr: &mut TextRenderer,

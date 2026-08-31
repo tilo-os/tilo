@@ -88,9 +88,9 @@ impl Period {
     pub fn range(self, now: SystemTime) -> Option<(SystemTime, SystemTime)> {
         let back = match self {
             Period::AllTime => return None,
-            Period::Today => Duration::from_hours(24),
-            Period::Week => Duration::from_hours(168),
-            Period::Month => Duration::from_hours(720),
+            Period::Today => Duration::from_secs(86400),
+            Period::Week => Duration::from_secs(604800),
+            Period::Month => Duration::from_secs(2592000),
         };
         // The end is nudged past `now` so a change committed during this very
         // frame is inside the window rather than one tick outside it — the
@@ -1532,7 +1532,7 @@ mod tests {
         tree.adopt_ownerless_workspaces(&user);
         let ws_id = tree.active;
 
-        let week_ago = SystemTime::now() - Duration::from_hours(168);
+        let week_ago = SystemTime::now() - Duration::from_secs(604800);
         let week_ago_secs = i64::try_from(
             week_ago
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -1901,12 +1901,12 @@ mod tests {
 
     #[test]
     fn period_windows_are_half_open_and_all_time_is_unbounded() {
-        let now = SystemTime::UNIX_EPOCH + Duration::from_hours(500_000);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         assert!(Period::AllTime.range(now).is_none());
         let (start, end) = Period::Week.range(now).unwrap();
         assert_eq!(
             now.duration_since(start).unwrap(),
-            Duration::from_hours(168)
+            Duration::from_secs(604800)
         );
         assert!(
             end > now,

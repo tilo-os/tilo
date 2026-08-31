@@ -56,6 +56,9 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+/// # Errors
+///
+/// Returns an error if launching the app or running a `--shots` capture fails.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new_with_args("dev.qos.video-player", live_root)
@@ -73,6 +76,10 @@ fn requested_path(args: &LaunchArgs) -> Option<PathBuf> {
         .or_else(|| args.positionals().first().map(PathBuf::from))
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::LaunchSpec::new_with_args"
+)]
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(video_player::app_root(requested_path(args)))
 }

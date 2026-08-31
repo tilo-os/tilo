@@ -1792,12 +1792,12 @@ impl Widget for TypstApp {
             ..
         } = event
         {
-            self.handle_keyboard_shortcut(logical_key, event, modifiers, doc, &src_id, handled);
+            self.handle_keyboard_shortcut(logical_key, event, *modifiers, doc, &src_id, handled);
             return;
         }
 
         // --- pointer ---
-        self.handle_pointer_event(event, scale_factor, modifiers, doc, &src_id, handled);
+        self.handle_pointer_event(event, scale_factor, *modifiers, doc, &src_id, handled);
     }
 
     fn name(&self) -> &'static str {
@@ -1840,7 +1840,7 @@ impl TypstApp {
         &mut self,
         logical_key: &Key,
         event: &WindowEvent,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         src_id: &ObjId,
         handled: &mut bool,
@@ -1927,7 +1927,7 @@ impl TypstApp {
             }
         }
         // Route remaining keys to the focused editor.
-        if self.editor.focused && self.editor.handle_key(event, modifiers, doc, src_id) {
+        if self.editor.focused && self.editor.handle_key(event, &modifiers, doc, src_id) {
             *handled = true;
         }
     }
@@ -1939,7 +1939,7 @@ impl TypstApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         src_id: &ObjId,
         handled: &mut bool,
@@ -2069,7 +2069,7 @@ impl TypstApp {
     /// tracked by the most recent `CursorMoved`.
     fn handle_left_press(
         &mut self,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         src_id: &ObjId,
         handled: &mut bool,
@@ -2603,10 +2603,10 @@ mod tests {
     /// touches the user's documents folder.
     #[test]
     fn export_pdf_writes_a_real_pdf_file() {
-        let (app, mut doc) = fresh();
+        let (app, doc) = fresh();
         let dir = unique_dir("pdf");
         let path = app
-            .export_pdf_to(&mut doc, &dir)
+            .export_pdf_to(&doc, &dir)
             .expect("the clean demo document exports");
         assert_eq!(path.extension().and_then(|e| e.to_str()), Some("pdf"));
         let bytes = std::fs::read(&path).expect("the pdf was written to disk");

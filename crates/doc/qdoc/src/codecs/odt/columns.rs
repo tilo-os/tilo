@@ -226,10 +226,7 @@ fn strip_columns(inner: &str) -> String {
     let mut out = String::with_capacity(inner.len());
     let mut reader = Reader::from_str(inner);
     let mut skip_depth = 0usize;
-    loop {
-        let Ok(pos) = usize::try_from(reader.buffer_position()) else {
-            break;
-        };
+    while let Ok(pos) = usize::try_from(reader.buffer_position()) {
         let Ok(ev) = reader.read_event() else {
             break;
         };

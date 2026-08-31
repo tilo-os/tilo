@@ -1240,7 +1240,16 @@ impl GitClientApp {
 
         if let Some((old_path, path, adds, dels)) = info {
             self.draw_diff_header_file(
-                scene, tr, t, theme, header, &old_path, path, adds, dels, staged,
+                scene,
+                tr,
+                t,
+                theme,
+                header,
+                old_path.as_deref(),
+                path,
+                adds,
+                dels,
+                staged,
             );
         } else {
             draw::text(
@@ -1256,7 +1265,7 @@ impl GitClientApp {
             );
         }
 
-        self.draw_diff_body(scene, tr, t, theme, pane, header, &key, staged);
+        self.draw_diff_body(scene, tr, t, theme, pane, header, key.as_ref(), staged);
     }
 
     /// Draw the diff-pane header for the selected file: title, +/− summary,
@@ -1273,14 +1282,14 @@ impl GitClientApp {
         t: Affine,
         theme: &Theme,
         header: Rect,
-        old_path: &Option<String>,
+        old_path: Option<&str>,
         path: String,
         adds: u32,
         dels: u32,
         staged: bool,
     ) {
         let c = &theme.tokens.colors;
-        let title = match &old_path {
+        let title = match old_path {
             Some(old) => format!("{old}  →  {path}"),
             None => path,
         };
@@ -1382,7 +1391,7 @@ impl GitClientApp {
         theme: &Theme,
         pane: Rect,
         header: Rect,
-        key: &Option<DiffKey>,
+        key: Option<&DiffKey>,
         staged: bool,
     ) {
         let c = &theme.tokens.colors;
@@ -1391,7 +1400,7 @@ impl GitClientApp {
             Some(DiscardTarget::Hunk(h)) => Some(h),
             _ => None,
         };
-        if let Some(diff) = key.as_ref().and_then(|k| self.diffs.get(k)) {
+        if let Some(diff) = key.and_then(|k| self.diffs.get(k)) {
             self.diff_hunk_buttons = DiffView::draw(
                 scene,
                 tr,

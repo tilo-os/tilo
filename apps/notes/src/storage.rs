@@ -468,7 +468,7 @@ fn page_saver_loop(
                     debounce.checked_sub(elapsed).unwrap_or(Duration::ZERO)
                 }
             }
-            _ => Duration::from_hours(1),
+            _ => Duration::from_secs(3600),
         };
         let msg = if timeout == Duration::ZERO {
             match rx.try_recv() {
@@ -552,7 +552,7 @@ fn saver_loop(
                     debounce.checked_sub(elapsed).unwrap_or(Duration::ZERO)
                 }
             }
-            _ => Duration::from_hours(1),
+            _ => Duration::from_secs(3600),
         };
         let msg = if timeout == Duration::ZERO {
             // Force an immediate flush — no wait.

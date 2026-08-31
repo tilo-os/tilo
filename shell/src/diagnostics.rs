@@ -173,7 +173,7 @@ impl PeerSurfaceMetrics {
             if let Some(slot) = inner.latency_ring.get_mut(head) {
                 *slot = latency_ns;
             }
-            inner.latency_head = head.wrapping_add(1).wrapping_rem(cap);
+            inner.latency_head = head.wrapping_add(1).checked_rem(cap).unwrap_or(0);
         }
     }
 
@@ -200,7 +200,7 @@ impl PeerSurfaceMetrics {
             if let Some(slot) = inner.encode_ring.get_mut(head) {
                 *slot = ns;
             }
-            inner.encode_head = head.wrapping_add(1).wrapping_rem(cap);
+            inner.encode_head = head.wrapping_add(1).checked_rem(cap).unwrap_or(0);
         }
     }
 
@@ -276,11 +276,13 @@ impl PeerSurfaceMetrics {
     /// arithmetic would underflow (clock skew against a frame predating the
     /// handshake) — callers skip the measurement rather than push a wrong one to the latency ring.
     pub fn end_to_end_latency_ns(&self, wire_ts_ns: u64, receiver_now_ns: u64) -> Option<u64> {
-        let inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let offset = inner.clock_offset_ns?;
+        let offset = {
+            let inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inner.clock_offset_ns
+        }?;
         // The sender's `ts` on the receiver's clock is `wire_ts_ns + offset` —
         // the "moment of capture" in the receiver's monotonic domain; latency is now minus that.
         // `wire_ts_ns` and `receiver_now_ns` are peer/wall-clock supplied, not bounded by this
@@ -352,6 +354,10 @@ impl PeerSurfaceMetrics {
     }
 
     /// Reset every counter — used by tests reusing a metrics handle across cases; production has no reason to call this.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the metrics mutex is poisoned.
     #[cfg(test)]
     pub fn reset(&self) {
         let mut inner = self.inner.lock().expect("metrics mutex");

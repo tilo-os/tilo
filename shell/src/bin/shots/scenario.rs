@@ -451,114 +451,100 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
 
 /// `Action::OpenWindow` — split out of [`apply`] to keep that dispatcher short.
 fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
-    match action {
-        Action::OpenWindow { app_id, surface_id } => {
-            let app_id = *app_id;
-            let surface_id = *surface_id;
-            driver.with_chrome(|st: &mut ChromeState| {
-                {
-                    // Exactly what opening an app does: decide where the
-                    // window goes now, against the layout the user is
-                    // looking at, and leave it as a note for the adoption.
-                    let tree = st.tree();
-                    shell::shell::placement::note_placement_for_launch(
-                        app_id,
-                        &tree,
-                        st.strip_viewport(),
-                    );
-                }
-                {
-                    let mut tree = st.tree_mut();
-                    shell::compositor::tab_binding::adopt_toplevel(
-                        &mut tree,
-                        surface_id,
-                        Some(app_id.to_string()),
-                    );
-                }
-                st.bump();
-            });
-            // Stand in for the client. A window is not painted until it
-            // has drawn something that fits the tab it is in, which is
-            // what stops a launch putting an empty frame on screen — and
-            // an adopted toplevel with no process behind it has drawn
-            // nothing at all, so without this the placement scenarios
-            // would depict where windows land by showing none of them.
-            //
-            // A layout pass first, because the size to draw at is the
-            // tab's, and the tab does not have one until it has been
-            // laid out. Which app each window is still reads off the tab
-            // pill above it.
-            driver.relayout();
-            if let Some((w, h)) = shell::compositor::foreign::store().viewport(surface_id)
-                && w > 0
-                && h > 0
+    if let Action::OpenWindow { app_id, surface_id } = action {
+        let app_id = *app_id;
+        let surface_id = *surface_id;
+        driver.with_chrome(|st: &mut ChromeState| {
             {
-                let px = (w as usize).saturating_mul(h as usize).saturating_mul(4);
-                shell::compositor::foreign::store().publish_rgba(surface_id, &vec![0xF4; px], w, h);
+                // Exactly what opening an app does: decide where the
+                // window goes now, against the layout the user is
+                // looking at, and leave it as a note for the adoption.
+                let tree = st.tree();
+                shell::shell::placement::note_placement_for_launch(
+                    app_id,
+                    &tree,
+                    st.strip_viewport(),
+                );
             }
+            {
+                let mut tree = st.tree_mut();
+                shell::compositor::tab_binding::adopt_toplevel(
+                    &mut tree,
+                    surface_id,
+                    Some(app_id.to_string()),
+                );
+            }
+            st.bump();
+        });
+        // Stand in for the client. A window is not painted until it
+        // has drawn something that fits the tab it is in, which is
+        // what stops a launch putting an empty frame on screen — and
+        // an adopted toplevel with no process behind it has drawn
+        // nothing at all, so without this the placement scenarios
+        // would depict where windows land by showing none of them.
+        //
+        // A layout pass first, because the size to draw at is the
+        // tab's, and the tab does not have one until it has been
+        // laid out. Which app each window is still reads off the tab
+        // pill above it.
+        driver.relayout();
+        if let Some((w, h)) = shell::compositor::foreign::store().viewport(surface_id)
+            && w > 0
+            && h > 0
+        {
+            let px = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+            shell::compositor::foreign::store().publish_rgba(surface_id, &vec![0xF4; px], w, h);
         }
-        _ => {}
     }
 }
 
 /// `Action::AddHostedTab` — split out of [`apply`] to keep that dispatcher short.
 fn apply_add_hosted_tab(driver: &mut ShellDriver, action: &Action) {
-    match action {
-        Action::AddHostedTab { app, title } => {
-            let app = *app;
-            let title = *title;
-            driver.with_chrome(|st: &mut ChromeState| {
-                #[allow(
-                    clippy::significant_drop_tightening,
-                    reason = "tree is held mutably from here through the group push below; \
-                              there's no earlier point to drop it without cloning the tree \
-                              data out for no real gain, and the block already ends right \
-                              after the last use"
-                )]
-                {
-                    let mut tree = st.tree_mut();
-                    // One past the highest tab id anywhere in the tree.
-                    // The production minter is crate-private, and a
-                    // scenario only needs an id no open tab already uses
-                    // — but it has to be *every* tab, not just this
-                    // group's: a tab id names the record its document
-                    // lives in, so reusing one from another workspace
-                    // would put two tabs on one document, which is the
-                    // thing this scenario exists to show cannot happen.
-                    let id = tree
-                        .workspaces
-                        .iter()
-                        .flat_map(|w| &w.strips)
-                        .flat_map(|s| &s.window_groups)
-                        .flat_map(|g| &g.tabs)
-                        .map(|t| t.id)
-                        .max()
-                        .unwrap_or(0)
-                        .saturating_add(1);
-                    let Some(ws) = tree.active_workspace_mut() else {
-                        return;
-                    };
-                    let Some(group) = ws
-                        .strips
-                        .first_mut()
-                        .and_then(|s| s.window_groups.first_mut())
-                    else {
-                        return;
-                    };
-                    group.tabs.push(shell::shell::state::Tab {
-                        id,
-                        title: title.to_string(),
-                        tile: shell::shell::state::TileContent::AppPlaceholder {
-                            kind: shell::shell::state::AppKind::Other(app.to_string()),
-                            label: title.to_string(),
-                        },
-                    });
-                    group.active_tab = id;
-                }
-                st.bump();
+    if let Action::AddHostedTab { app, title } = action {
+        let app = *app;
+        let title = *title;
+        driver.with_chrome(|st: &mut ChromeState| {
+            let mut tree = st.tree_mut();
+            // One past the highest tab id anywhere in the tree.
+            // The production minter is crate-private, and a
+            // scenario only needs an id no open tab already uses
+            // — but it has to be *every* tab, not just this
+            // group's: a tab id names the record its document
+            // lives in, so reusing one from another workspace
+            // would put two tabs on one document, which is the
+            // thing this scenario exists to show cannot happen.
+            let id = tree
+                .workspaces
+                .iter()
+                .flat_map(|w| &w.strips)
+                .flat_map(|s| &s.window_groups)
+                .flat_map(|g| &g.tabs)
+                .map(|t| t.id)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            let Some(ws) = tree.active_workspace_mut() else {
+                return;
+            };
+            let Some(group) = ws
+                .strips
+                .first_mut()
+                .and_then(|s| s.window_groups.first_mut())
+            else {
+                return;
+            };
+            group.tabs.push(shell::shell::state::Tab {
+                id,
+                title: title.to_string(),
+                tile: shell::shell::state::TileContent::AppPlaceholder {
+                    kind: shell::shell::state::AppKind::Other(app.to_string()),
+                    label: title.to_string(),
+                },
             });
-        }
-        _ => {}
+            group.active_tab = id;
+            drop(tree);
+            st.bump();
+        });
     }
 }
 
@@ -2769,18 +2755,18 @@ mod tests {
     /// The strip scenario has to end up with four *windows*, each one a
     /// live app — not four tabs of one window, and not stub cards.
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "strip (borrowed from tree) is read all the way through the assertions \
+                  at the end of this test; there's no earlier point to drop it without \
+                  cloning the strip data out for no real gain"
+    )]
     fn strip_scroll_scenario_opens_four_hosted_windows_side_by_side() {
         let mut d = ShellDriver::new((1600, 900));
         let mut sink = NullSink;
         run(&mut d, &strip_scroll_across_apps(), &mut sink);
 
         let st = d.chrome();
-        #[allow(
-            clippy::significant_drop_tightening,
-            reason = "strip (borrowed from tree) is read all the way through the assertions \
-                      at the end of this test; there's no earlier point to drop it without \
-                      cloning the strip data out for no real gain"
-        )]
         let tree = st.tree();
         let strip = &tree.active_workspace().expect("active workspace").strips[0];
         let kinds: Vec<&shell::shell::state::AppKind> = strip

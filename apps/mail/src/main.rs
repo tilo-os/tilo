@@ -51,7 +51,7 @@ fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.mail", mail::app_root)
+        &LaunchSpec::new("dev.qos.mail", mail::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "wide",

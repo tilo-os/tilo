@@ -318,14 +318,18 @@ impl ChatDoc {
     /// messages (the `read` watermark). #general carries a welcome message
     /// the demo peer hasn't opened, so it shows a real "1" out of the box.
     fn seed_demo_channels(doc: &mut AutoCommit) {
-        for (id, ws, cat, name, topic, kind, order) in Self::demo_channel_table() {
+        for (id, ws, cat, name, topic, kind, order) in Self::demo_channel_table_acme() {
+            Self::put_channel(doc, id, ws, cat, name, topic, *kind, *order);
+        }
+        for (id, ws, cat, name, topic, kind, order) in Self::demo_channel_table_qos_and_jam() {
             Self::put_channel(doc, id, ws, cat, name, topic, *kind, *order);
         }
     }
 
-    /// The demo workspace's channel roster: (id, workspace, category, name,
-    /// topic, kind, sort order within its category).
-    fn demo_channel_table() -> &'static [DemoChannelSeed] {
+    /// The demo `ws_acme` workspace's channel roster: (id, workspace,
+    /// category, name, topic, kind, sort order within its category). Part
+    /// of [`Self::seed_demo_channels`].
+    fn demo_channel_table_acme() -> &'static [DemoChannelSeed] {
         &[
             (
                 "c_general",
@@ -381,6 +385,14 @@ impl ChatDoc {
                 ChannelKind::Voice,
                 1,
             ),
+        ]
+    }
+
+    /// The demo `ws_qos` and `ws_jam` workspaces' channel rosters: (id,
+    /// workspace, category, name, topic, kind, sort order within its
+    /// category). Part of [`Self::seed_demo_channels`].
+    fn demo_channel_table_qos_and_jam() -> &'static [DemoChannelSeed] {
+        &[
             (
                 "c_kernel",
                 "ws_qos",
@@ -770,7 +782,7 @@ impl ChatDoc {
     /// # Panics
     /// Never in practice: `block` is the freshly inserted message map, and
     /// `rx` is the List this call itself just created — see
-    /// push_message_with_id's doc comment.
+    /// `push_message_with_id`'s doc comment.
     #[allow(
         clippy::expect_used,
         reason = "block is the freshly inserted message map and rx is a List this same call just created; see push_message_with_id's doc comment"
@@ -797,7 +809,7 @@ impl ChatDoc {
     /// # Panics
     /// Never in practice: `block` is the freshly inserted message map, and
     /// `mentions_obj` is the List this call itself just created — see
-    /// push_message_with_id's doc comment.
+    /// `push_message_with_id`'s doc comment.
     #[allow(
         clippy::expect_used,
         reason = "block is the freshly inserted message map and mentions_obj is a List this same call just created; see push_message_with_id's doc comment"
@@ -834,8 +846,8 @@ impl ChatDoc {
     fn write_reference_and_work(
         doc: &mut AutoCommit,
         block: &ObjId,
-        reference: &Option<qos_reference::ResourceRef>,
-        work: &Option<crate::model::AgentWork>,
+        reference: Option<&qos_reference::ResourceRef>,
+        work: Option<&crate::model::AgentWork>,
     ) {
         if let Some(r) = reference
             && let Ok(json) = serde_json::to_string(r)
@@ -852,7 +864,7 @@ impl ChatDoc {
     /// # Panics
     /// Never in practice: `block` is the freshly inserted message map, and
     /// `hist` is the List this call itself just created — see
-    /// push_message_with_id's doc comment.
+    /// `push_message_with_id`'s doc comment.
     #[allow(
         clippy::expect_used,
         reason = "block is the freshly inserted message map and hist is a List this same call just created; see push_message_with_id's doc comment"
@@ -871,12 +883,12 @@ impl ChatDoc {
     /// # Panics
     /// Never in practice: `block` is the freshly inserted message map, so
     /// `put_object` on it only fails for an already-corrupted document — see
-    /// push_message_with_id's doc comment.
+    /// `push_message_with_id`'s doc comment.
     #[allow(
         clippy::expect_used,
         reason = "block is the freshly inserted message map this same call created a moment earlier; see push_message_with_id's doc comment"
     )]
-    fn write_attachment(doc: &mut AutoCommit, block: &ObjId, attachment: &Option<Attachment>) {
+    fn write_attachment(doc: &mut AutoCommit, block: &ObjId, attachment: Option<&Attachment>) {
         let Some(att) = attachment else {
             return;
         };
@@ -956,9 +968,9 @@ impl ChatDoc {
         Self::write_message_text(doc, &block, &text);
         Self::write_reactions(doc, &block, &reactions);
         Self::write_mentions(doc, &block, &mentions);
-        Self::write_reference_and_work(doc, &block, &reference, &work);
+        Self::write_reference_and_work(doc, &block, reference.as_ref(), work.as_ref());
         Self::write_history(doc, &block, &history);
-        Self::write_attachment(doc, &block, &attachment);
+        Self::write_attachment(doc, &block, attachment.as_ref());
 
         id.to_string()
     }

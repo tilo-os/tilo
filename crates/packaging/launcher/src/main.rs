@@ -289,6 +289,10 @@ fn main() -> ExitCode {
 /// Every field of [`Cmd::Run`], bundled so [`run_gui_command`] doesn't count
 /// against clippy's argument limit — this is argv plumbing, not a sandbox
 /// policy struct (see [`ExecArgs`] below for the same pattern).
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent CLI flag mirrored 1:1 from Cmd::Run; grouping them would just move the same four toggles into a sub-struct destructured back apart at the one call site"
+)]
 struct RunCliArgs {
     manifest: PathBuf,
     payload_root: PathBuf,

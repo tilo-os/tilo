@@ -20,12 +20,14 @@ impl Modal {
             title: String::new(),
         }
     }
+    #[must_use]
     pub fn with_scrim(mut self, s: Scrim) -> Self {
         self.scrim = s;
         self
     }
 
     /// Set the dialog title used as the accessible name announced on open.
+    #[must_use]
     pub fn with_title(mut self, title: &str) -> Self {
         self.title = title.into();
         self

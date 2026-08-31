@@ -82,7 +82,7 @@ fn configure(app: &mut ui::App) {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new(APP_ID, sheets::app_root)
+        &LaunchSpec::new(APP_ID, sheets::app_root)
             .shot_handler(render_shot)
             .scenarios(SCENARIOS)
             .configure_app(configure),
@@ -96,6 +96,8 @@ pub fn main() {
 /// Returns an error if `--shots` was not given a path, or if
 /// `render_shot_to_png` fails to build the layout or write the file.
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    type Setup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>;
+
     let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
     let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
     let scenario = args.scenario.as_deref();
@@ -105,7 +107,6 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     // The scenario hook runs after the document is seeded (in
     // `render_shot_to_png`, post-`sync`), because opening a menu, starting an
     // edit, or driving a fill/paste operates on the live state.
-    type Setup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>;
     let setup: Setup = match scenario {
         Some("file") => Box::new(|a, _d| a.shots_open_file_menu()),
         Some("format") => Box::new(|a, _d| a.shots_open_format_menu()),

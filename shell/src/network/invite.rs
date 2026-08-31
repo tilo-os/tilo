@@ -148,6 +148,13 @@ fn now_unix_seconds() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Mint an invite for `workspace` with no always-on hosts and no bound
+/// signing identity.
+///
+/// # Errors
+///
+/// Returns an error if `workspace` has no room identity, if `owner_addr`
+/// does not belong to `key`, or if encoding the signed token fails.
 pub fn make_invite_token(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -158,6 +165,11 @@ pub fn make_invite_token(
 }
 
 /// Mint an invite carrying optional always-on workspace hosts.
+///
+/// # Errors
+///
+/// Returns an error if `workspace` has no room identity, if `owner_addr`
+/// does not belong to `key`, or if encoding the signed token fails.
 pub fn make_invite_token_with_hosts(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -175,6 +187,16 @@ pub fn make_invite_token_with_hosts(
     )
 }
 
+/// Mint an invite, optionally binding the inviter's identity-signed device
+/// certificate so the guest can verify who is inviting them, not just which
+/// device.
+///
+/// # Errors
+///
+/// Returns an error if `workspace` has no room identity, if `owner_addr`
+/// does not belong to `key`, if `owner_device_cert` is present but fails
+/// verification or doesn't name `key`'s device, or if encoding the signed
+/// token fails.
 pub fn make_invite_token_with_identity(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -219,6 +241,15 @@ pub fn make_invite_token_with_identity(
     Ok(B64.encode(json))
 }
 
+/// Decode and verify a base64 invite token: signature, expiry, room id, and
+/// (if present) the bound device certificate.
+///
+/// # Errors
+///
+/// Returns an error describing which check failed: base64/JSON decoding,
+/// expiry, an invalid or unminted room id, a device-certificate/endpoint
+/// mismatch, or a signature that verifies against neither the current nor
+/// the legacy signing payload.
 pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String> {
     let json = B64
         .decode(token_str)
@@ -280,6 +311,13 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
     Ok(token)
 }
 
+/// Validate `token_str` and bind `local`'s workspace to the room it names.
+///
+/// # Errors
+///
+/// Returns an error if the token fails [`validate_invite_token`], if it
+/// carries no valid room id, or if `local` names no local workspace to
+/// accept the invite into.
 pub fn accept_invite_into(
     tree: &mut WorkspaceTree,
     local: WorkspaceId,
@@ -393,11 +431,12 @@ mod tests {
         let local = WorkspaceId(99);
         tree.workspaces.push(workspace(99));
         accept_invite_into(&mut tree, local, &encoded).expect("accept");
-        let person = match collab_types::caps::Principal::person_from_key(
-            collab_types::crypto::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-        ) {
-            collab_types::caps::Principal::Person(id) => id,
-            _ => unreachable!(),
+        let collab_types::caps::Principal::Person(person) =
+            collab_types::caps::Principal::person_from_key(
+                collab_types::crypto::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+            )
+        else {
+            unreachable!()
         };
         assert!(
             tree.workspaces[0]

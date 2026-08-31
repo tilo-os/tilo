@@ -234,7 +234,7 @@ impl StoreApp {
         }
     }
 
-    /// Merge an enriched AppStream record into the current list and keep the
+    /// Merge an enriched `AppStream` record into the current list and keep the
     /// detail view focused on it.
     pub fn set_detail(&mut self, detail: StoreItem) {
         if let Some(item) = self.items.iter_mut().find(|item| item.id == detail.id) {
@@ -335,7 +335,7 @@ impl StoreApp {
             });
         } else {
             let q = self.query.clone();
-            hits.sort_by(|a, b| b.fuzzy_score(&q).cmp(&a.fuzzy_score(&q)));
+            hits.sort_by_key(|i| std::cmp::Reverse(i.fuzzy_score(&q)));
         }
         hits
     }
@@ -535,6 +535,14 @@ impl StoreApp {
     }
 
     fn build_list(&self, theme: &Theme) -> Box<dyn Widget> {
+        // The card list is a plain column of cards. A `Scrollable`
+        // wrapper is deliberately omitted because the retained
+        // toolkit's scrollable + intrinsic-height card interaction
+        // is unstable in headless render paths (see the settings
+        // pane comment); we render a fixed head of items for the
+        // initial cut and pick this up as a follow-up.
+        const MAX_ROWS: usize = 30;
+
         let visible = self.visible_items();
         if visible.is_empty() {
             let text = if self.items.is_empty() {
@@ -546,13 +554,6 @@ impl StoreApp {
                 Text::new(text).with_size(13.0).with_color(theme.text_dim),
             )));
         }
-        // The card list is a plain column of cards. A `Scrollable`
-        // wrapper is deliberately omitted because the retained
-        // toolkit's scrollable + intrinsic-height card interaction
-        // is unstable in headless render paths (see the settings
-        // pane comment); we render a fixed head of items for the
-        // initial cut and pick this up as a follow-up.
-        const MAX_ROWS: usize = 30;
         let mut column = Column::new().with_intrinsic_height();
         for item in visible.iter().take(MAX_ROWS) {
             let action = item.action_kind(self.flatpak_available);
@@ -611,7 +612,7 @@ impl StoreApp {
         let now = std::time::Instant::now();
         let label = self.footer_label();
         if label != self.last_status_label {
-            self.last_status_label = label.clone();
+            self.last_status_label.clone_from(&label);
             self.status_bubble.poke(now);
         }
         if label.is_empty() {
@@ -783,7 +784,7 @@ impl StoreApp {
             .map(|remote| remote.name.clone())
             .collect();
         for name in remote_names {
-            let key = format!("{}{}", REMOTES_REMOVE_KEY_PREFIX, name);
+            let key = format!("{REMOTES_REMOVE_KEY_PREFIX}{name}");
             if take_bool_edge(state, path, &key) {
                 self.pending_remote_intents.push(RemoteIntent::Remove(name));
                 any = true;

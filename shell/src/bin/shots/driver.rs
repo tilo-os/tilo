@@ -140,15 +140,15 @@ impl ShellDriver {
     /// The shared wire to the host lives on [`FrameBuilder::dispatch_event`];
     /// this method only adds driver-local bookkeeping (cursor cache,
     /// modifier snapshot) before delegating.
-    pub fn dispatch(&mut self, event: WindowEvent) -> bool {
-        if let WindowEvent::CursorMoved { position, .. } = &event {
+    pub fn dispatch(&mut self, event: &WindowEvent) -> bool {
+        if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x, position.y);
         }
-        if let WindowEvent::ModifiersChanged(m) = &event {
+        if let WindowEvent::ModifiersChanged(m) = event {
             self.modifiers = *m;
         }
         self.fb.dispatch_event(
-            &event,
+            event,
             &self.modifiers,
             &mut self.state,
             &self.root_obj,
@@ -161,16 +161,16 @@ impl ShellDriver {
     /// `dispatch` so per-event hit-tests run in the same order they
     /// would on real hardware.
     pub fn click_at(&mut self, p: Point) {
-        self.dispatch(WindowEvent::CursorMoved {
+        self.dispatch(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(p.x, p.y),
         });
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -184,7 +184,7 @@ impl ShellDriver {
     /// pixel deltas should multiply by ~`1.0/16.0` first to stay
     /// concept-faithful with the strip's per-line factor.
     pub fn mouse_wheel(&mut self, dx: f32, dy: f32) {
-        self.dispatch(WindowEvent::MouseWheel {
+        self.dispatch(&WindowEvent::MouseWheel {
             device_id: unsafe { std::mem::zeroed() },
             delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
             phase: winit::event::TouchPhase::Moved,
@@ -197,7 +197,7 @@ impl ShellDriver {
     /// scrub-then-pause behaviour. Updates `self.last_cursor` so any
     /// follow-up `mouse_wheel()` lands at the new position.
     pub fn move_cursor(&mut self, p: Point) {
-        self.dispatch(WindowEvent::CursorMoved {
+        self.dispatch(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(p.x, p.y),
         });
@@ -207,7 +207,7 @@ impl ShellDriver {
     /// releasing. Caller is responsible for the matching `release()`
     /// once the drag is complete.
     pub fn press(&mut self) {
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -216,7 +216,7 @@ impl ShellDriver {
 
     /// Synthesise a left-button `Released` at the current cursor.
     pub fn release(&mut self) {
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -227,11 +227,11 @@ impl ShellDriver {
     /// events, release at `to`. Used by scenarios that exercise the
     /// tab-drag / wheel-spin flows.
     pub fn drag(&mut self, from: Point, to: Point, steps: u32) {
-        self.dispatch(WindowEvent::CursorMoved {
+        self.dispatch(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(from.x, from.y),
         });
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -240,12 +240,12 @@ impl ShellDriver {
         for s in 1..=steps.max(1) {
             let t = f64::from(s) / n;
             let p = Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
-            self.dispatch(WindowEvent::CursorMoved {
+            self.dispatch(&WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
                 position: PhysicalPosition::new(p.x, p.y),
             });
         }
-        self.dispatch(WindowEvent::MouseInput {
+        self.dispatch(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -254,8 +254,8 @@ impl ShellDriver {
 
     /// Synthesise a `KeyboardInput { state: Pressed }` for `key`.
     pub fn press_key(&mut self, key: Key) {
-        let event = key_press_event(key);
-        self.dispatch(event);
+        let event = key_press_event(&key);
+        self.dispatch(&event);
     }
 
     /// Type a literal string — one `Key::Character` event per non-control
@@ -267,9 +267,10 @@ impl ShellDriver {
             if c.is_control() {
                 continue;
             }
-            let event =
-                key_press_event(Key::Character(winit::keyboard::SmolStr::new(c.to_string())));
-            self.dispatch(event);
+            let event = key_press_event(&Key::Character(winit::keyboard::SmolStr::new(
+                c.to_string(),
+            )));
+            self.dispatch(&event);
         }
     }
 
@@ -357,7 +358,7 @@ impl ShellDriver {
     /// something to bring here. Reachable only from `--shots`, but goes
     /// through the real `RoomRecords::reference` path, so what the scene
     /// paints is what a real room index produces.
-    fn seed_records_in_other_rooms(&mut self) {
+    fn seed_records_in_other_rooms(&self) {
         use ui::record::{RecordId, RecordKind};
         let rooms: Vec<_> = {
             let handle = self.chrome_handle();
@@ -514,7 +515,7 @@ impl ShellDriver {
     /// catalogue) — a one-shot mutation; call on a fresh driver per scene.
     pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
         match name {
-            "desktop" => self.scene_desktop(),
+            "desktop" => Self::scene_desktop(),
             "overview" => self.scene_overview(),
             "overview-shared" => self.scene_overview_shared(),
             "palette" => self.scene_palette(),
@@ -545,7 +546,9 @@ impl ShellDriver {
         Ok(())
     }
 
-    fn scene_desktop(&mut self) {}
+    /// Bare desktop — the driver's default state already renders it, so
+    /// this scene is a deliberate no-op kept for catalogue symmetry.
+    fn scene_desktop() {}
 
     fn scene_overview(&mut self) {
         self.with_chrome(|st| st.overlays.overview = true);
@@ -754,10 +757,10 @@ impl ShellDriver {
             let mut peer = automerge::AutoCommit::new();
             peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
             if peer.apply_changes(base).is_ok() {
+                const DAY: i64 = 86_400;
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-                const DAY: i64 = 86_400;
                 for (days_ago, title) in
                     [(11_i64, "Q3 budget"), (5, "Onboarding notes"), (1, "Retro")]
                 {
@@ -854,19 +857,19 @@ impl ShellDriver {
             st.push_notification_full(
                 Notification::new("Switched to workspace Research", "Active tab: Notes")
                     .with_severity(NotificationSeverity::Info)
-                    .with_dismiss_after(Duration::from_mins(1))
+                    .with_dismiss_after(Duration::from_secs(60))
                     .with_created_at(settled_at),
             );
             st.push_notification_full(
                 Notification::new("Slow network", "Peer sync delayed; retrying")
                     .with_severity(NotificationSeverity::Warning)
-                    .with_dismiss_after(Duration::from_mins(1))
+                    .with_dismiss_after(Duration::from_secs(60))
                     .with_created_at(settled_at),
             );
             st.push_notification_full(
                 Notification::new("Permission denied", "Files cannot access /etc/shadow")
                     .with_severity(NotificationSeverity::Error)
-                    .with_dismiss_after(Duration::from_mins(1))
+                    .with_dismiss_after(Duration::from_secs(60))
                     .with_created_at(settled_at),
             );
         });
@@ -879,7 +882,7 @@ impl ShellDriver {
             st.push_notification_full(
                 Notification::new("Build finished", "All 524 tests passed")
                     .with_severity(NotificationSeverity::Info)
-                    .with_dismiss_after(Duration::from_mins(1))
+                    .with_dismiss_after(Duration::from_secs(60))
                     .with_created_at(settled_at),
             );
         });
@@ -894,7 +897,7 @@ impl ShellDriver {
             st.push_notification_full(
                 Notification::new("Meeting in 10 minutes", "Standup — Research workspace")
                     .with_severity(NotificationSeverity::Info)
-                    .with_dismiss_after(Duration::from_mins(1))
+                    .with_dismiss_after(Duration::from_secs(60))
                     .with_created_at(settled_at),
             );
             // Engage Do-Not-Disturb, then post two more — these are
@@ -999,43 +1002,42 @@ impl ShellDriver {
         let half = WindowWidth::Fraction(500);
         let mut placed = None;
         self.with_chrome(|st| {
+            let mut tree = st.tree_mut();
+            let mut sibling = None;
+            let mut strip_id = None;
+            if let Some(strip) = tree
+                .active_workspace_mut()
+                .and_then(|ws| ws.strips.first_mut())
             {
-                let mut tree = st.tree_mut();
-                let mut sibling = None;
-                let mut strip_id = None;
-                if let Some(strip) = tree
-                    .active_workspace_mut()
-                    .and_then(|ws| ws.strips.first_mut())
-                {
-                    for g in &mut strip.window_groups {
-                        g.width = half;
-                    }
-                    let gid = 9101u64;
-                    let tid = 9111u64;
-                    strip.window_groups.push(WindowGroup {
-                        id: gid,
-                        tabs: vec![Tab {
-                            id: tid,
-                            title: "Settings".to_string(),
-                            tile: TileContent::Stub {
-                                kind: shell::shell::state::AppKind::Settings,
-                                label: "Settings".to_string(),
-                            },
-                        }],
-                        active_tab: tid,
-                        width: half,
-                        maximized: false,
-                    });
-                    strip_id = Some(strip.id);
-                    sibling = Some(gid);
+                for g in &mut strip.window_groups {
+                    g.width = half;
                 }
-                // Focus the newly-added right-hand window, so the
-                // scene shows the signal moving off the default.
-                if let (Some(sid), Some(gid)) = (strip_id, sibling) {
-                    tree.set_active_group(sid, gid);
-                    placed = Some(sid);
-                }
+                let gid = 9101u64;
+                let tid = 9111u64;
+                strip.window_groups.push(WindowGroup {
+                    id: gid,
+                    tabs: vec![Tab {
+                        id: tid,
+                        title: "Settings".to_string(),
+                        tile: TileContent::Stub {
+                            kind: shell::shell::state::AppKind::Settings,
+                            label: "Settings".to_string(),
+                        },
+                    }],
+                    active_tab: tid,
+                    width: half,
+                    maximized: false,
+                });
+                strip_id = Some(strip.id);
+                sibling = Some(gid);
             }
+            // Focus the newly-added right-hand window, so the
+            // scene shows the signal moving off the default.
+            if let (Some(sid), Some(gid)) = (strip_id, sibling) {
+                tree.set_active_group(sid, gid);
+                placed = Some(sid);
+            }
+            drop(tree);
             st.bump();
         });
         // Widths only reach the widget tree at construction, which
@@ -1210,7 +1212,7 @@ impl ShellDriver {
 /// (`platform_specific`) so we zero-init the struct + overwrite the
 /// fields the shell actually reads. Same workaround the e2e harness
 /// uses (see `tests/e2e_shell_flows.rs::escape_event`).
-pub fn key_press_event(key: Key) -> WindowEvent {
+pub fn key_press_event(key: &Key) -> WindowEvent {
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = key.clone();
     ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
@@ -1220,7 +1222,7 @@ pub fn key_press_event(key: Key) -> WindowEvent {
     // `text` is `Option<SmolStr>` — for ASCII characters we mirror what
     // winit normally fills so the palette's character-input branch
     // sees the same glyph it would on real hardware.
-    ev.text = if let Key::Character(s) = &key {
+    ev.text = if let Key::Character(s) = key {
         Some(s.clone())
     } else {
         None
@@ -1508,7 +1510,9 @@ mod tests {
             .iter()
             .position(|(_, tabs)| tabs.len() == 1)
             .expect("singleton (detached) group");
-        let notes_group_idx = 1 - files_group_idx;
+        // Exactly two groups are asserted above, so the other index is
+        // whichever of {0, 1} `files_group_idx` isn't — no arithmetic needed.
+        let notes_group_idx = if files_group_idx == 0 { 1 } else { 0 };
         let files_tab_id = strip.1[files_group_idx].1[0];
         let files_rect = d
             .host_mut()
@@ -1551,16 +1555,16 @@ mod tests {
         let _ = d.paint();
         d.relayout();
 
-        let mid = d.host().groups_per_strip();
-        let strip_mid = mid
+        let after_click = d.host().groups_per_strip();
+        let found = after_click
             .iter()
             .find(|(s, _)| *s == strip_id)
             .expect("strip present after body click");
         assert_eq!(
-            strip_mid.1.len(),
+            found.1.len(),
             2,
             "body click alone should not drop a group; got {:?}",
-            strip_mid.1
+            found.1
         );
 
         d.set_modifiers(ModifiersState::CONTROL);
