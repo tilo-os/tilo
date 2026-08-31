@@ -801,23 +801,23 @@ impl ContainersApp {
 
     /// Lay a shared dialog out against the app rect so its box + footer
     /// buttons resolve. Generic over which dialog slot is active.
-    fn layout_confirm_dialog(&mut self) {
+    fn layout_confirm_dialog(&mut self, theme: &Theme, tr: &mut TextRenderer) {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
         let rect = self.rect;
         if let Some(cd) = self.confirm_dialog.as_mut() {
-            layout_dialog(&mut cd.dialog, rect);
+            cd.dialog.layout_in(rect, theme, tr);
         }
     }
 
-    fn layout_prompt_dialog(&mut self) {
+    fn layout_prompt_dialog(&mut self, theme: &Theme, tr: &mut TextRenderer) {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
         let rect = self.rect;
         if let Some(pd) = self.prompt_dialog.as_mut() {
-            layout_dialog(&mut pd.dialog, rect);
+            pd.dialog.layout_in(rect, theme, tr);
         }
     }
 
@@ -837,12 +837,17 @@ impl ContainersApp {
             return;
         }
         self.ensure_confirm_dialog();
-        self.layout_confirm_dialog();
+        let viewport = self.rect;
         let (ok, cancel) = {
             let Some(cd) = self.confirm_dialog.as_mut() else {
                 return;
             };
-            route_event_into(&mut cd.dialog, event, scale_factor, modifiers, doc, handled);
+            if cd.dialog.dialog_rect() == Rect::ZERO {
+                cd.dialog
+                    .layout_in(viewport, &Theme::dark(), &mut TextRenderer::new());
+            }
+            cd.dialog
+                .handle_detached(event, scale_factor, modifiers, doc, &automerge::ROOT);
             (cd.confirm.replace(false), cd.cancel.replace(false))
         };
         if ok {
@@ -871,12 +876,17 @@ impl ContainersApp {
             return;
         }
         self.ensure_prompt_dialog();
-        self.layout_prompt_dialog();
+        let viewport = self.rect;
         let (submit, cancel) = {
             let Some(pd) = self.prompt_dialog.as_mut() else {
                 return;
             };
-            route_event_into(&mut pd.dialog, event, scale_factor, modifiers, doc, handled);
+            if pd.dialog.dialog_rect() == Rect::ZERO {
+                pd.dialog
+                    .layout_in(viewport, &Theme::dark(), &mut TextRenderer::new());
+            }
+            pd.dialog
+                .handle_detached(event, scale_factor, modifiers, doc, &automerge::ROOT);
             (pd.submit.replace(false), pd.cancel.replace(false))
         };
         if submit {
@@ -948,69 +958,6 @@ impl ContainersApp {
         self.prompt_dialog = None;
         self.refresh_view(doc);
     }
-}
-
-/// Lay a shared [`ModalDialog`] out inside `rect` via a throwaway taffy pass so
-/// its box + footer button rects resolve for hit-testing and paint.
-fn layout_dialog<C: Widget + 'static>(dialog: &mut ModalDialog<C>, rect: Rect) {
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
-        std::collections::HashMap::new();
-    let node = dialog.build_layout(&mut taffy, &theme, &mut node_map);
-    // A single-child throwaway tree; this can't realistically fail, but skip
-    // the layout pass rather than panic if it ever does.
-    let Ok(root) = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(rect.width() as f32),
-                height: Dimension::length(rect.height() as f32),
-            },
-            ..Default::default()
-        },
-        &[node],
-    ) else {
-        return;
-    };
-    let _ = taffy.compute_layout(
-        root,
-        Size {
-            width: taffy::AvailableSpace::Definite(rect.width() as f32),
-            height: taffy::AvailableSpace::Definite(rect.height() as f32),
-        },
-    );
-    dialog.apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
-}
-
-/// Route one event into a shared dialog with a throwaway node (the dialog
-/// drives its own retained content tree, so the node/taffy are ignored).
-fn route_event_into<C: Widget + 'static>(
-    dialog: &mut ModalDialog<C>,
-    event: &WindowEvent,
-    scale_factor: f64,
-    modifiers: winit::event::Modifiers,
-    doc: &mut AutoCommit,
-    handled: &mut bool,
-) {
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    // A single-leaf throwaway tree; this can't realistically fail, but skip
-    // the forward rather than panic if it ever does.
-    let Ok(node) = taffy.new_leaf(Style::default()) else {
-        return;
-    };
-    let mut focus_target = None;
-    let root = automerge::ROOT;
-    dialog.handle_event(
-        event,
-        scale_factor,
-        &modifiers,
-        doc,
-        &root,
-        handled,
-        &mut focus_target,
-        node,
-        &taffy,
-    );
 }
 
 /// Whether `event` is a key-press of Enter (the modal submit convenience).
@@ -1232,7 +1179,7 @@ impl Widget for ContainersApp {
         }
         if self.prompt.is_some() {
             self.ensure_prompt_dialog();
-            self.layout_prompt_dialog();
+            self.layout_prompt_dialog(theme, tr);
             if let Some(pd) = self.prompt_dialog.as_mut() {
                 pd.dialog.draw(scene, transform, tr, theme, presence);
             }
@@ -1241,7 +1188,7 @@ impl Widget for ContainersApp {
         }
         if self.confirm.is_some() {
             self.ensure_confirm_dialog();
-            self.layout_confirm_dialog();
+            self.layout_confirm_dialog(theme, tr);
             if let Some(cd) = self.confirm_dialog.as_mut() {
                 cd.dialog.draw(scene, transform, tr, theme, presence);
             }
