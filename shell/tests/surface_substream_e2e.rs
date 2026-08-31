@@ -41,11 +41,15 @@ fn cfg() -> FlatpakShareConfig {
 }
 
 fn gradient(width: u32, height: u32) -> Vec<u8> {
-    let mut out = Vec::with_capacity((width * height * 4) as usize);
+    let mut out = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4) as usize);
     for y in 0..height {
         for x in 0..width {
-            out.push(((x * 255) / width.max(1)) as u8);
-            out.push(((y * 255) / height.max(1)) as u8);
+            out.push(
+                u8::try_from(x.saturating_mul(255).saturating_div(width.max(1))).unwrap_or(255),
+            );
+            out.push(
+                u8::try_from(y.saturating_mul(255).saturating_div(height.max(1))).unwrap_or(255),
+            );
             out.push(0x80);
             out.push(0xFF);
         }

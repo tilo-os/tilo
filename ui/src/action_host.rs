@@ -61,8 +61,16 @@ impl ActionHost {
         if self.commit_before.is_none() {
             self.commit_before = Some(doc.get_heads());
         }
-        let encoded =
-            EncodedAction::encode(type_id, action).expect("a domain action is always serializable");
+        // Same "never panics the app" contract as the dispatch below: an
+        // encoding failure is logged and swallowed rather than taking the
+        // affordance down with it.
+        let encoded = match EncodedAction::encode(type_id, action) {
+            Ok(encoded) => encoded,
+            Err(e) => {
+                tracing::warn!(error = %e, type_id = %type_id, "action encoding failed");
+                return;
+            }
+        };
         self.last_dispatched = Some(encoded.clone());
         let mut transport = qos_actions::LocalTransport::new();
         if let Err(e) = qos_actions::dispatch(doc, action, encoded, &mut transport) {

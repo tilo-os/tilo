@@ -74,7 +74,7 @@ pub async fn handle_connection(
         futures::io::BufReader::new(reader),
         futures::io::BufWriter::new(writer),
         rpc_twoparty_capnp::Side::Server,
-        Default::default(),
+        capnp::message::ReaderOptions::default(),
     ));
     let service = FormatRouterService::new(router);
     let client: format_router::Client = capnp_rpc::new_client(service);

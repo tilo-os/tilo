@@ -2483,11 +2483,15 @@ mod tests {
             ),
             "both legacy sends must reach the SDK",
         );
-        {
+        let (snapshots, incrementals) = {
             let c = captures.lock().unwrap();
-            assert_eq!(c.unsigned_snapshots, vec![b"snap".to_vec()]);
-            assert_eq!(c.unsigned_incrementals, vec![b"delta".to_vec()]);
-        }
+            (
+                c.unsigned_snapshots.clone(),
+                c.unsigned_incrementals.clone(),
+            )
+        };
+        assert_eq!(snapshots, vec![b"snap".to_vec()]);
+        assert_eq!(incrementals, vec![b"delta".to_vec()]);
     }
 
     /// Every presence variant reaches the SDK method that keeps its key —
@@ -2552,27 +2556,42 @@ mod tests {
             ),
             "every presence variant must reach the corresponding SDK method",
         );
-        {
+        let (
+            pointer_publishes,
+            cursor_publishes,
+            caret_publishes,
+            selection_publishes,
+            arrived,
+            left,
+        ) = {
             let c = captures.lock().unwrap();
-            assert_eq!(
-                c.pointer_publishes,
-                vec![(expected_key_bytes.clone(), 1.5, 2.5)],
-                "a pointer carries the key its publisher chose, like every other \
-                 keyed variant here",
-            );
-            assert!(
-                c.cursor_publishes.is_empty(),
-                "and does not go out through the keyless call, which would drop \
-                 the space on the way",
-            );
-            assert_eq!(c.caret_publishes, vec![(expected_key_bytes.clone(), 12)]);
-            assert_eq!(
-                c.selection_publishes,
-                vec![(expected_key_bytes.clone(), 3, 9)]
-            );
-            assert_eq!(c.arrived, vec![expected_key_bytes.clone()]);
-            assert_eq!(c.left, vec![expected_key_bytes]);
-        }
+            (
+                c.pointer_publishes.clone(),
+                c.cursor_publishes.clone(),
+                c.caret_publishes.clone(),
+                c.selection_publishes.clone(),
+                c.arrived.clone(),
+                c.left.clone(),
+            )
+        };
+        assert_eq!(
+            pointer_publishes,
+            vec![(expected_key_bytes.clone(), 1.5, 2.5)],
+            "a pointer carries the key its publisher chose, like every other \
+             keyed variant here",
+        );
+        assert!(
+            cursor_publishes.is_empty(),
+            "and does not go out through the keyless call, which would drop \
+             the space on the way",
+        );
+        assert_eq!(caret_publishes, vec![(expected_key_bytes.clone(), 12)]);
+        assert_eq!(
+            selection_publishes,
+            vec![(expected_key_bytes.clone(), 3, 9)]
+        );
+        assert_eq!(arrived, vec![expected_key_bytes.clone()]);
+        assert_eq!(left, vec![expected_key_bytes]);
     }
 
     #[test]

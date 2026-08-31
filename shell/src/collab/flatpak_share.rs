@@ -85,6 +85,45 @@ enum StagedKind {
     Dmabuf(Dmabuf),
 }
 
+/// Build the encoder's `FrameInput::DmabufFd` from `dmabuf`'s planes.
+/// `.take(4)` bounds the plane count, but writes go through `.get_mut()`
+/// anyway rather than trust that invariant to hold forever. Split out of
+/// `SharedFlatpakSession::encode_next_frame` to keep it short.
+fn dmabuf_frame_input(dmabuf: &Dmabuf) -> FrameInput<'_> {
+    let mut plane_fds = [-1i32; 4];
+    let mut plane_offsets = [0u64; 4];
+    let mut plane_strides = [0u32; 4];
+    let mut num_planes: u8 = 0;
+    for (i, (fd, (offset, stride))) in dmabuf
+        .handles()
+        .zip(dmabuf.offsets().zip(dmabuf.strides()))
+        .take(4)
+        .enumerate()
+    {
+        if let Some(slot) = plane_fds.get_mut(i) {
+            *slot = fd.as_raw_fd();
+        }
+        if let Some(slot) = plane_offsets.get_mut(i) {
+            *slot = u64::from(offset);
+        }
+        if let Some(slot) = plane_strides.get_mut(i) {
+            *slot = stride;
+        }
+        num_planes = num_planes.saturating_add(1);
+    }
+    let fmt = dmabuf.format();
+    FrameInput::DmabufFd {
+        plane_fds,
+        plane_offsets,
+        plane_strides,
+        num_planes,
+        drm_fourcc: fmt.code as u32,
+        drm_modifier: u64::from(fmt.modifier),
+        width: dmabuf.width(),
+        height: dmabuf.height(),
+    }
+}
+
 /// One encoded frame, ready to wrap in `NeighbourMsg::SurfaceFrame`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EncodedFrame {
@@ -553,44 +592,10 @@ impl SharedFlatpakSession {
                 encoder.encode(FrameInput::Rgba(rgba), &mut nalus),
                 CapturePath::ShmReadback,
             ),
-            StagedKind::Dmabuf(dmabuf) => {
-                let mut plane_fds = [-1i32; 4];
-                let mut plane_offsets = [0u64; 4];
-                let mut plane_strides = [0u32; 4];
-                let mut num_planes: u8 = 0;
-                for (i, (fd, (offset, stride))) in dmabuf
-                    .handles()
-                    .zip(dmabuf.offsets().zip(dmabuf.strides()))
-                    .take(4)
-                    .enumerate()
-                {
-                    // `.take(4)` bounds `i` to the four plane slots, but
-                    // index via `.get_mut()` anyway rather than trust that
-                    // invariant to hold forever.
-                    if let Some(slot) = plane_fds.get_mut(i) {
-                        *slot = fd.as_raw_fd();
-                    }
-                    if let Some(slot) = plane_offsets.get_mut(i) {
-                        *slot = u64::from(offset);
-                    }
-                    if let Some(slot) = plane_strides.get_mut(i) {
-                        *slot = stride;
-                    }
-                    num_planes = num_planes.saturating_add(1);
-                }
-                let fmt = dmabuf.format();
-                let input = FrameInput::DmabufFd {
-                    plane_fds,
-                    plane_offsets,
-                    plane_strides,
-                    num_planes,
-                    drm_fourcc: fmt.code as u32,
-                    drm_modifier: u64::from(fmt.modifier),
-                    width: dmabuf.width(),
-                    height: dmabuf.height(),
-                };
-                (encoder.encode(input, &mut nalus), CapturePath::DmabufDirect)
-            }
+            StagedKind::Dmabuf(dmabuf) => (
+                encoder.encode(dmabuf_frame_input(dmabuf), &mut nalus),
+                CapturePath::DmabufDirect,
+            ),
         };
         match encode_result {
             Ok(stats) => {
@@ -791,11 +796,13 @@ mod tests {
     }
 
     fn gradient_frame(width: u32, height: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        let mut out = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4) as usize);
         for y in 0..height {
             for x in 0..width {
-                let r = ((x * 255) / width.max(1)) as u8;
-                let g = ((y * 255) / height.max(1)) as u8;
+                let r =
+                    u8::try_from(x.saturating_mul(255).saturating_div(width.max(1))).unwrap_or(255);
+                let g = u8::try_from(y.saturating_mul(255).saturating_div(height.max(1)))
+                    .unwrap_or(255);
                 out.push(r);
                 out.push(g);
                 out.push(128);

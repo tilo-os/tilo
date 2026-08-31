@@ -601,7 +601,9 @@ fn elide_token(token: &str) -> String {
     format!(
         "{}…{}",
         chars[..10].iter().collect::<String>(),
-        chars[chars.len() - 6..].iter().collect::<String>()
+        chars[chars.len().saturating_sub(6)..]
+            .iter()
+            .collect::<String>()
     )
 }
 
