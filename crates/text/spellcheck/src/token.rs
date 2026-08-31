@@ -37,21 +37,21 @@ pub fn tokenize(text: &str) -> Vec<Token<'_>> {
     while let Some(&(idx, ch)) = iter.peek() {
         if is_word_start(ch) {
             let start = idx;
-            let mut end = idx + ch.len_utf8();
+            let mut end = idx.saturating_add(ch.len_utf8());
             iter.next();
 
             // Extend over word chars and *internal* connectors.
             while let Some(&(j, c)) = iter.peek() {
                 if is_word_char(c) {
-                    end = j + c.len_utf8();
+                    end = j.saturating_add(c.len_utf8());
                     iter.next();
                 } else if is_connector(c) {
                     // Keep the connector only if a word char eventually follows
                     // it across an unbroken run of connectors. This lets `://`
                     // and `.co.` chains inside a URL stay attached, while a
                     // trailing `'` or `.` at the end of a word is dropped.
-                    if word_char_follows_connectors(text, j + c.len_utf8()) {
-                        end = j + c.len_utf8();
+                    if word_char_follows_connectors(text, j.saturating_add(c.len_utf8())) {
+                        end = j.saturating_add(c.len_utf8());
                         iter.next();
                     } else {
                         break;
@@ -62,8 +62,13 @@ pub fn tokenize(text: &str) -> Vec<Token<'_>> {
             }
 
             debug_assert!(end <= bytes_len);
+            // `start` and `end` are always char boundaries: `start` comes
+            // straight from `char_indices`, and `end` is only ever advanced by
+            // a char's own `len_utf8()` from a boundary already known to be
+            // valid. `.get()` still guards against that invariant ever lapsing
+            // rather than slicing straight through it.
             tokens.push(Token {
-                text: &text[start..end],
+                text: text.get(start..end).unwrap_or(""),
                 start,
                 end,
             });
@@ -99,7 +104,10 @@ fn is_connector(c: char) -> bool {
 /// report whether the first non-connector reached is a word character. Used so a
 /// connector run like `://` attaches to the following word characters.
 fn word_char_follows_connectors(text: &str, idx: usize) -> bool {
-    for c in text[idx..].chars() {
+    // `idx` is always a char boundary (see the callers), so this can only ever
+    // hit the `Some` arm; `.get()` keeps that a guarantee rather than an
+    // assumption a future caller could silently break.
+    for c in text.get(idx..).unwrap_or("").chars() {
         if is_word_char(c) {
             return true;
         }

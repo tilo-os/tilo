@@ -62,10 +62,8 @@ impl Instruction {
         let t = text.trim();
         let prefix = format!("{}:", name.to_lowercase());
         let lower = t.to_lowercase();
-        if !lower.starts_with(&prefix) {
-            return None;
-        }
-        Some(lower[prefix.len()..].trim().to_string())
+        let rest = lower.strip_prefix(&prefix)?;
+        Some(rest.trim().to_string())
     }
 
     /// The keyword vocabulary: the decision the agent reaches on its own.
@@ -147,6 +145,13 @@ impl Instruction {
     /// collects text is [`Refused::Unusable`] when neither `supplied` nor a
     /// quoted literal in `rest` gives it any, rather than silently falling
     /// back to the deterministic floor while reporting success.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused::NotExported`] when `id` names neither a catalogue entry
+    /// nor a live [`Offer`]. [`Refused::Unusable`] when `id` names an offer
+    /// that collects text but neither `supplied` nor a quoted literal in
+    /// `rest` gives it any.
     pub fn from_answer(
         id: &str,
         rest: &str,
@@ -383,13 +388,13 @@ impl Plan {
         // Every part named the same operation, which is one request said
         // twice rather than two to carry out — performing it twice is
         // harmless here.
-        if steps
-            .windows(2)
-            .all(|w| w[0].instruction == w[1].instruction)
-        {
-            return Plan {
-                steps: vec![steps.into_iter().next().expect("at least two")],
-            };
+        if steps.windows(2).all(|w| match w {
+            [a, b] => a.instruction == b.instruction,
+            _ => false,
+        }) {
+            let mut steps = steps;
+            steps.truncate(1);
+            return Plan { steps };
         }
         Plan { steps }
     }
@@ -422,7 +427,7 @@ pub fn clauses(rest: &str) -> Vec<String> {
     let mut in_curly = false;
     let mut i = 0usize;
     while i < rest.len() {
-        let tail = &rest[i..];
+        let Some(tail) = rest.get(i..) else { break };
         let Some(ch) = tail.chars().next() else { break };
         match ch {
             '"' => in_straight = !in_straight,
@@ -436,10 +441,13 @@ pub fn clauses(rest: &str) -> Vec<String> {
             // typographic quotation mark, in the very case this has to get
             // right — which slicing by a byte length would split.
             if let Some(sep) = CONJUNCTIONS.iter().find(|s| {
-                tail.len() >= s.len()
-                    && tail.as_bytes()[..s.len()].eq_ignore_ascii_case(s.as_bytes())
+                tail.as_bytes()
+                    .get(..s.len())
+                    .is_some_and(|b| b.eq_ignore_ascii_case(s.as_bytes()))
             }) {
-                out.push(rest[start..i].trim().to_string());
+                if let Some(clause) = rest.get(start..i) {
+                    out.push(clause.trim().to_string());
+                }
                 i += sep.len();
                 start = i;
                 continue;
@@ -447,7 +455,7 @@ pub fn clauses(rest: &str) -> Vec<String> {
         }
         i += ch.len_utf8();
     }
-    out.push(rest[start..].trim().to_string());
+    out.push(rest.get(start..).unwrap_or_default().trim().to_string());
     out.retain(|c| !c.is_empty());
     out
 }
@@ -590,13 +598,21 @@ pub fn find_instruction(blocks: &[Block], name: &str) -> Option<(usize, Instruct
 pub fn bullets_above(blocks: &[Block], at: usize) -> Vec<usize> {
     let mut i = at;
     // Skip blank lines between the bullets and the instruction.
-    while i > 0 && blocks[i - 1].kind == "paragraph" && blocks[i - 1].text.trim().is_empty() {
-        i -= 1;
+    while i > 0 {
+        match blocks.get(i - 1) {
+            Some(b) if b.kind == "paragraph" && b.text.trim().is_empty() => i -= 1,
+            _ => break,
+        }
     }
     let mut run = Vec::new();
-    while i > 0 && blocks[i - 1].kind == "list_item" {
-        i -= 1;
-        run.push(i);
+    while i > 0 {
+        match blocks.get(i - 1) {
+            Some(b) if b.kind == "list_item" => {
+                i -= 1;
+                run.push(i);
+            }
+            _ => break,
+        }
     }
     run.reverse();
     run
@@ -694,18 +710,21 @@ fn looks_like_a_label(text: &str) -> bool {
 /// headings.
 pub fn structure(blocks: &[Block], instruction: usize) -> Structure {
     let mut out = Structure::default();
-    let body: Vec<usize> = (0..blocks.len())
-        .filter(|&i| i != instruction)
-        .filter(|&i| blocks[i].kind != "cell")
-        .filter(|&i| !blocks[i].text.trim().is_empty())
+    let body: Vec<&Block> = blocks
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != instruction)
+        .map(|(_, b)| b)
+        .filter(|b| b.kind != "cell")
+        .filter(|b| !b.text.trim().is_empty())
         .collect();
     let Some((&first, rest)) = body.split_first() else {
         return out;
     };
-    out.title = Some(blocks[first].id.clone());
+    out.title = Some(first.id.clone());
 
-    for (n, &i) in rest.iter().enumerate() {
-        if blocks[i].kind != "paragraph" || !looks_like_a_label(&blocks[i].text) {
+    for (n, &b) in rest.iter().enumerate() {
+        if b.kind != "paragraph" || !looks_like_a_label(&b.text) {
             continue;
         }
         // The next line of body text has to read as prose, or this is just
@@ -713,11 +732,11 @@ pub fn structure(blocks: &[Block], instruction: usize) -> Structure {
         let Some(&next) = rest.get(n + 1) else {
             continue;
         };
-        let follows_prose = blocks[next].kind == "paragraph"
-            && !looks_like_a_label(&blocks[next].text)
-            && blocks[next].text.trim().chars().count() > blocks[i].text.trim().chars().count();
+        let follows_prose = next.kind == "paragraph"
+            && !looks_like_a_label(&next.text)
+            && next.text.trim().chars().count() > b.text.trim().chars().count();
         if follows_prose {
-            out.sections.push(blocks[i].id.clone());
+            out.sections.push(b.id.clone());
         }
     }
     out

@@ -55,6 +55,10 @@ pub struct Prediction {
 ///
 /// Layout: `sigAlg` = `TPM_ALG_RSASSA` (0x0014), `hash` = `TPM_ALG_SHA256` (0x000B), then a
 /// `TPM2B_PUBLIC_KEY_RSA` (big-endian size, then the bytes).
+///
+/// # Errors
+///
+/// Returns an error if `signature` is too long to fit the `TPM2B_PUBLIC_KEY_RSA` size field.
 pub fn marshal_rsassa_sha256(signature: &[u8]) -> Result<Vec<u8>> {
     let len = u16::try_from(signature.len()).with_context(|| {
         format!(
@@ -62,7 +66,9 @@ pub fn marshal_rsassa_sha256(signature: &[u8]) -> Result<Vec<u8>> {
             signature.len()
         )
     })?;
-    let mut out = Vec::with_capacity(signature.len() + 6);
+    // Just a capacity hint: `len` above already proves `signature.len()` fits a u16, so this
+    // cannot meaningfully overflow, and a wrong hint would only cost a reallocation.
+    let mut out = Vec::with_capacity(signature.len().saturating_add(6));
     out.extend_from_slice(&0x0014u16.to_be_bytes()); // TPM_ALG_RSASSA
     out.extend_from_slice(&0x000Bu16.to_be_bytes()); // TPM_ALG_SHA256
     out.extend_from_slice(&len.to_be_bytes());
@@ -87,6 +93,12 @@ pub const DEFAULT_PREDICTION_DIR: &str = "/usr/share/qos/pcr-predictions";
 /// produce these itself: signing needs the private prediction key, deliberately not on the
 /// device — a machine that could sign its own predictions could authorise any measurement
 /// state it liked, defeating the whole point of `PolicyAuthorize`.
+///
+/// # Errors
+///
+/// Returns an error if `dir` cannot be read, if any `.json` file in it fails to read or
+/// parse, or if one for the requested `generation` is missing its `approved_policy` or
+/// `signature` field or either is not valid base64.
 pub fn load_signed_predictions(dir: &Path, generation: u64) -> Result<Vec<Prediction>> {
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD;
@@ -103,23 +115,40 @@ pub fn load_signed_predictions(dir: &Path, generation: u64) -> Result<Vec<Predic
             std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
         let v: serde_json::Value =
             serde_json::from_str(&text).with_context(|| format!("parsing {}", p.display()))?;
-        if v["generation"].as_u64() != Some(generation) {
+        if v.get("generation").and_then(serde_json::Value::as_u64) != Some(generation) {
             continue;
         }
         out.push(Prediction {
             approved_policy: b64
-                .decode(v["approved_policy"].as_str().context("approved_policy")?)
+                .decode(
+                    v.get("approved_policy")
+                        .and_then(serde_json::Value::as_str)
+                        .context("approved_policy")?,
+                )
                 .with_context(|| format!("{}: approved_policy is not base64", p.display()))?,
             signature: b64
-                .decode(v["signature"].as_str().context("signature")?)
+                .decode(
+                    v.get("signature")
+                        .and_then(serde_json::Value::as_str)
+                        .context("signature")?,
+                )
                 .with_context(|| format!("{}: signature is not base64", p.display()))?,
-            label: v["label"].as_str().unwrap_or("").to_string(),
+            label: v
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string(),
         });
     }
     Ok(out)
 }
 
 /// Write a signed prediction where [`load_signed_predictions`] will find it.
+///
+/// # Errors
+///
+/// Returns an error if `dir` cannot be created, or if the prediction file cannot be
+/// serialised or written.
 pub fn write_signed_prediction(
     dir: &Path,
     generation: u64,
@@ -165,6 +194,10 @@ impl Workspace {
         self.dir.join(name)
     }
     /// Write bytes to a scratch file and return the path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be written.
     pub fn put(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
         let p = self.path(name);
         std::fs::write(&p, bytes).with_context(|| format!("writing {}", p.display()))?;
@@ -184,6 +217,10 @@ pub fn flush(runner: &dyn Runner) {
 
 /// Load the prediction authority's public key and return its TPM Name — that, not the PEM,
 /// is what `TPM2_PolicyAuthorize` commits to and what a sealed token is bound to.
+///
+/// # Errors
+///
+/// Returns an error if loading the key or reading its public area fails.
 pub fn key_name(runner: &dyn Runner, ws: &Workspace, public_key_pem: &Path) -> Result<Vec<u8>> {
     flush(runner);
     let ctx = ws.path("signkey.ctx");
@@ -217,6 +254,10 @@ pub fn key_name(runner: &dyn Runner, ws: &Workspace, public_key_pem: &Path) -> R
 /// Compute the digest a `TPM2_PolicyPCR` over `pcr_values` reaches. `pcr_values` is a
 /// `tpm2_pcrread -o` blob (the predicted measurements); pass `None` to use the machine's live
 /// PCRs, as enrollment does when generating its own first prediction on the machine itself.
+///
+/// # Errors
+///
+/// Returns an error if the trial policy session or reading its digest fails.
 pub fn approved_policy(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -260,6 +301,10 @@ pub fn approved_policy(
 }
 
 /// The full seal policy digest for one generation.
+///
+/// # Errors
+///
+/// Returns an error if any step of the trial policy session fails.
 pub fn seal_policy(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -338,6 +383,11 @@ pub fn seal_policy(
 
 /// Sign a prediction. Needs the *private* key, so this runs on the build or update
 /// authority, never on the device.
+///
+/// # Errors
+///
+/// Returns an error if signing with `openssl` fails, or if the signature file can't be read
+/// back.
 pub fn sign_prediction(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -372,12 +422,25 @@ pub struct SatisfiedSession {
     pub context: PathBuf,
 }
 
+/// The verification ticket and its approved-policy file, once a prediction's signature has
+/// been confirmed — everything [`drive_policy_session`] needs from stage 1.
+struct PredictionTicket {
+    approved: PathBuf,
+    ticket: PathBuf,
+}
+
 /// Drive a real policy session through the whole chain.
 ///
 /// Returns `Ok(None)` when the *prediction* did not apply (wrong state, wrong signer, or
 /// wrong policy reference) — an expected outcome when trying several predictions, not an
 /// error. `Err` is reserved for "the mechanism itself is broken", except a `PolicyNV` failure
 /// which *is* an error: it means the machine is below the rollback floor.
+///
+/// # Errors
+///
+/// Returns an error if loading the prediction key or minting its verification ticket fails
+/// outright (as opposed to simply not verifying), if the policy session fails to start, if
+/// reading live PCRs fails, or if the rollback-floor `PolicyNV` step fails.
 #[allow(clippy::too_many_arguments)]
 pub fn satisfy(
     runner: &dyn Runner,
@@ -391,8 +454,37 @@ pub fn satisfy(
     nv_operand: u64,
     with_pin: bool,
 ) -> Result<Option<SatisfiedSession>> {
-    // Stage 1: mint the verification ticket with only the external key loaded. Keeping the
-    // sealed object out until the ticket exists is what lets this run on a 3-slot TPM.
+    let Some(prediction_ticket) =
+        verify_prediction_signature(runner, ws, public_key_pem, prediction, gen_num)?
+    else {
+        return Ok(None);
+    };
+    drive_policy_session(
+        runner,
+        ws,
+        key_name,
+        gen_num,
+        selection,
+        nv_index,
+        nv_operand,
+        with_pin,
+        &prediction_ticket,
+    )
+}
+
+/// Stage 1 of [`satisfy`]: mint the verification ticket with only the external key loaded.
+/// Keeping the sealed object out until the ticket exists is what lets this run on a 3-slot
+/// TPM.
+///
+/// Returns `Ok(None)` if the prediction is not signed by this key, or not over this
+/// generation's policy reference.
+fn verify_prediction_signature(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    public_key_pem: &Path,
+    prediction: &Prediction,
+    gen_num: u64,
+) -> Result<Option<PredictionTicket>> {
     flush(runner);
     let sk = ws.path("verifykey.ctx");
     // `-C o` is load-bearing: `tpm2_loadexternal` defaults to the NULL hierarchy, and the TPM
@@ -443,8 +535,22 @@ pub fn satisfy(
         trace_failure("tpm2_verifysignature", &verify_args, &vs);
         return Ok(None);
     }
+    Ok(Some(PredictionTicket { approved, ticket }))
+}
 
-    // Stage 2: the real policy session.
+/// Stage 2 of [`satisfy`]: the real policy session, spending the ticket stage 1 minted.
+#[allow(clippy::too_many_arguments)]
+fn drive_policy_session(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    key_name: &[u8],
+    gen_num: u64,
+    selection: &str,
+    nv_index: u32,
+    nv_operand: u64,
+    with_pin: bool,
+    prediction_ticket: &PredictionTicket,
+) -> Result<Option<SatisfiedSession>> {
     let sess = ws.path("policy.ctx");
     require(
         runner,
@@ -475,13 +581,13 @@ pub fn satisfy(
             "-S",
             sess.as_os_str(),
             "-i",
-            approved.as_os_str(),
+            prediction_ticket.approved.as_os_str(),
             "-n",
             name_file.as_os_str(),
             "-q",
             ref_file.as_os_str(),
             "-t",
-            ticket.as_os_str(),
+            prediction_ticket.ticket.as_os_str(),
         ];
         let auth = runner.run("tpm2_policyauthorize", &auth_args, None)?;
         if !auth.ok() {

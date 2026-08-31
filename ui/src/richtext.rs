@@ -37,6 +37,7 @@ impl FontFamily {
         }
     }
     /// Cycle to the next family (for a toolbar toggle).
+    #[must_use]
     pub fn next(self) -> Self {
         match self {
             FontFamily::Sans => FontFamily::Serif,
@@ -112,22 +113,27 @@ impl RichSpan {
             baseline: BaselineShift::None,
         }
     }
+    #[must_use]
     pub fn bold(mut self, b: bool) -> Self {
         self.bold = b;
         self
     }
+    #[must_use]
     pub fn italic(mut self, i: bool) -> Self {
         self.italic = i;
         self
     }
+    #[must_use]
     pub fn color(mut self, c: Option<[u8; 3]>) -> Self {
         self.color = c;
         self
     }
+    #[must_use]
     pub fn background(mut self, c: Option<[u8; 3]>) -> Self {
         self.background = c;
         self
     }
+    #[must_use]
     pub fn baseline(mut self, b: BaselineShift) -> Self {
         self.baseline = b;
         self
@@ -188,12 +194,12 @@ impl RichTextLayout {
         let mut line_start = 0;
         for (byte, ch) in text.char_indices() {
             if ch == '\n' {
-                line_lens.push(byte - line_start);
-                line_start = byte + ch.len_utf8();
+                line_lens.push(byte.saturating_sub(line_start));
+                line_start = byte.saturating_add(ch.len_utf8());
                 line_starts.push(line_start);
             }
         }
-        line_lens.push(text.len() - line_start);
+        line_lens.push(text.len().saturating_sub(line_start));
         (line_starts, line_lens)
     }
 
@@ -328,63 +334,8 @@ impl RichTextLayout {
         let fam = style.family.to_cosmic();
         let base = style.cosmic_attrs().family(fam);
 
-        // Byte offsets accumulate over the *non-empty* spans (matching what gets
-        // fed to cosmic-text), so backgrounds/baselines align with glyph
-        // start/end indices reported in `layout_runs`.
-        let mut backgrounds: Vec<(usize, usize, [u8; 3])> = Vec::new();
-        let mut baselines: Vec<(usize, usize, BaselineShift)> = Vec::new();
-        let mut cursor = 0usize;
-
-        let built: Vec<(std::borrow::Cow<'_, str>, Attrs)> =
-            if spans.iter().all(|r| r.text.is_empty()) {
-                vec![(std::borrow::Cow::Borrowed(""), base.clone())]
-            } else {
-                spans
-                    .iter()
-                    .filter(|r| !r.text.is_empty())
-                    .map(|r| {
-                        let run_fam = match r.family {
-                            Some(family) => family.to_cosmic(),
-                            None => style.family.to_cosmic(),
-                        };
-                        let base_run_size = r.size.unwrap_or(size);
-                        // Super/subscript runs shape smaller so they advance narrower.
-                        let run_size = if r.baseline.is_shifted() {
-                            base_run_size * BaselineShift::SCALE
-                        } else {
-                            base_run_size
-                        };
-                        let start = cursor;
-                        let end = cursor + r.text.len();
-                        cursor = end;
-                        if let Some(bg) = r.background {
-                            backgrounds.push((start, end, bg));
-                        }
-                        if r.baseline.is_shifted() {
-                            baselines.push((start, end, r.baseline));
-                        }
-                        let mut a = style
-                            .cosmic_attrs()
-                            .family(run_fam)
-                            .weight(if r.bold {
-                                Weight::BOLD
-                            } else {
-                                style.effective_weight()
-                            })
-                            .metrics(Metrics::new(run_size, run_size * line_height_mult));
-                        if style.letter_spacing != 0.0 {
-                            a = a.letter_spacing(style.letter_spacing / run_size.max(0.1));
-                        }
-                        if r.italic || style.italic {
-                            a = a.style(Style::Italic);
-                        }
-                        if let Some([cr, cg, cb]) = r.color {
-                            a.color_opt = Some(cosmic_text::Color::rgb(cr, cg, cb));
-                        }
-                        (offset_map.shape_fragment(&r.text, start), a)
-                    })
-                    .collect()
-            };
+        let (built, backgrounds, baselines) =
+            Self::build_rich_runs(spans, style, &offset_map, &base, size, line_height_mult);
 
         buffer.set_rich_text(
             built
@@ -429,6 +380,81 @@ impl RichTextLayout {
             hanging_punctuation: style.hanging_punctuation,
             fragmentation: style.fragmentation,
         }
+    }
+
+    /// Build cosmic-text runs (with their `Attrs`) for `spans`, plus the
+    /// byte-ranged background/baseline decoration tables that
+    /// [`Self::shape_styled`] stores alongside the shaped buffer.
+    ///
+    /// Byte offsets accumulate over the *non-empty* spans (matching what gets
+    /// fed to cosmic-text), so backgrounds/baselines align with glyph
+    /// start/end indices reported in `layout_runs`.
+    fn build_rich_runs<'a, 's>(
+        spans: &'a [RichSpan],
+        style: &'s crate::text_render::TextStyle,
+        offset_map: &OffsetMap,
+        base: &Attrs<'s>,
+        size: f32,
+        line_height_mult: f32,
+    ) -> (
+        Vec<(std::borrow::Cow<'a, str>, Attrs<'s>)>,
+        Vec<(usize, usize, [u8; 3])>,
+        Vec<(usize, usize, BaselineShift)>,
+    ) {
+        let mut backgrounds: Vec<(usize, usize, [u8; 3])> = Vec::new();
+        let mut baselines: Vec<(usize, usize, BaselineShift)> = Vec::new();
+        let mut cursor: usize = 0;
+
+        let built = if spans.iter().all(|r| r.text.is_empty()) {
+            vec![(std::borrow::Cow::Borrowed(""), base.clone())]
+        } else {
+            spans
+                .iter()
+                .filter(|r| !r.text.is_empty())
+                .map(|r| {
+                    let run_fam = match r.family {
+                        Some(family) => family.to_cosmic(),
+                        None => style.family.to_cosmic(),
+                    };
+                    let base_run_size = r.size.unwrap_or(size);
+                    // Super/subscript runs shape smaller so they advance narrower.
+                    let run_size = if r.baseline.is_shifted() {
+                        base_run_size * BaselineShift::SCALE
+                    } else {
+                        base_run_size
+                    };
+                    let start = cursor;
+                    let end = cursor.saturating_add(r.text.len());
+                    cursor = end;
+                    if let Some(bg) = r.background {
+                        backgrounds.push((start, end, bg));
+                    }
+                    if r.baseline.is_shifted() {
+                        baselines.push((start, end, r.baseline));
+                    }
+                    let mut a = style
+                        .cosmic_attrs()
+                        .family(run_fam)
+                        .weight(if r.bold {
+                            Weight::BOLD
+                        } else {
+                            style.effective_weight()
+                        })
+                        .metrics(Metrics::new(run_size, run_size * line_height_mult));
+                    if style.letter_spacing != 0.0 {
+                        a = a.letter_spacing(style.letter_spacing / run_size.max(0.1));
+                    }
+                    if r.italic || style.italic {
+                        a = a.style(Style::Italic);
+                    }
+                    if let Some([cr, cg, cb]) = r.color {
+                        a.color_opt = Some(cosmic_text::Color::rgb(cr, cg, cb));
+                    }
+                    (offset_map.shape_fragment(&r.text, start), a)
+                })
+                .collect()
+        };
+        (built, backgrounds, baselines)
     }
 
     /// Total laid-out height (at least one line tall).
@@ -482,6 +508,10 @@ impl RichTextLayout {
     /// Add an underline decoration in this layout's global byte space. This
     /// is used for IME preedit, where the composition is shaped and painted
     /// but has not yet entered the document model.
+    #[allow(
+        clippy::suspicious_operation_groupings,
+        reason = "not a mirrored typo: range.start < range.end checks well-ordering, range.end <= text_len is the separate bounds check"
+    )]
     pub fn add_underline(&mut self, range: std::ops::Range<usize>) {
         if range.start < range.end && range.end <= self.text_len {
             self.underlines.push((range.start, range.end));
@@ -556,7 +586,7 @@ impl RichTextLayout {
             }
             fallback = Some(edges);
         }
-        fallback.unwrap_or((byte.min(self.text_len), byte.min(self.text_len)))
+        fallback.unwrap_or_else(|| (byte.min(self.text_len), byte.min(self.text_len)))
     }
 
     /// Zero-based visual row containing `byte`, including soft-wrapped rows.
@@ -610,7 +640,7 @@ impl RichTextLayout {
 
     /// Move one shaped caret stop toward the visual left or right. Stops are
     /// derived from grapheme boundaries inside each glyph cluster, so this
-    /// respects ligatures, combining sequences, and BiDi reordering.
+    /// respects ligatures, combining sequences, and `BiDi` reordering.
     pub fn visual_motion_position(&self, position: TextPosition, right: bool) -> TextPosition {
         let position = TextPosition {
             byte: position.byte.min(self.text_len),
@@ -622,11 +652,11 @@ impl RichTextLayout {
                 continue;
             };
             let target = if right {
-                (index + 1).min(stops.len().saturating_sub(1))
+                index.saturating_add(1).min(stops.len().saturating_sub(1))
             } else {
                 index.saturating_sub(1)
             };
-            return stops[target].1;
+            return stops.get(target).map_or(position, |(_, stop)| *stop);
         }
 
         // Byte-only callers conventionally enter with Before affinity. At a
@@ -641,11 +671,11 @@ impl RichTextLayout {
                 continue;
             };
             let target = if right {
-                (index + 1).min(stops.len().saturating_sub(1))
+                index.saturating_add(1).min(stops.len().saturating_sub(1))
             } else {
                 index.saturating_sub(1)
             };
-            return stops[target].1;
+            return stops.get(target).map_or(position, |(_, stop)| *stop);
         }
         position
     }
@@ -656,23 +686,30 @@ impl RichTextLayout {
             .byte
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "visual/segments are grapheme counts within one glyph cluster, always far below f32's 24-bit exact-integer range"
+    )]
     fn caret_stops(&self, run: &cosmic_text::LayoutRun<'_>) -> Vec<(f32, TextPosition)> {
         use unicode_segmentation::UnicodeSegmentation;
 
         let mut stops = Vec::new();
         for glyph in run.glyphs {
-            let cluster = &run.text[glyph.start..glyph.end];
+            let cluster = run.text.get(glyph.start..glyph.end).unwrap_or("");
             let mut boundaries: Vec<usize> =
                 cluster.grapheme_indices(true).map(|(at, _)| at).collect();
             boundaries.push(cluster.len());
             let segments = boundaries.len().saturating_sub(1).max(1);
             for visual in 0..=segments {
                 let logical = if glyph.level.is_rtl() {
-                    boundaries[segments - visual]
+                    boundaries
+                        .get(segments.saturating_sub(visual))
+                        .copied()
+                        .unwrap_or(cluster.len())
                 } else {
-                    boundaries[visual]
+                    boundaries.get(visual).copied().unwrap_or(cluster.len())
                 };
-                let shaped = glyph.start + logical;
+                let shaped = glyph.start.saturating_add(logical);
                 let affinity = if shaped == glyph.end {
                     TextAffinity::Before
                 } else {
@@ -709,14 +746,18 @@ impl RichTextLayout {
             Err(next) => next.saturating_sub(1),
         }
         .min(self.line_starts.len().saturating_sub(1));
-        let index = (byte - self.line_starts[line]).min(self.line_lens[line]);
+        let line_start = self.line_starts.get(line).copied().unwrap_or(0);
+        let line_len = self.line_lens.get(line).copied().unwrap_or(0);
+        let index = byte.saturating_sub(line_start).min(line_len);
         Cursor::new(line, index)
     }
 
     fn global_byte(&self, cursor: Cursor) -> usize {
         let line = cursor.line.min(self.line_starts.len().saturating_sub(1));
+        let line_start = self.line_starts.get(line).copied().unwrap_or(0);
+        let line_len = self.line_lens.get(line).copied().unwrap_or(0);
         self.offset_map
-            .shaped_to_source(self.line_starts[line] + cursor.index.min(self.line_lens[line]))
+            .shaped_to_source(line_start.saturating_add(cursor.index.min(line_len)))
             .min(self.text_len)
     }
 
