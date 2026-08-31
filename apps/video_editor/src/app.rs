@@ -3398,9 +3398,12 @@ impl VideoEditorApp {
     /// Commit a marker rename through whichever action owns that marker: a
     /// project-meta write for a timeline marker, a whole-clip write for one
     /// pinned to a clip.
-    fn commit_marker_rename(&mut self, doc: &mut AutoCommit, m: MarkerRef, text: &str) {
+    /// Returns whether the write was accepted — an empty name is refused,
+    /// and the caller has to say so rather than silently restoring the old
+    /// one.
+    fn commit_marker_rename(&mut self, doc: &mut AutoCommit, m: MarkerRef, text: &str) -> bool {
         let field = self.marker_field;
-        let _ = self.commit_marker_text(doc, m, field, text);
+        self.commit_marker_text(doc, m, field, text)
     }
 
     /// Write one of a marker's texts through whichever action owns that
@@ -6748,8 +6751,16 @@ impl Widget for VideoEditorApp {
             };
             match outcome {
                 EditOutcome::Committed(name) => {
-                    self.commit_marker_rename(state, target, &name);
-                    self.marker_rename = None;
+                    // A refused write leaves the editor open. Closing it
+                    // regardless put the old name back with nothing said, so
+                    // a marker whose name you had just cleared looked as
+                    // though it had simply ignored you.
+                    if self.commit_marker_rename(state, target, &name) {
+                        self.marker_rename = None;
+                    } else {
+                        self.project_notice =
+                            Some(Notice::failed("A marker needs a name to be found by"));
+                    }
                 }
                 EditOutcome::Cancelled => self.marker_rename = None,
                 EditOutcome::None => {}
@@ -14444,7 +14455,7 @@ impl VideoEditorApp {
             with_alpha(
                 body,
                 if kind == TrackKind::Video {
-                    clip.opacity * 0.85 + 0.15
+                    clip.param_at(Param::Opacity, self.playhead) * 0.85 + 0.15
                 } else {
                     0.92
                 },
@@ -14521,7 +14532,10 @@ impl VideoEditorApp {
                         clip.in_point,
                         clip.out_point,
                         media_dur,
-                        clip.volume,
+                        // The animated level, for the same reason as the clip
+                        // body: a keyframed ramp is heard rising and was drawn
+                        // flat.
+                        clip.param_at(Param::Volume, self.playhead),
                         color,
                     ),
                     _ => draw_flat_signal(scene, tf, inner, color),
@@ -17374,6 +17388,76 @@ mod tests {
             (p.width, p.height),
             (1080, 1920),
             "activating the preset wrote the document"
+        );
+    }
+
+    /// The timeline draws the animated value, not the constant under it.
+    ///
+    /// The clip body's alpha and the waveform's height read the raw
+    /// `opacity`/`volume` fields, which a keyframe supersedes. So a clip
+    /// fading out was drawn at full strength for its whole length while the
+    /// canvas beside it faded, and a volume ramp was heard rising and drawn
+    /// flat — the timeline stating one thing and the preview another.
+    ///
+    /// The playhead is held still and the *keyframes* differ between the two
+    /// renders, with the constant left identical. Moving the playhead instead
+    /// would move the playhead line across the lane, and the difference that
+    /// produces has nothing to do with opacity — a first draft of this test
+    /// passed against the unfixed code for exactly that reason.
+    #[test]
+    fn a_keyframed_clip_is_drawn_at_the_value_it_is_playing() {
+        use crate::param::{Interp, Param};
+
+        let theme = Theme::dark();
+        let (w, h) = (1280u32, 800u32);
+
+        // Same project, same playhead, same constant `opacity`; only the
+        // keyed value under the playhead differs.
+        let render = |keyed: f64| -> (Vec<u8>, Rect) {
+            let (mut app, _doc) = app_and_doc();
+            // A clip on a *video* track: the alpha under test is only read on
+            // that branch, and the seeded project's first clip is audio.
+            let cid = app
+                .project
+                .clips
+                .iter()
+                .find(|c| {
+                    app.project
+                        .track(c.track)
+                        .is_some_and(|t| t.kind == TrackKind::Video)
+                })
+                .expect("the seeded project has a video clip")
+                .id;
+            let (start, end) = {
+                let c = app.project.clip(cid).expect("seeded clip");
+                (c.start, c.end())
+            };
+            let at = start + (end - start) * 0.5;
+            {
+                let c = app.project.clip_mut(cid).expect("clip");
+                c.opacity = 1.0;
+                c.set_key_at(Param::Opacity, at, keyed, Interp::Linear);
+            }
+            app.playhead = at;
+            let px = render_pixels(&mut app, w, h, &theme);
+            let r = app.regions();
+            let clip = app.project.clip(cid).expect("clip").clone();
+            let lane = app
+                .lane_rects(&r)
+                .into_iter()
+                .find(|(tid, _, _)| *tid == clip.track)
+                .map(|(_, _, rect)| rect)
+                .expect("the clip's track has a lane");
+            (px, app.clip_rect(&clip, &lane, &r))
+        };
+
+        let (opaque, lane) = render(1.0);
+        let (faded, _) = render(0.05);
+        assert!(
+            region_diff(&opaque, &faded, w, h, lane) > 0,
+            "a clip keyed to 5% under the playhead is painted exactly like one \
+             keyed to 100%, so the lane is drawing the constant `opacity` \
+             rather than the value the preview is showing",
         );
     }
 
