@@ -17,7 +17,9 @@ sources; every following commit is a reviewable topic change:
 Run `tools/vendor-history.sh verify` to check the recorded roots and tips. Run
 `tools/vendor-history.sh export OUTPUT_DIRECTORY` to create portable Git
 bundles (baseline plus full history) and `git format-patch` series (topic
-commits only). The script refuses to overwrite an existing output directory.
+commits only). The verifier accepts either local topic branches or the
+`origin/vendor-upstream/*` remote-tracking refs present in a fresh clone, and
+the script refuses to overwrite an existing output directory.
 
 Published crate checksums used for the baselines:
 
