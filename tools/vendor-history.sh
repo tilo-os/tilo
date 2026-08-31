@@ -5,29 +5,64 @@ set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
 
-vello_ref=refs/heads/vendor-upstream/vello-0.9
+vello_branch=vendor-upstream/vello-0.9
 vello_base=f21d2c703175f5387315506865343c52f69b5b39
 vello_tip=92f96aff358bd01034d50bfd0de8d97b59dde028
 
-winit_ref=refs/heads/vendor-upstream/winit-0.30.13
+winit_branch=vendor-upstream/winit-0.30.13
 winit_base=967e2ec045e9485c10cfbd2323a4ede1a3751845
 winit_tip=b4ea19a1c6cccfe268ae2fb30f098629d926e5da
 
+resolve_ref() {
+    local branch=$1
+    local expected_tip=$2
+    local candidate actual
+    local -a found=()
+
+    # Topic branches are local in the repository where they are maintained,
+    # but a normal clone receives them as remote-tracking refs. Prefer a ref
+    # that already matches the immutable recorded tip; this also handles a
+    # stale local branch alongside an up-to-date origin branch safely.
+    for candidate in "refs/heads/$branch" "refs/remotes/origin/$branch"; do
+        if git -C "$repo_root" show-ref --verify --quiet "$candidate"; then
+            actual=$(git -C "$repo_root" rev-parse --verify "$candidate^{commit}")
+            found+=("$candidate=$actual")
+            if test "$actual" = "$expected_tip"; then
+                printf '%s\n' "$candidate"
+                return
+            fi
+        fi
+    done
+
+    if test "${#found[@]}" -eq 0; then
+        echo "missing vendor history '$branch'; fetch it from origin first" >&2
+    else
+        echo "no ref for '$branch' matches recorded tip $expected_tip" >&2
+        printf '  found %s\n' "${found[@]}" >&2
+    fi
+    return 1
+}
+
 verify_ref() {
-    local ref=$1
+    local branch=$1
     local expected_base=$2
     local expected_tip=$3
-    local actual_base actual_tip
+    local ref actual_base actual_tip
 
-    actual_tip=$(git -C "$repo_root" rev-parse --verify "$ref")
+    ref=$(resolve_ref "$branch" "$expected_tip")
+    actual_tip=$(git -C "$repo_root" rev-parse --verify "$ref^{commit}")
     actual_base=$(git -C "$repo_root" rev-list --max-parents=0 "$ref")
     test "$actual_tip" = "$expected_tip"
-    test "$actual_base" = "$expected_base"
+    if test "$actual_base" != "$expected_base"; then
+        echo "history '$branch' does not have the recorded root $expected_base" >&2
+        printf '  found roots: %s\n' "$actual_base" >&2
+        return 1
+    fi
 }
 
 verify() {
-    verify_ref "$vello_ref" "$vello_base" "$vello_tip"
-    verify_ref "$winit_ref" "$winit_base" "$winit_tip"
+    verify_ref "$vello_branch" "$vello_base" "$vello_tip"
+    verify_ref "$winit_branch" "$winit_base" "$winit_tip"
     echo "vendor histories match their recorded roots and tips"
 }
 
@@ -39,7 +74,11 @@ export_histories() {
         exit 2
     }
 
+    local vello_ref winit_ref
+
     verify
+    vello_ref=$(resolve_ref "$vello_branch" "$vello_tip")
+    winit_ref=$(resolve_ref "$winit_branch" "$winit_tip")
     mkdir -p "$output/vello-0.9-patches" "$output/winit-0.30.13-patches"
 
     git -C "$repo_root" bundle create "$output/vello-0.9.bundle" "$vello_ref"
