@@ -3451,30 +3451,8 @@ impl MonitorApp {
             return;
         };
         let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = cd.dialog.build_layout(&mut taffy, &theme, &mut node_map);
-        let Ok(root) = taffy.new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(self.rect.width() as f32),
-                    height: Dimension::length(self.rect.height() as f32),
-                },
-                ..Default::default()
-            },
-            &[node],
-        ) else {
-            return;
-        };
-        let _ = taffy.compute_layout(
-            root,
-            Size {
-                width: taffy::AvailableSpace::Definite(self.rect.width() as f32),
-                height: taffy::AvailableSpace::Definite(self.rect.height() as f32),
-            },
-        );
-        cd.dialog
-            .apply_layout(&taffy, node, Point::new(self.rect.x0, self.rect.y0));
+        let mut text_renderer = TextRenderer::new();
+        cd.dialog.layout_in(self.rect, &theme, &mut text_renderer);
     }
 
     /// Route an event into the open confirm dialog and act on the flags its
@@ -3506,22 +3484,9 @@ impl MonitorApp {
             let Some(cd) = self.confirm_dialog.as_mut() else {
                 return;
             };
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let Ok(node) = taffy.new_leaf(Style::default()) else {
-                return;
-            };
-            let mut focus_target = None;
-            cd.dialog.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                doc,
-                path,
-                handled,
-                &mut focus_target,
-                node,
-                &taffy,
-            );
+            *handled = cd
+                .dialog
+                .handle_detached(event, scale_factor, modifiers, doc, path);
             (cd.confirm.replace(false), cd.cancel.replace(false))
         };
         if confirm {
