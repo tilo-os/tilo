@@ -3848,6 +3848,10 @@ impl VideoEditorApp {
             // An imported file is decoded, never generated: only a title
             // carries text.
             text: None,
+            // What the container said. A video file with a sound track is
+            // the case the mixer needs told about — it reads audio off video
+            // tracks only for media that claims to carry any.
+            has_audio: probed.has_audio,
         };
         let id = item.id;
         self.project.media.push(item.clone());

@@ -60,18 +60,48 @@ fn soloing(project: &Project, kind: TrackKind) -> bool {
     project.tracks.iter().any(|t| t.kind == kind && t.solo)
 }
 
+/// Whether this clip contributes sound: it is on an audio track, or it is a
+/// picture whose own file carries a sound track.
+///
+/// The second half is the one that was missing. A video file lands on a video
+/// track, and the mixer read audio only from audio tracks — so a talking-head
+/// clip was silent in the preview and silent in the exported file, and
+/// nothing anywhere said so. `has_audio` comes from the container, read at
+/// import, so this asks the file rather than guessing from the track.
+fn carries_sound(project: &Project, clip: &crate::model::Clip, track_kind: TrackKind) -> bool {
+    track_kind == TrackKind::Audio
+        || project
+            .media
+            .iter()
+            .find(|m| m.id == clip.media)
+            .is_some_and(|m| m.has_audio)
+}
+
 /// The audio clips audible at timeline time `t`.
 ///
 /// Mute wins over solo, matching the picture: a muted track stays silent even
 /// when it is one of the soloed ones.
 pub fn plan_audio(project: &Project, t: f64) -> Vec<AudioLayer> {
-    let soloed = soloing(project, TrackKind::Audio);
+    // Solo is asked per track kind, so soloing a music bed does not silence
+    // the sound coming off the picture, and vice versa.
+    let audio_soloed = soloing(project, TrackKind::Audio);
+    let video_soloed = soloing(project, TrackKind::Video);
     let mut out = Vec::new();
     for clip in &project.clips {
         let Some(track) = project.track(clip.track) else {
             continue;
         };
-        if track.kind != TrackKind::Audio || track.muted || (soloed && !track.solo) {
+        if !carries_sound(project, clip, track.kind) {
+            continue;
+        }
+        // Mute and solo belong to the track the clip sits on, so muting the
+        // video track silences that clip's sound too — which is what a person
+        // means by muting the track their footage is on.
+        let soloed = match track.kind {
+            TrackKind::Audio => audio_soloed,
+            TrackKind::Video => video_soloed,
+        };
+        if track.muted || (soloed && !track.solo) {
             continue;
         }
         if !clip.covers(t) {
@@ -98,7 +128,7 @@ pub fn has_audio(project: &Project) -> bool {
     project.clips.iter().any(|c| {
         project
             .track(c.track)
-            .is_some_and(|t| t.kind == TrackKind::Audio)
+            .is_some_and(|t| carries_sound(project, c, t.kind))
     })
 }
 
@@ -1568,6 +1598,69 @@ mod tests {
             "past every clip the mix is silent"
         );
         assert_eq!(peak(&block), 0.0);
+    }
+
+    /// A video file's own sound reaches the mix.
+    ///
+    /// The timeline puts a video file on a video track, and the mixer used to
+    /// read only from audio tracks. So importing a talking-head clip, cutting
+    /// it and exporting gave back a silent file — with nothing in the preview,
+    /// the bin or the export dialog admitting it. This is the regression that
+    /// must never come back.
+    #[test]
+    fn a_video_clips_own_sound_is_mixed() {
+        use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind};
+
+        let mut p = Project::new("interview");
+        let media = uuid::Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: media,
+            name: "interview.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 30.0,
+            // What the container said: a picture that also carries sound.
+            has_audio: true,
+            ..Default::default()
+        });
+        let track = uuid::Uuid::new_v4();
+        p.tracks.push(Track {
+            id: track,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            ..Default::default()
+        });
+        let clip = p.add_clip(track, media, 0.0).expect("place the clip");
+        p.clip_mut(clip).unwrap().out_point = 30.0;
+
+        assert!(
+            has_audio(&p),
+            "the export asks this before it builds an audio branch at all; \
+             answering false is how the sound was dropped from the file",
+        );
+        let layers = plan_audio(&p, 2.0);
+        assert!(
+            layers.iter().any(|l| l.clip == clip),
+            "the video clip's own sound is not in the mix: {layers:?}",
+        );
+
+        // Muting the track the footage sits on silences its sound too — which
+        // is what a person means by muting that track.
+        p.tracks[0].muted = true;
+        assert!(
+            plan_audio(&p, 2.0).iter().all(|l| l.clip != clip),
+            "muting the video track left its sound playing",
+        );
+        p.tracks[0].muted = false;
+
+        // A picture whose file carries no sound contributes none, so a silent
+        // project does not grow an empty audio branch.
+        p.media[0].has_audio = false;
+        assert!(
+            !has_audio(&p),
+            "a video file with no sound track must not claim to carry audio",
+        );
+        assert!(plan_audio(&p, 2.0).is_empty());
     }
 
     #[test]
