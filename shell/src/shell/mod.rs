@@ -51,6 +51,7 @@ pub mod overlay_host;
 pub mod overview;
 pub mod peer_join_toast;
 pub mod peer_presence;
+pub mod peer_sync_overlay;
 pub mod peer_view;
 pub mod peer_windows;
 pub mod persist;
