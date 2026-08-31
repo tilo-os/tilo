@@ -70,6 +70,11 @@ impl Default for SessionOptions {
 /// Where the runtime's own binary is, as the supervisor sees it.
 /// `current_exe` rather than a constant: the guest must run the same build
 /// that built its confinement, which in a dev tree is under `target/`.
+///
+/// # Errors
+///
+/// Returns an error if `QOS_USH_BIN` is unset and
+/// [`std::env::current_exe`] cannot resolve the running binary's path.
 pub fn runtime_binary() -> std::io::Result<PathBuf> {
     if let Some(explicit) = std::env::var_os("QOS_USH_BIN") {
         return Ok(PathBuf::from(explicit));
@@ -132,6 +137,11 @@ impl Session {
 
     /// Build the plan for this session: everything the guest will be is decided
     /// here, from the store and the policy — never from anything the guest said.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runtime binary's own path cannot be resolved
+    /// (see [`runtime_binary`]).
     pub fn plan(
         &self,
         broker_socket: PathBuf,
@@ -175,6 +185,11 @@ impl Session {
 
     /// Run the session to completion, restarting in place as many times as the
     /// guest asks. Returns the guest's exit code.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be prepared, or if building or
+    /// running a guest fails (see [`Session::run_once`]).
     pub fn run(&mut self) -> anyhow::Result<i32> {
         self.store.ensure()?;
         let code;
@@ -266,7 +281,7 @@ impl Session {
         // The overlay is unmounted now, so the layer is an ordinary directory
         // again and both of these are safe.
         if !one_time.is_empty() && !burn {
-            self.undo_one_time(&one_time)?;
+            self.undo_one_time(&one_time);
         }
         if burn {
             layer.burn()?;
@@ -281,7 +296,7 @@ impl Session {
     /// Remove the packages a `--one-time` install put in the layer, by starting
     /// a throwaway non-interactive guest against the same layer — removing an
     /// rpm means running rpm, which needs the base to run its scriptlets.
-    fn undo_one_time(&self, packages: &[String]) -> anyhow::Result<()> {
+    fn undo_one_time(&self, packages: &[String]) {
         let releasever = crate::pkg::releasever();
         let argv = crate::pkg::remove_argv(packages, &releasever);
         let mut opts = self.opts.clone();
@@ -307,13 +322,16 @@ impl Session {
             m.forget(p);
         }
         let _ = m.save(&manifest);
-        Ok(())
     }
 }
 
 /// Give a fresh guest home the dotfiles that make a shell usable.
 /// Deliberately minimal and not a copy of the user's own: the home is
 /// write-isolated by default, and seeding from the real one would undo that.
+#[allow(
+    clippy::literal_string_with_formatting_args,
+    reason = "the `${VAR}` below is shell syntax in the .bashrc content, not a Rust format placeholder"
+)]
 fn seed_guest_home(home: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(home)?;
     let bashrc = home.join(".bashrc");
@@ -369,6 +387,11 @@ pub enum ServeResponse {
 }
 
 /// Decide one request. Pure, so the gate on `dsh` can be tested without a pty.
+///
+/// # Errors
+///
+/// Returns an error if the requested profile is not reachable from an app
+/// launch (currently only `dsh`, the unsandboxed developer profile).
 pub fn decide_serve(req: &ServeRequest) -> Result<Profile, String> {
     match req {
         ServeRequest::OpenSession { profile, .. } => {
@@ -387,7 +410,13 @@ pub fn decide_serve(req: &ServeRequest) -> Result<Profile, String> {
 }
 
 /// Listen for apps and hand out guests.
-pub fn serve(socket: &Path, store: Store, base: PathBuf) -> anyhow::Result<()> {
+///
+/// # Errors
+///
+/// Returns an error if the store cannot be prepared, the socket path's
+/// parent cannot be created, the socket cannot be bound, or its permissions
+/// cannot be set to owner-only.
+pub fn serve(socket: &Path, store: &Store, base: &Path) -> anyhow::Result<()> {
     store.ensure()?;
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent)?;
@@ -403,9 +432,9 @@ pub fn serve(socket: &Path, store: Store, base: PathBuf) -> anyhow::Result<()> {
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
         let store = store.clone();
-        let base = base.clone();
+        let base = base.to_path_buf();
         std::thread::spawn(move || {
-            if let Err(e) = serve_one(stream, store, base) {
+            if let Err(e) = serve_one(&stream, &store, base) {
                 tracing::warn!(error = %e, "ush: serve failed");
             }
         });
@@ -413,7 +442,7 @@ pub fn serve(socket: &Path, store: Store, base: PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn serve_one(stream: UnixStream, store: Store, base: PathBuf) -> anyhow::Result<()> {
+fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Result<()> {
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();

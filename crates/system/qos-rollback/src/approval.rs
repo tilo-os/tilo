@@ -96,6 +96,9 @@ pub struct Request {
 }
 
 impl Request {
+    /// # Errors
+    ///
+    /// Returns an error if `nv_name` is not valid base64.
     pub fn decoded_nv_name(&self) -> Result<Vec<u8>> {
         B64.decode(&self.nv_name)
             .context("request nv_name is not base64")
@@ -120,6 +123,10 @@ pub struct Approval {
 }
 
 impl Approval {
+    /// # Errors
+    ///
+    /// Returns an error if `approved_policy` is not valid base64, or does not decode to a
+    /// 32-byte digest.
     pub fn decoded_policy(&self) -> Result<Digest256> {
         let v = B64
             .decode(&self.approved_policy)
@@ -127,10 +134,18 @@ impl Approval {
         v.try_into()
             .map_err(|_| anyhow::anyhow!("approval approved_policy is not a 32-byte digest"))
     }
+
+    /// # Errors
+    ///
+    /// Returns an error if `signature` is not valid base64.
     pub fn decoded_signature(&self) -> Result<Vec<u8>> {
         B64.decode(&self.signature)
             .context("approval signature is not base64")
     }
+
+    /// # Errors
+    ///
+    /// Returns an error if `nv_name` is not valid base64.
     pub fn decoded_nv_name(&self) -> Result<Vec<u8>> {
         B64.decode(&self.nv_name)
             .context("approval nv_name is not base64")
@@ -139,6 +154,12 @@ impl Approval {
     /// Check everything checkable without a TPM. Deliberately not a security boundary — the TPM
     /// is — this just catches mundane cases (wrong machine, corrupted file) with a diagnostic
     /// instead of an opaque policy failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the schema version, NV index, NV Name or target counter don't match
+    /// what's expected, or if the approval's policy digest doesn't match its stated target
+    /// counter.
     pub fn validate_for(&self, nv_index: u32, nv_name: &[u8]) -> Result<()> {
         if self.version != SCHEMA_VERSION {
             bail!(
@@ -161,10 +182,15 @@ impl Approval {
         if self.target_counter == 0 {
             bail!("approval targets counter 0, which no counter can be incremented to");
         }
+        // Guarded by the check above: target_counter is non-zero here.
+        let prior_counter = self
+            .target_counter
+            .checked_sub(1)
+            .context("approval target counter underflowed")?;
         let expected = tpm_policy::nv_counter(
             tpm_policy::command_code(tpm_policy::ZERO, tpm_policy::CC_NV_INCREMENT),
             nv_name,
-            self.target_counter - 1,
+            prior_counter,
             tpm_policy::Operation::Eq,
         );
         if self.decoded_policy()? != expected {
@@ -183,19 +209,32 @@ impl Approval {
 }
 
 /// The policy an approval for `target_counter` has to authorise.
+///
+/// # Errors
+///
+/// Returns an error if `target_counter` is 0 — no counter can be incremented to it.
 pub fn approved_policy(nv_name: &[u8], target_counter: u64) -> Result<Digest256> {
     if target_counter == 0 {
         bail!("a counter cannot be incremented to 0");
     }
+    // Guarded by the check above: target_counter is non-zero here.
+    let prior_counter = target_counter
+        .checked_sub(1)
+        .context("target counter underflowed")?;
     Ok(tpm_policy::nv_counter(
         tpm_policy::command_code(tpm_policy::ZERO, tpm_policy::CC_NV_INCREMENT),
         nv_name,
-        target_counter - 1,
+        prior_counter,
         tpm_policy::Operation::Eq,
     ))
 }
 
 /// Build the request a device sends to the authority.
+///
+/// # Errors
+///
+/// Currently infallible; returns `Result` to match the rest of the approval-issuance
+/// pipeline, which chains this with `?`.
 pub fn build_request(
     nv_index: u32,
     nv_name: &[u8],
@@ -226,6 +265,14 @@ pub fn build_request(
 /// SAFETY-CRITICAL: refuses to issue past the request's `safe_target_floor` unless
 /// explicitly overridden — approvals a device holds are approvals a compromised device
 /// can spend.
+///
+/// # Errors
+///
+/// Returns an error if the request's schema version doesn't match, if `up_to_floor` is
+/// above the request's `safe_target_floor` and `allow_past_safe_bound` is false, if the
+/// number of increments needed would exceed [`counter::MAX_INCREMENTS_PER_ADVANCE`], if
+/// signing an approval with `openssl` fails, or if a counter/floor value overflows during
+/// the arithmetic that relates them.
 pub fn issue(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -253,12 +300,20 @@ pub fn issue(
         );
     }
     let nv_name = request.decoded_nv_name()?;
-    let first = counter::operand(request.base, request.floor_generation + 1)?;
+    let next_floor_generation = request
+        .floor_generation
+        .checked_add(1)
+        .context("request floor generation overflowed")?;
+    let first = counter::operand(request.base, next_floor_generation)?;
     let last = counter::operand(request.base, up_to_floor)?;
     if last < first {
         return Ok(Vec::new());
     }
-    let count = last - first + 1;
+    // `last >= first` was just checked, so this subtraction cannot underflow.
+    let count = last
+        .checked_sub(first)
+        .and_then(|span| span.checked_add(1))
+        .context("approval batch size overflowed")?;
     if count > counter::MAX_INCREMENTS_PER_ADVANCE {
         bail!(
             "that would be {count} approvals; more than {} in one batch means the request's counter \
@@ -289,7 +344,10 @@ pub fn issue(
         )?;
         let sig =
             std::fs::read(&sig_file).with_context(|| format!("reading {}", sig_file.display()))?;
-        let target_floor = u64::try_from(i128::from(target_counter) - i128::from(request.base))
+        let target_floor_signed = i128::from(target_counter)
+            .checked_sub(i128::from(request.base))
+            .context("target counter and request base are too far apart to relate")?;
+        let target_floor = u64::try_from(target_floor_signed)
             .context("target counter maps to a negative floor generation")?;
         out.push(Approval {
             version: SCHEMA_VERSION,
@@ -305,6 +363,11 @@ pub fn issue(
 }
 
 /// Write approvals into a directory.
+///
+/// # Errors
+///
+/// Returns an error if the directory cannot be created, or if any approval fails to
+/// serialise or write.
 pub fn store(dir: &Path, approvals: &[Approval]) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut paths = Vec::new();
@@ -319,6 +382,11 @@ pub fn store(dir: &Path, approvals: &[Approval]) -> Result<Vec<PathBuf>> {
 
 /// Load every approval in a directory, oldest target first. A file that doesn't parse is
 /// reported and skipped rather than aborting — one corrupt approval must not stop the others.
+///
+/// # Errors
+///
+/// Returns an error if the directory exists but cannot be read; a missing directory is not
+/// an error and yields an empty list.
 pub fn load_all(dir: &Path) -> Result<Vec<Approval>> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,

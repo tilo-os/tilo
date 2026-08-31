@@ -37,6 +37,11 @@ pub fn load(path: &Path) -> Option<AutoCommit> {
 
 /// Write the document to `path` atomically (temp file + rename) so a crash
 /// mid-write can never leave a half-written, unloadable file behind.
+///
+/// # Errors
+///
+/// Returns an error if `path`'s parent directory cannot be created, or if
+/// the atomic write (temp file creation, write, or rename) fails.
 pub fn save(path: &Path, doc: &mut AutoCommit) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

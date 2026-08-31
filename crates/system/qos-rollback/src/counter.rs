@@ -116,17 +116,32 @@ pub struct FloorState {
 
 impl FloorState {
     pub fn floor_generation(&self) -> u64 {
-        let f = i128::from(self.counter) - i128::from(self.base);
+        // `counter` is a u64 and `base` an i64, both widened into i128, so this subtraction
+        // stays far inside i128's range — `checked_sub` here is defense in depth, not a real
+        // failure path.
+        let f = i128::from(self.counter)
+            .checked_sub(i128::from(self.base))
+            .unwrap_or(0);
         u64::try_from(f.max(0)).unwrap_or(u64::MAX)
     }
 
     /// Absolute `operandB` for `TPM2_PolicyNV` when sealing for generation `g`; the policy
     /// asserts `counter <= base + g`, i.e. `floor <= g`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `generation` maps to a negative NV counter value, or overflows a
+    /// `u64` NV counter value.
     pub fn operand_for(&self, generation: u64) -> Result<u64> {
         operand(self.base, generation)
     }
 
     /// How many `TPM2_NV_Increment` calls move the floor to `target`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `target_floor` maps to a counter value below the current one — NV
+    /// counters cannot decrement — or if the target generation doesn't fit the counter space.
     pub fn increments_to(&self, target_floor: u64) -> Result<u64> {
         let target_counter = self.operand_for(target_floor)?;
         if target_counter < self.counter {
@@ -136,14 +151,23 @@ impl FloorState {
                 self.floor_generation()
             );
         }
-        Ok(target_counter - self.counter)
+        // `target_counter >= self.counter` was just checked, so this cannot underflow.
+        target_counter
+            .checked_sub(self.counter)
+            .context("increment count overflowed")
     }
 }
 
 /// The counter value that corresponds to floor generation `generation`, shared with the
 /// LUKS2 token so the header and TPM can never drift apart on the arithmetic.
+///
+/// # Errors
+///
+/// Returns an error if `base + generation` is negative, or does not fit in a `u64`.
 pub fn operand(base: i64, generation: u64) -> Result<u64> {
-    let v = i128::from(base) + i128::from(generation);
+    let v = i128::from(base)
+        .checked_add(i128::from(generation))
+        .context("counter base and generation are too far apart to relate")?;
     if v < 0 {
         bail!(
             "generation {generation} maps to NV counter value {v}, below zero: this device's \
@@ -157,6 +181,10 @@ fn idx(index: u32) -> String {
     format!("0x{index:08X}")
 }
 
+/// # Errors
+///
+/// Returns an error if running `tpm2_nvreadpublic` fails to execute (not if the index simply
+/// doesn't exist — that's reported as `Ok(false)`).
 pub fn exists(runner: &dyn Runner, index: u32) -> Result<bool> {
     let i = idx(index);
     let out = runner.run("tpm2_nvreadpublic", &argv![&i], None)?;
@@ -164,6 +192,11 @@ pub fn exists(runner: &dyn Runner, index: u32) -> Result<bool> {
 }
 
 /// Read the index's TPM Name as the TPM reports it.
+///
+/// # Errors
+///
+/// Returns an error if `tpm2_nvreadpublic` fails, its output has no `name:` line, or that
+/// line isn't valid hex.
 pub fn read_name(runner: &dyn Runner, index: u32) -> Result<Vec<u8>> {
     let i = idx(index);
     let out = require(
@@ -192,6 +225,12 @@ pub fn read_name(runner: &dyn Runner, index: u32) -> Result<Vec<u8>> {
 /// * An index with different attributes or a different `authPolicy` has a different Name,
 ///   so every token sealed against the old Name fails to unseal — reported here, by name,
 ///   rather than discovered at the next boot.
+///
+/// # Errors
+///
+/// Returns an error if checking or reading the existing index fails, if an existing index's
+/// Name matches neither the expected written nor unwritten Name, or if defining a new index
+/// fails.
 pub fn define(
     runner: &dyn Runner,
     index: u32,
@@ -228,6 +267,12 @@ pub fn define(
 }
 
 /// Read the counter, or `None` if it exists but has never been incremented.
+///
+/// # Errors
+///
+/// Returns an error if `tpm2_nvread` fails for a reason other than an unwritten index, if
+/// checking whether the index exists fails, if the read output file can't be read back, or
+/// if its contents don't decode as a counter value.
 pub fn read(runner: &dyn Runner, index: u32, scratch: &Path) -> Result<Option<u64>> {
     let i = idx(index);
     let out_path = scratch.join("nvread.bin");
@@ -254,12 +299,16 @@ pub fn read(runner: &dyn Runner, index: u32, scratch: &Path) -> Result<Option<u6
 }
 
 /// Decode the TPM's 8-byte big-endian counter representation.
+///
+/// # Errors
+///
+/// Returns an error if `bytes` is shorter than 8 bytes.
 pub fn decode(bytes: &[u8]) -> Result<Option<u64>> {
-    if bytes.len() < 8 {
-        bail!("NV counter read returned {} bytes, expected 8", bytes.len());
-    }
+    let head = bytes
+        .get(..8)
+        .with_context(|| format!("NV counter read returned {} bytes, expected 8", bytes.len()))?;
     let mut v = [0u8; 8];
-    v.copy_from_slice(&bytes[..8]);
+    v.copy_from_slice(head);
     Ok(Some(u64::from_be_bytes(v)))
 }
 
@@ -275,6 +324,10 @@ fn branch_files(
 
 /// The one increment that needs no approval: the one that brings the counter into existence.
 /// Works exactly once per index, enforced by the TPM.
+///
+/// # Errors
+///
+/// Returns an error if any of the `tpm2_*` policy or increment commands fail.
 pub fn increment_first(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -328,6 +381,12 @@ pub fn increment_first(
 /// One increment, authorised by a signed single-use approval. The approval is spent by the
 /// TPM, not by this function: after the increment the counter no longer equals `target - 1`,
 /// so the same approval can't be reused even if the file survives.
+///
+/// # Errors
+///
+/// Returns an error if the approval doesn't validate against the index's TPM Name, if
+/// verifying its signature against the authority key fails, or if any of the `tpm2_*` policy
+/// or increment commands fail.
 pub fn increment_approved(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -345,6 +404,36 @@ pub fn increment_approved(
     let policy = approval.decoded_policy()?;
     let signature = approval.decoded_signature()?;
 
+    let ticket = verify_approval_signature(
+        runner,
+        ws,
+        authority_public_key,
+        &policy,
+        &signature,
+        approval,
+    )?;
+
+    advance_with_approval(
+        runner,
+        ws,
+        &i,
+        authority_key_name,
+        approval,
+        &policy,
+        &ticket,
+    )
+}
+
+/// Verify the approval's signature against the authority's public key, minting the TPM
+/// verification ticket [`advance_with_approval`] spends.
+fn verify_approval_signature(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    authority_public_key: &std::path::Path,
+    policy: &tpm_policy::Digest256,
+    signature: &[u8],
+    approval: &crate::approval::Approval,
+) -> Result<std::path::PathBuf> {
     // Mint the verification ticket first, with only the authority's public key
     // loaded — the same transient-slot discipline the unseal path uses.
     crate::policy::flush(runner);
@@ -364,11 +453,11 @@ pub fn increment_approved(
         ],
         "loading the floor authority public key",
     )?;
-    let message = tpm_policy::authorize_signed_message(&policy, crate::approval::POLICY_REF);
+    let message = tpm_policy::authorize_signed_message(policy, crate::approval::POLICY_REF);
     let msg = ws.put("floor_verify_msg.bin", &message)?;
     let sig = ws.put(
         "floor_approval.sig",
-        &crate::policy::marshal_rsassa_sha256(&signature)?,
+        &crate::policy::marshal_rsassa_sha256(signature)?,
     )?;
     let ticket = ws.path("floor_ticket.bin");
     let vs = runner.run(
@@ -395,14 +484,29 @@ pub fn increment_approved(
             vs.last_error_line()
         );
     }
+    Ok(ticket)
+}
 
-    let approved_file = ws.put("floor_approved.bin", &policy)?;
+/// Run the policy session that spends `ticket` to advance the counter at `i` under `approval`.
+fn advance_with_approval(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    i: &str,
+    authority_key_name: &[u8],
+    approval: &crate::approval::Approval,
+    policy: &tpm_policy::Digest256,
+    ticket: &Path,
+) -> Result<()> {
+    let approved_file = ws.put("floor_approved.bin", policy)?;
     let name_file = ws.put("floor_authority.name", authority_key_name)?;
     let ref_file = ws.put("floor_ref.bin", crate::approval::POLICY_REF)?;
-    let operand = ws.put(
-        "floor_operand.bin",
-        &(approval.target_counter - 1).to_be_bytes(),
-    )?;
+    // Guarded by `Approval::validate_for`, called before this by `increment_approved`, which
+    // rejects a zero target counter.
+    let prior_counter = approval
+        .target_counter
+        .checked_sub(1)
+        .context("approval target counter underflowed")?;
+    let operand = ws.put("floor_operand.bin", &prior_counter.to_be_bytes())?;
     let (a, b) = branch_files(ws, authority_key_name)?;
     let list = format!("sha256:{},{}", a.display(), b.display());
     let sess = ws.path("nv_advance.ctx");
@@ -426,20 +530,19 @@ pub fn increment_approved(
                 sess.as_os_str(),
                 "-i",
                 operand.as_os_str(),
-                &i,
+                i,
                 "eq",
                 "-C",
-                &i,
+                i,
             ],
             None,
         )?;
         if !pnv.ok() {
             bail!(
-                "the approval for counter {} does not apply: the counter is not {} right now. An \
-                 approval authorises exactly one step and is spent once taken, so this one has \
-                 already been used or was issued for a different point.",
+                "the approval for counter {} does not apply: the counter is not {prior_counter} \
+                 right now. An approval authorises exactly one step and is spent once taken, so \
+                 this one has already been used or was issued for a different point.",
                 approval.target_counter,
-                approval.target_counter - 1
             );
         }
         require(
@@ -469,7 +572,7 @@ pub fn increment_approved(
         require(
             runner,
             "tpm2_nvincrement",
-            &argv![&i, "-C", &i, "-P", &auth],
+            &argv![i, "-C", i, "-P", &auth],
             &format!("advancing the rollback floor counter at {i}"),
         )?;
         Ok(())
@@ -482,6 +585,11 @@ pub fn increment_approved(
 
 /// Materialise a freshly defined counter and pick `base` so that the floor
 /// starts at `initial_floor`.
+///
+/// # Errors
+///
+/// Returns an error if materialising or reading the counter fails, or if `counter` and
+/// `initial_floor` are too far apart to fit the resulting `base` in an `i64`.
 pub fn materialise(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -497,13 +605,17 @@ pub fn materialise(
         .context("the rollback floor counter is still unreadable after an increment")?;
     // `base` is deliberately allowed to go negative: a fresh TPM's counter reads
     // 1, and the generation being enrolled is usually much larger than that.
-    let base =
-        i64::try_from(i128::from(counter) - i128::from(initial_floor)).with_context(|| {
-            format!(
-                "counter {counter} and initial floor {initial_floor} are too far apart to record a \
-             counter base"
-            )
+    let diff = i128::from(counter)
+        .checked_sub(i128::from(initial_floor))
+        .with_context(|| {
+            format!("counter {counter} and initial floor {initial_floor} are too far apart")
         })?;
+    let base = i64::try_from(diff).with_context(|| {
+        format!(
+            "counter {counter} and initial floor {initial_floor} are too far apart to record a \
+             counter base"
+        )
+    })?;
     Ok(FloorState { counter, base })
 }
 
@@ -531,6 +643,12 @@ impl AdvanceOutcome {
 /// SAFETY-CRITICAL: callers must have already proved that a token at or above `target_floor`
 /// unseals. This function does not and cannot check that — see
 /// [`crate::confirm::advance_floor`], the only intended caller.
+///
+/// # Errors
+///
+/// Returns an error if the number of increments needed to reach `target_floor` exceeds
+/// `max_increments`, if an approved increment fails, or if the counter doesn't move after an
+/// approved increment.
 #[allow(clippy::too_many_arguments)]
 pub fn advance(
     runner: &dyn Runner,
@@ -562,10 +680,13 @@ pub fn advance(
         );
     }
     let mut current = state;
-    let mut steps = 0;
+    let mut steps: u64 = 0;
     let mut unapproved = Vec::new();
     for _ in 0..n {
-        let next = current.counter + 1;
+        let next = current
+            .counter
+            .checked_add(1)
+            .context("rollback floor counter is at its maximum value")?;
         let Some(approval) = crate::approval::find(approvals, next) else {
             unapproved.push(next);
             break;
@@ -593,12 +714,16 @@ pub fn advance(
             counter,
             base: current.base,
         };
-        steps += 1;
+        steps = steps.saturating_add(1);
     }
     // Anything still between here and the target had no approval.
     let remaining = current.increments_to(target_floor).unwrap_or(0);
     for k in 0..remaining {
-        let want = current.counter + 1 + k;
+        let want = current
+            .counter
+            .checked_add(1)
+            .and_then(|v| v.checked_add(k))
+            .context("rollback floor counter overflowed while listing unapproved steps")?;
         if !unapproved.contains(&want) {
             unapproved.push(want);
         }

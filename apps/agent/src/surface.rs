@@ -353,6 +353,24 @@ fn photos_document(doc: &AutoCommit) -> bool {
     !photos::doc::PhotosDoc::is_empty(doc)
 }
 
+/// The word processor's contract, named on its own so a caller that needs
+/// exactly this app — [`crate::apply::Editor::empty`], the replica used
+/// where no peer snapshot exists to attribute — never has to index into
+/// [`CONTRACTS`] to get it.
+pub const WORD_PROCESSOR: AppContract = AppContract {
+    app_id: "dev.qos.word-processor",
+    title: "the word processor",
+    namespace: "word-processor",
+    recognises: |doc| qdoc::model::open(doc, &automerge::ROOT).is_ok(),
+    resources: word_processor_resources,
+    register: word_processor::actions::register,
+    // "This parses as a rich-text document" is true of every document
+    // built on the toolkit's schema, so this contract must be tried
+    // last: it means "a document, and nobody else's".
+    fallback: true,
+    product: word_processor_product,
+};
+
 /// Every app the agent can speak to: a rich-text document, a conversation, a
 /// photograph — deliberately different shapes, and none special-cased past
 /// this point. Adding a fourth is one entry here.
@@ -362,19 +380,7 @@ fn photos_document(doc: &AutoCommit) -> bool {
 /// also the room people are already talking in, which is what makes
 /// [`crate::listen`] possible.
 pub static CONTRACTS: &[AppContract] = &[
-    AppContract {
-        app_id: "dev.qos.word-processor",
-        title: "the word processor",
-        namespace: "word-processor",
-        recognises: |doc| qdoc::model::open(doc, &automerge::ROOT).is_ok(),
-        resources: word_processor_resources,
-        register: word_processor::actions::register,
-        // "This parses as a rich-text document" is true of every document
-        // built on the toolkit's schema, so this contract must be tried
-        // last: it means "a document, and nobody else's".
-        fallback: true,
-        product: word_processor_product,
-    },
+    WORD_PROCESSOR,
     AppContract {
         app_id: "dev.qos.chat",
         title: "the conversation",
