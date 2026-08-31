@@ -57,6 +57,7 @@ use crate::model::{
 };
 use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice, layout_chapter};
 use crate::paint;
+use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
 
 const TOP_BAR: f64 = 54.0;
@@ -523,20 +524,8 @@ pub struct BooksApp {
     /// summoned by the "Aa" button in the top bar.
     type_popover: bool,
 
-    /// The floating page-indicator bubble ([`ui::StatusBubble`]) over the
-    /// bottom-centre of the reading column on a page change or hover.
-    page_bubble: ui::StatusBubble,
-    /// The (chapter, page) the bubble last announced, so a change re-pokes
-    /// it. `None` until the first draw (so opening a book doesn't poke it).
-    bubble_shown: Option<(usize, usize)>,
-    /// The bubble's pill + chevron rects, captured during draw for hover
-    /// detection and click hit-testing.
-    bubble_rect: Rect,
-    bubble_prev: Rect,
-    bubble_next: Rect,
-    /// Screenshot-only: force the page bubble hover-pinned open. Never set
-    /// at runtime.
-    shots_reader_bubble: bool,
+    /// Owns the transient page indicator's animation, drawing and hit-testing.
+    reader_bubble: ReaderBubble,
 
     cursor: Point,
     /// First block index visible on the current page (for bookmark targeting).
@@ -741,12 +730,7 @@ impl BooksApp {
             scroll_to_cursor: false,
             turn_accum: 0.0,
             type_popover: false,
-            page_bubble: ui::StatusBubble::new(),
-            bubble_shown: None,
-            bubble_rect: Rect::ZERO,
-            bubble_prev: Rect::ZERO,
-            bubble_next: Rect::ZERO,
-            shots_reader_bubble: false,
+            reader_bubble: ReaderBubble::default(),
             cursor: Point::ZERO,
             page_top_block: 0,
             composing: None,
@@ -821,8 +805,7 @@ impl BooksApp {
     /// a single still frame captures the transient indicator. Never armed at
     /// runtime.
     pub fn arm_reader_bubble_for_shots(&mut self) {
-        self.shots_reader_bubble = true;
-        self.page_bubble.poke(Instant::now());
+        self.reader_bubble.arm_for_shots();
     }
 
     fn num_chapters(&self) -> usize {
@@ -3397,7 +3380,7 @@ impl Widget for BooksApp {
         // easing in, or the floating page bubble is lingering/fading.
         self.flaps_animating()
             || self.page_turn.is_some_and(|pt| !pt.done(Instant::now()))
-            || self.page_bubble.needs_frame(Instant::now())
+            || self.reader_bubble.needs_frame(Instant::now())
     }
 
     fn mark_drawn(&mut self) {
@@ -3621,6 +3604,13 @@ impl BooksApp {
         } else {
             None
         };
+        // The bubble is drawn below subsequent reader overlays. Their app-wide
+        // hits therefore keep precedence when geometry ever overlaps.
+        let bubble_action = if comment_action.is_none() && top.is_none() {
+            self.reader_bubble.hit_test(self.cursor)
+        } else {
+            None
+        };
         self.mouse_down = true;
         self.dragging_sel = false;
         self.press_pos = self.cursor;
@@ -3666,11 +3656,26 @@ impl BooksApp {
 
         // A press on page text runs through the shared
         // selection-gesture core: single → double (word) → triple.
-        let on_page = self.view == View::Reader && comment_action.is_none() && top.is_none();
+        let on_page = self.view == View::Reader
+            && comment_action.is_none()
+            && top.is_none()
+            && bubble_action.is_none();
         let consumed_page = self.resolve_page_press(on_page, modifiers.state().shift_key());
 
         if let Some(action) = comment_action {
             self.dispatch_comment_action(action, doc);
+            self.refresh_from_doc(doc);
+            self.persist_progress(doc);
+            self.dirty = true;
+            *handled = true;
+        } else if let Some(action) = bubble_action {
+            self.dispatch(
+                match action {
+                    ReaderBubbleAction::PreviousPage => Action::PrevPage,
+                    ReaderBubbleAction::NextPage => Action::NextPage,
+                },
+                doc,
+            );
             self.refresh_from_doc(doc);
             self.persist_progress(doc);
             self.dirty = true;
@@ -5725,14 +5730,21 @@ impl BooksApp {
 
         // ---- chrome: top bar, floating page bubble, selection HUD, drawers -
         self.draw_reader_topbar(scene, t, tr, theme, &lib, c);
-        self.draw_reader_bubble(
+        self.reader_bubble.draw(
             scene,
             t,
             tr,
             theme,
+            self.rect,
+            self.cursor,
             geom.center_x0,
             geom.center_x1,
-            nchap.max(1),
+            ReaderPosition {
+                chapter: self.chapter,
+                page: self.page,
+                page_count: self.cur_page_count,
+                chapter_count: nchap.max(1),
+            },
         );
         // Floating selection toolbar over the page (under any overlay rail).
         self.draw_selection_hud(
@@ -5792,7 +5804,7 @@ impl BooksApp {
         let body_y0 = r.y0 + TOP_BAR;
         // The page renders to the window bottom now that the always-on bottom
         // strip is gone — the page indicator floats as a transient bubble
-        // (`draw_reader_bubble`) instead of costing a permanent strip of chrome.
+        // (the `ReaderBubble` component) instead of costing a permanent strip of chrome.
         let body_y1 = r.y1;
 
         // ---- paper rect + content box -----------------------------------
@@ -7156,153 +7168,6 @@ impl BooksApp {
             TextWeight::Semibold,
         );
         self.push_hit(aa_rect, Action::ToggleTypePopover);
-    }
-
-    /// The floating page-indicator bubble ([`ui::StatusBubble`]): surfaces on
-    /// a page change or pointer hover over the bottom-centre band, then
-    /// fades. Chevron hits are pushed only while visible, so an invisible
-    /// bubble never eats a click in the bottom band.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_reader_bubble(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        center_x0: f64,
-        center_x1: f64,
-        nchap: usize,
-    ) {
-        self.bubble_rect = Rect::ZERO;
-        self.bubble_prev = Rect::ZERO;
-        self.bubble_next = Rect::ZERO;
-
-        let now = Instant::now();
-        // A page/chapter change briefly floats the bubble. The first
-        // observation only records the position, so opening a book doesn't
-        // poke it open.
-        let pos = (self.chapter, self.page);
-        if let Some(prev) = self.bubble_shown
-            && prev != pos
-        {
-            self.page_bubble.poke(now);
-        }
-        self.bubble_shown = Some(pos);
-
-        let r = self.rect;
-        let text_size = 12.5f32;
-        let chev = 26.0;
-        let label = self.reader_bubble_label(tr, center_x0, center_x1, nchap);
-
-        let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, tr, text_size, chev);
-        let cx = f64::midpoint(center_x0, center_x1);
-        let by = r.y1 - 16.0 - pill_h;
-        let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
-
-        // Reveal zone: a band across the bottom-centre of the reading column
-        // (plus the pill itself), so approaching the bottom edge surfaces the
-        // indicator.
-        let zone = Rect::new(rect.x0 - 40.0, r.y1 - (pill_h + 32.0), rect.x1 + 40.0, r.y1);
-        let over =
-            self.shots_reader_bubble || zone.contains(self.cursor) || rect.contains(self.cursor);
-        self.page_bubble.set_hover(over, now);
-
-        let alpha = self.page_bubble.alpha(now);
-        if alpha <= 0.0 {
-            return;
-        }
-
-        // Capture geometry for hover + click hit-testing (the chevron slots), and
-        // route the chevrons through the same page-nav action path every other
-        // affordance uses — only while the bubble is actually up.
-        self.bubble_rect = rect;
-        self.bubble_prev = Rect::new(rect.x0, rect.y0, rect.x0 + chev + 8.0, rect.y1);
-        self.bubble_next = Rect::new(rect.x1 - chev - 8.0, rect.y0, rect.x1, rect.y1);
-        self.push_hit(self.bubble_prev, Action::PrevPage);
-        self.push_hit(self.bubble_next, Action::NextPage);
-
-        self.draw_reader_bubble_pill(scene, t, tr, theme, rect, &label, text_size, alpha);
-    }
-
-    /// The bubble's label: `"page / count"`, extended with the chapter
-    /// locator when the richer label still fits comfortably within the
-    /// reading column.
-    fn reader_bubble_label(
-        &self,
-        tr: &mut TextRenderer,
-        center_x0: f64,
-        center_x1: f64,
-        nchap: usize,
-    ) -> String {
-        let count = self.cur_page_count.max(1);
-        let base = format!("{} / {}", self.page + 1, count);
-        let with_chapter = format!(
-            "{}   ·   Chapter {} of {}",
-            base,
-            self.chapter + 1,
-            nchap.max(1)
-        );
-        let col_w = (center_x1 - center_x0).max(120.0);
-        // Prefer the richer label with the chapter locator, but only when the
-        // pill would still sit comfortably within the reading column.
-        let (rich_w, _) = ui::status_bubble::pill_size(&with_chapter, tr, 12.5, 26.0);
-        if nchap > 0 && rich_w <= col_w - 48.0 {
-            with_chapter
-        } else {
-            base
-        }
-    }
-
-    /// The pill background + label, and its prev/next chevrons.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_reader_bubble_pill(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label: &str,
-        text_size: f32,
-        alpha: f32,
-    ) {
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            alpha,
-            t,
-            &rect.inflate(12.0, 14.0),
-        );
-        ui::status_bubble::draw_pill(scene, t, tr, theme, rect, label, text_size);
-        let prev_hot = self.bubble_prev.contains(self.cursor);
-        let next_hot = self.bubble_next.contains(self.cursor);
-        let cyy = f64::midpoint(rect.y0, rect.y1);
-        let pc = Rect::new(rect.x0 + 8.0, cyy - 8.0, rect.x0 + 8.0 + 16.0, cyy + 8.0);
-        let nc = Rect::new(rect.x1 - 8.0 - 16.0, cyy - 8.0, rect.x1 - 8.0, cyy + 8.0);
-        ui::status_bubble::draw_chevron(
-            scene,
-            t,
-            pc,
-            if prev_hot {
-                theme.text_primary
-            } else {
-                theme.text_dim
-            },
-            true,
-        );
-        ui::status_bubble::draw_chevron(
-            scene,
-            t,
-            nc,
-            if next_hot {
-                theme.text_primary
-            } else {
-                theme.text_dim
-            },
-            false,
-        );
-        scene.pop_layer();
     }
 
     /// Horizontal bounds `(left, right)` for the reading-settings popover,
@@ -10350,6 +10215,18 @@ mod interaction_tests {
                 pred(&action)
             })
             .or_else(|| {
+                [
+                    (ReaderBubbleAction::PreviousPage, Action::PrevPage),
+                    (ReaderBubbleAction::NextPage, Action::NextPage),
+                ]
+                .into_iter()
+                .find_map(|(bubble_action, action)| {
+                    pred(&action)
+                        .then(|| app.reader_bubble.action_center(bubble_action))
+                        .flatten()
+                })
+            })
+            .or_else(|| {
                 app.hits
                     .iter()
                     .rev()
@@ -11397,7 +11274,7 @@ mod interaction_tests {
             "a page change surfaces the bubble's next chevron"
         );
         assert!(
-            app.page_bubble.needs_frame(Instant::now()),
+            app.reader_bubble.needs_frame(Instant::now()),
             "the visible bubble schedules its own fade-out frames"
         );
     }
