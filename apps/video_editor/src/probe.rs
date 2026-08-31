@@ -62,6 +62,18 @@ pub struct ProbedMedia {
     pub fps: f64,
     /// Container/codec tag (four-CC or format name), or `"unknown"`.
     pub codec: String,
+    /// Whether the container carries a sound track alongside the picture.
+    ///
+    /// A video file's audio is the thing a person most often forgets a
+    /// timeline can lose: nothing on screen says "this clip has sound" until
+    /// the export comes back silent. The probe already walks the track
+    /// handlers to decide the file's kind, so it knows this for free — it
+    /// simply used to throw the answer away.
+    ///
+    /// `false` for a format whose header the probe does not parse. That is a
+    /// floor, not a claim: it means "no sound track was found", and a caller
+    /// must not read it as "there is none".
+    pub has_audio: bool,
 }
 
 /// Why a file yielded no real media metadata.
@@ -274,6 +286,8 @@ fn textual_kind(d: &[u8]) -> Option<&'static str> {
 
 fn image_probe(w: u32, h: u32, codec: &str) -> ProbedMedia {
     ProbedMedia {
+        // A still carries no sound track.
+        has_audio: false,
         kind: MediaKind::Image,
         duration: DEFAULT_IMAGE_DURATION,
         width: w,
@@ -333,6 +347,10 @@ fn fallback_from_extension(path: &Path) -> Result<ProbedMedia, ProbeError> {
         height: 0,
         fps: 0.0,
         codec: "unknown".into(),
+        // The header was never parsed here — the kind came from the
+        // extension. "No sound track was found" is the honest answer, and
+        // it is a floor rather than a claim that there is none.
+        has_audio: false,
     })
 }
 
@@ -489,6 +507,9 @@ fn parse_wav(d: &[u8]) -> Option<ProbedMedia> {
         height: 0,
         fps: 0.0,
         codec,
+        // A WAV is sound outright; it lands on an audio track the mixer
+        // already reads. This flag marks a *picture* that carries sound.
+        has_audio: false,
     })
 }
 
@@ -652,6 +673,7 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
         height,
         fps,
         codec,
+        has_audio: saw_audio,
     })
 }
 
@@ -917,6 +939,8 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
         height,
         fps,
         codec: "matroska".to_string(),
+        // Matroska track type 2 is audio, already walked above.
+        has_audio: saw_audio,
     })
 }
 
@@ -1044,6 +1068,10 @@ fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
 
 fn mp3_probe(duration: f64) -> ProbedMedia {
     ProbedMedia {
+        // The file *is* the sound; it lands on an audio track, which the
+        // mixer already reads. `has_audio` marks a *picture* that also
+        // carries sound, so it stays false here.
+        has_audio: false,
         kind: MediaKind::Audio,
         duration,
         width: 0,

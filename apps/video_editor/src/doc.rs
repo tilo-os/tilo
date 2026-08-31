@@ -137,6 +137,7 @@ impl VideoDoc {
         // state, never the bytes (see crate::media).
         let _ = doc.put(&obj, "path", m.path.as_str());
         let _ = doc.put(&obj, "hydration", m.hydration.as_str());
+        let _ = doc.put(&obj, "has_audio", m.has_audio);
         // A title's text and styling. Written as a compact JSON scalar for
         // the same reason the effects stack is: the action model rewrites a
         // media item whole, so a structured sub-map would buy no finer merge
@@ -349,6 +350,10 @@ impl VideoDoc {
                     // written before titles existed.
                     text: Self::get_str(doc, &obj, "text")
                         .and_then(|s| serde_json::from_str(&s).ok()),
+                    // Absent in any document written before the mixer could
+                    // find a video file's sound. False is the honest default:
+                    // it reads as "no sound track was found".
+                    has_audio: Self::get_bool(doc, &obj, "has_audio"),
                 });
             }
         }
@@ -510,6 +515,8 @@ pub fn sample_project() -> Project {
             id: Uuid::new_v4(),
             name: name.into(),
             kind,
+            // Sample media stands in for footage that was never probed.
+            has_audio: false,
             duration: dur,
             width: w,
             height: h,
