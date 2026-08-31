@@ -113,7 +113,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
         std::process::exit(ui::headless::run(
-            spec,
+            &spec,
             git_client::app_root(),
             "dev.qos.git-client",
         ));

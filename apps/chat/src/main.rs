@@ -79,7 +79,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, chat::app_root(), "dev.qos.chat"));
+        std::process::exit(ui::headless::run(&spec, chat::app_root(), "dev.qos.chat"));
     }
 
     // An older release kept the workspace in its own file. Hand that path to

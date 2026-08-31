@@ -48,6 +48,32 @@ pub fn intrinsic_height() -> f32 {
     PAD * 2.0 + GRID_H + GAP * 5.0 + PICKER_H + SLIDER_H * 2.0 + DROPDOWN_H + ACTIONS_H
 }
 
+/// Panic-free leaf/parent node construction for [`Widget::build_layout`].
+/// `TaffyTree::new_leaf` / `new_with_children` are typed `-> TaffyResult<_>`
+/// for API generality, but `new_leaf` always inserts and returns `Ok`, and
+/// `new_with_children` only fails for a child `NodeId` belonging to a
+/// *different* tree — never the case here, since every child passed in was
+/// just built in this same `taffy` tree by the call immediately above each
+/// call site. `Widget::build_layout` returns a bare `NodeId` (not a
+/// `Result`) across every implementor, so surfacing a theoretical error here
+/// would mean threading a `Result` through the whole toolkit for a branch
+/// that can't be taken.
+#[allow(
+    clippy::unwrap_used,
+    reason = "new_leaf/new_with_children cannot fail as called here; see doc comment"
+)]
+fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
+    taffy.new_leaf(style).unwrap()
+}
+
+#[allow(
+    clippy::unwrap_used,
+    reason = "new_leaf/new_with_children cannot fail as called here; see doc comment"
+)]
+fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> NodeId {
+    taffy.new_with_children(style, children).unwrap()
+}
+
 pub struct Customizer {
     color_picker: ColorPicker,
     radius_slider: Slider,
@@ -171,16 +197,17 @@ impl Widget for Customizer {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let grid = taffy
-            .new_leaf(Style {
+        let grid = leaf_node(
+            taffy,
+            Style {
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::length(GRID_H),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
-            })
-            .unwrap();
+            },
+        );
         self.grid_node = Some(grid);
 
         let picker = self.color_picker.build_layout(taffy, theme, node_map);
@@ -197,58 +224,56 @@ impl Widget for Customizer {
             .iter_mut()
             .map(|b| b.build_layout(taffy, theme, node_map))
             .collect();
-        let actions = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Row,
-                    gap: Size {
-                        width: length(8.0_f32),
-                        height: length(0.0_f32),
-                    },
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(34.0),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
+        let actions = parent_node(
+            taffy,
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Row,
+                gap: Size {
+                    width: length(8.0_f32),
+                    height: length(0.0_f32),
                 },
-                &btn_nodes,
-            )
-            .unwrap();
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::length(34.0),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+            &btn_nodes,
+        );
         self.actions_node = Some(actions);
 
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    gap: Size {
-                        width: length(0.0_f32),
-                        height: length(GAP),
-                    },
-                    padding: taffy::Rect {
-                        left: length(PAD),
-                        right: length(PAD),
-                        top: length(PAD),
-                        bottom: length(PAD),
-                    },
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
+        let node = parent_node(
+            taffy,
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Column,
+                gap: Size {
+                    width: length(0.0_f32),
+                    height: length(GAP),
                 },
-                &[grid, picker, radius, spacing, font, actions],
-            )
-            .unwrap();
+                padding: taffy::Rect {
+                    left: length(PAD),
+                    right: length(PAD),
+                    top: length(PAD),
+                    bottom: length(PAD),
+                },
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            },
+            &[grid, picker, radius, spacing, font, actions],
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else { return };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -257,8 +282,9 @@ impl Widget for Customizer {
         );
         let o = Point::new(self.rect.x0, self.rect.y0);
 
-        if let Some(n) = self.grid_node {
-            let gl = taffy.layout(n).unwrap();
+        if let Some(n) = self.grid_node
+            && let Ok(gl) = taffy.layout(n)
+        {
             self.grid_rect = Rect::new(
                 o.x + f64::from(gl.location.x),
                 o.y + f64::from(gl.location.y),
@@ -279,8 +305,9 @@ impl Widget for Customizer {
         if let Some(n) = self.font_node {
             self.font_dropdown.apply_layout(taffy, n, o);
         }
-        if let Some(n) = self.actions_node {
-            let al = taffy.layout(n).unwrap();
+        if let Some(n) = self.actions_node
+            && let Ok(al) = taffy.layout(n)
+        {
             let ao = Point::new(
                 o.x + f64::from(al.location.x),
                 o.y + f64::from(al.location.y),
@@ -312,146 +339,12 @@ impl Widget for Customizer {
             1.0,
         );
 
-        let name = self
-            .spec
-            .as_ref()
-            .map(|s| s.name.clone())
-            .unwrap_or_default();
-        draw::text_w(
-            tr,
-            scene,
-            t,
-            "Customize",
-            16.0,
-            theme.text_primary,
-            self.grid_rect.x0,
-            self.grid_rect.y0 + 2.0,
-            TextWeight::Bold,
-        );
-        draw::text(
-            tr,
-            scene,
-            t,
-            &name,
-            11.0,
-            theme.text_dim,
-            self.grid_rect.x0,
-            self.grid_rect.y0 + 22.0,
-        );
+        self.draw_header(scene, t, tr, theme);
+        self.draw_chip_grid(scene, t, tr, theme);
+        let font_r = self.draw_controls(scene, t, tr, theme, p);
 
-        draw::text_w(
-            tr,
-            scene,
-            t,
-            "COLORS",
-            11.0,
-            theme.text_dim,
-            self.grid_rect.x0,
-            self.grid_rect.y0 + 40.0,
-            TextWeight::Semibold,
-        );
-
-        // Chips.
-        for (tok, r) in &self.chip_rects {
-            let col = self
-                .spec
-                .as_ref()
-                .map_or([128, 128, 128], |s| s.token(*tok));
-            draw::fill_rrect(scene, t, *r, 6.0, model::color(col));
-            let sel = *tok == self.edit_token;
-            let ring = if sel {
-                theme.accent_primary
-            } else {
-                theme.border_standard
-            };
-            draw::stroke_rrect(scene, t, *r, 6.0, ring, if sel { 2.5 } else { 1.0 });
-        }
-        // Caption: selected token + hex.
-        if let Some(spec) = &self.spec {
-            let hex = model::hex(spec.token(self.edit_token));
-            let cap = format!("{} · {}", self.edit_token.label(), hex);
-            draw::text_w(
-                tr,
-                scene,
-                t,
-                &cap,
-                12.0,
-                theme.text_primary,
-                self.grid_rect.x0,
-                self.grid_rect.y1 - 15.0,
-                TextWeight::Medium,
-            );
-        }
-
-        // Real controls.
-        self.color_picker.draw(scene, t, tr, theme, p);
-
-        // Labels above sliders / dropdown.
-        let radius_r = self.radius_slider.get_rect();
-        let spacing_r = self.spacing_slider.get_rect();
-        let font_r = self.font_dropdown.get_rect();
-        if let Some(spec) = &self.spec {
-            draw::text(
-                tr,
-                scene,
-                t,
-                &format!("Corner radius — {:.0}px", spec.radius_px()),
-                12.0,
-                theme.text_dim,
-                radius_r.x0,
-                radius_r.y0 - 18.0,
-            );
-            draw::text(
-                tr,
-                scene,
-                t,
-                &format!("Spacing — {:.0}px", spec.spacing_px()),
-                12.0,
-                theme.text_dim,
-                spacing_r.x0,
-                spacing_r.y0 - 18.0,
-            );
-        }
-        draw::text(
-            tr,
-            scene,
-            t,
-            "Font family",
-            12.0,
-            theme.text_dim,
-            font_r.x0,
-            font_r.y0 - 18.0,
-        );
-
-        self.radius_slider.draw(scene, t, tr, theme, p);
-        self.spacing_slider.draw(scene, t, tr, theme, p);
-        self.font_dropdown.draw(scene, t, tr, theme, p);
-        for b in &mut self.buttons {
-            b.draw(scene, t, tr, theme, p);
-        }
-
-        // Read-only veil for built-in presets.
         if !self.editable {
-            let veil = Rect::new(
-                self.rect.x0,
-                self.color_picker.get_rect().y0 - 8.0,
-                self.rect.x1,
-                font_r.y1 + 6.0,
-            );
-            draw::fill_rect(scene, t, veil, theme.bg_app.multiply_alpha(0.55));
-            draw::text_center(
-                tr,
-                scene,
-                t,
-                "Preset — Duplicate to edit",
-                12.0,
-                theme.text_dim,
-                veil.x0,
-                veil.x1,
-                veil.center().y - 8.0,
-                veil.center().y + 8.0,
-                TextWeight::Semibold,
-            );
+            self.draw_readonly_veil(scene, t, tr, theme, font_r);
         }
     }
 
@@ -485,170 +378,23 @@ impl Widget for Customizer {
             self.cursor = Some(Point::new(position.x / scale, position.y / scale));
         }
 
-        // Pointer-capture priority for the live picker / slider drags.
-        if self.editable {
-            if self.color_picker.wants_pointer_capture() {
-                if let Some(n) = self.picker_node {
-                    self.color_picker.handle_event(
-                        event,
-                        scale,
-                        m,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        n,
-                        taffy,
-                    );
-                }
-                return;
-            }
-            if self.radius_slider.wants_pointer_capture() {
-                if let Some(n) = self.radius_node {
-                    self.radius_slider.handle_event(
-                        event,
-                        scale,
-                        m,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        n,
-                        taffy,
-                    );
-                }
-                return;
-            }
-            if self.spacing_slider.wants_pointer_capture() {
-                if let Some(n) = self.spacing_node {
-                    self.spacing_slider.handle_event(
-                        event,
-                        scale,
-                        m,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        n,
-                        taffy,
-                    );
-                }
-                return;
-            }
-        }
-
-        // Chip selection.
         if self.editable
-            && let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } = event
-            && let Some(pt) = self.cursor
+            && self.handle_pointer_capture(event, scale, m, state, path, handled, focus_target, taffy)
         {
-            for (tok, r) in &self.chip_rects {
-                if r.contains(pt) {
-                    crate::doc::put_str(
-                        state,
-                        path,
-                        crate::doc::KEY_COMMAND,
-                        &format!("edittoken:{}", tok.key()),
-                    );
-                    *handled = true;
-                    return;
-                }
-            }
+            return;
         }
 
-        // Real controls (only when editable).
-        if self.editable {
-            if let Some(n) = self.picker_node {
-                self.color_picker.handle_event(
-                    event,
-                    scale,
-                    m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-                if *handled {
-                    return;
-                }
-            }
-            if let Some(n) = self.radius_node {
-                self.radius_slider.handle_event(
-                    event,
-                    scale,
-                    m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-                if *handled {
-                    return;
-                }
-            }
-            if let Some(n) = self.spacing_node {
-                self.spacing_slider.handle_event(
-                    event,
-                    scale,
-                    m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-                if *handled {
-                    return;
-                }
-            }
-            if let Some(n) = self.font_node {
-                self.font_dropdown.handle_event(
-                    event,
-                    scale,
-                    m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-                if *handled {
-                    return;
-                }
-            }
+        if self.handle_chip_selection(event, state, path, handled) {
+            return;
         }
 
-        // Buttons (always active so Duplicate works on presets).
-        if let Some(an) = self.actions_node
-            && let Ok(bchildren) = taffy.children(an)
+        if self.editable
+            && self.handle_control_events(event, scale, m, state, path, handled, focus_target, taffy)
         {
-            for (b, c) in self.buttons.iter_mut().zip(bchildren.iter()) {
-                b.handle_event(
-                    event,
-                    scale,
-                    m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    *c,
-                    taffy,
-                );
-                if *handled {
-                    break;
-                }
-            }
+            return;
         }
+
+        self.handle_button_events(event, scale, m, state, path, handled, focus_target, taffy);
     }
 
     fn name(&self) -> &'static str {
@@ -709,6 +455,412 @@ impl Customizer {
             let y = y0 + row * (size + gap);
             self.chip_rects
                 .push((*tok, Rect::new(x, y, x + size, y + size)));
+        }
+    }
+
+    /// Panel title and selected theme name, plus the "COLORS" section label
+    /// (part of [`Widget::draw`]).
+    fn draw_header(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let name = self
+            .spec
+            .as_ref()
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        draw::text_w(
+            tr,
+            scene,
+            t,
+            "Customize",
+            16.0,
+            theme.text_primary,
+            self.grid_rect.x0,
+            self.grid_rect.y0 + 2.0,
+            TextWeight::Bold,
+        );
+        draw::text(
+            tr,
+            scene,
+            t,
+            &name,
+            11.0,
+            theme.text_dim,
+            self.grid_rect.x0,
+            self.grid_rect.y0 + 22.0,
+        );
+
+        draw::text_w(
+            tr,
+            scene,
+            t,
+            "COLORS",
+            11.0,
+            theme.text_dim,
+            self.grid_rect.x0,
+            self.grid_rect.y0 + 40.0,
+            TextWeight::Semibold,
+        );
+    }
+
+    /// The colour-token chip grid and its selected-token/hex caption (part
+    /// of [`Widget::draw`]).
+    fn draw_chip_grid(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        for (tok, r) in &self.chip_rects {
+            let col = self
+                .spec
+                .as_ref()
+                .map_or([128, 128, 128], |s| s.token(*tok));
+            draw::fill_rrect(scene, t, *r, 6.0, model::color(col));
+            let sel = *tok == self.edit_token;
+            let ring = if sel {
+                theme.accent_primary
+            } else {
+                theme.border_standard
+            };
+            draw::stroke_rrect(scene, t, *r, 6.0, ring, if sel { 2.5 } else { 1.0 });
+        }
+        // Caption: selected token + hex.
+        if let Some(spec) = &self.spec {
+            let hex = model::hex(spec.token(self.edit_token));
+            let cap = format!("{} · {}", self.edit_token.label(), hex);
+            draw::text_w(
+                tr,
+                scene,
+                t,
+                &cap,
+                12.0,
+                theme.text_primary,
+                self.grid_rect.x0,
+                self.grid_rect.y1 - 15.0,
+                TextWeight::Medium,
+            );
+        }
+    }
+
+    /// The real picker / sliders / dropdown / action buttons and their
+    /// labels (part of [`Widget::draw`]). Returns the font dropdown's rect
+    /// so [`Self::draw_readonly_veil`] can size the veil against it.
+    fn draw_controls(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        p: &PresenceCtx,
+    ) -> Rect {
+        self.color_picker.draw(scene, t, tr, theme, p);
+
+        // Labels above sliders / dropdown.
+        let radius_r = self.radius_slider.get_rect();
+        let spacing_r = self.spacing_slider.get_rect();
+        let font_r = self.font_dropdown.get_rect();
+        if let Some(spec) = &self.spec {
+            draw::text(
+                tr,
+                scene,
+                t,
+                &format!("Corner radius — {:.0}px", spec.radius_px()),
+                12.0,
+                theme.text_dim,
+                radius_r.x0,
+                radius_r.y0 - 18.0,
+            );
+            draw::text(
+                tr,
+                scene,
+                t,
+                &format!("Spacing — {:.0}px", spec.spacing_px()),
+                12.0,
+                theme.text_dim,
+                spacing_r.x0,
+                spacing_r.y0 - 18.0,
+            );
+        }
+        draw::text(
+            tr,
+            scene,
+            t,
+            "Font family",
+            12.0,
+            theme.text_dim,
+            font_r.x0,
+            font_r.y0 - 18.0,
+        );
+
+        self.radius_slider.draw(scene, t, tr, theme, p);
+        self.spacing_slider.draw(scene, t, tr, theme, p);
+        self.font_dropdown.draw(scene, t, tr, theme, p);
+        for b in &mut self.buttons {
+            b.draw(scene, t, tr, theme, p);
+        }
+        font_r
+    }
+
+    /// The read-only veil painted over the controls when the selected theme
+    /// is a built-in preset (part of [`Widget::draw`]). `font_r` is the font
+    /// dropdown's rect from [`Self::draw_controls`].
+    fn draw_readonly_veil(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        font_r: Rect,
+    ) {
+        let veil = Rect::new(
+            self.rect.x0,
+            self.color_picker.get_rect().y0 - 8.0,
+            self.rect.x1,
+            font_r.y1 + 6.0,
+        );
+        draw::fill_rect(scene, t, veil, theme.bg_app.multiply_alpha(0.55));
+        draw::text_center(
+            tr,
+            scene,
+            t,
+            "Preset — Duplicate to edit",
+            12.0,
+            theme.text_dim,
+            veil.x0,
+            veil.x1,
+            veil.center().y - 8.0,
+            veil.center().y + 8.0,
+            TextWeight::Semibold,
+        );
+    }
+
+    /// Pointer-capture priority for a live picker / slider drag (part of
+    /// [`Widget::handle_event`], editable only). Returns `true` if a
+    /// captured control owns the event, in which case the caller must stop
+    /// dispatching regardless of `*handled` (a capture still claims the
+    /// event even while the pointer strays outside the control's rect).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
+    )]
+    fn handle_pointer_capture(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        m: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if self.color_picker.wants_pointer_capture() {
+            if let Some(n) = self.picker_node {
+                self.color_picker.handle_event(
+                    event,
+                    scale,
+                    m,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
+                );
+            }
+            return true;
+        }
+        if self.radius_slider.wants_pointer_capture() {
+            if let Some(n) = self.radius_node {
+                self.radius_slider.handle_event(
+                    event,
+                    scale,
+                    m,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
+                );
+            }
+            return true;
+        }
+        if self.spacing_slider.wants_pointer_capture() {
+            if let Some(n) = self.spacing_node {
+                self.spacing_slider.handle_event(
+                    event,
+                    scale,
+                    m,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
+                );
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Colour-token chip selection (part of [`Widget::handle_event`],
+    /// editable only). Returns `true` if a chip was clicked.
+    fn handle_chip_selection(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.editable {
+            return false;
+        }
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let Some(pt) = self.cursor else {
+            return false;
+        };
+        for (tok, r) in &self.chip_rects {
+            if r.contains(pt) {
+                crate::doc::put_str(
+                    state,
+                    path,
+                    crate::doc::KEY_COMMAND,
+                    &format!("edittoken:{}", tok.key()),
+                );
+                *handled = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Forward the event into the picker / sliders / dropdown, in order
+    /// (part of [`Widget::handle_event`], editable only). Returns `true`
+    /// once one of them sets `*handled`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
+    )]
+    fn handle_control_events(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        m: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if let Some(n) = self.picker_node {
+            self.color_picker.handle_event(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+            if *handled {
+                return true;
+            }
+        }
+        if let Some(n) = self.radius_node {
+            self.radius_slider.handle_event(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+            if *handled {
+                return true;
+            }
+        }
+        if let Some(n) = self.spacing_node {
+            self.spacing_slider.handle_event(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+            if *handled {
+                return true;
+            }
+        }
+        if let Some(n) = self.font_node {
+            self.font_dropdown.handle_event(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+            if *handled {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Forward the event into the action buttons, always active so
+    /// Duplicate works on a read-only preset too (part of
+    /// [`Widget::handle_event`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
+    )]
+    fn handle_button_events(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        m: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+    ) {
+        let Some(an) = self.actions_node else {
+            return;
+        };
+        let Ok(bchildren) = taffy.children(an) else {
+            return;
+        };
+        for (b, c) in self.buttons.iter_mut().zip(bchildren.iter()) {
+            b.handle_event(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                *c,
+                taffy,
+            );
+            if *handled {
+                break;
+            }
         }
     }
 }

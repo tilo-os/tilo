@@ -85,6 +85,7 @@ impl WorkspaceTreeReplica {
     }
 
     /// Deliver this replica's messages under `origin`.
+    #[must_use]
     pub fn with_origin(mut self, origin: PeerOrigin) -> Self {
         self.origin = origin;
         self

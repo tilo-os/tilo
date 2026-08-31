@@ -128,6 +128,7 @@ impl ColorManagerState {
     /// the initialized state. Callers stash the returned value in the
     /// process-wide compositor state so the delegate dispatch impls
     /// route back to the right advertised-capability list.
+    #[must_use]
     pub fn new<D>(display: &DisplayHandle) -> Self
     where
         D: GlobalDispatch<WpColorManagerV1, ()> + 'static,
@@ -141,6 +142,7 @@ impl ColorManagerState {
     /// Zero-globals constructor for headless tests that never bind a
     /// display. Keeps the advertised-capability defaults but skips
     /// registering the Wayland global.
+    #[must_use]
     #[cfg(any(test, feature = "hosted-test-control"))]
     pub fn for_test() -> Self {
         Self::default()
@@ -351,9 +353,13 @@ pub struct ImageDescriptionData {
 
 impl ImageDescriptionData {
     /// Low 32 bits of the identity for the pre-v2 `ready` event.
+    #[must_use]
     pub fn identity_lo(&self) -> u32 {
         self.identity as u32
     }
+
+    /// High 32 bits of the identity for the `ready2` event.
+    #[must_use]
     pub fn identity_hi(&self) -> u32 {
         (self.identity >> 32) as u32
     }
@@ -451,6 +457,7 @@ impl ColorManagementOutputData {
     /// Attach a fresh output-side descriptor. Defaults to SDR BT.709;
     /// the DRM backend calls [`Self::set_display_color`] when an EDID
     /// arrives.
+    #[must_use]
     pub fn new(output: WlOutput) -> Self {
         Self {
             output,
@@ -458,6 +465,11 @@ impl ColorManagementOutputData {
             hdr: Arc::new(Mutex::new(None)),
         }
     }
+
+    /// Set the display's actual color space and optional HDR metadata.
+    ///
+    /// Called by the DRM backend when an EDID arrives or color space
+    /// information is updated.
     pub fn set_display_color(&self, color: Colorimetry, hdr: Option<Hdr10Metadata>) {
         if let Ok(mut g) = self.color.lock() {
             *g = color;
@@ -469,7 +481,7 @@ impl ColorManagementOutputData {
 
     fn snapshot(&self) -> ImageDescriptionData {
         let color = self.color.lock().map(|c| *c).unwrap_or_default();
-        let hdr = self.hdr.lock().map_or(None, |h| *h);
+        let hdr = self.hdr.lock().ok().and_then(|h| *h);
         ImageDescriptionData {
             colorimetry: color,
             hdr,
@@ -490,6 +502,8 @@ pub struct ColorManagementSurfaceUserData {
 }
 
 impl ColorManagementSurfaceUserData {
+    /// Create a new user-data instance for a `wp_color_management_surface_v1`.
+    #[must_use]
     pub fn new(surface: WlSurface) -> Self {
         Self { surface }
     }
@@ -507,6 +521,8 @@ pub struct ColorManagementSurfaceFeedbackData {
 }
 
 impl ColorManagementSurfaceFeedbackData {
+    /// Create a new user-data instance for a `wp_color_management_surface_feedback_v1`.
+    #[must_use]
     pub fn new(surface: WlSurface) -> Self {
         Self { surface }
     }
@@ -735,9 +751,7 @@ where
                 }
             }
             wp_image_description_creator_params_v1::Request::SetTfNamed { tf } => {
-                let tf = if let Ok(v) = tf.into_result() {
-                    v
-                } else {
+                let Ok(tf) = tf.into_result() else {
                     creator.post_error(
                         wp_image_description_creator_params_v1::Error::InvalidTf,
                         "unknown transfer_function enum value",
@@ -750,9 +764,7 @@ where
                 set_once!(tf_power_eexp = eexp, "transfer function already set");
             }
             wp_image_description_creator_params_v1::Request::SetPrimariesNamed { primaries } => {
-                let primaries = if let Ok(v) = primaries.into_result() {
-                    v
-                } else {
+                let Ok(primaries) = primaries.into_result() else {
                     creator.post_error(
                         wp_image_description_creator_params_v1::Error::InvalidPrimariesNamed,
                         "unknown primaries enum value",
@@ -846,7 +858,7 @@ where
         _client: &Client,
         obj: &WpImageDescriptionV1,
         request: <WpImageDescriptionV1 as Resource>::Request,
-        data: &ImageDescriptionData,
+        _data: &ImageDescriptionData,
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -862,7 +874,6 @@ where
                     wp_image_description_v1::Error::NoInformation,
                     "get_information is not allowed on this image description",
                 );
-                let _ = data; // silence unused-warning; we only inspect the payload for logging
             }
             _ => {}
         }

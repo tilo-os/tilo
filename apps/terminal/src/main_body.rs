@@ -1680,7 +1680,7 @@ impl Widget for TerminalWidget {
                     }
                 }
 
-                let mut bytes = self.map_key(logical_key, modifiers);
+                let mut bytes = self.map_key(logical_key, *modifiers);
                 if bytes.is_none()
                     && let Some(t) = text
                     && !t
@@ -2678,7 +2678,7 @@ impl TerminalWidget {
         Some(out)
     }
 
-    fn map_key(&self, key: &Key, modifiers: &winit::event::Modifiers) -> Option<Vec<u8>> {
+    fn map_key(&self, key: &Key, modifiers: winit::event::Modifiers) -> Option<Vec<u8>> {
         let mods = modifiers.state();
         let shift = mods.shift_key();
         let alt = mods.alt_key();
@@ -2902,9 +2902,8 @@ impl Perform for TerminalPerformer<'_> {
         }
 
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) {
-            Some(o) => o,
-            None => return,
+        let Some(line_obj) = self.active_line_id(y) else {
+            return;
         };
 
         // Point the write buffer at this line, loading its current text + attrs
@@ -2918,9 +2917,8 @@ impl Perform for TerminalPerformer<'_> {
             .is_none_or(|b| b.line_obj != line_obj);
         if need_load {
             self.flush_print_buf();
-            let text_id = match self.state.get(&line_obj, "text") {
-                Ok(Some((Value::Object(ObjType::Text), id))) => id,
-                _ => return,
+            let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") else {
+                return;
             };
             let text = self.state.text(&text_id).unwrap_or_default();
             let attrs = match self.state.get(&line_obj, "attrs") {
@@ -3475,9 +3473,8 @@ impl TerminalPerformer<'_> {
 
     fn erase_line(&mut self, mode: u16) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) {
-            Some(o) => o,
-            None => return,
+        let Some(line_obj) = self.active_line_id(y) else {
+            return;
         };
         if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
         {
@@ -3499,9 +3496,8 @@ impl TerminalPerformer<'_> {
 
     fn erase_chars(&mut self, n: usize) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) {
-            Some(o) => o,
-            None => return,
+        let Some(line_obj) = self.active_line_id(y) else {
+            return;
         };
         if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
         {
@@ -3521,9 +3517,8 @@ impl TerminalPerformer<'_> {
 
     fn insert_chars(&mut self, n: usize) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) {
-            Some(o) => o,
-            None => return,
+        let Some(line_obj) = self.active_line_id(y) else {
+            return;
         };
         if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
         {
@@ -3546,9 +3541,8 @@ impl TerminalPerformer<'_> {
 
     fn delete_chars(&mut self, n: usize) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) {
-            Some(o) => o,
-            None => return,
+        let Some(line_obj) = self.active_line_id(y) else {
+            return;
         };
         if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
         {
@@ -4186,6 +4180,10 @@ impl TerminalBackend {
     /// cannot flip route 2 on to escape, and cannot reach an *escalated*
     /// best-effort shell — route 3's child is still bounded by the launcher's
     /// seccomp + namespace + bind mounts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no suitable confinement route is available or the backend fails to initialize.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         match confinement_route() {
             ConfineRoute::Service => {
@@ -4214,6 +4212,10 @@ impl TerminalBackend {
     /// Open a PTY running an arbitrary command. `TERM` is forced to
     /// `xterm-256color` (unless the caller already set it) so programs emit the
     /// SGR / DEC sequences this emulator understands.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the PTY cannot be created or the command cannot be spawned.
     pub fn with_command(mut cmd: CommandBuilder) -> Result<Self, Box<dyn std::error::Error>> {
         if cmd.get_env("TERM").is_none() {
             cmd.env("TERM", "xterm-256color");
@@ -4590,7 +4592,11 @@ impl TerminalWidget {
     }
 
     /// Spawn the user's login shell (`$SHELL`) in a PTY + reader thread and
-    /// return a fully wired `TerminalWidget`. Errors if PTY creation fails.
+    /// return a fully wired `TerminalWidget`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if PTY creation fails.
     pub fn spawn_default() -> anyhow::Result<Self> {
         let backend = TerminalBackend::new().map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(Self::from_backend(backend))
@@ -4599,13 +4605,17 @@ impl TerminalWidget {
     /// Spawn an arbitrary command in a PTY + reader thread and return a fully
     /// wired `TerminalWidget`. This is the embedding entry point for hosts that
     /// want the terminal to run a specific program (a build, a REPL, `ssh …`)
-    /// instead of a login shell. Errors if PTY creation or the spawn fails.
+    /// instead of a login shell.
     ///
     /// ```no_run
     /// use terminal::{TerminalWidget, CommandBuilder};
     /// let cmd = CommandBuilder::new("htop");
     /// let _term = TerminalWidget::spawn_command(cmd).unwrap();
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if PTY creation or the command spawn fails.
     pub fn spawn_command(cmd: CommandBuilder) -> anyhow::Result<Self> {
         let backend =
             TerminalBackend::with_command(cmd).map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -4616,6 +4626,10 @@ impl TerminalWidget {
     /// mock PTY master. No shell is spawned, so nothing arrives on the output
     /// channel — used by headless screenshot scenarios that drive the grid
     /// entirely through `feed`, keeping the frame deterministic.
+    ///
+    /// # Errors
+    ///
+    /// This function should not fail under normal circumstances as it uses a null backend.
     pub fn spawn_headless() -> anyhow::Result<Self> {
         struct NullMaster;
         impl MasterPty for NullMaster {
