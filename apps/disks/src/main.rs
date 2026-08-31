@@ -3,7 +3,7 @@
 //! Modes:
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!     (headless screenshot; identical passes to the live app).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -20,10 +20,23 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use std::collections::HashMap;
 
 use disks::DisksApp;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -40,42 +53,42 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// the app's 900px breakpoint the drive list collapses to an overlay.
 const NARROW_SHOTS_VIEWPORT: (u32, u32) = (640, 800);
 
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
-        // `--live` probes the real system (lsblk + smartctl) for the capture,
-        // so the shot shows this machine's actual drives — degrading to the
-        // honest empty state if nothing is found. Without it the shot uses the
-        // curated offline sample (fully-populated, deterministic).
-        if args.iter().any(|a| a == "--live") {
-            // SAFETY: set once at startup before any threads read the env.
-            unsafe {
-                std::env::set_var("DISKS_LIVE", "1");
-            }
+fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args
+        .shots
+        .as_deref()
+        .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
+    // `--live` probes the real system (lsblk + smartctl) for the capture,
+    // so the shot shows this machine's actual drives — degrading to the
+    // honest empty state if nothing is found. Without it the shot uses the
+    // curated offline sample (fully-populated, deterministic).
+    if args.has("--live") {
+        // SAFETY: set once at startup before any threads read the env.
+        unsafe {
+            std::env::set_var("DISKS_LIVE", "1");
         }
-        // `--narrow` (or a sub-breakpoint `--viewport WxH`) renders the
-        // collapsed layout with the drive-list flap revealed over its scrim.
-        let narrow = args.iter().any(|a| a == "--narrow")
-            || parse_viewport_arg(&args).is_some_and(|(w, _)| f64::from(w) < 900.0);
-        let viewport = parse_viewport_arg(&args).unwrap_or(if narrow {
-            NARROW_SHOTS_VIEWPORT
-        } else {
-            DEFAULT_SHOTS_VIEWPORT
-        });
-        // Optional preset so a capture can pin a specific drive / partition /
-        // tab (used to verify the selection states offscreen).
-        let preset = Preset {
-            drive: parse_num_arg(&args, "--drive"),
-            part: parse_num_arg(&args, "--part"),
-            tab: parse_val_arg(&args, "--tab"),
-            pending: parse_val_arg(&args, "--pending"),
-        };
-        render_shot_to_png(DisksApp::new(), viewport, narrow, preset, &out)?;
-        return Ok(());
     }
+    // `--narrow` (or a sub-breakpoint `--viewport WxH`) renders the
+    // collapsed layout with the drive-list flap revealed over its scrim.
+    let narrow = args.has("--narrow") || args.viewport.is_some_and(|(w, _)| f64::from(w) < 900.0);
+    let viewport = args.viewport.unwrap_or(if narrow {
+        NARROW_SHOTS_VIEWPORT
+    } else {
+        DEFAULT_SHOTS_VIEWPORT
+    });
+    // Optional preset so a capture can pin a specific drive / partition /
+    // tab (used to verify the selection states offscreen).
+    let preset = Preset {
+        drive: args.value("--drive").and_then(|value| value.parse().ok()),
+        part: args.value("--part").and_then(|value| value.parse().ok()),
+        tab: args.value("--tab").map(str::to_owned),
+        pending: args.value("--pending").map(str::to_owned),
+    };
+    render_shot_to_png(DisksApp::new(), viewport, narrow, &preset, out)
+        .map_err(|error| LaunchError::Operation(error.to_string()))
+}
 
+fn live_root() -> Box<dyn Widget> {
     // Live mode: probe the real system (lsblk + smartctl). The `--shots`
     // path above never sets this, so the screenshot stays on the curated
     // sample topology and is fully populated offline.
@@ -83,50 +96,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         std::env::set_var("DISKS_LIVE", "1");
     }
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, disks::app_root(), "dev.qos.disks"));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.disks");
-    let app = ui::App::new(state, disks::app_root()).with_autosave(autosave);
-    app.run();
-    Ok(())
+    disks::app_root()
 }
 
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
-}
-
-/// Parse an optional `--viewport WIDTHxHEIGHT` (or `--viewport=WxH`) shots
-/// override so a caller can pick any capture size. Returns `None` if absent
-/// or malformed.
-fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
-    let mut iter = args.iter().skip(1);
-    let parse = |s: &str| -> Option<(u32, u32)> {
-        let (w, h) = s.split_once(['x', 'X'])?;
-        Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
-    };
-    while let Some(arg) = iter.next() {
-        if arg == "--viewport" {
-            return iter.next().and_then(|s| parse(s));
-        }
-        if let Some(rest) = arg.strip_prefix("--viewport=") {
-            return parse(rest);
-        }
-    }
-    None
+pub fn main() {
+    ui::launch::run_or_exit(
+        &LaunchSpec::new("dev.qos.disks", live_root)
+            .shot_handler(shot_handler)
+            .allowed_flags(&["--live", "--narrow"])
+            .allowed_options(&["--drive", "--part", "--tab", "--pending"]),
+    );
 }
 
 /// Optional pinned state for a `--shots` capture.
@@ -140,26 +119,6 @@ struct Preset {
     pending: Option<String>,
 }
 
-/// Parse `--flag N` / `--flag=N` as a `usize`.
-fn parse_num_arg(args: &[String], flag: &str) -> Option<usize> {
-    parse_val_arg(args, flag).and_then(|s| s.parse().ok())
-}
-
-/// Parse `--flag VALUE` / `--flag=VALUE` as a string.
-fn parse_val_arg(args: &[String], flag: &str) -> Option<String> {
-    let eq = format!("{flag}=");
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == flag {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix(&eq) {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
-
 /// Run one offscreen frame against the app and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 /// `narrow` snaps the drive-list flap open *after* layout so the collapsed
@@ -168,7 +127,7 @@ fn render_shot_to_png(
     mut widget: DisksApp,
     viewport: (u32, u32),
     narrow: bool,
-    preset: Preset,
+    preset: &Preset,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;

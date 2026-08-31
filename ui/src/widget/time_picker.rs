@@ -22,6 +22,17 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
+/// `kurbo::Affine` composition is plain f64 matrix math with no panic
+/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine * Affine composes two 2D transforms via f64 \
+              matrix math; it never panics or overflows, unlike integer +/-/*"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
 /// Maximum hour value (inclusive). 24-hour clock — wraps 23 → 0.
 const HOUR_MAX: u8 = 23;
 /// Maximum minute/second value (inclusive). Wraps 59 → 0.
@@ -120,10 +131,12 @@ impl TimePicker {
             self.digit_buffer.clear();
         }
         let mut candidate = self.digit_buffer.clone();
-        candidate.push(char::from_digit(u32::from(d), 10).unwrap());
+        candidate.push(char::from_digit(u32::from(d), 10).unwrap_or('0'));
         let parsed: u8 = candidate.parse().unwrap_or(0);
         if parsed > max {
-            self.digit_buffer = char::from_digit(u32::from(d), 10).unwrap().to_string();
+            self.digit_buffer = char::from_digit(u32::from(d), 10)
+                .unwrap_or('0')
+                .to_string();
         } else {
             self.digit_buffer = candidate;
         }
@@ -152,8 +165,7 @@ impl TimePicker {
                     None
                 }
             }
-            Some(TimeCell::Seconds) => None,
-            None => None,
+            Some(TimeCell::Seconds) | None => None,
         };
         self.digit_buffer.clear();
     }
@@ -194,6 +206,7 @@ impl TimePicker {
     /// Enable the seconds spinner with the given initial value (clamped to
     /// 0..=59). Without this builder call the seconds field stays `None` and
     /// the third spinner is hidden.
+    #[must_use]
     pub fn with_seconds(mut self, seconds: u8) -> Self {
         self.seconds = Some(seconds.min(MINSEC_MAX));
         self
@@ -211,6 +224,7 @@ impl TimePicker {
 
     /// Install a callback invoked with `(hours, minutes, seconds)` every
     /// time a user-driven change commits a new value.
+    #[must_use]
     pub fn on_change<F: FnMut(u8, u8, Option<u8>) + 'static>(mut self, f: F) -> Self {
         self.on_change = Some(Box::new(f));
         self
@@ -266,11 +280,11 @@ impl TimePicker {
     }
 
     fn wrap_inc(v: u8, max: u8) -> u8 {
-        if v >= max { 0 } else { v + 1 }
+        if v >= max { 0 } else { v.saturating_add(1) }
     }
 
     fn wrap_dec(v: u8, max: u8) -> u8 {
-        if v == 0 { max } else { v - 1 }
+        if v == 0 { max } else { v.saturating_sub(1) }
     }
 
     fn fire_on_change(&mut self) {
@@ -300,12 +314,10 @@ impl TimePicker {
     /// No-op if seconds disabled.
     fn step_seconds(&mut self, delta: i8) {
         let Some(cur) = self.seconds else { return };
-        let new = if delta > 0 {
-            Self::wrap_inc(cur, MINSEC_MAX)
-        } else if delta < 0 {
-            Self::wrap_dec(cur, MINSEC_MAX)
-        } else {
-            cur
+        let new = match delta.cmp(&0) {
+            std::cmp::Ordering::Greater => Self::wrap_inc(cur, MINSEC_MAX),
+            std::cmp::Ordering::Less => Self::wrap_dec(cur, MINSEC_MAX),
+            std::cmp::Ordering::Equal => cur,
         };
         self.seconds = Some(new);
         self.fire_on_change();
@@ -421,7 +433,7 @@ impl Widget for TimePicker {
                 &label,
                 text_size,
                 colors.text_primary,
-                transform * Affine::translate((tx, ty)),
+                translated(transform, tx, ty),
                 None,
             );
 
@@ -439,11 +451,11 @@ impl Widget for TimePicker {
             colon,
             text_size,
             colors.text_dim,
-            transform
-                * Affine::translate((
-                    between_h_m_x - f64::from(cw) / 2.0,
-                    centre_y - f64::from(ch) / 2.0,
-                )),
+            translated(
+                transform,
+                between_h_m_x - f64::from(cw) / 2.0,
+                centre_y - f64::from(ch) / 2.0,
+            ),
             None,
         );
         if self.seconds.is_some() {
@@ -453,11 +465,11 @@ impl Widget for TimePicker {
                 colon,
                 text_size,
                 colors.text_dim,
-                transform
-                    * Affine::translate((
-                        between_m_s_x - f64::from(cw) / 2.0,
-                        centre_y - f64::from(ch) / 2.0,
-                    )),
+                translated(
+                    transform,
+                    between_m_s_x - f64::from(cw) / 2.0,
+                    centre_y - f64::from(ch) / 2.0,
+                ),
                 None,
             );
         }
@@ -484,178 +496,13 @@ impl Widget for TimePicker {
                 button: MouseButton::Left,
                 ..
             } => {
-                let p = self.last_cursor;
-                // A click on a value cell latches keyboard focus there so
-                // digit keys flow through `accept_digit`.
-                if let Some(cell) = self.cell_for_point(p) {
-                    let value_rect = self.cell_value_rect(cell);
-                    if value_rect.contains(p) {
-                        if !self.is_focused {
-                            *focus_target = Some(node_id);
-                        }
-                        if self.focused_cell != Some(cell) {
-                            self.focused_cell = Some(cell);
-                            self.digit_buffer.clear();
-                        }
-                        *handled = true;
-                        return;
-                    }
-                }
-                // Otherwise: up/down chevron handling.
-                let mut cells: Vec<(Rect, u8)> = vec![(self.hour_rect, 0), (self.minute_rect, 1)];
-                if self.seconds.is_some() {
-                    cells.push((self.second_rect, 2));
-                }
-                for (cell, which) in &cells {
-                    if !cell.contains(p) {
-                        continue;
-                    }
-                    let (up_rect, _value_rect, down_rect) = Self::spinner_subrects(*cell);
-                    let delta: i8 = if up_rect.contains(p) {
-                        1
-                    } else if down_rect.contains(p) {
-                        -1
-                    } else {
-                        0
-                    };
-                    if delta != 0 {
-                        match which {
-                            0 => self.step_hours(delta),
-                            1 => self.step_minutes(delta),
-                            2 => self.step_seconds(delta),
-                            _ => {}
-                        }
-                        *handled = true;
-                    }
-                    break;
-                }
+                self.handle_mouse_press(handled, focus_target, node_id);
             }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: element_state,
-                        text,
-                        ..
-                    },
-                ..
-            } => {
-                if !self.is_focused || *element_state != ElementState::Pressed {
-                    return;
-                }
-                let shift = modifiers.state().shift_key();
-                match logical_key {
-                    Key::Named(NamedKey::Tab) => {
-                        if shift {
-                            self.retreat_focus();
-                        } else {
-                            self.advance_focus();
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Escape) => {
-                        self.focused_cell = None;
-                        self.digit_buffer.clear();
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Backspace) => {
-                        // An empty buffer resets the cell value to zero.
-                        if let Some(cell) = self.focused_cell {
-                            self.digit_buffer.pop();
-                            let v: u8 = self.digit_buffer.parse().unwrap_or(0);
-                            match cell {
-                                TimeCell::Hours => self.hours = v,
-                                TimeCell::Minutes => self.minutes = v,
-                                TimeCell::Seconds => self.seconds = Some(v),
-                            }
-                            self.fire_on_change();
-                            *handled = true;
-                        }
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        if let Some(cell) = self.focused_cell {
-                            self.digit_buffer.clear();
-                            match cell {
-                                TimeCell::Hours => self.step_hours(1),
-                                TimeCell::Minutes => self.step_minutes(1),
-                                TimeCell::Seconds => self.step_seconds(1),
-                            }
-                            *handled = true;
-                        }
-                    }
-                    Key::Named(NamedKey::ArrowDown) => {
-                        if let Some(cell) = self.focused_cell {
-                            self.digit_buffer.clear();
-                            match cell {
-                                TimeCell::Hours => self.step_hours(-1),
-                                TimeCell::Minutes => self.step_minutes(-1),
-                                TimeCell::Seconds => self.step_seconds(-1),
-                            }
-                            *handled = true;
-                        }
-                    }
-                    Key::Named(NamedKey::ArrowLeft) => {
-                        self.retreat_focus();
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowRight) => {
-                        self.advance_focus();
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Enter) => {
-                        self.digit_buffer.clear();
-                        self.advance_focus();
-                        *handled = true;
-                    }
-                    _ => {
-                        // Deliberately the logical-key character path, not
-                        // named keys, so numpad digits also work.
-                        if let Some(t) = text {
-                            for c in t.chars() {
-                                if let Some(d) = c.to_digit(10) {
-                                    self.accept_digit(d as u8);
-                                    *handled = true;
-                                }
-                            }
-                        }
-                    }
-                }
+            WindowEvent::KeyboardInput { .. } => {
+                self.handle_keyboard_input(event, *modifiers, handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let p = self.last_cursor;
-                // Wheel up increments, matching native OS time pickers.
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-                    MouseScrollDelta::PixelDelta(pp) => pp.y,
-                };
-                let step: i8 = if dy > 0.0 {
-                    1
-                } else if dy < 0.0 {
-                    -1
-                } else {
-                    0
-                };
-                if step == 0 {
-                    return;
-                }
-
-                let mut cells: Vec<(Rect, u8)> = vec![(self.hour_rect, 0), (self.minute_rect, 1)];
-                if self.seconds.is_some() {
-                    cells.push((self.second_rect, 2));
-                }
-                for (cell, which) in &cells {
-                    let (_up_rect, value_rect, _down_rect) = Self::spinner_subrects(*cell);
-                    if value_rect.contains(p) {
-                        match which {
-                            0 => self.step_hours(step),
-                            1 => self.step_minutes(step),
-                            2 => self.step_seconds(step),
-                            _ => {}
-                        }
-                        *handled = true;
-                        break;
-                    }
-                }
+                self.handle_mouse_wheel(*delta, handled);
             }
             _ => {}
         }
@@ -704,6 +551,203 @@ impl Widget for TimePicker {
                     ..Default::default()
                 }),
         )
+    }
+}
+
+impl TimePicker {
+    /// A click on a value cell latches keyboard focus there so digit keys
+    /// flow through `accept_digit`; otherwise a click on an up/down
+    /// chevron steps that spinner.
+    fn handle_mouse_press(
+        &mut self,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+    ) {
+        let p = self.last_cursor;
+        if let Some(cell) = self.cell_for_point(p) {
+            let value_rect = self.cell_value_rect(cell);
+            if value_rect.contains(p) {
+                if !self.is_focused {
+                    *focus_target = Some(node_id);
+                }
+                if self.focused_cell != Some(cell) {
+                    self.focused_cell = Some(cell);
+                    self.digit_buffer.clear();
+                }
+                *handled = true;
+                return;
+            }
+        }
+        // Otherwise: up/down chevron handling.
+        let mut cells: Vec<(Rect, u8)> = vec![(self.hour_rect, 0), (self.minute_rect, 1)];
+        if self.seconds.is_some() {
+            cells.push((self.second_rect, 2));
+        }
+        for (cell, which) in &cells {
+            if !cell.contains(p) {
+                continue;
+            }
+            let (up_rect, _value_rect, down_rect) = Self::spinner_subrects(*cell);
+            let delta: i8 = if up_rect.contains(p) {
+                1
+            } else if down_rect.contains(p) {
+                -1
+            } else {
+                0
+            };
+            if delta != 0 {
+                match which {
+                    0 => self.step_hours(delta),
+                    1 => self.step_minutes(delta),
+                    2 => self.step_seconds(delta),
+                    _ => {}
+                }
+                *handled = true;
+            }
+            break;
+        }
+    }
+
+    /// Tab/Shift+Tab cycle cells, Escape clears the edit buffer, arrows
+    /// step or move focus, Enter commits and advances, and any other key
+    /// falls through to digit entry on the focused cell.
+    fn handle_keyboard_input(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: Modifiers,
+        handled: &mut bool,
+    ) {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: element_state,
+                    text,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return;
+        };
+        if !self.is_focused || *element_state != ElementState::Pressed {
+            return;
+        }
+        let shift = modifiers.state().shift_key();
+        match logical_key {
+            Key::Named(NamedKey::Tab) => {
+                if shift {
+                    self.retreat_focus();
+                } else {
+                    self.advance_focus();
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.focused_cell = None;
+                self.digit_buffer.clear();
+                *handled = true;
+            }
+            Key::Named(NamedKey::Backspace) => {
+                // An empty buffer resets the cell value to zero.
+                if let Some(cell) = self.focused_cell {
+                    self.digit_buffer.pop();
+                    let v: u8 = self.digit_buffer.parse().unwrap_or(0);
+                    match cell {
+                        TimeCell::Hours => self.hours = v,
+                        TimeCell::Minutes => self.minutes = v,
+                        TimeCell::Seconds => self.seconds = Some(v),
+                    }
+                    self.fire_on_change();
+                    *handled = true;
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                if let Some(cell) = self.focused_cell {
+                    self.digit_buffer.clear();
+                    match cell {
+                        TimeCell::Hours => self.step_hours(1),
+                        TimeCell::Minutes => self.step_minutes(1),
+                        TimeCell::Seconds => self.step_seconds(1),
+                    }
+                    *handled = true;
+                }
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                if let Some(cell) = self.focused_cell {
+                    self.digit_buffer.clear();
+                    match cell {
+                        TimeCell::Hours => self.step_hours(-1),
+                        TimeCell::Minutes => self.step_minutes(-1),
+                        TimeCell::Seconds => self.step_seconds(-1),
+                    }
+                    *handled = true;
+                }
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                self.retreat_focus();
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                self.advance_focus();
+                *handled = true;
+            }
+            Key::Named(NamedKey::Enter) => {
+                self.digit_buffer.clear();
+                self.advance_focus();
+                *handled = true;
+            }
+            _ => {
+                // Deliberately the logical-key character path, not
+                // named keys, so numpad digits also work.
+                if let Some(t) = text {
+                    for c in t.chars() {
+                        if let Some(d) = c.to_digit(10) {
+                            self.accept_digit(u8::try_from(d).unwrap_or(0));
+                            *handled = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Wheel up increments, matching native OS time pickers.
+    fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta, handled: &mut bool) {
+        let p = self.last_cursor;
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, y) => f64::from(y),
+            MouseScrollDelta::PixelDelta(pp) => pp.y,
+        };
+        let step: i8 = if dy > 0.0 {
+            1
+        } else if dy < 0.0 {
+            -1
+        } else {
+            0
+        };
+        if step == 0 {
+            return;
+        }
+
+        let mut cells: Vec<(Rect, u8)> = vec![(self.hour_rect, 0), (self.minute_rect, 1)];
+        if self.seconds.is_some() {
+            cells.push((self.second_rect, 2));
+        }
+        for (cell, which) in &cells {
+            let (_up_rect, value_rect, _down_rect) = Self::spinner_subrects(*cell);
+            if value_rect.contains(p) {
+                match which {
+                    0 => self.step_hours(step),
+                    1 => self.step_minutes(step),
+                    2 => self.step_seconds(step),
+                    _ => {}
+                }
+                *handled = true;
+                break;
+            }
+        }
     }
 }
 

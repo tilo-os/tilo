@@ -90,6 +90,16 @@ fn payload_size(_store: &Store, entry: &RegistryEntry) -> u64 {
 
 // -------- Server impl -----------------------------------------------
 
+// capnp-rpc capability methods are driven from a single-threaded
+// `LocalSet`: `capnp::capability::Rc` (captured as `self`) is a
+// non-atomic, non-`Send` reference count by capnp's own design, so
+// these futures can never be `Send` and are never meant to cross a
+// thread. Forcing `Send` here isn't a real fix, it's a different
+// (wrong) threading model.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc Server methods run on a single-threaded LocalSet via the non-atomic capnp::capability::Rc; the futures are never sent across threads"
+)]
 impl app_host::Server for AppHostServer {
     fn list(
         self: capnp::capability::Rc<Self>,
@@ -106,9 +116,13 @@ impl app_host::Server for AppHostServer {
             .await
             .map_err(|e| Error::failed(format!("join: {e}")))?;
             let (rows, sizes) = entries;
-            let mut list = results.get().init_entries(rows.len() as u32);
+            let row_count = u32::try_from(rows.len())
+                .map_err(|_| Error::failed("too many registry entries to list".to_string()))?;
+            let mut list = results.get().init_entries(row_count);
             for (i, (row, size)) in rows.iter().zip(sizes.iter()).enumerate() {
-                fill_entry(list.reborrow().get(i as u32), row, *size);
+                let idx = u32::try_from(i)
+                    .map_err(|_| Error::failed("too many registry entries to list".to_string()))?;
+                fill_entry(list.reborrow().get(idx), row, *size);
             }
             Ok(())
         }

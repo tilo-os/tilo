@@ -51,29 +51,45 @@ const SHADOW_GAUSSIAN_K: f64 = 0.35;
 /// stretched).
 const SHADOW_PEAK_RADIUS: f64 = 0.30;
 
-fn build_shadow_sprite(r: u8, g: u8, b: u8) -> Image {
+/// Rounds a channel-times-alpha product into a colour byte. Every caller
+/// passes either `alpha_frac * 255.0` or `channel * alpha_frac` where
+/// `alpha_frac` is already clamped to `[0.0, 1.0]` and `channel` is a
+/// `u8` widened to `f64`, so `value` is always in `[0.0, 255.0]` — the
+/// lint can't see that through the clamp above, but the `.clamp` here
+/// makes the saturating float-to-int cast provably safe regardless.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "value is clamped into [0.0, 255.0] on the line above, so the \
+              cast can never truncate or flip sign"
+)]
+fn channel_byte(value: f64) -> u8 {
+    value.round().clamp(0.0, 255.0) as u8
+}
+
+fn build_shadow_sprite(red: u8, green: u8, blue: u8) -> Image {
     let size = SHADOW_SPRITE_SIZE;
-    let s = f64::from(size);
-    let cx = (s - 1.0) * 0.5;
-    let cy = (s - 1.0) * 0.5;
-    let max_r = cx.max(cy);
-    let k = SHADOW_GAUSSIAN_K;
-    let d_peak = SHADOW_PEAK_RADIUS;
-    let mut data = Vec::<u8>::with_capacity((size * size * 4) as usize);
-    for y in 0..size {
-        for x in 0..size {
-            let dx = (f64::from(x) - cx) / max_r;
-            let dy = (f64::from(y) - cy) / max_r;
-            let d = (dx * dx + dy * dy).sqrt();
-            let bump = (-((d - d_peak) / k).powi(2)).exp();
-            let inner = (d / d_peak).min(1.0);
-            let outer = (1.0 - d).max(0.0);
-            let a = (bump * inner * outer).clamp(0.0, 1.0);
-            let a8 = (a * 255.0).round() as u8;
-            data.push((f64::from(r) * a).round() as u8);
-            data.push((f64::from(g) * a).round() as u8);
-            data.push((f64::from(b) * a).round() as u8);
-            data.push(a8);
+    let size_f = f64::from(size);
+    let cx = (size_f - 1.0) * 0.5;
+    let cy = (size_f - 1.0) * 0.5;
+    let max_radius = cx.max(cy);
+    let falloff = SHADOW_GAUSSIAN_K;
+    let peak_radius = SHADOW_PEAK_RADIUS;
+    let side_len = usize::try_from(size).unwrap_or(usize::MAX);
+    let mut data = Vec::<u8>::with_capacity(side_len.saturating_mul(side_len).saturating_mul(4));
+    for py in 0..size {
+        for px in 0..size {
+            let dx = (f64::from(px) - cx) / max_radius;
+            let dy = (f64::from(py) - cy) / max_radius;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let bump = (-((dist - peak_radius) / falloff).powi(2)).exp();
+            let inner = (dist / peak_radius).min(1.0);
+            let outer = (1.0 - dist).max(0.0);
+            let alpha_frac = (bump * inner * outer).clamp(0.0, 1.0);
+            data.push(channel_byte(f64::from(red) * alpha_frac));
+            data.push(channel_byte(f64::from(green) * alpha_frac));
+            data.push(channel_byte(f64::from(blue) * alpha_frac));
+            data.push(channel_byte(alpha_frac * 255.0));
         }
     }
     let blob = Blob::new(Arc::new(data));
@@ -124,8 +140,7 @@ fn draw_shadow_sprite(
     }
     let sx = tw / f64::from(sprite.width);
     let sy = th / f64::from(sprite.height);
-    let brush_transform =
-        transform * Affine::translate((target.x0, target.y0)) * Affine::scale_non_uniform(sx, sy);
+    let brush_transform = translated_and_scaled(transform, target.x0, target.y0, sx, sy);
     scene.push_layer(
         vello::peniko::Fill::NonZero,
         vello::peniko::BlendMode::default(),
@@ -144,13 +159,55 @@ fn draw_shadow_sprite(
     scene.pop_layer();
 }
 
+/// `kurbo::Affine` composition is plain f64 matrix math with no panic
+/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
+              or overflows, unlike integer +/-/*"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
+/// See [`translated`]: translate-then-scale is the same plain f64 math.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
+              or overflows, unlike integer +/-/*"
+)]
+fn translated_and_scaled(transform: Affine, x: f64, y: f64, sx: f64, sy: f64) -> Affine {
+    transform * Affine::translate((x, y)) * Affine::scale_non_uniform(sx, sy)
+}
+
+/// See [`translated`]: scaling about a pivot point is translate, scale,
+/// translate back — still the same plain f64 matrix math.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
+              or overflows, unlike integer +/-/*"
+)]
+fn scaled_about(transform: Affine, centre: Point, scale: f64) -> Affine {
+    transform
+        * Affine::translate((centre.x, centre.y))
+        * Affine::scale(scale)
+        * Affine::translate((-centre.x, -centre.y))
+}
+
+/// `Duration::as_secs_f32` converts precisely with no lossy integer
+/// step, unlike `as_millis() as f32` (`u128` -> `f32`), which is what the
+/// truncation/precision-loss lints below were actually catching.
+fn elapsed_ms_f32(t: Instant) -> f32 {
+    t.elapsed().as_secs_f32() * 1000.0
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum UndoStep {
     Undo,
     Redo,
 }
 
-fn undo_step(event: &WindowEvent, m: &winit::event::Modifiers) -> Option<UndoStep> {
+fn undo_step(event: &WindowEvent, m: winit::event::Modifiers) -> Option<UndoStep> {
     if !(m.state().control_key() || m.state().super_key()) {
         return None;
     }
@@ -284,10 +341,20 @@ pub struct TileHost {
 /// enough nobody is waiting on it.
 const HANDOVER_MS: u64 = 180;
 
+/// Mirrors `HANDOVER_MS` as an `f32` for the dissolve's progress ratio —
+/// kept as its own literal rather than `HANDOVER_MS as f32` so the
+/// conversion is a compile-time constant, not a cast the lints must trust.
+const HANDOVER_MS_F32: f32 = 180.0;
+
 /// Larger than the toolkit default so it holds its own under a title on a
 /// full-window card, small enough to stay an indicator rather than the
 /// subject of the screen.
 const OPENING_SPINNER_PX: f64 = 36.0;
+
+/// Mirrors `OPENING_SPINNER_PX` as an `f32`: `Spinner::with_size` takes an
+/// `f32`, while every rect computation below stays in `f64` alongside the
+/// rest of this widget's geometry.
+const OPENING_SPINNER_PX_F32: f32 = 36.0;
 
 const OPENING_SPINNER_GAP: f64 = 24.0;
 
@@ -303,7 +370,7 @@ impl TileHost {
             focused: false,
             spawned_at: None,
             opening_name: String::new(),
-            opening_spinner: Spinner::with_size(OPENING_SPINNER_PX as f32),
+            opening_spinner: Spinner::with_size(OPENING_SPINNER_PX_F32),
             opening_shown: false,
             handed_over_at: None,
         }
@@ -403,7 +470,7 @@ impl TileHost {
 
     pub fn spawn_in_flight(&self) -> bool {
         match self.spawned_at {
-            Some(t) => t.elapsed().as_millis() < SPAWN_FADE_MS as u128,
+            Some(t) => elapsed_ms_f32(t) < SPAWN_FADE_MS,
             None => false,
         }
     }
@@ -413,7 +480,7 @@ impl TileHost {
     #[cfg(test)]
     pub fn spawn_alpha(&self) -> Option<f32> {
         self.spawned_at.and_then(|t| {
-            let elapsed = t.elapsed().as_millis() as f32;
+            let elapsed = elapsed_ms_f32(t);
             if elapsed >= SPAWN_FADE_MS {
                 None
             } else {
@@ -536,7 +603,7 @@ impl Widget for TileHost {
         // Clear an expired spawn timestamp before branching, or it stays
         // `Some` forever after the curve ends.
         if let Some(t) = self.spawned_at
-            && t.elapsed().as_millis() >= SPAWN_FADE_MS as u128
+            && elapsed_ms_f32(t) >= SPAWN_FADE_MS
         {
             self.spawned_at = None;
         }
@@ -545,9 +612,10 @@ impl Widget for TileHost {
         }
         // Wrap the steady-state paint in one alpha layer + centre-pivot
         // scale so the whole tile fades/scales as one unit.
-        if self.spawn_in_flight() {
-            let started = self.spawned_at.expect("spawn_in_flight guards Some");
-            let elapsed = started.elapsed().as_millis() as f32;
+        if self.spawn_in_flight()
+            && let Some(started) = self.spawned_at
+        {
+            let elapsed = elapsed_ms_f32(started);
             let t = (elapsed / SPAWN_FADE_MS).clamp(0.0, 1.0);
             let eased = 1.0 - (1.0 - t).powi(3);
             let alpha = eased;
@@ -568,10 +636,7 @@ impl Widget for TileHost {
                 &clip,
             );
             let centre = self.rect.center();
-            let anim_transform = transform
-                * Affine::translate((centre.x, centre.y))
-                * Affine::scale(scale)
-                * Affine::translate((-centre.x, -centre.y));
+            let anim_transform = scaled_about(transform, centre, scale);
             self.draw_steady_state(scene, anim_transform, tr, theme, presence);
             scene.pop_layer();
             return;
@@ -582,7 +647,7 @@ impl Widget for TileHost {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        m: &winit::event::Modifiers,
+        mods: &winit::event::Modifiers,
         s: &mut AutoCommit,
         p: &ObjId,
         handled: &mut bool,
@@ -591,7 +656,7 @@ impl Widget for TileHost {
         taffy: &TaffyTree<()>,
     ) {
         let live = self.resolve_record();
-        let TileContent::App(w) = &mut self.content else {
+        let TileContent::App(app) = &mut self.content else {
             return;
         };
         // Same structural-mismatch guard as apply_layout above.
@@ -599,11 +664,11 @@ impl Widget for TileHost {
         let Some(&child_node) = children.first() else {
             return;
         };
-        let (Some(id), Some(b)) = (live, &self.binding) else {
-            w.handle_event(
+        let (Some(id), Some(bind)) = (live, &self.binding) else {
+            app.handle_event(
                 event,
                 scale_factor,
-                m,
+                mods,
                 s,
                 p,
                 handled,
@@ -616,36 +681,41 @@ impl Widget for TileHost {
         // An `UndoEntry` is a pair of change hashes inside *this* record's
         // change graph, so running it against another tab's document
         // either does nothing or reverts the wrong thing.
-        if w.is_focused()
-            && let Some(step) = undo_step(event, m)
+        if app.is_focused()
+            && let Some(step) = undo_step(event, *mods)
         {
-            b.store.with_history(&id, |doc, history| {
+            bind.store.with_history(&id, |doc, history| {
                 let author = crate::collaboration::local_user_id();
                 // Close any open burst first, so Ctrl+Z right after typing
                 // reverts what was just typed, not the action before it —
                 // free when the burst is already closed.
                 if matches!(step, UndoStep::Undo) {
-                    history.commit_action_authored(doc, None, w.get_state(), Some(author.clone()));
+                    history.commit_action_authored(
+                        doc,
+                        None,
+                        app.get_state(),
+                        Some(author.clone()),
+                    );
                 }
                 match step {
-                    UndoStep::Undo => history.undo_as(doc, Some(&author), None, w.get_state()),
-                    UndoStep::Redo => history.redo_as(doc, Some(&author), None, w.get_state()),
+                    UndoStep::Undo => history.undo_as(doc, Some(&author), None, app.get_state()),
+                    UndoStep::Redo => history.redo_as(doc, Some(&author), None, app.get_state()),
                 }
                 .map(|entry| {
                     if let Some(meta) = entry.widget_metadata.as_deref() {
-                        w.set_state(meta);
+                        app.set_state(meta);
                     }
                 })
             });
-            w.on_commit();
+            app.on_commit();
             *handled = true;
             return;
         }
-        b.store.with(&id, |doc| {
-            w.handle_event(
+        bind.store.with(&id, |doc| {
+            app.handle_event(
                 event,
                 scale_factor,
-                m,
+                mods,
                 doc,
                 &ROOT,
                 handled,
@@ -741,18 +811,17 @@ impl Widget for TileHost {
 }
 
 impl TileHost {
-    /// Ambient shadow → focus bloom → white card + border → hosted app or
-    /// stub contents. Extracted from `draw` so the spawn-fade branch can
-    /// wrap the same paint under one scaled layer.
-    fn draw_steady_state(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        let radius = f64::from(theme.tokens.radii.xl);
+    /// Ambient drop shadow, and — only when focused — the coloured bloom
+    /// that reads as a window being lit rather than fenced. Split out of
+    /// `draw_steady_state` to keep that function's line count sane; paint
+    /// order (ambient, then bloom, then the card on top) is unchanged.
+    ///
+    /// Deliberately a deeper shadow rather than a border: a strip of
+    /// non-overlapping windows has no z-order to read focus from, and
+    /// fencing off the content area would draw a shape belonging to
+    /// nothing else on screen. Lighting the window's own footprint keeps
+    /// the signal attached to the object it describes.
+    fn draw_shadows(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         // Ambient `shadow-2xl` (`0 25px 50px -12px rgba(0,0,0,0.25)`): 25 px
         // downward offset, ~50 px bleed so the falloff clears the corners.
         let ambient_pad = 50.0_f64;
@@ -770,11 +839,6 @@ impl TileHost {
             ambient_target,
             0.25,
         );
-        // Deliberately a deeper shadow rather than a border: a strip of
-        // non-overlapping windows has no z-order to read focus from, and
-        // fencing off the content area would draw a shape belonging to
-        // nothing else on screen. Lighting the window's own footprint
-        // keeps the signal attached to the object it describes.
         if self.focused {
             let bloom_pad = 120.0_f64;
             let bloom_target = Rect::new(
@@ -791,6 +855,47 @@ impl TileHost {
                 FOCUS_BLOOM_ALPHA,
             );
         }
+    }
+
+    /// The window's outline. Painted *outside* the card's silhouette, safe
+    /// from app content by the clip in `draw_steady_state` rather than a
+    /// paint-order race: a stroke over unknown app content can't pick one
+    /// alpha that reads right on every ground, but the desktop outside is
+    /// known, so `Theme::window_edge` can derive one that does. Inflated by
+    /// half the stroke width so the band sits flush with zero overlap; the
+    /// radius grows by the same half so it stays concentric at the
+    /// corners. Focus reuses this same edge (colour + weight) rather than a
+    /// second ring, keeping the signal part of the window's own silhouette.
+    fn draw_edge(&self, scene: &mut Scene, transform: Affine, theme: &Theme, radius: f64) {
+        let (edge_width, edge_color) = if self.focused {
+            (FOCUS_EDGE_STROKE_WIDTH, theme.tokens.colors.border_focus)
+        } else {
+            (EDGE_STROKE_WIDTH, theme.window_edge())
+        };
+        let half = edge_width / 2.0;
+        let edge = RoundedRect::from_rect(self.rect.inflate(half, half), radius + half);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(edge_width),
+            transform,
+            edge_color,
+            None,
+            &edge,
+        );
+    }
+
+    /// Ambient shadow → focus bloom → white card + border → hosted app or
+    /// stub contents. Extracted from `draw` so the spawn-fade branch can
+    /// wrap the same paint under one scaled layer.
+    fn draw_steady_state(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let radius = f64::from(theme.tokens.radii.xl);
+        self.draw_shadows(scene, transform, theme);
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -847,7 +952,7 @@ impl TileHost {
                 self.opening_shown = false;
                 self.handed_over_at = None;
             } else if let Some(started) = self.handed_over_at {
-                let t = started.elapsed().as_millis() as f32 / HANDOVER_MS as f32;
+                let t = elapsed_ms_f32(started) / HANDOVER_MS_F32;
                 if t >= 1.0 {
                     self.opening_shown = false;
                     self.handed_over_at = None;
@@ -874,30 +979,7 @@ impl TileHost {
             }
         }
         scene.pop_layer();
-        // Painted *outside* the card's silhouette, safe from app content
-        // by the clip above rather than a paint-order race: a stroke over
-        // unknown app content can't pick one alpha that reads right on
-        // every ground, but the desktop outside is known, so
-        // `Theme::window_edge` can derive one that does. Inflated by half
-        // the stroke width so the band sits flush with zero overlap; the
-        // radius grows by the same half so it stays concentric at the
-        // corners. Focus reuses this same edge (colour + weight) rather
-        // than a second ring, keeping the signal part of the window's own
-        // silhouette.
-        let (edge_width, edge_color) = if self.focused {
-            (FOCUS_EDGE_STROKE_WIDTH, theme.tokens.colors.border_focus)
-        } else {
-            (EDGE_STROKE_WIDTH, theme.window_edge())
-        };
-        let half = edge_width / 2.0;
-        let edge = RoundedRect::from_rect(self.rect.inflate(half, half), radius + half);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(edge_width),
-            transform,
-            edge_color,
-            None,
-            &edge,
-        );
+        self.draw_edge(scene, transform, theme, radius);
     }
 }
 
@@ -942,7 +1024,7 @@ fn draw_opening_card(
             name,
             size,
             on_card,
-            transform * Affine::translate((cx - f64::from(tw) / 2.0, y)),
+            translated(transform, cx - f64::from(tw) / 2.0, y),
             None,
         );
     }
@@ -987,7 +1069,7 @@ fn draw_card_text(
         title,
         text_size,
         on_card,
-        transform * Affine::translate((x, y)),
+        translated(transform, x, y),
         None,
     );
     if detail.is_empty() {
@@ -1001,7 +1083,7 @@ fn draw_card_text(
         detail,
         sm,
         on_card_dim,
-        transform * Affine::translate((sx, y + f64::from(text_size) + 8.0)),
+        translated(transform, sx, y + f64::from(text_size) + 8.0),
         None,
     );
 }
@@ -1013,8 +1095,37 @@ mod tests {
 
     fn sprite_alpha_at(sprite: &Image, x: u32, y: u32) -> u8 {
         let bytes: &[u8] = sprite.data.data();
-        let idx = ((y * sprite.width + x) * 4 + 3) as usize;
-        bytes[idx]
+        let idx = y
+            .saturating_mul(sprite.width)
+            .saturating_add(x)
+            .saturating_mul(4)
+            .saturating_add(3);
+        let idx = usize::try_from(idx).unwrap_or(usize::MAX);
+        bytes.get(idx).copied().unwrap_or(0)
+    }
+
+    /// Test fixtures below deal only in small, non-negative pixel
+    /// coordinates (well under `u32::MAX`), so these narrowing casts
+    /// can't truncate or flip sign in practice — the lint can't see that
+    /// through the float math or fixture constants.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test fixture coordinates are small non-negative constants"
+    )]
+    fn px(v: f64) -> u32 {
+        v as u32
+    }
+
+    /// See [`px`]: the millisecond durations used in these tests are
+    /// small positive compile-time constants.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "duration constants used in these tests are small positive values"
+    )]
+    fn millis(v: f32) -> u64 {
+        v as u64
     }
 
     #[test]
@@ -1028,8 +1139,8 @@ mod tests {
         let a_edge = sprite_alpha_at(sprite, size - 1, cy);
         // 0.3 × diameter puts the sample on the Gaussian peak ring;
         // 0.9 × diameter sits in the decayed tail.
-        let r_peak = (size as f64 * 0.3) as u32;
-        let r_tail = (size as f64 * 0.9) as u32;
+        let r_peak = px(f64::from(size) * 0.3);
+        let r_tail = px(f64::from(size) * 0.9);
         let a_peak = sprite_alpha_at(sprite, r_peak, cy);
         let a_tail = sprite_alpha_at(sprite, r_tail, cy);
         assert!(
@@ -1061,7 +1172,7 @@ mod tests {
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let n = taffy.leaf_node(Style::default());
-            node_map.insert(n, self as *mut dyn Widget);
+            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
             n
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
@@ -1087,7 +1198,7 @@ mod tests {
             _taffy: &TaffyTree<()>,
         ) {
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "Scribe"
         }
         fn get_rect(&self) -> Rect {
@@ -1107,7 +1218,7 @@ mod tests {
         fn app_kind(&self) -> AppKind {
             AppKind::Editor
         }
-        fn app_title(&self) -> &str {
+        fn app_title(&self) -> &'static str {
             "Scribe"
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
@@ -1245,7 +1356,7 @@ mod tests {
         h.start_spawn_animation();
         // Sleep past `SPAWN_FADE_MS + 20` so the elapsed check
         // definitively exceeds the window even with timer jitter.
-        std::thread::sleep(Duration::from_millis(SPAWN_FADE_MS as u64 + 20));
+        std::thread::sleep(Duration::from_millis(millis(SPAWN_FADE_MS) + 20));
         assert!(
             !h.spawn_in_flight(),
             "spawn_in_flight must be false after SPAWN_FADE_MS elapses",
@@ -1263,11 +1374,83 @@ mod tests {
         // — guards against the wrapper becoming always-on and costing an
         // extra layer + affine compose every frame.
         let h = stub_host();
-        assert!(!h.spawn_in_flight(), "fresh host must not be in flight",);
+        assert!(!h.spawn_in_flight(), "fresh host must not be in flight");
         assert!(
             h.spawn_alpha().is_none(),
             "fresh host must report no spawn alpha",
         );
+    }
+
+    /// Fills its entire rect with one flat opaque colour, exactly as
+    /// `FileExplorerWidget::paint_background` and every other hosted
+    /// app's background pass does. Module-scoped (rather than nested in
+    /// its one test) purely to keep that test's line count sane.
+    struct FloodFill {
+        rect: Rect,
+    }
+    const FLOOD: vello::peniko::Color = vello::peniko::Color::from_rgb8(0xFF, 0x00, 0x00);
+    impl Widget for FloodFill {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let n = taffy.leaf_node(Style::default());
+            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
+            n
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            scene: &mut Scene,
+            transform: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                FLOOD,
+                None,
+                &self.rect,
+            );
+        }
+        fn handle_event(
+            &mut self,
+            _event: &WindowEvent,
+            _scale: f64,
+            _m: &winit::event::Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            _focus: &mut Option<NodeId>,
+            _node: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "FloodFill"
+        }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+    impl crate::widget::app_widget::AppWidget for FloodFill {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Files
+        }
+        fn app_title(&self) -> &'static str {
+            "FloodFill"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("F")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
     }
 
     /// An app that fills its whole rect (as every hosted app does, since
@@ -1276,77 +1459,6 @@ mod tests {
     #[test]
     fn a_hosted_app_cannot_square_off_the_window_or_erase_its_border() {
         use crate::offscreen::OffscreenRenderer;
-
-        /// Fills its entire rect with one flat opaque colour, exactly as
-        /// `FileExplorerWidget::paint_background` and every other hosted
-        /// app's background pass does.
-        struct FloodFill {
-            rect: Rect,
-        }
-        const FLOOD: vello::peniko::Color = vello::peniko::Color::from_rgb8(0xFF, 0x00, 0x00);
-        impl Widget for FloodFill {
-            fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
-            fn build_layout(
-                &mut self,
-                taffy: &mut TaffyTree<()>,
-                _theme: &Theme,
-                node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-            ) -> NodeId {
-                let n = taffy.leaf_node(Style::default());
-                node_map.insert(n, self as *mut dyn Widget);
-                n
-            }
-            fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-            fn draw(
-                &mut self,
-                scene: &mut Scene,
-                transform: Affine,
-                _tr: &mut TextRenderer,
-                _th: &Theme,
-                _p: &PresenceCtx,
-            ) {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    FLOOD,
-                    None,
-                    &self.rect,
-                );
-            }
-            fn handle_event(
-                &mut self,
-                _event: &WindowEvent,
-                _scale: f64,
-                _m: &winit::event::Modifiers,
-                _state: &mut AutoCommit,
-                _path: &ObjId,
-                _handled: &mut bool,
-                _focus: &mut Option<NodeId>,
-                _node: NodeId,
-                _taffy: &TaffyTree<()>,
-            ) {
-            }
-            fn name(&self) -> &str {
-                "FloodFill"
-            }
-            fn get_rect(&self) -> Rect {
-                self.rect
-            }
-        }
-        impl crate::widget::app_widget::AppWidget for FloodFill {
-            fn app_kind(&self) -> AppKind {
-                AppKind::Files
-            }
-            fn app_title(&self) -> &str {
-                "FloodFill"
-            }
-            fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
-                crate::widget::app_widget::IconDescriptor::Glyph("F")
-            }
-            fn permission_hint(&self) -> Option<AppKind> {
-                None
-            }
-        }
 
         // Tile inset far enough from the surface edge that the ambient
         // shadow sprite has somewhere to land without wrapping.
@@ -1371,11 +1483,11 @@ mod tests {
         // any of the three is identifiable in the failure message.
         let rgba = r.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
 
-        let radius = theme.tokens.radii.xl as f64;
+        let radius = f64::from(theme.tokens.radii.xl);
         // A point inside the tile's bounding box but outside its rounded
         // silhouette: one pixel in from the box corner, well inside the
         // corner arc's cut.
-        let (cx, cy) = (rect.x0 as u32 + 2, rect.y0 as u32 + 2);
+        let (cx, cy) = (px(rect.x0) + 2, px(rect.y0) + 2);
         assert!(
             radius > 8.0,
             "test assumes a visibly rounded card; radii.xl is {radius}",
@@ -1399,7 +1511,7 @@ mod tests {
         // One pixel out from the boundary is the frame's edge: it must be
         // neither the app (flood escaped its clip) nor bare desktop (no
         // edge there at all).
-        let edge_x = rect.x0 as u32 - 1;
+        let edge_x = px(rect.x0) - 1;
         let (er, eg, eb, _) = OffscreenRenderer::sample(&rgba, w, edge_x, 100);
         assert!(
             (er, eg, eb) != (0xFF, 0x00, 0x00),
@@ -1414,7 +1526,7 @@ mod tests {
 
         // ...and the first pixel *inside* the boundary is the app's, whole.
         // The frame stops at the silhouette.
-        let inside_x = rect.x0 as u32;
+        let inside_x = px(rect.x0);
         let (nr, ng, nb, _) = OffscreenRenderer::sample(&rgba, w, inside_x, 100);
         assert_eq!(
             (nr, ng, nb),
@@ -1424,80 +1536,82 @@ mod tests {
         );
     }
 
+    /// Module-scoped alongside [`FloodFill`] purely to keep its one test's
+    /// line count sane.
+    struct Flood {
+        rect: Rect,
+        color: vello::peniko::Color,
+    }
+    impl Widget for Flood {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let n = taffy.leaf_node(Style::default());
+            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
+            n
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            scene: &mut Scene,
+            transform: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                self.color,
+                None,
+                &self.rect,
+            );
+        }
+        fn handle_event(
+            &mut self,
+            _event: &WindowEvent,
+            _scale: f64,
+            _m: &winit::event::Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            _focus: &mut Option<NodeId>,
+            _node: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "Flood"
+        }
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+    impl crate::widget::app_widget::AppWidget for Flood {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Flood"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("F")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
     /// The window's edge must never tint a pixel the hosted app owns —
     /// stroking a constant over unknown app content reads right on one
     /// ground and wrong on the rest of the ramp.
     #[test]
     fn the_window_edge_never_tints_a_pixel_the_app_owns() {
         use crate::offscreen::OffscreenRenderer;
-
-        struct Flood {
-            rect: Rect,
-            color: vello::peniko::Color,
-        }
-        impl Widget for Flood {
-            fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
-            fn build_layout(
-                &mut self,
-                taffy: &mut TaffyTree<()>,
-                _theme: &Theme,
-                node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-            ) -> NodeId {
-                let n = taffy.leaf_node(Style::default());
-                node_map.insert(n, self as *mut dyn Widget);
-                n
-            }
-            fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-            fn draw(
-                &mut self,
-                scene: &mut Scene,
-                transform: Affine,
-                _tr: &mut TextRenderer,
-                _th: &Theme,
-                _p: &PresenceCtx,
-            ) {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    self.color,
-                    None,
-                    &self.rect,
-                );
-            }
-            fn handle_event(
-                &mut self,
-                _event: &WindowEvent,
-                _scale: f64,
-                _m: &winit::event::Modifiers,
-                _state: &mut AutoCommit,
-                _path: &ObjId,
-                _handled: &mut bool,
-                _focus: &mut Option<NodeId>,
-                _node: NodeId,
-                _taffy: &TaffyTree<()>,
-            ) {
-            }
-            fn name(&self) -> &str {
-                "Flood"
-            }
-            fn get_rect(&self) -> Rect {
-                self.rect
-            }
-        }
-        impl crate::widget::app_widget::AppWidget for Flood {
-            fn app_kind(&self) -> AppKind {
-                AppKind::Editor
-            }
-            fn app_title(&self) -> &str {
-                "Flood"
-            }
-            fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
-                crate::widget::app_widget::IconDescriptor::Glyph("F")
-            }
-            fn permission_hint(&self) -> Option<AppKind> {
-                None
-            }
-        }
 
         // Spanning the ramp: a dark app, two mid grounds, and the light
         // chrome a word processor paints.
@@ -1530,10 +1644,10 @@ mod tests {
             // Both vertical edges at mid-height, and the horizontal edges at
             // mid-width: the first pixel inside the silhouette on every side.
             let probes = [
-                ("left", rect.x0 as u32, 100u32),
-                ("right", rect.x1 as u32 - 1, 100u32),
-                ("top", 100u32, rect.y0 as u32),
-                ("bottom", 100u32, rect.y1 as u32 - 1),
+                ("left", px(rect.x0), 100u32),
+                ("right", px(rect.x1) - 1, 100u32),
+                ("top", 100u32, px(rect.y0)),
+                ("bottom", 100u32, px(rect.y1) - 1),
             ];
             for (side, px, py) in probes {
                 let (sr, sg, sb, _) = OffscreenRenderer::sample(&rgba, w, px, py);
@@ -1559,7 +1673,7 @@ mod tests {
     fn focus_lights_the_card_s_edge_and_never_squares_off_its_corner() {
         use crate::offscreen::OffscreenRenderer;
 
-        let (w, h) = (200u32, 200u32);
+        let (width, height) = (200u32, 200u32);
         let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
         // Desktop stand-in. Deliberately a colour no palette contains, so
         // "still desktop" cannot be confused with "some theme token".
@@ -1569,8 +1683,8 @@ mod tests {
             let name = theme.name.clone();
             let focus = theme.tokens.colors.border_focus;
             let (fr, fg, fb) = {
-                let c = focus.to_rgba8();
-                (c.r, c.g, c.b)
+                let rgba = focus.to_rgba8();
+                (rgba.r, rgba.g, rgba.b)
             };
 
             let shot = |focused: bool| {
@@ -1589,7 +1703,7 @@ mod tests {
                     &theme,
                     &PresenceCtx::empty(),
                 );
-                let mut renderer = OffscreenRenderer::new(w, h);
+                let mut renderer = OffscreenRenderer::new(width, height);
                 renderer.render(&scene, ground)
             };
 
@@ -1598,35 +1712,35 @@ mod tests {
 
             // Mid-span of the top edge: the band the stroke occupies sits
             // just outside the card boundary.
-            let (x, y) = (100u32, rect.y0 as u32 - 1);
-            let (lr, lg, lb, _) = OffscreenRenderer::sample(&lit, w, x, y);
+            let (sample_x, sample_y) = (100u32, px(rect.y0) - 1);
+            let (lr, lg, lb, _) = OffscreenRenderer::sample(&lit, width, sample_x, sample_y);
             assert_eq!(
                 (lr, lg, lb),
                 (fr, fg, fb),
-                "{name}: the focused window's edge is not the theme's focus                  colour at ({x},{y}) — got ({lr},{lg},{lb}), expected                  ({fr},{fg},{fb}). Focus has to come from the theme: a baked                  constant is right on one palette and meaningless on the rest",
+                "{name}: the focused window's edge is not the theme's focus                  colour at ({sample_x},{sample_y}) — got ({lr},{lg},{lb}), expected                  ({fr},{fg},{fb}). Focus has to come from the theme: a baked                  constant is right on one palette and meaningless on the rest",
             );
-            let (ur, ug, ub, _) = OffscreenRenderer::sample(&dark, w, x, y);
+            let (ur, ug, ub, _) = OffscreenRenderer::sample(&dark, width, sample_x, sample_y);
             assert_ne!(
                 (ur, ug, ub),
                 (fr, fg, fb),
-                "{name}: an unfocused window paints the focus colour on its                  edge at ({x},{y}), so focus distinguishes nothing",
+                "{name}: an unfocused window paints the focus colour on its                  edge at ({sample_x},{sample_y}), so focus distinguishes nothing",
             );
 
             // Well outside the rounded arc, where a square fence would
             // have painted. The ambient shadow legitimately darkens this
             // pixel, so the claim is only that focus colour isn't there,
             // not that it's untouched.
-            let (cx, cy) = (rect.x0 as u32 - 2, rect.y0 as u32 - 2);
+            let (corner_x, corner_y) = (px(rect.x0) - 2, px(rect.y0) - 2);
             for (label, buf) in [("focused", &lit), ("unfocused", &dark)] {
-                let (r, g, b, _) = OffscreenRenderer::sample(buf, w, cx, cy);
+                let (sr, sg, sb, _) = OffscreenRenderer::sample(buf, width, corner_x, corner_y);
                 assert_ne!(
-                    (r, g, b),
+                    (sr, sg, sb),
                     (fr, fg, fb),
-                    "{name}: the {label} window painted the focus colour at ({cx},{cy}), outside its own rounded corner on bare desktop. Only a sharp-cornered rectangle drawn around the window reaches that pixel, which is the artefact this replaced",
+                    "{name}: the {label} window painted the focus colour at ({corner_x},{corner_y}), outside its own rounded corner on bare desktop. Only a sharp-cornered rectangle drawn around the window reaches that pixel, which is the artefact this replaced",
                 );
                 assert!(
-                    g > r && g > b,
-                    "{name}: the {label} window covered the desktop at ({cx},{cy}) with ({r},{g},{b}). Outside its rounded corner the desktop must still read as the desktop, shadowed at most, never stroked over",
+                    sg > sr && sg > sb,
+                    "{name}: the {label} window covered the desktop at ({corner_x},{corner_y}) with ({sr},{sg},{sb}). Outside its rounded corner the desktop must still read as the desktop, shadowed at most, never stroked over",
                 );
             }
         }
@@ -1682,7 +1796,7 @@ mod tests {
             _taffy: &TaffyTree<()>,
         ) {
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "Starting"
         }
         fn get_rect(&self) -> Rect {
@@ -1700,7 +1814,7 @@ mod tests {
         fn app_kind(&self) -> AppKind {
             AppKind::Files
         }
-        fn app_title(&self) -> &str {
+        fn app_title(&self) -> &'static str {
             "Starting"
         }
         fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
@@ -1845,7 +1959,7 @@ mod tests {
             h.needs_animation_frame(),
             "in-flight spawn must pump the App run loop",
         );
-        std::thread::sleep(Duration::from_millis(SPAWN_FADE_MS as u64 + 20));
+        std::thread::sleep(Duration::from_millis(millis(SPAWN_FADE_MS) + 20));
         assert!(
             !h.needs_animation_frame(),
             "after the spawn window elapses, no more frames are needed",

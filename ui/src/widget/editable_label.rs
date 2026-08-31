@@ -42,7 +42,7 @@ pub enum EditOutcome {
 }
 
 pub struct EditableLabel {
-    _id: String,
+    id: String,
     value: String,
     /// Live only while editing; owns the caret/selection and every
     /// editing affordance.
@@ -61,7 +61,7 @@ pub struct EditableLabel {
 impl EditableLabel {
     pub fn new(value: &str) -> Self {
         Self {
-            _id: String::new(),
+            id: String::new(),
             value: value.to_string(),
             input: TextInput::local(),
             editing: false,
@@ -74,25 +74,34 @@ impl EditableLabel {
         }
     }
 
+    #[must_use]
     pub fn with_font_family(mut self, family: FontChoice) -> Self {
         self.input.set_font_family(Some(family.clone()));
         self.family = family;
         self
     }
 
+    #[must_use]
     pub fn with_font_size(mut self, size: f32) -> Self {
         self.size = size;
         self.input.set_font_size(size);
         self
     }
 
+    pub fn set_font_size(&mut self, size: f32) {
+        self.size = size;
+        self.input.set_font_size(size);
+    }
+
+    #[must_use]
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
         self.idle_color = Some(color);
         self
     }
 
+    #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
-        self._id = id.to_string();
+        self.id = id.to_string();
         self
     }
 
@@ -245,13 +254,23 @@ impl Widget for EditableLabel {
         }
         let color = self.idle_color.unwrap_or(theme.text_primary);
         let (top, _lh) = self.text_band();
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
+        )]
+        let text_transform = transform * Affine::translate((self.rect.x0, top));
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
+        )]
+        let width = self.rect.width() as f32 + 1.0;
         text_renderer.draw_text_font(
             scene,
             &self.value,
             self.size,
             color,
-            transform * Affine::translate((self.rect.x0, top)),
-            Some(self.rect.width() as f32 + 1.0),
+            text_transform,
+            Some(width),
             TextWeight::Regular,
             false,
             &self.family,
@@ -354,10 +373,10 @@ impl Widget for EditableLabel {
     }
 
     fn test_id(&self) -> Option<&str> {
-        if self._id.is_empty() {
+        if self.id.is_empty() {
             Some("editable_label")
         } else {
-            Some(self._id.as_str())
+            Some(self.id.as_str())
         }
     }
 
@@ -443,12 +462,7 @@ impl Widget for EditableLabel {
 mod tests {
     use super::*;
 
-    fn drive(
-        el: &mut EditableLabel,
-        doc: &mut AutoCommit,
-        ev: &WindowEvent,
-        m: &Modifiers,
-    ) -> bool {
+    fn drive(el: &mut EditableLabel, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -456,7 +470,7 @@ mod tests {
         el.handle_event(
             ev,
             1.0,
-            m,
+            &m,
             doc,
             &automerge::ROOT,
             &mut handled,
@@ -530,9 +544,9 @@ mod tests {
         assert!(el.is_editing());
 
         // begin_edit selects-all, so the first keystroke replaces the value.
-        drive(&mut el, &mut doc, &char_key("N"), &no_mods());
-        drive(&mut el, &mut doc, &char_key("e"), &no_mods());
-        drive(&mut el, &mut doc, &char_key("w"), &no_mods());
+        drive(&mut el, &mut doc, &char_key("N"), no_mods());
+        drive(&mut el, &mut doc, &char_key("e"), no_mods());
+        drive(&mut el, &mut doc, &char_key("w"), no_mods());
         assert_eq!(
             el.current_text(),
             "New",
@@ -541,8 +555,8 @@ mod tests {
         assert!(el.is_editing(), "still editing until a commit trigger");
 
         // Move the pointer well outside the field, then press — a click away.
-        drive(&mut el, &mut doc, &mouse_move(500.0, 500.0), &no_mods());
-        let consumed = drive(&mut el, &mut doc, &left_press(), &no_mods());
+        drive(&mut el, &mut doc, &mouse_move(500.0, 500.0), no_mods());
+        let consumed = drive(&mut el, &mut doc, &left_press(), no_mods());
 
         assert!(!el.is_editing(), "click outside ends the edit");
         assert_eq!(el.value(), "New", "blur committed the typed value");
@@ -564,8 +578,8 @@ mod tests {
         el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
         let mut doc = AutoCommit::new();
         el.begin_edit();
-        drive(&mut el, &mut doc, &char_key("z"), &no_mods()); // replaces selection → "z"
-        let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Enter), &no_mods());
+        drive(&mut el, &mut doc, &char_key("z"), no_mods()); // replaces selection → "z"
+        let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Enter), no_mods());
         assert!(consumed, "Enter is consumed");
         assert!(!el.is_editing());
         assert_eq!(el.value(), "z");
@@ -578,8 +592,8 @@ mod tests {
         el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
         let mut doc = AutoCommit::new();
         el.begin_edit();
-        drive(&mut el, &mut doc, &char_key("X"), &no_mods()); // would-be new value
-        let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Escape), &no_mods());
+        drive(&mut el, &mut doc, &char_key("X"), no_mods()); // would-be new value
+        let consumed = drive(&mut el, &mut doc, &named_key(NamedKey::Escape), no_mods());
         assert!(consumed, "Esc is consumed");
         assert!(!el.is_editing());
         assert_eq!(el.value(), "keep me", "cancel restores the previous value");
@@ -593,12 +607,12 @@ mod tests {
         let mut doc = AutoCommit::new();
         el.begin_edit(); // selects all
         // select-all is already active; type a space then backspace to empty it.
-        drive(&mut el, &mut doc, &char_key(" "), &no_mods()); // → " "
+        drive(&mut el, &mut doc, &char_key(" "), no_mods()); // → " "
         drive(
             &mut el,
             &mut doc,
             &named_key(NamedKey::Backspace),
-            &no_mods(),
+            no_mods(),
         ); // → ""
         assert_eq!(el.current_text(), "", "field is empty before commit");
         el.commit();
@@ -611,7 +625,7 @@ mod tests {
         el.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 30.0));
         let mut doc = AutoCommit::new();
         el.begin_edit();
-        drive(&mut el, &mut doc, &char_key("A"), &no_mods()); // → "A"
+        drive(&mut el, &mut doc, &char_key("A"), no_mods()); // → "A"
         el.set_focus(false);
         assert!(!el.is_editing());
         assert_eq!(el.value(), "A");
@@ -629,13 +643,13 @@ mod tests {
             &mut el,
             &mut doc,
             &named_key(NamedKey::ArrowRight),
-            &no_mods(),
+            no_mods(),
         );
         // Now Ctrl+A must reselect everything, then typing replaces it all.
         let mut ctrl = winit::keyboard::ModifiersState::empty();
         ctrl |= winit::keyboard::ModifiersState::CONTROL;
-        drive(&mut el, &mut doc, &char_key("a"), &Modifiers::from(ctrl));
-        drive(&mut el, &mut doc, &char_key("Z"), &no_mods());
+        drive(&mut el, &mut doc, &char_key("a"), Modifiers::from(ctrl));
+        drive(&mut el, &mut doc, &char_key("Z"), no_mods());
         assert_eq!(
             el.current_text(),
             "Z",

@@ -46,6 +46,19 @@ const SHEET_INSET: f64 = 16.0;
 const HEADER_H: f64 = 58.0;
 const CHIP_ROW_H: f64 = 30.0;
 
+/// Compose `transform` with a translation to `(dx, dy)`. `Affine`'s `Mul`
+/// is pure `f64` matrix composition — it cannot overflow or panic — but
+/// `arithmetic_side_effects` can't see that for a non-primitive `Mul`
+/// impl, so every call site funnels through this one function instead of
+/// an `#[allow]` at each of them.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is float matrix multiplication; it cannot overflow or panic"
+)]
+fn at(transform: Affine, dx: f64, dy: f64) -> Affine {
+    transform * Affine::translate((dx, dy))
+}
+
 /// How far back the pane is showing. Maps onto
 /// [`HistoryFilter::time_range`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -75,14 +88,14 @@ impl Period {
     pub fn range(self, now: SystemTime) -> Option<(SystemTime, SystemTime)> {
         let back = match self {
             Period::AllTime => return None,
-            Period::Today => Duration::from_hours(24),
-            Period::Week => Duration::from_hours(168),
-            Period::Month => Duration::from_hours(720),
+            Period::Today => Duration::from_secs(86400),
+            Period::Week => Duration::from_secs(604_800),
+            Period::Month => Duration::from_secs(2_592_000),
         };
         // The end is nudged past `now` so a change committed during this very
         // frame is inside the window rather than one tick outside it — the
         // interval is half-open at the top.
-        let end = now + Duration::from_secs(1);
+        let end = now.checked_add(Duration::from_secs(1)).unwrap_or(now);
         Some((now.checked_sub(back).unwrap_or(SystemTime::UNIX_EPOCH), end))
     }
 }
@@ -260,8 +273,10 @@ impl RoomActivityPane {
 
     /// Op-class chips and author typeahead are the widget's own, left alone.
     fn reinstall_filter(&mut self) {
-        let mut filter = HistoryFilter::default();
-        filter.time_range = self.period.range(self.now());
+        let mut filter = HistoryFilter {
+            time_range: self.period.range(self.now()),
+            ..HistoryFilter::default()
+        };
         if let Some(a) = &self.author {
             filter.authors.push(a.clone());
         }
@@ -339,7 +354,7 @@ impl RoomActivityPane {
         let mut rows: Vec<HistoryEntry> = Vec::with_capacity(self.derived.len());
         for (entry, tag) in &self.derived {
             match (self.scope, tag) {
-                (RoomScope::ThisRoom, Some(id)) if *id != active => continue,
+                (RoomScope::ThisRoom, Some(id)) if *id != active => {}
                 (RoomScope::ThisRoom, _) => rows.push(entry.clone()),
                 (RoomScope::AllWorkspaces, tag) => {
                     let mut e = entry.clone();
@@ -458,6 +473,29 @@ impl RoomActivityPane {
             &card,
         );
 
+        self.draw_title_and_subtitle(scene, transform, tr, theme);
+        self.draw_scope_chips(scene, transform, tr, theme);
+
+        self.period_rects.clear();
+        self.author_rects.clear();
+        if self.shows_chip_rows() {
+            self.draw_filter_chip_rows(scene, transform, tr, theme);
+        }
+
+        self.timeline.draw(scene, transform, tr, theme, presence);
+    }
+
+    /// Paint the sheet's title ("Room activity" / "Workspace activity")
+    /// and its one-line subtitle.
+    fn draw_title_and_subtitle(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
         let title_size = tokens.typography.scale.lg;
         let title = match self.scope {
             RoomScope::ThisRoom => "Room activity",
@@ -468,7 +506,7 @@ impl RoomActivityPane {
             title,
             title_size,
             colors.text_primary,
-            transform * Affine::translate((self.sheet.x0 + 16.0, self.sheet.y0 + 12.0)),
+            at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 12.0),
             None,
         );
         let sub_size = (tokens.typography.scale.sm - 1.0).max(10.0);
@@ -489,112 +527,132 @@ impl RoomActivityPane {
                 self.total_entries
             ),
         };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "sheet width is a UI pixel measurement, always far under f32's range"
+        )]
+        let wrap_width = (self.sheet.width() - 32.0) as f32;
         tr.draw_text(
             scene,
             &subtitle,
             sub_size,
             colors.text_dim,
-            transform * Affine::translate((self.sheet.x0 + 16.0, self.sheet.y0 + 32.0)),
-            Some((self.sheet.width() - 32.0) as f32),
+            at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 32.0),
+            Some(wrap_width),
+        );
+    }
+
+    /// Paint the "This room" / "All workspaces" scope pills and record
+    /// their rects for hit-testing. Not drawn at all if they wouldn't fit.
+    fn draw_scope_chips(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        self.scope_rects.clear();
+        let size = (tokens.typography.scale.sm - 1.0).max(10.0);
+        let h = 22.0_f64;
+        let cy = self.sheet.y0 + 24.0;
+        let mut widths: Vec<f64> = Vec::with_capacity(2);
+        for sc in RoomScope::ALL {
+            widths.push(f64::from(tr.measure(sc.label(), size, None).0) + 16.0);
+        }
+        let total: f64 = widths.iter().sum::<f64>() + 4.0;
+        if total >= self.sheet.width() * 0.62 {
+            return;
+        }
+        let mut x = self.sheet.x1 - 16.0 - total;
+        for (i, sc) in RoomScope::ALL.iter().enumerate() {
+            let w = widths.get(i).copied().unwrap_or(0.0);
+            let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
+            self.scope_rects.push((*sc, rect));
+            let active = self.scope == *sc;
+            let shape = RoundedRect::from_rect(rect, h / 2.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if active {
+                    colors.accent[5]
+                } else {
+                    colors.surface_white_5
+                },
+                None,
+                &shape,
+            );
+            let (lw, lh) = tr.measure(sc.label(), size, None);
+            tr.draw_text(
+                scene,
+                sc.label(),
+                size,
+                if active {
+                    colors.text_primary
+                } else {
+                    colors.text_dim
+                },
+                at(
+                    transform,
+                    rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
+                    rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
+                ),
+                None,
+            );
+            x += w + 4.0;
+        }
+    }
+
+    /// Paint the Period and Author filter chip rows beneath the header.
+    fn draw_filter_chip_rows(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let y = self.sheet.y0 + HEADER_H;
+        let periods: Vec<(Period, String)> = Period::ALL
+            .iter()
+            .map(|p| (*p, p.label().to_string()))
+            .collect();
+        let selected = self.period;
+        self.period_rects = draw_chip_row(
+            scene,
+            transform,
+            tr,
+            theme,
+            Rect::new(
+                self.sheet.x0 + 12.0,
+                y,
+                self.sheet.x1 - 12.0,
+                y + CHIP_ROW_H,
+            ),
+            &periods,
+            |p| *p == selected,
         );
 
-        self.scope_rects.clear();
-        {
-            let size = (tokens.typography.scale.sm - 1.0).max(10.0);
-            let h = 22.0_f64;
-            let cy = self.sheet.y0 + 24.0;
-            let mut widths: Vec<f64> = Vec::with_capacity(2);
-            for sc in RoomScope::ALL {
-                widths.push(f64::from(tr.measure(sc.label(), size, None).0) + 16.0);
-            }
-            let total: f64 = widths.iter().sum::<f64>() + 4.0;
-            if total < self.sheet.width() * 0.62 {
-                let mut x = self.sheet.x1 - 16.0 - total;
-                for (i, sc) in RoomScope::ALL.iter().enumerate() {
-                    let rect = Rect::new(x, cy - h / 2.0, x + widths[i], cy + h / 2.0);
-                    self.scope_rects.push((*sc, rect));
-                    let active = self.scope == *sc;
-                    let shape = RoundedRect::from_rect(rect, h / 2.0);
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        if active {
-                            colors.accent[5]
-                        } else {
-                            colors.surface_white_5
-                        },
-                        None,
-                        &shape,
-                    );
-                    let (lw, lh) = tr.measure(sc.label(), size, None);
-                    tr.draw_text(
-                        scene,
-                        sc.label(),
-                        size,
-                        if active {
-                            colors.text_primary
-                        } else {
-                            colors.text_dim
-                        },
-                        transform
-                            * Affine::translate((
-                                rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
-                                rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
-                            )),
-                        None,
-                    );
-                    x += widths[i] + 4.0;
-                }
-            }
+        let mut people: Vec<(Option<String>, String)> = vec![(None, "Everyone".to_string())];
+        for c in &self.contributors {
+            people.push((Some(c.clone()), c.clone()));
         }
-
-        self.period_rects.clear();
-        self.author_rects.clear();
-        if self.shows_chip_rows() {
-            let y = self.sheet.y0 + HEADER_H;
-            let periods: Vec<(Period, String)> = Period::ALL
-                .iter()
-                .map(|p| (*p, p.label().to_string()))
-                .collect();
-            let selected = self.period;
-            self.period_rects = draw_chip_row(
-                scene,
-                transform,
-                tr,
-                theme,
-                Rect::new(
-                    self.sheet.x0 + 12.0,
-                    y,
-                    self.sheet.x1 - 12.0,
-                    y + CHIP_ROW_H,
-                ),
-                &periods,
-                |p| *p == selected,
-            );
-
-            let mut people: Vec<(Option<String>, String)> = vec![(None, "Everyone".to_string())];
-            for c in &self.contributors {
-                people.push((Some(c.clone()), c.clone()));
-            }
-            let picked = self.author.clone();
-            let y2 = y + CHIP_ROW_H;
-            self.author_rects = draw_chip_row(
-                scene,
-                transform,
-                tr,
-                theme,
-                Rect::new(
-                    self.sheet.x0 + 12.0,
-                    y2,
-                    self.sheet.x1 - 12.0,
-                    y2 + CHIP_ROW_H,
-                ),
-                &people,
-                |a| *a == picked,
-            );
-        }
-
-        self.timeline.draw(scene, transform, tr, theme, presence);
+        let picked = self.author.clone();
+        let y2 = y + CHIP_ROW_H;
+        self.author_rects = draw_chip_row(
+            scene,
+            transform,
+            tr,
+            theme,
+            Rect::new(
+                self.sheet.x0 + 12.0,
+                y2,
+                self.sheet.x1 - 12.0,
+                y2 + CHIP_ROW_H,
+            ),
+            &people,
+            |a| *a == picked,
+        );
     }
 
     // ---------- Events ----------
@@ -655,7 +713,11 @@ impl RoomActivityPane {
         // `Widget::handle_event` needs a layout tree; a throwaway one since
         // the timeline hit-tests against its own rect and ignores it.
         let mut scratch: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-        let node = scratch.new_leaf(taffy::Style::default()).unwrap();
+        // A fresh, empty tree has no capacity limit to hit in practice;
+        // declining to forward the event is still safer than a panic.
+        let Ok(node) = scratch.new_leaf(taffy::Style::default()) else {
+            return out;
+        };
         let root = automerge::ROOT;
         self.timeline.handle_event(
             event,
@@ -768,7 +830,7 @@ fn draw_chip_row<T: Clone>(
         let (lw, lh) = tr.measure(label, size, None);
         let w = f64::from(lw) + 16.0;
         if x + w > row.x1 - 28.0 {
-            dropped += 1;
+            dropped = dropped.saturating_add(1);
             continue;
         }
         let rect = Rect::new(x, cy - chip_h / 2.0, x + w, cy + chip_h / 2.0);
@@ -794,11 +856,11 @@ fn draw_chip_row<T: Clone>(
             } else {
                 colors.text_dim
             },
-            transform
-                * Affine::translate((
-                    rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
-                    rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
-                )),
+            at(
+                transform,
+                rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
+                rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
+            ),
             None,
         );
         out.push((value.clone(), rect));
@@ -812,7 +874,7 @@ fn draw_chip_row<T: Clone>(
             &more,
             size,
             colors.text_dim,
-            transform * Affine::translate((row.x1 - f64::from(mw), cy - f64::from(mh) / 2.0)),
+            at(transform, row.x1 - f64::from(mw), cy - f64::from(mh) / 2.0),
             None,
         );
     }
@@ -858,10 +920,14 @@ fn describe_room_changes(
             continue;
         };
         let patches = doc.diff(&deps, &[hash]);
-        tags[i] = workspace_touched(doc, &patches, hash);
-        if let Some((summary, op_class)) = describe_patches(&patches) {
-            entries[i].summary = summary;
-            entries[i].op_class = op_class;
+        if let Some(tag) = tags.get_mut(i) {
+            *tag = workspace_touched(doc, &patches, hash);
+        }
+        if let Some((summary, op_class)) = describe_patches(&patches)
+            && let Some(entry) = entries.get_mut(i)
+        {
+            entry.summary = summary;
+            entry.op_class = op_class;
         }
     }
     tags
@@ -881,13 +947,24 @@ fn workspace_touched(
         let entry_obj = match p.path.len() {
             0 | 1 => continue, // the document root: not a workspace's change
             2 => p.obj.clone(),
-            _ => p.path[2].0.clone(),
+            _ => {
+                let Some((obj, _)) = p.path.get(2) else {
+                    continue;
+                };
+                obj.clone()
+            }
         };
         // Unrecognised layout otherwise; guessing would be worse than declining.
-        if !matches!(&p.path[0].1, Prop::Map(k) if k == "workspaces") {
+        let Some((_, root_prop)) = p.path.first() else {
+            continue;
+        };
+        if !matches!(root_prop, Prop::Map(k) if k == "workspaces") {
             continue;
         }
-        if !matches!(p.path[1].1, Prop::Seq(_)) {
+        let Some((_, seq_prop)) = p.path.get(1) else {
+            continue;
+        };
+        if !matches!(seq_prop, Prop::Seq(_)) {
             continue;
         }
         let id = match doc.get_at(&entry_obj, "id", &heads) {
@@ -908,24 +985,30 @@ fn workspace_touched(
     found
 }
 
-/// Map a change's patches onto a room event, or `None` when nothing in it is
-/// recognised.
-fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
-    let mut grants: Vec<String> = Vec::new();
-    let mut revokes = 0usize;
-    let mut names: Vec<String> = Vec::new();
-    let mut owner_set = false;
-    let mut room_set = false;
-    let mut tabs_added = 0usize;
-    let mut tabs_removed = 0usize;
-    let mut tab_titles: Vec<String> = Vec::new();
-    let mut groups_moved = 0usize;
-    let mut workspaces_added = 0usize;
-    let mut workspaces_removed = 0usize;
-    let mut geometry = 0usize;
-    let mut active_switched = false;
+/// Running counts [`describe_patches`] accumulates one patch at a time,
+/// then turns into a single room-event description. Split out from
+/// [`describe_patches`] purely to keep each step under the line-count
+/// guard — the accumulation and the priority cascade are still one
+/// pipeline, just two named steps of it.
+#[derive(Default)]
+struct PatchCounts {
+    grants: Vec<String>,
+    revokes: usize,
+    names: Vec<String>,
+    owner_set: bool,
+    room_set: bool,
+    tabs_added: usize,
+    tabs_removed: usize,
+    tab_titles: Vec<String>,
+    groups_moved: usize,
+    workspaces_added: usize,
+    workspaces_removed: usize,
+    geometry: usize,
+    active_switched: bool,
+}
 
-    for p in patches {
+impl PatchCounts {
+    fn record(&mut self, p: &automerge::Patch) {
         let container = path_tail(p);
         match (&p.action, container.as_str()) {
             (automerge::PatchAction::PutMap { key, value, .. }, "capabilities") => {
@@ -934,126 +1017,153 @@ fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
                     && let ScalarValue::Bytes(blob) = s.as_ref()
                     && let Ok(cap) = serde_json::from_slice::<CapOverride>(blob)
                 {
-                    grants.push(describe_capability(&cap));
+                    self.grants.push(describe_capability(&cap));
                 } else {
-                    grants.push("a capability".to_string());
+                    self.grants.push("a capability".to_string());
                 }
             }
-            (automerge::PatchAction::DeleteMap { .. }, "capabilities") => revokes += 1,
+            (automerge::PatchAction::DeleteMap { .. }, "capabilities") => {
+                self.revokes = self.revokes.saturating_add(1);
+            }
             (automerge::PatchAction::PutMap { key, value, .. }, _) if key == "name" => {
                 if let Some(n) = scalar_string(&value.0) {
-                    names.push(n);
+                    self.names.push(n);
                 }
             }
-            (automerge::PatchAction::PutMap { key, .. }, _) if key == "owner" => owner_set = true,
-            (automerge::PatchAction::PutMap { key, .. }, _) if key == "room" => room_set = true,
+            (automerge::PatchAction::PutMap { key, .. }, _) if key == "owner" => {
+                self.owner_set = true;
+            }
+            (automerge::PatchAction::PutMap { key, .. }, _) if key == "room" => {
+                self.room_set = true;
+            }
             (automerge::PatchAction::PutMap { key, value, .. }, _) if key == "title" => {
                 if let Some(t) = scalar_string(&value.0)
                     && !t.is_empty()
                 {
-                    tab_titles.push(t);
+                    self.tab_titles.push(t);
                 }
             }
             (automerge::PatchAction::PutMap { key, .. }, _)
                 if key == "maximized" || key == "width_pixels" =>
             {
-                geometry += 1;
+                self.geometry = self.geometry.saturating_add(1);
             }
             (automerge::PatchAction::PutMap { key, .. }, _) if key == "active" => {
-                active_switched = true;
+                self.active_switched = true;
             }
-            (automerge::PatchAction::Insert { values, .. }, "tabs") => tabs_added += values.len(),
-            (automerge::PatchAction::DeleteSeq { length, .. }, "tabs") => tabs_removed += length,
+            (automerge::PatchAction::Insert { values, .. }, "tabs") => {
+                self.tabs_added = self.tabs_added.saturating_add(values.len());
+            }
+            (automerge::PatchAction::DeleteSeq { length, .. }, "tabs") => {
+                self.tabs_removed = self.tabs_removed.saturating_add(*length);
+            }
             (automerge::PatchAction::Insert { values, .. }, "window_groups") => {
-                groups_moved += values.len();
+                self.groups_moved = self.groups_moved.saturating_add(values.len());
             }
             (automerge::PatchAction::DeleteSeq { length, .. }, "window_groups") => {
-                groups_moved += length;
+                self.groups_moved = self.groups_moved.saturating_add(*length);
             }
             (automerge::PatchAction::Insert { values, .. }, "workspaces") => {
-                workspaces_added += values.len();
+                self.workspaces_added = self.workspaces_added.saturating_add(values.len());
             }
             (automerge::PatchAction::DeleteSeq { length, .. }, "workspaces") => {
-                workspaces_removed += length;
+                self.workspaces_removed = self.workspaces_removed.saturating_add(*length);
             }
             _ => {}
         }
     }
 
-    // A whole-list rewrite (`seed_doc_from_cache`) touches the capability
-    // map too, so it must be recognised before the per-field cases, or a
-    // flush that granted nothing reads as "granted 4 capabilities".
-    if workspaces_removed > 0 && workspaces_added == 0 {
-        return Some((
-            plural(workspaces_removed, "workspace", "Removed"),
-            OpClass::Tombstone,
-        ));
-    }
-    if workspaces_added > 0 {
-        let s = match names.len() {
-            0 => plural(workspaces_added, "workspace", "Recorded"),
-            1 => format!("Recorded workspace \u{201c}{}\u{201d}", names[0]),
-            n => format!("Recorded {n} workspaces: {}", join_titles(&names)),
-        };
-        return Some((s, OpClass::Splice));
-    }
+    /// The highest-priority signal wins — governance beats structural
+    /// noise, and a whole-list rewrite (`seed_doc_from_cache`) is
+    /// recognised before the per-field cases, or a flush that granted
+    /// nothing reads as "granted 4 capabilities".
+    fn describe(&self) -> Option<(String, OpClass)> {
+        if self.workspaces_removed > 0 && self.workspaces_added == 0 {
+            return Some((
+                plural(self.workspaces_removed, "workspace", "Removed"),
+                OpClass::Tombstone,
+            ));
+        }
+        if self.workspaces_added > 0 {
+            let s = match self.names.len() {
+                0 => plural(self.workspaces_added, "workspace", "Recorded"),
+                1 => format!(
+                    "Recorded workspace \u{201c}{}\u{201d}",
+                    self.names.first().map_or("", String::as_str)
+                ),
+                n => format!("Recorded {n} workspaces: {}", join_titles(&self.names)),
+            };
+            return Some((s, OpClass::Splice));
+        }
 
-    // Governance takes priority over whatever else the change touched.
-    if !grants.is_empty() {
-        let s = if grants.len() == 1 {
-            format!("Granted {}", grants[0])
-        } else {
-            format!("Granted {} capabilities", grants.len())
-        };
-        return Some((s, OpClass::Govern));
+        if !self.grants.is_empty() {
+            let s = if self.grants.len() == 1 {
+                format!("Granted {}", self.grants.first().map_or("", String::as_str))
+            } else {
+                format!("Granted {} capabilities", self.grants.len())
+            };
+            return Some((s, OpClass::Govern));
+        }
+        if self.revokes > 0 {
+            let s = if self.revokes == 1 {
+                "Revoked a capability".to_string()
+            } else {
+                format!("Revoked {} capabilities", self.revokes)
+            };
+            return Some((s, OpClass::Govern));
+        }
+        if self.owner_set {
+            return Some(("Set the room owner".to_string(), OpClass::Govern));
+        }
+        if self.room_set {
+            return Some(("Assigned the room identity".to_string(), OpClass::Govern));
+        }
+        if let Some(name) = self.names.first() {
+            let s = if name.is_empty() {
+                "Renamed the workspace".to_string()
+            } else {
+                format!("Named the workspace \u{201c}{name}\u{201d}")
+            };
+            return Some((s, OpClass::EditMeta));
+        }
+        if self.tabs_added > 0 {
+            let s = if self.tab_titles.is_empty() {
+                plural(self.tabs_added, "window", "Opened")
+            } else {
+                format!("Opened {}", join_titles(&self.tab_titles))
+            };
+            return Some((s, OpClass::Splice));
+        }
+        if self.tabs_removed > 0 {
+            return Some((
+                plural(self.tabs_removed, "window", "Closed"),
+                OpClass::Tombstone,
+            ));
+        }
+        if self.groups_moved > 0 {
+            return Some(("Rearranged the strip".to_string(), OpClass::Move));
+        }
+        if self.geometry > 0 {
+            return Some(("Resized a window group".to_string(), OpClass::EditMeta));
+        }
+        if self.active_switched {
+            return Some((
+                "Switched the active workspace".to_string(),
+                OpClass::EditMeta,
+            ));
+        }
+        None
     }
-    if revokes > 0 {
-        let s = if revokes == 1 {
-            "Revoked a capability".to_string()
-        } else {
-            format!("Revoked {revokes} capabilities")
-        };
-        return Some((s, OpClass::Govern));
+}
+
+/// Map a change's patches onto a room event, or `None` when nothing in it is
+/// recognised.
+fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
+    let mut counts = PatchCounts::default();
+    for p in patches {
+        counts.record(p);
     }
-    if owner_set {
-        return Some(("Set the room owner".to_string(), OpClass::Govern));
-    }
-    if room_set {
-        return Some(("Assigned the room identity".to_string(), OpClass::Govern));
-    }
-    if !names.is_empty() {
-        let name = &names[0];
-        let s = if name.is_empty() {
-            "Renamed the workspace".to_string()
-        } else {
-            format!("Named the workspace \u{201c}{name}\u{201d}")
-        };
-        return Some((s, OpClass::EditMeta));
-    }
-    if tabs_added > 0 {
-        let s = if tab_titles.is_empty() {
-            plural(tabs_added, "window", "Opened")
-        } else {
-            format!("Opened {}", join_titles(&tab_titles))
-        };
-        return Some((s, OpClass::Splice));
-    }
-    if tabs_removed > 0 {
-        return Some((plural(tabs_removed, "window", "Closed"), OpClass::Tombstone));
-    }
-    if groups_moved > 0 {
-        return Some(("Rearranged the strip".to_string(), OpClass::Move));
-    }
-    if geometry > 0 {
-        return Some(("Resized a window group".to_string(), OpClass::EditMeta));
-    }
-    if active_switched {
-        return Some((
-            "Switched the active workspace".to_string(),
-            OpClass::EditMeta,
-        ));
-    }
-    None
+    counts.describe()
 }
 
 /// The map key of the object a patch lands in — `"capabilities"`, `"tabs"`,
@@ -1074,7 +1184,7 @@ fn scalar_string(v: &Value<'_>) -> Option<String> {
             ScalarValue::Str(t) => Some(t.to_string()),
             _ => None,
         },
-        _ => None,
+        Value::Object(_) => None,
     }
 }
 
@@ -1155,11 +1265,13 @@ fn plural(n: usize, noun: &str, verb: &str) -> String {
 /// Name up to two windows, then count the rest — the row has a line, not a
 /// paragraph.
 fn join_titles(titles: &[String]) -> String {
+    let first = || titles.first().map_or("", String::as_str);
+    let second = || titles.get(1).map_or("", String::as_str);
     match titles.len() {
         0 => String::new(),
-        1 => titles[0].clone(),
-        2 => format!("{} and {}", titles[0], titles[1]),
-        n => format!("{}, {} and {} more", titles[0], titles[1], n - 2),
+        1 => first().to_string(),
+        2 => format!("{} and {}", first(), second()),
+        n => format!("{}, {} and {} more", first(), second(), n.saturating_sub(2)),
     }
 }
 
@@ -1420,11 +1532,14 @@ mod tests {
         tree.adopt_ownerless_workspaces(&user);
         let ws_id = tree.active;
 
-        let week_ago = SystemTime::now() - Duration::from_hours(168);
-        let week_ago_secs = week_ago
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let week_ago = SystemTime::now() - Duration::from_secs(604_800);
+        let week_ago_secs = i64::try_from(
+            week_ago
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
         assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
             9001,
             "Last week's window".to_string(),
@@ -1786,12 +1901,12 @@ mod tests {
 
     #[test]
     fn period_windows_are_half_open_and_all_time_is_unbounded() {
-        let now = SystemTime::UNIX_EPOCH + Duration::from_hours(500000);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         assert!(Period::AllTime.range(now).is_none());
         let (start, end) = Period::Week.range(now).unwrap();
         assert_eq!(
             now.duration_since(start).unwrap(),
-            Duration::from_hours(168)
+            Duration::from_secs(604_800)
         );
         assert!(
             end > now,

@@ -39,6 +39,17 @@ const SPLIT_MIN: f32 = 0.1;
 const SPLIT_MAX: f32 = 0.9;
 const SPLIT_DEFAULT: f32 = 0.5;
 
+/// Narrows a bounded screen-space `f64` (divider/split geometry) to `f32`
+/// for taffy; split geometry stays far below `f32::MAX`.
+#[inline]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "screen-space pixel values in this widget never approach f32::MAX"
+)]
+fn px(v: f64) -> f32 {
+    v as f32
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SplitOrientation {
     /// Panes sit side-by-side; divider is a vertical strip.
@@ -81,6 +92,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
 
     /// Clamped to `[SPLIT_MIN, SPLIT_MAX]` so a caller can't construct a
     /// split where one pane is invisible from the start.
+    #[must_use]
     pub fn with_split_position(mut self, position: f32) -> Self {
         self.split_position = position.clamp(SPLIT_MIN, SPLIT_MAX);
         self
@@ -132,6 +144,125 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             }
         }
     }
+
+    /// Applies an in-progress divider drag to cursor point `pt`, updating
+    /// `split_position` and `divider_rect`. Returns whether a drag was
+    /// active (and thus consumed the move).
+    fn apply_divider_drag(&mut self, pt: Point) -> bool {
+        let Some(offset) = self.divider_drag else {
+            return false;
+        };
+        let r = self.rect;
+        let new_pos = match self.orientation {
+            SplitOrientation::Horizontal => {
+                let extent = r.width().max(1.0);
+                px((pt.x - offset - r.x0) / extent)
+            }
+            SplitOrientation::Vertical => {
+                let extent = r.height().max(1.0);
+                px((pt.y - offset - r.y0) / extent)
+            }
+        };
+        self.split_position = new_pos.clamp(SPLIT_MIN, SPLIT_MAX);
+        self.recompute_divider_rect();
+        true
+    }
+
+    /// Not consumed by the divider — forward to whichever pane the cursor is
+    /// over (positional events), or to both in turn until one claims
+    /// `handled` (non-positional events; same convention `Row`/`Column` use).
+    #[allow(clippy::too_many_arguments)]
+    fn forward_to_children(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let children = taffy.children(node_id).unwrap_or_default();
+        let left_node = children.first().copied();
+        let right_node = children.get(2).copied();
+
+        let cursor_pt = if let WindowEvent::CursorMoved { position, .. } = event {
+            Some(Point::new(
+                position.x / scale_factor,
+                position.y / scale_factor,
+            ))
+        } else {
+            None
+        };
+
+        let (left_rect, right_rect) = self.child_rects();
+        if let Some(pt) = cursor_pt {
+            if left_rect.contains(pt) {
+                if let Some(n) = left_node {
+                    self.left.handle_event(
+                        event,
+                        scale_factor,
+                        &modifiers,
+                        state,
+                        path,
+                        handled,
+                        focus_target,
+                        n,
+                        taffy,
+                    );
+                }
+            } else if right_rect.contains(pt)
+                && let Some(n) = right_node
+            {
+                self.right.handle_event(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
+                );
+            }
+            return;
+        }
+
+        // Non-positional events: dispatch to both, stopping at the first
+        // to claim `handled`. Same convention `Row` and `Column` use.
+        if let Some(n) = left_node {
+            self.left.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+            if *handled {
+                return;
+            }
+        }
+        if let Some(n) = right_node {
+            self.right.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
+    }
 }
 
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
@@ -165,7 +296,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                     height: percent(1.0_f32),
                 },
                 taffy::Size {
-                    width: length(DIVIDER_PX as f32),
+                    width: length(px(DIVIDER_PX)),
                     height: percent(1.0_f32),
                 },
                 taffy::FlexDirection::Row,
@@ -181,7 +312,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                 },
                 taffy::Size {
                     width: percent(1.0_f32),
-                    height: length(DIVIDER_PX as f32),
+                    height: length(px(DIVIDER_PX)),
                 },
                 taffy::FlexDirection::Column,
             ),
@@ -316,21 +447,8 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                 // reflects the cursor's resting state under the divider.
                 self.divider_hover = self.divider_rect.contains(pt);
 
-                if let Some(offset) = self.divider_drag {
-                    // Apply the press-time offset so the divider doesn't snap to centre.
-                    let r = self.rect;
-                    let new_pos = match self.orientation {
-                        SplitOrientation::Horizontal => {
-                            let extent = r.width().max(1.0);
-                            ((pt.x - offset - r.x0) / extent) as f32
-                        }
-                        SplitOrientation::Vertical => {
-                            let extent = r.height().max(1.0);
-                            ((pt.y - offset - r.y0) / extent) as f32
-                        }
-                    };
-                    self.split_position = new_pos.clamp(SPLIT_MIN, SPLIT_MAX);
-                    self.recompute_divider_rect();
+                // Apply the press-time offset so the divider doesn't snap to centre.
+                if self.apply_divider_drag(pt) {
                     *handled = true;
                     return;
                 }
@@ -359,87 +477,17 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             _ => {}
         }
 
-        // Not consumed by the divider — forward to whichever pane the cursor is over.
-        let children = taffy.children(node_id).unwrap_or_default();
-        let left_node = children.first().copied();
-        let right_node = children.get(2).copied();
-
-        let cursor_pt = if let WindowEvent::CursorMoved { position, .. } = event {
-            Some(Point::new(
-                position.x / scale_factor,
-                position.y / scale_factor,
-            ))
-        } else {
-            None
-        };
-
-        let (left_rect, right_rect) = self.child_rects();
-        if let Some(pt) = cursor_pt {
-            if left_rect.contains(pt) {
-                if let Some(n) = left_node {
-                    self.left.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        n,
-                        taffy,
-                    );
-                }
-                return;
-            } else if right_rect.contains(pt) {
-                if let Some(n) = right_node {
-                    self.right.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        n,
-                        taffy,
-                    );
-                }
-                return;
-            }
-            return;
-        }
-
-        // Non-positional events: dispatch to both, stopping at the first
-        // to claim `handled`. Same convention `Row` and `Column` use.
-        if let Some(n) = left_node {
-            self.left.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            if *handled {
-                return;
-            }
-        }
-        if let Some(n) = right_node {
-            self.right.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-        }
+        self.forward_to_children(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -594,17 +642,17 @@ mod tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let node = taffy.leaf_node(Style::default());
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let l = taffy.layout(node).copied().unwrap_or_default();
             self.rect = Rect::new(
-                origin.x + l.location.x as f64,
-                origin.y + l.location.y as f64,
-                origin.x + l.location.x as f64 + l.size.width as f64,
-                origin.y + l.location.y as f64 + l.size.height as f64,
+                origin.x + f64::from(l.location.x),
+                origin.y + f64::from(l.location.y),
+                origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+                origin.y + f64::from(l.location.y) + f64::from(l.size.height),
             );
         }
 
@@ -632,7 +680,7 @@ mod tests {
         ) {
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "TestLeaf"
         }
 

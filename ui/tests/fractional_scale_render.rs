@@ -11,6 +11,16 @@
 //! Skipped (eprintln + early return) when no wgpu adapter is available,
 //! matching the sibling `screenshot_test.rs`; we never `#[ignore]`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use crate::support::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -34,9 +44,7 @@ fn fractional_scale_maps_logical_to_physical_with_a_hard_edge() {
     let scale = 1.5_f64;
     // Logical canvas is 60×60; physical surface is logical × scale = 90×90.
     let phys = 90u32;
-    let mut renderer = if let Some(r) = try_new_renderer(phys, phys) {
-        r
-    } else {
+    let Some(mut renderer) = try_new_renderer(phys, phys) else {
         eprintln!("offscreen: no wgpu adapter — skipping fractional-scale render test");
         return;
     };
@@ -99,13 +107,17 @@ fn fractional_scale_maps_logical_to_physical_with_a_hard_edge() {
 }
 
 #[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "phys/mid_y are derived from a small positive logical size (≤ 105) times a bounded \
+              scale factor (1.25/1.75), always positive and well within u32's range"
+)]
 fn different_fractional_factors_place_the_edge_proportionally() {
     // Proves the placement scales with the factor, not a fixed rounding.
     for (scale, edge_in, edge_out) in [(1.25_f64, 60u32, 65u32), (1.75_f64, 85u32, 90u32)] {
         let phys = ((60.0 * scale).round() as u32) + 4;
-        let mut renderer = if let Some(r) = try_new_renderer(phys, phys) {
-            r
-        } else {
+        let Some(mut renderer) = try_new_renderer(phys, phys) else {
             eprintln!("offscreen: no wgpu adapter — skipping ({scale}x) case");
             return;
         };

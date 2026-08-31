@@ -101,18 +101,21 @@ pub fn percentiles(values: &[u32]) -> Percentiles {
     // Nearest-rank: the p-th percentile is the ceil(p/100 * n)-th value, 1-indexed — chosen over interpolation since frame times are "a frame this long happened", not a fitted curve.
     let pick = |p: u64| -> u32 {
         let n = v.len() as u64;
-        let rank = ((p * n).div_ceil(100)).max(1);
-        v[(rank - 1).min(n - 1) as usize]
+        // n >= 1 (checked above), so clamping rank to [1, n] keeps rank - 1 in bounds.
+        let rank = p.saturating_mul(n).div_ceil(100).clamp(1, n);
+        let idx = usize::try_from(rank.saturating_sub(1)).unwrap_or(usize::MAX);
+        v.get(idx).copied().unwrap_or(0)
     };
     let sum: u64 = v.iter().map(|&x| u64::from(x)).sum();
+    let len = v.len() as u64;
     Percentiles {
-        count: v.len() as u64,
-        min: v[0],
+        count: len,
+        min: v.first().copied().unwrap_or(0),
         p50: pick(50),
         p95: pick(95),
         p99: pick(99),
-        max: v[v.len() - 1],
-        mean: (sum / v.len() as u64) as u32,
+        max: v.last().copied().unwrap_or(0),
+        mean: u32::try_from(sum.checked_div(len).unwrap_or(0)).unwrap_or(u32::MAX),
     }
 }
 
@@ -169,7 +172,10 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
         let mut prev: Option<u64> = None;
         for s in samples.iter().filter(|s| s.painted) {
             if let Some(p) = prev {
-                out.push(s.start_us.saturating_sub(p).min(u64::from(u32::MAX)) as u32);
+                out.push(
+                    u32::try_from(s.start_us.saturating_sub(p).min(u64::from(u32::MAX)))
+                        .unwrap_or(u32::MAX),
+                );
             }
             prev = Some(s.start_us);
         }
@@ -180,11 +186,19 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
         .last()
         .map_or(0, |s| s.start_us)
         .saturating_sub(samples.first().map_or(0, |s| s.start_us));
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "display-only fps ratio: painted/span_us are bounded by MAX_RETAINED ticks, nowhere near f64's precision limit"
+    )]
     let fps = if span_us > 0 {
         painted as f64 * 1_000_000.0 / span_us as f64
     } else {
         0.0
     };
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "display-only ratio over a bounded sample count, nowhere near f64's precision limit"
+    )]
     let on_cadence_ratio = if target_period_us > 0 && !paint_cadence.is_empty() {
         let hits = paint_cadence
             .iter()
@@ -217,7 +231,10 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
         work: percentiles(
             &samples
                 .windows(2)
-                .map(|w| w[1].work_us(w[0].sleep_us))
+                .map(|w| match w {
+                    [prev, cur] => cur.work_us(prev.sleep_us),
+                    _ => 0,
+                })
                 .collect::<Vec<_>>(),
         ),
         input: field(|s| s.input_us),
@@ -322,19 +339,22 @@ impl FrameRecorder {
         let trace = trace_path.and_then(|p| match std::fs::File::create(&p) {
             Ok(mut f) => {
                 if let Err(e) = writeln!(f, "{CSV_HEADER}") {
-                    eprintln!("frame-metrics: writing trace header to {p:?}: {e}");
+                    eprintln!(
+                        "frame-metrics: writing trace header to {}: {e}",
+                        p.display()
+                    );
                     return None;
                 }
                 Some(std::io::BufWriter::new(f))
             }
             Err(e) => {
-                eprintln!("frame-metrics: cannot create trace {p:?}: {e}");
+                eprintln!("frame-metrics: cannot create trace {}: {e}", p.display());
                 None
             }
         });
         let mut me = Self::disabled();
         me.enabled = true;
-        me.warmup_us = warmup_ms * 1_000;
+        me.warmup_us = warmup_ms.saturating_mul(1_000);
         me.trace = trace;
         me.summary_path = summary_path.map(std::path::PathBuf::from);
         me.samples.reserve(4096);
@@ -352,7 +372,8 @@ impl FrameRecorder {
 
     /// Record the refresh interval the loop is pacing to, so the summary can report how many frames landed on it.
     pub fn set_target_period(&mut self, period: Duration) {
-        self.target_period_us = period.as_micros().min(u128::from(u32::MAX)) as u32;
+        self.target_period_us =
+            u32::try_from(period.as_micros().min(u128::from(u32::MAX))).unwrap_or(u32::MAX);
     }
 
     /// Start a new tick. `now` is the loop's own tick-start instant, so the recorder doesn't take a second clock reading.
@@ -360,9 +381,10 @@ impl FrameRecorder {
         if !self.enabled {
             return;
         }
-        let start_us = now.duration_since(self.start).as_micros() as u64;
+        let start_us =
+            u64::try_from(now.duration_since(self.start).as_micros()).unwrap_or(u64::MAX);
         let period_us = self.prev_start_us.map_or(0, |p| {
-            start_us.saturating_sub(p).min(u64::from(u32::MAX)) as u32
+            u32::try_from(start_us.saturating_sub(p).min(u64::from(u32::MAX))).unwrap_or(u32::MAX)
         });
         self.prev_start_us = Some(start_us);
         self.cur = FrameSample {
@@ -371,7 +393,7 @@ impl FrameRecorder {
             period_us,
             ..Default::default()
         };
-        self.seq += 1;
+        self.seq = self.seq.saturating_add(1);
     }
 
     /// Note that an input event was consumed this tick; the first painted frame that follows closes
@@ -418,9 +440,12 @@ impl FrameRecorder {
         self.cur.present_async = async_present;
         if let Some(input_at) = self.pending_input.take() {
             self.cur.input_latency_us = Some(
-                done.saturating_duration_since(input_at)
-                    .as_micros()
-                    .min(u128::from(u32::MAX)) as u32,
+                u32::try_from(
+                    done.saturating_duration_since(input_at)
+                        .as_micros()
+                        .min(u128::from(u32::MAX)),
+                )
+                .unwrap_or(u32::MAX),
             );
         }
     }
@@ -467,11 +492,14 @@ impl FrameRecorder {
         match serde_json::to_vec_pretty(&summary) {
             Ok(bytes) => {
                 if let Err(e) = std::fs::write(&path, bytes) {
-                    eprintln!("frame-metrics: cannot write summary {path:?}: {e}");
+                    eprintln!(
+                        "frame-metrics: cannot write summary {}: {e}",
+                        path.display()
+                    );
                 } else {
                     eprintln!(
                         "frame-metrics: {} ticks, {} painted, {:.1} fps, \
-                         paint-period p50={}us p99={}us, input-latency p50={}us p99={}us → {path:?}",
+                         paint-period p50={}us p99={}us, input-latency p50={}us p99={}us → {}",
                         summary.ticks,
                         summary.painted,
                         summary.fps,
@@ -479,6 +507,7 @@ impl FrameRecorder {
                         summary.paint_period.p99,
                         summary.input_latency.p50,
                         summary.input_latency.p99,
+                        path.display(),
                     );
                 }
             }
@@ -494,7 +523,7 @@ impl Drop for FrameRecorder {
 }
 
 fn us(d: Duration) -> u32 {
-    d.as_micros().min(u128::from(u32::MAX)) as u32
+    u32::try_from(d.as_micros().min(u128::from(u32::MAX))).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]

@@ -58,6 +58,12 @@ struct Cell {
     text: String,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool tracks an independent, mutually-exclusive-in-practice \
+              interaction mode (drag kind, fit intent, staleness); a bitflags \
+              enum would not read more clearly at call sites like `self.panning`"
+)]
 pub struct PreviewPane {
     rect: Rect,
     /// Shared zoom/pan kernel; its rect is the main viewport (pane minus the
@@ -449,8 +455,10 @@ impl PreviewPane {
     }
 
     /// Map a screen point to the nearest selectable cell boundary. Clamps to
-    /// the nearest line when the pointer is in the margin. `None` only when the
-    /// page carries no selectable text at all.
+    /// the nearest line when the pointer is in the margin. `None` when the
+    /// page carries no selectable text at all, or — a defensive fallback that
+    /// should never trigger since every index below comes from `self.cells`
+    /// itself — an index built from it fails to resolve.
     fn boundary_at(&self, p: Point) -> Option<usize> {
         if self.cells.is_empty() {
             return None;
@@ -458,8 +466,12 @@ impl PreviewPane {
         let cp = self.viewport.screen_to_content(p);
 
         // Cells whose vertical band contains the point (the line under it).
-        let mut line: Vec<usize> = (0..self.cells.len())
-            .filter(|&i| cp.y >= self.cells[i].rect.y0 && cp.y <= self.cells[i].rect.y1)
+        let mut line: Vec<usize> = self
+            .cells
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| cp.y >= c.rect.y0 && cp.y <= c.rect.y1)
+            .map(|(i, _)| i)
             .collect();
 
         if line.is_empty() {
@@ -475,31 +487,37 @@ impl PreviewPane {
                     nearest = i;
                 }
             }
-            let key = self.cells[nearest].line_key;
-            line = (0..self.cells.len())
-                .filter(|&i| self.cells[i].line_key == key)
+            let key = self.cells.get(nearest)?.line_key;
+            line = self
+                .cells
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.line_key == key)
+                .map(|(i, _)| i)
                 .collect();
         }
 
         line.sort_by(|&a, &b| {
-            self.cells[a]
-                .rect
-                .x0
-                .partial_cmp(&self.cells[b].rect.x0)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            let xa = self.cells.get(a).map(|c| c.rect.x0);
+            let xb = self.cells.get(b).map(|c| c.rect.x0);
+            xa.partial_cmp(&xb).unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // Left of the line → start; right of it → end.
-        let first = *line.first().unwrap();
-        if cp.x <= self.cells[first].rect.x0 {
+        let &first = line.first()?;
+        let first_cell = self.cells.get(first)?;
+        if cp.x <= first_cell.rect.x0 {
             return Some(first);
         }
-        let last = *line.last().unwrap();
-        if cp.x >= self.cells[last].rect.x1 {
+        let &last = line.last()?;
+        let last_cell = self.cells.get(last)?;
+        if cp.x >= last_cell.rect.x1 {
             return Some(last + 1);
         }
         for &i in &line {
-            let r = self.cells[i].rect;
+            let Some(r) = self.cells.get(i).map(|c| c.rect) else {
+                continue;
+            };
             if cp.x < r.x0 {
                 return Some(i);
             }
@@ -514,8 +532,7 @@ impl PreviewPane {
     fn thumb_click(&mut self, p: Point) {
         let tw = THUMB_STRIP_W - 2.0 * THUMB_GAP;
         let mut y = self.rect.y0 + THUMB_GAP;
-        for i in 0..self.images.len() {
-            let (pw, ph) = self.sizes_px[i];
+        for (i, &(pw, ph)) in self.sizes_px.iter().enumerate() {
             let th = tw * f64::from(ph.max(1)) / f64::from(pw.max(1));
             let r = Rect::new(
                 self.rect.x0 + THUMB_GAP,
@@ -561,7 +578,8 @@ impl PreviewPane {
         }
         let mut out = String::new();
         let mut prev_key: Option<(usize, i64)> = None;
-        for cell in &self.cells[lo..hi] {
+        let selected = self.cells.get(lo..hi)?;
+        for cell in selected {
             if let Some(k) = prev_key
                 && k != cell.line_key
             {
@@ -587,17 +605,23 @@ impl PreviewPane {
         self.recompute_current();
     }
 
-    /// Zoom past fit-width and pan to `(sx_frac, sy_frac)` of the reachable
+    /// Zoom past fit-width and pan to `(pan_x_frac, pan_y_frac)` of the reachable
     /// scroll range, so an offscreen capture can prove the page pans on both
     /// axes once it overflows the pane. Used only by the `--shots` renderer.
-    pub fn demo_pan_view(&mut self, display_zoom: f64, sx_frac: f64, sy_frac: f64) {
+    #[allow(
+        clippy::similar_names,
+        reason = "pan_x_frac/pan_y_frac are a standard x/y coordinate-pair naming convention"
+    )]
+    pub fn demo_pan_view(&mut self, display_zoom: f64, pan_x_frac: f64, pan_y_frac: f64) {
         self.fit_width = false;
         let fw = self.viewport.fit_width_zoom();
         self.viewport.set_zoom(fw * display_zoom);
         let mx = self.viewport.max_scroll_x();
         let my = self.viewport.max_scroll_y();
-        self.viewport
-            .set_scroll(mx * sx_frac.clamp(0.0, 1.0), my * sy_frac.clamp(0.0, 1.0));
+        self.viewport.set_scroll(
+            mx * pan_x_frac.clamp(0.0, 1.0),
+            my * pan_y_frac.clamp(0.0, 1.0),
+        );
         self.recompute_current();
     }
 
@@ -695,9 +719,10 @@ impl PreviewPane {
     ) {
         let c = &theme.tokens.colors;
         let main = self.viewport.rect();
+        let page_count = self.images.len();
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &main);
 
-        for (i, b) in self.boxes.iter().enumerate() {
+        for (i, (b, image)) in self.boxes.iter().zip(self.images.iter_mut()).enumerate() {
             let tl = self
                 .viewport
                 .content_point_to_screen(Point::new(b.x_off, b.top));
@@ -714,7 +739,7 @@ impl PreviewPane {
             let shadow = page_rect + vello::kurbo::Vec2::new(3.0, 4.0);
             scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shadow);
             // Paper.
-            self.images[i].paint_at(scene, transform, page_rect);
+            image.paint_at(scene, transform, page_rect);
             // Border.
             scene.stroke(
                 &Stroke::new(1.0),
@@ -725,7 +750,7 @@ impl PreviewPane {
             );
 
             // Page caption under the page.
-            let label = format!("Page {} of {}", i + 1, self.images.len());
+            let label = format!("Page {} of {page_count}", i + 1);
             tr.draw_text(
                 scene,
                 &label,
@@ -764,7 +789,10 @@ impl PreviewPane {
                 scene.fill(Fill::NonZero, transform, fill, None, &r);
             }
         };
-        for cell in &self.cells[lo..hi] {
+        let Some(selected) = self.cells.get(lo..hi) else {
+            return;
+        };
+        for cell in selected {
             match &mut run {
                 Some((key, band)) if *key == cell.line_key => {
                     band.x1 = band.x1.max(cell.rect.x1);
@@ -808,8 +836,8 @@ impl PreviewPane {
 
         let tw = THUMB_STRIP_W - 2.0 * THUMB_GAP;
         let mut y = self.rect.y0 + THUMB_GAP;
-        for i in 0..self.images.len() {
-            let (pw, ph) = self.sizes_px[i];
+        for (i, (&(pw, ph), image)) in self.sizes_px.iter().zip(self.images.iter_mut()).enumerate()
+        {
             let th = tw * f64::from(ph.max(1)) / f64::from(pw.max(1));
             let r = Rect::new(
                 self.rect.x0 + THUMB_GAP,
@@ -828,7 +856,7 @@ impl PreviewPane {
                     &ring,
                 );
             }
-            self.images[i].paint_at(scene, transform, r);
+            image.paint_at(scene, transform, r);
             scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &r);
 
             let label = format!("{}", i + 1);

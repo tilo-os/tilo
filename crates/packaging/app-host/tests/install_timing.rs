@@ -3,6 +3,16 @@
 //!
 //!     APP_HOST_TIMING=1 cargo test -p app-host --test install_timing --release -- --nocapture
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use crate::common;
 use app_host::install::install_qpkg;
 use app_host::registry::Pinning;
@@ -28,7 +38,7 @@ fn install_1mb_qpkg_timing() {
         samples.push(t.elapsed());
     }
     let sum: std::time::Duration = samples.iter().sum();
-    let avg = sum / iters as u32;
+    let avg = sum / u32::try_from(iters).unwrap_or(u32::MAX);
     let min = samples.iter().min().unwrap();
     let max = samples.iter().max().unwrap();
     eprintln!("install(1 MB) x{iters}: avg {avg:?}, min {min:?}, max {max:?}");

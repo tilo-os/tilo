@@ -1,5 +1,15 @@
 //! Peer-join toast batching: 3 join events in <1s → single toast.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::{Duration, Instant};
 
 use shell::shell::peer_join_toast::{BATCH_WINDOW, PeerEventKind, PeerToastQueue};

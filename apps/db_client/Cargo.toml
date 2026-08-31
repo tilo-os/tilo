@@ -2,6 +2,8 @@
 name = "db_client"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "db_client"
@@ -17,7 +19,6 @@ qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 uuid.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

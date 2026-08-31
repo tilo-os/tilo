@@ -98,7 +98,11 @@ pub fn layout(sizes: &[(u32, u32)]) -> Vec<(i32, i32)> {
     let mut out = Vec::with_capacity(sizes.len());
     for &(w, _h) in sizes {
         out.push((next_x, 0));
-        next_x += w as i32;
+        // Widths come from the connector's mode list; clamp rather than
+        // wrap or panic on the (unreachable in practice) case of a
+        // driver-reported width past `i32::MAX`.
+        let w = i32::try_from(w).unwrap_or(i32::MAX);
+        next_x = next_x.saturating_add(w);
     }
     out
 }
@@ -110,7 +114,9 @@ pub fn combined_extent(positions: &[(i32, i32)], sizes: &[(u32, u32)]) -> (i32, 
         .iter()
         .zip(sizes)
         .fold((0i32, 0i32), |(w, h), (&(x, y), &(sw, sh))| {
-            (w.max(x + sw as i32), h.max(y + sh as i32))
+            let sw = i32::try_from(sw).unwrap_or(i32::MAX);
+            let sh = i32::try_from(sh).unwrap_or(i32::MAX);
+            (w.max(x.saturating_add(sw)), h.max(y.saturating_add(sh)))
         })
 }
 
@@ -129,8 +135,11 @@ pub fn clamp_pointer(pointer: (f64, f64), extent: (i32, i32)) -> (f64, f64) {
         return (0.0, 0.0);
     }
     (
-        pointer.0.clamp(0.0, f64::from(extent.0 - 1)),
-        pointer.1.clamp(0.0, f64::from(extent.1 - 1)),
+        // `extent.{0,1} > 0` is guaranteed by the check above, so this
+        // never actually saturates — `saturating_sub` just avoids a raw
+        // `-` clippy can't see is safe.
+        pointer.0.clamp(0.0, f64::from(extent.0.saturating_sub(1))),
+        pointer.1.clamp(0.0, f64::from(extent.1.saturating_sub(1))),
     )
 }
 

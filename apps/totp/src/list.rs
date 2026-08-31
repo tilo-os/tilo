@@ -165,18 +165,18 @@ impl AccountList {
 
     /// Geometry landmarks within a row, derived once and shared by draw +
     /// hit-test so they never drift.
-    fn row_layout(&self, r: Rect) -> RowLayout {
+    fn row_layout(r: Rect) -> RowLayout {
         let actions_x1 = r.x1 - 12.0;
         let actions_x0 = actions_x1 - ACTION_W;
-        let ring_cx = actions_x0 - 16.0 - RING_R;
-        let ring_cy = r.center().y;
-        let code_right = ring_cx - RING_R - 18.0;
+        let ring_center_x = actions_x0 - 16.0 - RING_R;
+        let ring_center = Point::new(ring_center_x, r.center().y);
+        let code_right = ring_center_x - RING_R - 18.0;
         let avatar_c = Point::new(r.x0 + 18.0 + AVATAR_R, r.center().y);
         let text_x = avatar_c.x + AVATAR_R + 16.0;
         RowLayout {
             actions_x0,
             actions_x1,
-            ring_c: Point::new(ring_cx, ring_cy),
+            ring_c: ring_center,
             code_right,
             avatar_c,
             text_x,
@@ -193,7 +193,7 @@ impl AccountList {
             if !r.contains(p) {
                 continue;
             }
-            let l = self.row_layout(r);
+            let l = Self::row_layout(r);
             // Action column (3 stacked zones) takes priority.
             if p.x >= l.actions_x0 && p.x <= l.actions_x1 {
                 let third = r.height() / 3.0;
@@ -219,7 +219,6 @@ impl AccountList {
     // ---- drawing -----------------------------------------------------
 
     fn draw_avatar(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -249,7 +248,6 @@ impl AccountList {
     }
 
     fn draw_action_icons(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -315,41 +313,34 @@ impl AccountList {
         i: usize,
         now: f64,
     ) {
-        let account = self.accounts[i].clone();
+        // `i` always comes from `0..self.accounts.len()` in `draw`'s loop, so
+        // this is unreachable in practice — `.get()` documents that instead
+        // of indexing straight into the vector.
+        let Some(account) = self.accounts.get(i).cloned() else {
+            return;
+        };
         let r = self.row_rect(i);
         // Cull rows scrolled outside the viewport.
         if r.y1 < self.rect.y0 || r.y0 > self.rect.y1 {
             return;
         }
-        let l = self.row_layout(r);
+        let l = Self::row_layout(r);
         let is_selected = self.selected == Some(account.id);
         let is_hovered = self.hover_row == Some(i);
         let hovered_zone = if is_hovered { self.hover_zone } else { None };
 
-        // Row card.
-        let card = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.lg));
-        let bg = if is_selected {
-            theme.tokens.colors.surface_white_10
-        } else if is_hovered {
-            theme.tokens.colors.surface_white_5
-        } else {
-            theme.tokens.colors.surfaces.raised.with_alpha_factor(0.55)
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &card);
-        if is_selected {
-            // accent left-edge marker
-            let marker = RoundedRect::new(r.x0, r.y0 + 10.0, r.x0 + 3.0, r.y1 - 10.0, 2.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                account_color(theme, account.color),
-                None,
-                &marker,
-            );
-        }
+        Self::draw_row_card(
+            scene,
+            transform,
+            theme,
+            r,
+            &account,
+            is_selected,
+            is_hovered,
+        );
 
         // Avatar.
-        self.draw_avatar(scene, transform, text_renderer, theme, l.avatar_c, &account);
+        Self::draw_avatar(scene, transform, text_renderer, theme, l.avatar_c, &account);
 
         // Issuer + label, vertically centred as a block. The available
         // text width shrinks with the row so a narrow window truncates
@@ -431,7 +422,41 @@ impl AccountList {
 
         // Hover action icons.
         if is_hovered {
-            self.draw_action_icons(scene, transform, theme, &l, r, hovered_zone);
+            Self::draw_action_icons(scene, transform, theme, &l, r, hovered_zone);
+        }
+    }
+
+    /// Paint the row background card, tinted for selection/hover, plus the
+    /// accent left-edge marker on the selected row. Split out of
+    /// [`Self::draw_row`] to keep that function's line count in check.
+    fn draw_row_card(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        r: Rect,
+        account: &Account,
+        is_selected: bool,
+        is_hovered: bool,
+    ) {
+        let card = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.lg));
+        let bg = if is_selected {
+            theme.tokens.colors.surface_white_10
+        } else if is_hovered {
+            theme.tokens.colors.surface_white_5
+        } else {
+            theme.tokens.colors.surfaces.raised.with_alpha_factor(0.55)
+        };
+        scene.fill(Fill::NonZero, transform, bg, None, &card);
+        if is_selected {
+            // accent left-edge marker
+            let marker = RoundedRect::new(r.x0, r.y0 + 10.0, r.x0 + 3.0, r.y1 - 10.0, 2.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                account_color(theme, account.color),
+                None,
+                &marker,
+            );
         }
     }
 
@@ -496,6 +521,10 @@ impl Widget for AccountList {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -511,7 +540,7 @@ impl Widget for AccountList {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let x0 = origin.x + f64::from(layout.location.x);
         let y0 = origin.y + f64::from(layout.location.y);
         self.rect = Rect::new(
@@ -650,7 +679,7 @@ mod tests {
     fn copy_zone_and_action_zones_hit_test_correctly() {
         let l = list_with_demo();
         let r = l.row_rect(0);
-        let layout = l.row_layout(r);
+        let layout = AccountList::row_layout(r);
         // Just left of the ring → copy zone.
         let copy_p = Point::new(layout.code_right - 20.0, r.center().y);
         assert_eq!(l.hit(copy_p), Some((0, Zone::Copy)));
@@ -712,7 +741,7 @@ mod tests {
         let mut l = list_with_demo();
         let id = l.account_at(0).unwrap().id;
         let r = l.row_rect(0);
-        let layout = l.row_layout(r);
+        let layout = AccountList::row_layout(r);
         let copy_p = Point::new(layout.code_right - 20.0, r.center().y);
         dispatch(&mut l, &cursor_at(copy_p));
         let handled = dispatch(&mut l, &left_press());
@@ -726,7 +755,7 @@ mod tests {
         let mut l = list_with_demo();
         let id = l.account_at(0).unwrap().id;
         let r = l.row_rect(0);
-        let layout = l.row_layout(r);
+        let layout = AccountList::row_layout(r);
         let col_x = f64::midpoint(layout.actions_x0, layout.actions_x1);
         // Top third of the action column → move up.
         dispatch(&mut l, &cursor_at(Point::new(col_x, r.y0 + 4.0)));

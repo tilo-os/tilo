@@ -73,6 +73,13 @@ const CHIP_PADDING_Y: f64 = 2.0;
 
 /// Convert a peer's `[f32; 4]` RGBA color into a `vello::peniko::Color`.
 fn peer_color_to_peniko(c: [f32; 4]) -> vello::peniko::Color {
+    // Clamped into u8's range on the line above, so the truncation and
+    // sign-loss this cast could otherwise cause cannot happen.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "explicitly clamped into u8's range immediately before the cast"
+    )]
     let to_u8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     vello::peniko::Color::from_rgba8(to_u8(c[0]), to_u8(c[1]), to_u8(c[2]), to_u8(c[3]))
 }
@@ -88,6 +95,9 @@ impl ui::widget::Widget for RemoteCursorOverlay {
     ) -> taffy::NodeId {
         // Stacked by a parent `Stack`, so it fills the available box and
         // relies on `active_tile_bounds` (set externally) for its clip rect.
+        // `new_leaf` can't fail in practice for a single-node insert; a
+        // dummy id here just means the fallback is unreachable by real
+        // traversal instead of panicking.
         let node = taffy
             .new_leaf(taffy::Style {
                 size: taffy::Size {
@@ -96,7 +106,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
                 },
                 ..Default::default()
             })
-            .unwrap();
+            .unwrap_or(taffy::NodeId::new(0));
         node_map.insert(node, std::ptr::from_mut::<dyn ui::widget::Widget>(self));
         node
     }
@@ -107,7 +117,9 @@ impl ui::widget::Widget for RemoteCursorOverlay {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = vello::kurbo::Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -168,13 +180,17 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &caret);
 
             let (text_w, _text_h) = text_renderer.measure(&cursor.label, label_size, None);
-            let chip_w = f64::from(text_w) + CHIP_PADDING_X * 2.0;
-            let chip_h = f64::from(label_size) + CHIP_PADDING_Y * 2.0;
-            let chip_x = apex.x + CARET_SIZE + CHIP_OFFSET;
-            let chip_y = apex.y + CARET_SIZE + CHIP_OFFSET;
-            let chip_rect =
-                vello::kurbo::Rect::new(chip_x, chip_y, chip_x + chip_w, chip_y + chip_h);
-            let chip = vello::kurbo::RoundedRect::from_rect(chip_rect, chip_radius);
+            let chip_size = vello::kurbo::Size::new(
+                f64::from(text_w) + CHIP_PADDING_X * 2.0,
+                f64::from(label_size) + CHIP_PADDING_Y * 2.0,
+            );
+            let chip_left = apex.x + CARET_SIZE + CHIP_OFFSET;
+            let chip_top = apex.y + CARET_SIZE + CHIP_OFFSET;
+            let chip_bounds = vello::kurbo::Rect::from_origin_size(
+                vello::kurbo::Point::new(chip_left, chip_top),
+                chip_size,
+            );
+            let chip = vello::kurbo::RoundedRect::from_rect(chip_bounds, chip_radius);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -191,10 +207,10 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             );
             // Peer-colored underline so the chip's owner is obvious.
             let underline = vello::kurbo::Rect::new(
-                chip_rect.x0,
-                chip_rect.y1 - 2.0,
-                chip_rect.x1,
-                chip_rect.y1,
+                chip_bounds.x0,
+                chip_bounds.y1 - 2.0,
+                chip_bounds.x1,
+                chip_bounds.y1,
             );
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -204,14 +220,16 @@ impl ui::widget::Widget for RemoteCursorOverlay {
                 &underline,
             );
 
-            let text_y = chip_rect.y0 + CHIP_PADDING_Y;
+            let text_y = chip_bounds.y0 + CHIP_PADDING_Y;
             text_renderer.draw_text(
                 scene,
                 &cursor.label,
                 label_size,
                 label_color,
-                transform
-                    * vello::kurbo::Affine::translate((chip_rect.x0 + CHIP_PADDING_X, text_y)),
+                transform.pre_translate(vello::kurbo::Vec2::new(
+                    chip_bounds.x0 + CHIP_PADDING_X,
+                    text_y,
+                )),
                 None,
             );
         }

@@ -55,6 +55,11 @@ impl PeerIdentity {
     /// Build a `PeerIdentity` from a peer's presented cert: verifies the
     /// signature under the embedded `user_public_key`, checks it hasn't
     /// expired at `now_ns`. Does NOT check the revocation list — that lives with the [`PeerIdentityStore`], shared across peers.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DeviceCertError` if the certificate signature does not verify,
+    /// the embedded public key is invalid, or the certificate has expired.
     pub fn from_cert(cert: DeviceCert, now_ns: u64) -> Result<Self, DeviceCertError> {
         verify_device_cert_at(&cert, now_ns)?;
         Ok(Self {
@@ -87,6 +92,7 @@ struct PeerIdentityStoreInner {
 
 impl PeerIdentityStore {
     /// Fresh empty store.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -96,6 +102,11 @@ impl PeerIdentityStore {
     ///
     /// `peer` must be the origin the *transport* authenticated, never one a
     /// payload claimed: an entry inserted under someone else's name is an entry that verifies that someone else's ops.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DeviceCertError` if the certificate signature does not verify,
+    /// the embedded public key is invalid, or the certificate has expired.
     pub fn insert(
         &self,
         peer: PeerOrigin,
@@ -103,32 +114,54 @@ impl PeerIdentityStore {
         now_ns: u64,
     ) -> Result<PeerIdentity, DeviceCertError> {
         let identity = PeerIdentity::from_cert(cert, now_ns)?;
-        let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.by_peer.insert(peer, identity.clone());
+        drop(inner);
         Ok(identity)
     }
 
     /// Drop a peer's cached identity — used on disconnect. Idempotent.
     pub fn remove(&self, peer: &PeerOrigin) {
-        let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.by_peer.remove(peer);
     }
 
     /// Look up a peer by its [`PeerOrigin`].
     pub fn get(&self, peer: &PeerOrigin) -> Option<PeerIdentity> {
-        let inner = self.inner.read().expect("PeerIdentityStore lock poisoned");
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.by_peer.get(peer).cloned()
     }
 
     /// Merge a user's revocation list — additive, see [`RevocationList::insert`].
-    pub fn set_revocations(&self, user_pubkey: [u8; 32], list: RevocationList) {
-        let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
-        inner.revocations.insert(user_pubkey, list);
+    pub fn set_revocations(&self, user_pubkey: [u8; 32], list: &RevocationList) {
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = inner.revocations.entry(user_pubkey).or_default();
+        for entry in list.iter().cloned() {
+            // Never let a later handshake erase or postpone a revocation that
+            // this device has already verified.
+            let _ = current.insert(entry);
+        }
+        drop(inner);
     }
 
     /// True if `device_pubkey` has been revoked under `user_pubkey` at or before `at_ns`.
     pub fn is_revoked(&self, user_pubkey: &[u8; 32], device_pubkey: &[u8; 32], at_ns: u64) -> bool {
-        let inner = self.inner.read().expect("PeerIdentityStore lock poisoned");
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner
             .revocations
             .get(user_pubkey)
@@ -139,6 +172,20 @@ impl PeerIdentityStore {
     /// message. Full identity-chain check: peer registered, cert still
     /// verifies under the embedded user root key, cert not expired at
     /// `now_ns`, device not revoked at or before `signed_at_ns`, signature verifies under the device pubkey. `Ok(PeerIdentity)` on all-pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PeerIdentityError` if:
+    /// - The peer is not in the identity store (`UnknownPeer`).
+    /// - The peer's certificate signature does not verify (`Cert`).
+    /// - The peer's certificate has expired at `now_ns` (`CertExpired`).
+    /// - The peer's device has been revoked at or before `signed_at_ns` (`Revoked`).
+    /// - The device public key is invalid (`BadDevicePubkey`).
+    /// - The Ed25519 signature does not verify (`BadSignature`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal `RwLock` has been poisoned.
     pub fn verify_signature_from(
         &self,
         peer: &PeerOrigin,
@@ -218,7 +265,7 @@ mod tests {
 
     #[test]
     fn insert_and_lookup() {
-        let (_root_sk, _dev_sk, cert) = fresh_identity(DeviceCapabilities::primary());
+        let (_, _, cert) = fresh_identity(DeviceCapabilities::primary());
         let store = PeerIdentityStore::new();
         let who = peer(7);
         let ident = store.insert(who.clone(), cert.clone(), 500).unwrap();
@@ -232,8 +279,8 @@ mod tests {
     /// could collide keep separate entries (see the module doc's digest-collision attack).
     #[test]
     fn distinct_peers_never_share_an_entry() {
-        let (_r1, dev_sk_a, cert_a) = fresh_identity(DeviceCapabilities::primary());
-        let (_r2, _dev_sk_b, cert_b) = fresh_identity(DeviceCapabilities::member());
+        let (_, dev_sk_a, cert_a) = fresh_identity(DeviceCapabilities::primary());
+        let (_, _, cert_b) = fresh_identity(DeviceCapabilities::member());
         let store = PeerIdentityStore::new();
         let a = peer(1);
         let b = peer(2);
@@ -268,7 +315,7 @@ mod tests {
     /// A hub subscriber id can never be mistaken for a peer id — the namespacing `PeerOrigin` applies is what the store keys on.
     #[test]
     fn hub_origin_does_not_alias_a_peer_origin() {
-        let (_root_sk, _dev_sk, cert) = fresh_identity(DeviceCapabilities::primary());
+        let (_, _, cert) = fresh_identity(DeviceCapabilities::primary());
         let store = PeerIdentityStore::new();
         store.insert(PeerOrigin::hub(1), cert, 500).unwrap();
         assert!(store.get(&peer(1)).is_none());
@@ -277,7 +324,7 @@ mod tests {
 
     #[test]
     fn insert_rejects_expired() {
-        let (root_sk, _dev_sk, _) = fresh_identity(DeviceCapabilities::member());
+        let (root_sk, _, _) = fresh_identity(DeviceCapabilities::member());
         let user_pk = root_sk.verifying_key().to_bytes();
         let (_dev_sk2, dev2) = DeviceIdentity::generate("temp", 200);
         let mut cert = DeviceCert {
@@ -299,7 +346,7 @@ mod tests {
 
     #[test]
     fn insert_rejects_bad_signature() {
-        let (_root_sk, _dev_sk, mut cert) = fresh_identity(DeviceCapabilities::primary());
+        let (_, _, mut cert) = fresh_identity(DeviceCapabilities::primary());
         cert.signature[0] ^= 0x01;
         let store = PeerIdentityStore::new();
         assert!(store.insert(peer(1), cert, 500).is_err());
@@ -307,7 +354,7 @@ mod tests {
 
     #[test]
     fn verify_signature_end_to_end() {
-        let (_root_sk, dev_sk, cert) = fresh_identity(DeviceCapabilities::primary());
+        let (_, dev_sk, cert) = fresh_identity(DeviceCapabilities::primary());
         let store = PeerIdentityStore::new();
         store.insert(peer(1), cert, 500).unwrap();
 
@@ -321,7 +368,7 @@ mod tests {
 
     #[test]
     fn verify_signature_rejects_tampered() {
-        let (_root_sk, dev_sk, cert) = fresh_identity(DeviceCapabilities::primary());
+        let (_, dev_sk, cert) = fresh_identity(DeviceCapabilities::primary());
         let store = PeerIdentityStore::new();
         store.insert(peer(1), cert, 500).unwrap();
 
@@ -338,7 +385,7 @@ mod tests {
 
     #[test]
     fn verify_signature_rejects_wrong_peer() {
-        let (_root_sk, _dev_sk, cert) = fresh_identity(DeviceCapabilities::primary());
+        let (_, _, cert) = fresh_identity(DeviceCapabilities::primary());
         let store = PeerIdentityStore::new();
         store.insert(peer(1), cert, 500).unwrap();
 
@@ -379,7 +426,10 @@ mod tests {
         sign_revocation_entry(&mut rev, &root_sk).unwrap();
         let mut list = RevocationList::new();
         list.insert(rev).unwrap();
-        store.set_revocations(user_pk, list);
+        store.set_revocations(user_pk, &list);
+        // A later peer advertising an empty/stale set cannot erase what we
+        // already learned.
+        store.set_revocations(user_pk, &RevocationList::new());
 
         // Signed AT the cut-off — rejected.
         let msg = b"at";
@@ -401,8 +451,10 @@ mod tests {
 
     #[test]
     fn different_users_get_separate_revocation_lists() {
-        let (alice_root, _alice_dev, alice_cert) = fresh_identity(DeviceCapabilities::primary());
-        let (bob_root, bob_dev, bob_cert) = fresh_identity(DeviceCapabilities::primary());
+        use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+
+        let (_, _, alice_cert) = fresh_identity(DeviceCapabilities::primary());
+        let (bob_root, _, bob_cert) = fresh_identity(DeviceCapabilities::primary());
         let alice_user_pk = alice_cert.user_public_key;
         let bob_user_pk = bob_cert.user_public_key;
         let bob_device_pk = bob_cert.device_public_key;
@@ -412,7 +464,6 @@ mod tests {
         store.insert(peer(2), bob_cert, 500).unwrap();
 
         // Revoke Bob's device.
-        use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
         let mut rev = RevocationEntry {
             user_public_key: bob_user_pk,
             revoked_device_public_key: bob_device_pk,
@@ -423,19 +474,17 @@ mod tests {
         sign_revocation_entry(&mut rev, &bob_root).unwrap();
         let mut list = RevocationList::new();
         list.insert(rev).unwrap();
-        store.set_revocations(bob_user_pk, list);
+        store.set_revocations(bob_user_pk, &list);
 
         // Bob's device is revoked …
         assert!(store.is_revoked(&bob_user_pk, &bob_device_pk, 700));
         // … but not under Alice's identity space.
         assert!(!store.is_revoked(&alice_user_pk, &bob_device_pk, 700));
-        let _ = alice_root;
-        let _ = bob_dev;
     }
 
     #[test]
     fn same_user_check() {
-        let (_root_sk, _dev_sk, cert) = fresh_identity(DeviceCapabilities::primary());
+        let (_, _, cert) = fresh_identity(DeviceCapabilities::primary());
         let user_pk = cert.user_public_key;
         let ident = PeerIdentity::from_cert(cert, 500).unwrap();
         assert!(ident.is_same_user(&user_pk));

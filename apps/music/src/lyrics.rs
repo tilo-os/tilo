@@ -78,7 +78,6 @@ pub fn parse_lrc(body: &str) -> Lyrics {
             });
         } else if line.starts_with('[') && line.contains(':') && line.ends_with(']') {
             // A metadata tag like [ar:Artist] — skip.
-            continue;
         } else {
             lines.push(LyricsLine {
                 at_ms: None,
@@ -95,7 +94,7 @@ fn parse_lrc_timestamp(line: &str) -> Option<(u64, &str)> {
     let rest = line.strip_prefix('[')?;
     let close = rest.find(']')?;
     let (ts, after) = rest.split_at(close);
-    let after = &after[1..]; // drop ']'
+    let after = after.strip_prefix(']').unwrap_or(after);
     let (mm, ss) = ts.split_once(':')?;
     let minutes: u64 = mm.trim().parse().ok()?;
     // Seconds may carry a fractional part: `ss` or `ss.xx`.
@@ -172,8 +171,10 @@ fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 #[cfg(any(feature = "lyrics", feature = "live"))]
 fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
     let key = cache_key(meta);
-    if let Some(cached) = cache_get(&key) {
-        return cached;
+    match cache_get(&key) {
+        CacheEntry::Hit(l) => return Some(l),
+        CacheEntry::Miss => return None,
+        CacheEntry::Absent => {}
     }
     let result = live_fetch_uncached(meta);
     cache_put(key, result.clone());
@@ -282,6 +283,7 @@ fn lyrics_from_record(json: &serde_json::Value) -> Option<Lyrics> {
 
 /// Percent-encode a query-string value (RFC 3986 unreserved bytes pass through).
 fn enc(s: &str) -> String {
+    use std::fmt::Write;
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
@@ -289,7 +291,9 @@ fn enc(s: &str) -> String {
                 out.push(b as char);
             }
             b' ' => out.push_str("%20"),
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out
@@ -338,7 +342,7 @@ fn strip_feat(s: &str) -> String {
     let low = s.to_ascii_lowercase();
     for marker in [" feat.", " feat ", " ft.", " ft ", " featuring "] {
         if let Some(idx) = low.find(marker) {
-            return s[..idx].to_string();
+            return s.get(..idx).unwrap_or(s).to_string();
         }
     }
     s.to_string()
@@ -438,9 +442,25 @@ fn lyrics_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String,
     CACHE.get_or_init(Default::default)
 }
 
+/// The result of a lyrics cache lookup: no entry at all, a cached miss (a
+/// prior lookup found no lyrics for this track), or a cached hit.
 #[cfg(any(feature = "lyrics", feature = "live"))]
-fn cache_get(key: &str) -> Option<Option<Lyrics>> {
-    lyrics_cache().lock().ok()?.get(key).cloned()
+enum CacheEntry {
+    Absent,
+    Miss,
+    Hit(Lyrics),
+}
+
+#[cfg(any(feature = "lyrics", feature = "live"))]
+fn cache_get(key: &str) -> CacheEntry {
+    let Ok(map) = lyrics_cache().lock() else {
+        return CacheEntry::Absent;
+    };
+    match map.get(key).cloned() {
+        Some(Some(l)) => CacheEntry::Hit(l),
+        Some(None) => CacheEntry::Miss,
+        None => CacheEntry::Absent,
+    }
 }
 
 #[cfg(any(feature = "lyrics", feature = "live"))]

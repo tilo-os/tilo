@@ -7,6 +7,16 @@
 //! user's privileges): the page's on-disk path is replaced with a
 //! directory, so `std::fs::write` can never succeed there.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::Duration;
 
 use notes::sidebar::OutEvent;
@@ -33,7 +43,7 @@ fn status_bar_surfaces_page_save_failure() {
     // Dirty the editor for this page and flush the savers so the
     // background writer attempts (and fails) the body write.
     app.main_panel_mut()
-        .load_page(id, "Doomed".into(), "content that cannot be saved".into());
+        .load_page(id, "Doomed", "content that cannot be saved".into());
     app.main_panel_mut().editor_mut().force_dirty_for_test();
     app.tick_for_test(); // drain_editor_edits → page_saver.request(...)
     // Clear the editor's lingering structure-dirty flag (the App does

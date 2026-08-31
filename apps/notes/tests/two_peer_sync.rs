@@ -7,6 +7,16 @@
 //! `doc::tests`, `block_editor` tests, `app::crdt_update_merges`); this
 //! checks that the notes app wires them together.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc};
 
@@ -18,16 +28,16 @@ use ui::presence::PresenceKey;
 
 /// A fresh notes app rooted at a temp dir, with the seed grace window
 /// collapsed so the first `sync` seeds immediately.
-fn spawn_app() -> (NotesApp, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let mut app = NotesApp::spawn_with_starter_page(dir.path().to_path_buf()).unwrap();
+fn spawn_app() -> Result<(NotesApp, tempfile::TempDir), String> {
+    let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let mut app = NotesApp::spawn_with_starter_page(dir.path().to_path_buf())?;
     app.bypass_seed_grace_for_test();
-    (app, dir)
+    Ok((app, dir))
 }
 
 #[test]
 fn sync_seeds_welcome_page_into_doc() {
-    let (mut app, _dir) = spawn_app();
+    let (mut app, _dir) = spawn_app().unwrap();
     let mut doc = AutoCommit::new();
     app.sync(&mut doc, &ROOT);
 
@@ -50,7 +60,7 @@ fn sync_seeds_welcome_page_into_doc() {
 #[test]
 fn second_peer_adopts_without_duplicating_welcome() {
     // Peer A seeds.
-    let (mut a, _da) = spawn_app();
+    let (mut a, _da) = spawn_app().unwrap();
     let mut doc = AutoCommit::new();
     a.sync(&mut doc, &ROOT);
     let a_count = NotesDoc::list_pages(&doc).len();
@@ -58,7 +68,7 @@ fn second_peer_adopts_without_duplicating_welcome() {
 
     // Peer B joins from A's state (the late-join handshake hands B a copy
     // of A's full doc). B must adopt it, not push its own welcome.
-    let (mut b, _db) = spawn_app();
+    let (mut b, _db) = spawn_app().unwrap();
     let mut doc_b = AutoCommit::load(&doc.save()).unwrap();
     b.sync(&mut doc_b, &ROOT);
 
@@ -73,7 +83,7 @@ fn second_peer_adopts_without_duplicating_welcome() {
 fn presence_payload_reports_current_page_as_tab() {
     // The location-presence the App broadcasts (and peers render as
     // indicative mist) is the Tab key for the page this instance views.
-    let (mut app, _d) = spawn_app();
+    let (mut app, _d) = spawn_app().unwrap();
     let mut doc = AutoCommit::new();
     app.sync(&mut doc, &ROOT);
     let sel = app.selected_for_test().expect("a page is selected");
@@ -90,14 +100,14 @@ fn text_edit_in_peer_a_converges_to_peer_b() {
     // Peer A seeds and selects a page. Distinct, fixed actor ids mirror
     // production (main.rs sets the actor from QUICK_APP_ID) so the test
     // exercises the same CRDT author topology two real instances do.
-    let (mut a, _da) = spawn_app();
+    let (mut a, _da) = spawn_app().unwrap();
     let mut doc_a = AutoCommit::new();
     doc_a.set_actor(automerge::ActorId::from(b"alice".as_slice()));
     a.sync(&mut doc_a, &ROOT);
     let sel = a.selected_for_test().unwrap();
 
     // Peer B joins from A's full state and adopts.
-    let (mut b, _db) = spawn_app();
+    let (mut b, _db) = spawn_app().unwrap();
     let mut doc_b = AutoCommit::load(&doc_a.save()).unwrap();
     doc_b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
     b.sync(&mut doc_b, &ROOT);

@@ -15,6 +15,16 @@
 //! Headless, deterministic maths — no GPU or HDR panel. A real DRM
 //! connector scanning out `Rgba16Float` is the documented hardware-only gap.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use shell::diagnostics::PeerSurfaceMetrics;
 use shell::shell::color_pipeline::{
     OutputColorSpace, OutputColorState, SDR_REFERENCE_WHITE_NITS, SurfaceColorOp,
@@ -128,6 +138,11 @@ fn hdr_surface_quadrants() {
 /// through the CPU HDR->SDR tone-mapper on either output (both leave
 /// `hdr_tonemap` disabled), without the `hdr-decode` feature.
 #[test]
+#[allow(
+    clippy::similar_names,
+    reason = "on_sdr/on_hdr name the two output-capability cases under test; renaming either \
+              away from the sdr/hdr pair would hurt readability, not help it"
+)]
 fn peer_view_sdr_stream_never_cpu_tonemaps() {
     let sdr_display = DisplayCapabilities::sdr_default();
     let hdr_display = DisplayCapabilities::hdr10_baseline();

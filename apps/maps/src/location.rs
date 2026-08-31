@@ -53,14 +53,25 @@ const FIX_TIMEOUT: Duration = Duration::from_secs(20);
 /// round-trip and the host permission prompt live entirely on the worker.
 pub fn request_location() -> LocationChannel {
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
+    // A clone survives a failed spawn (the closure below, and the original
+    // `tx` it owns, never runs in that case) so the honest Unavailable below
+    // still has a sender to use.
+    let fallback_tx = tx.clone();
+    let spawned = std::thread::Builder::new()
         .name("maps-location".into())
         .spawn(move || {
             let outcome = run_location_blocking();
             // The UI may have moved on (window closed); ignore a dead channel.
             let _ = tx.send(outcome);
         })
-        .expect("spawn location worker thread");
+        .is_ok();
+    if !spawned {
+        // Consistent with this module's contract: never hang the UI's
+        // "Locating…" state — report the failure honestly instead.
+        let _ = fallback_tx.send(LocationOutcome::Unavailable(
+            "failed to spawn location worker thread".to_string(),
+        ));
+    }
     rx
 }
 
@@ -139,6 +150,11 @@ fn portal_reason(e: ashpd::Error) -> String {
 /// Test-only: build a channel and immediately deliver `outcome` on it, so a
 /// headless test can exercise the exact per-frame drain path the real portal
 /// worker feeds — without opening a D-Bus session. Mirrors [`request_location`].
+///
+/// # Panics
+///
+/// Panics if the just-created channel's receiver has already been dropped,
+/// which cannot happen since the caller always holds it.
 #[cfg(test)]
 pub fn inject_for_test(outcome: LocationOutcome) -> LocationChannel {
     let (tx, rx) = std::sync::mpsc::channel();

@@ -311,7 +311,11 @@ mod tests {
         assert!(src.installable, "a qOS image can be pre-configured");
         assert_eq!(src.label, "QOS_1_0");
         assert!(src.size > 0);
-        assert!(src.name.ends_with(".iso"));
+        assert!(
+            std::path::Path::new(&src.name)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("iso"))
+        );
     }
 
     #[test]

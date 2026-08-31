@@ -88,6 +88,19 @@ mod dims {
     pub const ANCHOR_GAP: f64 = 12.0;
 }
 
+/// Geometry [`SelectionHud::measure`] computes once and the draw helpers
+/// below consume — split out of [`SelectionHud::draw`] so that function
+/// stays under the line-count limit without changing any of its arithmetic.
+struct HudMeasurements {
+    rect: Rect,
+    hud_x: f64,
+    cyc: f64,
+    dots_w: f64,
+    sep_w: f64,
+    copy_w: f64,
+    note_w: f64,
+}
+
 impl SelectionHud {
     /// `anchor` is the point the bar floats above (horizontal centre + top-y
     /// of the selection's first band, in `transform`'s space); the bar
@@ -107,9 +120,57 @@ impl SelectionHud {
         anchor: Point,
         bounds: Rect,
     ) -> Self {
-        use dims::{ANCHOR_GAP, DOT_GAP, DOT_R, HEIGHT, PAD, PILL_GAP, SEP_W, TRASH};
-        let mut hud = SelectionHud::default();
+        let m = Self::measure(tr, swatches, show_note, show_delete, anchor, bounds);
+        let mut hud = SelectionHud {
+            rect: m.rect,
+            shown: true,
+            ..SelectionHud::default()
+        };
 
+        let radius = dims::HEIGHT / 2.0;
+        // Shared painter, so the HUD is lifted by the same material as every other surface.
+        crate::surface::shadow(scene, transform, m.rect, radius, &style.elevation);
+        fill_round(scene, transform, m.rect, radius, style.surface);
+        stroke_round(scene, transform, m.rect, radius, style.border, 1.0);
+
+        Self::draw_swatches(scene, transform, style, swatches, cursor, &m, &mut hud);
+        Self::draw_pills(
+            scene,
+            transform,
+            tr,
+            style,
+            show_note,
+            show_delete,
+            cursor,
+            &m,
+            &mut hud,
+        );
+
+        hud
+    }
+
+    /// The sizing/positioning half of [`Self::draw`] — every value here is
+    /// pixel-comparing-test-sensitive, so this is pure code motion out of
+    /// `draw`, not a rewrite.
+    #[allow(clippy::too_many_arguments)]
+    fn measure(
+        tr: &mut TextRenderer,
+        swatches: &[HudSwatch],
+        show_note: bool,
+        show_delete: bool,
+        anchor: Point,
+        bounds: Rect,
+    ) -> HudMeasurements {
+        use dims::{ANCHOR_GAP, DOT_GAP, DOT_R, HEIGHT, PAD, PILL_GAP, SEP_W, TRASH};
+
+        // Swatch counts are always small (a handful of highlight colours);
+        // this cast can't lose meaningful precision, and the layout formula
+        // it feeds must stay byte-for-byte identical to avoid a
+        // pixel-snapshot regression.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "swatch counts are always small; this feeds pixel-snapshot-sensitive layout math that must not change"
+        )]
         let n = swatches.len().max(1) as f64;
         let dots_w = n * (DOT_R * 2.0) + (n - 1.0).max(0.0) * DOT_GAP;
         let (cw, _) = tr.measure_weighted("Copy", 13.0, None, TextWeight::Medium);
@@ -134,20 +195,33 @@ impl SelectionHud {
                 .max(bounds.y0 + 6.0)
         };
         let rect = Rect::new(hud_x, hud_y, hud_x + hud_w, hud_y + HEIGHT);
-        hud.rect = rect;
-        hud.shown = true;
-
-        let radius = HEIGHT / 2.0;
-        // Shared painter, so the HUD is lifted by the same material as every other surface.
-        crate::surface::shadow(scene, transform, rect, radius, &style.elevation);
-        fill_round(scene, transform, rect, radius, style.surface);
-        stroke_round(scene, transform, rect, radius, style.border, 1.0);
-
         let cyc = hud_y + HEIGHT / 2.0;
+        HudMeasurements {
+            rect,
+            hud_x,
+            cyc,
+            dots_w,
+            sep_w,
+            copy_w,
+            note_w,
+        }
+    }
 
-        let mut x = hud_x + PAD + DOT_R;
+    /// The swatch-dot row + its divider, the second half of [`Self::draw`].
+    fn draw_swatches(
+        scene: &mut Scene,
+        transform: Affine,
+        style: &ReaderHudStyle,
+        swatches: &[HudSwatch],
+        cursor: Point,
+        m: &HudMeasurements,
+        hud: &mut SelectionHud,
+    ) {
+        use dims::{DOT_GAP, DOT_R, PAD};
+
+        let mut x = m.hud_x + PAD + DOT_R;
         for (i, sw) in swatches.iter().enumerate() {
-            let center = Point::new(x, cyc);
+            let center = Point::new(x, m.cyc);
             let dot = Rect::new(
                 center.x - DOT_R,
                 center.y - DOT_R,
@@ -185,20 +259,40 @@ impl SelectionHud {
             x += DOT_R * 2.0 + DOT_GAP;
         }
 
-        let dots_end = hud_x + PAD + dots_w;
+        let dots_end = m.hud_x + PAD + m.dots_w;
         if !swatches.is_empty() {
-            let div_x = dots_end + sep_w / 2.0;
+            let div_x = dots_end + m.sep_w / 2.0;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
                 style.border,
                 None,
-                &Line::new(Point::new(div_x, cyc - 10.0), Point::new(div_x, cyc + 10.0)),
+                &Line::new(
+                    Point::new(div_x, m.cyc - 10.0),
+                    Point::new(div_x, m.cyc + 10.0),
+                ),
             );
         }
+    }
 
-        let copy_x = dots_end + sep_w;
-        let copy_rect = Rect::new(copy_x, cyc - 14.0, copy_x + copy_w, cyc + 14.0);
+    /// The Copy / Note / Delete pills, the third half of [`Self::draw`].
+    #[allow(clippy::too_many_arguments)]
+    fn draw_pills(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        style: &ReaderHudStyle,
+        show_note: bool,
+        show_delete: bool,
+        cursor: Point,
+        m: &HudMeasurements,
+        hud: &mut SelectionHud,
+    ) {
+        use dims::{PAD, PILL_GAP, TRASH};
+
+        let dots_end = m.hud_x + PAD + m.dots_w;
+        let copy_x = dots_end + m.sep_w;
+        let copy_rect = Rect::new(copy_x, m.cyc - 14.0, copy_x + m.copy_w, m.cyc + 14.0);
         let copy_hover = copy_rect.contains(cursor);
         fill_round(
             scene,
@@ -207,21 +301,28 @@ impl SelectionHud {
             14.0,
             if copy_hover { style.hover } else { style.pill },
         );
+        // `Affine`'s `Mul` composes two transforms; it has no failure mode, but
+        // clippy can't see that for a non-primitive operator overload.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine's Mul composes transform matrices and cannot overflow/panic"
+        )]
+        let copy_label_transform = transform * Affine::translate((copy_x + 12.0, m.cyc - 7.0));
         tr.draw_text_weighted(
             scene,
             "Copy",
             13.0,
             style.text,
-            transform * Affine::translate((copy_x + 12.0, cyc - 7.0)),
+            copy_label_transform,
             None,
             TextWeight::Medium,
         );
         hud.buttons.push((copy_rect, HudAction::Copy));
 
-        let mut cursor_x = copy_x + copy_w;
+        let mut cursor_x = copy_x + m.copy_w;
         if show_note {
             let note_x = cursor_x + PILL_GAP;
-            let note_rect = Rect::new(note_x, cyc - 14.0, note_x + note_w, cyc + 14.0);
+            let note_rect = Rect::new(note_x, m.cyc - 14.0, note_x + m.note_w, m.cyc + 14.0);
             let note_hover = note_rect.contains(cursor);
             fill_round(
                 scene,
@@ -230,22 +331,27 @@ impl SelectionHud {
                 14.0,
                 if note_hover { style.hover } else { style.pill },
             );
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine's Mul composes transform matrices and cannot overflow/panic"
+            )]
+            let note_label_transform = transform * Affine::translate((note_x + 12.0, m.cyc - 7.0));
             tr.draw_text_weighted(
                 scene,
                 "Note",
                 13.0,
                 style.text,
-                transform * Affine::translate((note_x + 12.0, cyc - 7.0)),
+                note_label_transform,
                 None,
                 TextWeight::Medium,
             );
             hud.buttons.push((note_rect, HudAction::Note));
-            cursor_x = note_x + note_w;
+            cursor_x = note_x + m.note_w;
         }
 
         if show_delete {
             let tx = cursor_x + 8.0;
-            let trash = Rect::new(tx, cyc - TRASH / 2.0, tx + TRASH, cyc + TRASH / 2.0);
+            let trash = Rect::new(tx, m.cyc - TRASH / 2.0, tx + TRASH, m.cyc + TRASH / 2.0);
             let thov = trash.contains(cursor);
             if thov {
                 fill_round(scene, transform, trash, 6.0, style.hover);
@@ -259,8 +365,6 @@ impl SelectionHud {
             );
             hud.buttons.push((trash, HudAction::Delete));
         }
-
-        hud
     }
 
     /// The control rects + their actions, for a caller that folds them into its

@@ -24,12 +24,24 @@ jobs:
       CARGO_HOME: /cargo-home
       CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
+      # Keep dev and test fingerprints compatible. The all-target check and
+      # example links can then reuse dependencies emitted by nextest instead
+      # of rebuilding the workspace merely to add unused CI debuginfo.
+      CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_TERM_COLOR: never
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-      SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
       WGPU_BACKEND: vulkan
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      WGPU_ADAPTER_NAME: llvmpipe
       XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+      # Keep this identical to the nextest gpu-golden override. These tests
+      # need an idle software Vulkan renderer, not merely serialization with
+      # one another; the isolated tail below retains full daily coverage.
+      GOLDEN_FILTER: >-
+        (package(ui) and test(typography_visual_regression::)) or
+        (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or
+        (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,6 +62,7 @@ jobs:
 
       - name: Prepare runtime and cache metrics
         run: |
+          test -r "$VK_DRIVER_FILES"
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
           bash tools/ci-sccache.sh prepare
@@ -64,6 +77,27 @@ jobs:
           bash tools/ci-measure.sh "nightly workspace nextest" --
           bash scripts/ci-run.sh "cargo nextest --workspace" --
           cargo nextest run --workspace --locked --profile ci
+          -E "not ($GOLDEN_FILTER)"
+
+      # This reuses the artifacts compiled above and executes the same number
+      # of tests as before. A separate job would duplicate the workspace build;
+      # running at the tail makes llvmpipe/lavapipe idle without extra CPU.
+      - name: Verify visual goldens on an idle renderer
+        run: >-
+          bash tools/ci-measure.sh "nightly isolated visual goldens" --
+          bash scripts/ci-run.sh "cargo nextest visual goldens" --
+          cargo nextest run --workspace --locked --profile ci
+          -E "$GOLDEN_FILTER"
+
+      # The fast and complete workspace suites stay deterministic. This one
+      # intentionally queries third-party music services; retain its coverage
+      # nightly without making ordinary pushes depend on external uptime.
+      - name: Probe live music search and stream resolution
+        continue-on-error: true
+        run: >-
+          bash tools/ci-measure.sh "nightly live music integration" --
+          cargo nextest run -p music --locked --profile ci --run-ignored all
+          -E 'test(live_search_and_stream_resolve_through_the_app)'
 
       - name: Check every workspace target
         run: >-

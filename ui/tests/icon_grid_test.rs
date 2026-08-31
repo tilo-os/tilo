@@ -5,6 +5,16 @@
 //! Skips gracefully when no wgpu adapter is available, matching the other
 //! offscreen tests. Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use crate::support::offscreen::OffscreenRenderer;
 use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
@@ -27,6 +37,10 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
 }
 
 #[test]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "w/h are small fixed test-canvas dimensions, exactly representable in f32"
+)]
 fn icon_grid_renders_cells_and_selection() {
     let (w, h) = (520u32, 360u32);
     let Some(mut renderer) = try_new_renderer(w, h) else {

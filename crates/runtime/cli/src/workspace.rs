@@ -44,6 +44,11 @@ pub fn workspace_root() -> Option<PathBuf> {
 ///
 /// Rejects absolute paths and `..` traversal, so a path safe in workspace
 /// is also safe standalone.
+///
+/// # Errors
+///
+/// Returns an error if `rel` is empty, absolute, contains a `..` component,
+/// or — standalone only — if the parent directory can't be created.
 pub fn resolve_workspace_path(rel: &str) -> Result<PathBuf> {
     if rel.is_empty() {
         anyhow::bail!("workspace path is empty");
@@ -91,6 +96,11 @@ impl std::fmt::Debug for WorkspaceHandle {
 /// client in qOS, `None` standalone. Runs on the current tokio `LocalSet`
 /// (capnp-rpc futures are `!Send`); skip this and call
 /// [`resolve_workspace_path`] directly if you don't need the FS client.
+///
+/// # Errors
+///
+/// Returns an error if the workspace (or standalone fallback) root can't be
+/// created, or if `f` itself returns an error.
 pub async fn act<T, F, Fut>(f: F) -> Result<T>
 where
     F: FnOnce(WorkspaceHandle) -> Fut,

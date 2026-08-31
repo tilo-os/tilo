@@ -15,10 +15,30 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+// `ShotFactory` (in `ui::launch`) is `fn(&LaunchArgs) -> Result<Box<dyn
+// Widget>, LaunchError>` — a fixed callback type shared by every app's
+// `--shots` entry point, so this can't drop the `Result` even though this
+// particular app never fails to build its shot root.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "must match ui::launch's ShotFactory = fn(&LaunchArgs) -> Result<..>"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     if args.has("--empty") {
         Ok(backups::app_root())
@@ -33,10 +53,10 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.backups", backups::app_root)
+        &LaunchSpec::new("dev.qos.backups", backups::app_root)
             .shot_root(shot_root)
             .scenarios(&["status"])
             .allowed_flags(&["--empty"])
             .configure_app(|app| backups::actions::register(app.action_registry_mut())),
-    )
+    );
 }

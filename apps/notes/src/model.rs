@@ -171,10 +171,12 @@ impl Workspace {
             None => return false,
         };
         let target = pos + delta.signum();
-        if target < 0 || num::usize_of_i32(target) >= siblings.len() {
+        if target < 0 {
             return false;
         }
-        let other = siblings[num::usize_of_i32(target)];
+        let Some(&other) = siblings.get(num::usize_of_i32(target)) else {
+            return false;
+        };
         // Swap the two pages' order values, then re-densify to keep the
         // "contiguous from 0" invariant even if orders were sparse.
         let (id_order, other_order) = match (self.get(id), self.get(other)) {
@@ -275,7 +277,8 @@ impl Workspace {
     ///
     /// Returns `(new_root, mapping)` where `mapping` pairs each source
     /// page id with its fresh copy id — the storage layer walks it to
-    /// duplicate the `{uuid}.md` body files. `None` when `id` is unknown.
+    /// duplicate the `{uuid}.md` body files. `None` when `id` is unknown
+    /// (or, defensively, if the tree changes out from under the walk).
     pub fn duplicate_page(&mut self, id: PageId) -> Option<(PageId, Vec<(PageId, PageId)>)> {
         let src = self.get(id)?.clone();
         // Visit the subtree parents-before-children so a child's rewired
@@ -295,7 +298,7 @@ impl Workspace {
             map.insert(*old, new);
             mapping.push((*old, new));
         }
-        let new_root = map[&id];
+        let &new_root = map.get(&id)?;
         // The sibling `id` currently sits before in its group — insert the
         // copy right after it (before the sibling that follows `id`).
         let after_sibling = {
@@ -308,8 +311,8 @@ impl Workspace {
         // Materialise every cloned meta, then append them in one pass.
         let mut new_metas: Vec<PageMeta> = Vec::with_capacity(order_list.len());
         for old in &order_list {
-            let meta = self.get(*old).expect("subtree page exists");
-            let new_id = map[old];
+            let meta = self.get(*old)?;
+            let &new_id = map.get(old)?;
             let new_parent = if *old == id {
                 src.parent
             } else {
@@ -365,6 +368,11 @@ impl Workspace {
     /// None) and every sibling group has contiguous `order` starting
     /// from 0. Used by tests + the storage layer post-load to detect
     /// corruption.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the first broken invariant found (a
+    /// dangling parent, or a non-contiguous sibling `order`).
     pub fn check_invariants(&self) -> Result<(), String> {
         let ids: std::collections::HashSet<PageId> = self.data.pages.iter().map(|p| p.id).collect();
         for p in &self.data.pages {

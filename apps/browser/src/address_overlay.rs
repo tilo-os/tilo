@@ -305,6 +305,15 @@ impl Widget for AddressSuggestions {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
+        // cannot actually return `Err` for a fresh leaf (see
+        // `ui::widget::TaffyTreeExt`'s doc comment), and `Widget::build_layout`
+        // returns a bare `NodeId` across every implementor, so there is
+        // nowhere to surface a theoretical error.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -319,7 +328,12 @@ impl Widget for AddressSuggestions {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        // A missing layout entry for our own node would be a taffy bug, not a
+        // recoverable app condition — skip this frame's rect update rather
+        // than panic; the next frame's layout pass will have one.
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         let taffy_origin = Point::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

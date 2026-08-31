@@ -3,6 +3,16 @@
 //! Invokes the freshly-built binary with `--shots <tmp>` and asserts the
 //! resulting file exists and starts with the canonical PNG magic header.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::fs;
 use std::process::Command;
 

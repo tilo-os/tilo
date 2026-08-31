@@ -9,6 +9,16 @@
 //! parse (incoming) and build (outgoing) paths. The live IMAP/SMTP socket loop
 //! is proven separately by the `--features live` engine tests.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -26,9 +36,57 @@ fn unique_root() -> PathBuf {
     std::env::temp_dir().join(format!("qos-mail-engine-loop-{}-{}", std::process::id(), n))
 }
 
-fn recv(rx: &std::sync::mpsc::Receiver<EngineEvent>) -> EngineEvent {
+fn recv(
+    rx: &std::sync::mpsc::Receiver<EngineEvent>,
+) -> Result<EngineEvent, std::sync::mpsc::RecvTimeoutError> {
     rx.recv_timeout(Duration::from_secs(5))
-        .expect("engine answered within the timeout")
+}
+
+/// Step 4a of the end-to-end loop test: a compose produces a well-formed SMTP
+/// payload. Build the same draft's MIME (the exact function the engine's Send
+/// uses) and check it directly, then parse it back. Note: two independent
+/// builds are NOT byte-identical — RFC 5322 requires a unique Message-ID and
+/// a current Date, which mail-builder auto-generates per call, so the payload
+/// is verified by structure and content, not by comparing the length of a
+/// second build to the engine's. The exact bytes the engine puts on the wire
+/// are asserted by the `--features live` SMTP socket test, which captures the
+/// server-side DATA.
+fn assert_send_builds_real_mime(loaded: &AccountConfig, draft: &Draft) {
+    let from = Addr::new(loaded.display_name.clone(), loaded.email.clone());
+    let mime = build_mime(&from, draft).expect("build MIME");
+    let text = String::from_utf8_lossy(&mime);
+    assert!(
+        text.contains("Subject: Loop check"),
+        "subject header present: {text}"
+    );
+    assert!(
+        text.contains("ada@analytical.example"),
+        "From address present in the payload"
+    );
+    assert!(
+        text.contains("you@qos.example"),
+        "To recipient present in the payload"
+    );
+    assert!(
+        text.contains("cc@qos.example"),
+        "Cc recipient present in the payload"
+    );
+    assert!(
+        text.contains("This travels through the engine."),
+        "body present in the payload"
+    );
+    // And it parses back cleanly as a real RFC 5322 message.
+    let round = parse_eml(&mime, 0, Folder::Sent).expect("parse built MIME");
+    assert_eq!(round.subject, "Loop check");
+    assert_eq!(round.from.email, "ada@analytical.example");
+    assert!(
+        round.to.iter().any(|a| a.email == "you@qos.example"),
+        "To recipient survives"
+    );
+    assert!(
+        round.cc.iter().any(|a| a.email == "cc@qos.example"),
+        "Cc recipient survives"
+    );
 }
 
 #[test]
@@ -76,7 +134,7 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         account: loaded.clone(),
     })
     .unwrap();
-    match recv(&rx) {
+    match recv(&rx).expect("engine answered within the timeout") {
         EngineEvent::Connected { account_id } => {
             assert_eq!(account_id, "ada@analytical.example");
         }
@@ -88,7 +146,7 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         folder: Folder::Inbox,
     })
     .unwrap();
-    match recv(&rx) {
+    match recv(&rx).expect("engine answered within the timeout") {
         EngineEvent::Fetched { folder, .. } => assert_eq!(folder, Folder::Inbox),
         other => panic!("expected Fetched, got {other:?}"),
     }
@@ -107,7 +165,7 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         draft: Box::new(draft.clone()),
     })
     .unwrap();
-    let wire = match recv(&rx) {
+    let wire = match recv(&rx).expect("engine answered within the timeout") {
         EngineEvent::Sent { wire_bytes } => wire_bytes,
         other => panic!("expected Sent, got {other:?}"),
     };
@@ -115,50 +173,7 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         wire > 0,
         "the engine built and measured a real MIME payload on Send"
     );
-
-    // A compose produces a well-formed SMTP payload. Build the same draft's MIME
-    // (the exact function the engine's Send uses) and check it directly. Note:
-    // two independent builds are NOT byte-identical — RFC 5322 requires a unique
-    // Message-ID and a current Date, which mail-builder auto-generates per call,
-    // so the payload is verified by structure and content, not by comparing the
-    // length of a second build to the engine's. The exact bytes the engine puts
-    // on the wire are asserted by the `--features live` SMTP socket test, which
-    // captures the server-side DATA.
-    let from = Addr::new(loaded.display_name.clone(), loaded.email);
-    let mime = build_mime(&from, &draft).expect("build MIME");
-    let text = String::from_utf8_lossy(&mime);
-    assert!(
-        text.contains("Subject: Loop check"),
-        "subject header present: {text}"
-    );
-    assert!(
-        text.contains("ada@analytical.example"),
-        "From address present in the payload"
-    );
-    assert!(
-        text.contains("you@qos.example"),
-        "To recipient present in the payload"
-    );
-    assert!(
-        text.contains("cc@qos.example"),
-        "Cc recipient present in the payload"
-    );
-    assert!(
-        text.contains("This travels through the engine."),
-        "body present in the payload"
-    );
-    // And it parses back cleanly as a real RFC 5322 message.
-    let round = parse_eml(&mime, 0, Folder::Sent).expect("parse built MIME");
-    assert_eq!(round.subject, "Loop check");
-    assert_eq!(round.from.email, "ada@analytical.example");
-    assert!(
-        round.to.iter().any(|a| a.email == "you@qos.example"),
-        "To recipient survives"
-    );
-    assert!(
-        round.cc.iter().any(|a| a.email == "cc@qos.example"),
-        "Cc recipient survives"
-    );
+    assert_send_builds_real_mime(&loaded, &draft);
 
     // 4b) A fetch parses a message: the exact decode a live UID FETCH runs, with
     //     the server's \Seen flag applied.

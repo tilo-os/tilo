@@ -35,8 +35,8 @@ use ui::{card_column_width, card_columns};
 use crate::actions::{self, BACKUPS_ACTION_TYPE};
 use crate::doc::{BackupsDoc, PolicyField};
 use crate::model::{
-    Catalog, DestKind, Destination, Health, Retention, RetentionPolicy, SnapStatus, SnapType,
-    Snapshot, Source, SourceKind, View,
+    Catalog, DestKind, Destination, Health, Retention, RetentionPolicy, SnapFile, SnapStatus,
+    SnapType, Snapshot, Source, SourceKind, View,
 };
 use crate::paint;
 
@@ -320,7 +320,7 @@ impl BackupsApp {
         if self.is_empty() {
             // Fresh install: nothing to back up yet. Show onboarding instead of
             // an empty dashboard so the app reads as ready, not broken.
-            self.draw_empty_onboarding(scene, t, tr, theme, content);
+            Self::draw_empty_onboarding(scene, t, tr, theme, content);
         } else {
             match self.ui.view {
                 View::Timeline => self.draw_timeline_view(scene, t, tr, theme, content),
@@ -368,9 +368,31 @@ impl BackupsApp {
         let cy = bar.y0 + BAR_H / 2.0;
         let narrow = self.rect.width() < NARROW_BREAKPOINT;
 
-        // Left cluster. A hamburger leads it whenever the Timeline rail isn't
-        // fully docked-open (overlay, or a collapsed dock), so the source rail
-        // is always reachable.
+        let brand_right = self.draw_top_bar_left_cluster(scene, tr, theme, t, bar, cy, narrow);
+        let btn = self.draw_top_bar_backup_button(scene, tr, theme, t, bar, cy, narrow);
+        self.draw_top_bar_tabs(scene, tr, theme, t, cy, brand_right, btn.x0);
+    }
+
+    /// The top bar's left cluster: the Timeline-rail hamburger (when
+    /// relevant) and the "N sources · M destinations" tally label. Returns
+    /// the x just past the label, so the tab strip can centre in the
+    /// remaining gap. Split out of [`Self::draw_top_bar`] to keep it under
+    /// the line budget.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_top_bar_left_cluster(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        bar: Rect,
+        cy: f64,
+        narrow: bool,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        // A hamburger leads it whenever the Timeline rail isn't fully
+        // docked-open (overlay, or a collapsed dock), so the source rail is
+        // always reachable.
         let mut lx = bar.x0 + PAD;
         let show_hamburger = self.ui.view == View::Timeline
             && !self.is_empty()
@@ -396,9 +418,25 @@ impl BackupsApp {
             let (tw, _) = tr.measure(&sub, 13.0, None);
             lx += f64::from(tw);
         }
-        let brand_right = lx;
+        lx
+    }
 
-        // Right: "Back up now" — icon-only at narrow so it never crowds the tabs.
+    /// The "Back up now" primary action — icon-only at narrow so it never
+    /// crowds the tabs. Returns its rect so the tab strip can lay out in the
+    /// remaining gap. Split out of [`Self::draw_top_bar`] to keep it under
+    /// the line budget.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_top_bar_backup_button(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        bar: Rect,
+        cy: f64,
+        narrow: bool,
+    ) -> Rect {
+        let c = &theme.tokens.colors;
         let bw = if narrow { 40.0 } else { 152.0 };
         let btn = Rect::new(bar.x1 - PAD - bw, cy - 18.0, bar.x1 - PAD, cy + 18.0);
         let running = self.job.is_some();
@@ -422,69 +460,110 @@ impl BackupsApp {
             paint::fill_rrect(scene, t, pr, 1.5, theme.accent_primary);
         }
         if narrow {
-            // Just the "+" glyph, centred.
-            let gc = btn.center();
-            if !running {
-                paint::poly(
-                    scene,
-                    t,
-                    &[(gc.x - 5.0, gc.y), (gc.x + 5.0, gc.y)],
-                    c.text_primary,
-                    2.0,
-                    false,
-                );
-                paint::poly(
-                    scene,
-                    t,
-                    &[(gc.x, gc.y - 5.0), (gc.x, gc.y + 5.0)],
-                    c.text_primary,
-                    2.0,
-                    false,
-                );
-            }
+            Self::draw_backup_button_plus_narrow(scene, t, btn, c.text_primary, running);
         } else {
-            let label = if running {
-                "Backing up…"
-            } else {
-                "Back up now"
-            };
-            let gx = btn.x0 + 16.0;
-            if !running {
-                paint::poly(
-                    scene,
-                    t,
-                    &[(gx - 5.0, cy), (gx + 5.0, cy)],
-                    c.text_primary,
-                    2.0,
-                    false,
-                );
-                paint::poly(
-                    scene,
-                    t,
-                    &[(gx, cy - 5.0), (gx, cy + 5.0)],
-                    c.text_primary,
-                    2.0,
-                    false,
-                );
-            }
-            paint::text_center(
-                scene,
-                tr,
-                t,
-                label,
-                13.5,
-                c.text_primary,
-                btn.x0 + 16.0,
-                btn.x1 - 6.0,
-                cy - 7.0,
-            );
+            Self::draw_backup_button_label(scene, tr, t, btn, cy, c.text_primary, running);
         }
         self.hits.push((btn, Hit::BackupNow));
+        btn
+    }
 
+    /// The narrow "+" glyph, centred on the button (drawn only while idle).
+    fn draw_backup_button_plus_narrow(
+        scene: &mut Scene,
+        t: Affine,
+        btn: Rect,
+        glyph_color: Color,
+        running: bool,
+    ) {
+        if running {
+            return;
+        }
+        let gc = btn.center();
+        paint::poly(
+            scene,
+            t,
+            &[(gc.x - 5.0, gc.y), (gc.x + 5.0, gc.y)],
+            glyph_color,
+            2.0,
+            false,
+        );
+        paint::poly(
+            scene,
+            t,
+            &[(gc.x, gc.y - 5.0), (gc.x, gc.y + 5.0)],
+            glyph_color,
+            2.0,
+            false,
+        );
+    }
+
+    /// The wide "+ Back up now" / "Backing up…" glyph and label.
+    fn draw_backup_button_label(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        btn: Rect,
+        cy: f64,
+        glyph_color: Color,
+        running: bool,
+    ) {
+        let label = if running {
+            "Backing up…"
+        } else {
+            "Back up now"
+        };
+        let gx = btn.x0 + 16.0;
+        if !running {
+            paint::poly(
+                scene,
+                t,
+                &[(gx - 5.0, cy), (gx + 5.0, cy)],
+                glyph_color,
+                2.0,
+                false,
+            );
+            paint::poly(
+                scene,
+                t,
+                &[(gx, cy - 5.0), (gx, cy + 5.0)],
+                glyph_color,
+                2.0,
+                false,
+            );
+        }
+        paint::text_center(
+            scene,
+            tr,
+            t,
+            label,
+            13.5,
+            glyph_color,
+            btn.x0 + 16.0,
+            btn.x1 - 6.0,
+            cy - 7.0,
+        );
+    }
+
+    /// The view segmented-tab control, centred between the left cluster and
+    /// the backup button, with per-tab width clamped so all tabs always fit.
+    /// Split out of [`Self::draw_top_bar`] to keep it under the line budget.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_top_bar_tabs(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        cy: f64,
+        brand_right: f64,
+        btn_x0: f64,
+    ) {
+        let c = &theme.tokens.colors;
         // Segmented tab control, centred in the gap between the brand and the
         // button, with the per-tab width clamped so four tabs always fit.
         let band_x0 = brand_right + 14.0;
-        let band_x1 = btn.x0 - 14.0;
+        let band_x1 = btn_x0 - 14.0;
         let n = View::ALL.len() as f64;
         let tab_w = ((band_x1 - band_x0) / n).clamp(58.0, TAB_W);
         let seg_total = tab_w * n;
@@ -587,7 +666,7 @@ impl BackupsApp {
         // unconditional poke would pin the bubble open forever.
         if label != self.status_shown {
             self.status_bubble.poke(now);
-            self.status_shown = label.clone();
+            self.status_shown.clone_from(&label);
         }
         let text_size = 12.0f32;
         let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
@@ -631,7 +710,6 @@ impl BackupsApp {
     /// centered prompt so the fresh app reads as ready rather than as a broken
     /// blank dashboard.
     fn draw_empty_onboarding(
-        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -677,16 +755,21 @@ impl BackupsApp {
         // Main column: the drawer's resolved content rect (inset by the docked
         // rail, or full width in overlay). A small gap keeps it off a docked rail.
         let docked_gap = if self.drawer.is_docked() { 18.0 } else { 0.0 };
-        let cr = self.drawer.content_rect();
-        let main = Rect::new(cr.x0 + docked_gap, content.y0, content.x1, content.y1);
+        let drawer_rect = self.drawer.content_rect();
+        let main = Rect::new(
+            drawer_rect.x0 + docked_gap,
+            content.y0,
+            content.x1,
+            content.y1,
+        );
 
         // Summary stat tiles — reflow from four abreast down to a 2×2 grid so
         // they never crush at narrow widths.
         let cols = card_columns(main.width(), 156.0, 12.0).clamp(1, 4);
         let rows = 4usize.div_ceil(cols);
         let tile_h = 82.0;
-        let tiles_h = rows as f64 * tile_h + (rows as f64 - 1.0) * 12.0;
-        let tiles = Rect::new(main.x0, main.y0, main.x1, main.y0 + tiles_h);
+        let tile_block_h = rows as f64 * tile_h + (rows as f64 - 1.0) * 12.0;
+        let tiles = Rect::new(main.x0, main.y0, main.x1, main.y0 + tile_block_h);
         self.draw_summary_tiles(scene, t, tr, theme, tiles, cols);
 
         // Timeline header.
@@ -821,7 +904,6 @@ impl BackupsApp {
 
     /// Shared row highlight (selected / hovered) used by the rail rows.
     fn row_bg(
-        &self,
         scene: &mut Scene,
         t: Affine,
         theme: &Theme,
@@ -869,7 +951,7 @@ impl BackupsApp {
         let c = &theme.tokens.colors;
         let h = 38.0;
         let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
-        self.row_bg(
+        Self::row_bg(
             scene,
             t,
             theme,
@@ -918,7 +1000,7 @@ impl BackupsApp {
         let c = &theme.tokens.colors;
         let h = 50.0;
         let row = Rect::new(rail.x0 + 8.0, *y, rail.x1 - 8.0, *y + h);
-        self.row_bg(
+        Self::row_bg(
             scene,
             t,
             theme,
@@ -928,7 +1010,7 @@ impl BackupsApp {
         );
         let ix = row.x0 + 22.0;
         let cy = row.y0 + h / 2.0;
-        self.draw_source_icon(
+        Self::draw_source_icon(
             scene,
             t,
             src.kind,
@@ -981,6 +1063,10 @@ impl BackupsApp {
     }
 
     #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/y/h/c/d are the standard graphics convention: transform, position, row height, colour tokens, and this row's Destination"
+    )]
     fn draw_dest_compact(
         &mut self,
         scene: &mut Scene,
@@ -998,7 +1084,7 @@ impl BackupsApp {
             paint::fill_rrect(scene, t, row, 9.0, c.surface_white_5);
         }
         let ix = row.x0 + 18.0;
-        self.draw_dest_icon(
+        Self::draw_dest_icon(
             scene,
             t,
             d.kind,
@@ -1035,7 +1121,7 @@ impl BackupsApp {
     }
 
     fn draw_summary_tiles(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1046,9 +1132,9 @@ impl BackupsApp {
         let c = &theme.tokens.colors;
         let gap = 12.0;
         let cols = cols.max(1);
-        let tw = card_column_width(region.width(), cols, gap);
+        let tile_w = card_column_width(region.width(), cols, gap);
         let rows = 4usize.div_ceil(cols);
-        let th = ((region.height() - gap * (rows as f64 - 1.0)) / rows as f64).max(64.0);
+        let tile_h = ((region.height() - gap * (rows as f64 - 1.0)) / rows as f64).max(64.0);
         let next_run = self
             .ui
             .sel_source
@@ -1090,10 +1176,10 @@ impl BackupsApp {
         ];
         for (i, (label, value, accent)) in tiles.iter().enumerate() {
             let col = i % cols;
-            let rowi = i / cols;
-            let x0 = region.x0 + col as f64 * (tw + gap);
-            let y0 = region.y0 + rowi as f64 * (th + gap);
-            let tile = Rect::new(x0, y0, x0 + tw, y0 + th);
+            let tile_row = i / cols;
+            let x0 = region.x0 + col as f64 * (tile_w + gap);
+            let y0 = region.y0 + tile_row as f64 * (tile_h + gap);
+            let tile = Rect::new(x0, y0, x0 + tile_w, y0 + tile_h);
             paint::card(scene, t, tile, 12.0, c.surfaces.raised, c.border_white_10);
             // accent ticker on the left edge
             let tick = Rect::new(tile.x0, tile.y0 + 10.0, tile.x0 + 3.0, tile.y1 - 10.0);
@@ -1221,7 +1307,7 @@ impl BackupsApp {
 
     #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
     fn draw_snapshot_row(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1322,14 +1408,20 @@ impl BackupsApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        det: Rect,
+        detail_rect: Rect,
         s: &Snapshot,
     ) {
         let c = &theme.tokens.colors;
-        paint::fill_rrect(scene, t, det, 10.0, c.neutral[0].with_alpha_factor(0.5));
+        paint::fill_rrect(
+            scene,
+            t,
+            detail_rect,
+            10.0,
+            c.neutral[0].with_alpha_factor(0.5),
+        );
         let dest = self.catalog.destination(&s.dest_id);
-        let dest_name = dest.map(|d| d.name.clone()).unwrap_or_default();
-        let dest_kind = dest.map_or("", |d| d.kind.label());
+        let dest_name = dest.map(|found| found.name.clone()).unwrap_or_default();
+        let dest_kind = dest.map_or("", |found| found.kind.label());
         paint::text(
             scene,
             tr,
@@ -1337,10 +1429,10 @@ impl BackupsApp {
             &format!("Stored on {dest_name}  ·  {dest_kind}"),
             12.0,
             c.text_dim,
-            det.x0 + 16.0,
-            det.y0 + 12.0,
+            detail_rect.x0 + 16.0,
+            detail_rect.y0 + 12.0,
         );
-        let enc = if dest.is_some_and(|d| d.encrypted) {
+        let enc = if dest.is_some_and(|found| found.encrypted) {
             "encrypted"
         } else {
             "plaintext"
@@ -1357,8 +1449,8 @@ impl BackupsApp {
             ),
             11.5,
             c.text_dim,
-            det.x0 + 16.0,
-            det.y0 + 33.0,
+            detail_rect.x0 + 16.0,
+            detail_rect.y0 + 33.0,
         );
 
         // Action buttons, right-aligned.
@@ -1371,22 +1463,22 @@ impl BackupsApp {
                 c.semantic.danger.with_alpha_factor(0.18),
             ),
         ];
-        let mut bx = det.x1 - 12.0;
-        let bh = 32.0;
-        let by = det.y0 + (det.height() - bh) / 2.0;
+        let mut btn_x = detail_rect.x1 - 12.0;
+        let btn_h = 32.0;
+        let btn_y = detail_rect.y0 + (detail_rect.height() - btn_h) / 2.0;
         for (label, hit, fill) in btns.iter().rev() {
-            let (tw, _) = tr.measure(label, 12.5, None);
-            let bw = f64::from(tw) + 28.0;
-            let b = Rect::new(bx - bw, by, bx, by + bh);
+            let (label_w, _) = tr.measure(label, 12.5, None);
+            let btn_w = f64::from(label_w) + 28.0;
+            let btn = Rect::new(btn_x - btn_w, btn_y, btn_x, btn_y + btn_h);
             let hovered = self.hover.as_ref() == Some(hit);
-            let f = if hovered {
+            let fill_color = if hovered {
                 fill.with_alpha_factor(0.85)
             } else {
                 *fill
             };
-            paint::fill_rrect(scene, t, b, 8.0, f);
+            paint::fill_rrect(scene, t, btn, 8.0, fill_color);
             if *hit != Hit::Restore {
-                paint::stroke_rrect(scene, t, b, 8.0, c.border_white_10, 1.0);
+                paint::stroke_rrect(scene, t, btn, 8.0, c.border_white_10, 1.0);
             }
             let fg = if *hit == Hit::Delete {
                 c.semantic.danger
@@ -1400,12 +1492,12 @@ impl BackupsApp {
                 label,
                 12.5,
                 fg,
-                b.x0,
-                b.x1,
-                by + (bh - 12.5) / 2.0,
+                btn.x0,
+                btn.x1,
+                btn_y + (btn_h - 12.5) / 2.0,
             );
-            self.hits.push((b, hit.clone()));
-            bx -= bw + 8.0;
+            self.hits.push((btn, hit.clone()));
+            btn_x -= btn_w + 8.0;
         }
     }
 
@@ -1413,6 +1505,35 @@ impl BackupsApp {
 
     fn draw_sources_view(
         &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+    ) {
+        Self::draw_sources_view_header(scene, t, tr, theme, content);
+
+        // At narrow widths the three inline stat columns collapse to one line
+        // beneath the path, so nothing is crushed against the toggle.
+        let narrow = content.width() < 620.0;
+        let mut y = content.y0 + 50.0;
+        let card_h = if narrow { 104.0 } else { 96.0 };
+        for i in 0..self.catalog.sources.len() {
+            let src = self.catalog.sources[i].clone();
+            self.draw_source_card(scene, t, tr, theme, content, y, card_h, narrow, &src);
+            y += card_h + 12.0;
+        }
+
+        // Recent activity feed fills the remaining space.
+        let region = Rect::new(content.x0, y + 10.0, content.x1, content.y1);
+        if region.height() > 80.0 {
+            self.draw_recent_activity(scene, t, tr, theme, region);
+        }
+    }
+
+    /// The "Backup sources" title + subtitle. Split out of
+    /// [`Self::draw_sources_view`] to keep it under the line budget.
+    fn draw_sources_view_header(
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1440,169 +1561,221 @@ impl BackupsApp {
             content.x0,
             content.y0 + 24.0,
         );
+    }
 
-        // At narrow widths the three inline stat columns collapse to one line
-        // beneath the path, so nothing is crushed against the toggle.
-        let narrow = content.width() < 620.0;
-        let mut y = content.y0 + 50.0;
-        let card_h = if narrow { 104.0 } else { 96.0 };
-        for i in 0..self.catalog.sources.len() {
-            let src = self.catalog.sources[i].clone();
-            let card = Rect::new(content.x0, y, content.x1, y + card_h);
-            let sel = self.ui.sel_source.as_deref() == Some(src.id.as_str());
-            let border = if sel {
-                theme.accent_primary.with_alpha_factor(0.6)
-            } else {
-                c.border_white_10
-            };
-            paint::card(scene, t, card, 14.0, c.surfaces.raised, border);
-            let ix = card.x0 + 34.0;
-            self.draw_source_icon(
-                scene,
-                t,
-                src.kind,
-                Point::new(ix, card.y0 + 30.0),
-                13.0,
-                theme.accent_primary,
-            );
-            paint::text_bold(
-                scene,
-                tr,
-                t,
-                &src.path,
-                17.0,
-                c.text_primary,
-                ix + 28.0,
-                card.y0 + 16.0,
-            );
-            let kind = match src.kind {
-                SourceKind::Home => "Home directory",
-                SourceKind::System => "System configuration",
-                SourceKind::Workspace => "Collaborative workspace",
-                SourceKind::Custom => "Custom path",
-            };
-            paint::text(
-                scene,
-                tr,
-                t,
-                kind,
-                12.0,
-                c.text_dim,
-                ix + 28.0,
-                card.y0 + 40.0,
-            );
+    /// One source card: icon + path + kind, the cadence/snapshots/protected
+    /// stats, health + next-run, and the enable toggle. Split out of
+    /// [`Self::draw_sources_view`] to keep it under the line budget.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_source_card(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        y: f64,
+        card_h: f64,
+        narrow: bool,
+        src: &Source,
+    ) {
+        let c = &theme.tokens.colors;
+        let card = Rect::new(content.x0, y, content.x1, y + card_h);
+        let sel = self.ui.sel_source.as_deref() == Some(src.id.as_str());
+        let border = if sel {
+            theme.accent_primary.with_alpha_factor(0.6)
+        } else {
+            c.border_white_10
+        };
+        paint::card(scene, t, card, 14.0, c.surfaces.raised, border);
+        let ix = card.x0 + 34.0;
+        Self::draw_source_icon(
+            scene,
+            t,
+            src.kind,
+            Point::new(ix, card.y0 + 30.0),
+            13.0,
+            theme.accent_primary,
+        );
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            &src.path,
+            17.0,
+            c.text_primary,
+            ix + 28.0,
+            card.y0 + 16.0,
+        );
+        let kind = match src.kind {
+            SourceKind::Home => "Home directory",
+            SourceKind::System => "System configuration",
+            SourceKind::Workspace => "Collaborative workspace",
+            SourceKind::Custom => "Custom path",
+        };
+        paint::text(
+            scene,
+            tr,
+            t,
+            kind,
+            12.0,
+            c.text_dim,
+            ix + 28.0,
+            card.y0 + 40.0,
+        );
 
-            if narrow {
-                // Single compact stats line.
-                let stats = format!(
-                    "{} · {} snapshots · {}",
-                    src.cadence.label(),
-                    self.catalog.count_for(&src.id),
-                    ui::format::bytes(self.catalog.protected_bytes(&src.id)),
-                );
-                paint::text(
-                    scene,
-                    tr,
-                    t,
-                    &stats,
-                    12.0,
-                    c.text_dim,
-                    ix + 28.0,
-                    card.y0 + 60.0,
-                );
-            } else {
-                // Stat columns.
-                let stat = |sc: &mut Scene,
-                            tr: &mut TextRenderer,
-                            x: f64,
-                            label: &str,
-                            value: &str,
-                            col: Color| {
-                    paint::text(sc, tr, t, label, 10.5, c.text_dim, x, card.y0 + 16.0);
-                    paint::text_bold(sc, tr, t, value, 15.0, col, x, card.y0 + 32.0);
-                };
-                let col0 = card.x0 + card.width() * 0.46;
-                let col1 = card.x0 + card.width() * 0.62;
-                let col2 = card.x0 + card.width() * 0.78;
-                stat(
-                    scene,
-                    tr,
-                    col0,
-                    "CADENCE",
-                    src.cadence.label(),
-                    c.text_primary,
-                );
-                stat(
-                    scene,
-                    tr,
-                    col1,
-                    "SNAPSHOTS",
-                    &format!("{}", self.catalog.count_for(&src.id)),
-                    c.semantic.info,
-                );
-                stat(
-                    scene,
-                    tr,
-                    col2,
-                    "PROTECTED",
-                    &ui::format::bytes(self.catalog.protected_bytes(&src.id)),
-                    theme.accent_primary,
-                );
-            }
-
-            // Health + next-run + enable toggle.
-            paint::dot(
-                scene,
-                t,
-                Point::new(card.x0 + 16.0, card.y0 + card_h - 18.0),
-                3.5,
-                Self::health_color(theme, src.health),
-            );
-            paint::text(
-                scene,
-                tr,
-                t,
-                &format!("Next run {}", src.next_run),
-                11.5,
-                c.text_dim,
-                card.x0 + 28.0,
-                card.y0 + card_h - 24.0,
-            );
-
-            // Enable switch (shared Toggle look).
-            let tw = 52.0;
-            let tog = Rect::new(
-                card.x1 - 22.0 - tw,
-                card.y0 + card_h - 30.0,
-                card.x1 - 22.0,
-                card.y0 + card_h - 30.0 + 22.0,
-            );
-            let on = src.enabled;
-            Toggle::paint(scene, t, theme, &ToggleFace::new(tog, on));
-            paint::text_right(
-                scene,
-                tr,
-                t,
-                if on { "Enabled" } else { "Paused" },
-                10.5,
-                c.text_dim,
-                tog.x0 - 8.0,
-                tog.center().y - 5.0,
-            );
-
-            self.hits.push((card, Hit::Source(Some(src.id.clone()))));
-            y += card_h + 12.0;
+        if narrow {
+            Self::draw_source_card_stats_narrow(scene, t, tr, theme, &self.catalog, card, ix, src);
+        } else {
+            Self::draw_source_card_stats_wide(scene, t, tr, theme, &self.catalog, card, src);
         }
 
-        // Recent activity feed fills the remaining space.
-        let region = Rect::new(content.x0, y + 10.0, content.x1, content.y1);
-        if region.height() > 80.0 {
-            self.draw_recent_activity(scene, t, tr, theme, region);
-        }
+        self.draw_source_card_footer(scene, t, tr, theme, card, card_h, src);
+    }
+
+    /// The health dot, next-run label, and enable toggle at the bottom of a
+    /// source card. Split out of [`Self::draw_source_card`] to keep it under
+    /// the line budget.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_source_card_footer(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        card_h: f64,
+        src: &Source,
+    ) {
+        let c = &theme.tokens.colors;
+        paint::dot(
+            scene,
+            t,
+            Point::new(card.x0 + 16.0, card.y0 + card_h - 18.0),
+            3.5,
+            Self::health_color(theme, src.health),
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            &format!("Next run {}", src.next_run),
+            11.5,
+            c.text_dim,
+            card.x0 + 28.0,
+            card.y0 + card_h - 24.0,
+        );
+
+        // Enable switch (shared Toggle look).
+        let tw = 52.0;
+        let tog = Rect::new(
+            card.x1 - 22.0 - tw,
+            card.y0 + card_h - 30.0,
+            card.x1 - 22.0,
+            card.y0 + card_h - 30.0 + 22.0,
+        );
+        let on = src.enabled;
+        Toggle::paint(scene, t, theme, &ToggleFace::new(tog, on));
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            if on { "Enabled" } else { "Paused" },
+            10.5,
+            c.text_dim,
+            tog.x0 - 8.0,
+            tog.center().y - 5.0,
+        );
+
+        self.hits.push((card, Hit::Source(Some(src.id.clone()))));
+    }
+
+    /// The single compact stats line shown for a source card at narrow
+    /// widths. Split out of [`Self::draw_source_card`] to keep it under the
+    /// line budget.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_source_card_stats_narrow(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        catalog: &Catalog,
+        card: Rect,
+        ix: f64,
+        src: &Source,
+    ) {
+        let c = &theme.tokens.colors;
+        let stats = format!(
+            "{} · {} snapshots · {}",
+            src.cadence.label(),
+            catalog.count_for(&src.id),
+            ui::format::bytes(catalog.protected_bytes(&src.id)),
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            &stats,
+            12.0,
+            c.text_dim,
+            ix + 28.0,
+            card.y0 + 60.0,
+        );
+    }
+
+    /// The three cadence/snapshots/protected stat columns shown for a source
+    /// card at wide widths. Split out of [`Self::draw_source_card`] to keep
+    /// it under the line budget.
+    fn draw_source_card_stats_wide(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        catalog: &Catalog,
+        card: Rect,
+        src: &Source,
+    ) {
+        let c = &theme.tokens.colors;
+        let stat = |sc: &mut Scene,
+                    tr: &mut TextRenderer,
+                    x: f64,
+                    label: &str,
+                    value: &str,
+                    col: Color| {
+            paint::text(sc, tr, t, label, 10.5, c.text_dim, x, card.y0 + 16.0);
+            paint::text_bold(sc, tr, t, value, 15.0, col, x, card.y0 + 32.0);
+        };
+        let col0 = card.x0 + card.width() * 0.46;
+        let col1 = card.x0 + card.width() * 0.62;
+        let col2 = card.x0 + card.width() * 0.78;
+        stat(
+            scene,
+            tr,
+            col0,
+            "CADENCE",
+            src.cadence.label(),
+            c.text_primary,
+        );
+        stat(
+            scene,
+            tr,
+            col1,
+            "SNAPSHOTS",
+            &format!("{}", catalog.count_for(&src.id)),
+            c.semantic.info,
+        );
+        stat(
+            scene,
+            tr,
+            col2,
+            "PROTECTED",
+            &ui::format::bytes(catalog.protected_bytes(&src.id)),
+            theme.accent_primary,
+        );
     }
 
     fn draw_recent_activity(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1651,124 +1824,25 @@ impl BackupsApp {
             .collect();
         let row_h = if narrow { 46.0 } else { 38.0 };
         let y0 = region.y0 + 44.0;
-        for (i, s) in events.iter().enumerate() {
+        for (i, event) in events.iter().enumerate() {
             let ry = y0 + i as f64 * row_h;
             if ry + row_h > region.y1 - 8.0 {
                 break;
             }
             let path = self
                 .catalog
-                .source(&s.source_id)
-                .map(|x| x.path.clone())
+                .source(&event.source_id)
+                .map(|found| found.path.clone())
                 .unwrap_or_default();
-            let action = format!("{} snapshot of {}", s.kind.label(), path);
-            let when = format!("{} {}", Catalog::day_label(s.day), s.time);
+            let action = format!("{} snapshot of {}", event.kind.label(), path);
+            let when = format!("{} {}", Catalog::day_label(event.day), event.time);
             if narrow {
-                paint::dot(
-                    scene,
-                    t,
-                    Point::new(region.x0 + 22.0, ry + 12.0),
-                    4.0,
-                    Self::status_color(theme, s.status),
-                );
-                paint::text(
-                    scene,
-                    tr,
-                    t,
-                    &when,
-                    12.5,
-                    c.text_primary,
-                    region.x0 + 36.0,
-                    ry + 4.0,
-                );
-                paint::text_right(
-                    scene,
-                    tr,
-                    t,
-                    &ui::format::bytes(s.delta_bytes),
-                    12.0,
-                    c.text_dim,
-                    region.x1 - 18.0,
-                    ry + 4.0,
-                );
-                paint::text(
-                    scene,
-                    tr,
-                    t,
-                    &action,
-                    11.5,
-                    c.text_dim,
-                    region.x0 + 36.0,
-                    ry + 24.0,
+                Self::draw_recent_activity_row_narrow(
+                    scene, t, tr, theme, region, ry, event, &when, &action,
                 );
             } else {
-                let cy = ry + row_h / 2.0;
-                paint::dot(
-                    scene,
-                    t,
-                    Point::new(region.x0 + 22.0, cy),
-                    4.0,
-                    Self::status_color(theme, s.status),
-                );
-                paint::text(
-                    scene,
-                    tr,
-                    t,
-                    &when,
-                    12.5,
-                    c.text_primary,
-                    region.x0 + 36.0,
-                    cy - 7.0,
-                );
-                paint::text(
-                    scene,
-                    tr,
-                    t,
-                    &action,
-                    12.0,
-                    c.text_dim,
-                    region.x0 + 168.0,
-                    cy - 7.0,
-                );
-                let dest = self
-                    .catalog
-                    .destination(&s.dest_id)
-                    .map(|d| d.name.clone())
-                    .unwrap_or_default();
-                paint::text(
-                    scene,
-                    tr,
-                    t,
-                    &format!("→ {dest}"),
-                    11.5,
-                    Self::dest_color(theme, &s.dest_id),
-                    region.x0 + 440.0,
-                    cy - 6.0,
-                );
-                let status = match s.status {
-                    SnapStatus::Complete => "completed",
-                    SnapStatus::Verifying => "verifying",
-                    SnapStatus::Failed => "failed",
-                };
-                paint::text_right(
-                    scene,
-                    tr,
-                    t,
-                    status,
-                    11.5,
-                    Self::status_color(theme, s.status),
-                    region.x1 - 110.0,
-                    cy - 6.0,
-                );
-                paint::text_right(
-                    scene,
-                    tr,
-                    t,
-                    &ui::format::bytes(s.delta_bytes),
-                    12.0,
-                    c.text_dim,
-                    region.x1 - 18.0,
-                    cy - 7.0,
+                self.draw_recent_activity_row_wide(
+                    scene, t, tr, theme, region, ry, row_h, event, &when, &action,
                 );
             }
             if i + 1 < events.len() && ry + row_h * 2.0 <= region.y1 - 8.0 {
@@ -1783,6 +1857,149 @@ impl BackupsApp {
                 );
             }
         }
+    }
+
+    /// One narrow-layout recent-activity row: status dot, when + size on top,
+    /// the action beneath. Split out of [`Self::draw_recent_activity`] to
+    /// keep it under the line budget.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_recent_activity_row_narrow(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        region: Rect,
+        ry: f64,
+        event: &Snapshot,
+        when: &str,
+        action: &str,
+    ) {
+        let c = &theme.tokens.colors;
+        paint::dot(
+            scene,
+            t,
+            Point::new(region.x0 + 22.0, ry + 12.0),
+            4.0,
+            Self::status_color(theme, event.status),
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            when,
+            12.5,
+            c.text_primary,
+            region.x0 + 36.0,
+            ry + 4.0,
+        );
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            &ui::format::bytes(event.delta_bytes),
+            12.0,
+            c.text_dim,
+            region.x1 - 18.0,
+            ry + 4.0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            action,
+            11.5,
+            c.text_dim,
+            region.x0 + 36.0,
+            ry + 24.0,
+        );
+    }
+
+    /// One wide-layout recent-activity row: status dot, when, action, dest,
+    /// status label, size. Split out of [`Self::draw_recent_activity`] to
+    /// keep it under the line budget.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_recent_activity_row_wide(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        region: Rect,
+        ry: f64,
+        row_h: f64,
+        event: &Snapshot,
+        when: &str,
+        action: &str,
+    ) {
+        let c = &theme.tokens.colors;
+        let cy = ry + row_h / 2.0;
+        paint::dot(
+            scene,
+            t,
+            Point::new(region.x0 + 22.0, cy),
+            4.0,
+            Self::status_color(theme, event.status),
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            when,
+            12.5,
+            c.text_primary,
+            region.x0 + 36.0,
+            cy - 7.0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            action,
+            12.0,
+            c.text_dim,
+            region.x0 + 168.0,
+            cy - 7.0,
+        );
+        let dest = self
+            .catalog
+            .destination(&event.dest_id)
+            .map(|found| found.name.clone())
+            .unwrap_or_default();
+        paint::text(
+            scene,
+            tr,
+            t,
+            &format!("→ {dest}"),
+            11.5,
+            Self::dest_color(theme, &event.dest_id),
+            region.x0 + 440.0,
+            cy - 6.0,
+        );
+        let status = match event.status {
+            SnapStatus::Complete => "completed",
+            SnapStatus::Verifying => "verifying",
+            SnapStatus::Failed => "failed",
+        };
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            status,
+            11.5,
+            Self::status_color(theme, event.status),
+            region.x1 - 110.0,
+            cy - 6.0,
+        );
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            &ui::format::bytes(event.delta_bytes),
+            12.0,
+            c.text_dim,
+            region.x1 - 18.0,
+            cy - 7.0,
+        );
     }
 
     // ---- DESTINATIONS view ---------------------------------------------
@@ -1839,9 +2056,9 @@ impl BackupsApp {
             let card = Rect::new(x0, y0, x0 + cw, y0 + ch);
             let sel = self.ui.sel_dest.as_deref() == Some(d.id.as_str());
             if compact {
-                self.draw_dest_card_compact(scene, t, tr, theme, card, &d, sel);
+                Self::draw_dest_card_compact(scene, t, tr, theme, card, &d, sel);
             } else {
-                self.draw_dest_card_tall(scene, t, tr, theme, card, &d, sel);
+                Self::draw_dest_card_tall(scene, t, tr, theme, card, &d, sel);
             }
             self.hits.push((card, Hit::Dest(d.id.clone())));
         }
@@ -1907,7 +2124,6 @@ impl BackupsApp {
     /// The full repository card: a big capacity ring plus used/free figures.
     #[allow(clippy::too_many_arguments)]
     fn draw_dest_card_tall(
-        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1924,7 +2140,25 @@ impl BackupsApp {
         };
         paint::card(scene, t, card, 16.0, c.surfaces.raised, border);
 
-        self.draw_dest_icon(
+        Self::draw_dest_card_tall_header(scene, t, tr, theme, card, d);
+        Self::draw_dest_card_tall_ring(scene, t, tr, theme, card, d);
+        Self::draw_dest_card_tall_figures(scene, t, tr, theme, card, d);
+        Self::draw_dest_card_tall_footer(scene, t, tr, theme, card, d);
+    }
+
+    /// The icon + name + kind label at the top of a tall destination card.
+    /// Split out of [`Self::draw_dest_card_tall`] to keep it under the line
+    /// budget.
+    fn draw_dest_card_tall_header(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        d: &Destination,
+    ) {
+        let c = &theme.tokens.colors;
+        Self::draw_dest_icon(
             scene,
             t,
             d.kind,
@@ -1952,8 +2186,19 @@ impl BackupsApp {
             card.x0 + 24.0,
             card.y0 + 44.0,
         );
+    }
 
-        // Capacity ring.
+    /// The capacity ring in the middle of a tall destination card. Split out
+    /// of [`Self::draw_dest_card_tall`] to keep it under the line budget.
+    fn draw_dest_card_tall_ring(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        d: &Destination,
+    ) {
+        let c = &theme.tokens.colors;
         let frac = d.used_bytes as f64 / d.total_bytes as f64;
         let center = Point::new(card.center().x, card.y0 + 120.0);
         let ringcol = if frac > 0.85 {
@@ -1984,8 +2229,20 @@ impl BackupsApp {
             center.x + 40.0,
             center.y + 8.0,
         );
+    }
 
-        // Used / free figures.
+    /// The used/free byte figures beneath the ring on a tall destination
+    /// card. Split out of [`Self::draw_dest_card_tall`] to keep it under the
+    /// line budget.
+    fn draw_dest_card_tall_figures(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        d: &Destination,
+    ) {
+        let c = &theme.tokens.colors;
         let fy = card.y0 + 184.0;
         paint::text(scene, tr, t, "Used", 11.0, c.text_dim, card.x0 + 24.0, fy);
         paint::text_right(
@@ -2018,8 +2275,20 @@ impl BackupsApp {
             card.x1 - 24.0,
             fy + 18.0,
         );
+    }
 
-        // Footer chips: encryption + last sync.
+    /// The footer chips (encryption + last sync) at the bottom of a tall
+    /// destination card. Split out of [`Self::draw_dest_card_tall`] to keep
+    /// it under the line budget.
+    fn draw_dest_card_tall_footer(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        d: &Destination,
+    ) {
+        let c = &theme.tokens.colors;
         let mut chx = card.x0 + 24.0;
         if d.encrypted {
             chx += paint::tag_pill(
@@ -2047,9 +2316,7 @@ impl BackupsApp {
 
     /// The compact repository card for a single-column (narrow) layout: name +
     /// percent on top, a capacity bar and figures beneath — no crushed ring.
-    #[allow(clippy::too_many_arguments)]
     fn draw_dest_card_compact(
-        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -2065,8 +2332,23 @@ impl BackupsApp {
             c.border_white_10
         };
         paint::card(scene, t, card, 14.0, c.surfaces.raised, border);
+        Self::draw_dest_card_compact_header(scene, t, tr, theme, card, d);
+        Self::draw_dest_card_compact_body(scene, t, tr, theme, card, d);
+    }
 
-        self.draw_dest_icon(
+    /// The icon + name + kind label + capacity percent at the top of a
+    /// compact destination card. Split out of
+    /// [`Self::draw_dest_card_compact`] to keep it under the line budget.
+    fn draw_dest_card_compact_header(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        d: &Destination,
+    ) {
+        let c = &theme.tokens.colors;
+        Self::draw_dest_icon(
             scene,
             t,
             d.kind,
@@ -2111,8 +2393,21 @@ impl BackupsApp {
             card.x1 - 20.0,
             card.y0 + 18.0,
         );
+    }
 
-        // Capacity bar + used/free figures.
+    /// The capacity bar, used/free figures, and trailing chips on a compact
+    /// destination card. Split out of [`Self::draw_dest_card_compact`] to
+    /// keep it under the line budget.
+    fn draw_dest_card_compact_body(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        d: &Destination,
+    ) {
+        let c = &theme.tokens.colors;
+        let frac = d.used_bytes as f64 / d.total_bytes as f64;
         let bar = Rect::new(
             card.x0 + 22.0,
             card.y0 + 60.0,
@@ -2171,7 +2466,7 @@ impl BackupsApp {
     }
 
     fn draw_dest_distribution(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -2194,36 +2489,40 @@ impl BackupsApp {
             .catalog
             .destinations
             .iter()
-            .map(|d| {
-                let n = self
+            .map(|dest| {
+                let count = self
                     .catalog
                     .snapshots
                     .iter()
-                    .filter(|s| s.dest_id == d.id)
+                    .filter(|snap| snap.dest_id == dest.id)
                     .count();
-                (d.id.clone(), d.name.clone(), n)
+                (dest.id.clone(), dest.name.clone(), count)
             })
             .collect();
-        let total: usize = counts.iter().map(|(_, _, n)| *n).sum::<usize>().max(1);
+        let total: usize = counts
+            .iter()
+            .map(|(_, _, count)| *count)
+            .sum::<usize>()
+            .max(1);
 
         // Stacked proportional bar.
         let bar = Rect::new(content.x0, y0 + 22.0, content.x1, y0 + 40.0);
         paint::fill_rrect(scene, t, bar, 9.0, c.neutral[2]);
-        let mut x = bar.x0;
-        for (id, _, n) in &counts {
-            let w = bar.width() * (*n as f64 / total as f64);
-            if w > 1.0 {
-                let seg = Rect::new(x, bar.y0, (x + w).min(bar.x1), bar.y1);
+        let mut bar_x = bar.x0;
+        for (id, _, count) in &counts {
+            let bar_w = bar.width() * (*count as f64 / total as f64);
+            if bar_w > 1.0 {
+                let seg = Rect::new(bar_x, bar.y0, (bar_x + bar_w).min(bar.x1), bar.y1);
                 paint::fill_rrect(scene, t, seg, 9.0, Self::dest_color(theme, id));
             }
-            x += w;
+            bar_x += bar_w;
         }
 
         // Legend — wraps onto further rows so it never runs off the right edge.
         let mut lx = content.x0;
         let mut ly = y0 + 56.0;
-        for (id, name, n) in &counts {
-            let label = format!("{name}  ·  {n} snapshots");
+        for (id, name, count) in &counts {
+            let label = format!("{name}  ·  {count} snapshots");
             let (w, _) = tr.measure(&label, 12.0, None);
             let item_w = 16.0 + f64::from(w) + 28.0;
             if lx + item_w > content.x1 && lx > content.x0 + 0.5 {
@@ -2252,9 +2551,42 @@ impl BackupsApp {
         theme: &Theme,
         content: Rect,
     ) {
-        let c = &theme.tokens.colors;
         // Below this the editor + summary stack vertically instead of a 60/40 split.
         let stacked = content.width() < 660.0;
+        Self::draw_schedules_header(scene, t, tr, theme, content, stacked);
+
+        let panel = Self::schedules_panel_rect(content, stacked);
+        let c = &theme.tokens.colors;
+        paint::card(scene, t, panel, 16.0, c.surfaces.raised, c.border_white_10);
+
+        let p = self.ui.policy;
+        self.draw_schedules_editor_rows(scene, t, tr, theme, panel, p);
+
+        // Summary of effective retention — beside the editor when wide, stacked
+        // beneath it when narrow.
+        let side = Self::schedules_side_rect(content, panel, stacked);
+        Self::draw_schedules_summary(scene, t, tr, theme, side, p);
+
+        // Retention ruler — one lane per class, dots = snapshots kept. Sits
+        // below whichever of {editor, stacked summary} is lowest.
+        let ruler_top = if stacked { side.y1 } else { panel.y1 } + 22.0;
+        let ruler = Rect::new(content.x0, ruler_top, content.x1, ruler_top + 200.0);
+        if ruler.y1 < content.y1 {
+            Self::draw_retention_ruler(scene, t, tr, theme, ruler, p);
+        }
+    }
+
+    /// The "Retention policy" title + subtitle. Split out of
+    /// [`Self::draw_schedules_view`] to keep it under the line budget.
+    fn draw_schedules_header(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        stacked: bool,
+    ) {
+        let c = &theme.tokens.colors;
         paint::text_bold(
             scene,
             tr,
@@ -2280,97 +2612,134 @@ impl BackupsApp {
             content.x0,
             content.y0 + 24.0,
         );
+    }
 
+    /// The editor panel's rect: full width when stacked, 60% when
+    /// side-by-side with the summary. Split out of
+    /// [`Self::draw_schedules_view`] to keep it under the line budget.
+    fn schedules_panel_rect(content: Rect, stacked: bool) -> Rect {
         let panel_w = if stacked {
             content.width()
         } else {
             content.width() * 0.6
         };
-        let panel = Rect::new(
+        Rect::new(
             content.x0,
             content.y0 + 52.0,
             content.x0 + panel_w,
             content.y0 + 52.0 + 4.0 * 64.0 + 16.0,
-        );
-        paint::card(scene, t, panel, 16.0, c.surfaces.raised, c.border_white_10);
+        )
+    }
 
-        let p = self.ui.policy;
+    /// The four per-class retention rows inside the editor panel. Split out
+    /// of [`Self::draw_schedules_view`] to keep it under the line budget.
+    fn draw_schedules_editor_rows(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        p: RetentionPolicy,
+    ) {
         let vals = [p.hourly, p.daily, p.weekly, p.monthly];
         for (i, field) in PolicyField::ALL.iter().enumerate() {
-            let ry = panel.y0 + 14.0 + i as f64 * 64.0;
-            let row = Rect::new(panel.x0 + 12.0, ry, panel.x1 - 12.0, ry + 56.0);
-            let focused = self.policy_focus == i;
-            if focused {
-                paint::fill_rrect(
-                    scene,
-                    t,
-                    row,
-                    10.0,
-                    theme.accent_primary.with_alpha_factor(0.12),
-                );
-                paint::stroke_rrect(
-                    scene,
-                    t,
-                    row,
-                    10.0,
-                    theme.accent_primary.with_alpha_factor(0.5),
-                    1.0,
-                );
-            }
-            let rc = Self::retention_color(
-                theme,
-                match field {
-                    PolicyField::Hourly => Retention::Hourly,
-                    PolicyField::Daily => Retention::Daily,
-                    PolicyField::Weekly => Retention::Weekly,
-                    PolicyField::Monthly => Retention::Monthly,
-                },
-            );
-            paint::dot(scene, t, Point::new(row.x0 + 18.0, row.center().y), 5.0, rc);
-            paint::text_bold(
-                scene,
-                tr,
-                t,
-                field.label(),
-                14.5,
-                c.text_primary,
-                row.x0 + 34.0,
-                row.y0 + 12.0,
-            );
-            paint::text(
-                scene,
-                tr,
-                t,
-                &format!("keep over the {}", field.unit()),
-                11.0,
-                c.text_dim,
-                row.x0 + 34.0,
-                row.y0 + 32.0,
-            );
+            self.draw_schedules_editor_row(scene, t, tr, theme, panel, i, *field, vals[i]);
+        }
+    }
 
-            // Stepper: [-]  value  [+]
-            let cy = row.center().y;
-            let plus = Rect::new(row.x1 - 44.0, cy - 18.0, row.x1 - 8.0, cy + 18.0);
-            let valx0 = plus.x0 - 64.0;
-            let minus = Rect::new(valx0 - 44.0, cy - 18.0, valx0 - 8.0, cy + 18.0);
-            self.draw_stepper(scene, t, tr, theme, minus, "–", Hit::Policy(*field, -1));
-            self.draw_stepper(scene, t, tr, theme, plus, "+", Hit::Policy(*field, 1));
-            paint::text_center(
+    /// One retention-class row: focus highlight, dot + label + unit, and the
+    /// -/value/+ stepper. Split out of [`Self::draw_schedules_editor_rows`]
+    /// to keep it under the line budget.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_schedules_editor_row(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        i: usize,
+        field: PolicyField,
+        value: u32,
+    ) {
+        let c = &theme.tokens.colors;
+        let ry = panel.y0 + 14.0 + i as f64 * 64.0;
+        let row = Rect::new(panel.x0 + 12.0, ry, panel.x1 - 12.0, ry + 56.0);
+        let focused = self.policy_focus == i;
+        if focused {
+            paint::fill_rrect(
                 scene,
-                tr,
                 t,
-                &format!("{}", vals[i]),
-                20.0,
-                c.text_primary,
-                valx0 - 8.0,
-                plus.x0,
-                cy - 12.0,
+                row,
+                10.0,
+                theme.accent_primary.with_alpha_factor(0.12),
+            );
+            paint::stroke_rrect(
+                scene,
+                t,
+                row,
+                10.0,
+                theme.accent_primary.with_alpha_factor(0.5),
+                1.0,
             );
         }
+        let rc = Self::retention_color(
+            theme,
+            match field {
+                PolicyField::Hourly => Retention::Hourly,
+                PolicyField::Daily => Retention::Daily,
+                PolicyField::Weekly => Retention::Weekly,
+                PolicyField::Monthly => Retention::Monthly,
+            },
+        );
+        paint::dot(scene, t, Point::new(row.x0 + 18.0, row.center().y), 5.0, rc);
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            field.label(),
+            14.5,
+            c.text_primary,
+            row.x0 + 34.0,
+            row.y0 + 12.0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            &format!("keep over the {}", field.unit()),
+            11.0,
+            c.text_dim,
+            row.x0 + 34.0,
+            row.y0 + 32.0,
+        );
 
-        // Summary of effective retention — beside the editor when wide, stacked
-        // beneath it when narrow.
-        let side = if stacked {
+        // Stepper: [-]  value  [+]
+        let cy = row.center().y;
+        let plus = Rect::new(row.x1 - 44.0, cy - 18.0, row.x1 - 8.0, cy + 18.0);
+        let valx0 = plus.x0 - 64.0;
+        let minus = Rect::new(valx0 - 44.0, cy - 18.0, valx0 - 8.0, cy + 18.0);
+        self.draw_stepper(scene, t, tr, theme, minus, "–", Hit::Policy(field, -1));
+        self.draw_stepper(scene, t, tr, theme, plus, "+", Hit::Policy(field, 1));
+        paint::text_center(
+            scene,
+            tr,
+            t,
+            &format!("{value}"),
+            20.0,
+            c.text_primary,
+            valx0 - 8.0,
+            plus.x0,
+            cy - 12.0,
+        );
+    }
+
+    /// The side summary panel's rect: beside the editor when wide, stacked
+    /// beneath it when narrow. Split out of [`Self::draw_schedules_view`] to
+    /// keep it under the line budget.
+    fn schedules_side_rect(content: Rect, panel: Rect, stacked: bool) -> Rect {
+        if stacked {
             Rect::new(
                 content.x0,
                 panel.y1 + 16.0,
@@ -2379,7 +2748,20 @@ impl BackupsApp {
             )
         } else {
             Rect::new(panel.x1 + 18.0, content.y0 + 52.0, content.x1, panel.y1)
-        };
+        }
+    }
+
+    /// The "Effective window" summary card. Split out of
+    /// [`Self::draw_schedules_view`] to keep it under the line budget.
+    fn draw_schedules_summary(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        side: Rect,
+        p: RetentionPolicy,
+    ) {
+        let c = &theme.tokens.colors;
         paint::card(
             scene,
             t,
@@ -2405,12 +2787,12 @@ impl BackupsApp {
             format!("{} weekly  →  last {} weeks", p.weekly, p.weekly),
             format!("{} monthly →  last {} months", p.monthly, p.monthly),
         ];
-        for (i, l) in lines.iter().enumerate() {
+        for (i, line) in lines.iter().enumerate() {
             paint::text(
                 scene,
                 tr,
                 t,
-                l,
+                line,
                 12.0,
                 c.text_dim,
                 side.x0 + 16.0,
@@ -2446,18 +2828,13 @@ impl BackupsApp {
             side.x0 + 16.0,
             side.y0 + 180.0,
         );
-
-        // Retention ruler — one lane per class, dots = snapshots kept. Sits
-        // below whichever of {editor, stacked summary} is lowest.
-        let ruler_top = if stacked { side.y1 } else { panel.y1 } + 22.0;
-        let ruler = Rect::new(content.x0, ruler_top, content.x1, ruler_top + 200.0);
-        if ruler.y1 < content.y1 {
-            self.draw_retention_ruler(scene, t, tr, theme, ruler, p);
-        }
     }
 
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/c/p/n/r/k are the standard graphics convention: transform, colour tokens, the RetentionPolicy, dot count, dot radius, and the dot loop index"
+    )]
     fn draw_retention_ruler(
-        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -2593,9 +2970,6 @@ impl BackupsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let c = &theme.tokens.colors;
-        // Scrim.
-        paint::fill_rect(scene, t, self.rect, c.surfaces.overlay);
         let snap = self
             .ui
             .sel_snapshot
@@ -2604,18 +2978,42 @@ impl BackupsApp {
             .cloned();
         let Some(snap) = snap else { return };
         let src = self.catalog.source(&snap.source_id);
+
+        let (m, narrow_modal) =
+            Self::draw_restore_modal_frame(scene, t, tr, theme, self.rect, &snap, src);
+        let (tree, opt) = Self::draw_restore_modal_layout(m, narrow_modal);
+        self.draw_restore_file_tree(scene, t, tr, theme, tree, &snap);
+        Self::draw_restore_options(scene, t, tr, theme, opt, &snap);
+        self.draw_restore_footer_buttons(scene, t, tr, theme, m);
+    }
+
+    /// The modal's scrim, card frame, and title/subtitle. Returns the modal
+    /// rect and whether it's in the narrow (stacked) layout. Split out of
+    /// [`Self::draw_restore_modal`] to keep it under the line budget.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_restore_modal_frame(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        window: Rect,
+        snap: &Snapshot,
+        src: Option<&Source>,
+    ) -> (Rect, bool) {
+        let c = &theme.tokens.colors;
+        paint::fill_rect(scene, t, window, c.surfaces.overlay);
         // Clamp the modal to the window so it never overflows a small screen.
         // When it's too narrow for two columns it stacks, and needs more height
         // so the options don't crowd the footer buttons.
-        let mw = 760.0_f64.min(self.rect.width() - 40.0).max(300.0);
-        let narrow_modal = mw < 620.0;
+        let modal_w = 760.0_f64.min(window.width() - 40.0).max(300.0);
+        let narrow_modal = modal_w < 620.0;
         let target_h: f64 = if narrow_modal { 620.0 } else { 460.0 };
-        let mh = target_h.min(self.rect.height() - 40.0).max(300.0);
+        let modal_h = target_h.min(window.height() - 40.0).max(300.0);
         let m = Rect::new(
-            self.rect.center().x - mw / 2.0,
-            self.rect.center().y - mh / 2.0,
-            self.rect.center().x + mw / 2.0,
-            self.rect.center().y + mh / 2.0,
+            window.center().x - modal_w / 2.0,
+            window.center().y - modal_h / 2.0,
+            window.center().x + modal_w / 2.0,
+            window.center().y + modal_h / 2.0,
         );
         paint::card(scene, t, m, 18.0, c.surfaces.raised, c.border_white_20);
 
@@ -2645,12 +3043,17 @@ impl BackupsApp {
             m.x0 + 24.0,
             m.y0 + 46.0,
         );
+        (m, narrow_modal)
+    }
 
-        // File browser + options: side by side when wide, stacked (tree over
-        // options) when the modal is too narrow for two readable columns.
+    /// Split the modal body into the file-tree and options-column rects: side
+    /// by side when wide, stacked (tree over options) when the modal is too
+    /// narrow for two readable columns. Split out of
+    /// [`Self::draw_restore_modal`] to keep it under the line budget.
+    fn draw_restore_modal_layout(m: Rect, narrow_modal: bool) -> (Rect, Rect) {
         let body_y = m.y0 + 74.0;
         let body_bottom = m.y1 - 76.0;
-        let (tree, opt) = if narrow_modal {
+        if narrow_modal {
             // Give the options column enough height for its four rows + the
             // estimate line, so nothing overlaps.
             let mid = body_y + (body_bottom - body_y) * 0.46;
@@ -2659,12 +3062,28 @@ impl BackupsApp {
                 Rect::new(m.x0 + 24.0, mid + 10.0, m.x1 - 24.0, body_bottom),
             )
         } else {
-            let split = m.x0 + mw * 0.58;
+            let split = m.x0 + m.width() * 0.58;
             (
                 Rect::new(m.x0 + 24.0, body_y, split - 12.0, body_bottom),
                 Rect::new(split + 12.0, body_y, m.x1 - 24.0, body_bottom),
             )
-        };
+        }
+    }
+
+    /// The file browser: an honest empty state when the snapshot has no
+    /// index, otherwise the row-per-file listing (each a hit target). Split
+    /// out of [`Self::draw_restore_modal`] to keep it under the line budget.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_restore_file_tree(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        tree: Rect,
+        snap: &Snapshot,
+    ) {
+        let c = &theme.tokens.colors;
         paint::card(
             scene,
             t,
@@ -2708,65 +3127,96 @@ impl BackupsApp {
             if ry + row_h > tree.y1 - 4.0 {
                 break;
             }
-            let row = Rect::new(tree.x0 + 6.0, ry, tree.x1 - 6.0, ry + row_h - 2.0);
-            let sel = self.file_sel == i;
-            if sel {
-                paint::fill_rrect(
-                    scene,
-                    t,
-                    row,
-                    7.0,
-                    theme.accent_primary.with_alpha_factor(0.18),
-                );
-            } else if self.hover == Some(Hit::FileRow(i)) {
-                paint::fill_rrect(scene, t, row, 7.0, c.surface_white_5);
-            }
-            let ix = row.x0 + 10.0 + f.depth as f64 * 18.0;
-            let icol = if f.is_dir {
-                theme.accent_primary
-            } else {
-                c.text_dim
-            };
-            if f.is_dir {
-                // folder glyph
-                let fr = Rect::new(ix, row.center().y - 5.0, ix + 13.0, row.center().y + 5.0);
-                paint::fill_rrect(scene, t, fr, 2.0, icol.with_alpha_factor(0.8));
-            } else {
-                let fr = Rect::new(
-                    ix + 1.0,
-                    row.center().y - 6.0,
-                    ix + 11.0,
-                    row.center().y + 6.0,
-                );
-                paint::stroke_rrect(scene, t, fr, 2.0, icol, 1.3);
-            }
-            paint::text_vc(
+            self.draw_restore_file_row(scene, t, tr, theme, tree, ry, row_h, i, f);
+        }
+    }
+
+    /// One row of the restore file tree: selection/hover fill, folder-or-file
+    /// glyph, name, and size. Split out of [`Self::draw_restore_file_tree`]
+    /// to keep it under the line budget.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_restore_file_row(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        tree: Rect,
+        ry: f64,
+        row_h: f64,
+        i: usize,
+        f: &SnapFile,
+    ) {
+        let c = &theme.tokens.colors;
+        let row = Rect::new(tree.x0 + 6.0, ry, tree.x1 - 6.0, ry + row_h - 2.0);
+        let sel = self.file_sel == i;
+        if sel {
+            paint::fill_rrect(
+                scene,
+                t,
+                row,
+                7.0,
+                theme.accent_primary.with_alpha_factor(0.18),
+            );
+        } else if self.hover == Some(Hit::FileRow(i)) {
+            paint::fill_rrect(scene, t, row, 7.0, c.surface_white_5);
+        }
+        let ix = row.x0 + 10.0 + f.depth as f64 * 18.0;
+        let icol = if f.is_dir {
+            theme.accent_primary
+        } else {
+            c.text_dim
+        };
+        if f.is_dir {
+            // folder glyph
+            let fr = Rect::new(ix, row.center().y - 5.0, ix + 13.0, row.center().y + 5.0);
+            paint::fill_rrect(scene, t, fr, 2.0, icol.with_alpha_factor(0.8));
+        } else {
+            let fr = Rect::new(
+                ix + 1.0,
+                row.center().y - 6.0,
+                ix + 11.0,
+                row.center().y + 6.0,
+            );
+            paint::stroke_rrect(scene, t, fr, 2.0, icol, 1.3);
+        }
+        paint::text_vc(
+            scene,
+            tr,
+            t,
+            &f.name,
+            12.5,
+            c.text_primary,
+            ix + 20.0,
+            row.y0,
+            row_h - 2.0,
+        );
+        if !f.size.is_empty() {
+            paint::text_right(
                 scene,
                 tr,
                 t,
-                &f.name,
-                12.5,
-                c.text_primary,
-                ix + 20.0,
-                row.y0,
-                row_h - 2.0,
+                &f.size,
+                11.0,
+                c.text_dim,
+                row.x1 - 10.0,
+                row.center().y - 6.0,
             );
-            if !f.size.is_empty() {
-                paint::text_right(
-                    scene,
-                    tr,
-                    t,
-                    &f.size,
-                    11.0,
-                    c.text_dim,
-                    row.x1 - 10.0,
-                    row.center().y - 6.0,
-                );
-            }
-            self.hits.push((row, Hit::FileRow(i)));
         }
+        self.hits.push((row, Hit::FileRow(i)));
+    }
 
-        // Options column (laid out above).
+    /// The restore-options checkboxes + size summary. Split out of
+    /// [`Self::draw_restore_modal`] to keep it under the line budget.
+    fn draw_restore_options(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        opt: Rect,
+        snap: &Snapshot,
+    ) {
+        let c = &theme.tokens.colors;
         paint::text_bold(
             scene,
             tr,
@@ -2785,43 +3235,7 @@ impl BackupsApp {
         ];
         for (i, (label, on)) in opts.iter().enumerate() {
             let oy = opt.y0 + 40.0 + i as f64 * 38.0;
-            let box_r = Rect::new(opt.x0, oy, opt.x0 + 18.0, oy + 18.0);
-            paint::fill_rrect(
-                scene,
-                t,
-                box_r,
-                5.0,
-                if *on {
-                    theme.accent_primary
-                } else {
-                    c.neutral[2]
-                },
-            );
-            paint::stroke_rrect(scene, t, box_r, 5.0, c.border_white_10, 1.0);
-            if *on {
-                paint::poly(
-                    scene,
-                    t,
-                    &[
-                        (box_r.x0 + 4.0, box_r.center().y),
-                        (box_r.x0 + 7.5, box_r.y1 - 5.0),
-                        (box_r.x1 - 4.0, box_r.y0 + 5.0),
-                    ],
-                    c.text_primary,
-                    2.0,
-                    false,
-                );
-            }
-            paint::text(
-                scene,
-                tr,
-                t,
-                label,
-                12.5,
-                c.text_primary,
-                box_r.x1 + 12.0,
-                oy + 2.0,
-            );
+            Self::draw_restore_option_row(scene, t, tr, theme, opt.x0, oy, label, *on);
         }
         // Size summary.
         paint::hline(
@@ -2853,8 +3267,73 @@ impl BackupsApp {
             opt.x1,
             opt.y1 - 32.0,
         );
+    }
 
-        // Footer buttons.
+    /// One restore-option checkbox row: box, checkmark when on, label. Split
+    /// out of [`Self::draw_restore_options`] to keep it under the line
+    /// budget.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_restore_option_row(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        x0: f64,
+        oy: f64,
+        label: &str,
+        on: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        let box_r = Rect::new(x0, oy, x0 + 18.0, oy + 18.0);
+        paint::fill_rrect(
+            scene,
+            t,
+            box_r,
+            5.0,
+            if on {
+                theme.accent_primary
+            } else {
+                c.neutral[2]
+            },
+        );
+        paint::stroke_rrect(scene, t, box_r, 5.0, c.border_white_10, 1.0);
+        if on {
+            paint::poly(
+                scene,
+                t,
+                &[
+                    (box_r.x0 + 4.0, box_r.center().y),
+                    (box_r.x0 + 7.5, box_r.y1 - 5.0),
+                    (box_r.x1 - 4.0, box_r.y0 + 5.0),
+                ],
+                c.text_primary,
+                2.0,
+                false,
+            );
+        }
+        paint::text(
+            scene,
+            tr,
+            t,
+            label,
+            12.5,
+            c.text_primary,
+            box_r.x1 + 12.0,
+            oy + 2.0,
+        );
+    }
+
+    /// Footer Restore/Cancel buttons. Split out of [`Self::draw_restore_modal`]
+    /// to keep it under the line budget.
+    fn draw_restore_footer_buttons(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        m: Rect,
+    ) {
+        let c = &theme.tokens.colors;
         let by = m.y1 - 56.0;
         let bh = 38.0;
         let confirm = Rect::new(m.x1 - 24.0 - 170.0, by, m.x1 - 24.0, by + bh);
@@ -2960,8 +3439,11 @@ impl BackupsApp {
 
     // ---- little vector icons -------------------------------------------
 
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/x/y/r/k/a are the standard graphics convention: transform, position, radius, loop index, angle"
+    )]
     fn draw_source_icon(
-        &self,
         scene: &mut Scene,
         t: Affine,
         kind: SourceKind,
@@ -3050,7 +3532,6 @@ impl BackupsApp {
     }
 
     fn draw_dest_icon(
-        &self,
         scene: &mut Scene,
         t: Affine,
         kind: DestKind,

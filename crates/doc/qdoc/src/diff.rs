@@ -126,10 +126,10 @@ pub fn diff_snapshots(old: &DocSnapshot, new: &DocSnapshot) -> DocDiff {
     let mut summary = DiffSummary::default();
     for b in &blocks {
         match b.op {
-            BlockOp::Added => summary.added += 1,
-            BlockOp::Removed => summary.removed += 1,
-            BlockOp::Changed => summary.changed += 1,
-            BlockOp::Equal => summary.unchanged += 1,
+            BlockOp::Added => summary.added = summary.added.saturating_add(1),
+            BlockOp::Removed => summary.removed = summary.removed.saturating_add(1),
+            BlockOp::Changed => summary.changed = summary.changed.saturating_add(1),
+            BlockOp::Equal => summary.unchanged = summary.unchanged.saturating_add(1),
         }
     }
     DocDiff {
@@ -160,12 +160,20 @@ pub fn diff_block_lists(old: &[BlockView], new: &[BlockView]) -> Vec<BlockDiff> 
     for step in lcs_align(&old_ids, &new_ids) {
         match step {
             AlignStep::Both(oid, nid) => {
-                let ob = old_by_id[oid];
-                let nb = new_by_id[nid];
-                out.push(compare_blocks(ob, nb));
+                if let (Some(&ob), Some(&nb)) = (old_by_id.get(oid), new_by_id.get(nid)) {
+                    out.push(compare_blocks(ob, nb));
+                }
             }
-            AlignStep::OldOnly(oid) => out.push(removed_block(old_by_id[oid])),
-            AlignStep::NewOnly(nid) => out.push(added_block(new_by_id[nid])),
+            AlignStep::OldOnly(oid) => {
+                if let Some(&ob) = old_by_id.get(oid) {
+                    out.push(removed_block(ob));
+                }
+            }
+            AlignStep::NewOnly(nid) => {
+                if let Some(&nb) = new_by_id.get(nid) {
+                    out.push(added_block(nb));
+                }
+            }
         }
     }
     out
@@ -176,12 +184,14 @@ fn diff_positional(old: &[BlockView], new: &[BlockView]) -> Vec<BlockDiff> {
     let mut out = Vec::new();
     let n = old.len().min(new.len());
     for i in 0..n {
-        out.push(compare_blocks(&old[i], &new[i]));
+        if let (Some(ob), Some(nb)) = (old.get(i), new.get(i)) {
+            out.push(compare_blocks(ob, nb));
+        }
     }
-    for b in &new[n..] {
+    for b in new.get(n..).unwrap_or(&[]) {
         out.push(added_block(b));
     }
-    for b in &old[n..] {
+    for b in old.get(n..).unwrap_or(&[]) {
         out.push(removed_block(b));
     }
     out
@@ -336,84 +346,107 @@ enum AlignStep<'a> {
     NewOnly(&'a str),
 }
 
+/// `dp[i][j]`, or `0` past either edge — matches the DP table's own boundary condition.
+fn dp_at(dp: &[Vec<u32>], i: usize, j: usize) -> u32 {
+    dp.get(i).and_then(|row| row.get(j)).copied().unwrap_or(0)
+}
+
 /// LCS alignment over two id sequences → an ordered list of steps: shared ids in the longest
 /// common subsequence become `Both`; the rest are `OldOnly`/`NewOnly` interleaved in reading order.
 fn lcs_align<'a>(old: &[&'a str], new: &[&'a str]) -> Vec<AlignStep<'a>> {
     let n = old.len();
     let m = new.len();
     // dp[i][j] = LCS length of old[i..] and new[j..].
-    let mut dp = vec![vec![0u32; m + 1]; n + 1];
+    let mut dp = vec![vec![0u32; m.saturating_add(1)]; n.saturating_add(1)];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
-            dp[i][j] = if old[i] == new[j] {
-                dp[i + 1][j + 1] + 1
-            } else {
-                dp[i + 1][j].max(dp[i][j + 1])
+            let value = match (old.get(i).copied(), new.get(j).copied()) {
+                (Some(oi), Some(nj)) if oi == nj => {
+                    dp_at(&dp, i.saturating_add(1), j.saturating_add(1)).saturating_add(1)
+                }
+                _ => dp_at(&dp, i.saturating_add(1), j).max(dp_at(&dp, i, j.saturating_add(1))),
             };
+            if let Some(cell) = dp.get_mut(i).and_then(|row| row.get_mut(j)) {
+                *cell = value;
+            }
         }
     }
     let mut steps = Vec::new();
     let (mut i, mut j) = (0, 0);
     while i < n && j < m {
-        if old[i] == new[j] {
-            steps.push(AlignStep::Both(old[i], new[j]));
-            i += 1;
-            j += 1;
-        } else if dp[i + 1][j] >= dp[i][j + 1] {
-            steps.push(AlignStep::OldOnly(old[i]));
-            i += 1;
+        let (Some(oi), Some(nj)) = (old.get(i).copied(), new.get(j).copied()) else {
+            break;
+        };
+        if oi == nj {
+            steps.push(AlignStep::Both(oi, nj));
+            i = i.saturating_add(1);
+            j = j.saturating_add(1);
+        } else if dp_at(&dp, i.saturating_add(1), j) >= dp_at(&dp, i, j.saturating_add(1)) {
+            steps.push(AlignStep::OldOnly(oi));
+            i = i.saturating_add(1);
         } else {
-            steps.push(AlignStep::NewOnly(new[j]));
-            j += 1;
+            steps.push(AlignStep::NewOnly(nj));
+            j = j.saturating_add(1);
         }
     }
     while i < n {
-        steps.push(AlignStep::OldOnly(old[i]));
-        i += 1;
+        let Some(oi) = old.get(i).copied() else { break };
+        steps.push(AlignStep::OldOnly(oi));
+        i = i.saturating_add(1);
     }
     while j < m {
-        steps.push(AlignStep::NewOnly(new[j]));
-        j += 1;
+        let Some(nj) = new.get(j).copied() else { break };
+        steps.push(AlignStep::NewOnly(nj));
+        j = j.saturating_add(1);
     }
     steps
 }
 
 /// Per-character LCS edit script over two char vectors.
-fn lcs_char_ops(a: &[char], b: &[char]) -> Vec<(RunOp, char)> {
-    let n = a.len();
-    let m = b.len();
-    let mut dp = vec![vec![0u32; m + 1]; n + 1];
+fn lcs_char_ops(old: &[char], new: &[char]) -> Vec<(RunOp, char)> {
+    let n = old.len();
+    let m = new.len();
+    let mut dp = vec![vec![0u32; m.saturating_add(1)]; n.saturating_add(1)];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
-            dp[i][j] = if a[i] == b[j] {
-                dp[i + 1][j + 1] + 1
-            } else {
-                dp[i + 1][j].max(dp[i][j + 1])
+            let value = match (old.get(i).copied(), new.get(j).copied()) {
+                (Some(oi), Some(nj)) if oi == nj => {
+                    dp_at(&dp, i.saturating_add(1), j.saturating_add(1)).saturating_add(1)
+                }
+                _ => dp_at(&dp, i.saturating_add(1), j).max(dp_at(&dp, i, j.saturating_add(1))),
             };
+            if let Some(cell) = dp.get_mut(i).and_then(|row| row.get_mut(j)) {
+                *cell = value;
+            }
         }
     }
     let mut ops = Vec::new();
     let (mut i, mut j) = (0, 0);
     while i < n && j < m {
-        if a[i] == b[j] {
-            ops.push((RunOp::Equal, a[i]));
-            i += 1;
-            j += 1;
-        } else if dp[i + 1][j] >= dp[i][j + 1] {
-            ops.push((RunOp::Delete, a[i]));
-            i += 1;
+        let (Some(oi), Some(nj)) = (old.get(i).copied(), new.get(j).copied()) else {
+            break;
+        };
+        if oi == nj {
+            ops.push((RunOp::Equal, oi));
+            i = i.saturating_add(1);
+            j = j.saturating_add(1);
+        } else if dp_at(&dp, i.saturating_add(1), j) >= dp_at(&dp, i, j.saturating_add(1)) {
+            ops.push((RunOp::Delete, oi));
+            i = i.saturating_add(1);
         } else {
-            ops.push((RunOp::Insert, b[j]));
-            j += 1;
+            ops.push((RunOp::Insert, nj));
+            j = j.saturating_add(1);
         }
     }
     while i < n {
-        ops.push((RunOp::Delete, a[i]));
-        i += 1;
+        let Some(oi) = old.get(i).copied() else { break };
+        ops.push((RunOp::Delete, oi));
+        i = i.saturating_add(1);
     }
     while j < m {
-        ops.push((RunOp::Insert, b[j]));
-        j += 1;
+        let Some(nj) = new.get(j).copied() else { break };
+        ops.push((RunOp::Insert, nj));
+        j = j.saturating_add(1);
     }
     ops
 }
@@ -463,20 +496,20 @@ mod tests {
 
     #[test]
     fn detects_added_removed_changed_blocks() {
-        let mut d = Document::new();
-        let a = d.insert_block(None, "paragraph");
-        d.splice_text(&a, 0, 0, "alpha");
-        let b = d.insert_block(Some(&a), "paragraph");
-        d.splice_text(&b, 0, 0, "beta");
-        let c = d.insert_block(Some(&b), "paragraph");
-        d.splice_text(&c, 0, 0, "gamma");
-        let v1 = snap_of(&d);
+        let mut doc = Document::new();
+        let alpha_id = doc.insert_block(None, "paragraph");
+        doc.splice_text(&alpha_id, 0, 0, "alpha");
+        let beta_id = doc.insert_block(Some(&alpha_id), "paragraph");
+        doc.splice_text(&beta_id, 0, 0, "beta");
+        let gamma_id = doc.insert_block(Some(&beta_id), "paragraph");
+        doc.splice_text(&gamma_id, 0, 0, "gamma");
+        let v1 = snap_of(&doc);
 
-        d.splice_text(&b, 0, 4, "BETA"); // "beta" -> "BETA"
-        d.remove_block(&c);
-        let e = d.insert_block(Some(&a), "paragraph");
-        d.splice_text(&e, 0, 0, "epsilon");
-        let v2 = snap_of(&d);
+        doc.splice_text(&beta_id, 0, 4, "BETA"); // "beta" -> "BETA"
+        doc.remove_block(&gamma_id);
+        let epsilon_id = doc.insert_block(Some(&alpha_id), "paragraph");
+        doc.splice_text(&epsilon_id, 0, 0, "epsilon");
+        let v2 = snap_of(&doc);
 
         let diff = diff_snapshots(&v1, &v2);
         assert_eq!(diff.summary.added, 1, "one new paragraph");
@@ -485,7 +518,7 @@ mod tests {
 
         let changed: Vec<_> = diff.changed_blocks().collect();
         let edited = changed.iter().find(|b| b.op == BlockOp::Changed).unwrap();
-        assert_eq!(edited.id, b);
+        assert_eq!(edited.id, beta_id);
         assert_eq!(edited.old_text.as_deref(), Some("beta"));
         assert_eq!(edited.new_text.as_deref(), Some("BETA"));
         assert!(
@@ -498,7 +531,7 @@ mod tests {
         let added = changed.iter().find(|x| x.op == BlockOp::Added).unwrap();
         assert_eq!(added.new_text.as_deref(), Some("epsilon"));
         let removed = changed.iter().find(|x| x.op == BlockOp::Removed).unwrap();
-        assert_eq!(removed.id, c);
+        assert_eq!(removed.id, gamma_id);
         assert_eq!(removed.old_text.as_deref(), Some("gamma"));
     }
 
@@ -670,16 +703,22 @@ pub fn diff_workbooks(old: &WorkbookSnapshot, new: &WorkbookSnapshot) -> SheetDi
             if change.op == SheetOp::Changed {
                 for c in &change.cells {
                     match c.op {
-                        CellOp::Added => summary.cells_added += 1,
-                        CellOp::Removed => summary.cells_removed += 1,
-                        CellOp::Changed => summary.cells_changed += 1,
+                        CellOp::Added => {
+                            summary.cells_added = summary.cells_added.saturating_add(1);
+                        }
+                        CellOp::Removed => {
+                            summary.cells_removed = summary.cells_removed.saturating_add(1);
+                        }
+                        CellOp::Changed => {
+                            summary.cells_changed = summary.cells_changed.saturating_add(1);
+                        }
                     }
                 }
             }
             out.push(change);
         } else {
-            summary.sheets_added += 1;
-            summary.cells_added += ns.cells.len();
+            summary.sheets_added = summary.sheets_added.saturating_add(1);
+            summary.cells_added = summary.cells_added.saturating_add(ns.cells.len());
             out.push(SheetChange {
                 id: ns.id.clone(),
                 name: ns.name.clone(),
@@ -701,8 +740,8 @@ pub fn diff_workbooks(old: &WorkbookSnapshot, new: &WorkbookSnapshot) -> SheetDi
     // Removed sheets (present only in old).
     for os in &old.sheets {
         if !new_by_id.contains_key(os.id.as_str()) {
-            summary.sheets_removed += 1;
-            summary.cells_removed += os.cells.len();
+            summary.sheets_removed = summary.sheets_removed.saturating_add(1);
+            summary.cells_removed = summary.cells_removed.saturating_add(os.cells.len());
             out.push(SheetChange {
                 id: os.id.clone(),
                 name: os.name.clone(),
@@ -753,7 +792,6 @@ fn diff_sheet(old: &SheetView, new: &SheetView) -> SheetChange {
                 old: Some((*oc).clone()),
                 new: Some((*nc).clone()),
             }),
-            (Some(_), Some(_)) => {}
             (None, Some(nc)) => cells.push(CellChange {
                 reference: r.to_string(),
                 op: CellOp::Added,
@@ -766,7 +804,7 @@ fn diff_sheet(old: &SheetView, new: &SheetView) -> SheetChange {
                 old: Some((*oc).clone()),
                 new: None,
             }),
-            (None, None) => {}
+            (Some(_), Some(_)) | (None, None) => {}
         }
     }
     let op = if name_change.is_some() || !cells.is_empty() {

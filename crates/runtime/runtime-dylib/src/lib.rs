@@ -23,6 +23,19 @@
 // `pub use`, not a bare `extern crate`: that's what keeps the symbols and
 // records these crates as provided-by-this-dylib in the metadata, which
 // the downstream `-C prefer-dynamic` link step consumes.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub use cli;
 pub use runtime;
 pub use ui;

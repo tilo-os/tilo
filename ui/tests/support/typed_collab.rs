@@ -6,6 +6,15 @@
 //! shovel without a shell process or process-global service-fd variables.
 
 #![allow(refining_impl_trait)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -77,22 +86,34 @@ struct Hub {
 }
 
 impl Hub {
-    fn fanout_op(&self, channel: &str, source: u64, value: Op) {
-        let mut channels = self.channels.lock().unwrap();
-        let subscribers = &mut channels.entry(channel.to_owned()).or_default().ops;
-        subscribers.retain(|sub| sub.peer == source || sub.tx.send(value.clone()).is_ok());
+    fn fanout_op(&self, channel: &str, source: u64, value: &Op) {
+        self.channels
+            .lock()
+            .unwrap()
+            .entry(channel.to_owned())
+            .or_default()
+            .ops
+            .retain(|sub| sub.peer == source || sub.tx.send(value.clone()).is_ok());
     }
 
-    fn fanout_presence(&self, channel: &str, source: u64, value: Presence) {
-        let mut channels = self.channels.lock().unwrap();
-        let subscribers = &mut channels.entry(channel.to_owned()).or_default().presence;
-        subscribers.retain(|sub| sub.peer == source || sub.tx.send(value.clone()).is_ok());
+    fn fanout_presence(&self, channel: &str, source: u64, value: &Presence) {
+        self.channels
+            .lock()
+            .unwrap()
+            .entry(channel.to_owned())
+            .or_default()
+            .presence
+            .retain(|sub| sub.peer == source || sub.tx.send(value.clone()).is_ok());
     }
 
-    fn fanout_action(&self, channel: &str, source: u64, value: Action) {
-        let mut channels = self.channels.lock().unwrap();
-        let subscribers = &mut channels.entry(channel.to_owned()).or_default().actions;
-        subscribers.retain(|sub| sub.peer == source || sub.tx.send(value.clone()).is_ok());
+    fn fanout_action(&self, channel: &str, source: u64, value: &Action) {
+        self.channels
+            .lock()
+            .unwrap()
+            .entry(channel.to_owned())
+            .or_default()
+            .actions
+            .retain(|sub| sub.peer == source || sub.tx.send(value.clone()).is_ok());
     }
 }
 
@@ -132,7 +153,7 @@ impl TypedBroker {
                         read.compat(),
                         write.compat_write(),
                         rpc_twoparty_capnp::Side::Server,
-                        Default::default(),
+                        capnp::message::ReaderOptions::default(),
                     ));
                     let bootstrap: collab_service::Client = capnp_rpc::new_client(service);
                     let _ = RpcSystem::new(network, Some(bootstrap.client)).await;
@@ -162,7 +183,7 @@ impl TypedBroker {
         self.hub.fanout_action(
             &channel,
             u64::MAX,
-            Action {
+            &Action {
                 type_id: type_id.to_owned(),
                 payload: payload.to_vec(),
                 author: author.to_owned(),
@@ -185,7 +206,7 @@ impl collab_service::Server for Service {
     ) -> Promise<(), capnp::Error> {
         let channel = match params
             .get()
-            .and_then(|p| p.get_channel_id())
+            .and_then(collab_service::join_channel_params::Reader::get_channel_id)
             .and_then(|s| s.to_str().map_err(|e| capnp::Error::failed(e.to_string())))
         {
             Ok(value) => value.to_owned(),
@@ -215,14 +236,17 @@ impl channel_handle::Server for ChannelHandle {
         params: channel_handle::SendParams,
         _results: channel_handle::SendResults,
     ) -> Promise<(), capnp::Error> {
-        let bytes = match params.get().and_then(|p| p.get_op()) {
+        let bytes = match params
+            .get()
+            .and_then(channel_handle::send_params::Reader::get_op)
+        {
             Ok(value) => value.to_vec(),
             Err(error) => return Promise::err(error),
         };
         self.hub.fanout_op(
             &self.channel,
             self.peer,
-            Op {
+            &Op {
                 bytes,
                 author: self.user_id.clone(),
                 kind: OpKind::Signed,
@@ -276,7 +300,9 @@ impl channel_handle::Server for ChannelHandle {
         _results: channel_handle::SendUnsignedSnapshotResults,
     ) -> Promise<(), capnp::Error> {
         self.send_unsigned(
-            params.get().and_then(|p| p.get_data()),
+            params
+                .get()
+                .and_then(channel_handle::send_unsigned_snapshot_params::Reader::get_data),
             OpKind::UnsignedSnapshot,
         )
     }
@@ -287,7 +313,9 @@ impl channel_handle::Server for ChannelHandle {
         _results: channel_handle::SendUnsignedIncrementalResults,
     ) -> Promise<(), capnp::Error> {
         self.send_unsigned(
-            params.get().and_then(|p| p.get_data()),
+            params
+                .get()
+                .and_then(channel_handle::send_unsigned_incremental_params::Reader::get_data),
             OpKind::UnsignedIncremental,
         )
     }
@@ -325,7 +353,7 @@ impl channel_handle::Server for ChannelHandle {
         self.hub.fanout_action(
             &self.channel,
             self.peer,
-            Action {
+            &Action {
                 type_id,
                 payload,
                 author: self.user_id.clone(),
@@ -372,7 +400,7 @@ impl ChannelHandle {
         self.hub.fanout_op(
             &self.channel,
             self.peer,
-            Op {
+            &Op {
                 bytes,
                 author: self.user_id.clone(),
                 kind,
@@ -386,6 +414,14 @@ struct OpStream {
     rx: Rc<RefCell<mpsc::UnboundedReceiver<Op>>>,
 }
 impl stream::Server for OpStream {
+    #[allow(
+        clippy::await_holding_refcell_ref,
+        reason = "UnboundedReceiver::recv borrows the receiver for the life of the returned \
+                  future, so the RefMut must stay live across the await; each stream's Rc is \
+                  driven by exactly one in-flight `read` promise at a time (capnp-rpc callers \
+                  await one `read` before issuing the next), so no reentrant double-borrow \
+                  occurs"
+    )]
     fn read(
         self: Rc<Self>,
         _params: stream::ReadParams,
@@ -434,7 +470,7 @@ impl presence_handle::Server for PresenceHandle {
             Err(e) => return Promise::err(e),
         };
         self.publish(
-            p.get_key_bytes().map(|v| v.to_vec()),
+            p.get_key_bytes().map(<[u8]>::to_vec),
             PresenceValue::Pointer(p.get_x(), p.get_y()),
         )
     }
@@ -448,7 +484,7 @@ impl presence_handle::Server for PresenceHandle {
             Err(e) => return Promise::err(e),
         };
         self.publish(
-            p.get_key_bytes().map(|v| v.to_vec()),
+            p.get_key_bytes().map(<[u8]>::to_vec),
             PresenceValue::Caret(p.get_pos()),
         )
     }
@@ -462,7 +498,7 @@ impl presence_handle::Server for PresenceHandle {
             Err(e) => return Promise::err(e),
         };
         self.publish(
-            p.get_key_bytes().map(|v| v.to_vec()),
+            p.get_key_bytes().map(<[u8]>::to_vec),
             PresenceValue::Selection(p.get_start(), p.get_end()),
         )
     }
@@ -476,7 +512,7 @@ impl presence_handle::Server for PresenceHandle {
             Err(e) => return Promise::err(e),
         };
         self.publish(
-            p.get_key_bytes().map(|v| v.to_vec()),
+            p.get_key_bytes().map(<[u8]>::to_vec),
             PresenceValue::Arrived,
         )
     }
@@ -489,7 +525,7 @@ impl presence_handle::Server for PresenceHandle {
             Ok(p) => p,
             Err(e) => return Promise::err(e),
         };
-        self.publish(p.get_key_bytes().map(|v| v.to_vec()), PresenceValue::Left)
+        self.publish(p.get_key_bytes().map(<[u8]>::to_vec), PresenceValue::Left)
     }
     fn subscribe_all(
         self: Rc<Self>,
@@ -529,7 +565,7 @@ impl PresenceHandle {
         self.hub.fanout_presence(
             &self.channel,
             self.peer,
-            Presence {
+            &Presence {
                 author: self.user_id.clone(),
                 key,
                 payload,
@@ -543,6 +579,14 @@ struct PresenceStream {
     rx: Rc<RefCell<mpsc::UnboundedReceiver<Presence>>>,
 }
 impl presence_stream::Server for PresenceStream {
+    #[allow(
+        clippy::await_holding_refcell_ref,
+        reason = "UnboundedReceiver::recv borrows the receiver for the life of the returned \
+                  future, so the RefMut must stay live across the await; each stream's Rc is \
+                  driven by exactly one in-flight `read` promise at a time (capnp-rpc callers \
+                  await one `read` before issuing the next), so no reentrant double-borrow \
+                  occurs"
+    )]
     fn read(
         self: Rc<Self>,
         _params: presence_stream::ReadParams,
@@ -581,6 +625,14 @@ struct ActionStream {
     rx: Rc<RefCell<mpsc::UnboundedReceiver<Action>>>,
 }
 impl action_stream::Server for ActionStream {
+    #[allow(
+        clippy::await_holding_refcell_ref,
+        reason = "UnboundedReceiver::recv borrows the receiver for the life of the returned \
+                  future, so the RefMut must stay live across the await; each stream's Rc is \
+                  driven by exactly one in-flight `read` promise at a time (capnp-rpc callers \
+                  await one `read` before issuing the next), so no reentrant double-borrow \
+                  occurs"
+    )]
     fn read(
         self: Rc<Self>,
         _params: action_stream::ReadParams,

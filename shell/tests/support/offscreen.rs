@@ -11,6 +11,15 @@
 //! strips padding on readback; callers see a tight `width * 4` buffer.
 
 #![allow(dead_code)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 
 use std::path::Path;
 
@@ -69,10 +78,10 @@ impl OffscreenRenderer {
         // Padded buffer for the texture→buffer copy: row pitch must be a multiple
         // of 256 (wgpu::COPY_BYTES_PER_ROW_ALIGNMENT).
         let bytes_per_pixel = 4u32;
-        let unpadded = width * bytes_per_pixel;
+        let unpadded = width.saturating_mul(bytes_per_pixel);
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-        let padded_bytes_per_row = unpadded.div_ceil(align) * align;
-        let readback_size = u64::from(padded_bytes_per_row * height);
+        let padded_bytes_per_row = unpadded.div_ceil(align).saturating_mul(align);
+        let readback_size = u64::from(padded_bytes_per_row).saturating_mul(u64::from(height));
         let readback_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("quick-ui-offscreen-readback"),
             size: readback_size,
@@ -162,11 +171,12 @@ impl OffscreenRenderer {
             .expect("buffer map failed");
 
         let mapped = slice.get_mapped_range();
-        let mut tight = Vec::with_capacity((self.width * self.height * 4) as usize);
-        let row_bytes = (self.width * 4) as usize;
+        let mut tight =
+            Vec::with_capacity((self.width.saturating_mul(self.height).saturating_mul(4)) as usize);
+        let row_bytes = self.width.saturating_mul(4) as usize;
         for row in 0..self.height as usize {
-            let start = row * self.padded_bytes_per_row as usize;
-            tight.extend_from_slice(&mapped[start..start + row_bytes]);
+            let start = row.saturating_mul(self.padded_bytes_per_row as usize);
+            tight.extend_from_slice(&mapped[start..start.saturating_add(row_bytes)]);
         }
         drop(mapped);
         self.readback_buf.unmap();
@@ -191,7 +201,12 @@ impl OffscreenRenderer {
 
     /// Sample the RGBA at `(x, y)` from the last render — tight-packed, not padded.
     pub fn sample(rgba: &[u8], width: u32, x: u32, y: u32) -> (u8, u8, u8, u8) {
-        let idx = ((y * width + x) * 4) as usize;
-        (rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3])
+        let idx = (y.saturating_mul(width).saturating_add(x).saturating_mul(4)) as usize;
+        (
+            rgba[idx],
+            rgba[idx.saturating_add(1)],
+            rgba[idx.saturating_add(2)],
+            rgba[idx.saturating_add(3)],
+        )
     }
 }

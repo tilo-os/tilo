@@ -60,6 +60,12 @@ QOS_PASS="${QOS_PASS:-quickdesktop}"
 
 QOS_MEM="${QOS_MEM:-4096}"
 QOS_SMP="${QOS_SMP:-4}"
+# `auto` uses hardware acceleration when this environment owns a usable KVM
+# device, and otherwise falls back to QEMU's multithreaded software emulator.
+# The fallback is intentionally slower, but lets the release gate run inside a
+# Kata-isolated CI runner without exposing the Kubernetes node's /dev/kvm.
+QOS_ACCEL="${QOS_ACCEL:-auto}"
+QOS_BOOT_WAIT_ATTEMPTS="${QOS_BOOT_WAIT_ATTEMPTS:-90}"
 
 # virtio-gpu resolution (the compositor modesets the connector's preferred
 # mode, which these set). Bigger = more software-render cost.
@@ -88,9 +94,31 @@ inenv() {
   fi
 }
 
+qemu_accel_args() {
+  case "$QOS_ACCEL" in
+    auto)
+      if inenv "test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm"; then
+        echo "-enable-kvm -cpu host"
+      else
+        echo "-accel tcg,thread=multi -cpu max"
+      fi
+      ;;
+    kvm) echo "-enable-kvm -cpu host" ;;
+    tcg) echo "-accel tcg,thread=multi -cpu max" ;;
+    *) die "QOS_ACCEL must be auto, kvm, or tcg (got $QOS_ACCEL)" ;;
+  esac
+}
+
 # Send one HMP monitor command to the running VM, print its reply.
 hmp() {
-  inenv "printf '%s\n' \"$1\" | socat - 'unix:$QOS_MON'"
+  # The monitor socket is on the host-visible QOS_RUN mount. Prefer the host's
+  # socat even when QEMU itself lives in a distrobox; entering the container for
+  # every individual key made a login take minutes instead of seconds.
+  if command -v socat >/dev/null 2>&1; then
+    printf '%s\n' "$1" | socat - "unix:$QOS_MON"
+  else
+    inenv "printf '%s\n' \"$1\" | socat - 'unix:$QOS_MON'"
+  fi
 }
 
 # Run a command in the guest over SSH (password auth via sshpass, on the host

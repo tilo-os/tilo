@@ -7,6 +7,16 @@
 //! offscreen tests. Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump the PNGs
 //! (`tooltip_over_icon_button_dark.png` / `_light.png`) for visual review.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use crate::support::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -27,8 +37,8 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
 }
 
 fn render_case(theme: &Theme, bg: Color, name: &str) {
-    let (w, h) = (360u32, 150u32);
-    let Some(mut renderer) = try_new_renderer(w, h) else {
+    let (canvas_w, canvas_h) = (360u32, 150u32);
+    let Some(mut renderer) = try_new_renderer(canvas_w, canvas_h) else {
         eprintln!("no wgpu adapter — skipping tooltip render ({name})");
         return;
     };
@@ -63,7 +73,7 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
 
     // Reveal the tooltip over the first (Search) button via the shared
     // primitive — the same call the App's central TooltipHost makes.
-    let viewport = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+    let viewport = Rect::new(0.0, 0.0, f64::from(canvas_w), f64::from(canvas_h));
     tooltip::draw_hover_tooltip(
         &mut scene,
         Affine::IDENTITY,
@@ -79,7 +89,7 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
     // The chip is anchored just below the first button — sample a pixel there
     // and assert it's opaque and differs from the background.
     let (bx, by) = (44u32, 78u32);
-    let (r, g, b, a) = OffscreenRenderer::sample(&rgba, w, bx, by);
+    let (r, g, b, a) = OffscreenRenderer::sample(&rgba, canvas_w, bx, by);
     let bg8 = bg.to_rgba8();
     assert_eq!(a, 0xff, "tooltip chip is opaque ({name})");
     assert!(
@@ -101,7 +111,7 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
         let path = format!("{dir}/tooltip_over_icon_button_{name}.png");
         let mut png = Vec::new();
         {
-            let mut enc = png::Encoder::new(&mut png, w, h);
+            let mut enc = png::Encoder::new(&mut png, canvas_w, canvas_h);
             enc.set_color(png::ColorType::Rgba);
             enc.set_depth(png::BitDepth::Eight);
             let mut writer = enc.write_header().unwrap();

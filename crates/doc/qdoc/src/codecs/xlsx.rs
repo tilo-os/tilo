@@ -95,7 +95,7 @@ impl SheetProvider for XlsxCodec {
         );
         for (i, sheet) in snap.sheets.iter().enumerate() {
             pkg.set(
-                &format!("xl/worksheets/sheet{}.xml", i + 1),
+                &format!("xl/worksheets/sheet{}.xml", i.saturating_add(1)),
                 worksheet_xml(sheet).into_bytes(),
             );
         }
@@ -324,7 +324,8 @@ fn flush_cell(
             let idx: usize = value.trim().parse().unwrap_or(usize::MAX);
             (CellType::Text, sst.get(idx).cloned().unwrap_or_default())
         }
-        "str" | "inlineStr" => (CellType::Text, value.to_string()),
+        // "d" is an ISO date string, preserved as text like "str"/"inlineStr".
+        "str" | "inlineStr" | "d" => (CellType::Text, value.to_string()),
         "b" => (
             CellType::Bool,
             if value.trim() == "1" || value.eq_ignore_ascii_case("true") {
@@ -334,7 +335,6 @@ fn flush_cell(
             },
         ),
         "e" => (CellType::Error, value.to_string()),
-        "d" => (CellType::Text, value.to_string()), // ISO date string, preserved as text
         _ => (CellType::Number, value.to_string()), // absent or "n"
     };
     if resolved.is_empty() && !has_formula && style.is_none() {
@@ -399,7 +399,7 @@ fn content_types_xml(nsheets: usize, has_styles: bool) -> String {
         let _ = write!(
             overrides,
             r#"<Override PartName="/xl/worksheets/sheet{}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#,
-            i + 1
+            i.saturating_add(1)
         );
     }
     if has_styles {
@@ -420,12 +420,11 @@ fn root_rels_xml() -> String {
 fn workbook_xml(snap: &crate::sheet::WorkbookSnapshot) -> String {
     let mut sheets = String::new();
     for (i, sheet) in snap.sheets.iter().enumerate() {
+        let n = i.saturating_add(1);
         let _ = write!(
             sheets,
-            r#"<sheet name="{}" sheetId="{}" r:id="rIdSheet{}"/>"#,
+            r#"<sheet name="{}" sheetId="{n}" r:id="rIdSheet{n}"/>"#,
             xml_escape(&sheet.name),
-            i + 1,
-            i + 1
         );
     }
     format!(
@@ -437,11 +436,10 @@ fn workbook_xml(snap: &crate::sheet::WorkbookSnapshot) -> String {
 fn workbook_rels_xml(nsheets: usize, has_styles: bool) -> String {
     let mut rels = String::new();
     for i in 0..nsheets {
+        let n = i.saturating_add(1);
         let _ = write!(
             rels,
-            r#"<Relationship Id="rIdSheet{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{}.xml"/>"#,
-            i + 1,
-            i + 1
+            r#"<Relationship Id="rIdSheet{n}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{n}.xml"/>"#,
         );
     }
     if has_styles {

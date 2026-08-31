@@ -9,6 +9,16 @@
 //! stale inside a `Stack` → `Column` chain. These tests pin the
 //! forwarding for each container so that cannot regress quietly.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -33,7 +43,7 @@ impl Widget for Probe {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
-        self.updates.set(self.updates.get() + 1);
+        self.updates.set(self.updates.get().saturating_add(1));
         true
     }
 

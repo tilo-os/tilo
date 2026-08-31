@@ -35,6 +35,13 @@ const ICON_D: f64 = 16.0;
 const CLEAR_D: f64 = 16.0;
 
 /// A search-styled input: magnifier + editable text + clear button.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent mode/dirty marker (clearable, cleared, \
+              opens_palette, palette_requested) set and read on its own schedule, never \
+              combined into a state machine, so a bitflags/enum encoding would not simplify \
+              the call sites"
+)]
 pub struct SearchField {
     input: TextInput,
     leading: Icon,
@@ -67,6 +74,7 @@ impl SearchField {
         }
     }
 
+    #[must_use]
     pub fn opens_palette(mut self) -> Self {
         self.opens_palette = true;
         self.clearable = false;
@@ -83,6 +91,7 @@ impl SearchField {
         std::mem::take(&mut self.palette_requested)
     }
 
+    #[must_use]
     pub fn with_placeholder(mut self, hint: &str) -> Self {
         self.input.set_placeholder(hint);
         self
@@ -92,6 +101,7 @@ impl SearchField {
         self.input.set_placeholder(hint);
     }
 
+    #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.input = std::mem::replace(&mut self.input, TextInput::local()).with_id(id);
         self
@@ -99,6 +109,7 @@ impl SearchField {
 
     /// Binds the query to a CRDT string path, instead of the default
     /// local-only buffer.
+    #[must_use]
     pub fn bound(mut self, path: &str) -> Self {
         self.input = std::mem::replace(&mut self.input, TextInput::local())
             .with_plain_chrome()
@@ -106,11 +117,13 @@ impl SearchField {
         self
     }
 
+    #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.leading = icon;
         self
     }
 
+    #[must_use]
     pub fn without_clear(mut self) -> Self {
         self.clearable = false;
         self
@@ -193,14 +206,13 @@ impl SearchField {
             None,
             &rounded,
         );
-        text_renderer.draw_text(
-            scene,
-            LABEL,
-            SIZE,
-            theme.text_dim,
-            transform * Affine::translate((chip.x0 + 7.0, cy - 6.5)),
-            None,
-        );
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine composition is float matrix multiplication; it cannot overflow \
+                      or panic"
+        )]
+        let label_transform = transform * Affine::translate((chip.x0 + 7.0, cy - 6.5));
+        text_renderer.draw_text(scene, LABEL, SIZE, theme.text_dim, label_transform, None);
     }
 }
 
@@ -215,6 +227,11 @@ impl Widget for SearchField {
         self.input.sync(state, path);
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "these are widget-geometry constants — small, bounded pixel values — so \
+                  narrowing to f32 for Taffy's layout math loses no meaningful precision"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -460,6 +477,11 @@ impl Widget for SearchField {
 mod tests {
     use super::*;
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "test-only layout size is a small pixel value; f32 precision loss is \
+                  immaterial"
+    )]
     fn lay_out(w: &mut dyn Widget, vw: f32) -> TaffyTree<()> {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
@@ -474,10 +496,9 @@ mod tests {
                     height: taffy::AvailableSpace::Definite(HEIGHT as f32),
                 },
                 |k, a, id, _, _| {
-                    node_map
-                        .get(&id)
-                        .map(|&p| unsafe { (*p).measure(k, a, &mut tr) })
-                        .unwrap_or(taffy::Size::ZERO)
+                    node_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                        (*p).measure(k, a, &mut tr)
+                    })
                 },
             )
             .unwrap();
@@ -526,6 +547,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "test-only layout size is a small pixel value; f32 precision loss is \
+                  immaterial"
+    )]
     fn clicking_clear_empties_query_and_reports_dirty() {
         let theme = Theme::dark();
         let mut sf = SearchField::new();
@@ -541,9 +567,9 @@ mod tests {
                     height: taffy::AvailableSpace::Definite(HEIGHT as f32),
                 },
                 |k, a, id, _, _| {
-                    nm.get(&id)
-                        .map(|&p| unsafe { (*p).measure(k, a, &mut tr) })
-                        .unwrap_or(taffy::Size::ZERO)
+                    nm.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                        (*p).measure(k, a, &mut tr)
+                    })
                 },
             )
             .unwrap();
@@ -610,6 +636,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "test-only layout size is a small pixel value; f32 precision loss is \
+                  immaterial"
+    )]
     fn launcher_click_latches_a_palette_request_and_stays_non_editable() {
         let theme = Theme::dark();
         let mut sf = SearchField::new()
@@ -628,9 +659,9 @@ mod tests {
                     height: taffy::AvailableSpace::Definite(HEIGHT as f32),
                 },
                 |k, a, id, _, _| {
-                    nm.get(&id)
-                        .map(|&p| unsafe { (*p).measure(k, a, &mut tr) })
-                        .unwrap_or(taffy::Size::ZERO)
+                    nm.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                        (*p).measure(k, a, &mut tr)
+                    })
                 },
             )
             .unwrap();

@@ -153,6 +153,8 @@ mod tests {
     /// for an action to mutate.
     #[test]
     fn document_holds_only_view_state_and_native_text() {
+        const ALLOWED: [&str; 5] = ["section", "selected", "tab", "search", "create"];
+
         let mut app = ContainersApp::new(false);
         let mut doc = AutoCommit::new();
 
@@ -175,7 +177,6 @@ mod tests {
         );
 
         // Every key inside `view` is a known view-state key; classify each.
-        const ALLOWED: [&str; 5] = ["section", "selected", "tab", "search", "create"];
         let view = view_obj(&doc);
         for key in doc.keys(&view) {
             assert!(

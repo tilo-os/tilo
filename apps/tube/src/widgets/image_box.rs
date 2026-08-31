@@ -54,6 +54,7 @@ impl ImageBox {
 
     /// Resolve the image lazily from `store` at `url` (looked up in [`sync`]),
     /// instead of passing a pre-decoded image at build time.
+    #[must_use]
     pub fn source(mut self, store: Option<ImageStore>, url: &str) -> Self {
         self.store = store;
         self.url = url.to_string();

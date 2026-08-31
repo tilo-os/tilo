@@ -16,8 +16,9 @@
 //!   uses the iOS/TV player clients, which return real stream URLs **without a
 //!   `PoToken`** (see [`crate::backend::potoken`]).
 //!
-//! Pure Rust: rustypipe embeds `rquickjs` for signature deobfuscation; no
-//! ffmpeg / yt-dlp / external JS binary.
+//! Search and metadata stay pure Rust through rustypipe. Stream resolution
+//! prefers the independently packaged `yt-dlp` helper when available, then
+//! falls back to rustypipe's direct player response.
 
 #![cfg(feature = "live")]
 
@@ -44,13 +45,23 @@ pub struct RustyPipeBackend {
 impl RustyPipeBackend {
     /// Construct with the default (null) `PoToken` provider — audio resolves via
     /// the iOS/TV player clients, no token needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the tokio runtime or the rustypipe
+    /// client fails to build.
     pub fn new() -> Result<Self, BackendError> {
-        Self::with_potoken(Box::new(NullPoToken))
+        Self::with_potoken(&NullPoToken)
     }
 
     /// Construct with an explicit `PoToken` provider. A provider that cannot
     /// stream keeps rustypipe's `BotGuard` path disabled (`no_botguard`).
-    pub fn with_potoken(provider: Box<dyn PoTokenProvider>) -> Result<Self, BackendError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] if the tokio runtime or the rustypipe
+    /// client fails to build.
+    pub fn with_potoken(provider: &dyn PoTokenProvider) -> Result<Self, BackendError> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -202,11 +213,12 @@ fn cover_url(thumbs: &[Thumbnail], px: u32) -> String {
 /// smaller downloads, sharp tiles. URLs without that segment (e.g.
 /// `i.ytimg.com/vi/<id>/hqdefault.jpg`) are returned unchanged.
 fn resize_google_thumb(url: &str, px: u32) -> String {
-    if let Some(eq) = url.rfind('=') {
-        let tail = &url[eq + 1..];
-        if tail.starts_with('w') || tail.starts_with('s') {
-            return format!("{}=w{px}-h{px}-l90-rj", &url[..eq]);
-        }
+    if let Some(eq) = url.rfind('=')
+        && let Some(tail) = url.get(eq + 1..)
+        && (tail.starts_with('w') || tail.starts_with('s'))
+        && let Some(base) = url.get(..eq)
+    {
+        return format!("{base}=w{px}-h{px}-l90-rj");
     }
     url.to_string()
 }
@@ -275,7 +287,6 @@ fn codec_str(c: AudioCodec) -> &'static str {
         AudioCodec::Opus => "opus",
         AudioCodec::Ac3 => "ac-3",
         AudioCodec::Ec3 => "ec-3",
-        AudioCodec::Unknown => "unknown",
         _ => "unknown",
     }
 }
@@ -419,9 +430,20 @@ impl MusicBackend for RustyPipeBackend {
     }
 
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome {
-        // Reliable base: rustypipe's direct iOS/TV googlevideo URL. It always
-        // renders, but is PoToken/SABR-gated — it only serves the first ~1-minute
-        // segment.
+        // Prefer the independent full-track resolver before asking InnerTube's
+        // player endpoint. YouTube can reject rustypipe's iOS/TV player client
+        // while yt-dlp's android_vr client still works; resolving the fallback
+        // first used to turn that recoverable condition into a hard failure.
+        // A yt-dlp URL is already fully rangeable, so it needs no truncating
+        // direct-stream fallback.
+        if let Some(full) = crate::backend::ytdlp::resolve_full_audio(video_id) {
+            tracing::info!(target: "music::resolve", itag = full.itag, "using yt-dlp full-track URL (whole song streams)");
+            return Ok(full);
+        }
+
+        // Fallback base: rustypipe's direct iOS/TV googlevideo URL. It renders
+        // when the player endpoint accepts this client, but is PoToken/SABR-
+        // gated and may only serve the first ~1-minute segment.
         let q = self.rp.query();
         let player = self
             .block(async { q.player(video_id).await })
@@ -439,23 +461,7 @@ impl MusicBackend for RustyPipeBackend {
             "resolved direct googlevideo audio stream"
         );
 
-        // 1. Prefer a **fully-rangeable full-track** URL from `yt-dlp` when it is
-        // installed. rustypipe's iOS/TV URL is SABR-gated to its first ~1-minute
-        // segment (playback stops after ~1 min); yt-dlp resolves through the
-        // `android_vr` client, which serves the whole file over arbitrary byte
-        // ranges. Runtime-optional: absent yt-dlp → fall through. The direct URL
-        // rides along as the engine's last-resort fallback.
-        if let Some(mut full) = crate::backend::ytdlp::resolve_full_audio(video_id) {
-            if full.size_bytes == 0 {
-                full.size_bytes = direct.size_bytes;
-            }
-            full.duration_ms = direct.duration_ms;
-            full.fallback_url = Some(direct.url);
-            tracing::info!(target: "music::resolve", url = %full.url, itag = full.itag, "using yt-dlp full-track URL (whole song streams)");
-            return Ok(full);
-        }
-
-        // 2. Otherwise a fully-rangeable Invidious `local` proxy, but only if that
+        // Otherwise try a fully-rangeable Invidious `local` proxy, but only if that
         // proxy genuinely serves media (validated). Public instances are mostly
         // dead / anti-bot-gated, so this usually returns `None`.
         // The direct URL is always carried as the engine's fallback too.
@@ -465,10 +471,10 @@ impl MusicBackend for RustyPipeBackend {
                 proxy.size_bytes = direct.size_bytes;
             }
             proxy.fallback_url = Some(direct.url);
-            tracing::info!(target: "music::resolve", url = %proxy.url, "using rangeable proxy (direct URL as fallback)");
+            tracing::info!(target: "music::resolve", "using rangeable proxy (direct URL as fallback)");
             return Ok(proxy);
         }
-        tracing::info!(target: "music::resolve", url = %direct.url, "no working proxy — playing direct googlevideo URL");
+        tracing::info!(target: "music::resolve", "no working proxy — playing direct googlevideo URL");
         Ok(direct)
     }
 

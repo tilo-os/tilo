@@ -2,6 +2,8 @@
 name = "terminal"
 version = "0.2.1"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "terminal"
@@ -23,7 +25,6 @@ ush = { path = "../../crates/runtime/ush" }
 libc.workspace = true
 vte = "0.15.0"
 tracing.workspace = true
-tracing-subscriber.workspace = true
 unicode-width = "0.2.2"
 crossbeam-channel = "0.5.15"
 vello.workspace = true
@@ -34,12 +35,6 @@ anyhow.workspace = true
 base64.workspace = true
 
 [dev-dependencies]
-# Clipboard round-trip assertions in the selection tests. Production code
-# copies/pastes through `ui::clipboard_copy` / `ui::clipboard_paste`
-# (and `ui::clipboard_copy_primary` for the mouse primary selection), so
-# arboard is only a test dependency now — the shared `ui` helper replaced
-# the terminal's former direct use.
-arboard.workspace = true
 # Serialises the tests that touch the shared system clipboard / primary
 # selection so they don't race each other under the default parallel runner
 # (selecting text sets the primary selection, which a middle-click paste test

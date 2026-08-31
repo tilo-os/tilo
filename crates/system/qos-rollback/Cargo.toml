@@ -2,6 +2,8 @@
 name = "qos-rollback"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "Bounded rollback protection: a TPM2 NV monotonic counter holding the oldest bootable generation, plus per-generation sealed LUKS2 keyslots."
 
 [lib]

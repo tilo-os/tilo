@@ -5,6 +5,14 @@ use std::sync::OnceLock;
 
 pub const HOTSPOT_PROFILE: &str = "qOS Hotspot";
 
+// Six independently-meaningful named flags, not a bitset in disguise — each is read and
+// written by name across `shell` and `apps/settings`. Regrouping them (e.g. into a bitflags
+// type) would ripple through both crates for no behavioural gain.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent, individually named radio/availability flag read \
+              across shell and apps/settings; grouping them would only relocate the same state"
+)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RadioState {
     pub airplane_mode: bool,
@@ -22,6 +30,10 @@ pub struct VpnConnectionInfo {
     pub kind: String,
 }
 
+/// # Errors
+///
+/// Returns an error message if `nmcli` is not installed or the radio/device status query
+/// fails.
 pub fn get_radio_state() -> Result<RadioState, String> {
     let radios = run_capture("nmcli", &["-t", "-f", "WIFI,WWAN", "radio"])?;
     let devices = run_capture("nmcli", &["-t", "-f", "TYPE,STATE", "device", "status"])?;
@@ -58,6 +70,9 @@ fn parse_radio_state(radios: &str, devices: &str, active: &str) -> RadioState {
     }
 }
 
+/// # Errors
+///
+/// Returns an error message if `nmcli` is not installed or the radio-toggle call fails.
 pub fn set_airplane_mode(enabled: bool) -> Result<(), String> {
     if enabled {
         run("nmcli", &["radio", "all", "off"])
@@ -70,6 +85,9 @@ pub fn set_airplane_mode(enabled: bool) -> Result<(), String> {
     }
 }
 
+/// # Errors
+///
+/// Returns an error message if `nmcli` is not installed or the radio-toggle call fails.
 pub fn set_mobile_broadband(enabled: bool) -> Result<(), String> {
     run(
         "nmcli",
@@ -77,8 +95,12 @@ pub fn set_mobile_broadband(enabled: bool) -> Result<(), String> {
     )
 }
 
-/// Activate the qOS hotspot. NetworkManager creates the profile and a random
+/// Activate the qOS hotspot. `NetworkManager` creates the profile and a random
 /// WPA credential on first use; qOS never receives or logs that secret.
+///
+/// # Errors
+///
+/// Returns an error message if `nmcli` is not installed or the underlying call fails.
 pub fn set_hotspot(enabled: bool) -> Result<(), String> {
     if enabled {
         let profiles = run_capture("nmcli", &["-t", "-f", "NAME", "connection", "show"])?;
@@ -99,6 +121,9 @@ pub fn set_hotspot(enabled: bool) -> Result<(), String> {
     )
 }
 
+/// # Errors
+///
+/// Returns an error message if `nmcli` is not installed or the command fails.
 pub fn list_vpn_connections() -> Result<Vec<VpnConnectionInfo>, String> {
     let all = run_capture("nmcli", &["-t", "-f", "NAME,TYPE", "connection", "show"])?;
     let active = run_capture(
@@ -122,6 +147,10 @@ pub fn list_vpn_connections() -> Result<Vec<VpnConnectionInfo>, String> {
         .collect())
 }
 
+/// # Errors
+///
+/// Returns an error message if `name` is empty or contains a NUL/newline, or `nmcli` is not
+/// installed or the command fails.
 pub fn set_vpn_connection(name: &str, enabled: bool) -> Result<(), String> {
     if name.is_empty() || name.bytes().any(|b| b == 0 || b == b'\n' || b == b'\r') {
         return Err("invalid VPN connection name".into());
@@ -132,6 +161,10 @@ pub fn set_vpn_connection(name: &str, enabled: bool) -> Result<(), String> {
     )
 }
 
+/// # Errors
+///
+/// Returns an error message if `kind` is not `wireguard` or `openvpn`, or `nmcli` is not
+/// installed or the import fails.
 pub fn import_vpn_config(kind: &str, path: &str) -> Result<(), String> {
     if !matches!(kind, "wireguard" | "openvpn") {
         return Err("unsupported VPN type".into());
@@ -156,12 +189,21 @@ pub struct WifiNetworkInfo {
 }
 
 /// Toggle the Wi-Fi radio on or off via `nmcli radio wifi on|off`.
+///
+/// # Errors
+///
+/// Returns an error message if `nmcli` is not installed or the command fails.
 pub fn set_wifi(enabled: bool) -> Result<(), String> {
     let state = if enabled { "on" } else { "off" };
     run("nmcli", &["radio", "wifi", state])
 }
 
 /// Read the Wi-Fi radio state. `nmcli radio wifi` prints `enabled` or `disabled` on stdout.
+///
+/// # Errors
+///
+/// Returns an error message if `nmcli` is not installed, the command fails, or its output is
+/// neither `enabled` nor `disabled`.
 pub fn get_wifi() -> Result<bool, String> {
     let out = run_capture("nmcli", &["radio", "wifi"])?;
     parse_nmcli_radio(&out)
@@ -182,6 +224,10 @@ fn parse_nmcli_radio(stdout: &str) -> Result<bool, String> {
 
 /// Scan + list visible Wi-Fi networks via `nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY device
 /// wifi list`. `-t` (terse) prints one row per line, fields separated by `:`.
+///
+/// # Errors
+///
+/// Returns an error message if `nmcli` is not installed or the command fails.
 pub fn list_wifi_networks() -> Result<Vec<WifiNetworkInfo>, String> {
     let out = run_capture(
         "nmcli",
@@ -204,16 +250,18 @@ fn parse_nmcli_wifi_list(stdout: &str) -> Vec<WifiNetworkInfo> {
             continue;
         }
         let fields = split_terse(line);
-        if fields.len() < 4 {
+        let (Some(in_use), Some(ssid_field), Some(signal_field), Some(security_field)) =
+            (fields.first(), fields.get(1), fields.get(2), fields.get(3))
+        else {
             continue;
-        }
-        let in_use = fields[0].trim();
-        let ssid = fields[1].trim().to_string();
+        };
+        let in_use = in_use.trim();
+        let ssid = ssid_field.trim().to_string();
         if ssid.is_empty() {
             continue;
         }
-        let signal_pct: u8 = fields[2].trim().parse().unwrap_or(0);
-        let security = fields[3].trim();
+        let signal_pct: u8 = signal_field.trim().parse().unwrap_or(0);
+        let security = security_field.trim();
         out.push(WifiNetworkInfo {
             ssid,
             signal: signal_pct_to_bucket(signal_pct),
@@ -315,6 +363,10 @@ impl LinkStatus {
 ///
 /// Signal strength comes from `/proc/net/wireless` instead, one file read the kernel keeps
 /// current, so the bars move as the user walks around with no nmcli involvement at all.
+///
+/// # Errors
+///
+/// Returns an error message if `nmcli` is not installed or the device-status query fails.
 pub fn get_link_status() -> Result<LinkStatus, String> {
     let out = run_capture(
         "nmcli",
@@ -341,10 +393,10 @@ fn parse_nmcli_device_status(stdout: &str) -> LinkStatus {
     let mut wifi: Option<LinkStatus> = None;
     for line in stdout.lines() {
         let f = split_terse(line);
-        if f.len() < 3 {
+        let (Some(kind_s), Some(state), Some(conn)) = (f.first(), f.get(1), f.get(2)) else {
             continue;
-        }
-        let (kind_s, state, conn) = (f[0].trim(), f[1].trim(), f[2].trim());
+        };
+        let (kind_s, state, conn) = (kind_s.trim(), state.trim(), conn.trim());
         // nmcli spells the fully-up state "connected"; "connecting (getting IP configuration)" and
         // friends aren't yet carrying traffic, so they read as offline.
         if state != "connected" {
@@ -406,6 +458,12 @@ fn parse_proc_net_wireless(raw: &str) -> Option<u8> {
         let Ok(q) = quality.trim_end_matches('.').parse::<f32>() else {
             continue;
         };
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to 0.0..=100.0 immediately above, so the rounded value always \
+                      fits in u8 with no sign loss"
+        )]
         let pct = if q <= 70.0 {
             ((q / 70.0) * 100.0).round().clamp(0.0, 100.0) as u8
         } else {
@@ -418,6 +476,11 @@ fn parse_proc_net_wireless(raw: &str) -> Option<u8> {
 
 /// Connect to a Wi-Fi SSID. Passwords travel on nmcli's `--ask` stdin,
 /// never argv (which is readable through `/proc`).
+///
+/// # Errors
+///
+/// Returns an error message if `password` contains a line break, `nmcli` is not installed, or
+/// the connect attempt fails or times out.
 pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
     if let Some(password) = password {
         if password.chars().any(|c| matches!(c, '\n' | '\r')) {
@@ -439,7 +502,7 @@ pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
     }
 }
 
-/// NetworkManager's connectivity result, including the portal state used by
+/// `NetworkManager`'s connectivity result, including the portal state used by
 /// captive-portal helpers. Values intentionally mirror the daemon rather than
 /// deriving "online" from a local address.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -464,14 +527,22 @@ impl ConnectivityState {
     }
 }
 
+/// # Errors
+///
+/// Returns an error message if `nmcli` is not installed or the connectivity check fails.
 pub fn get_connectivity() -> Result<ConnectivityState, String> {
     let out = run_capture("nmcli", &["-t", "networking", "connectivity", "check"])?;
     Ok(parse_connectivity(&out))
 }
 
-/// Return NetworkManager's configured connectivity-check URI. Opening this
+/// Return `NetworkManager`'s configured connectivity-check URI. Opening this
 /// URI is the standard captive-portal flow: an intercepting network redirects
 /// it to its login page. qOS does not guess a gateway or hard-code a vendor URL.
+///
+/// # Errors
+///
+/// Returns an error message if the D-Bus runtime cannot start, `NetworkManager` is unreachable,
+/// it has no connectivity-check URI configured, or the configured URI is not `http(s)://`.
 pub fn captive_portal_uri() -> Result<String, String> {
     static RT: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
     let runtime = RT
@@ -553,8 +624,8 @@ pub struct ConnectionPolicy {
     pub proxy: ProxyConfiguration,
 }
 
-/// Editable values read from a NetworkManager connection profile. `None`
-/// means NetworkManager returned a value this UI does not understand; callers
+/// Editable values read from a `NetworkManager` connection profile. `None`
+/// means `NetworkManager` returned a value this UI does not understand; callers
 /// must leave that property alone rather than replacing it with a default.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConnectionProfileSettings {
@@ -571,6 +642,10 @@ pub struct ConnectionPolicyPatch {
     pub proxy: Option<ProxyConfiguration>,
 }
 
+/// # Errors
+///
+/// Returns an error message if `uuid` fails validation, the patch's automatic proxy URL is
+/// not `http(s)://` or exceeds 2048 bytes, or `nmcli` is not installed or a modify call fails.
 pub fn configure_connection_policy_patch(
     uuid: &str,
     patch: &ConnectionPolicyPatch,
@@ -642,6 +717,9 @@ pub fn configure_connection_policy_patch(
     Ok(())
 }
 
+/// # Errors
+///
+/// Returns an error message if [`configure_connection_policy_patch`] fails.
 pub fn configure_connection_policy(uuid: &str, policy: &ConnectionPolicy) -> Result<(), String> {
     configure_connection_policy_patch(
         uuid,
@@ -664,9 +742,14 @@ pub struct ConnectionDiagnostics {
     pub recommendations: Vec<String>,
 }
 
-/// NetworkManager state/connectivity come directly from its D-Bus API. IP
+/// `NetworkManager` state/connectivity come directly from its D-Bus API. IP
 /// detail remains NM-owned and is read through its standard client, avoiding
 /// route/proc guesses and a second network model.
+///
+/// # Errors
+///
+/// Returns an error message if the D-Bus runtime cannot start or `NetworkManager` is
+/// unreachable.
 pub fn connection_diagnostics() -> Result<ConnectionDiagnostics, String> {
     static RT: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
     let rt = RT
@@ -766,6 +849,9 @@ pub fn connection_diagnostics() -> Result<ConnectionDiagnostics, String> {
     Ok(out)
 }
 
+/// # Errors
+///
+/// Returns an error message if `nmcli` is not installed or the command fails.
 pub fn list_saved_network_profiles() -> Result<Vec<SavedNetworkProfile>, String> {
     let out = run_capture(
         "nmcli",
@@ -814,14 +900,22 @@ fn validate_uuid(uuid: &str) -> Result<(), String> {
         });
     valid
         .then_some(())
-        .ok_or("invalid NetworkManager profile UUID".into())
+        .ok_or_else(|| "invalid NetworkManager profile UUID".into())
 }
 
+/// # Errors
+///
+/// Returns an error message if `uuid` fails validation, or `nmcli` is not installed or the
+/// delete fails.
 pub fn forget_network_profile(uuid: &str) -> Result<(), String> {
     validate_uuid(uuid)?;
     run("nmcli", &["connection", "delete", "uuid", uuid])
 }
 
+/// # Errors
+///
+/// Returns an error message if `uuid` fails validation, or `nmcli` is not installed or the
+/// modify call fails.
 pub fn set_network_autoconnect(uuid: &str, enabled: bool) -> Result<(), String> {
     validate_uuid(uuid)?;
     run(
@@ -853,9 +947,14 @@ fn valid_ip_token(value: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() || matches!(b, b'.' | b':' | b'/' | b'%'))
 }
 
-/// Apply one profile's IPv4 settings through NetworkManager. The UUID is the
+/// Apply one profile's IPv4 settings through `NetworkManager`. The UUID is the
 /// stable identity; user-facing names are never used as selectors. Empty DNS
 /// means "use DHCP-provided DNS".
+///
+/// # Errors
+///
+/// Returns an error message if `uuid` fails validation, any address/gateway/DNS entry is
+/// invalid, manual mode has no address, or `nmcli` is not installed or the modify call fails.
 pub fn configure_ipv4(uuid: &str, config: &IpConfiguration) -> Result<(), String> {
     validate_uuid(uuid)?;
     if config.addresses.len() > 16
@@ -897,8 +996,13 @@ pub fn configure_ipv4(uuid: &str, config: &IpConfiguration) -> Result<(), String
 }
 
 /// Read the properties Settings can safely edit from a profile. The typed
-/// `nmcli` property view is NetworkManager's standard client surface and keeps
+/// `nmcli` property view is `NetworkManager`'s standard client surface and keeps
 /// this crate independent of vendor files and connection serialization.
+///
+/// # Errors
+///
+/// Returns an error message if `uuid` fails validation, `nmcli` is not installed, the query
+/// fails, or the response is unexpectedly large.
 pub fn connection_profile_settings(uuid: &str) -> Result<ConnectionProfileSettings, String> {
     validate_uuid(uuid)?;
     let out = run_capture(
@@ -928,11 +1032,13 @@ fn parse_connection_profile_settings(out: &str) -> Result<ConnectionProfileSetti
             return Err("NetworkManager profile property is too large".into());
         }
         let fields = split_terse(line);
-        if fields.len() >= 2 {
-            values.insert(fields[0].clone(), fields[1..].join(":"));
+        if let Some((key, rest)) = fields.split_first()
+            && !rest.is_empty()
+        {
+            values.insert(key.clone(), rest.join(":"));
         }
     }
-    let value = |key: &str| values.get(key).map(String::as_str).unwrap_or("").trim();
+    let value = |key: &str| values.get(key).map_or("", String::as_str).trim();
     let metered = match value("connection.metered") {
         "unknown" => Some(MeteredPolicy::Automatic),
         "yes" | "true" | "1" => Some(MeteredPolicy::Metered),
@@ -1015,6 +1121,11 @@ pub struct HotspotConfiguration {
 }
 
 impl HotspotConfiguration {
+    /// # Errors
+    ///
+    /// Returns an error message if `ssid` is empty, longer than 32 bytes, or contains a
+    /// control character, or if `password` is outside 8–63 characters or contains a control
+    /// character.
     pub fn validate(&self) -> Result<(), String> {
         if self.ssid.is_empty() || self.ssid.len() > 32 || self.ssid.chars().any(char::is_control) {
             return Err("hotspot name must be 1–32 bytes".into());
@@ -1028,6 +1139,10 @@ impl HotspotConfiguration {
     /// Standard Wi-Fi QR payload. Escaping follows the WIFI schema used by
     /// Android and iOS scanners; the plaintext is returned only on explicit
     /// request and is never logged or persisted by this crate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if [`Self::validate`] fails.
     pub fn qr_payload(&self) -> Result<String, String> {
         self.validate()?;
         let escape = |value: &str| {
@@ -1045,6 +1160,10 @@ impl HotspotConfiguration {
     }
 }
 
+/// # Errors
+///
+/// Returns an error message if `config` fails [`HotspotConfiguration::validate`], or `nmcli`
+/// is not installed or a step of creating/editing/activating the hotspot profile fails.
 pub fn configure_hotspot(config: &HotspotConfiguration) -> Result<(), String> {
     config.validate()?;
     let profiles = run_capture("nmcli", &["-t", "-f", "NAME", "connection", "show"])?;
@@ -1095,6 +1214,10 @@ pub struct HotspotClient {
     pub signal_dbm: Option<i32>,
 }
 
+/// # Errors
+///
+/// Returns an error message if `nmcli` or `iw` is not installed, or either command fails. An
+/// unrecognised or missing hotspot interface name yields an empty list rather than an error.
 pub fn list_hotspot_clients() -> Result<Vec<HotspotClient>, String> {
     let iface = run_capture(
         "nmcli",
@@ -1214,9 +1337,14 @@ mod profile_tests {
     }
 }
 
-/// Create a NetworkManager WWAN profile without handling SIM secrets in the
-/// UI process. PIN/password flags are `not-saved`; NetworkManager's registered
+/// Create a `NetworkManager` WWAN profile without handling SIM secrets in the
+/// UI process. PIN/password flags are `not-saved`; `NetworkManager`'s registered
 /// secret agent owns prompting and custody when activation needs them.
+///
+/// # Errors
+///
+/// Returns an error message if `name` or `apn` is invalid, or `nmcli` is not installed or a
+/// step of creating/modifying the profile fails.
 pub fn create_mobile_profile(name: &str, apn: &str) -> Result<(), String> {
     let safe = |v: &str, max: usize| {
         !v.trim().is_empty() && v.len() <= max && !v.chars().any(char::is_control)
@@ -1273,6 +1401,11 @@ pub struct CertificateInfo {
     pub sha256_fingerprint: String,
 }
 
+/// # Errors
+///
+/// Returns an error message if `path` is not an existing absolute file, `openssl` is not
+/// installed, the certificate cannot be parsed or is missing a subject/expiry/fingerprint, or
+/// the certificate has expired.
 pub fn inspect_certificate(path: &str) -> Result<CertificateInfo, String> {
     let p = std::path::Path::new(path);
     if !p.is_absolute() || !p.is_file() {
@@ -1363,9 +1496,15 @@ impl EnterpriseWifiConfiguration {
 }
 
 /// Configure the broadly deployed PEAP/MSCHAPv2 enterprise profile using
-/// NetworkManager's standard 802.1X setting. A CA certificate is mandatory;
+/// `NetworkManager`'s standard 802.1X setting. A CA certificate is mandatory;
 /// qOS never offers the dangerously convenient "do not validate" mode.
 /// The password is fed to `nmcli --ask` on stdin and marked not-saved.
+///
+/// # Errors
+///
+/// Returns an error message if `config` fails validation, its certificates cannot be
+/// inspected, `password` is empty or invalid for a non-TLS method, or `nmcli` is not installed
+/// or a step of creating/modifying/activating the profile fails.
 pub fn connect_enterprise_wifi(
     config: &EnterpriseWifiConfiguration,
     password: &str,
@@ -1570,6 +1709,10 @@ pub struct WiredInfo {
 /// Snapshot the primary wired (ethernet) device via `nmcli`. Returns a default
 /// (`connected: false`) `WiredInfo` when no ethernet device is present, so the Settings
 /// panel renders an "unplugged" card without an error path.
+///
+/// # Errors
+///
+/// Returns an error message if `nmcli` is not installed or the device-status query fails.
 pub fn get_wired() -> Result<WiredInfo, String> {
     let status = run_capture(
         "nmcli",
@@ -1604,7 +1747,12 @@ pub fn get_wired() -> Result<WiredInfo, String> {
 
 /// Connect or disconnect the primary Ethernet interface.  This is scoped to
 /// one device; unlike `nmcli networking off`, it cannot accidentally disable
-/// Wi-Fi, VPN, or the entire NetworkManager service.
+/// Wi-Fi, VPN, or the entire `NetworkManager` service.
+///
+/// # Errors
+///
+/// Returns an error message if `nmcli` is not installed, no wired interface is found, or the
+/// connect/disconnect call fails.
 pub fn set_wired(enabled: bool) -> Result<(), String> {
     let status = run_capture(
         "nmcli",

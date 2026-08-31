@@ -5,6 +5,16 @@
 //! Update intentional changes with:
 //! `UPDATE_TYPOGRAPHY_BASELINES=1 cargo test -p ui --test it typography_visual_regression`
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -79,6 +89,14 @@ struct Frame {
     rgba: Vec<u8>,
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "LOGICAL_WIDTH/logical_height/display_scale describe a bounded gallery-card canvas \
+              (at most a few thousand px, scale <= 1.5), always positive and well within f32's \
+              exact-integer range and u32's range"
+)]
 fn render(case: Case) -> Option<Frame> {
     let theme = if case.light {
         Theme::light()

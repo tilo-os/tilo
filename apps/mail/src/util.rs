@@ -91,7 +91,6 @@ pub fn minutes_of(y: i64, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
 /// Compact relative timestamp for the message-list column:
 /// `09:42` (today), `Yesterday`, `Mon` (this week), or `Jun 24`.
 pub fn format_relative(ts_min: i64, now_min: i64) -> String {
-    let delta = now_min - ts_min;
     let today = now_min.div_euclid(1440);
     let that_day = ts_min.div_euclid(1440);
     let day_diff = today - that_day;
@@ -108,7 +107,6 @@ pub fn format_relative(ts_min: i64, now_min: i64) -> String {
         let (_, mo, d) = civil_from_days(that_day);
         format!("{} {}", month_name(mo), d)
     }
-    .pipe(|s| if delta < 0 { s } else { s })
 }
 
 /// Full absolute timestamp for the reader header, e.g. `Jun 30, 2026, 13:42`.
@@ -146,6 +144,11 @@ pub fn downloads_dir() -> std::path::PathBuf {
 /// `filename` (final path component only, never an absolute/parent path), and
 /// return the file it was written to. Real IO — this is the genuine "save
 /// attachment" action, not a stub.
+///
+/// # Errors
+///
+/// Returns `Err` if the downloads directory cannot be created or the file
+/// cannot be written.
 pub fn save_download(filename: &str, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
     let safe = filename.rsplit(['/', '\\']).next().unwrap_or("attachment");
     let safe = if safe.trim().is_empty() {
@@ -163,17 +166,10 @@ pub fn save_download(filename: &str, bytes: &[u8]) -> std::io::Result<std::path:
 fn weekday(day: i64) -> &'static str {
     // 1970-01-01 was a Thursday (index 4 if week starts Sun=0).
     const NAMES: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    // `rem_euclid(7)` yields 0..=6, exactly NAMES' length, so this is total.
     let idx = (day.rem_euclid(7) + 4).rem_euclid(7) as usize;
-    NAMES[idx]
+    NAMES.get(idx).copied().unwrap_or("Sun")
 }
-
-/// Tiny fluent-ish helper so `format_relative` reads cleanly.
-trait Pipe: Sized {
-    fn pipe<R>(self, f: impl FnOnce(Self) -> R) -> R {
-        f(self)
-    }
-}
-impl<T> Pipe for T {}
 
 #[cfg(test)]
 mod tests {

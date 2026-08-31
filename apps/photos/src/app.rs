@@ -195,7 +195,12 @@ pub fn toolbar_width(faces: &[Face]) -> f32 {
             w += BTN_GAP;
         }
         w += match *slot {
-            Slot::Item(n) => item_width(faces[n], &tr(TOOLBAR[n].1)),
+            // Unreachable: `faces` and `TOOLBAR` are always built the same
+            // length, one entry per `SLOTS::Item` index.
+            Slot::Item(n) => match (faces.get(n), TOOLBAR.get(n)) {
+                (Some(&face), Some(item)) => item_width(face, &tr(item.1)),
+                _ => 0.0,
+            },
             Slot::Separator => SEP_W,
             Slot::Spacer => 0.0,
         };
@@ -378,10 +383,12 @@ impl PhotosApp {
     /// off the right-hand edge of any window narrower than 912 px while every
     /// geometry assertion still passed.
     pub fn toolbar_item_rects(&self) -> Vec<(String, Rect)> {
+        // Unreachable: `self.buttons` is always built one entry per `TOOLBAR`
+        // item, so every index here has a matching `TOOLBAR` entry.
         self.buttons
             .iter()
             .enumerate()
-            .map(|(i, (_, b))| (tr(TOOLBAR[i].1), b.get_rect()))
+            .filter_map(|(i, (_, b))| TOOLBAR.get(i).map(|item| (tr(item.1), b.get_rect())))
             .collect()
     }
 
@@ -423,7 +430,11 @@ impl PhotosApp {
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
+        // A fresh leaf on a fresh tree cannot fail; bail out rather than
+        // panic if it somehow does.
+        let Ok(node) = taffy.new_leaf(Style::default()) else {
+            return;
+        };
         // SAFETY: `DeviceId` has no public constructor; a zeroed value is
         // winit's own "no device" sentinel, and every field below is
         // overwritten or unused by `ImageViewer::handle_event`. Same idiom
@@ -645,9 +656,8 @@ impl PhotosApp {
                 let path = path.to_string_lossy().into_owned();
                 self.open_path(doc, &path);
             }
-            Ok(_) => self.picker = None,
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(_) => self.picker = None,
+            _ => self.picker = None,
         }
     }
 
@@ -678,6 +688,164 @@ impl PhotosApp {
             s.push_str(n);
         }
         s
+    }
+
+    /// Lay out the toolbar strip: one taffy node per [`SLOTS`] entry (a
+    /// button, a separator rule, or the greedy spacer), wrapped in the bar
+    /// row itself. Split out of `build_layout` to keep that dispatch under
+    /// the line-count limit.
+    #[allow(
+        clippy::unwrap_used,
+        reason = "these taffy nodes are freshly built with fixed, valid styles"
+    )]
+    fn build_toolbar_node(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let mut bar_children = Vec::new();
+        for slot in SLOTS {
+            let node = match *slot {
+                Slot::Item(n) => match self.buttons.get_mut(n) {
+                    Some((_, button)) => button.build_layout(taffy, theme, node_map),
+                    // Unreachable: SLOTS only ever indexes within self.buttons.
+                    None => taffy.new_leaf(Style::default()).unwrap(),
+                },
+                Slot::Separator => taffy
+                    .new_leaf(Style {
+                        size: Size {
+                            width: Dimension::length(SEP_W),
+                            height: Dimension::length(BTN_H * 0.6),
+                        },
+                        flex_shrink: 0.0,
+                        ..Default::default()
+                    })
+                    .unwrap(),
+                // Soaks the residual width so the export group sits hard
+                // right instead of leaving a third of the strip bare.
+                Slot::Spacer => taffy
+                    .new_leaf(Style {
+                        size: Size {
+                            width: Dimension::length(0.0),
+                            height: Dimension::length(0.0),
+                        },
+                        flex_grow: 1.0,
+                        flex_shrink: 1.0,
+                        ..Default::default()
+                    })
+                    .unwrap(),
+            };
+            bar_children.push(node);
+        }
+        taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::length(BAR_H),
+                    },
+                    flex_shrink: 0.0,
+                    align_items: Some(AlignItems::Center),
+                    gap: Size {
+                        width: LengthPercentage::length(BTN_GAP),
+                        height: LengthPercentage::length(0.0),
+                    },
+                    padding: taffy::Rect {
+                        left: LengthPercentage::length(PAD),
+                        right: LengthPercentage::length(PAD),
+                        top: LengthPercentage::length(0.0),
+                        bottom: LengthPercentage::length(0.0),
+                    },
+                    ..Default::default()
+                },
+                &bar_children,
+            )
+            .unwrap()
+    }
+
+    /// Lay out the canvas: the `ImageViewer` if a photograph is open, else a
+    /// placeholder leaf sized to soak the remaining height. `flex_basis: 0`
+    /// with `min_size: 0` is what stops a large image's intrinsic size from
+    /// pushing the layout wider than the window — the failure mode where
+    /// content is silently clipped because the container grew past its
+    /// parent instead of the content being scaled to fit. Split out of
+    /// `build_layout` to keep that dispatch under the line-count limit.
+    #[allow(
+        clippy::unwrap_used,
+        reason = "these taffy nodes are freshly built with fixed, valid styles"
+    )]
+    fn build_canvas_node(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let canvas = match self.viewer.as_mut() {
+            Some(v) => v.build_layout(taffy, theme, node_map),
+            None => taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::auto(),
+                    },
+                    flex_grow: 1.0,
+                    ..Default::default()
+                })
+                .unwrap(),
+        };
+        taffy
+            .set_style(
+                canvas,
+                Style {
+                    size: Size {
+                        width: Dimension::auto(),
+                        height: Dimension::auto(),
+                    },
+                    min_size: Size {
+                        width: Dimension::length(0.0),
+                        height: Dimension::length(0.0),
+                    },
+                    flex_grow: 1.0,
+                    flex_shrink: 1.0,
+                    flex_basis: Dimension::length(0.0),
+                    margin: taffy::Rect {
+                        left: LengthPercentageAuto::length(0.0),
+                        right: LengthPercentageAuto::length(0.0),
+                        top: LengthPercentageAuto::length(CANVAS_INSET),
+                        bottom: LengthPercentageAuto::length(CANVAS_INSET),
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        canvas
+    }
+
+    /// Lay out the status band: zero height with nothing to say (reserving
+    /// the band anyway would leave a rule and a strip of empty chrome under
+    /// an empty state, which reads as a control that failed to draw), else a
+    /// fixed band. Split out of `build_layout` to keep that dispatch under
+    /// the line-count limit.
+    #[allow(
+        clippy::unwrap_used,
+        reason = "this taffy node is freshly built with a fixed, valid style"
+    )]
+    fn build_status_node(&self, taffy: &mut TaffyTree<()>) -> NodeId {
+        taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::length(if self.status.is_empty() {
+                        0.0
+                    } else {
+                        BAR_H * 0.6
+                    }),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            })
+            .unwrap()
     }
 }
 
@@ -765,6 +933,10 @@ impl Widget for PhotosApp {
         self.status = self.status_text(doc);
     }
 
+    #[allow(
+        clippy::unwrap_used,
+        reason = "root's taffy node always builds from freshly-built children"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -775,125 +947,9 @@ impl Widget for PhotosApp {
         // has no rect yet and lays out roomy; the frame after corrects it.
         self.refit_toolbar(self.rect.width() as f32);
 
-        let mut bar_children = Vec::new();
-        for slot in SLOTS {
-            let node = match *slot {
-                Slot::Item(n) => {
-                    let (_, button) = &mut self.buttons[n];
-                    button.build_layout(taffy, theme, node_map)
-                }
-                Slot::Separator => taffy
-                    .new_leaf(Style {
-                        size: Size {
-                            width: Dimension::length(SEP_W),
-                            height: Dimension::length(BTN_H * 0.6),
-                        },
-                        flex_shrink: 0.0,
-                        ..Default::default()
-                    })
-                    .unwrap(),
-                // Soaks the residual width so the export group sits hard
-                // right instead of leaving a third of the strip bare.
-                Slot::Spacer => taffy
-                    .new_leaf(Style {
-                        size: Size {
-                            width: Dimension::length(0.0),
-                            height: Dimension::length(0.0),
-                        },
-                        flex_grow: 1.0,
-                        flex_shrink: 1.0,
-                        ..Default::default()
-                    })
-                    .unwrap(),
-            };
-            bar_children.push(node);
-        }
-        let bar = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(BAR_H),
-                    },
-                    flex_shrink: 0.0,
-                    align_items: Some(AlignItems::Center),
-                    gap: Size {
-                        width: LengthPercentage::length(BTN_GAP),
-                        height: LengthPercentage::length(0.0),
-                    },
-                    padding: taffy::Rect {
-                        left: LengthPercentage::length(PAD),
-                        right: LengthPercentage::length(PAD),
-                        top: LengthPercentage::length(0.0),
-                        bottom: LengthPercentage::length(0.0),
-                    },
-                    ..Default::default()
-                },
-                &bar_children,
-            )
-            .unwrap();
-
-        // The canvas takes every pixel the two bars do not. `flex_basis: 0`
-        // with `min_size: 0` is what stops a large image's intrinsic size from
-        // pushing the layout wider than the window — the failure mode where
-        // content is silently clipped because the container grew past its
-        // parent instead of the content being scaled to fit.
-        let canvas = match self.viewer.as_mut() {
-            Some(v) => v.build_layout(taffy, theme, node_map),
-            None => taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::auto(),
-                    },
-                    flex_grow: 1.0,
-                    ..Default::default()
-                })
-                .unwrap(),
-        };
-        taffy
-            .set_style(
-                canvas,
-                Style {
-                    size: Size {
-                        width: Dimension::auto(),
-                        height: Dimension::auto(),
-                    },
-                    min_size: Size {
-                        width: Dimension::length(0.0),
-                        height: Dimension::length(0.0),
-                    },
-                    flex_grow: 1.0,
-                    flex_shrink: 1.0,
-                    flex_basis: Dimension::length(0.0),
-                    margin: taffy::Rect {
-                        left: LengthPercentageAuto::length(0.0),
-                        right: LengthPercentageAuto::length(0.0),
-                        top: LengthPercentageAuto::length(CANVAS_INSET),
-                        bottom: LengthPercentageAuto::length(CANVAS_INSET),
-                    },
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-
-        // A status line with nothing to say takes no room. Reserving the band
-        // anyway leaves a rule and a strip of empty chrome under an empty
-        // state, which reads as a control that failed to draw.
-        let status = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(if self.status.is_empty() {
-                        0.0
-                    } else {
-                        BAR_H * 0.6
-                    }),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let bar = self.build_toolbar_node(taffy, theme, node_map);
+        let canvas = self.build_canvas_node(taffy, theme, node_map);
+        let status = self.build_status_node(taffy);
 
         let root = taffy
             .new_with_children(
@@ -912,6 +968,7 @@ impl Widget for PhotosApp {
         root
     }
 
+    #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         let x = origin.x + f64::from(layout.location.x);

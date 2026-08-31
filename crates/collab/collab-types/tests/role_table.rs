@@ -7,6 +7,16 @@
 //! exhaustively means a code change that flips a single row will
 //! fail loudly here.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use collab_types::{ArtifactKind, OpClass, Role, role_permits};
 
 fn all_artifact_kinds() -> [ArtifactKind; 5] {

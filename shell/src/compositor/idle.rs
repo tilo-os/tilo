@@ -79,6 +79,7 @@ impl IdleConfig {
     }
 
     /// Override the suspend timeout (the Settings power policy drives this in production; env/`from_env` only seeds the headless default). Chainable.
+    #[must_use]
     pub fn with_suspend(mut self, suspend: Option<Duration>) -> Self {
         self.suspend_timeout = suspend;
         self
@@ -102,9 +103,8 @@ impl IdleConfig {
             match v {
                 None => None,
                 Some(s) => match s.trim().parse::<u64>() {
-                    Ok(0) => None,
+                    Ok(0) | Err(_) => None,
                     Ok(n) => Some(Duration::from_secs(n)),
-                    Err(_) => None,
                 },
             }
         };
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn config_defaults_blank_five_minutes_no_lock() {
         let c = IdleConfig::from_env_values(None, None, None);
-        assert_eq!(c.blank_timeout, Some(Duration::from_mins(5)));
+        assert_eq!(c.blank_timeout, Some(Duration::from_secs(300)));
         assert_eq!(c.lock_timeout, None);
         assert_eq!(c.suspend_timeout, None);
     }
@@ -290,15 +290,15 @@ mod tests {
     #[test]
     fn config_parses_positive_seconds() {
         let c = IdleConfig::from_env_values(Some("60"), Some("120"), Some("900"));
-        assert_eq!(c.blank_timeout, Some(Duration::from_mins(1)));
-        assert_eq!(c.lock_timeout, Some(Duration::from_mins(2)));
-        assert_eq!(c.suspend_timeout, Some(Duration::from_mins(15)));
+        assert_eq!(c.blank_timeout, Some(Duration::from_secs(60)));
+        assert_eq!(c.lock_timeout, Some(Duration::from_secs(120)));
+        assert_eq!(c.suspend_timeout, Some(Duration::from_secs(900)));
     }
 
     #[test]
     fn config_garbage_blank_falls_back_to_default_garbage_lock_disables() {
         let c = IdleConfig::from_env_values(Some("nonsense"), Some("nonsense"), Some("nonsense"));
-        assert_eq!(c.blank_timeout, Some(Duration::from_mins(5)));
+        assert_eq!(c.blank_timeout, Some(Duration::from_secs(300)));
         assert_eq!(c.lock_timeout, None);
         assert_eq!(c.suspend_timeout, None);
     }
@@ -307,9 +307,9 @@ mod tests {
     fn with_suspend_overrides_the_timeout() {
         // The Settings power policy drives suspend, overriding env.
         let c = IdleConfig::from_env_values(Some("300"), None, None)
-            .with_suspend(Some(Duration::from_mins(20)));
-        assert_eq!(c.suspend_timeout, Some(Duration::from_mins(20)));
-        assert_eq!(c.blank_timeout, Some(Duration::from_mins(5)));
+            .with_suspend(Some(Duration::from_secs(1200)));
+        assert_eq!(c.suspend_timeout, Some(Duration::from_secs(1200)));
+        assert_eq!(c.blank_timeout, Some(Duration::from_secs(300)));
     }
 
     #[test]
@@ -339,12 +339,12 @@ mod tests {
         assert!(!s.is_blanked());
 
         // At/after the threshold: blanks once.
-        let trans = s.tick(t0 + Duration::from_mins(5));
+        let trans = s.tick(t0 + Duration::from_secs(300));
         assert_eq!(trans, vec![SessionTransition::Blanked]);
         assert!(s.is_blanked());
 
         // Subsequent ticks while blanked emit nothing (idempotent).
-        assert!(s.tick(t0 + Duration::from_mins(10)).is_empty());
+        assert!(s.tick(t0 + Duration::from_secs(600)).is_empty());
         assert!(s.is_blanked());
 
         // Any input wakes the display and resets the timer.
@@ -377,11 +377,11 @@ mod tests {
         let t0 = Instant::now();
         let mut s = SessionManager::new(cfg(Some(300), Some(600)), t0);
 
-        let trans = s.tick(t0 + Duration::from_mins(5));
+        let trans = s.tick(t0 + Duration::from_secs(300));
         assert_eq!(trans, vec![SessionTransition::Blanked]);
         assert!(!s.is_locked());
 
-        let trans = s.tick(t0 + Duration::from_mins(10));
+        let trans = s.tick(t0 + Duration::from_secs(600));
         assert_eq!(trans, vec![SessionTransition::Locked]);
         assert!(s.is_locked());
     }
@@ -390,7 +390,7 @@ mod tests {
     fn equal_timeouts_emit_both_blank_and_lock_same_tick() {
         let t0 = Instant::now();
         let mut s = SessionManager::new(cfg(Some(300), Some(300)), t0);
-        let trans = s.tick(t0 + Duration::from_mins(5));
+        let trans = s.tick(t0 + Duration::from_secs(300));
         assert_eq!(
             trans,
             vec![SessionTransition::Blanked, SessionTransition::Locked]
@@ -408,7 +408,7 @@ mod tests {
         let mut s = SessionManager::new(cfg_s(Some(300), None, Some(900)), t0);
 
         assert_eq!(
-            s.tick(t0 + Duration::from_mins(5)),
+            s.tick(t0 + Duration::from_secs(300)),
             vec![SessionTransition::Blanked]
         );
         assert!(!s.is_suspend_pending());
@@ -419,13 +419,13 @@ mod tests {
 
         // At the threshold: suspend once.
         assert_eq!(
-            s.tick(t0 + Duration::from_mins(15)),
+            s.tick(t0 + Duration::from_secs(900)),
             vec![SessionTransition::Suspend]
         );
         assert!(s.is_suspend_pending());
 
         // Latched: subsequent ticks emit nothing.
-        assert!(s.tick(t0 + Duration::from_mins(20)).is_empty());
+        assert!(s.tick(t0 + Duration::from_secs(1200)).is_empty());
     }
 
     #[test]
@@ -442,7 +442,7 @@ mod tests {
         let t0 = Instant::now();
         let mut s = SessionManager::new(cfg_s(None, None, Some(600)), t0);
         assert_eq!(
-            s.tick(t0 + Duration::from_mins(10)),
+            s.tick(t0 + Duration::from_secs(600)),
             vec![SessionTransition::Suspend]
         );
         assert!(s.is_suspend_pending());
@@ -450,7 +450,7 @@ mod tests {
         let _ = s.note_activity(t0 + Duration::from_secs(605));
         assert!(!s.is_suspend_pending());
         // Idle again for the full period → suspends afresh.
-        assert!(s.tick(t0 + Duration::from_mins(20)).is_empty());
+        assert!(s.tick(t0 + Duration::from_secs(1200)).is_empty());
         assert_eq!(
             s.tick(t0 + Duration::from_secs(1205)),
             vec![SessionTransition::Suspend]
@@ -464,7 +464,7 @@ mod tests {
         let t0 = Instant::now();
         let mut s = SessionManager::new(cfg_s(None, None, Some(600)), t0);
         assert_eq!(
-            s.tick(t0 + Duration::from_mins(10)),
+            s.tick(t0 + Duration::from_secs(600)),
             vec![SessionTransition::Suspend]
         );
         s.cancel_suspend();
@@ -491,7 +491,7 @@ mod tests {
     fn request_unlock_clears_lock_and_wakes_if_blanked() {
         let t0 = Instant::now();
         let mut s = SessionManager::new(cfg(Some(300), Some(300)), t0);
-        let _ = s.tick(t0 + Duration::from_mins(5));
+        let _ = s.tick(t0 + Duration::from_secs(300));
         assert!(s.is_locked() && s.is_blanked());
 
         let trans = s.request_unlock(t0 + Duration::from_secs(305));
@@ -517,7 +517,7 @@ mod tests {
         let mut s = SessionManager::new(cfg(Some(300), None), t0);
         let _ = s.request_lock(t0);
         // Idle past blank while locked → still blanks.
-        let trans = s.tick(t0 + Duration::from_mins(5));
+        let trans = s.tick(t0 + Duration::from_secs(300));
         assert_eq!(trans, vec![SessionTransition::Blanked]);
         assert!(s.is_locked() && s.is_blanked());
 
@@ -534,7 +534,7 @@ mod tests {
         let t0 = Instant::now();
         let mut s = SessionManager::new(cfg(Some(300), None), t0);
         let _ = s.request_lock(t0);
-        let _ = s.tick(t0 + Duration::from_mins(5)); // blanked
+        let _ = s.tick(t0 + Duration::from_secs(300)); // blanked
         let _ = s.note_activity(t0 + Duration::from_secs(301)); // woke, timer reset
         // Idle 300s from the wake → blanks again.
         let trans = s.tick(t0 + Duration::from_secs(601));

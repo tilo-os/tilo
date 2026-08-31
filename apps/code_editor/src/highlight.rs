@@ -182,14 +182,17 @@ impl Highlighter {
     /// `state` so the next line continues the same parse (multi-line strings,
     /// block comments, etc. carry over correctly). Returns role-tagged spans
     /// covering the whole line.
+    #[allow(
+        clippy::unused_self,
+        reason = "keeps the ergonomic hl.highlight_line(...) call site; the syntax reference is already baked into state.parse by fresh_state(), so self genuinely isn't needed in the body, but converting to an associated function would read worse at every call site for no benefit"
+    )]
     pub fn highlight_line(&self, line: &str, state: &mut LineState) -> Vec<Span> {
         let set = syntax_set();
         // `parse_line` yields (byte_offset, ScopeStackOp) deltas. We replay
         // them against a running ScopeStack to know the active scope at each
         // boundary, then coalesce equal-role runs.
-        let ops = match state.parse.parse_line(line, set) {
-            Ok(ops) => ops,
-            Err(_) => return vec![],
+        let Ok(ops) = state.parse.parse_line(line, set) else {
+            return vec![];
         };
 
         let mut spans: Vec<Span> = Vec::new();

@@ -5,6 +5,16 @@
 //! helper emits geometry (data-side population and wire integration are
 //! covered by `presence_remote_cursors_test` and `cross_process_presence_pump`).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use vello::Scene;
 use vello::peniko::Color;
 
@@ -14,6 +24,12 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
 #[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "apex_x/apex_y are a fixed non-negative test pixel coordinate (30.0), always \
+              exactly representable as u32"
+)]
 fn ghost_cursor_rendered_at_remote_position() {
     // 128x96 is just enough to fit the caret + name pill without
     // clipping; small enough to stay sub-millisecond on llvmpipe.
@@ -48,23 +64,23 @@ fn ghost_cursor_rendered_at_remote_position() {
     // The triangle is ~10 px tall, so sweep (apex.x, apex.x+8) ×
     // (apex.y, apex.y+8) for a pixel diverging from BLACK.
     let apex_xi = apex_x as u32;
-    let apex_yi = apex_y as u32;
+    let apex_y_rounded = apex_y as u32;
     let mut hits = 0;
     let mut first_hit = None;
     for dy in 0..9u32 {
         for dx in 0..9u32 {
-            let x = apex_xi + dx;
-            let y = apex_yi + dy;
-            if x >= width || y >= height {
+            let px = apex_xi + dx;
+            let py = apex_y_rounded + dy;
+            if px >= width || py >= height {
                 continue;
             }
-            let (r, g, b, a) = OffscreenRenderer::sample(&rgba, width, x, y);
+            let (r, g, b, a) = OffscreenRenderer::sample(&rgba, width, px, py);
             // Threshold 16 catches weak AA-edge hits; `as u32` widens
             // before summing so a bright (255,255,255) doesn't overflow u8 add.
             if u32::from(r) + u32::from(g) + u32::from(b) > 16 && a > 16 {
                 hits += 1;
                 if first_hit.is_none() {
-                    first_hit = Some((x, y, r, g, b, a));
+                    first_hit = Some((px, py, r, g, b, a));
                 }
             }
         }

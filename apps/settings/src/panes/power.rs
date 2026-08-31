@@ -258,74 +258,21 @@ impl PowerPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        // --- Battery card.
-        let battery_card = if self.battery.present {
-            let mut battery_rows: Vec<El> = vec![
-                Box::new(ProgressBar::new(self.battery.capacity as f32 / 100.0)),
-                value_row("Charge", &format!("{}%", self.battery.capacity)),
-                value_row("Status", &self.battery.summary()),
-            ];
-            if let Some(cycles) = self.battery.cycle_count {
-                battery_rows.push(value_row("Charge cycles", &cycles.to_string()));
-            }
-            if let Some(health) = self.battery.health_percent() {
-                battery_rows.push(value_row("Battery health", &format!("{health}%")));
-                battery_rows.push(caption(self.battery.health_explanation()));
-            } else {
-                battery_rows.push(value_row("Battery health", "Not reported by this device"));
-            }
-            let trend: Vec<f32> = self
-                .history
-                .points
-                .iter()
-                .map(|p| p.capacity as f32)
-                .collect();
-            if trend.len() >= 2 {
-                battery_rows.push(Box::new(
-                    Sparkline::new(trend, Theme::dark().accent_primary)
-                        .with_max(100.0)
-                        .with_size(320.0, 56.0),
-                ));
-                battery_rows.push(caption("Charge history · last 30 days · sampled at most every 15 minutes. Device names and serial numbers are never stored."));
-            }
-            if let Some(capability) = &self.charge_cap {
-                let choices: Vec<String> = capability
-                    .choices
-                    .iter()
-                    .map(|limit| format!("{limit}%"))
-                    .collect();
-                battery_rows.push(choice_row(
-                    "Charge cap",
-                    Box::new(
-                        Dropdown::new(choices, CHARGE_LIMIT_KEY)
-                            .with_id("power.charge_limit")
-                            .with_placeholder(&format!("{}%", capability.current)),
-                    ),
-                ));
-                let detail = match capability.backend {
-                    ChargeCapBackend::ConservationMode => {
-                        "This laptop exposes a discrete conservation mode, so only its real hardware choices are offered."
-                    }
-                    ChargeCapBackend::HuaweiWmi => {
-                        "The platform uses paired start/end thresholds; qOS preserves a safe charging window."
-                    }
-                    ChargeCapBackend::PowerSupply if capability.supports_start_threshold => {
-                        "The kernel exposes start and stop thresholds; qOS adjusts the start only when required by a lower cap."
-                    }
-                    ChargeCapBackend::PowerSupply => {
-                        "The kernel exposes a hardware stop threshold. A lower cap can reduce long-term battery wear."
-                    }
-                };
-                battery_rows.push(caption(detail));
-            } else {
-                battery_rows.push(value_row("Charge cap", "Not supported by this hardware"));
-            }
-            if let Some(notice) = &self.charge_notice {
-                battery_rows.push(caption(notice));
-            }
-            card("Battery", rows(battery_rows))
-        } else {
-            card(
+        let mut cards = vec![
+            self.battery_card(),
+            self.profile_card(),
+            self.idle_card(),
+            self.actions_card(),
+        ];
+        if let Some(device_card) = self.devices_card() {
+            cards.insert(1, device_card);
+        }
+        crate::widgets::cards(cards)
+    }
+
+    fn battery_card(&self) -> El {
+        if !self.battery.present {
+            return card(
                 "Power source",
                 rows(vec![
                     value_row("Source", "AC power"),
@@ -334,10 +281,75 @@ impl PowerPane {
                          charge and battery-saver settings don't apply.",
                     ),
                 ]),
-            )
-        };
+            );
+        }
+        let mut battery_rows: Vec<El> = vec![
+            Box::new(ProgressBar::new(self.battery.capacity as f32 / 100.0)),
+            value_row("Charge", &format!("{}%", self.battery.capacity)),
+            value_row("Status", &self.battery.summary()),
+        ];
+        if let Some(cycles) = self.battery.cycle_count {
+            battery_rows.push(value_row("Charge cycles", &cycles.to_string()));
+        }
+        if let Some(health) = self.battery.health_percent() {
+            battery_rows.push(value_row("Battery health", &format!("{health}%")));
+            battery_rows.push(caption(self.battery.health_explanation()));
+        } else {
+            battery_rows.push(value_row("Battery health", "Not reported by this device"));
+        }
+        let trend: Vec<f32> = self
+            .history
+            .points
+            .iter()
+            .map(|p| p.capacity as f32)
+            .collect();
+        if trend.len() >= 2 {
+            battery_rows.push(Box::new(
+                Sparkline::new(trend, Theme::dark().accent_primary)
+                    .with_max(100.0)
+                    .with_size(320.0, 56.0),
+            ));
+            battery_rows.push(caption("Charge history · last 30 days · sampled at most every 15 minutes. Device names and serial numbers are never stored."));
+        }
+        if let Some(capability) = &self.charge_cap {
+            let choices: Vec<String> = capability
+                .choices
+                .iter()
+                .map(|limit| format!("{limit}%"))
+                .collect();
+            battery_rows.push(choice_row(
+                "Charge cap",
+                Box::new(
+                    Dropdown::new(choices, CHARGE_LIMIT_KEY)
+                        .with_id("power.charge_limit")
+                        .with_placeholder(&format!("{}%", capability.current)),
+                ),
+            ));
+            let detail = match capability.backend {
+                ChargeCapBackend::ConservationMode => {
+                    "This laptop exposes a discrete conservation mode, so only its real hardware choices are offered."
+                }
+                ChargeCapBackend::HuaweiWmi => {
+                    "The platform uses paired start/end thresholds; qOS preserves a safe charging window."
+                }
+                ChargeCapBackend::PowerSupply if capability.supports_start_threshold => {
+                    "The kernel exposes start and stop thresholds; qOS adjusts the start only when required by a lower cap."
+                }
+                ChargeCapBackend::PowerSupply => {
+                    "The kernel exposes a hardware stop threshold. A lower cap can reduce long-term battery wear."
+                }
+            };
+            battery_rows.push(caption(detail));
+        } else {
+            battery_rows.push(value_row("Charge cap", "Not supported by this hardware"));
+        }
+        if let Some(notice) = &self.charge_notice {
+            battery_rows.push(caption(notice));
+        }
+        card("Battery", rows(battery_rows))
+    }
 
-        // --- Power profile card.
+    fn profile_card(&self) -> El {
         let profile_opts: Vec<String> = self
             .available_profiles
             .iter()
@@ -361,13 +373,14 @@ impl PowerPane {
         if let Some(notice) = &self.profile_notice {
             profile_rows.push(caption(notice));
         }
-        let profile = card("Power profile", rows(profile_rows));
+        card("Power profile", rows(profile_rows))
+    }
 
-        // --- Session-idle card (durable preferences).
+    fn idle_card(&self) -> El {
         let blank_opts: Vec<String> = BLANK_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
         let suspend_opts: Vec<String> =
             SUSPEND_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
-        let idle = card(
+        card(
             "Automatic power saving",
             rows(vec![
                 setting_row(
@@ -420,10 +433,11 @@ impl PowerPane {
                     "The active power profile selects its own idle timeout in the compositor; changing profile never creates a second policy owner.",
                 ),
             ]),
-        );
+        )
+    }
 
-        // --- Buttons + battery actions card.
-        let actions = card(
+    fn actions_card(&self) -> El {
+        card(
             "Power behaviour",
             rows(vec![
                 choice_row(
@@ -455,29 +469,25 @@ impl PowerPane {
                     self.prefs.low_battery_percent, self.prefs.critical_battery_percent
                 )),
             ]),
-        );
+        )
+    }
 
-        let devices = if self.devices.len() > 1 {
-            let mut entries = Vec::new();
-            for d in &self.devices {
-                let kind = match d.kind {
-                    os_actions::PowerSupplyKind::Battery => "Battery",
-                    os_actions::PowerSupplyKind::Ups => "UPS",
-                };
-                entries.push(value_row(
-                    d.model.as_deref().unwrap_or(&d.id),
-                    &format!("{kind} · {}% · {}", d.capacity, d.status),
-                ));
-            }
-            Some(card("Power devices", rows(entries)))
-        } else {
-            None
-        };
-        let mut cards = vec![battery_card, profile, idle, actions];
-        if let Some(device_card) = devices {
-            cards.insert(1, device_card);
+    fn devices_card(&self) -> Option<El> {
+        if self.devices.len() <= 1 {
+            return None;
         }
-        crate::widgets::cards(cards)
+        let mut entries = Vec::new();
+        for d in &self.devices {
+            let kind = match d.kind {
+                os_actions::PowerSupplyKind::Battery => "Battery",
+                os_actions::PowerSupplyKind::Ups => "UPS",
+            };
+            entries.push(value_row(
+                d.model.as_deref().unwrap_or(&d.id),
+                &format!("{kind} · {}% · {}", d.capacity, d.status),
+            ));
+        }
+        Some(card("Power devices", rows(entries)))
     }
 
     fn persist(&self) {
@@ -487,97 +497,107 @@ impl PowerPane {
             warn!(target: "qos::settings", op = "power_prefs_save", error = %e, "failed to persist power prefs");
         }
     }
-}
 
-pub fn build() -> Box<dyn Widget> {
-    Box::new(PowerPane::new())
-}
-
-impl Widget for PowerPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.needs_seed {
-            let _ = state.put(root, PROFILE_KEY, profile_label(self.profile));
-            let _ = state.put(
-                root,
-                AUTO_SUSPEND_KEY,
-                automerge::ScalarValue::Boolean(self.prefs.auto_suspend),
-            );
-            let _ = state.put(root, SUSPEND_KEY, suspend_label(self.prefs.suspend_minutes));
-            let _ = state.put(root, BLANK_KEY, blank_label(self.prefs.blank_minutes));
-            let _ = state.put(
-                root,
-                SAVER_SUSPEND_KEY,
-                suspend_label(self.prefs.saver_suspend_minutes),
-            );
-            let _ = state.put(
-                root,
-                BALANCED_SUSPEND_KEY,
-                suspend_label(self.prefs.balanced_suspend_minutes),
-            );
-            let _ = state.put(
-                root,
-                PERFORMANCE_SUSPEND_KEY,
-                suspend_label(self.prefs.performance_suspend_minutes),
-            );
-            let _ = state.put(root, LID_KEY, self.prefs.lid_close_action.display());
-            let _ = state.put(root, POWER_KEY_KEY, self.prefs.power_key_action.display());
-            let _ = state.put(root, CRITICAL_KEY, self.prefs.critical_action.display());
-            if let Some(capability) = &self.charge_cap {
-                let _ = state.put(root, CHARGE_LIMIT_KEY, format!("{}%", capability.current));
-            }
-            self.last_prefs = self.prefs;
-            self.needs_seed = false;
+    fn seed(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !self.needs_seed {
+            return;
         }
-
-        // Power profile → dispatch on change, guarded so it doesn't re-fire.
-        if let Some(label) = read_str(state, root, PROFILE_KEY)
-            && let Some(p) = profile_from_label(&label)
-            && p != self.last_profile
-        {
-            if !self.available_profiles.contains(&p) {
-                let _ = state.put(root, PROFILE_KEY, profile_label(self.last_profile));
-                self.profile_notice = Some(format!(
-                    "{} is not supported by this device.",
-                    profile_label(p)
-                ));
-            } else {
-                match self.dispatcher.set_power_profile(p) {
-                    Ok(()) => {
-                        self.last_profile = p;
-                        self.profile = p;
-                        self.profile_notice = Some(format!("{} is now active.", profile_label(p)));
-                    }
-                    Err(e) => {
-                        let _ = state.put(root, PROFILE_KEY, profile_label(self.last_profile));
-                        self.profile_notice =
-                            Some(format!("Could not change the power profile: {e}"));
-                        warn!(target: "qos::settings", op = "set_power_profile", error = %e, "power pane dispatch failed");
-                    }
-                }
-            }
+        let _ = state.put(root, PROFILE_KEY, profile_label(self.profile));
+        let _ = state.put(
+            root,
+            AUTO_SUSPEND_KEY,
+            automerge::ScalarValue::Boolean(self.prefs.auto_suspend),
+        );
+        let _ = state.put(root, SUSPEND_KEY, suspend_label(self.prefs.suspend_minutes));
+        let _ = state.put(root, BLANK_KEY, blank_label(self.prefs.blank_minutes));
+        let _ = state.put(
+            root,
+            SAVER_SUSPEND_KEY,
+            suspend_label(self.prefs.saver_suspend_minutes),
+        );
+        let _ = state.put(
+            root,
+            BALANCED_SUSPEND_KEY,
+            suspend_label(self.prefs.balanced_suspend_minutes),
+        );
+        let _ = state.put(
+            root,
+            PERFORMANCE_SUSPEND_KEY,
+            suspend_label(self.prefs.performance_suspend_minutes),
+        );
+        let _ = state.put(root, LID_KEY, self.prefs.lid_close_action.display());
+        let _ = state.put(root, POWER_KEY_KEY, self.prefs.power_key_action.display());
+        let _ = state.put(root, CRITICAL_KEY, self.prefs.critical_action.display());
+        if let Some(capability) = &self.charge_cap {
+            let _ = state.put(root, CHARGE_LIMIT_KEY, format!("{}%", capability.current));
         }
+        self.last_prefs = self.prefs;
+        self.needs_seed = false;
+    }
 
-        if let Some(label) = read_str(state, root, CHARGE_LIMIT_KEY)
-            && let Some(limit) = label.strip_suffix('%').and_then(|s| s.parse::<u32>().ok())
-            && self
-                .charge_cap
-                .as_ref()
-                .is_some_and(|cap| cap.current != limit && cap.choices.contains(&limit))
-        {
-            match os_actions::set_charge_limit_checked(limit) {
-                Ok(actual) => {
-                    self.battery.charge_limit = Some(limit);
-                    self.charge_cap = Some(actual);
-                    self.charge_notice = Some(format!("Hardware confirmed a {limit}% charge cap."));
+    /// Power profile → dispatch on change, guarded so it doesn't re-fire.
+    fn handle_profile_change(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let Some(label) = read_str(state, root, PROFILE_KEY) else {
+            return;
+        };
+        let Some(p) = profile_from_label(&label) else {
+            return;
+        };
+        if p == self.last_profile {
+            return;
+        }
+        if self.available_profiles.contains(&p) {
+            match self.dispatcher.set_power_profile(p) {
+                Ok(()) => {
+                    self.last_profile = p;
+                    self.profile = p;
+                    self.profile_notice = Some(format!("{} is now active.", profile_label(p)));
                 }
                 Err(e) => {
-                    self.charge_notice = Some(format!("Charge cap was not applied: {e}"));
-                    warn!(target: "qos::settings", op = "set_charge_limit", error = %e, "battery cap failed")
+                    let _ = state.put(root, PROFILE_KEY, profile_label(self.last_profile));
+                    self.profile_notice = Some(format!("Could not change the power profile: {e}"));
+                    warn!(target: "qos::settings", op = "set_power_profile", error = %e, "power pane dispatch failed");
                 }
             }
+        } else {
+            let _ = state.put(root, PROFILE_KEY, profile_label(self.last_profile));
+            self.profile_notice = Some(format!(
+                "{} is not supported by this device.",
+                profile_label(p)
+            ));
         }
+    }
 
-        // Auto-suspend → persist on change.
+    fn handle_charge_limit(&mut self, state: &AutoCommit, root: &ObjId) {
+        let Some(label) = read_str(state, root, CHARGE_LIMIT_KEY) else {
+            return;
+        };
+        let Some(limit) = label.strip_suffix('%').and_then(|s| s.parse::<u32>().ok()) else {
+            return;
+        };
+        if !self
+            .charge_cap
+            .as_ref()
+            .is_some_and(|cap| cap.current != limit && cap.choices.contains(&limit))
+        {
+            return;
+        }
+        match os_actions::set_charge_limit_checked(limit) {
+            Ok(actual) => {
+                self.battery.charge_limit = Some(limit);
+                self.charge_cap = Some(actual);
+                self.charge_notice = Some(format!("Hardware confirmed a {limit}% charge cap."));
+            }
+            Err(e) => {
+                self.charge_notice = Some(format!("Charge cap was not applied: {e}"));
+                warn!(target: "qos::settings", op = "set_charge_limit", error = %e, "battery cap failed");
+            }
+        }
+    }
+
+    /// Auto-suspend, screen-blank and the three per-profile idle-suspend
+    /// timeouts → persisted on change.
+    fn handle_idle_prefs(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(b) = read_bool(state, root, AUTO_SUSPEND_KEY)
             && b != self.last_prefs.auto_suspend
         {
@@ -586,7 +606,6 @@ impl Widget for PowerPane {
             self.persist();
         }
 
-        // Screen-blank timeout → persist on change.
         if let Some(label) = read_str(state, root, BLANK_KEY)
             && let Some(m) = blank_from_label(&label)
             && m != self.last_prefs.blank_minutes
@@ -596,7 +615,6 @@ impl Widget for PowerPane {
             self.persist();
         }
 
-        // Idle-suspend timeout → persist on change.
         if let Some(label) = read_str(state, root, SUSPEND_KEY)
             && let Some(m) = suspend_from_label(&label)
             && m != self.last_prefs.suspend_minutes
@@ -643,8 +661,11 @@ impl Widget for PowerPane {
                 self.persist();
             }
         }
+    }
 
-        // Lid-close action → persist on change.
+    /// Lid-close, power-key and critical-battery actions → persisted on
+    /// change.
+    fn handle_action_prefs(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(label) = read_str(state, root, LID_KEY)
             && let Some(a) = PowerActionPref::from_display(&label)
             && a != self.last_prefs.lid_close_action
@@ -654,7 +675,6 @@ impl Widget for PowerPane {
             self.persist();
         }
 
-        // Power-key action → persist on change.
         if let Some(label) = read_str(state, root, POWER_KEY_KEY)
             && let Some(a) = PowerActionPref::from_display(&label)
             && a != self.last_prefs.power_key_action
@@ -664,7 +684,6 @@ impl Widget for PowerPane {
             self.persist();
         }
 
-        // Critical-battery action → persist on change.
         if let Some(label) = read_str(state, root, CRITICAL_KEY)
             && let Some(a) = PowerActionPref::from_display(&label)
             && a != self.last_prefs.critical_action
@@ -673,6 +692,20 @@ impl Widget for PowerPane {
             self.prefs.critical_action = a;
             self.persist();
         }
+    }
+}
+
+pub fn build() -> Box<dyn Widget> {
+    Box::new(PowerPane::new())
+}
+
+impl Widget for PowerPane {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.seed(state, root);
+        self.handle_profile_change(state, root);
+        self.handle_charge_limit(state, root);
+        self.handle_idle_prefs(state, root);
+        self.handle_action_prefs(state, root);
 
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
@@ -697,13 +730,17 @@ impl Widget for PowerPane {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap();
+        // `child` was just created in this same `taffy` tree, so wrapping it
+        // cannot fail in practice; falling back to the child node itself
+        // (skipping the wrapper style) is a real degraded behaviour rather
+        // than a panic if that invariant is ever broken.
+        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

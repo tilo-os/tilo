@@ -89,12 +89,14 @@ impl IconGrid {
         }
     }
 
+    #[must_use]
     pub fn with_cell_size(mut self, w: f64, h: f64) -> Self {
         self.cell_w = w.max(8.0);
         self.cell_h = h.max(8.0);
         self
     }
 
+    #[must_use]
     pub fn with_icon_size(mut self, px: f64) -> Self {
         self.icon_px = px.max(4.0);
         self
@@ -105,6 +107,7 @@ impl IconGrid {
         self.selection = sel;
     }
 
+    #[must_use]
     pub fn with_selection(mut self, sel: SelectionModel) -> Self {
         self.selection = sel;
         self
@@ -119,12 +122,14 @@ impl IconGrid {
     }
 
     /// `(index, ctrl, shift)`.
+    #[must_use]
     pub fn on_item_click<F: FnMut(usize, bool, bool) + 'static>(mut self, f: F) -> Self {
         self.on_item_click = Some(Box::new(f));
         self
     }
 
     /// Double-click or Enter.
+    #[must_use]
     pub fn on_activate<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
         self.on_activate = Some(Box::new(f));
         self
@@ -138,7 +143,7 @@ impl IconGrid {
             return 1;
         }
         // width + gap, because the last cell needs no trailing gap.
-        (((width + self.gap) / stride).floor() as usize).max(1)
+        floor_to_usize(((width + self.gap) / stride).floor()).max(1)
     }
 
     fn content_height(&self, columns: usize) -> f64 {
@@ -150,16 +155,17 @@ impl IconGrid {
         if rows == 0 {
             0.0
         } else {
-            rows as f64 * self.cell_h + (rows.saturating_sub(1)) as f64 * self.gap
+            count_to_f64(rows) * self.cell_h + count_to_f64(rows.saturating_sub(1)) * self.gap
         }
     }
 
     fn cell_origin(&self, i: usize) -> Point {
-        let col = i % self.columns;
-        let row = i / self.columns;
+        let columns = self.columns.max(1);
+        let col = i.checked_rem(columns).unwrap_or(0);
+        let row = i.checked_div(columns).unwrap_or(0);
         Point::new(
-            self.rect.x0 + col as f64 * (self.cell_w + self.gap),
-            self.rect.y0 + row as f64 * (self.cell_h + self.gap),
+            self.rect.x0 + count_to_f64(col) * (self.cell_w + self.gap),
+            self.rect.y0 + count_to_f64(row) * (self.cell_h + self.gap),
         )
     }
 
@@ -179,25 +185,69 @@ impl IconGrid {
         if rel_x < 0.0 || rel_y < 0.0 {
             return None;
         }
-        let col = (rel_x / stride_x) as usize;
-        let row = (rel_y / stride_y) as usize;
+        let col = floor_to_usize(rel_x / stride_x);
+        let row = floor_to_usize(rel_y / stride_y);
         if col >= self.columns {
             return None;
         }
         // Reject points that land in the inter-cell gap.
-        if rel_x - col as f64 * stride_x > self.cell_w {
+        if rel_x - count_to_f64(col) * stride_x > self.cell_w {
             return None;
         }
-        if rel_y - row as f64 * stride_y > self.cell_h {
+        if rel_y - count_to_f64(row) * stride_y > self.cell_h {
             return None;
         }
-        let idx = row * self.columns + col;
+        let idx = row.saturating_mul(self.columns).saturating_add(col);
         if idx < self.items.len() {
             Some(idx)
         } else {
             None
         }
     }
+}
+
+/// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
+/// pure `f64` matrix multiply-add with no overflow trap, so it cannot
+/// panic regardless of operand magnitude.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is float matrix math and cannot panic"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
+/// Widens a column/row count to `f64` for layout math. Goes through `u32`
+/// (exactly representable in `f64`) with a saturating fallback rather than
+/// an `as` cast, so it's lossless for any realistic grid size.
+fn count_to_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// Narrows a layout dimension to `f32` for taffy. Grid width/height here
+/// are always screen-space pixel sizes, many orders of magnitude below
+/// `f32::MAX`, so the truncation the lint warns about can't actually
+/// occur.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "grid layout sizes never approach f32::MAX"
+)]
+fn to_f32(v: f64) -> f32 {
+    v as f32
+}
+
+/// Floors a non-negative layout measurement (column/row index or count)
+/// to `usize`. Grid dimensions here are always tiny (a handful of
+/// columns, at most a few hundred rows), nowhere near `usize::MAX`, and
+/// the `.max(0.0)` clamp rules out the sign-loss case the lint also warns
+/// about.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "grid column/row counts are always tiny and non-negative"
+)]
+fn floor_to_usize(v: f64) -> usize {
+    v.max(0.0) as usize
 }
 
 impl Widget for IconGrid {
@@ -222,8 +272,8 @@ impl Widget for IconGrid {
     ) -> taffy::Size<f32> {
         // known wins, else the definite available width, else enough
         // for one cell.
-        let width = known.width.map_or(
-            match available.width {
+        let width = known.width.map_or_else(
+            || match available.width {
                 taffy::AvailableSpace::Definite(w) => f64::from(w),
                 _ => self.cell_w,
             },
@@ -233,8 +283,8 @@ impl Widget for IconGrid {
         self.columns = columns;
         let height = self.content_height(columns);
         taffy::Size {
-            width: width as f32,
-            height: height as f32,
+            width: to_f32(width),
+            height: to_f32(height),
         }
     }
 
@@ -261,7 +311,7 @@ impl Widget for IconGrid {
     ) {
         let tokens = &theme.tokens;
         let label_size = tokens.typography.scale.sm;
-        for i in 0..self.items.len() {
+        for (i, item) in self.items.iter().enumerate() {
             let cell = self.cell_rect(i);
             if presence.should_cull(cell) {
                 continue;
@@ -292,17 +342,13 @@ impl Widget for IconGrid {
                 scene,
                 transform,
                 icon_rect,
-                self.items[i].icon,
+                item.icon,
                 glyph_color,
                 LUCIDE_DEFAULT_STROKE_PX,
             );
 
-            let label = truncate_to_width(
-                text_renderer,
-                &self.items[i].label,
-                label_size,
-                self.cell_w - 8.0,
-            );
+            let label =
+                truncate_to_width(text_renderer, &item.label, label_size, self.cell_w - 8.0);
             let (tw, _) = text_renderer.measure(&label, label_size, None);
             let tx = cell.x0 + (self.cell_w - f64::from(tw)) / 2.0;
             let ty = icon_y + self.icon_px + 8.0;
@@ -318,7 +364,7 @@ impl Widget for IconGrid {
                 &label,
                 label_size,
                 label_color,
-                transform * Affine::translate((tx, ty)),
+                translated(transform, tx, ty),
                 None,
             );
         }
@@ -406,11 +452,11 @@ impl Widget for IconGrid {
                 let cur = self.selection.primary();
                 let target = match &ke.logical_key {
                     Key::Named(NamedKey::ArrowRight) => {
-                        Some(cur.map_or(0, |c| (c + 1).min(len - 1)))
+                        Some(cur.map_or(0, |c| c.saturating_add(1).min(len.saturating_sub(1))))
                     }
                     Key::Named(NamedKey::ArrowLeft) => Some(cur.map_or(0, |c| c.saturating_sub(1))),
                     Key::Named(NamedKey::ArrowDown) => {
-                        Some(cur.map_or(0, |c| (c + cols).min(len - 1)))
+                        Some(cur.map_or(0, |c| c.saturating_add(cols).min(len.saturating_sub(1))))
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         Some(cur.map_or(0, |c| c.saturating_sub(cols)))
@@ -483,7 +529,7 @@ impl Widget for IconGrid {
         if let Some(i) = primary
             && i < self.items.len()
         {
-            node = node.with_position(i + 1, self.items.len());
+            node = node.with_position(i.saturating_add(1), self.items.len());
         }
         Some(node)
     }
@@ -501,8 +547,8 @@ fn truncate_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -
     let chars: Vec<char> = text.chars().collect();
     let mut keep = chars.len();
     while keep > 0 {
-        keep -= 1;
-        let candidate: String = chars[..keep].iter().collect::<String>() + "…";
+        keep = keep.saturating_sub(1);
+        let candidate: String = chars.get(..keep).unwrap_or(&[]).iter().collect::<String>() + "…";
         let (cw, _) = tr.measure(&candidate, size, None);
         if f64::from(cw) <= max_w {
             return candidate;

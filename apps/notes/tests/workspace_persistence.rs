@@ -1,6 +1,16 @@
 //! End-to-end persistence: build a workspace with several pages,
 //! save it to a tmpdir, reload, and assert nothing got lost.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use notes::Workspace;
 use notes::storage::{load_workspace, save_workspace};
 use tempfile::TempDir;

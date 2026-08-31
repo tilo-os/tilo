@@ -11,6 +11,19 @@
 //! it sees the agent's first change, which lands in the middle of the
 //! agent's own sequence of edits, while the agent is between actions.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard; the arithmetic \
+              here is a wall-clock timeout deadline and a typed-character \
+              counter bounded by a short-lived test run, not real user data"
+)]
+
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
@@ -110,61 +123,17 @@ fn granted(name: &str) -> ui::permissions::PermissionContext {
     )
 }
 
-#[test]
-fn a_person_typing_and_the_agent_working_both_land() {
-    let dir = tempfile::tempdir().unwrap();
-    let sock = dir.path().join("collab.sock");
-    let _broker = typed_peer::spawn(&sock);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    let room = Uuid::new_v4();
-
-    let mut peer = TypedPeer::connect(&sock).expect("peer connects");
-    let hello = CollabRequest::Hello {
-        app_id: APP.into(),
-        cluster_id: room,
-        record: Some(RECORD.into()),
-        handle: Some("ada".into()),
-    };
-    peer.announce(&sock, &hello).unwrap();
-    let mut replica = seed_document();
-    let head = heading_id(&replica);
-    std::thread::sleep(Duration::from_millis(100));
-
-    let cfg = Config {
-        endpoint: Some(sock),
-        app_id: APP.into(),
-        cluster: room,
-        record: Some(RECORD.into()),
-        name: "Scribe".into(),
-        // Slow enough that the person's keystrokes genuinely arrive
-        // between the agent's actions rather than after all of them.
-        pace: Duration::from_millis(40),
-        once: true,
-        model: false,
-        model_timeout: Duration::from_secs(1),
-        // The instruction is in the page before the agent connects, so
-        // there is no half-typed line here to wait out.
-        settle: Duration::ZERO,
-        await_document: Duration::ZERO,
-        directory: None,
-        permissions: granted("Scribe"),
-    };
-    let agent = std::thread::spawn(move || {
-        let mut s = Session::connect(cfg).expect("agent connects");
-        s.run_until(Instant::now() + Duration::from_secs(20))
-            .expect("agent session")
-    });
-
-    peer.set_read_timeout(Some(Duration::from_millis(200)))
-        .unwrap();
+/// Drive the peer: answer the agent's Arrived with a snapshot, and for
+/// every agent change also type the next character of [`TYPED`] into the
+/// heading — the person and the agent land through the same peer,
+/// interleaved by whichever change the agent makes next. Returns how many
+/// characters were typed and whether the agent's table has landed.
+fn drive_peer_and_type(
+    peer: &mut TypedPeer,
+    replica: &mut AutoCommit,
+    head: &str,
+) -> (usize, bool) {
+    peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut typed = 0usize;
     let mut table_done = false;
@@ -191,13 +160,13 @@ fn a_person_typing_and_the_agent_working_both_land() {
                 // per change the agent makes, so the two are interleaved
                 // rather than merely overlapping.
                 if let Some(ch) = TYPED.chars().nth(typed) {
-                    let delta = type_one(&mut replica, &head, &ch.to_string());
+                    let delta = type_one(replica, head, &ch.to_string());
                     let msg = CollabRequest::SyncIncremental { data: delta };
                     peer.send(&msg).unwrap();
                     typed += 1;
                 }
 
-                let b = blocks(&replica);
+                let b = blocks(replica);
                 table_done = b.iter().any(|x| x.kind == "cell")
                     && !b.iter().any(|x| x.kind == "list_item")
                     && !b.iter().any(|x| x.text.starts_with("Scribe:"));
@@ -205,16 +174,16 @@ fn a_person_typing_and_the_agent_working_both_land() {
             _ => {}
         }
     }
+    (typed, table_done)
+}
 
-    // Give the person's last keystrokes a moment to reach the agent, so a
-    // pass here is not just a race the agent happened to win.
-    std::thread::sleep(Duration::from_millis(300));
-    assert!(agent.join().unwrap(), "the agent reports having acted");
-
-    let b = blocks(&replica);
+/// Assert the agent's table landed and survived the person typing through
+/// it. Returns the blocks as `(kind, text)` pairs for later failure
+/// messages.
+fn assert_agent_table(replica: &AutoCommit, table_done: bool) -> Vec<(String, String)> {
+    let b = blocks(replica);
     let shown: Vec<(String, String)> = b.iter().map(|x| (x.kind.clone(), x.text.clone())).collect();
 
-    // The agent's work is there.
     assert!(
         table_done,
         "the agent's table never landed; blocks: {shown:?}"
@@ -236,10 +205,12 @@ fn a_person_typing_and_the_agent_working_both_land() {
         ["Venue", "The Hall", "Date", "3 Sep", "Budget", "1200"],
         "the agent's table survived the person typing through it"
     );
+    shown
+}
 
-    // And so is the person's — every character, in order, not a subset
-    // that happened to miss a collision.
-    //
+/// Assert every character the person typed, in order, landed in the
+/// heading — not a subset that happened to miss a collision.
+fn assert_person_typed(replica: &AutoCommit, typed: usize, shown: &[(String, String)]) {
     // The count is asserted before the text: one keystroke per change the
     // agent made, so reaching the whole word is also the proof that the
     // two were genuinely interleaved and not merely both present. A pass
@@ -252,6 +223,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
          this proves less than it looks: {typed} of {} characters",
         TYPED.chars().count()
     );
+    let b = blocks(replica);
     let heading = b
         .iter()
         .find(|x| x.kind == "heading")
@@ -264,10 +236,15 @@ fn a_person_typing_and_the_agent_working_both_land() {
         heading.text, expected,
         "the person's typing was lost or reordered; blocks: {shown:?}"
     );
+}
 
+/// Assert both authors are in the history — each change attributed to
+/// whoever made it, per change rather than per document — and that every
+/// change carries a hash.
+fn assert_attribution(replica: &mut AutoCommit, typed: usize) {
     // Both authors are in the history, so the strip attributes each edit
     // to whoever made it rather than folding them into one.
-    let versions = qdoc::history::versions(&mut replica);
+    let versions = qdoc::history::versions(replica);
     let actors: std::collections::HashSet<String> =
         versions.iter().map(|v| v.actor_hex.clone()).collect();
     assert!(
@@ -307,4 +284,69 @@ fn a_person_typing_and_the_agent_working_both_land() {
         versions.iter().all(|v| !v.change_hash.is_empty()),
         "a change with no hash cannot be joined to what it touched"
     );
+}
+
+#[test]
+fn a_person_typing_and_the_agent_working_both_land() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("collab.sock");
+    let _broker = typed_peer::spawn(&sock);
+    let started = Instant::now();
+    while !sock.exists() {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "relay never bound"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let room = Uuid::new_v4();
+
+    let mut peer = TypedPeer::connect(&sock);
+    let hello = CollabRequest::Hello {
+        app_id: APP.into(),
+        cluster_id: room,
+        record: Some(RECORD.into()),
+        handle: Some("ada".into()),
+    };
+    peer.announce(&sock, &hello).unwrap();
+    let mut replica = seed_document();
+    let head = heading_id(&replica);
+    std::thread::sleep(Duration::from_millis(100));
+
+    let cfg = Config {
+        endpoint: Some(sock),
+        app_id: APP.into(),
+        cluster: room,
+        record: Some(RECORD.into()),
+        name: "Scribe".into(),
+        // Slow enough that the person's keystrokes genuinely arrive
+        // between the agent's actions rather than after all of them.
+        pace: Duration::from_millis(40),
+        once: true,
+        model: false,
+        model_timeout: Duration::from_secs(1),
+        // The instruction is in the page before the agent connects, so
+        // there is no half-typed line here to wait out.
+        settle: Duration::ZERO,
+        await_document: Duration::ZERO,
+        directory: None,
+        permissions: granted("Scribe"),
+    };
+    let agent = std::thread::spawn(move || {
+        let mut s = Session::connect(cfg).expect("agent connects");
+        s.run_until(Instant::now() + Duration::from_secs(20))
+            .expect("agent session")
+    });
+
+    let (typed, table_done) = drive_peer_and_type(&mut peer, &mut replica, &head);
+
+    // Give the person's last keystrokes a moment to reach the agent, so a
+    // pass here is not just a race the agent happened to win.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(agent.join().unwrap(), "the agent reports having acted");
+
+    let shown = assert_agent_table(&replica, table_done);
+    assert_person_typed(&replica, typed, &shown);
+    assert_attribution(&mut replica, typed);
 }

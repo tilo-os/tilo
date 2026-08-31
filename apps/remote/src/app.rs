@@ -106,7 +106,7 @@ struct Hit {
 
 /// Everything a click can do. Dispatched from `handle_event` after a
 /// hit-test; applied by [`RemoteApp::apply`].
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Action {
     /// Open the list (home).
     GoList,
@@ -238,6 +238,13 @@ struct QosDevice {
     online: bool,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, unrelated flag (session scale/fullscreen, \
+              repaint gate, seed status); grouping them into enums would not express \
+              any real invariant between them and would touch every read/write site \
+              across this file"
+)]
 pub struct RemoteApp {
     /// The connection store. Source of truth for the list; mirrored into
     /// the shared CRDT in `sync`.
@@ -584,7 +591,7 @@ impl RemoteApp {
         self.vnc_buttons = 0;
         self.live = None;
         if live_sessions_enabled() {
-            self.live = Some(self.start_live(&c));
+            self.live = Some(Self::start_live(&c));
             // Record the attempt in "last used"; presence is only marked
             // Online once the transport actually reports Connected (in draw).
             if let Some(m) = self.workspace.get_mut(id) {
@@ -596,7 +603,7 @@ impl RemoteApp {
 
     /// Build the real transport for a connection from its kind + auth and
     /// the process environment (secrets are never stored in the document).
-    fn start_live(&self, c: &Connection) -> LiveSession {
+    fn start_live(c: &Connection) -> LiveSession {
         match c.kind {
             ConnectionKind::Ssh => {
                 let prefer_key = matches!(c.auth, AuthMethod::PublicKey);
@@ -613,20 +620,26 @@ impl RemoteApp {
                 } else {
                     c.user.clone()
                 };
-                LiveSession::Ssh(Box::new(SshSession::connect(SshConfig {
+                match SshSession::connect(SshConfig {
                     host: c.host.clone(),
                     port: c.port,
                     user,
                     auth,
                     cols: 80,
                     rows: 24,
-                })))
+                }) {
+                    Ok(s) => LiveSession::Ssh(Box::new(s)),
+                    Err(e) => LiveSession::Error(e.to_string()),
+                }
             }
-            ConnectionKind::Vnc => LiveSession::Vnc(VncSession::connect(VncConfig {
+            ConnectionKind::Vnc => match VncSession::connect(VncConfig {
                 host: c.host.clone(),
                 port: c.port,
                 password: std::env::var("REMOTE_VNC_PASSWORD").ok(),
-            })),
+            }) {
+                Ok(s) => LiveSession::Vnc(s),
+                Err(e) => LiveSession::Error(e.to_string()),
+            },
             other => LiveSession::Error(format!(
                 "{} transport is not implemented yet",
                 other.label()
@@ -731,7 +744,7 @@ impl RemoteApp {
         if let Some(existing) = self.workspace.get(id) {
             conn.favorite = existing.favorite;
             conn.presence = existing.presence;
-            conn.last_used = existing.last_used.clone();
+            existing.last_used.clone_into(&mut conn.last_used);
         }
         // One focused action for the edited fields — not a whole-workspace
         // re-mirror. favourite/presence/last_used are preserved by the action's
@@ -833,7 +846,7 @@ impl RemoteApp {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         node_id: NodeId,
@@ -847,7 +860,7 @@ impl RemoteApp {
         input.handle_event(
             event,
             scale,
-            modifiers,
+            &modifiers,
             state,
             path,
             &mut handled,
@@ -886,17 +899,28 @@ impl Default for RemoteApp {
 // the offline screenshot and first launch are immediately meaningful.
 // ===========================================================================
 
-fn seed_connections() -> Vec<Connection> {
-    let mk = |name: &str,
-              host: &str,
-              port: u16,
-              user: &str,
-              kind: ConnectionKind,
-              auth: AuthMethod,
-              last: &str,
-              presence: Presence,
-              group: &str,
-              fav: bool| Connection {
+/// Build one seed [`Connection`]. Broken out of [`seed_connections`] purely to
+/// keep that function's line count down — the field list is identical to
+/// [`Connection`] itself, just positional.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one positional field per Connection column; a builder struct would \
+              just move the same ten values into named fields for a private \
+              seed-data helper used only here"
+)]
+fn seeded_connection(
+    name: &str,
+    host: &str,
+    port: u16,
+    user: &str,
+    kind: ConnectionKind,
+    auth: AuthMethod,
+    last: &str,
+    presence: Presence,
+    group: &str,
+    fav: bool,
+) -> Connection {
+    Connection {
         id: Uuid::new_v4(),
         name: name.into(),
         host: host.into(),
@@ -908,9 +932,20 @@ fn seed_connections() -> Vec<Connection> {
         presence,
         group: group.into(),
         favorite: fav,
-    };
+    }
+}
+
+fn seed_connections() -> Vec<Connection> {
+    let mut list = seed_connections_lab_and_office();
+    list.extend(seed_connections_remote_and_backup());
+    list
+}
+
+/// First half of [`seed_connections`]' roster — split out only to stay under
+/// the line-count limit; order matters (it's the on-screen list order).
+fn seed_connections_lab_and_office() -> Vec<Connection> {
     vec![
-        mk(
+        seeded_connection(
             "Build Box",
             "build.lab.internal",
             22,
@@ -922,7 +957,7 @@ fn seed_connections() -> Vec<Connection> {
             "lab",
             true,
         ),
-        mk(
+        seeded_connection(
             "Studio Node",
             "studio-node",
             0,
@@ -934,7 +969,7 @@ fn seed_connections() -> Vec<Connection> {
             "qOS",
             true,
         ),
-        mk(
+        seeded_connection(
             "Office NAS",
             "10.0.0.20",
             5900,
@@ -946,7 +981,7 @@ fn seed_connections() -> Vec<Connection> {
             "home",
             false,
         ),
-        mk(
+        seeded_connection(
             "Win Workstation",
             "10.0.0.31",
             3389,
@@ -958,7 +993,14 @@ fn seed_connections() -> Vec<Connection> {
             "work",
             false,
         ),
-        mk(
+    ]
+}
+
+/// Second half of [`seed_connections`]' roster — see
+/// [`seed_connections_lab_and_office`].
+fn seed_connections_remote_and_backup() -> Vec<Connection> {
+    vec![
+        seeded_connection(
             "Edge Gateway",
             "edge.example.com",
             2222,
@@ -970,7 +1012,7 @@ fn seed_connections() -> Vec<Connection> {
             "prod",
             false,
         ),
-        mk(
+        seeded_connection(
             "Pi Cluster Head",
             "192.168.4.2",
             22,
@@ -982,7 +1024,7 @@ fn seed_connections() -> Vec<Connection> {
             "lab",
             false,
         ),
-        mk(
+        seeded_connection(
             "Workshop Laptop",
             "workshop-laptop",
             0,
@@ -994,7 +1036,7 @@ fn seed_connections() -> Vec<Connection> {
             "qOS",
             false,
         ),
-        mk(
+        seeded_connection(
             "Backup Vault",
             "vault.example.com",
             5901,
@@ -1032,6 +1074,17 @@ fn seed_qos_devices() -> Vec<QosDevice> {
             online: false,
         },
     ]
+}
+
+/// Read-only "how to route this input" bundle threaded through
+/// `handle_event`'s per-arm helpers, so extracting them doesn't balloon each
+/// one's parameter list.
+struct EventRouteCtx<'a> {
+    scale_factor: f64,
+    modifiers: winit::event::Modifiers,
+    path: &'a ObjId,
+    node_id: NodeId,
+    taffy: &'a TaffyTree<()>,
 }
 
 // ===========================================================================
@@ -1265,45 +1318,24 @@ impl Widget for RemoteApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        let ctx = EventRouteCtx {
+            scale_factor,
+            modifiers: *modifiers,
+            path,
+            node_id,
+            taffy,
+        };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                if p != self.pointer {
-                    self.pointer = p;
-                    self.dirty = true; // hover feedback
-                    // Stream pointer motion to a live remote desktop.
-                    self.forward_vnc_pointer(p);
-                }
-                // A focused field tracks the pointer so a drag extends its
-                // selection past the edge of the box.
-                if self.focus.is_some() {
-                    self.route_to_focused_field(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        node_id,
-                        taffy,
-                    );
-                }
+                self.handle_cursor_moved_pos(p, event, state, &ctx);
             }
             // A press/release over the live VNC canvas is injected into the
             // remote desktop rather than hit-testing the local chrome.
             WindowEvent::MouseInput { state, button, .. }
                 if self.vnc_pointer_target(self.pointer).is_some() =>
             {
-                let bit = match button {
-                    MouseButton::Left => 1,
-                    MouseButton::Middle => 2,
-                    MouseButton::Right => 4,
-                    _ => 0,
-                };
-                match state {
-                    ElementState::Pressed => self.vnc_buttons |= bit,
-                    ElementState::Released => self.vnc_buttons &= !bit,
-                }
-                self.forward_vnc_pointer(self.pointer);
+                self.handle_vnc_mouse_input(*state, *button);
                 *handled = true;
             }
             WindowEvent::MouseInput {
@@ -1311,63 +1343,7 @@ impl Widget for RemoteApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                let p = self.pointer;
-
-                // Scrim dismissal: when the rail is an open overlay, a press
-                // on the dimmed content (outside the rail itself, and not on
-                // the hamburger) closes the rail and is consumed — matching the
-                // toolkit flap's scrim-click behaviour.
-                if self.rail_layout == SplitLayout::Overlay && self.rail_open() {
-                    let rail_rect = Rect::new(
-                        self.rect.x0,
-                        self.rect.y0,
-                        self.rect.x0 + RAIL_W,
-                        self.rect.y1,
-                    );
-                    let hamburger = Rect::new(
-                        self.rect.x0 + 12.0,
-                        self.rect.y0 + 12.0,
-                        self.rect.x0 + 12.0 + HAMBURGER,
-                        self.rect.y0 + 12.0 + HAMBURGER,
-                    );
-                    if !rail_rect.contains(p) && !hamburger.contains(p) {
-                        self.rail.close();
-                        self.dirty = true;
-                        *handled = true;
-                        return;
-                    }
-                }
-
-                // Hit-test the regions captured on the previous frame.
-                if let Some(action) = self
-                    .hits
-                    .iter()
-                    .rev()
-                    .find(|h| h.rect.contains(p))
-                    .map(|h| h.action.clone())
-                {
-                    // A press on a field focuses it *and* goes on to the input,
-                    // so the caret lands where the pointer did and a drag from
-                    // here selects — rather than the click only meaning "focus".
-                    if let Action::FocusField(f) = action {
-                        self.focus_field(f);
-                        self.route_to_focused_field(
-                            event,
-                            scale_factor,
-                            modifiers,
-                            state,
-                            path,
-                            node_id,
-                            taffy,
-                        );
-                    } else {
-                        self.apply(action, state);
-                    }
-                    *handled = true;
-                } else {
-                    // A click on empty space drops field focus.
-                    self.blur_field();
-                }
+                self.handle_left_press_event(event, state, handled, &ctx);
             }
             // Ending a drag has to reach the field that started it, or the
             // selection keeps extending after the button is up.
@@ -1377,12 +1353,12 @@ impl Widget for RemoteApp {
             } if self.focus.is_some() => {
                 self.route_to_focused_field(
                     event,
-                    scale_factor,
-                    modifiers,
+                    ctx.scale_factor,
+                    ctx.modifiers,
                     state,
-                    path,
-                    node_id,
-                    taffy,
+                    ctx.path,
+                    ctx.node_id,
+                    ctx.taffy,
                 );
             }
             WindowEvent::KeyboardInput {
@@ -1395,27 +1371,14 @@ impl Widget for RemoteApp {
                     },
                 ..
             } => {
-                self.handle_key(
+                self.handle_keyboard_input_event(
+                    event,
                     logical_key,
                     text.as_ref().map(winit::keyboard::SmolStr::as_str),
-                    modifiers.state(),
                     state,
                     handled,
+                    &ctx,
                 );
-                // Anything the app's own shortcuts did not claim belongs to the
-                // focused field: typing, caret movement, selection, clipboard,
-                // IME — all of it the shared input's, not this app's.
-                if !*handled && self.focus.is_some() {
-                    *handled = self.route_to_focused_field(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        node_id,
-                        taffy,
-                    );
-                }
             }
             _ => {}
         }
@@ -1459,6 +1422,147 @@ impl Widget for RemoteApp {
 }
 
 impl RemoteApp {
+    /// `WindowEvent::CursorMoved`'s share of `handle_event`: track hover,
+    /// stream motion to a live remote desktop, and let a focused field's drag
+    /// follow the pointer.
+    fn handle_cursor_moved_pos(
+        &mut self,
+        p: Point,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        ctx: &EventRouteCtx<'_>,
+    ) {
+        if p != self.pointer {
+            self.pointer = p;
+            self.dirty = true; // hover feedback
+            // Stream pointer motion to a live remote desktop.
+            self.forward_vnc_pointer(p);
+        }
+        // A focused field tracks the pointer so a drag extends its
+        // selection past the edge of the box.
+        if self.focus.is_some() {
+            self.route_to_focused_field(
+                event,
+                ctx.scale_factor,
+                ctx.modifiers,
+                state,
+                ctx.path,
+                ctx.node_id,
+                ctx.taffy,
+            );
+        }
+    }
+
+    /// A press/release over the live VNC canvas: update the button mask and
+    /// forward the pointer, rather than hit-testing the local chrome.
+    fn handle_vnc_mouse_input(&mut self, state: ElementState, button: MouseButton) {
+        let bit = match button {
+            MouseButton::Left => 1,
+            MouseButton::Middle => 2,
+            MouseButton::Right => 4,
+            _ => 0,
+        };
+        match state {
+            ElementState::Pressed => self.vnc_buttons |= bit,
+            ElementState::Released => self.vnc_buttons &= !bit,
+        }
+        self.forward_vnc_pointer(self.pointer);
+    }
+
+    /// A left press: dismiss an open overlay rail's scrim, else hit-test the
+    /// regions captured last frame.
+    fn handle_left_press_event(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+        ctx: &EventRouteCtx<'_>,
+    ) {
+        let p = self.pointer;
+
+        // Scrim dismissal: when the rail is an open overlay, a press
+        // on the dimmed content (outside the rail itself, and not on
+        // the hamburger) closes the rail and is consumed — matching the
+        // toolkit flap's scrim-click behaviour.
+        if self.rail_layout == SplitLayout::Overlay && self.rail_open() {
+            let rail_rect = Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x0 + RAIL_W,
+                self.rect.y1,
+            );
+            let hamburger = Rect::new(
+                self.rect.x0 + 12.0,
+                self.rect.y0 + 12.0,
+                self.rect.x0 + 12.0 + HAMBURGER,
+                self.rect.y0 + 12.0 + HAMBURGER,
+            );
+            if !rail_rect.contains(p) && !hamburger.contains(p) {
+                self.rail.close();
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
+        }
+
+        // Hit-test the regions captured on the previous frame.
+        if let Some(action) = self
+            .hits
+            .iter()
+            .rev()
+            .find(|h| h.rect.contains(p))
+            .map(|h| h.action)
+        {
+            // A press on a field focuses it *and* goes on to the input,
+            // so the caret lands where the pointer did and a drag from
+            // here selects — rather than the click only meaning "focus".
+            if let Action::FocusField(f) = action {
+                self.focus_field(f);
+                self.route_to_focused_field(
+                    event,
+                    ctx.scale_factor,
+                    ctx.modifiers,
+                    state,
+                    ctx.path,
+                    ctx.node_id,
+                    ctx.taffy,
+                );
+            } else {
+                self.apply(action, state);
+            }
+            *handled = true;
+        } else {
+            // A click on empty space drops field focus.
+            self.blur_field();
+        }
+    }
+
+    /// A pressed key: run the app's own shortcuts/navigation first; anything
+    /// unclaimed falls through to the focused field's input (typing, caret
+    /// movement, selection, clipboard, IME).
+    fn handle_keyboard_input_event(
+        &mut self,
+        event: &WindowEvent,
+        logical_key: &Key,
+        text: Option<&str>,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+        ctx: &EventRouteCtx<'_>,
+    ) {
+        self.handle_key(logical_key, text, ctx.modifiers.state(), state, handled);
+        if !*handled && self.focus.is_some() {
+            *handled = self.route_to_focused_field(
+                event,
+                ctx.scale_factor,
+                ctx.modifiers,
+                state,
+                ctx.path,
+                ctx.node_id,
+                ctx.taffy,
+            );
+        }
+    }
+
     /// Process a key press. Returns via `handled`.
     fn handle_key(
         &mut self,
@@ -1468,15 +1572,31 @@ impl RemoteApp {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        let ctrl = mods.control_key() || mods.super_key();
+        if self.handle_key_global_shortcut(key, mods, state, handled) {
+            return;
+        }
+        if self.handle_key_live_session(key, text, mods, handled) {
+            return;
+        }
+        self.handle_key_navigation(key, text, state, handled);
+    }
 
-        // --- Global shortcuts (work regardless of focus) ---
+    /// Ctrl/Cmd shortcuts that work regardless of focus. Returns whether the
+    /// key was fully handled (caller should stop dispatching further).
+    fn handle_key_global_shortcut(
+        &mut self,
+        key: &Key,
+        mods: ModifiersState,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        let ctrl = mods.control_key() || mods.super_key();
         if ctrl && let Key::Character(c) = key {
             match c.to_lowercase().as_str() {
                 "n" => {
                     self.apply(Action::NewConnection, state);
                     *handled = true;
-                    return;
+                    return true;
                 }
                 "f" => {
                     self.apply(Action::FocusField(Field::Search), state);
@@ -1485,21 +1605,32 @@ impl RemoteApp {
                         self.apply(Action::FocusField(Field::Search), state);
                     }
                     *handled = true;
-                    return;
+                    return true;
                 }
                 "w" => {
                     if matches!(self.screen, Screen::Session { .. }) {
                         self.apply(Action::Disconnect, state);
                         *handled = true;
-                        return;
+                        return true;
                     }
                 }
                 _ => {}
             }
         }
+        false
+    }
 
-        // A connected session captures keyboard input for the remote — except
-        // Escape while fullscreen, which exits fullscreen locally.
+    /// A connected session captures keyboard input for the remote — except
+    /// Escape while fullscreen, which exits fullscreen locally. Returns
+    /// whether the key was fully handled (caller should stop dispatching
+    /// further).
+    fn handle_key_live_session(
+        &mut self,
+        key: &Key,
+        text: Option<&str>,
+        mods: ModifiersState,
+        handled: &mut bool,
+    ) -> bool {
         let esc_exits_fullscreen = self.fullscreen && matches!(key, Key::Named(NamedKey::Escape));
         if !esc_exits_fullscreen && matches!(self.screen, Screen::Session { .. }) {
             match &self.live {
@@ -1508,7 +1639,7 @@ impl RemoteApp {
                         s.send_input(bytes);
                         self.dirty = true;
                         *handled = true;
-                        return;
+                        return true;
                     }
                 }
                 Some(LiveSession::Vnc(s)) if s.status() == SessionStatus::Connected => {
@@ -1523,13 +1654,24 @@ impl RemoteApp {
                         });
                         self.dirty = true;
                         *handled = true;
-                        return;
+                        return true;
                     }
                 }
                 _ => {}
             }
         }
+        false
+    }
 
+    /// Screen navigation / local editing keys, once neither a global shortcut
+    /// nor a connected live session claimed the key.
+    fn handle_key_navigation(
+        &mut self,
+        key: &Key,
+        text: Option<&str>,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
         match key {
             Key::Named(NamedKey::Escape) => {
                 // An open overlay rail is dismissed first (toolkit flap parity).
@@ -1567,7 +1709,7 @@ impl RemoteApp {
                             self.apply(Action::Connect(id), state);
                         }
                     }
-                    _ => {}
+                    Screen::Session { .. } => {}
                 }
                 *handled = true;
             }
@@ -2058,6 +2200,21 @@ impl RemoteApp {
         row: Rect,
         c: &Connection,
     ) {
+        self.draw_connection_row_header(scene, transform, text_renderer, theme, row, c);
+        self.draw_connection_row_meta_and_actions(scene, transform, text_renderer, theme, row, c);
+    }
+
+    /// `draw_connection_row`'s background/border/status dot and the first
+    /// line (name + favorite star).
+    fn draw_connection_row_header(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        c: &Connection,
+    ) {
         let tokens = &theme.tokens;
         let selected = self.selected == Some(c.id);
         let hovered = row.contains(self.pointer);
@@ -2137,11 +2294,25 @@ impl RemoteApp {
             star_center.y + 11.0,
         );
         self.push_hit(star_rect, Action::ToggleFavorite(c.id));
+    }
 
+    /// `draw_connection_row`'s second line (kind badge · address · group)
+    /// and its right-aligned action buttons + last-used stamp.
+    fn draw_connection_row_meta_and_actions(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        c: &Connection,
+    ) {
+        let tokens = &theme.tokens;
+        let name_x = row.x0 + 44.0;
         // --- Second line: kind badge · address · group ---
         let line2_y = row.y0 + 38.0;
         // Kind badge first (leftmost), vertically centered on line2.
-        let badge_w = self.draw_kind_badge_at(
+        let badge_w = Self::draw_kind_badge_at(
             scene,
             transform,
             text_renderer,
@@ -2211,7 +2382,6 @@ impl RemoteApp {
     /// Draw a kind badge whose top-left sits at `top_left`; returns its
     /// drawn width so the caller can lay subsequent text out beside it.
     fn draw_kind_badge_at(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -2317,8 +2487,14 @@ impl RemoteApp {
         Widget::draw(input, scene, transform, text_renderer, theme, presence);
     }
 
-    /// Draw the add/edit form.
-    #[allow(clippy::too_many_arguments)]
+    /// Draw the add/edit form. Split into one helper per card section — each
+    /// threads the running layout cursor `y` through and hands back where the
+    /// next section starts, exactly as the inline version did.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "matches ui's draw dispatch shape (scene/transform/text_renderer/theme) \
+                  plus this screen's own presence/content/editing state"
+    )]
     fn draw_form(
         &mut self,
         scene: &mut Scene,
@@ -2329,10 +2505,78 @@ impl RemoteApp {
         content: Rect,
         editing: Option<ConnectionId>,
     ) {
-        let tokens = &theme.tokens;
         let pad = 24.0;
+        Self::draw_form_header(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            content,
+            pad,
+            editing,
+        );
 
-        // Header.
+        // The form is a centered card.
+        let card_w = (content.width() - 2.0 * pad).min(560.0);
+        let card_x = content.x0 + (content.width() - card_w) / 2.0;
+        let y = content.y0 + HEADER_H + 8.0;
+
+        let y =
+            self.draw_form_kind_selector(scene, transform, text_renderer, theme, card_x, card_w, y);
+        let y =
+            self.draw_form_qos_picker(scene, transform, text_renderer, theme, card_x, card_w, y);
+        let y = self.draw_form_name_field(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            card_x,
+            card_w,
+            y,
+        );
+        let y = self.draw_form_host_port_row(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            card_x,
+            card_w,
+            y,
+        );
+        let y = self.draw_form_user_auth_row(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            card_x,
+            card_w,
+            y,
+        );
+        self.draw_form_footer(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            card_x,
+            card_w,
+            y,
+            editing,
+        );
+    }
+
+    /// `draw_form`'s title, centered above the card.
+    fn draw_form_header(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        pad: f64,
+        editing: Option<ConnectionId>,
+    ) {
         let title = if editing.is_some() {
             "Edit connection"
         } else {
@@ -2342,19 +2586,31 @@ impl RemoteApp {
             scene,
             title,
             22.0,
-            tokens.colors.text_primary,
+            theme.tokens.colors.text_primary,
             transform * Affine::translate((content.x0 + pad, content.y0 + 18.0)),
             None,
             TextWeight::Bold,
         );
+    }
 
-        // The form is a centered card.
-        let card_w = (content.width() - 2.0 * pad).min(560.0);
-        let card_x = content.x0 + (content.width() - card_w) / 2.0;
-        let mut y = content.y0 + HEADER_H + 8.0;
-
-        // -- Protocol kind selector (segmented) --
-        y = self.draw_form_label(
+    /// `draw_form`'s protocol kind selector (segmented control).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one draw_form section threading the shared card geometry \
+                  (x/width) and running layout cursor `y` through the shaped \
+                  protocol-kind row"
+    )]
+    fn draw_form_kind_selector(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card_x: f64,
+        card_w: f64,
+        y: f64,
+    ) -> f64 {
+        let mut y = Self::draw_form_label(
             scene,
             transform,
             text_renderer,
@@ -2386,10 +2642,31 @@ impl RemoteApp {
             self.push_hit(seg, Action::SetKind(k));
         }
         y += 56.0;
+        y
+    }
 
-        // -- qOS device picker (only for qOS kind) --
+    /// `draw_form`'s qOS device picker — a no-op (returns `y` unchanged) for
+    /// any other protocol kind.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one draw_form section threading the shared card geometry \
+                  (x/width) and running layout cursor `y` through the \
+                  discovered-devices list"
+    )]
+    fn draw_form_qos_picker(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card_x: f64,
+        card_w: f64,
+        y: f64,
+    ) -> f64 {
+        let tokens = &theme.tokens;
+        let mut y = y;
         if self.draft.kind == ConnectionKind::Qos {
-            y = self.draw_form_label(
+            y = Self::draw_form_label(
                 scene,
                 transform,
                 text_renderer,
@@ -2456,9 +2733,28 @@ impl RemoteApp {
             }
             y += 4.0;
         }
+        y
+    }
 
-        // -- Name --
-        y = self.draw_form_label(scene, transform, text_renderer, theme, card_x, y, "Name");
+    /// `draw_form`'s Name field.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one draw_form section threading the shared card geometry \
+                  (x/width) and running layout cursor `y` through the Name field"
+    )]
+    fn draw_form_name_field(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        card_x: f64,
+        card_w: f64,
+        y: f64,
+    ) -> f64 {
+        let mut y =
+            Self::draw_form_label(scene, transform, text_renderer, theme, card_x, y, "Name");
         let name = Rect::new(card_x, y, card_x + card_w, y + 40.0);
         self.draw_field(
             scene,
@@ -2471,14 +2767,32 @@ impl RemoteApp {
         );
         self.push_hit(name, Action::FocusField(Field::Name));
         y += 56.0;
+        y
+    }
 
-        // -- Host + Port row --
+    /// `draw_form`'s Host + Port row (Port hidden for qOS).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one draw_form section threading the shared card geometry \
+                  (x/width) and running layout cursor `y` through the Host/Port row"
+    )]
+    fn draw_form_host_port_row(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        card_x: f64,
+        card_w: f64,
+        y: f64,
+    ) -> f64 {
         let host_label = if self.draft.kind == ConnectionKind::Qos {
             "Device node"
         } else {
             "Host"
         };
-        y = self.draw_form_label(
+        let mut y = Self::draw_form_label(
             scene,
             transform,
             text_renderer,
@@ -2514,11 +2828,34 @@ impl RemoteApp {
             self.push_hit(port, Action::FocusField(Field::Port));
         }
         y += 56.0;
+        y
+    }
 
-        // -- User + Group row (user hidden for qOS) --
+    /// `draw_form`'s User + Group row for non-qOS kinds, or the implicit-auth
+    /// info card for qOS.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one draw_form section threading the shared card geometry \
+                  (x/width) and running layout cursor `y` through the User/Group \
+                  row and auth method selector"
+    )]
+    fn draw_form_user_auth_row(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        card_x: f64,
+        card_w: f64,
+        y: f64,
+    ) -> f64 {
+        let tokens = &theme.tokens;
+        let qos = self.draft.kind == ConnectionKind::Qos;
+        let mut y = y;
         if qos {
             // qOS: authentication is implicit via device identity.
-            y = self.draw_form_label(
+            y = Self::draw_form_label(
                 scene,
                 transform,
                 text_renderer,
@@ -2545,7 +2882,7 @@ impl RemoteApp {
             );
             y += 56.0;
         } else {
-            y = self.draw_form_label(scene, transform, text_renderer, theme, card_x, y, "User");
+            y = Self::draw_form_label(scene, transform, text_renderer, theme, card_x, y, "User");
             let half = (card_w - 12.0) / 2.0;
             let user = Rect::new(card_x, y, card_x + half, y + 40.0);
             self.draw_field(
@@ -2572,7 +2909,7 @@ impl RemoteApp {
             y += 56.0;
 
             // -- Auth method selector --
-            y = self.draw_form_label(
+            y = Self::draw_form_label(
                 scene,
                 transform,
                 text_renderer,
@@ -2605,6 +2942,29 @@ impl RemoteApp {
             }
             y += 56.0;
         }
+        y
+    }
+
+    /// `draw_form`'s tail: validation messages, Save + Cancel, and (edit mode
+    /// only) the Delete button.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one draw_form section threading the shared card geometry \
+                  (x/width), the settled layout cursor `y`, and the editing id \
+                  through the closing validation/action row"
+    )]
+    fn draw_form_footer(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card_x: f64,
+        card_w: f64,
+        y: f64,
+        editing: Option<ConnectionId>,
+    ) {
+        let tokens = &theme.tokens;
 
         // -- Validation messages --
         let problems = self.draft.problems();
@@ -2619,7 +2979,7 @@ impl RemoteApp {
                 Some(card_w as f32),
             );
         }
-        y += 28.0;
+        let y = y + 28.0;
 
         // -- Save + Cancel --
         let save = Rect::new(card_x + card_w - 120.0, y, card_x + card_w, y + 40.0);
@@ -2689,9 +3049,7 @@ impl RemoteApp {
     }
 
     /// Draw a small section label and return the y just below it.
-    #[allow(clippy::too_many_arguments)]
     fn draw_form_label(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -2903,6 +3261,45 @@ impl RemoteApp {
         tone: StatusTone,
     ) {
         let tokens = &theme.tokens;
+        let accent = match tone {
+            StatusTone::Neutral => tokens.colors.neutral[4],
+            StatusTone::Pending => tokens.colors.semantic.warning,
+            StatusTone::Error => tokens.colors.semantic.danger,
+        };
+        let card = Self::draw_status_session_card(scene, transform, theme, content, body);
+        let y = Self::draw_status_session_identity(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            card,
+            accent,
+            c,
+        );
+        let y = Self::draw_status_session_pill_and_body(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            card,
+            accent,
+            title,
+            body,
+            y,
+        );
+        self.draw_status_session_actions(scene, transform, text_renderer, theme, card, tone, c, y);
+    }
+
+    /// `draw_status_session`'s full-surface backdrop and centred card
+    /// background/border, sized to fit `body`. Returns the card's [`Rect`].
+    fn draw_status_session_card(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        content: Rect,
+        body: &[String],
+    ) -> Rect {
+        let tokens = &theme.tokens;
 
         // Full-surface backdrop.
         scene.fill(
@@ -2912,15 +3309,6 @@ impl RemoteApp {
             None,
             &content,
         );
-
-        let accent = match tone {
-            StatusTone::Neutral => tokens.colors.neutral[4],
-            StatusTone::Pending => tokens.colors.semantic.warning,
-            StatusTone::Error => tokens.colors.semantic.danger,
-        };
-        // Retry only makes sense after a real failure; the gated/ended states
-        // just return to the list.
-        let can_retry = matches!(tone, StatusTone::Error);
 
         // Card geometry, sized to its content so it stays balanced.
         let cw = 460.0_f64.min(content.width() - 40.0);
@@ -2943,7 +3331,26 @@ impl RemoteApp {
             None,
             &rr,
         );
+        card
+    }
 
+    /// `draw_status_session`'s state emblem, machine name, and address line.
+    /// Returns the `y` the status pill should start at.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one draw_status_session section threading the card geometry \
+                  and tone accent through the emblem + identity lines"
+    )]
+    fn draw_status_session_identity(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        accent: Color,
+        c: &Connection,
+    ) -> f64 {
+        let tokens = &theme.tokens;
         let mid = card.center().x;
         let mut y = card.y0 + 34.0;
 
@@ -3003,6 +3410,31 @@ impl RemoteApp {
             None,
         );
         y += 30.0;
+        y
+    }
+
+    /// `draw_status_session`'s status pill and explanation body. Returns the
+    /// `y` the action row should start at.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one draw_status_session section threading the card geometry, \
+                  tone accent, and running layout cursor `y` through the pill \
+                  and body lines"
+    )]
+    fn draw_status_session_pill_and_body(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        accent: Color,
+        title: &str,
+        body: &[String],
+        y: f64,
+    ) -> f64 {
+        let tokens = &theme.tokens;
+        let mid = card.center().x;
+        let mut y = y;
 
         // Status pill — the state as a labelled, tone-coloured form.
         let (pw, _) = text_renderer.measure_weighted(title, 13.0, None, TextWeight::Semibold);
@@ -3047,8 +3479,31 @@ impl RemoteApp {
             y += 22.0;
         }
         y += 14.0;
+        y
+    }
 
-        // Actions: a primary "Back to list", plus "Retry" where it applies.
+    /// `draw_status_session`'s action row: a primary "Back to list", plus
+    /// "Retry" where the tone is an actual failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one draw_status_session section threading the card geometry, \
+                  tone, and settled layout cursor `y` through the action row"
+    )]
+    fn draw_status_session_actions(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        tone: StatusTone,
+        c: &Connection,
+        y: f64,
+    ) {
+        let mid = card.center().x;
+        // Retry only makes sense after a real failure; the gated/ended states
+        // just return to the list.
+        let can_retry = matches!(tone, StatusTone::Error);
         let btn_h = 38.0;
         let back_w = 132.0;
         let retry_w = 104.0;
@@ -3316,7 +3771,7 @@ impl RemoteApp {
     /// Draw the live SSH terminal grid, straight from the real PTY output
     /// held in the [`crate::vt::VtGrid`].
     fn draw_terminal(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,

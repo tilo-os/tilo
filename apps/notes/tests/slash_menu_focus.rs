@@ -3,6 +3,16 @@
 //! chosen block, Esc closes. Regression guard for the case where the
 //! sidebar retained focus (after a row click) and swallowed the arrows.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use notes::NotesApp;
@@ -66,9 +76,9 @@ fn named_key(key: NamedKey) -> WindowEvent {
 fn settle_layout(
     app: &mut NotesApp,
     state: &mut ui::State,
-    w: u32,
-    h: u32,
-) -> (TaffyTree<()>, NodeId) {
+    w: u16,
+    h: u16,
+) -> Result<(TaffyTree<()>, NodeId), String> {
     let theme = Theme::dark();
     let mut text_renderer = TextRenderer::new();
     app.sync(&mut state.doc, &state.root);
@@ -81,14 +91,14 @@ fn settle_layout(
             .new_with_children(
                 Style {
                     size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
+                        width: Dimension::length(f32::from(w)),
+                        height: Dimension::length(f32::from(h)),
                     },
                     ..Default::default()
                 },
                 &[child],
             )
-            .unwrap();
+            .map_err(|e| e.to_string())?;
         {
             let measure_map = node_map.clone();
             let tr = &mut text_renderer;
@@ -96,8 +106,8 @@ fn settle_layout(
                 .compute_layout_with_measure(
                     root,
                     taffy::Size {
-                        width: AvailableSpace::Definite(w as f32),
-                        height: AvailableSpace::Definite(h as f32),
+                        width: AvailableSpace::Definite(f32::from(w)),
+                        height: AvailableSpace::Definite(f32::from(h)),
                     },
                     |known, avail, node_id, _, _| {
                         if let Some(&ptr) = measure_map.get(&node_id) {
@@ -107,7 +117,7 @@ fn settle_layout(
                         }
                     },
                 )
-                .unwrap();
+                .map_err(|e| e.to_string())?;
         }
         app.apply_layout(&taffy, child, Point::ORIGIN);
         let settled = !app.take_structure_dirty();
@@ -116,7 +126,7 @@ fn settle_layout(
             break;
         }
     }
-    result.unwrap()
+    result.ok_or_else(|| "layout never settled".to_string())
 }
 
 fn dispatch(
@@ -154,7 +164,7 @@ fn slash_menu_arrows_navigate_the_menu_not_the_page_list() {
     app.sync_sidebar_for_test();
 
     let mut state = ui::State::new();
-    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
 
     // Click Welcome's row: this selects it AND gives the sidebar focus,
     // while loading the page focuses the editor too — the exact state in
@@ -243,7 +253,7 @@ fn slash_menu_enter_inserts_the_chosen_block() {
     app.sync_sidebar_for_test();
 
     let mut state = ui::State::new();
-    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
 
     // Open the menu, arrow to Heading 1, Enter to convert the block.
     dispatch(&mut app, &mut state, &taffy, child, &char_key("/"));

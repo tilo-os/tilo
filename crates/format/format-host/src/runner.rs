@@ -73,6 +73,10 @@ pub struct LoadedComponent {
 
 impl LoadedComponent {
     /// Build an engine wired for the component model + per-call interruption.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Wasmtime engine configuration or creation fails.
     pub fn engine() -> anyhow::Result<Engine> {
         let mut cfg = wasmtime::Config::new();
         cfg.wasm_component_model(true);
@@ -92,31 +96,39 @@ impl LoadedComponent {
     }
 
     /// Load a component from a `.wasm` file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading the file or parsing it as a component fails.
     pub fn from_path(engine: &Engine, path: &Path) -> anyhow::Result<Self> {
         let component = Component::from_file(engine, path)
             .map_err(|e| anyhow::anyhow!("loading {}: {e:#}", path.display()))?;
-        Self::wrap(engine.clone(), component)
+        Ok(Self::wrap(engine.clone(), component))
     }
 
     /// Load a component from in-memory bytes (used by tests + `.wat` fixtures).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if parsing the bytes as a component fails.
     pub fn from_bytes(engine: &Engine, bytes: &[u8]) -> anyhow::Result<Self> {
         let component = Component::new(engine, bytes)
             .map_err(|e| anyhow::anyhow!("loading component bytes: {e:#}"))?;
-        Self::wrap(engine.clone(), component)
+        Ok(Self::wrap(engine.clone(), component))
     }
 
-    fn wrap(engine: Engine, component: Component) -> anyhow::Result<Self> {
+    fn wrap(engine: Engine, component: Component) -> Self {
         let mut linker: Linker<WasiHostState> = Linker::new(&engine);
         // WASI imports — some component bindgen artifacts unconditionally
         // pull in WASI even when the guest doesn't use it; wire it up
         // pre-emptively. Best-effort: in older wasmtime-wasi builds the
         // function may live behind a different module path.
         let _ = wasmtime_wasi::p2::add_to_linker_sync(&mut linker);
-        Ok(Self {
+        Self {
             engine,
             component,
             linker: Arc::new(linker),
-        })
+        }
     }
 
     /// Build a fresh Store with our resource caps applied.
@@ -140,6 +152,11 @@ impl LoadedComponent {
     }
 
     /// Instantiate + call `detect`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `CodecError` if component instantiation fails or if the guest
+    /// component returns an error.
     pub fn detect(&self, head: &[u8]) -> Result<wit_iface::Detected, CodecError> {
         let mut store = self.new_store();
         let bindings = Provider::instantiate(&mut store, &self.component, &self.linker)
@@ -151,6 +168,11 @@ impl LoadedComponent {
     }
 
     /// Instantiate + call `import-doc`. Returns the canonical CRDT bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `CodecError` if component instantiation fails or if the guest
+    /// component returns an error.
     pub fn import_doc(&self, bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
         let mut store = self.new_store();
         let bindings = Provider::instantiate(&mut store, &self.component, &self.linker)
@@ -167,6 +189,11 @@ impl LoadedComponent {
     }
 
     /// Instantiate + call `export-doc`. Returns the file-format bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `CodecError` if component instantiation fails or if the guest
+    /// component returns an error.
     pub fn export_doc(&self, canonical: &[u8]) -> Result<Vec<u8>, CodecError> {
         let mut store = self.new_store();
         let bindings = Provider::instantiate(&mut store, &self.component, &self.linker)

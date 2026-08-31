@@ -11,6 +11,19 @@
 //! cap), [`session`] (the throttle+encode→frame / reframe→decode seam
 //! both the compositor and chat drive).
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod decoder;
 pub mod encoder;
 pub mod session;

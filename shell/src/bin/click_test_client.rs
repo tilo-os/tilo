@@ -24,6 +24,17 @@ use wayland_client::{
     protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
 
+/// Convert width/height to the `i32` + byte-stride triple `SlotPool::create_buffer`
+/// wants. `w`/`h` come from the compositor's `configure` event, which is not bounded
+/// by this client — `None` degrades to "skip this frame" rather than wrapping the
+/// stride into a buffer smaller than the canvas.
+fn buffer_geometry(w: u32, h: u32) -> Option<(i32, i32, i32)> {
+    let w_px = i32::try_from(w).ok()?;
+    let h_px = i32::try_from(h).ok()?;
+    let stride = w_px.checked_mul(4)?;
+    Some((w_px, h_px, stride))
+}
+
 struct ClientApp {
     registry_state: RegistryState,
     seat_state: SeatState,
@@ -40,18 +51,23 @@ struct ClientApp {
 }
 
 impl ClientApp {
-    fn new(globals: &wayland_client::globals::GlobalList, qh: &QueueHandle<Self>) -> Self {
+    fn new(
+        globals: &wayland_client::globals::GlobalList,
+        qh: &QueueHandle<Self>,
+    ) -> Result<Self, String> {
         let registry_state = RegistryState::new(globals);
         let seat_state = SeatState::new(globals, qh);
         let output_state = OutputState::new(globals, qh);
-        let compositor_state =
-            CompositorState::bind(globals, qh).expect("wl_compositor not available");
-        let shm_state = Shm::bind(globals, qh).expect("wl_shm not available");
-        let xdg_shell_state = XdgShell::bind(globals, qh).expect("xdg_shell not available");
+        let compositor_state = CompositorState::bind(globals, qh)
+            .map_err(|e| format!("wl_compositor not available: {e}"))?;
+        let shm_state = Shm::bind(globals, qh).map_err(|e| format!("wl_shm not available: {e}"))?;
+        let xdg_shell_state =
+            XdgShell::bind(globals, qh).map_err(|e| format!("xdg_shell not available: {e}"))?;
 
-        let pool = SlotPool::new(256 * 256 * 4, &shm_state).expect("Failed to create pool");
+        let pool = SlotPool::new(256 * 256 * 4, &shm_state)
+            .map_err(|e| format!("failed to create pool: {e}"))?;
 
-        Self {
+        Ok(Self {
             registry_state,
             seat_state,
             output_state,
@@ -63,7 +79,7 @@ impl ClientApp {
             width: 256,
             height: 256,
             first_configure: true,
-        }
+        })
     }
 }
 
@@ -124,20 +140,23 @@ impl WindowHandler for ClientApp {
     ) {
         self.width = configure.new_size.0.map_or(256, std::num::NonZero::get);
         self.height = configure.new_size.1.map_or(256, std::num::NonZero::get);
-        let (buffer, canvas) = self
-            .pool
-            .create_buffer(
-                self.width as i32,
-                self.height as i32,
-                self.width as i32 * 4,
-                wl_shm::Format::Argb8888,
-            )
-            .expect("create buffer");
+        let Some((w_px, h_px, stride)) = buffer_geometry(self.width, self.height) else {
+            return;
+        };
+        let Ok((buffer, canvas)) =
+            self.pool
+                .create_buffer(w_px, h_px, stride, wl_shm::Format::Argb8888)
+        else {
+            return;
+        };
         for chunk in canvas.chunks_exact_mut(4) {
-            chunk[0] = 0x00;
-            chunk[1] = 0x00;
-            chunk[2] = 0xFF;
-            chunk[3] = 0xFF;
+            let [blue, green, red, alpha] = chunk else {
+                continue; // chunks_exact_mut(4) guarantees len == 4
+            };
+            *blue = 0x00;
+            *green = 0x00;
+            *red = 0xFF;
+            *alpha = 0xFF;
         }
         if self.first_configure {
             self.first_configure = false;
@@ -162,9 +181,8 @@ impl SeatHandler for ClientApp {
         capability: Capability,
     ) {
         if capability == Capability::Pointer {
-            self.seat_state
-                .get_pointer(qh, &seat)
-                .expect("Failed to get pointer");
+            // Best-effort: without a pointer this dev client just won't report clicks.
+            let _ = self.seat_state.get_pointer(qh, &seat);
         }
     }
     fn remove_capability(
@@ -222,11 +240,12 @@ delegate_xdg_shell!(ClientApp);
 delegate_xdg_window!(ClientApp);
 delegate_registry!(ClientApp);
 
-fn main() {
-    let conn = Connection::connect_to_env().unwrap();
-    let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
+fn main() -> Result<(), String> {
+    let conn = Connection::connect_to_env().map_err(|e| format!("connect_to_env: {e}"))?;
+    let (globals, mut event_queue) =
+        registry_queue_init(&conn).map_err(|e| format!("registry_queue_init: {e}"))?;
     let qh = event_queue.handle();
-    let mut app = ClientApp::new(&globals, &qh);
+    let mut app = ClientApp::new(&globals, &qh)?;
     let window = app.xdg_shell_state.create_window(
         app.compositor_state.create_surface(&qh),
         smithay_client_toolkit::shell::xdg::window::WindowDecorations::ServerDefault,
@@ -237,6 +256,8 @@ fn main() {
     window.commit();
     app.window = Some(window);
     loop {
-        event_queue.blocking_dispatch(&mut app).unwrap();
+        event_queue
+            .blocking_dispatch(&mut app)
+            .map_err(|e| format!("blocking_dispatch: {e}"))?;
     }
 }

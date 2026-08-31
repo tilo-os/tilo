@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::widget::TaffyTreeExt;
 use automerge::{AutoCommit, ObjId};
+use openh264::formats::YUVSource;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -156,6 +157,22 @@ enum MenuHit {
     Option(usize, usize),
 }
 
+/// One row to be painted inside an open settings menu.
+enum MenuRow {
+    Setting(usize),
+    /// `(setting index, option index)`.
+    Option(usize, usize),
+}
+
+/// The rows an open menu should paint, plus where to anchor the panel and
+/// its optional header (a [`OpenMenu::Choice`] popover names itself; the
+/// gear list doesn't).
+struct MenuPanel {
+    rows: Vec<MenuRow>,
+    anchor: Rect,
+    title: Option<String>,
+}
+
 /// Supplied so the player can publish it to the desktop media controls
 /// (MPRIS: media keys + the top-bar widget).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -166,6 +183,13 @@ pub struct NowPlaying {
     pub art_url: String,
 }
 
+// Six independent lifecycle/interaction flags (mute, fullscreen intent vs.
+// touched, drag state, focus, dirty), not a combinatorial state machine —
+// grouping them into an enum would obscure rather than clarify.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "flags are independent widget state, not related toggles"
+)]
 pub struct VideoPlayer {
     /// `None` in push mode.
     engine: Option<media::MediaEngine>,
@@ -224,6 +248,27 @@ pub struct VideoPlayer {
     fullscreen_target: crate::fullscreen::FullscreenTarget,
 }
 
+/// Shared geometry threaded through `paint_controls`'s helpers, bundled so
+/// none of them needs more than a handful of parameters. `cluster_x0` starts
+/// as a placeholder and is filled in by `paint_settings_cluster`.
+#[derive(Clone, Copy)]
+struct ControlsLayout {
+    bar: Rect,
+    mid_y: f64,
+    pad: f64,
+    icon: f64,
+    play_btn: Rect,
+    cluster_x0: f64,
+}
+
+/// The elapsed/duration label, pre-measured once so every layout helper that
+/// needs it shares the same measurement.
+struct TimeLabel<'a> {
+    text: &'a str,
+    width: f32,
+    size: f32,
+}
+
 impl VideoPlayer {
     pub fn new() -> Self {
         Self {
@@ -270,12 +315,18 @@ impl VideoPlayer {
     /// Only repaints when the set actually changes, so a host may call this
     /// every rebuild.
     pub fn set_sponsor_marks(&mut self, marks: Vec<(f32, f32, Color)>) {
-        if marks.len() != self.scrub_marks.len()
+        // Exact equality is the point here — this is change detection for a
+        // dirty flag, not a numerical comparison that needs a tolerance.
+        #[allow(
+            clippy::float_cmp,
+            reason = "exact-change detection for a dirty flag, not numerical comparison"
+        )]
+        let changed = marks.len() != self.scrub_marks.len()
             || marks
                 .iter()
                 .zip(&self.scrub_marks)
-                .any(|(a, b)| a.0 != b.0 || a.1 != b.1)
-        {
+                .any(|(a, b)| a.0 != b.0 || a.1 != b.1);
+        if changed {
             self.scrub_marks = marks;
             self.dirty = true;
         }
@@ -295,6 +346,7 @@ impl VideoPlayer {
         }
     }
 
+    #[must_use]
     pub fn with_setting(mut self, setting: PlayerSetting) -> Self {
         self.set_setting(setting);
         self
@@ -404,10 +456,20 @@ impl VideoPlayer {
             }
             C::Seek(us) => {
                 let delta_ms = us / 1000;
-                let target = (self.position_ms as i64 + delta_ms).max(0) as u64;
-                self.seek_to_ms(target);
+                let position = i64::try_from(self.position_ms).unwrap_or(i64::MAX);
+                let target = position.saturating_add(delta_ms).max(0);
+                self.seek_to_ms(u64::try_from(target).unwrap_or(0));
             }
-            C::SetPosition(us) => self.seek_to_ms((us.max(0) as u64) / 1000),
+            C::SetPosition(us) => {
+                self.seek_to_ms(u64::try_from(us.max(0)).unwrap_or(0) / 1000);
+            }
+            // Volume is a `0.0..=1.0` fraction (clamped again in
+            // `set_volume`), so the `f64 -> f32` narrowing cannot lose
+            // meaningful precision.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "volume fraction in 0.0..=1.0; f32 precision is sufficient"
+            )]
             C::SetVolume(v) => self.set_volume(v as f32),
             // No single-clip meaning here; a host can observe these once it wires a playlist.
             C::Next | C::Previous | C::Raise | C::Quit => {}
@@ -428,8 +490,12 @@ impl VideoPlayer {
             artist: self.now_playing.artist.clone(),
             album: String::new(),
             art_url: self.now_playing.art_url.clone(),
-            length_us: self.duration_ms as i64 * 1000,
-            position_us: self.position_ms as i64 * 1000,
+            length_us: i64::try_from(self.duration_ms)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(1000),
+            position_us: i64::try_from(self.position_ms)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(1000),
             volume: f64::from(self.effective_volume()),
             can_next: false,
             can_prev: false,
@@ -444,6 +510,7 @@ impl VideoPlayer {
         self.mpris.publish(snap);
     }
 
+    #[must_use]
     pub fn with_engine(mut self, engine: media::MediaEngine) -> Self {
         self.set_engine(engine);
         self
@@ -473,11 +540,13 @@ impl VideoPlayer {
         }
     }
 
+    #[must_use]
     pub fn with_test_id(mut self, id: &'static str) -> Self {
         self.test_id = Some(id);
         self
     }
 
+    #[must_use]
     pub fn on_seek<F: FnMut(Duration) + 'static>(mut self, f: F) -> Self {
         self.on_seek = Some(Box::new(f));
         self
@@ -494,16 +563,25 @@ impl VideoPlayer {
                 Err(_) => return false,
             }
         }
-        let decoder = self.decoder.as_mut().expect("decoder just initialised");
-        let yuv = match decoder.decode(nalus) {
-            Ok(Some(yuv)) => yuv,
-            Ok(None) | Err(_) => return false,
+        let Some(decoder) = self.decoder.as_mut() else {
+            return false;
         };
-        use openh264::formats::YUVSource;
+        let Ok(Some(yuv)) = decoder.decode(nalus) else {
+            return false;
+        };
         let (width, height) = yuv.dimensions();
-        let mut rgba = vec![0u8; width * height * 4];
+        // A malformed/adversarial stream could report dimensions whose
+        // product overflows `usize`; bail rather than let it wrap into an
+        // undersized allocation that `write_rgba8` then writes past.
+        let Some(len) = width.checked_mul(height).and_then(|wh| wh.checked_mul(4)) else {
+            return false;
+        };
+        let (Ok(w32), Ok(h32)) = (u32::try_from(width), u32::try_from(height)) else {
+            return false;
+        };
+        let mut rgba = vec![0u8; len];
         yuv.write_rgba8(&mut rgba);
-        self.latest_frame = Some(rgba_image(width as u32, height as u32, Arc::new(rgba)));
+        self.latest_frame = Some(rgba_image(w32, h32, Arc::new(rgba)));
         self.dirty = true;
         true
     }
@@ -628,7 +706,9 @@ impl VideoPlayer {
     /// Used by the headless `--shots` path so a captured frame shows the full
     /// controls bar (which otherwise auto-hides when no cursor is moving).
     pub fn reveal_controls(&mut self) {
-        self.controls_visible_until = Some(Instant::now() + Duration::from_hours(1));
+        // `checked_add` rather than `+`: `Instant` addition panics on
+        // overflow, though `now + 1h` cannot realistically overflow.
+        self.controls_visible_until = Instant::now().checked_add(Duration::from_secs(3600));
         self.dirty = true;
     }
 
@@ -647,7 +727,7 @@ impl VideoPlayer {
     }
 
     fn show_controls(&mut self) {
-        self.controls_visible_until = Some(Instant::now() + CONTROLS_AUTO_HIDE);
+        self.controls_visible_until = Instant::now().checked_add(CONTROLS_AUTO_HIDE);
     }
 
     fn controls_bar_rect(&self) -> Rect {
@@ -663,7 +743,7 @@ impl VideoPlayer {
         if self.duration_ms == 0 {
             0.0
         } else {
-            (self.position_ms as f64 / self.duration_ms as f64).clamp(0.0, 1.0)
+            (ms_to_f64(self.position_ms) / ms_to_f64(self.duration_ms)).clamp(0.0, 1.0)
         }
     }
 
@@ -762,6 +842,13 @@ impl VideoPlayer {
                 let dh = ih * scale;
                 let dx = self.rect.x0 + (rw - dw) * 0.5;
                 let dy = self.rect.y0 + (rh - dh) * 0.5;
+                // Affine composition on f64 fields; see `translated`'s
+                // doc comment for why `arithmetic_side_effects` is a
+                // false positive here.
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "Affine composition of f64 transforms; cannot meaningfully overflow"
+                )]
                 let brush_transform =
                     Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
                 let dest = Rect::new(dx, dy, dx + dw, dy + dh);
@@ -805,7 +892,6 @@ impl VideoPlayer {
             return;
         }
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
 
         // Scrim so controls read over bright frames.
         scene.fill(
@@ -829,14 +915,6 @@ impl VideoPlayer {
         self.play_button_rect = play_btn;
         self.draw_play_glyph(scene, transform, play_btn, colors.text_primary);
 
-        // Right cluster [ setting icons ][ gear ][ fullscreen ], packed from
-        // the right so fullscreen stays pinned to the corner. Priority
-        // `>= 1` settings get their own icon, highest first; overflow (plus
-        // every priority-0 setting) collapses into the gear.
-        let fs_size = icon;
-        let btn = icon;
-        let gap = pad;
-
         // Feeds the left reserve that bounds how many setting icons can fit
         // without crushing the scrubber.
         let time_text = format!(
@@ -847,18 +925,64 @@ impl VideoPlayer {
         let time_size = 12.0f32;
         let (tw, _th) = text_renderer.measure(&time_text, time_size, None);
 
-        let mut prio: Vec<usize> = (0..self.settings.len())
-            .filter(|&i| self.settings[i].priority >= 1)
-            .collect();
-        prio.sort_by(|&a, &b| {
-            self.settings[b]
-                .priority
-                .cmp(&self.settings[a].priority)
-                .then(a.cmp(&b))
-        });
-        let zero: Vec<usize> = (0..self.settings.len())
-            .filter(|&i| self.settings[i].priority == 0)
-            .collect();
+        let mut layout = ControlsLayout {
+            bar,
+            mid_y,
+            pad,
+            icon,
+            play_btn,
+            cluster_x0: 0.0,
+        };
+        self.paint_settings_cluster(scene, transform, theme, &mut layout, tw);
+
+        let time = TimeLabel {
+            text: &time_text,
+            width: tw,
+            size: time_size,
+        };
+        self.paint_volume_time_track(scene, transform, text_renderer, theme, &layout, &time);
+
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &bar,
+        );
+
+        self.paint_menu(scene, transform, text_renderer, theme);
+    }
+
+    /// Right cluster `[ setting icons ][ gear ][ fullscreen ]`, packed from
+    /// the right so fullscreen stays pinned to the corner. Priority `>= 1`
+    /// settings get their own icon, highest first; overflow (plus every
+    /// priority-0 setting) collapses into the gear. Writes the leftmost
+    /// edge the cluster reached into `layout.cluster_x0`, so the caller
+    /// knows where the volume control has room to end.
+    fn paint_settings_cluster(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        layout: &mut ControlsLayout,
+        tw: f32,
+    ) {
+        let ControlsLayout {
+            bar,
+            mid_y,
+            pad,
+            icon,
+            play_btn,
+            ..
+        } = *layout;
+        let colors = &theme.tokens.colors;
+        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+
+        let fs_size = icon;
+        let btn = icon;
+        let gap = pad;
+
+        let (prio, zero) = self.settings_priority_lists();
 
         let fs_btn = Rect::new(
             bar.x1 - pad - fs_size,
@@ -871,6 +995,14 @@ impl VideoPlayer {
             play_btn.x1 + pad + MIN_SCRUB_WIDTH + pad + f64::from(tw) + pad + VOLUME_WIDTH + pad;
         let slot = btn + gap;
         let avail = (fs_btn.x0 - gap - left_reserve).max(0.0);
+        // `avail` is clamped to >= 0.0 above and `slot > 0.0` is checked, so
+        // the quotient is always non-negative and bounded by a realistic
+        // count of setting icons — far under `usize::MAX`.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "avail >= 0.0 and slot > 0.0, so the quotient is a small non-negative icon count"
+        )]
         let max_fit = if slot > 0.0 {
             (avail / slot).floor() as usize
         } else {
@@ -907,11 +1039,76 @@ impl VideoPlayer {
         };
         self.gear_button_rect = gear_btn;
 
+        // `shown` is always `<= prio.len()` by construction above; `.get()`
+        // plus the full-slice fallback keeps that provable to the reader
+        // without a raw range-index.
+        let shown_slice = prio.get(..shown).unwrap_or(&prio);
+        self.paint_setting_icons(scene, transform, theme, layout, cx, shown_slice);
+
+        self.gear_entries.clear();
+        self.gear_entries.extend(prio.iter().skip(shown).copied());
+        self.gear_entries.extend(zero.iter().copied());
+
+        // Leftmost edge the right cluster reached — the volume sits to its left.
+        layout.cluster_x0 = self.setting_icon_rects.last().map_or(
+            if gear_needed { gear_btn.x0 } else { fs_btn.x0 },
+            |(_, r)| r.x0,
+        );
+    }
+
+    /// Priority `>= 1` settings (highest first, ties broken by original
+    /// index) and priority-0 settings, both as indices into `self.settings`.
+    fn settings_priority_lists(&self) -> (Vec<usize>, Vec<usize>) {
+        // Indices only ever come from `0..self.settings.len()`, so they stay
+        // valid for the lifetime of any caller — `.get()` still guards each
+        // use since `self.settings` isn't provably immutable to the reader.
+        let mut prio: Vec<usize> = self
+            .settings
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.priority >= 1)
+            .map(|(i, _)| i)
+            .collect();
+        prio.sort_by(|&a, &b| {
+            let pb = self.settings.get(b).map_or(0, |s| s.priority);
+            let pa = self.settings.get(a).map_or(0, |s| s.priority);
+            pb.cmp(&pa).then(a.cmp(&b))
+        });
+        let zero: Vec<usize> = self
+            .settings
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.priority == 0)
+            .map(|(i, _)| i)
+            .collect();
+        (prio, zero)
+    }
+
+    /// Draws each of `shown`'s setting icons leftward from `start_cx`,
+    /// pushing its rect into `setting_icon_rects`.
+    fn paint_setting_icons(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        layout: &ControlsLayout,
+        start_cx: f64,
+        shown: &[usize],
+    ) {
+        let colors = &theme.tokens.colors;
+        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let btn = layout.icon;
+        let gap = layout.pad;
+        let mid_y = layout.mid_y;
+
         self.setting_icon_rects.clear();
-        for &idx in prio.iter().take(shown) {
+        let mut cx = start_cx;
+        for &idx in shown {
+            let Some(s) = self.settings.get(idx) else {
+                continue;
+            };
             let r = Rect::new(cx - btn, mid_y - btn * 0.5, cx, mid_y + btn * 0.5);
             cx = r.x0 - gap;
-            let s = &self.settings[idx];
             let on = matches!(s.control, PlayerSettingControl::Toggle { on: true });
             let menu_open = self.open_menu == Some(OpenMenu::Choice(idx));
             let tint = if on || menu_open {
@@ -922,16 +1119,64 @@ impl VideoPlayer {
             s.icon.draw(scene, transform, inset_rect(r, 4.0), tint);
             self.setting_icon_rects.push((idx, r));
         }
+    }
 
-        self.gear_entries.clear();
-        self.gear_entries.extend(prio.iter().skip(shown).copied());
-        self.gear_entries.extend(zero.iter().copied());
+    /// Volume slider, elapsed/duration text, and the scrub track (with
+    /// buffering, sponsor marks and the playhead thumb).
+    fn paint_volume_time_track(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: &ControlsLayout,
+        time: &TimeLabel<'_>,
+    ) {
+        let ControlsLayout {
+            mid_y,
+            pad,
+            play_btn,
+            ..
+        } = *layout;
+        let colors = &theme.tokens.colors;
 
-        // Leftmost edge the right cluster reached — the volume sits to its left.
-        let cluster_x0 = self.setting_icon_rects.last().map_or(
-            if gear_needed { gear_btn.x0 } else { fs_btn.x0 },
-            |(_, r)| r.x0,
+        let vol_x0 = self.paint_volume_slider(scene, transform, theme, layout);
+
+        let time_x1 = vol_x0 - pad;
+        let time_x0 = (time_x1 - f64::from(time.width)).max(play_btn.x1 + pad);
+        text_renderer.draw_text(
+            scene,
+            time.text,
+            time.size,
+            colors.text_dim,
+            translated(transform, time_x0, mid_y - f64::from(time.size) * 0.5),
+            None,
         );
+
+        let track_x0 = play_btn.x1 + pad;
+        let track_x1 = time_x0 - pad;
+        self.paint_scrub_track(scene, transform, theme, layout, track_x0, track_x1);
+    }
+
+    /// Draws the speaker glyph and volume level track. Returns its left
+    /// edge, so the caller knows where the time label has room to end.
+    fn paint_volume_slider(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        layout: &ControlsLayout,
+    ) -> f64 {
+        let ControlsLayout {
+            mid_y,
+            pad,
+            icon,
+            play_btn,
+            cluster_x0,
+            ..
+        } = *layout;
+        let colors = &theme.tokens.colors;
+        let accent = colors.accent[ACCENT_PRIMARY_IDX];
 
         let vol_x1 = cluster_x0 - pad;
         let vol_x0 = (vol_x1 - VOLUME_WIDTH).max(play_btn.x1);
@@ -975,107 +1220,146 @@ impl VideoPlayer {
         } else {
             self.volume_track_rect = Rect::ZERO;
         }
+        vol_x0
+    }
 
-        let time_x1 = vol_x0 - pad;
-        let time_x0 = (time_x1 - f64::from(tw)).max(play_btn.x1 + pad);
-        text_renderer.draw_text(
-            scene,
-            &time_text,
-            time_size,
-            colors.text_dim,
-            transform * Affine::translate((time_x0, mid_y - f64::from(time_size) * 0.5)),
-            None,
+    /// Draws the scrub track — background, buffered range, played range,
+    /// sponsor-style marks and the playhead thumb — between `track_x0` and
+    /// `track_x1`. A non-positive-width range just hides the track.
+    fn paint_scrub_track(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        layout: &ControlsLayout,
+        track_x0: f64,
+        track_x1: f64,
+    ) {
+        if track_x1 <= track_x0 {
+            self.scrub_track_rect = Rect::ZERO;
+            return;
+        }
+        let mid_y = layout.mid_y;
+        let colors = &theme.tokens.colors;
+        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+
+        let track = Rect::new(
+            track_x0,
+            mid_y - SCRUB_TRACK_HEIGHT * 0.5,
+            track_x1,
+            mid_y + SCRUB_TRACK_HEIGHT * 0.5,
         );
-
-        let track_x0 = play_btn.x1 + pad;
-        let track_x1 = time_x0 - pad;
-        if track_x1 > track_x0 {
-            let track = Rect::new(
-                track_x0,
-                mid_y - SCRUB_TRACK_HEIGHT * 0.5,
-                track_x1,
-                mid_y + SCRUB_TRACK_HEIGHT * 0.5,
-            );
-            self.scrub_track_rect = track;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.border_standard,
-                None,
-                &RoundedRect::from_rect(track, SCRUB_TRACK_HEIGHT * 0.5),
-            );
-            let buf_frac = (f64::from(self.buffering) / 100.0).clamp(0.0, 1.0);
-            if buf_frac > 0.0 {
-                let buffered = Rect::new(
-                    track.x0,
-                    track.y0,
-                    track.x0 + track.width() * buf_frac,
-                    track.y1,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.text_dim,
-                    None,
-                    &RoundedRect::from_rect(buffered, SCRUB_TRACK_HEIGHT * 0.5),
-                );
-            }
-            let frac = self.playhead_fraction();
-            let played = Rect::new(
+        self.scrub_track_rect = track;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.border_standard,
+            None,
+            &RoundedRect::from_rect(track, SCRUB_TRACK_HEIGHT * 0.5),
+        );
+        let buf_frac = (f64::from(self.buffering) / 100.0).clamp(0.0, 1.0);
+        if buf_frac > 0.0 {
+            let buffered = Rect::new(
                 track.x0,
                 track.y0,
-                track.x0 + track.width() * frac,
+                track.x0 + track.width() * buf_frac,
                 track.y1,
             );
             scene.fill(
                 Fill::NonZero,
                 transform,
-                accent,
+                colors.text_dim,
                 None,
-                &RoundedRect::from_rect(played, SCRUB_TRACK_HEIGHT * 0.5),
+                &RoundedRect::from_rect(buffered, SCRUB_TRACK_HEIGHT * 0.5),
             );
-            // SponsorBlock-style marks as slightly-taller bands, visible on the
-            // ONE timeline before playback rather than a separate bar.
-            let mid_y = track.center().y;
-            let band_h = SCRUB_TRACK_HEIGHT + 3.0;
-            for (s, e, color) in &self.scrub_marks {
-                let s = f64::from((*s).clamp(0.0, 1.0));
-                let e = f64::from((*e).clamp(0.0, 1.0));
-                if e <= s {
-                    continue;
-                }
-                let x0 = track.x0 + track.width() * s;
-                let x1 = (track.x0 + track.width() * e).max(x0 + 2.0);
-                let band = Rect::new(x0, mid_y - band_h * 0.5, x1, mid_y + band_h * 0.5);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    *color,
-                    None,
-                    &RoundedRect::from_rect(band, 1.5),
-                );
+        }
+        let frac = self.playhead_fraction();
+        let played = Rect::new(
+            track.x0,
+            track.y0,
+            track.x0 + track.width() * frac,
+            track.y1,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            accent,
+            None,
+            &RoundedRect::from_rect(played, SCRUB_TRACK_HEIGHT * 0.5),
+        );
+        // SponsorBlock-style marks as slightly-taller bands, visible on the
+        // ONE timeline before playback rather than a separate bar.
+        let mid_y = track.center().y;
+        let band_h = SCRUB_TRACK_HEIGHT + 3.0;
+        for (s, e, color) in &self.scrub_marks {
+            let s = f64::from((*s).clamp(0.0, 1.0));
+            let e = f64::from((*e).clamp(0.0, 1.0));
+            if e <= s {
+                continue;
             }
-            let thumb_cx = track.x0 + track.width() * frac;
+            let x0 = track.x0 + track.width() * s;
+            let x1 = (track.x0 + track.width() * e).max(x0 + 2.0);
+            let band = Rect::new(x0, mid_y - band_h * 0.5, x1, mid_y + band_h * 0.5);
             scene.fill(
                 Fill::NonZero,
                 transform,
-                accent,
+                *color,
                 None,
-                &Circle::new((thumb_cx, mid_y), SCRUB_THUMB_RADIUS),
+                &RoundedRect::from_rect(band, 1.5),
             );
-        } else {
-            self.scrub_track_rect = Rect::ZERO;
         }
-
-        scene.stroke(
-            &Stroke::new(1.0),
+        let thumb_cx = track.x0 + track.width() * frac;
+        scene.fill(
+            Fill::NonZero,
             transform,
-            colors.border_standard,
+            accent,
             None,
-            &bar,
+            &Circle::new((thumb_cx, mid_y), SCRUB_THUMB_RADIUS),
         );
+    }
 
-        self.paint_menu(scene, transform, text_renderer, theme);
+    /// Walks `menu`'s entries into paintable [`MenuRow`]s. `None` only for a
+    /// [`OpenMenu::Choice`] whose setting has since vanished (e.g. the host
+    /// removed it while the popover was open).
+    fn build_menu_rows(&self, menu: OpenMenu) -> Option<MenuPanel> {
+        let mut rows = Vec::new();
+        let (anchor, title) = match menu {
+            OpenMenu::Gear => {
+                for &idx in &self.gear_entries {
+                    rows.push(MenuRow::Setting(idx));
+                    // Options appear indented only while this is the expanded
+                    // entry, so the gear reads as a tidy list until drilled in.
+                    if self.gear_expanded == Some(idx)
+                        && let Some(PlayerSettingControl::Choice { options, .. }) =
+                            self.settings.get(idx).map(|s| &s.control)
+                    {
+                        for oi in 0..options.len() {
+                            rows.push(MenuRow::Option(idx, oi));
+                        }
+                    }
+                }
+                (self.gear_button_rect, None)
+            }
+            OpenMenu::Choice(idx) => {
+                let s = self.settings.get(idx)?;
+                if let PlayerSettingControl::Choice { options, .. } = &s.control {
+                    for oi in 0..options.len() {
+                        rows.push(MenuRow::Option(idx, oi));
+                    }
+                }
+                let anchor = self
+                    .setting_icon_rects
+                    .iter()
+                    .find(|(i, _)| *i == idx)
+                    .map_or(self.gear_button_rect, |(_, r)| *r);
+                (anchor, Some(s.name.clone()))
+            }
+        };
+        Some(MenuPanel {
+            rows,
+            anchor,
+            title,
+        })
     }
 
     /// Records `menu_hit_rects` for `handle_event`.
@@ -1088,66 +1372,33 @@ impl VideoPlayer {
     ) {
         self.menu_hit_rects.clear();
         let Some(menu) = self.open_menu else { return };
-        let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
-
-        enum Row {
-            Setting(usize),
-            Option(usize, usize),
-        }
-        let mut rows: Vec<Row> = Vec::new();
-        let (anchor, title): (Rect, Option<String>) = match menu {
-            OpenMenu::Gear => {
-                for &idx in &self.gear_entries {
-                    rows.push(Row::Setting(idx));
-                    // Options appear indented only while this is the expanded
-                    // entry, so the gear reads as a tidy list until drilled in.
-                    if self.gear_expanded == Some(idx)
-                        && let PlayerSettingControl::Choice { options, .. } =
-                            &self.settings[idx].control
-                    {
-                        for oi in 0..options.len() {
-                            rows.push(Row::Option(idx, oi));
-                        }
-                    }
-                }
-                (self.gear_button_rect, None)
-            }
-            OpenMenu::Choice(idx) => {
-                if let Some(s) = self.settings.get(idx) {
-                    if let PlayerSettingControl::Choice { options, .. } = &s.control {
-                        for oi in 0..options.len() {
-                            rows.push(Row::Option(idx, oi));
-                        }
-                    }
-                    let anchor = self
-                        .setting_icon_rects
-                        .iter()
-                        .find(|(i, _)| *i == idx)
-                        .map_or(self.gear_button_rect, |(_, r)| *r);
-                    (anchor, Some(s.name.clone()))
-                } else {
-                    return;
-                }
-            }
+        let Some(panel) = self.build_menu_rows(menu) else {
+            return;
         };
-        if rows.is_empty() && title.is_none() {
+        if panel.rows.is_empty() && panel.title.is_none() {
             return;
         }
+        let colors = &theme.tokens.colors;
 
         let row_h = MENU_ROW_H;
         let pad = f64::from(theme.tokens.spacing.s2);
-        let title_h = if title.is_some() { row_h } else { 0.0 };
-        let panel_h = title_h + rows.len() as f64 * row_h + pad;
+        let title_h = if panel.title.is_some() { row_h } else { 0.0 };
+        // The row count is a small UI list (settings + their options), well
+        // under any precision limit `f64` could impose.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "menu row count is a small UI list, well within f64 precision"
+        )]
+        let panel_h = title_h + panel.rows.len() as f64 * row_h + pad;
         let width = MENU_WIDTH.min(self.rect.width() - 8.0).max(80.0);
         // Right-aligned to the anchor, clamped inside the surface.
-        let x1 = anchor.x1.min(self.rect.x1 - 4.0);
+        let x1 = panel.anchor.x1.min(self.rect.x1 - 4.0);
         let x0 = (x1 - width).max(self.rect.x0 + 4.0);
-        let y1 = (anchor.y0 - pad * 0.5).max(self.rect.y0 + panel_h + 4.0);
+        let y1 = (panel.anchor.y0 - pad * 0.5).max(self.rect.y0 + panel_h + 4.0);
         let y0 = y1 - panel_h;
-        let panel = Rect::new(x0, y0, x1, y1);
+        let panel_rect = Rect::new(x0, y0, x1, y1);
 
-        let bg = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.md));
+        let bg = RoundedRect::from_rect(panel_rect, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &bg);
         scene.stroke(
             &Stroke::new(1.0),
@@ -1158,136 +1409,206 @@ impl VideoPlayer {
         );
 
         let mut y = y0 + pad * 0.5;
-        if let Some(t) = &title {
+        if let Some(t) = &panel.title {
             text_renderer.draw_text(
                 scene,
                 t,
                 12.0,
                 colors.text_dim,
-                transform * Affine::translate((x0 + pad, y + row_h * 0.5 - 7.0)),
+                translated(transform, x0 + pad, y + row_h * 0.5 - 7.0),
                 None,
             );
             y += row_h;
         }
 
-        for row in &rows {
+        for row in &panel.rows {
             let row_rect = Rect::new(x0 + 3.0, y, x1 - 3.0, y + row_h - 2.0);
-            match row {
-                Row::Setting(idx) => {
-                    let s = &self.settings[*idx];
-                    let icon_r = Rect::new(
-                        row_rect.x0 + 4.0,
-                        y + 5.0,
-                        row_rect.x0 + 22.0,
-                        y + row_h - 7.0,
-                    );
-                    s.icon.draw(scene, transform, icon_r, colors.text_primary);
-                    text_renderer.draw_text(
-                        scene,
-                        &s.name,
-                        13.0,
-                        colors.text_primary,
-                        transform * Affine::translate((icon_r.x1 + 8.0, y + row_h * 0.5 - 8.0)),
-                        None,
-                    );
-                    let value: String = match &s.control {
-                        PlayerSettingControl::Toggle { on } => {
-                            if *on {
-                                "On".into()
-                            } else {
-                                "Off".into()
-                            }
-                        }
-                        PlayerSettingControl::Choice { options, selected } => {
-                            options.get(*selected).cloned().unwrap_or_default()
-                        }
-                        PlayerSettingControl::Button => String::new(),
-                    };
-                    if !value.is_empty() {
-                        let (vw, _) = text_renderer.measure(&value, 12.0, None);
-                        let tint = matches!(s.control, PlayerSettingControl::Toggle { on: true })
-                            .then_some(accent)
-                            .unwrap_or(colors.text_dim);
-                        text_renderer.draw_text(
-                            scene,
-                            &value,
-                            12.0,
-                            tint,
-                            transform
-                                * Affine::translate((
-                                    x1 - pad - f64::from(vw),
-                                    y + row_h * 0.5 - 7.0,
-                                )),
-                            None,
-                        );
-                    }
-                    self.menu_hit_rects.push((MenuHit::Setting(*idx), row_rect));
-                }
-                Row::Option(idx, oi) => {
-                    if let PlayerSettingControl::Choice { options, selected } =
-                        &self.settings[*idx].control
-                    {
-                        let selected = *selected == *oi;
-                        // The standalone popover has no header, so no indent.
-                        let indent = if matches!(menu, OpenMenu::Gear) {
-                            26.0
-                        } else {
-                            10.0
-                        };
-                        if selected {
-                            let hl = RoundedRect::from_rect(
-                                Rect::new(
-                                    row_rect.x0 + 2.0,
-                                    y + 1.0,
-                                    row_rect.x1 - 2.0,
-                                    y + row_h - 3.0,
-                                ),
-                                6.0,
-                            );
-                            scene.fill(
-                                Fill::NonZero,
-                                transform,
-                                accent.multiply_alpha(0.22),
-                                None,
-                                &hl,
-                            );
-                        }
-                        let label = options.get(*oi).cloned().unwrap_or_default();
-                        let tint = if selected {
-                            accent
-                        } else {
-                            colors.text_primary
-                        };
-                        text_renderer.draw_text(
-                            scene,
-                            &label,
-                            13.0,
-                            tint,
-                            transform * Affine::translate((x0 + indent, y + row_h * 0.5 - 8.0)),
-                            None,
-                        );
-                        if selected {
-                            let (cw, _) = text_renderer.measure("✓", 13.0, None);
-                            text_renderer.draw_text(
-                                scene,
-                                "✓",
-                                13.0,
-                                accent,
-                                transform
-                                    * Affine::translate((
-                                        x1 - pad - f64::from(cw),
-                                        y + row_h * 0.5 - 8.0,
-                                    )),
-                                None,
-                            );
-                        }
-                        self.menu_hit_rects
-                            .push((MenuHit::Option(*idx, *oi), row_rect));
-                    }
-                }
-            }
+            self.paint_menu_row(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                menu,
+                (row, row_rect),
+            );
             y += row_h;
         }
+    }
+
+    /// Paints one row of an open settings menu and records its hit rect.
+    /// `row_rect` alone determines the row's geometry, so the two row kinds
+    /// only need it plus their own indices.
+    fn paint_menu_row(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        menu: OpenMenu,
+        entry: (&MenuRow, Rect),
+    ) {
+        let (row, row_rect) = entry;
+        match row {
+            MenuRow::Setting(idx) => {
+                self.paint_setting_row(scene, transform, text_renderer, theme, *idx, row_rect);
+            }
+            MenuRow::Option(idx, oi) => {
+                self.paint_option_row(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    menu,
+                    ((*idx, *oi), row_rect),
+                );
+            }
+        }
+    }
+
+    /// Paints a [`MenuRow::Setting`] row: icon, name, and its current value
+    /// (On/Off, the selected choice, or nothing for a bare button).
+    fn paint_setting_row(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        idx: usize,
+        row_rect: Rect,
+    ) {
+        let Some(s) = self.settings.get(idx) else {
+            return;
+        };
+        let x1 = row_rect.x1 + 3.0;
+        let y = row_rect.y0;
+        let row_h = row_rect.height() + 2.0;
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let colors = &theme.tokens.colors;
+        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+
+        let icon_r = Rect::new(
+            row_rect.x0 + 4.0,
+            y + 5.0,
+            row_rect.x0 + 22.0,
+            y + row_h - 7.0,
+        );
+        s.icon.draw(scene, transform, icon_r, colors.text_primary);
+        text_renderer.draw_text(
+            scene,
+            &s.name,
+            13.0,
+            colors.text_primary,
+            translated(transform, icon_r.x1 + 8.0, y + row_h * 0.5 - 8.0),
+            None,
+        );
+        let value: String = match &s.control {
+            PlayerSettingControl::Toggle { on } => {
+                if *on {
+                    "On".into()
+                } else {
+                    "Off".into()
+                }
+            }
+            PlayerSettingControl::Choice { options, selected } => {
+                options.get(*selected).cloned().unwrap_or_default()
+            }
+            PlayerSettingControl::Button => String::new(),
+        };
+        if !value.is_empty() {
+            let (vw, _) = text_renderer.measure(&value, 12.0, None);
+            let tint = matches!(s.control, PlayerSettingControl::Toggle { on: true })
+                .then_some(accent)
+                .unwrap_or(colors.text_dim);
+            text_renderer.draw_text(
+                scene,
+                &value,
+                12.0,
+                tint,
+                translated(transform, x1 - pad - f64::from(vw), y + row_h * 0.5 - 7.0),
+                None,
+            );
+        }
+        self.menu_hit_rects.push((MenuHit::Setting(idx), row_rect));
+    }
+
+    /// Paints a [`MenuRow::Option`] row: a [`PlayerSettingControl::Choice`]
+    /// option label, highlighted and checked when it's the selected one.
+    fn paint_option_row(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        menu: OpenMenu,
+        entry: ((usize, usize), Rect),
+    ) {
+        let ((idx, oi), row_rect) = entry;
+        let Some(s) = self.settings.get(idx) else {
+            return;
+        };
+        let PlayerSettingControl::Choice { options, selected } = &s.control else {
+            return;
+        };
+        let x0 = row_rect.x0 - 3.0;
+        let x1 = row_rect.x1 + 3.0;
+        let y = row_rect.y0;
+        let row_h = row_rect.height() + 2.0;
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let colors = &theme.tokens.colors;
+        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+
+        let selected = *selected == oi;
+        // The standalone popover has no header, so no indent.
+        let indent = if matches!(menu, OpenMenu::Gear) {
+            26.0
+        } else {
+            10.0
+        };
+        if selected {
+            let hl = RoundedRect::from_rect(
+                Rect::new(
+                    row_rect.x0 + 2.0,
+                    y + 1.0,
+                    row_rect.x1 - 2.0,
+                    y + row_h - 3.0,
+                ),
+                6.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                accent.multiply_alpha(0.22),
+                None,
+                &hl,
+            );
+        }
+        let label = options.get(oi).cloned().unwrap_or_default();
+        let tint = if selected {
+            accent
+        } else {
+            colors.text_primary
+        };
+        text_renderer.draw_text(
+            scene,
+            &label,
+            13.0,
+            tint,
+            translated(transform, x0 + indent, y + row_h * 0.5 - 8.0),
+            None,
+        );
+        if selected {
+            let (cw, _) = text_renderer.measure("✓", 13.0, None);
+            text_renderer.draw_text(
+                scene,
+                "✓",
+                13.0,
+                accent,
+                translated(transform, x1 - pad - f64::from(cw), y + row_h * 0.5 - 8.0),
+                None,
+            );
+        }
+        self.menu_hit_rects
+            .push((MenuHit::Option(idx, oi), row_rect));
     }
 
     /// So a player with no media reads as intentionally empty ("nothing loaded
@@ -1342,6 +1663,30 @@ impl VideoPlayer {
 /// Shrink `r` by `d` on every side (used to breathe a glyph inside its button).
 fn inset_rect(r: Rect, d: f64) -> Rect {
     Rect::new(r.x0 + d, r.y0 + d, r.x1 - d, r.y1 - d)
+}
+
+/// Millisecond timestamps here are bounded by realistic media durations —
+/// far below 2^53 — so the `u64 -> f64` conversion cannot lose precision in
+/// practice.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "millisecond timestamps are bounded well under 2^53; exact in f64"
+)]
+fn ms_to_f64(ms: u64) -> f64 {
+    ms as f64
+}
+
+/// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
+/// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
+/// but composing two f64-based affine transforms cannot meaningfully
+/// overflow — same reasoning clippy already exempts bare `f64` arithmetic
+/// for.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine::mul composes f64 transform matrices; cannot meaningfully overflow"
+)]
+fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
+    transform * Affine::translate((dx, dy))
 }
 
 fn rgba_image(width: u32, height: u32, rgba: Arc<Vec<u8>>) -> PenikoImage {
@@ -1568,13 +1913,13 @@ impl Widget for VideoPlayer {
                         *handled = true;
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
-                        let step = KEY_SEEK_STEP.as_millis() as u64;
+                        let step = u64::try_from(KEY_SEEK_STEP.as_millis()).unwrap_or(u64::MAX);
                         self.seek_to_ms(self.position_ms.saturating_sub(step));
                         self.show_controls();
                         *handled = true;
                     }
                     Key::Named(NamedKey::ArrowRight) => {
-                        let step = KEY_SEEK_STEP.as_millis() as u64;
+                        let step = u64::try_from(KEY_SEEK_STEP.as_millis()).unwrap_or(u64::MAX);
                         self.seek_to_ms(self.position_ms.saturating_add(step));
                         self.show_controls();
                         *handled = true;
@@ -1755,6 +2100,12 @@ impl VideoPlayer {
         if self.volume_track_rect.width() > 0.0 && self.volume_track_rect.contains(p) {
             let frac = ((p.x - self.volume_track_rect.x0) / self.volume_track_rect.width())
                 .clamp(0.0, 1.0);
+            // `frac` is clamped to 0.0..=1.0; `set_volume` clamps again, so
+            // the narrowing to `f32` cannot lose meaningful precision.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "frac is clamped to 0.0..=1.0; f32 precision is sufficient for a volume fraction"
+            )]
             self.set_volume(frac as f32);
             return true;
         }
@@ -1771,33 +2122,45 @@ impl VideoPlayer {
 
     fn activate_menu_hit(&mut self, hit: MenuHit) {
         match hit {
-            MenuHit::Setting(idx) => match &self.settings[idx].control {
-                PlayerSettingControl::Toggle { .. } => self.toggle_setting(idx),
-                PlayerSettingControl::Button => {
-                    let id = self.settings[idx].id.clone();
-                    self.setting_events
-                        .push(PlayerSettingEvent::Activated { id });
-                    self.open_menu = None;
-                    self.dirty = true;
+            MenuHit::Setting(idx) => {
+                let Some(s) = self.settings.get(idx) else {
+                    return;
+                };
+                match &s.control {
+                    PlayerSettingControl::Toggle { .. } => self.toggle_setting(idx),
+                    PlayerSettingControl::Button => {
+                        let Some(id) = self.settings.get(idx).map(|s| s.id.clone()) else {
+                            return;
+                        };
+                        self.setting_events
+                            .push(PlayerSettingEvent::Activated { id });
+                        self.open_menu = None;
+                        self.dirty = true;
+                    }
+                    PlayerSettingControl::Choice { .. } => {
+                        self.gear_expanded = if self.gear_expanded == Some(idx) {
+                            None
+                        } else {
+                            Some(idx)
+                        };
+                        self.dirty = true;
+                    }
                 }
-                PlayerSettingControl::Choice { .. } => {
-                    self.gear_expanded = if self.gear_expanded == Some(idx) {
-                        None
-                    } else {
-                        Some(idx)
-                    };
-                    self.dirty = true;
-                }
-            },
+            }
             MenuHit::Option(idx, oi) => self.choose_option(idx, oi),
         }
     }
 
     fn activate_setting_icon(&mut self, idx: usize) {
-        match &self.settings[idx].control {
+        let Some(s) = self.settings.get(idx) else {
+            return;
+        };
+        match &s.control {
             PlayerSettingControl::Toggle { .. } => self.toggle_setting(idx),
             PlayerSettingControl::Button => {
-                let id = self.settings[idx].id.clone();
+                let Some(id) = self.settings.get(idx).map(|s| s.id.clone()) else {
+                    return;
+                };
                 self.setting_events
                     .push(PlayerSettingEvent::Activated { id });
                 self.dirty = true;
@@ -1814,29 +2177,36 @@ impl VideoPlayer {
     }
 
     fn toggle_setting(&mut self, idx: usize) {
-        let new_on = if let PlayerSettingControl::Toggle { on } = &mut self.settings[idx].control {
-            *on = !*on;
-            *on
-        } else {
+        let Some(s) = self.settings.get_mut(idx) else {
             return;
         };
-        let id = self.settings[idx].id.clone();
+        let PlayerSettingControl::Toggle { on } = &mut s.control else {
+            return;
+        };
+        *on = !*on;
+        let new_on = *on;
+        let Some(id) = self.settings.get(idx).map(|s| s.id.clone()) else {
+            return;
+        };
         self.setting_events
             .push(PlayerSettingEvent::Toggled { id, on: new_on });
         self.dirty = true;
     }
 
     fn choose_option(&mut self, idx: usize, oi: usize) {
-        if let PlayerSettingControl::Choice { options, selected } = &mut self.settings[idx].control
-        {
-            if oi >= options.len() {
-                return;
-            }
-            *selected = oi;
-        } else {
+        let Some(s) = self.settings.get_mut(idx) else {
+            return;
+        };
+        let PlayerSettingControl::Choice { options, selected } = &mut s.control else {
+            return;
+        };
+        if oi >= options.len() {
             return;
         }
-        let id = self.settings[idx].id.clone();
+        *selected = oi;
+        let Some(id) = self.settings.get(idx).map(|s| s.id.clone()) else {
+            return;
+        };
         self.setting_events
             .push(PlayerSettingEvent::Chose { id, index: oi });
         self.open_menu = None;
@@ -1851,7 +2221,15 @@ impl VideoPlayer {
         let frac = ((self.last_cursor.x - self.scrub_track_rect.x0)
             / self.scrub_track_rect.width())
         .clamp(0.0, 1.0);
-        let target = (frac * self.duration_ms as f64) as u64;
+        // `frac` is clamped to 0.0..=1.0, so the product stays within
+        // `0..=duration_ms` and is always non-negative — the `u64` cast
+        // cannot truncate or flip sign.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "frac is clamped to 0.0..=1.0, so frac * duration_ms stays within 0..=duration_ms"
+        )]
+        let target = (frac * ms_to_f64(self.duration_ms)) as u64;
         self.seek_to_ms(target);
     }
 }

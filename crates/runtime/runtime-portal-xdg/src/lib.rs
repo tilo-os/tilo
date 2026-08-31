@@ -14,6 +14,19 @@
 //! current-thread tokio runtime; apps that already own a runtime should
 //! call the `_async` variants directly.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use std::path::PathBuf;
 
 use tokio::runtime::Builder;
@@ -102,12 +115,16 @@ pub fn is_portal_available() -> bool {
 }
 
 /// Run a future on a fresh single-threaded tokio runtime, used by every sync
-/// wrapper. Panics only if the runtime itself can't be built (OOM).
-fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+/// wrapper. Surfaces a runtime-build failure (e.g. OOM, fd exhaustion) as
+/// [`PortalError::Other`] instead of panicking.
+fn block_on<T, F>(fut: F) -> Result<T, PortalError>
+where
+    F: std::future::Future<Output = Result<T, PortalError>>,
+{
     let rt = Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("build tokio current-thread runtime");
+        .map_err(|e| PortalError::Other(format!("failed to start tokio runtime: {e}")))?;
     rt.block_on(fut)
 }
 
@@ -133,10 +150,22 @@ fn uris_to_selected(uris: &[Url]) -> Vec<SelectedFile> {
 
 impl FileChooser {
     /// Show an Open dialog; blocks until the user picks a file or cancels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PortalError::NotAvailable`] if no D-Bus session bus is
+    /// reachable, [`PortalError::PortalNotFound`] if no file-chooser
+    /// frontend is installed on the host, or another [`PortalError`]
+    /// variant for a portal-side failure.
     pub fn open(title: &str) -> Result<Vec<SelectedFile>, PortalError> {
         block_on(Self::open_async(title))
     }
 
+    /// Async form of [`Self::open`].
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::open`].
     pub async fn open_async(title: &str) -> Result<Vec<SelectedFile>, PortalError> {
         use ashpd::desktop::file_chooser::SelectedFiles;
 
@@ -147,6 +176,14 @@ impl FileChooser {
     }
 
     /// Show a Save dialog with an optional suggested filename; `None` if cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PortalError::NotAvailable`] if no D-Bus session bus is
+    /// reachable, [`PortalError::PortalNotFound`] if no file-chooser
+    /// frontend is installed on the host, or another [`PortalError`]
+    /// variant for a portal-side failure. A user cancellation is reported
+    /// as `Ok(None)`, not an error.
     pub fn save(
         title: &str,
         current_name: Option<&str>,
@@ -154,6 +191,11 @@ impl FileChooser {
         block_on(Self::save_async(title, current_name))
     }
 
+    /// Async form of [`Self::save`].
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::save`].
     pub async fn save_async(
         title: &str,
         current_name: Option<&str>,
@@ -191,10 +233,22 @@ pub struct ScreenCastStream {
 impl ScreenCast {
     /// Request a screencast session; the portal drives its own consent UI
     /// (source selection) and this returns the selected streams on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PortalError::NotAvailable`] if no D-Bus session bus is
+    /// reachable, [`PortalError::Cancelled`] if the user declines the
+    /// consent dialog, or another [`PortalError`] variant for a
+    /// portal-side failure.
     pub fn start() -> Result<Vec<ScreenCastStream>, PortalError> {
         block_on(Self::start_async())
     }
 
+    /// Async form of [`Self::start`].
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::start`].
     pub async fn start_async() -> Result<Vec<ScreenCastStream>, PortalError> {
         use ashpd::WindowIdentifier;
         use ashpd::desktop::PersistMode;
@@ -238,15 +292,30 @@ pub struct Notification;
 
 impl Notification {
     /// Send a fire-and-forget notification with a random per-call id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PortalError::NotAvailable`] if no D-Bus session bus is
+    /// reachable, or another [`PortalError`] variant for a portal-side
+    /// failure.
     pub fn send(title: &str) -> Result<(), PortalError> {
         Self::send_full("", title, None)
     }
 
     /// Full form: choose id + body; an empty `id` gets a per-process sequence id.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::send`].
     pub fn send_full(id: &str, title: &str, body: Option<&str>) -> Result<(), PortalError> {
         block_on(Self::send_full_async(id, title, body))
     }
 
+    /// Async form of [`Self::send_full`].
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::send`].
     pub async fn send_full_async(
         id: &str,
         title: &str,
@@ -290,10 +359,21 @@ pub struct Secret;
 
 impl Secret {
     /// Retrieve the current secret bytes. Blocks the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PortalError::NotAvailable`] if no D-Bus session bus is
+    /// reachable, or another [`PortalError`] variant for a portal-side
+    /// failure.
     pub fn retrieve() -> Result<Vec<u8>, PortalError> {
         block_on(Self::retrieve_async())
     }
 
+    /// Async form of [`Self::retrieve`].
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::retrieve`].
     pub async fn retrieve_async() -> Result<Vec<u8>, PortalError> {
         ashpd::desktop::secret::retrieve()
             .await
@@ -307,10 +387,21 @@ pub struct OpenUri;
 
 impl OpenUri {
     /// Ask the host to open the given URL; blocks until the portal acknowledges.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PortalError::Other`] if `uri` fails to parse as a URL,
+    /// [`PortalError::NotAvailable`] if no D-Bus session bus is reachable,
+    /// or another [`PortalError`] variant for a portal-side failure.
     pub fn open(uri: &str) -> Result<(), PortalError> {
         block_on(Self::open_async(uri))
     }
 
+    /// Async form of [`Self::open`].
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::open`].
     pub async fn open_async(uri: &str) -> Result<(), PortalError> {
         use ashpd::desktop::open_uri::OpenFileRequest;
 

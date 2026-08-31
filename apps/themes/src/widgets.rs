@@ -20,195 +20,14 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::draw;
 use crate::model::{self, Rgb, ThemeSpec};
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum BtnVariant {
-    Primary,
-    Ghost,
-    Danger,
-}
-
-/// A labelled button that writes `command` into the CRDT command bus on
-/// click. Sizing is either content-approximate or full-width.
-pub struct Btn {
-    command: String,
-    label: String,
-    variant: BtnVariant,
-    full_width: bool,
-    rect: Rect,
-    hover: bool,
-    pressed: bool,
-    enabled: bool,
-}
-
-impl Btn {
-    pub fn new(command: impl Into<String>, label: impl Into<String>, variant: BtnVariant) -> Self {
-        Self {
-            command: command.into(),
-            label: label.into(),
-            variant,
-            full_width: false,
-            rect: Rect::ZERO,
-            hover: false,
-            pressed: false,
-            enabled: true,
-        }
-    }
-
-    pub fn full_width(mut self) -> Self {
-        self.full_width = true;
-        self
-    }
-
-    pub fn set_enabled(&mut self, on: bool) {
-        self.enabled = on;
-    }
-
-    fn approx_width(&self) -> f32 {
-        (self.label.chars().count() as f32 * 8.0 + 30.0).max(64.0)
-    }
-}
-
-impl Widget for Btn {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let width = if self.full_width {
-            Dimension::percent(1.0)
-        } else {
-            Dimension::length(self.approx_width())
-        };
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width,
-                    height: Dimension::length(34.0),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        _p: &PresenceCtx,
-    ) {
-        let radius = theme.radius_standard;
-        let (mut bg, mut fg, border) = match self.variant {
-            BtnVariant::Primary => (theme.accent_primary, on_accent(theme), Color::TRANSPARENT),
-            BtnVariant::Ghost => (theme.bg_primary, theme.text_primary, theme.border_standard),
-            BtnVariant::Danger => (
-                theme.tokens.colors.semantic.danger,
-                Color::WHITE,
-                Color::TRANSPARENT,
-            ),
-        };
-        if !self.enabled {
-            bg = bg.multiply_alpha(0.4);
-            fg = fg.multiply_alpha(0.5);
-        } else if self.pressed {
-            bg = bg.multiply_alpha(0.82);
-        } else if self.hover {
-            match self.variant {
-                BtnVariant::Ghost => bg = theme.bg_hover,
-                _ => bg = lighten(bg, 0.08),
-            }
-        }
-        draw::fill_rrect(scene, t, self.rect, radius, bg);
-        if border != Color::TRANSPARENT {
-            draw::stroke_rrect(scene, t, self.rect, radius, border, 1.0);
-        }
-        draw::text_center(
-            tr,
-            scene,
-            t,
-            &self.label,
-            13.0,
-            fg,
-            self.rect.x0,
-            self.rect.x1,
-            self.rect.y0,
-            self.rect.y1,
-            TextWeight::Semibold,
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        _m: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if !self.enabled {
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale, position.y / scale);
-                let h = self.rect.contains(p);
-                if h != self.hover {
-                    self.hover = h;
-                    *handled = true;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: es,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if *es == ElementState::Pressed && self.hover {
-                    self.pressed = true;
-                    *focus_target = Some(node_id);
-                    *handled = true;
-                } else if *es == ElementState::Released {
-                    if self.pressed && self.hover {
-                        crate::doc::put_str(state, path, crate::doc::KEY_COMMAND, &self.command);
-                        *handled = true;
-                    }
-                    self.pressed = false;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "Btn"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-    fn is_focusable(&self) -> bool {
-        self.enabled
-    }
+/// Panic-free leaf construction for [`Widget::build_layout`]. `new_leaf`
+/// always inserts and returns `Ok`; `Widget::build_layout` returns a bare
+/// `NodeId` (not a `Result`) across every implementor, so surfacing a
+/// theoretical error here would mean threading a `Result` through the whole
+/// toolkit for a branch that can't be taken.
+#[allow(clippy::unwrap_used, reason = "new_leaf cannot fail; see doc comment")]
+fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
+    taffy.new_leaf(style).unwrap()
 }
 
 /// Height of one sidebar theme row (logical px). Mirrors weather's
@@ -224,17 +43,36 @@ pub const ROW_H: f32 = 58.0;
 pub struct ThemeRow {
     id: String,
     name: String,
-    builtin: bool,
-    dark_base: bool,
+    /// Static properties mirrored from the [`ThemeSpec`] this row
+    /// represents, used only to paint the "Preset · Dark" tag.
+    kind: ThemeKind,
     /// [base, raised, accent, success, warning, danger].
     swatch: [Rgb; 6],
-    selected: bool,
-    /// This row is the applied OS theme.
-    active: bool,
+    /// Transient view-state, read together when painting the row
+    /// background and the "Active" badge.
+    view: RowView,
     /// The gallery is drawing an inline name editor over this row, so the
     /// row must not paint its own static name.
     suppress_name: bool,
     rect: Rect,
+}
+
+/// Static per-theme properties mirrored from the [`ThemeSpec`] a
+/// [`ThemeRow`] represents — whether it's a built-in preset, and its base
+/// contrast profile.
+#[derive(Clone, Copy)]
+struct ThemeKind {
+    builtin: bool,
+    dark_base: bool,
+}
+
+/// Transient per-row view-state for a [`ThemeRow`]: selection, the applied
+/// OS theme, and pointer hover.
+#[derive(Clone, Copy, Default)]
+struct RowView {
+    selected: bool,
+    /// This row is the applied OS theme.
+    active: bool,
     hover: bool,
 }
 
@@ -243,14 +81,17 @@ impl ThemeRow {
         Self {
             id: spec.id.clone(),
             name: spec.name.clone(),
-            builtin: spec.builtin,
-            dark_base: spec.dark_base,
+            kind: ThemeKind {
+                builtin: spec.builtin,
+                dark_base: spec.dark_base,
+            },
             swatch: Self::swatch_of(spec),
-            selected,
-            active: false,
+            view: RowView {
+                selected,
+                ..RowView::default()
+            },
             suppress_name: false,
             rect: Rect::ZERO,
-            hover: false,
         }
     }
 
@@ -269,7 +110,7 @@ impl ThemeRow {
         &self.id
     }
     pub fn is_custom(&self) -> bool {
-        !self.builtin
+        !self.kind.builtin
     }
     pub fn get_rect(&self) -> Rect {
         self.rect
@@ -278,12 +119,12 @@ impl ThemeRow {
     /// Refresh visual fields in place (preserves hover / rect so the gallery
     /// can push fresh state every frame without flicker).
     pub fn update(&mut self, spec: &ThemeSpec, selected: bool, active: bool, suppress_name: bool) {
-        self.name = spec.name.clone();
-        self.builtin = spec.builtin;
-        self.dark_base = spec.dark_base;
+        self.name.clone_from(&spec.name);
+        self.kind.builtin = spec.builtin;
+        self.kind.dark_base = spec.dark_base;
         self.swatch = Self::swatch_of(spec);
-        self.selected = selected;
-        self.active = active;
+        self.view.selected = selected;
+        self.view.active = active;
         self.suppress_name = suppress_name;
     }
 
@@ -298,69 +139,11 @@ impl ThemeRow {
             self.rect.y0 + 33.0,
         )
     }
-}
 
-impl Widget for ThemeRow {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(ROW_H),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        _p: &PresenceCtx,
-    ) {
-        let radius = theme.radius_standard.min(12.0);
-        // Row background: selected → accent-tinted; else hover / raised —
-        // the same tiering weather's saved-place chip uses.
-        let bg = if self.selected {
-            lerp(theme.bg_app, theme.accent_primary, 0.18)
-        } else if self.hover {
-            theme.bg_hover
-        } else {
-            theme.bg_primary
-        };
-        draw::fill_rrect(scene, t, self.rect, radius, bg);
-        let (border, bw) = if self.selected {
-            (theme.accent_primary, 1.5)
-        } else {
-            (theme.border_standard.multiply_alpha(0.6), 1.0)
-        };
-        draw::stroke_rrect(scene, t, self.rect, radius, border, bw);
-
-        // Palette swatch: a compact tile of the theme's base surface with a
-        // raised inset and a row of accent + semantic dots.
+    /// Palette swatch: surface tile with a raised inset and a row of
+    /// accent + semantic dots (part of [`Widget::draw`]). Returns its rect
+    /// so the name/tag text can anchor beside it.
+    fn draw_swatch(&self, scene: &mut Scene, t: Affine, theme: &Theme) -> Rect {
         let sw = Rect::new(
             self.rect.x0 + 11.0,
             self.rect.y0 + 9.0,
@@ -393,8 +176,20 @@ impl Widget for ThemeRow {
                 model::color(*c),
             );
         }
+        sw
+    }
 
-        // Name (unless the gallery's inline editor covers it) + tag.
+    /// Name (unless the gallery's inline editor covers it) plus the
+    /// preset/custom · dark/light tag beside the swatch `sw` (part of
+    /// [`Widget::draw`]).
+    fn draw_name_and_tag(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        sw: Rect,
+    ) {
         let tx = sw.x1 + 11.0;
         if !self.suppress_name {
             draw::text_w(
@@ -409,8 +204,12 @@ impl Widget for ThemeRow {
                 TextWeight::Semibold,
             );
         }
-        let tag = if self.builtin { "Preset" } else { "Custom" };
-        let base = if self.dark_base { "Dark" } else { "Light" };
+        let tag = if self.kind.builtin {
+            "Preset"
+        } else {
+            "Custom"
+        };
+        let base = if self.kind.dark_base { "Dark" } else { "Light" };
         draw::text(
             tr,
             scene,
@@ -421,33 +220,109 @@ impl Widget for ThemeRow {
             tx,
             self.rect.y0 + 33.0,
         );
+    }
 
-        // Applied-theme badge on the right edge.
-        if self.active {
-            let lab = "Active";
-            let (w, _) = tr.measure(lab, 10.0, None);
-            let pw = f64::from(w) + 16.0;
-            let pill = Rect::new(
-                self.rect.x1 - pw - 10.0,
-                self.rect.center().y - 9.0,
-                self.rect.x1 - 10.0,
-                self.rect.center().y + 9.0,
-            );
-            draw::fill_rrect(scene, t, pill, 9.0, theme.accent_primary);
-            draw::text_center(
-                tr,
-                scene,
-                t,
-                lab,
-                10.0,
-                on_accent(theme),
-                pill.x0,
-                pill.x1,
-                pill.y0,
-                pill.y1,
-                TextWeight::Bold,
-            );
+    /// The "Active" badge on the row's right edge when this theme is the
+    /// applied OS theme (part of [`Widget::draw`]).
+    fn draw_active_badge(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.view.active {
+            return;
         }
+        let lab = "Active";
+        let (w, _) = tr.measure(lab, 10.0, None);
+        let pw = f64::from(w) + 16.0;
+        let pill = Rect::new(
+            self.rect.x1 - pw - 10.0,
+            self.rect.center().y - 9.0,
+            self.rect.x1 - 10.0,
+            self.rect.center().y + 9.0,
+        );
+        draw::fill_rrect(scene, t, pill, 9.0, theme.accent_primary);
+        draw::text_center(
+            tr,
+            scene,
+            t,
+            lab,
+            10.0,
+            on_accent(theme),
+            pill.x0,
+            pill.x1,
+            pill.y0,
+            pill.y1,
+            TextWeight::Bold,
+        );
+    }
+}
+
+impl Widget for ThemeRow {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = leaf_node(
+            taffy,
+            Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::length(ROW_H),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let Ok(l) = taffy.layout(node) else { return };
+        self.rect = Rect::new(
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
+            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+        );
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        _p: &PresenceCtx,
+    ) {
+        let radius = theme.radius_standard.min(12.0);
+        // Row background: selected → accent-tinted; else hover / raised —
+        // the same tiering weather's saved-place chip uses.
+        let bg = if self.view.selected {
+            lerp(theme.bg_app, theme.accent_primary, 0.18)
+        } else if self.view.hover {
+            theme.bg_hover
+        } else {
+            theme.bg_primary
+        };
+        draw::fill_rrect(scene, t, self.rect, radius, bg);
+        let (border, bw) = if self.view.selected {
+            (theme.accent_primary, 1.5)
+        } else {
+            (theme.border_standard.multiply_alpha(0.6), 1.0)
+        };
+        draw::stroke_rrect(scene, t, self.rect, radius, border, bw);
+
+        let sw = self.draw_swatch(scene, t, theme);
+        self.draw_name_and_tag(scene, t, tr, theme, sw);
+        self.draw_active_badge(scene, t, tr, theme);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -467,8 +342,8 @@ impl Widget for ThemeRow {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale, position.y / scale);
                 let h = self.rect.contains(p);
-                if h != self.hover {
-                    self.hover = h;
+                if h != self.view.hover {
+                    self.view.hover = h;
                     *handled = true;
                 }
             }
@@ -476,7 +351,7 @@ impl Widget for ThemeRow {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.hover => {
+            } if self.view.hover => {
                 crate::doc::put_str(
                     state,
                     path,
@@ -516,12 +391,6 @@ pub fn on_accent(theme: &Theme) -> Color {
         theme.accent_primary.b(),
     ];
     model::color(model::on_color(a))
-}
-
-/// Lighten a colour toward white by `t` (0..1).
-pub fn lighten(c: Color, t: f32) -> Color {
-    let rgb = [c.r(), c.g(), c.b()];
-    model::color(model::mix(rgb, [255, 255, 255], t))
 }
 
 /// Linearly mix colour `a` toward `b` by `t` (0..1).

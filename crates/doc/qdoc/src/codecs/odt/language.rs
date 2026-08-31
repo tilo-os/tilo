@@ -56,7 +56,7 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
+        .and_then(|a| crate::codecs::unescape_attr(&a))
 }
 
 /// Splice the document default language into `styles_xml`'s paragraph `style:default-style`,
@@ -106,9 +106,9 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
     // Case 1: a paragraph default-style exists — rewrite it wholesale; other text-properties on a default style are uncommon, so re-synthesising keeps the splice simple.
     if let Some((start, end)) = find_para_default_style(&s) {
         let mut out = String::with_capacity(s.len());
-        out.push_str(&s[..start]);
+        out.push_str(s.get(..start).unwrap_or_default());
         out.push_str(&default_style_xml(lang, country));
-        out.push_str(&s[end..]);
+        out.push_str(s.get(end..).unwrap_or_default());
         return out.into_bytes();
     }
 
@@ -116,20 +116,24 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
 
     // Case 2: an `<office:styles>` section exists — inject right after its open tag (default styles conventionally lead the section).
     if let Some(open_end) = open_tag_end(&s, "<office:styles") {
-        let mut out = String::with_capacity(s.len() + elem.len());
-        out.push_str(&s[..open_end]);
+        // A capacity hint only; bounded by the styles.xml + injected-element
+        // sizes, nowhere near `usize::MAX`.
+        let mut out = String::with_capacity(s.len().saturating_add(elem.len()));
+        out.push_str(s.get(..open_end).unwrap_or_default());
         out.push_str(&elem);
-        out.push_str(&s[open_end..]);
+        out.push_str(s.get(open_end..).unwrap_or_default());
         return out.into_bytes();
     }
     // Case 2b: a self-closing `<office:styles/>` — expand it to a paired element.
     if let Some((sc_start, sc_end)) = self_closing_span(&s, "<office:styles") {
-        let mut out = String::with_capacity(s.len() + elem.len());
-        out.push_str(&s[..sc_start]);
+        // A capacity hint only; bounded by the styles.xml + injected-element
+        // sizes, nowhere near `usize::MAX`.
+        let mut out = String::with_capacity(s.len().saturating_add(elem.len()));
+        out.push_str(s.get(..sc_start).unwrap_or_default());
         out.push_str("<office:styles>");
         out.push_str(&elem);
         out.push_str("</office:styles>");
-        out.push_str(&s[sc_end..]);
+        out.push_str(s.get(sc_end..).unwrap_or_default());
         return out.into_bytes();
     }
 
@@ -140,10 +144,12 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
         .or_else(|| s.find("<office:master-styles"))
         .or_else(|| s.rfind("</office:document-styles>"));
     if let Some(pos) = at {
-        let mut out = String::with_capacity(s.len() + section.len());
-        out.push_str(&s[..pos]);
+        // A capacity hint only; bounded by the styles.xml + injected-section
+        // sizes, nowhere near `usize::MAX`.
+        let mut out = String::with_capacity(s.len().saturating_add(section.len()));
+        out.push_str(s.get(..pos).unwrap_or_default());
         out.push_str(&section);
-        out.push_str(&s[pos..]);
+        out.push_str(s.get(pos..).unwrap_or_default());
         out.into_bytes()
     } else {
         let mut out = s;
@@ -156,28 +162,27 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
 fn find_para_default_style(s: &str) -> Option<(usize, usize)> {
     let needle = "<style:default-style";
     let mut from = 0;
-    while let Some(rel) = s[from..].find(needle) {
-        let start = from + rel;
-        let after_name = start + needle.len();
+    while let Some(rel) = s.get(from..)?.find(needle) {
+        let start = from.checked_add(rel)?;
+        let after_name = start.checked_add(needle.len())?;
         // The char after the element name must be a delimiter, so `<style:default-style-x` doesn't match.
         let is_delim = matches!(
             s.as_bytes().get(after_name),
             Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/')
         );
-        let gt = {
-            let g = s[start..].find('>')?;
-            start + g
-        };
-        let open_tag = &s[start..=gt];
+        let gt = start.checked_add(s.get(start..)?.find('>')?)?;
+        let open_tag = s.get(start..=gt)?;
         if is_delim && open_tag.contains(r#"style:family="paragraph""#) {
             if s.as_bytes().get(gt.wrapping_sub(1)) == Some(&b'/') {
-                return Some((start, gt + 1));
+                return Some((start, gt.checked_add(1)?));
             }
             let close = "</style:default-style>";
-            let end = s[gt..].find(close)? + gt + close.len();
+            let end = gt
+                .checked_add(s.get(gt..)?.find(close)?)?
+                .checked_add(close.len())?;
             return Some((start, end));
         }
-        from = gt + 1;
+        from = gt.checked_add(1)?;
     }
     None
 }
@@ -185,19 +190,19 @@ fn find_para_default_style(s: &str) -> Option<(usize, usize)> {
 /// Byte index just past the `>` of the first `{open_prefix}` open tag, or `None` if self-closing/absent.
 fn open_tag_end(s: &str, open_prefix: &str) -> Option<usize> {
     let open = s.find(open_prefix)?;
-    let gt = s[open..].find('>')? + open;
+    let gt = open.checked_add(s.get(open..)?.find('>')?)?;
     if s.as_bytes().get(gt.wrapping_sub(1)) == Some(&b'/') {
         return None; // self-closing — handled separately
     }
-    Some(gt + 1)
+    gt.checked_add(1)
 }
 
 /// The `(start, end)` byte span of a self-closing `{open_prefix} …/>` tag, or `None`.
 fn self_closing_span(s: &str, open_prefix: &str) -> Option<(usize, usize)> {
     let open = s.find(open_prefix)?;
-    let gt = s[open..].find('>')? + open;
+    let gt = open.checked_add(s.get(open..)?.find('>')?)?;
     if s.as_bytes().get(gt.wrapping_sub(1)) == Some(&b'/') {
-        Some((open, gt + 1))
+        Some((open, gt.checked_add(1)?))
     } else {
         None
     }

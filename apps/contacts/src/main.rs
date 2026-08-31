@@ -1,9 +1,9 @@
 //! Contacts — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//! * default        — run the live winit event loop via `ui::App`.
+//! * `--shots PATH` — render one offscreen frame to a PNG and exit
+//!   (headless screenshot; identical passes to the live app).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -20,10 +20,23 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -36,118 +49,73 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
-        // `--shots` renders one offscreen frame. A `--viewport WxH` arg
-        // overrides the default desktop viewport so the same binary can
-        // capture the narrow, single-pane responsive layout; `--detail`
-        // snaps the narrow push flow to the pushed detail pane (otherwise
-        // a narrow frame opens to the list, as a fresh window would).
-        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        let show_detail = args.iter().any(|a| a == "--detail");
-        let scenario = parse_scenario_arg(&args);
-        // Screenshots use the hermetic sample book so a headless frame is
-        // populated and never reads or writes the real address-book file.
-        let mut app = contacts::ContactsApp::sample();
-        if show_detail {
-            app.shots_show_detail();
-        }
-        // A `--scenario NAME` arg snaps a specific UI surface into view so a
-        // single headless frame captures it (new-contact form, export
-        // selection dialog, unsaved-changes modal, right-click menu). The
-        // hooks need the document seeded first, which `render_shot_to_png`
-        // does before drawing — so they're applied through a closure run
-        // *after* the sync pass.
-        let setup: Box<dyn FnOnce(&mut contacts::ContactsApp)> = match scenario.as_deref() {
-            Some("new") => Box::new(|a: &mut contacts::ContactsApp| a.shots_new_contact()),
-            Some("edit") => Box::new(|a: &mut contacts::ContactsApp| a.shots_edit_contact()),
-            Some("editfocus") => Box::new(|a: &mut contacts::ContactsApp| a.shots_edit_focused()),
-            Some("export") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_export()),
-            Some("unsaved") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_unsaved()),
-            Some("context") => {
-                Box::new(|a: &mut contacts::ContactsApp| a.shots_show_context_menu())
-            }
-            Some("confirm") => {
-                Box::new(|a: &mut contacts::ContactsApp| a.shots_show_confirm_delete())
-            }
-            Some("empty") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_empty()),
-            _ => Box::new(|_: &mut contacts::ContactsApp| {}),
-        };
-        render_shot_to_png(app, viewport, &out, setup)?;
-        return Ok(());
+fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args
+        .shots
+        .as_deref()
+        .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
+    // `--shots` renders one offscreen frame. A `--viewport WxH` arg
+    // overrides the default desktop viewport so the same binary can
+    // capture the narrow, single-pane responsive layout; `--detail`
+    // snaps the narrow push flow to the pushed detail pane (otherwise
+    // a narrow frame opens to the list, as a fresh window would).
+    let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+    let show_detail = args.has("--detail");
+    let scenario = args.scenario.as_deref();
+    // Screenshots use the hermetic sample book so a headless frame is
+    // populated and never reads or writes the real address-book file.
+    let mut app = contacts::ContactsApp::sample();
+    if show_detail {
+        app.shots_show_detail();
     }
+    // A `--scenario NAME` arg snaps a specific UI surface into view so a
+    // single headless frame captures it (new-contact form, export
+    // selection dialog, unsaved-changes modal, right-click menu). The
+    // hooks need the document seeded first, which `render_shot_to_png`
+    // does before drawing — so they're applied through a closure run
+    // *after* the sync pass.
+    let setup: Box<dyn FnOnce(&mut contacts::ContactsApp)> = match scenario {
+        Some("new") => Box::new(|a: &mut contacts::ContactsApp| a.shots_new_contact()),
+        Some("edit") => Box::new(|a: &mut contacts::ContactsApp| a.shots_edit_contact()),
+        Some("editfocus") => Box::new(|a: &mut contacts::ContactsApp| a.shots_edit_focused()),
+        Some("export") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_export()),
+        Some("unsaved") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_unsaved()),
+        Some("context") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_context_menu()),
+        Some("confirm") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_confirm_delete()),
+        Some("empty") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_empty()),
+        _ => Box::new(|_: &mut contacts::ContactsApp| {}),
+    };
+    render_shot_to_png(app, viewport, out, setup)
+        .map_err(|error| LaunchError::Operation(error.to_string()))
+}
 
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            spec,
-            contacts::app_root(),
-            "dev.qos.contacts",
-        ));
-    }
-
+fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
     // Contacts kept its own address-book file before the shared store
     // existed; import it once so an existing user's book comes across.
-    let (state, autosave) = match contacts::storage::default_path() {
-        Some(legacy) => ui::persist::open_migrating("dev.qos.contacts", &legacy),
-        None => ui::persist::open("dev.qos.contacts"),
-    };
-    let mut app = ui::App::new(state, contacts::app_root()).with_autosave(autosave);
-    // Register the contacts actions so the shell's Ctrl+K palette can decode +
-    // replay the same contact mutations the on-screen affordances dispatch.
-    contacts::actions::register(app.action_registry_mut());
-    app.run();
-    Ok(())
+    match contacts::storage::default_path() {
+        Some(legacy) => ui::persist::open_migrating(app_id, &legacy),
+        None => ui::persist::open(app_id),
+    }
 }
 
-/// Parse `--viewport WxH` (e.g. `--viewport 480x820`) for `--shots`.
-fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        let spec = if arg == "--viewport" {
-            iter.next().map(String::as_str)
-        } else {
-            arg.strip_prefix("--viewport=")
-        };
-        if let Some(spec) = spec {
-            let (w, h) = spec.split_once(['x', 'X'])?;
-            return Some((w.trim().parse().ok()?, h.trim().parse().ok()?));
-        }
-    }
-    None
-}
-
-/// Parse `--scenario NAME` (e.g. `--scenario new`) for `--shots`, selecting
-/// which non-default UI surface to snap into view for the captured frame.
-fn parse_scenario_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--scenario" {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix("--scenario=") {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
-
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
+pub fn main() {
+    ui::launch::run_or_exit(
+        &LaunchSpec::new("dev.qos.contacts", contacts::app_root)
+            .shot_handler(shot_handler)
+            .allowed_flags(&["--detail"])
+            .scenarios(&[
+                "new",
+                "edit",
+                "editfocus",
+                "export",
+                "unsaved",
+                "context",
+                "confirm",
+                "empty",
+            ])
+            .open_state(open_state)
+            .configure_app(|app| contacts::actions::register(app.action_registry_mut())),
+    );
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.

@@ -2,6 +2,8 @@
 name = "qdoc-html"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "Semantic HTML export/preview for qdoc DocSnapshot documents (qOS)"
 
 [dependencies]

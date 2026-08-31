@@ -44,14 +44,21 @@ fn block_texts(doc: &AutoCommit) -> std::collections::BTreeMap<String, String> {
         return out;
     };
     let snap = qdoc::model::materialize(doc, &c);
-    fn walk(blocks: &[qdoc::BlockView], out: &mut std::collections::BTreeMap<String, String>) {
-        for b in blocks {
-            out.insert(b.id.clone(), b.text.clone());
-            walk(&b.children, out);
-        }
-    }
-    walk(&snap.blocks, &mut out);
+    walk_block_texts(&snap.blocks, &mut out);
     out
+}
+
+/// Depth-first text collection for [`block_texts`], walked as its own
+/// function rather than nested so the item does not follow statements in
+/// its caller's scope.
+fn walk_block_texts(
+    blocks: &[qdoc::BlockView],
+    out: &mut std::collections::BTreeMap<String, String>,
+) {
+    for b in blocks {
+        out.insert(b.id.clone(), b.text.clone());
+        walk_block_texts(&b.children, out);
+    }
 }
 
 /// The character range `after` added relative to `before`, as `[start, end)`.
@@ -67,11 +74,15 @@ fn added_range(before: &str, after: &str) -> Option<(usize, usize)> {
         return None;
     }
     let mut head = 0;
-    while head < b.len() && b[head] == a[head] {
+    while head < b.len() && b.get(head) == a.get(head) {
         head += 1;
     }
+    let after_head = b.get(head..).unwrap_or(&[]);
     let mut tail = 0;
-    while tail < b.len() - head && b[b.len() - 1 - tail] == a[a.len() - 1 - tail] {
+    for (&x, &y) in after_head.iter().rev().zip(a.iter().rev()) {
+        if x != y {
+            break;
+        }
         tail += 1;
     }
     let end = a.len() - tail;
@@ -106,7 +117,7 @@ impl Editor {
     /// A fresh, unbound document under `actor`. Used by tests; a live agent
     /// always starts from a peer's snapshot.
     pub fn empty(actor_handle: &str) -> Self {
-        Self::empty_for(&crate::surface::CONTRACTS[0], actor_handle)
+        Self::empty_for(&crate::surface::WORD_PROCESSOR, actor_handle)
     }
 
     /// [`Editor::empty`] for a named app.
@@ -138,6 +149,11 @@ impl Editor {
     /// [`looks_like_a_document`] first: a room hands out snapshots of
     /// everything in it, and this will happily seed itself from something
     /// that is not a document at all.
+    ///
+    /// # Errors
+    ///
+    /// When no app the agent speaks to claims `bytes` ([`attribute`]), or
+    /// when `bytes` do not decode as an Automerge document.
     pub fn from_snapshot(bytes: &[u8], actor_handle: &str) -> Result<Self> {
         let contract =
             attribute(bytes).context("no app the agent speaks to claims this document")?;
@@ -159,6 +175,10 @@ impl Editor {
     /// The page keeps the plain name ([`Editor::from_snapshot`]) because
     /// that is the history somebody reads: the durable `author` mark this
     /// stamps is the plain name either way, only the replica handle differs.
+    ///
+    /// # Errors
+    ///
+    /// When `bytes` do not decode as an Automerge document.
     pub fn peer_from_snapshot(
         contract: &'static AppContract,
         bytes: &[u8],
@@ -173,6 +193,10 @@ impl Editor {
     }
 
     /// [`Editor::from_snapshot`] for an already-attributed snapshot.
+    ///
+    /// # Errors
+    ///
+    /// When `bytes` do not decode as an Automerge document.
     pub fn from_snapshot_for(
         contract: &'static AppContract,
         bytes: &[u8],
@@ -213,6 +237,14 @@ impl Editor {
     /// unrelated documents sharing an actor id fail to merge with
     /// `duplicate seq N found for actor …`, and propagating that killed the
     /// agent mid-run.
+    ///
+    /// # Errors
+    ///
+    /// Never returns `Err`: every way `bytes` can fail to become part of
+    /// this document — undecodable, the wrong schema, a merge Automerge
+    /// itself refuses — becomes `Ok(false)`, which is the point of the
+    /// doc comment above. The `Result` shape matches
+    /// [`Editor::merge_incremental`], the other half of this pair.
     pub fn merge_full(&mut self, bytes: &[u8]) -> Result<bool> {
         let Ok(mut incoming) = AutoCommit::load(bytes) else {
             return Ok(false);
@@ -239,6 +271,12 @@ impl Editor {
     /// said these bytes are this app's, so a merge that fails anyway is the
     /// room's own state failing to reach the agent, which then sits waiting
     /// to be spoken to about something it will never see.
+    ///
+    /// # Errors
+    ///
+    /// Never returns `Err`: a snapshot that will not merge is logged and
+    /// reported as `Ok(false)` rather than propagated, for the reason given
+    /// above.
     pub fn merge_full_any(&mut self, bytes: &[u8]) -> Result<bool> {
         let Ok(mut incoming) = AutoCommit::load(bytes) else {
             return Ok(false);
@@ -282,6 +320,10 @@ impl Editor {
 
     /// Take `bytes` as the document, discarding what we hold. Only for the
     /// case above, and only before the agent has made an edit.
+    ///
+    /// # Errors
+    ///
+    /// When `bytes` do not decode as an Automerge document.
     pub fn replace_with(&mut self, bytes: &[u8]) -> Result<()> {
         let mut doc = AutoCommit::load(bytes).context("load a peer snapshot")?;
         doc.set_actor(self.actor.clone());
@@ -304,6 +346,12 @@ impl Editor {
     /// of the run that the page held is short. So the ancestors are checked
     /// against this replica, on a throwaway load of the delta, before
     /// anything touches it.
+    ///
+    /// # Errors
+    ///
+    /// Never returns `Err`: an undecodable delta, or one whose ancestors
+    /// this replica is missing, is reported as `Ok(false)` rather than
+    /// propagated — see above for why applying it anyway would be wrong.
     pub fn merge_incremental(&mut self, bytes: &[u8]) -> Result<bool> {
         let mut incoming = AutoCommit::new();
         if incoming.load_incremental(bytes).is_err() {
@@ -349,6 +397,11 @@ impl Editor {
     ///
     /// Generic over the action rather than fixed to one app's, so this
     /// guard can be exercised with an action of the shape that breaks it.
+    ///
+    /// # Errors
+    ///
+    /// When `action.apply` fails against this document — for instance, the
+    /// action names a block, table or attribute that is no longer there.
     pub fn apply<A>(&mut self, action: &A) -> Result<Option<Vec<u8>>>
     where
         A: qos_actions::Action + std::fmt::Debug + ?Sized,
@@ -394,6 +447,10 @@ impl Editor {
     /// agent inventing structure it does not own. The actor is still the
     /// agent's, so the message is attributed to it exactly as its edits
     /// are.
+    ///
+    /// # Errors
+    ///
+    /// When `action.apply` fails against this document.
     pub fn apply_foreign<A: qos_actions::Action>(&mut self, action: &A) -> Result<Option<Vec<u8>>> {
         self.doc.set_actor(self.actor.clone());
         action
@@ -418,6 +475,12 @@ impl Editor {
     /// `registry` is the apps' own decoders: the door decodes the encoded
     /// action through it before running anything, so a type no app
     /// registered is refused rather than applied on trust.
+    ///
+    /// # Errors
+    ///
+    /// Any [`DoorError`] `door::invoke` returns — most often
+    /// [`DoorError::Unknown`] when `address` no longer names a live
+    /// operation in the tree built from `view`.
     pub fn invoke(
         &mut self,
         view: &View,
@@ -507,6 +570,12 @@ impl Editor {
     }
 
     /// The document as blocks in order.
+    ///
+    /// # Errors
+    ///
+    /// When the document held has no qdoc schema — one this editor was not
+    /// seeded from a peer's snapshot for, or one from an app that does not
+    /// use it.
     pub fn snapshot(&self) -> Result<qdoc::DocSnapshot> {
         let c = qdoc::model::open(&self.doc, &automerge::ROOT)
             .map_err(|e| anyhow::anyhow!("the document has no qdoc schema: {e:?}"))?;

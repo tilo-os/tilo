@@ -4,6 +4,16 @@
 //! enrolment; after losing a device the user re-imports it to
 //! reconstitute a working quorum with surviving devices.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use collab_types::{canonical_bytes, verify_event};
 use threshold_identity::{
     EnrolmentRound2, ThresholdIdentity, signing::SigningRound1, signing::SigningRound1Commitment,
@@ -16,6 +26,13 @@ use rand_chacha::ChaCha20Rng;
 /// Run a 2-of-3 DKG and return the three devices. Share 3 is the
 /// "recovery share" printed to paper; the test discards device C and
 /// uses the recovery share if needed.
+// `_a`/`_b`/`_c` names three independent DKG devices — the clearest
+// available convention for a 3-device protocol test, used the same way
+// across every multi-device test in this crate.
+#[allow(
+    clippy::similar_names,
+    reason = "_a/_b/_c device naming is deliberate and used throughout this crate's multi-device tests"
+)]
 fn setup_2_of_3() -> (ThresholdIdentity, ThresholdIdentity, ThresholdIdentity) {
     let mut rng_a = ChaCha20Rng::from_seed([21u8; 32]);
     let mut rng_b = ChaCha20Rng::from_seed([22u8; 32]);
@@ -93,7 +110,7 @@ fn recovery_share_can_re_enter_quorum_after_device_loss() {
     let rs = c.export_recovery_share().unwrap();
     let secret_share = ThresholdIdentity::import_recovery_share_full(rs).unwrap();
     // The user's surviving device A "becomes" the recovery share holder.
-    a.adopt_recovery_share(secret_share).unwrap();
+    a.adopt_recovery_share(&secret_share).unwrap();
     // Now A is share 3, B is share 2.
     assert_eq!(a.this_share_index, 3);
     assert_eq!(b.this_share_index, 2);

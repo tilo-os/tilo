@@ -7,6 +7,16 @@
 //!    Phase-3 kind (paragraph, heading, bullet, checklist, code block,
 //!    divider) — proving the parser landed at least one of each.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashSet;
 
 use notes::WELCOME_BODY;

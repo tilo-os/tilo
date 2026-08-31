@@ -67,9 +67,15 @@ impl Backend {
     /// Apply the plan for `cfg`. In [`Mode::DryRun`] this only regenerates
     /// the plan (no side effects) and returns `Ok(())`. In [`Mode::Live`]
     /// it executes each command, stopping at the first failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if a command in the plan fails to spawn, or exits with
+    /// a non-zero status — execution stops at that command, and anything
+    /// after it in the plan is not run.
     pub fn apply(&mut self, cfg: &FirewallConfig) -> Result<(), String> {
         let plan = plan_commands(cfg);
-        self.last_plan = plan.clone();
+        self.last_plan.clone_from(&plan);
         if self.mode == Mode::DryRun {
             return Ok(());
         }
@@ -254,10 +260,10 @@ pub fn parse_rich_rule(line: &str) -> Option<Rule> {
 
 /// Read the double-quoted value immediately following `needle` in `hay`.
 fn quoted_after(hay: &str, needle: &str) -> Option<String> {
-    let rest = &hay[hay.find(needle)? + needle.len()..];
+    let rest = hay.get(hay.find(needle)? + needle.len()..)?;
     let rest = rest.strip_prefix('"')?;
     let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    Some(rest.get(..end)?.to_string())
 }
 
 /// Build the ordered list of `firewall-cmd` commands that would realise
@@ -304,18 +310,20 @@ fn plan_zone(z: &Zone, out: &mut Vec<String>) {
         if !r.enabled {
             continue;
         }
-        out.push(rich_rule(zone, r.matcher.clone(), r.action, &r.source));
+        out.push(rich_rule(zone, &r.matcher, r.action, &r.source));
     }
 }
 
 /// Render a single rule as either a simple `--add-port` (allow, anywhere,
 /// port matcher) or a full firewalld rich-rule string otherwise.
-fn rich_rule(zone: &str, matcher: Matcher, action: Action, source: &str) -> String {
+fn rich_rule(zone: &str, matcher: &Matcher, action: Action, source: &str) -> String {
+    use std::fmt::Write as _;
+
     let has_source = !source.trim().is_empty();
     // Simple fast-path: allow a port from anywhere → plain --add-port.
     if action == Action::Allow
         && !has_source
-        && let Matcher::Port { port, proto } = &matcher
+        && let Matcher::Port { port, proto } = matcher
     {
         return format!(
             "firewall-cmd --permanent --zone={zone} --add-port={port}/{}",
@@ -325,20 +333,21 @@ fn rich_rule(zone: &str, matcher: Matcher, action: Action, source: &str) -> Stri
 
     let mut rule = String::from("rule family=\"ipv4\"");
     if has_source {
-        rule.push_str(&format!(" source address=\"{}\"", source.trim()));
+        let _ = write!(rule, " source address=\"{}\"", source.trim());
     }
-    match &matcher {
-        Matcher::Service(s) => rule.push_str(&format!(" service name=\"{s}\"")),
-        Matcher::Port { port, proto } => rule.push_str(&format!(
-            " port port=\"{port}\" protocol=\"{}\"",
-            proto.label()
-        )),
+    match matcher {
+        Matcher::Service(s) => {
+            let _ = write!(rule, " service name=\"{s}\"");
+        }
+        Matcher::Port { port, proto } => {
+            let _ = write!(rule, " port port=\"{port}\" protocol=\"{}\"", proto.label());
+        }
     }
     let verb = match action {
         Action::Allow => "accept",
         Action::Deny => "reject",
     };
-    rule.push_str(&format!(" {verb}"));
+    let _ = write!(rule, " {verb}");
     format!("firewall-cmd --permanent --zone={zone} --add-rich-rule='{rule}'")
 }
 
@@ -362,7 +371,7 @@ mod tests {
     fn allow_port_anywhere_uses_add_port_fastpath() {
         let s = rich_rule(
             "public",
-            Matcher::Port {
+            &Matcher::Port {
                 port: "51820".into(),
                 proto: Proto::Udp,
             },
@@ -379,7 +388,7 @@ mod tests {
     fn deny_with_source_uses_rich_rule() {
         let s = rich_rule(
             "public",
-            Matcher::Port {
+            &Matcher::Port {
                 port: "3389".into(),
                 proto: Proto::Tcp,
             },
@@ -396,7 +405,7 @@ mod tests {
     fn service_allow_with_source_is_rich_rule() {
         let s = rich_rule(
             "work",
-            Matcher::Service("ipp".into()),
+            &Matcher::Service("ipp".into()),
             Action::Allow,
             "192.168.0.0/16",
         );

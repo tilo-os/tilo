@@ -49,11 +49,7 @@ fn sectpr_reference_ids(document_xml: &[u8]) -> (Option<String>, Option<String>)
     let mut hdr_first: Option<String> = None;
     let mut ftr_default: Option<String> = None;
     let mut ftr_first: Option<String> = None;
-    loop {
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
-        };
+    while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Start(e) if e.name().as_ref() == b"w:sectPr" => in_sectpr = true,
             Event::Empty(e) | Event::Start(e) if in_sectpr => match e.name().as_ref() {
@@ -61,7 +57,7 @@ fn sectpr_reference_ids(document_xml: &[u8]) -> (Option<String>, Option<String>)
                     let rid = attr_r_id(&e);
                     let kind = attr_w_val(&e, b"w:type");
                     if hdr_first.is_none() {
-                        hdr_first = rid.clone();
+                        hdr_first.clone_from(&rid);
                     }
                     if kind.as_deref() == Some("default") {
                         hdr_default = rid;
@@ -71,7 +67,7 @@ fn sectpr_reference_ids(document_xml: &[u8]) -> (Option<String>, Option<String>)
                     let rid = attr_r_id(&e);
                     let kind = attr_w_val(&e, b"w:type");
                     if ftr_first.is_none() {
-                        ftr_first = rid.clone();
+                        ftr_first.clone_from(&rid);
                     }
                     if kind.as_deref() == Some("default") {
                         ftr_default = rid;
@@ -94,11 +90,7 @@ fn rel_targets(rels_xml: &[u8]) -> Vec<(String, String)> {
     };
     let mut reader = Reader::from_str(s);
     let mut out = Vec::new();
-    loop {
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
-        };
+    while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Empty(e) | Event::Start(e) if e.name().as_ref() == b"Relationship" => {
                 let id = attr_w_val(&e, b"Id");
@@ -128,6 +120,105 @@ fn attr_r_id(e: &quick_xml::events::BytesStart) -> Option<String> {
     attr_w_val(e, b"r:id")
 }
 
+/// Splice the page-number placeholder char at `cur`'s current position and record its start
+/// for the deferred field-mark pass.
+fn splice_page_placeholder(
+    region: Region,
+    doc: &mut DocMut,
+    cur: Option<&str>,
+    cur_len: &mut usize,
+    field_marks: &mut Vec<(String, usize)>,
+) {
+    if let Some(b) = cur {
+        let start = *cur_len;
+        doc.splice_text_in(region, b, *cur_len, 0, &FIELD_PLACEHOLDER.to_string());
+        *cur_len = cur_len.saturating_add(1);
+        field_marks.push((b.to_string(), start));
+    }
+}
+
+/// If `instr` is a PAGE field instruction, splice its placeholder now (the `w:fldSimple` case:
+/// the instruction and its cached result are both on the one element).
+fn emit_page_field(
+    instr: &str,
+    region: Region,
+    doc: &mut DocMut,
+    cur: Option<&str>,
+    cur_len: &mut usize,
+    field_marks: &mut Vec<(String, usize)>,
+) {
+    if is_page_instr(instr) {
+        splice_page_placeholder(region, doc, cur, cur_len, field_marks);
+    }
+}
+
+/// Open a fresh `paragraph` block in `region` and make it current.
+fn open_region_block(
+    region: Region,
+    doc: &mut DocMut,
+    prev: &mut Option<String>,
+    cur: &mut Option<String>,
+    cur_len: &mut usize,
+) {
+    let id = doc.insert_block_in(region, prev.as_deref(), "paragraph");
+    *prev = Some(id.clone());
+    *cur = Some(id);
+    *cur_len = 0;
+}
+
+/// Splice a single char (`w:tab`/`w:br`/`w:cr`) at `cur`'s current position, if any.
+fn splice_one_char(
+    region: Region,
+    doc: &mut DocMut,
+    cur: Option<&str>,
+    cur_len: &mut usize,
+    ch: char,
+) {
+    if let Some(b) = cur {
+        let mut buf = [0u8; 4];
+        doc.splice_text_in(region, b, *cur_len, 0, ch.encode_utf8(&mut buf));
+        *cur_len = cur_len.saturating_add(1);
+    }
+}
+
+/// Advance the complex-field (`w:fldChar` begin/separate/end) state machine for one element.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same per-region parser state as this file's other helpers"
+)]
+fn handle_fld_char(
+    e: &quick_xml::events::BytesStart,
+    region: Region,
+    doc: &mut DocMut,
+    cur: Option<&str>,
+    cur_len: &mut usize,
+    field_pending: &mut bool,
+    field_in_progress: &mut bool,
+    field_skip_text: &mut bool,
+    field_marks: &mut Vec<(String, usize)>,
+) {
+    match attr_w_val(e, b"w:fldCharType").as_deref() {
+        Some("begin") => {
+            *field_in_progress = true;
+            *field_pending = false;
+            *field_skip_text = false;
+        }
+        // Instruction collected; if it was PAGE, emit the field now and skip result-run text until "end".
+        Some("separate") => {
+            if *field_pending {
+                splice_page_placeholder(region, doc, cur, cur_len, field_marks);
+                *field_skip_text = true;
+            }
+        }
+        Some("end") => {
+            *field_in_progress = false;
+            *field_pending = false;
+            *field_skip_text = false;
+        }
+        _ => {}
+    }
+}
+
 /// Import a `w:hdr`/`w:ftr` part into a region: `w:p` → paragraph blocks, `w:t` → text,
 /// `w:tab`/`w:br` → tab/newline, a `PAGE` field (simple or complex) → a page-number field.
 pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
@@ -149,99 +240,54 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
     let mut fldsimple_depth = 0usize;
     let mut field_marks: Vec<(String, usize)> = Vec::new();
 
-    let open_block = |doc: &mut DocMut,
-                      prev: &mut Option<String>,
-                      cur: &mut Option<String>,
-                      cur_len: &mut usize| {
-        let id = doc.insert_block_in(region, prev.as_deref(), "paragraph");
-        *prev = Some(id.clone());
-        *cur = Some(id);
-        *cur_len = 0;
-    };
-
-    loop {
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => break,
-        };
+    while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Start(e) => match e.name().as_ref() {
-                b"w:p" => open_block(doc, &mut prev, &mut cur, &mut cur_len),
+                b"w:p" => open_region_block(region, doc, &mut prev, &mut cur, &mut cur_len),
                 b"w:t" => in_t = true,
                 b"w:instrText" => in_instr = true,
                 b"w:fldSimple" => {
                     // Emit the field once at its start, then skip its cached result-run text until it closes.
-                    fldsimple_depth += 1;
+                    fldsimple_depth = fldsimple_depth.saturating_add(1);
                     let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
-                    if is_page_instr(&instr)
-                        && let Some(b) = cur.clone()
-                    {
-                        let start = cur_len;
-                        doc.splice_text_in(region, &b, cur_len, 0, &FIELD_PLACEHOLDER.to_string());
-                        cur_len += 1;
-                        field_marks.push((b, start));
-                    }
+                    emit_page_field(
+                        &instr,
+                        region,
+                        doc,
+                        cur.as_deref(),
+                        &mut cur_len,
+                        &mut field_marks,
+                    );
                 }
                 _ => {}
             },
             Event::Empty(e) => match e.name().as_ref() {
-                b"w:tab" => {
-                    if let Some(b) = cur.clone() {
-                        doc.splice_text_in(region, &b, cur_len, 0, "\t");
-                        cur_len += 1;
-                    }
-                }
+                b"w:tab" => splice_one_char(region, doc, cur.as_deref(), &mut cur_len, '\t'),
                 b"w:br" | b"w:cr" => {
-                    if let Some(b) = cur.clone() {
-                        doc.splice_text_in(region, &b, cur_len, 0, "\n");
-                        cur_len += 1;
-                    }
+                    splice_one_char(region, doc, cur.as_deref(), &mut cur_len, '\n')
                 }
                 b"w:fldSimple" => {
                     let instr = attr_w_val(&e, b"w:instr").unwrap_or_default();
-                    if is_page_instr(&instr)
-                        && let Some(b) = cur.clone()
-                    {
-                        let start = cur_len;
-                        doc.splice_text_in(region, &b, cur_len, 0, &FIELD_PLACEHOLDER.to_string());
-                        cur_len += 1;
-                        field_marks.push((b, start));
-                    }
+                    emit_page_field(
+                        &instr,
+                        region,
+                        doc,
+                        cur.as_deref(),
+                        &mut cur_len,
+                        &mut field_marks,
+                    );
                 }
-                b"w:fldChar" => {
-                    match attr_w_val(&e, b"w:fldCharType").as_deref() {
-                        Some("begin") => {
-                            field_in_progress = true;
-                            field_pending = false;
-                            field_skip_text = false;
-                        }
-                        Some("separate") => {
-                            // Instruction collected; if it was PAGE, emit the field now and skip result-run text
-                            // until "end".
-                            if field_pending {
-                                if let Some(b) = cur.clone() {
-                                    let start = cur_len;
-                                    doc.splice_text_in(
-                                        region,
-                                        &b,
-                                        cur_len,
-                                        0,
-                                        &FIELD_PLACEHOLDER.to_string(),
-                                    );
-                                    cur_len += 1;
-                                    field_marks.push((b, start));
-                                }
-                                field_skip_text = true;
-                            }
-                        }
-                        Some("end") => {
-                            field_in_progress = false;
-                            field_pending = false;
-                            field_skip_text = false;
-                        }
-                        _ => {}
-                    }
-                }
+                b"w:fldChar" => handle_fld_char(
+                    &e,
+                    region,
+                    doc,
+                    cur.as_deref(),
+                    &mut cur_len,
+                    &mut field_pending,
+                    &mut field_in_progress,
+                    &mut field_skip_text,
+                    &mut field_marks,
+                ),
                 _ => {}
             },
             Event::Text(t) => {
@@ -257,7 +303,7 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                     && !txt.is_empty()
                 {
                     doc.splice_text_in(region, &b, cur_len, 0, &txt);
-                    cur_len += txt.chars().count();
+                    cur_len = cur_len.saturating_add(txt.chars().count());
                 }
             }
             Event::End(e) => match e.name().as_ref() {
@@ -273,7 +319,14 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
     }
 
     for (b, start) in field_marks {
-        doc.add_mark_in(region, &b, start, start + 1, MARK_FIELD, FIELD_PAGE_NUMBER);
+        doc.add_mark_in(
+            region,
+            &b,
+            start,
+            start.saturating_add(1),
+            MARK_FIELD,
+            FIELD_PAGE_NUMBER,
+        );
     }
 }
 
@@ -289,7 +342,7 @@ fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.unescape_value().ok().map(std::borrow::Cow::into_owned))
+        .and_then(|a| crate::codecs::unescape_attr(&a))
 }
 
 fn push_escaped(out: &mut String, c: char) {
@@ -306,7 +359,7 @@ fn page_number_field_at(b: &BlockView, i: usize) -> bool {
     b.marks.iter().any(|m| {
         m.name == MARK_FIELD
             && m.start == i
-            && m.end == i + 1
+            && m.end == i.saturating_add(1)
             && m.value.as_str() == Some(FIELD_PAGE_NUMBER)
     })
 }

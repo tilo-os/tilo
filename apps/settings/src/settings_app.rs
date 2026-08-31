@@ -101,6 +101,7 @@ impl SettingsApp {
     /// Seed the responsive layout with a known width before the first frame —
     /// the offscreen `--shots` renderer calls this so the cold screenshot
     /// resolves the correct wide/narrow layout immediately.
+    #[must_use]
     pub fn with_width_hint(mut self, width: f32) -> Self {
         self.width_hint = Some(width);
         self
@@ -110,6 +111,7 @@ impl SettingsApp {
     /// arrow). The narrow layout already collapses to the content by default,
     /// so this only matters for a capture that overrides an earlier seed. Has
     /// no visible effect when the layout resolves to wide.
+    #[must_use]
     pub fn with_narrow_content_shot(mut self) -> Self {
         self.narrow_shot_screen = Some(NarrowScreen::Content);
         self
@@ -119,6 +121,7 @@ impl SettingsApp {
     /// back-tap-away screen a collapse no longer defaults to. Without the live
     /// event loop nothing drives the navigation, so this seeds the list screen
     /// for its own snapshot. Has no visible effect when the layout is wide.
+    #[must_use]
     pub fn with_narrow_list_shot(mut self) -> Self {
         self.narrow_shot_screen = Some(NarrowScreen::List);
         self
@@ -174,6 +177,7 @@ impl SettingsApp {
 
     /// Pre-seed a search query so the deterministic `--shots` render shows the
     /// filtered sidebar (there is no live event loop to type into the field).
+    #[must_use]
     pub fn with_search_shot(mut self, query: &str) -> Self {
         self.search_query = query.to_string();
         self
@@ -185,7 +189,7 @@ impl SettingsApp {
     /// shell hosts it as a direct child in the App's tree, a click focuses it
     /// and `autofocus_on_structure_change` restores focus + caret after the
     /// filtered sidebar rebuilds.
-    fn build_search_field(&self) -> Box<dyn Widget> {
+    fn build_search_field() -> Box<dyn Widget> {
         Box::new(
             TextInput::new(Vec::new())
                 .with_id("settings.search")
@@ -248,7 +252,7 @@ impl SettingsApp {
         // screen; otherwise the shell collapses to the content.
         let narrow_screen = self.narrow_shot_screen.unwrap_or(NarrowScreen::Content);
         let mut shell = AppShell::new(nav, content)
-            .with_search(self.build_search_field())
+            .with_search(Self::build_search_field())
             .with_breakpoint(NAV_BREAKPOINT)
             .with_sidebar_width(sidebar::SIDEBAR_WIDTH)
             .with_narrow_screen(narrow_screen);
@@ -335,6 +339,10 @@ impl Widget for SettingsApp {
         if self.shell.is_none() {
             self.shell = Some(self.build_shell());
         }
+        #[allow(
+            clippy::expect_used,
+            reason = "shell was just set unconditionally above; nothing between there and here can clear it"
+        )]
         let shell = self.shell.as_mut().expect("just set above");
         let shell_node = shell.build_layout(taffy, theme, node_map);
 
@@ -346,7 +354,13 @@ impl Widget for SettingsApp {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[shell_node]).unwrap();
+        // `new_with_children` only fails for a child `NodeId` from a
+        // different tree, which never happens here — see
+        // `ui::widget::TaffyTreeExt`. Fall back to the child directly rather
+        // than panic, on the off chance that ever changes.
+        let node = taffy
+            .new_with_children(style, &[shell_node])
+            .unwrap_or(shell_node);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -357,7 +371,9 @@ impl Widget for SettingsApp {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
-        let l = taffy.layout(node).unwrap();
+        // `taffy.layout(...)` only errors for a `NodeId` from a different
+        // tree, which never happens here — see `ui::widget::TaffyTreeExt`.
+        let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = vello::kurbo::Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

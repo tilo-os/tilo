@@ -15,10 +15,26 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "must match the ShotFactory fn-pointer type, which returns Result"
+)]
 fn shot_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(
         if std::env::var("QOS_FIREWALL_SAMPLE").as_deref() == Ok("1") {
@@ -31,8 +47,8 @@ fn shot_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.firewall", firewall::app_root)
+        &LaunchSpec::new("dev.qos.firewall", firewall::app_root)
             .shot_root(shot_root)
             .configure_app(|app| firewall::actions::register(app.action_registry_mut())),
-    )
+    );
 }

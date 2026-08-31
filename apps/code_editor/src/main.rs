@@ -1,9 +1,9 @@
 //! Code — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//! * default — run the live winit event loop via `ui::App`.
+//! * `--shots PATH` — render one offscreen frame to a PNG and exit (headless
+//!   screenshot; identical passes to the live app).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -20,10 +20,23 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -52,119 +65,67 @@ const SCENARIOS: &[&str] = &[
     "status",
 ];
 
+/// # Errors
+/// Returns an error when `--shots` fails to lay out or render the offscreen
+/// frame (see [`render_scenario_to_png`]); an unknown `--scenario` name exits
+/// the process directly rather than returning an error.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
-        // `--shots` renders one offscreen frame. `--viewport WxH` overrides the
-        // default desktop viewport so the same binary can capture the narrow
-        // (overlay-sidebar) responsive layout. `--sidebar-open` snaps the flap
-        // open so a narrow shot shows the summoned sidebar + scrim rather than
-        // the closed default a fresh narrow window opens to. `--scenario NAME`
-        // stages a specific view (terminal / selection / completion).
-        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        let open_sidebar = args.iter().any(|a| a == "--sidebar-open");
-        let scenario = parse_scenario_arg(&args);
-        if let Some(name) = scenario.as_deref() {
-            // An unknown scenario used to fall through silently and render the
-            // plain cold-start frame — a check that cannot observe its subject
-            // but reports success. Refuse it instead.
-            if !SCENARIOS.contains(&name) {
-                eprintln!(
-                    "code_editor: unknown scenario '{name}'. Known scenarios: {}",
-                    SCENARIOS.join(", ")
-                );
-                std::process::exit(2);
-            }
-        }
-        // `--shots` with a path captures that real project; without one it
-        // captures the bundled demo, which is the only place the demo is used.
-        let mut app = match code_editor::parse_path_arg(&args) {
-            Some(path) => code_editor::CodeApp::open_path(&path),
-            None => code_editor::CodeApp::with_sample(),
-        };
-        // Seed the width up front so this single offscreen frame resolves the
-        // responsive layout (docked vs. overlay) correctly — `build_layout`
-        // runs before `apply_layout` would otherwise measure the window.
-        app.set_width_hint(f64::from(viewport.0));
-        if open_sidebar {
-            app.shots_snap_sidebar(true);
-        }
-        render_scenario_to_png(app, viewport, &out, scenario.as_deref())?;
-        return Ok(());
-    }
-
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    let open_path = code_editor::parse_path_arg(&args);
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            spec,
-            code_editor::app_root_at(open_path.as_deref()),
-            "dev.qos.code-editor",
-        ));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.code-editor");
-    let mut app =
-        ui::App::new(state, code_editor::app_root_at(open_path.as_deref())).with_autosave(autosave);
-    // Register Code's action so the shell's Ctrl+K palette can decode + replay the
-    // same buffer-creation the on-screen "New file" command dispatches.
-    code_editor::actions::register(app.action_registry_mut());
-    app.run();
+    ui::launch::run(
+        &LaunchSpec::new("dev.qos.code-editor", code_editor::app_root)
+            .live_root_with_args(live_root)
+            .shot_handler(render_shot)
+            .allowed_flags(&["--sidebar-open"])
+            .allowed_live_options(&["--path"])
+            .max_positionals(1)
+            .scenarios(SCENARIOS)
+            .configure_app(configure_app),
+    )?;
     Ok(())
 }
 
-/// Parse `--viewport WxH` (e.g. `--viewport 520x820`) for `--shots`.
-fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        let spec = if arg == "--viewport" {
-            iter.next().map(String::as_str)
-        } else {
-            arg.strip_prefix("--viewport=")
-        };
-        if let Some(spec) = spec {
-            let (w, h) = spec.split_once(['x', 'X'])?;
-            return Some((w.trim().parse().ok()?, h.trim().parse().ok()?));
-        }
-    }
-    None
+fn requested_path(args: &LaunchArgs) -> Option<std::path::PathBuf> {
+    args.value("--path")
+        .map(std::path::PathBuf::from)
+        .or_else(|| args.positionals().first().map(std::path::PathBuf::from))
 }
 
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::LaunchSpec::live_root_with_args"
+)]
+fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    let path = requested_path(args);
+    Ok(code_editor::app_root_at(path.as_deref()))
 }
 
-/// Parse `--scenario NAME` (terminal / selection / completion).
-fn parse_scenario_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--scenario" {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix("--scenario=") {
-            return Some(rest.to_string());
-        }
+fn configure_app(app: &mut ui::App) {
+    code_editor::actions::register(app.action_registry_mut());
+}
+
+fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or_else(|| {
+        LaunchError::Operation("code editor screenshot handler called without --shots".into())
+    })?;
+    let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+    let mut app = requested_path(args).map_or_else(code_editor::CodeApp::with_sample, |path| {
+        code_editor::CodeApp::open_path(&path)
+    });
+    app.set_width_hint(f64::from(viewport.0));
+    if args.has("--sidebar-open") {
+        app.shots_snap_sidebar(true);
     }
-    None
+    render_scenario_to_png(app, viewport, out, args.scenario.as_deref())
+        .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Render one offscreen frame of the `CodeApp`, optionally staging a scenario
 /// first. Mirrors `ui::App`'s cycle (sync → `build_layout` → `compute_layout` →
 /// `apply_layout` → draw); for the `terminal` scenario it also drives the live
 /// PTY and pumps `sync` a few times so real shell output lands in the frame.
+///
+/// # Errors
+/// Returns an error if taffy fails to assemble or measure the offscreen
+/// layout tree.
 fn render_scenario_to_png(
     mut app: code_editor::CodeApp,
     viewport: (u32, u32),
@@ -182,9 +143,6 @@ fn render_scenario_to_png(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
     let mut state = ui::State::new();
 
     // Pre-sync staging: opening the terminal must happen before the first sync
@@ -207,8 +165,52 @@ fn render_scenario_to_png(
     }
 
     app.sync(&mut state.doc, &state.root);
+    build_and_apply_layout(&mut app, &theme, &mut text_renderer, w, h)?;
 
-    let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+    stage_scenario(
+        &mut app,
+        scenario,
+        &mut state,
+        &mut text_renderer,
+        &theme,
+        &presence,
+        &permission,
+    );
+
+    // The staged scenarios change the layout (the find bar appears, the search
+    // panel is taller), so the tree has to be rebuilt before the final draw or
+    // the new surfaces get last frame's geometry.
+    if matches!(scenario, Some("find" | "search")) {
+        build_and_apply_layout(&mut app, &theme, &mut text_renderer, w, h)?;
+    }
+
+    let scene = draw_frame(&mut app, &mut text_renderer, &theme, &presence, &permission);
+
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut renderer = OffscreenRenderer::new(w, h);
+    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    println!("code_editor: wrote shot to {}", out.display());
+    Ok(())
+}
+
+/// Build `app`'s widget tree at `w`×`h`, measure it, and apply the result —
+/// the `build_layout` → `compute_layout` → `apply_layout` third of the cycle,
+/// shared by the initial layout and the rebuild after a scenario changes it.
+///
+/// # Errors
+/// Returns an error if taffy fails to assemble or measure the layout tree.
+fn build_and_apply_layout(
+    app: &mut code_editor::CodeApp,
+    theme: &Theme,
+    text_renderer: &mut TextRenderer,
+    w: u32,
+    h: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = app.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
             size: Size {
@@ -219,10 +221,9 @@ fn render_scenario_to_png(
         },
         &[child],
     )?;
-
     {
         let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
+        let tr = &mut *text_renderer;
         taffy.compute_layout_with_measure(
             root,
             taffy::Size {
@@ -239,27 +240,50 @@ fn render_scenario_to_png(
         )?;
     }
     app.apply_layout(&taffy, child, Point::ORIGIN);
+    Ok(())
+}
 
-    // A helper that runs a full draw pass into a fresh scene.
-    let draw = |app: &mut code_editor::CodeApp, tr: &mut TextRenderer| {
-        let mut scene = Scene::new();
-        app.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            tr,
-            &theme,
-            &presence,
-            &permission,
-        );
-        scene
-    };
+/// Run one full draw pass into a fresh scene.
+fn draw_frame(
+    app: &mut code_editor::CodeApp,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    permission: &PermissionContext,
+) -> Scene {
+    let mut scene = Scene::new();
+    app.draw_with_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        text_renderer,
+        theme,
+        presence,
+        permission,
+    );
+    scene
+}
 
-    // Post-layout staging.
+/// Stage the requested `--scenario` after the first layout pass: select
+/// words, open the find bar, drive the live terminal's PTY, and so on. A
+/// `None` scenario (the default cold-start frame) stages nothing.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same handful of already-built shots context (app, state, renderer, theme, presence, permission) to whichever scenario arm needs it; grouping them into a struct would not make the call clearer"
+)]
+fn stage_scenario(
+    app: &mut code_editor::CodeApp,
+    scenario: Option<&str>,
+    state: &mut ui::State,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+    permission: &PermissionContext,
+) {
     match scenario {
         Some("terminal") => {
             // One draw settles the terminal's cell metrics + placement, then we
             // drive the real shell and pump `sync` to collect its output.
-            let _ = draw(&mut app, &mut text_renderer);
+            let _ = draw_frame(app, text_renderer, theme, presence, permission);
             app.shots_terminal_input(
                 "echo 'qOS embedded terminal (live PTY)'; echo \"shell: $SHELL\"; \
                  echo 'demo output:'; echo '  primes below 20: 2 3 5 7 11 13 17 19'; echo done\n",
@@ -300,51 +324,4 @@ fn render_scenario_to_png(
         }
         _ => {}
     }
-    // The staged scenarios change the layout (the find bar appears, the search
-    // panel is taller), so the tree has to be rebuilt before the final draw or
-    // the new surfaces get last frame's geometry.
-    if matches!(scenario, Some("find" | "search")) {
-        let mut taffy2: TaffyTree<()> = TaffyTree::new();
-        let mut map2: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child2 = app.build_layout(&mut taffy2, &theme, &mut map2);
-        let root2 = taffy2.new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
-            },
-            &[child2],
-        )?;
-        {
-            let measure_map = map2.clone();
-            let tr = &mut text_renderer;
-            taffy2.compute_layout_with_measure(
-                root2,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )?;
-        }
-        app.apply_layout(&taffy2, child2, Point::ORIGIN);
-    }
-
-    let scene = draw(&mut app, &mut text_renderer);
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
-    println!("code_editor: wrote shot to {}", out.display());
-    Ok(())
 }

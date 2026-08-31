@@ -20,6 +20,9 @@
 //! * the network is on, because a package manager without a network is a prop.
 
 use std::ffi::OsString;
+// `write!` into a `String` cannot fail; the discarded `Result` is the
+// `fmt::Write` contract, not a swallowed error.
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// A host path exposed inside a layer session.
@@ -192,7 +195,7 @@ impl SessionSpec {
             if s.starts_with("--") {
                 out.push_str(&s);
             } else if s.contains(char::is_whitespace) {
-                out.push_str(&format!("'{s}'"));
+                let _ = write!(out, "'{s}'");
             } else {
                 out.push_str(&s);
             }

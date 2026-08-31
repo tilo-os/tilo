@@ -31,9 +31,8 @@ fn parse_cols(document_xml: &[u8]) -> Option<(u32, Option<f64>)> {
     let mut reader = Reader::from_str(s);
     let mut in_sectpr = false;
     loop {
-        let ev = match reader.read_event() {
-            Ok(e) => e,
-            Err(_) => return None,
+        let Ok(ev) = reader.read_event() else {
+            return None;
         };
         match ev {
             Event::Start(e) if e.name().as_ref() == b"w:sectPr" => in_sectpr = true,
@@ -43,21 +42,15 @@ fn parse_cols(document_xml: &[u8]) -> Option<(u32, Option<f64>)> {
                     .attributes()
                     .flatten()
                     .find(|a| a.key.as_ref() == b"w:num")
-                    .and_then(|a| {
-                        a.unescape_value()
-                            .ok()
-                            .and_then(|v| v.trim().parse::<u32>().ok())
-                    })
+                    .and_then(|a| crate::codecs::unescape_attr(&a))
+                    .and_then(|v| v.trim().parse::<u32>().ok())
                     .unwrap_or(1);
                 let gap = e
                     .attributes()
                     .flatten()
                     .find(|a| a.key.as_ref() == b"w:space")
-                    .and_then(|a| {
-                        a.unescape_value()
-                            .ok()
-                            .and_then(|v| v.trim().parse::<f64>().ok())
-                    })
+                    .and_then(|a| crate::codecs::unescape_attr(&a))
+                    .and_then(|v| v.trim().parse::<f64>().ok())
                     .map(|twips| (twips / TWIPS_PER_PX * 100.0).round() / 100.0);
                 return Some((num, gap));
             }
@@ -75,6 +68,10 @@ pub(super) fn section_columns_xml(doc: &DocRef) -> Option<String> {
     if count <= 1 {
         return None;
     }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a column gap in twips, converted from a document px value; far below i64::MAX"
+    )]
     let space_attr = gap
         .map(|px| format!(r#" w:space="{}""#, (px * TWIPS_PER_PX).round() as i64))
         .unwrap_or_default();

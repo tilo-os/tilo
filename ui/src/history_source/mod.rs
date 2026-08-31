@@ -85,16 +85,19 @@ impl HistorySource {
         }
     }
 
+    #[must_use]
     pub fn with_authors(mut self, authors: AuthorDirectory) -> Self {
         self.authors = authors;
         self
     }
 
+    #[must_use]
     pub fn with_artifact_kind(mut self, kind: ArtifactKind) -> Self {
         self.artifact_kind = kind;
         self
     }
 
+    #[must_use]
     pub fn with_max_entries(mut self, max: usize) -> Self {
         self.max_entries = max.max(1);
         self
@@ -128,10 +131,12 @@ impl HistorySource {
         let mut prev_snapshot: Option<DocSnapshot> = if start == 0 {
             Some(DocSnapshot::default())
         } else {
-            qdoc::history::materialize_at(doc, start - 1).ok()
+            // `start != 0` here, so this never saturates below the value
+            // plain subtraction would have produced.
+            qdoc::history::materialize_at(doc, start.saturating_sub(1)).ok()
         };
 
-        let mut out = Vec::with_capacity(versions.len() - start);
+        let mut out = Vec::with_capacity(versions.len().saturating_sub(start));
         for v in versions.iter().skip(start) {
             let cur_snapshot = qdoc::history::materialize_at(doc, v.index).ok();
             let before = heads
@@ -208,10 +213,17 @@ pub fn entry_id_from_hash(change_hash_hex: &str) -> HistoryEntryId {
     let mut bytes = [0u8; 16];
     let src = change_hash_hex.as_bytes();
     for (i, slot) in bytes.iter_mut().enumerate() {
-        let (hi, lo) = (src.get(i * 2), src.get(i * 2 + 1));
+        // `i` walks a fixed 16-byte array, so `idx` never approaches
+        // `usize::MAX`; `saturating_mul`/`saturating_add` are a no-op here
+        // and only exist to satisfy the arithmetic-side-effects lint.
+        let idx = i.saturating_mul(2);
+        let (hi, lo) = (src.get(idx), src.get(idx.saturating_add(1)));
         let hi = hi.and_then(|c| (*c as char).to_digit(16)).unwrap_or(0);
         let lo = lo.and_then(|c| (*c as char).to_digit(16)).unwrap_or(0);
-        *slot = (hi * 16 + lo) as u8;
+        // `to_digit(16)` only ever returns `0..=15`, so `combined` is always
+        // `0..=255` and the `try_from` below can never actually fail.
+        let combined = hi.saturating_mul(16).saturating_add(lo);
+        *slot = u8::try_from(combined).unwrap_or(u8::MAX);
     }
     HistoryEntryId(bytes)
 }
@@ -223,7 +235,13 @@ fn timestamp_from_ms(time_ms: i64) -> SystemTime {
     if time_ms <= 0 {
         return UNIX_EPOCH;
     }
-    UNIX_EPOCH + Duration::from_millis(time_ms as u64)
+    // `time_ms` is confirmed positive above, so the cast never loses sign;
+    // `checked_add` guards the (unreachable for any real change timestamp)
+    // case where the duration would overflow `SystemTime`'s representation.
+    let millis = u64::try_from(time_ms).unwrap_or(0);
+    UNIX_EPOCH
+        .checked_add(Duration::from_millis(millis))
+        .unwrap_or(UNIX_EPOCH)
 }
 
 /// Versions `start - 1 ..= end - 1`, computed in one pass — `prefix_heads`
@@ -238,7 +256,12 @@ fn prefix_heads_series(
     let mut out = HashMap::new();
     let lo = start.saturating_sub(1);
     for i in lo..end.min(changes.len()) {
-        let prefix = &changes[..=i];
+        // The loop bound guarantees `i < changes.len()`, so `..=i` is
+        // always in range; `get` plus `continue` keeps that provable
+        // rather than assumed.
+        let Some(prefix) = changes.get(..=i) else {
+            continue;
+        };
         let depended_on: std::collections::HashSet<ChangeHash> = prefix
             .iter()
             .flat_map(|c| c.deps().iter().copied())
@@ -270,23 +293,34 @@ fn structural_summary(
     let mut formatting = 0usize;
     for b in &diff.blocks {
         match b.op {
-            qdoc::BlockOp::Added => inserted += b.new_text.as_deref().unwrap_or("").chars().count(),
+            qdoc::BlockOp::Added => {
+                inserted =
+                    inserted.saturating_add(b.new_text.as_deref().unwrap_or("").chars().count());
+            }
             qdoc::BlockOp::Removed => {
-                deleted += b.old_text.as_deref().unwrap_or("").chars().count();
+                deleted =
+                    deleted.saturating_add(b.old_text.as_deref().unwrap_or("").chars().count());
             }
             qdoc::BlockOp::Changed | qdoc::BlockOp::Equal => {
                 for r in &b.runs {
                     match r.op {
-                        qdoc::RunOp::Insert => inserted += r.text.chars().count(),
-                        qdoc::RunOp::Delete => deleted += r.text.chars().count(),
+                        qdoc::RunOp::Insert => {
+                            inserted = inserted.saturating_add(r.text.chars().count());
+                        }
+                        qdoc::RunOp::Delete => {
+                            deleted = deleted.saturating_add(r.text.chars().count());
+                        }
                         qdoc::RunOp::Equal => {}
                     }
                 }
             }
         }
-        formatting += b.attr_changes.len() + b.marks_added.len() + b.marks_removed.len();
+        formatting = formatting
+            .saturating_add(b.attr_changes.len())
+            .saturating_add(b.marks_added.len())
+            .saturating_add(b.marks_removed.len());
         if b.kind_change.is_some() {
-            formatting += 1;
+            formatting = formatting.saturating_add(1);
         }
     }
 
@@ -312,7 +346,7 @@ fn structural_summary(
     }
     if pure_removal {
         return (
-            plural_signed(-(blocks_removed as i64), "block"),
+            plural_signed(negative_count(blocks_removed), "block"),
             OpClass::Tombstone,
             delta,
         );
@@ -326,14 +360,14 @@ fn structural_summary(
     }
     if blocks_added > 0 {
         return (
-            plural_signed(blocks_added as i64, "block"),
+            plural_signed(as_i64_count(blocks_added), "block"),
             OpClass::Splice,
             delta,
         );
     }
     if blocks_removed > 0 {
         return (
-            plural_signed(-(blocks_removed as i64), "block"),
+            plural_signed(negative_count(blocks_removed), "block"),
             OpClass::Tombstone,
             delta,
         );
@@ -408,21 +442,26 @@ fn patch_summary(
         let is_text = matches!(doc.object_type(&p.obj), Ok(ObjType::Text));
         match &p.action {
             PatchAction::SpliceText { value, .. } => {
-                inserted += value.make_string().chars().count();
+                inserted = inserted.saturating_add(value.make_string().chars().count());
             }
             PatchAction::DeleteSeq { length, .. } => {
                 if is_text {
-                    text_deleted += length;
+                    text_deleted = text_deleted.saturating_add(*length);
                 } else {
-                    list_deleted += length;
+                    list_deleted = list_deleted.saturating_add(*length);
                 }
             }
-            PatchAction::Insert { values, .. } => list_inserted += values.len(),
-            PatchAction::PutMap { .. } => fields += 1,
-            PatchAction::DeleteMap { .. } => field_deleted += 1,
-            PatchAction::PutSeq { .. } => list_inserted += 1,
-            PatchAction::Increment { .. } => fields += 1,
-            PatchAction::Mark { marks: m } => marks += m.len(),
+            PatchAction::Insert { values, .. } => {
+                list_inserted = list_inserted.saturating_add(values.len());
+            }
+            // Both arms only ever mark that a scalar field changed — an
+            // increment is bookkeeping the same way a put is.
+            PatchAction::PutMap { .. } | PatchAction::Increment { .. } => {
+                fields = fields.saturating_add(1);
+            }
+            PatchAction::DeleteMap { .. } => field_deleted = field_deleted.saturating_add(1),
+            PatchAction::PutSeq { .. } => list_inserted = list_inserted.saturating_add(1),
+            PatchAction::Mark { marks: m } => marks = marks.saturating_add(m.len()),
             PatchAction::Conflict { .. } => {}
         }
     }
@@ -437,28 +476,28 @@ fn patch_summary(
     }
     if list_inserted > 0 {
         return (
-            plural_signed(list_inserted as i64, "item"),
+            plural_signed(as_i64_count(list_inserted), "item"),
             OpClass::Splice,
             delta,
         );
     }
     if list_deleted > 0 {
         return (
-            plural_signed(-(list_deleted as i64), "item"),
+            plural_signed(negative_count(list_deleted), "item"),
             OpClass::Tombstone,
             delta,
         );
     }
     if field_deleted > 0 && fields == 0 {
         return (
-            plural_signed(-(field_deleted as i64), "field"),
+            plural_signed(negative_count(field_deleted), "field"),
             OpClass::Tombstone,
             delta,
         );
     }
     if fields > 0 || field_deleted > 0 {
         return (
-            plural(fields + field_deleted, "field"),
+            plural(fields.saturating_add(field_deleted), "field"),
             OpClass::EditMeta,
             delta,
         );
@@ -477,8 +516,22 @@ fn plural(n: usize, noun: &str) -> String {
     }
 }
 
+/// Converts a count to a non-negative `i64` for [`plural_signed`],
+/// saturating at `i64::MAX` instead of risking a wrap — no realistic
+/// block/item/field count on a document gets anywhere near that bound.
+fn as_i64_count(n: usize) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
+}
+
+/// Converts a count to a negative `i64` for [`plural_signed`]. Saturates at
+/// `i64::MIN` rather than risking overflow on the negation; unreachable in
+/// practice for the same reason as [`as_i64_count`].
+fn negative_count(n: usize) -> i64 {
+    as_i64_count(n).checked_neg().unwrap_or(i64::MIN)
+}
+
 fn plural_signed(n: i64, noun: &str) -> String {
-    let mag = n.unsigned_abs() as usize;
+    let mag = usize::try_from(n.unsigned_abs()).unwrap_or(usize::MAX);
     let sign = if n < 0 { '-' } else { '+' };
     if mag == 1 {
         format!("{sign}1 {noun}")

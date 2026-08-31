@@ -9,6 +9,7 @@
 //! seed uses [`sample_response`] instead.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::time::Instant;
 
 use base64::Engine;
@@ -137,7 +138,9 @@ fn url_encode(s: &str) -> String {
                 out.push(b as char);
             }
             b' ' => out.push_str("%20"),
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out

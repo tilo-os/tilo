@@ -27,9 +27,19 @@ impl Manifest {
     pub fn total_len(&self) -> u64 {
         self.chunks.iter().map(|c| u64::from(c.len)).sum()
     }
-    pub fn encode(&self) -> Vec<u8> {
-        postcard::to_allocvec(self).expect("serialize manifest")
+
+    /// Serialize to postcard bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if postcard serialization fails.
+    pub fn encode(&self) -> anyhow::Result<Vec<u8>> {
+        Ok(postcard::to_allocvec(self)?)
     }
+
+    /// # Errors
+    ///
+    /// Returns an error if `bytes` is not a valid postcard-encoded [`Manifest`].
     pub fn decode(bytes: &[u8]) -> anyhow::Result<Self> {
         Ok(postcard::from_bytes(bytes)?)
     }
@@ -56,17 +66,26 @@ pub fn split(data: &[u8]) -> Vec<&[u8]> {
     let mut chunks = Vec::new();
     let mut start = 0usize;
     let mut hash: u64 = 0;
-    for i in 0..data.len() {
-        hash = (hash << 1).wrapping_add(table[data[i] as usize]);
-        let len = i - start + 1;
+    for (i, &byte) in data.iter().enumerate() {
+        // `byte` is always 0..=255 and `table` has exactly 256 entries, so this never misses.
+        let gear = table.get(usize::from(byte)).copied().unwrap_or(0);
+        hash = (hash << 1).wrapping_add(gear);
+        // `i >= start` is a loop invariant: `start` only ever advances to a
+        // previously-seen `i + 1`, so this length is always non-negative.
+        let len = i.saturating_sub(start).saturating_add(1);
         if (len >= MIN_CHUNK && (hash & MASK) == 0) || len >= MAX_CHUNK {
-            chunks.push(&data[start..=i]);
-            start = i + 1;
+            let Some(chunk) = data.get(start..=i) else {
+                break;
+            };
+            chunks.push(chunk);
+            start = i.saturating_add(1);
             hash = 0;
         }
     }
-    if start < data.len() {
-        chunks.push(&data[start..]);
+    if start < data.len()
+        && let Some(rest) = data.get(start..)
+    {
+        chunks.push(rest);
     }
     chunks
 }
@@ -116,6 +135,8 @@ mod tests {
 
     #[test]
     fn edit_only_changes_local_chunks() {
+        use std::collections::HashSet;
+
         // Content-defined chunking: editing one byte mid-file must leave most chunk hashes identical (the dedup property).
         let data = pseudo(200_000, 99);
         let before: Vec<Vec<u8>> = split(&data).iter().map(|c| c.to_vec()).collect();
@@ -124,12 +145,14 @@ mod tests {
         edited[100_000] ^= 0xff; // flip a byte in the middle
         let after: Vec<Vec<u8>> = split(&edited).iter().map(|c| c.to_vec()).collect();
 
-        use std::collections::HashSet;
         let before_set: HashSet<&Vec<u8>> = before.iter().collect();
         let shared = after.iter().filter(|c| before_set.contains(c)).count();
-        // The vast majority of chunks must be unchanged.
+        // The vast majority of chunks must be unchanged. Chunk counts are tiny
+        // relative to u32, so this widening is lossless (unlike a direct `as f64`).
+        let shared_f = f64::from(u32::try_from(shared).unwrap_or(u32::MAX));
+        let total_f = f64::from(u32::try_from(before.len()).unwrap_or(u32::MAX));
         assert!(
-            shared as f64 > before.len() as f64 * 0.8,
+            shared_f > total_f * 0.8,
             "expected most chunks unchanged, only {shared}/{} shared",
             before.len()
         );
@@ -150,7 +173,7 @@ mod tests {
             ],
         };
         assert_eq!(m.total_len(), 30);
-        let back = Manifest::decode(&m.encode()).unwrap();
+        let back = Manifest::decode(&m.encode().unwrap()).unwrap();
         assert_eq!(back, m);
     }
 }

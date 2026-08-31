@@ -4,6 +4,16 @@
 //! `DocxCodec` + the editor's file I/O — exactly as the integrated app does.
 //! Mirrors `e2e_odt.rs` for the Microsoft Word format.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::path::{Path, PathBuf};
 
 use qdoc::AttrVal;

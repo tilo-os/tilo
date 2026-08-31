@@ -81,6 +81,12 @@ pub struct ConnectorSnapshot {
 
 impl CardHandle {
     /// Open `card_path` through the session and become DRM master.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the session fails to open `card_path` (e.g. libseat denies access or the
+    /// node doesn't exist). Failing to *acquire* DRM master afterward is logged but not fatal
+    /// here — a later `set_crtc` surfaces that as its own error instead.
     pub fn open<S: Session>(session: &mut S, card_path: &Path) -> Result<Self, String> {
         let card = DrmScanout::open_card(session, card_path)?;
         let device_id = card.dev_id();
@@ -227,15 +233,12 @@ impl CardHandle {
                 refresh_mhz: mode_refresh_mhz(&current),
             };
             let sysfs = Path::new("/sys/class/drm").join(format!("{card_name}-{connector}"));
-            let sink_hdr = std::fs::read(sysfs.join("edid"))
-                .ok()
-                .map(|edid| {
-                    crate::wayland::edid::parse_hdr_display_info(&edid)
-                        .supported_transfers
-                        .iter()
-                        .any(|transfer| transfer.is_hdr())
-                })
-                .unwrap_or(false);
+            let sink_hdr = std::fs::read(sysfs.join("edid")).ok().is_some_and(|edid| {
+                crate::wayland::edid::parse_hdr_display_info(&edid)
+                    .supported_transfers
+                    .iter()
+                    .any(|transfer| transfer.is_hdr())
+            });
             // `vrr_capable` is a standard DRM connector property exported by
             // modern amdgpu/i915 kernels. Absence is unknown/not usable, never
             // interpreted as support.
@@ -421,16 +424,17 @@ pub(super) fn discover_icc_profiles() -> BTreeMap<String, String> {
 fn mode_refresh_mhz(mode: &Mode) -> u32 {
     let (_, _, htotal) = mode.hsync();
     let (_, _, vtotal) = mode.vsync();
-    let denominator = u64::from(htotal) * u64::from(vtotal);
+    let denominator = u64::from(htotal).saturating_mul(u64::from(vtotal));
     if denominator == 0 {
         return mode.vrefresh().saturating_mul(1_000);
     }
     // Pixel clock is kHz. kHz * 1_000_000 / pixels-per-frame = mHz.
-    (u64::from(mode.clock())
+    let numerator = u64::from(mode.clock())
         .saturating_mul(1_000_000)
-        .saturating_add(denominator / 2)
-        / denominator)
-        .try_into()
+        .saturating_add(denominator / 2);
+    numerator
+        .checked_div(denominator)
+        .and_then(|mhz| u32::try_from(mhz).ok())
         .unwrap_or(u32::MAX)
 }
 
@@ -453,7 +457,12 @@ impl HwCursor {
 
     /// Park the cursor off this output's panel; the KMS plane is per-CRTC, so a plane on an output the pointer left must be hidden or it leaves a frozen arrow.
     pub fn hide(&self) {
-        self.move_to(-(CURSOR_DIM as i32), -(CURSOR_DIM as i32));
+        // `CURSOR_DIM` is a small compile-time constant (64), so this can never actually
+        // saturate; `try_from`/`saturating_neg` keep it defensive instead of relying on that.
+        let offset = i32::try_from(CURSOR_DIM)
+            .unwrap_or(i32::MAX)
+            .saturating_neg();
+        self.move_to(offset, offset);
     }
 }
 
@@ -540,12 +549,15 @@ impl CursorPlanes {
 
     /// Move the cursor to global `(gx, gy)`, hiding the previously-active plane on an output crossing; outside every output (mismatched-height gap) the last position is left alone.
     pub fn move_to(&mut self, gx: f64, gy: f64) {
-        let (xi, yi) = (gx as i32, gy as i32);
         let rects: Vec<_> = self.outputs.iter().map(|o| o.rect).collect();
+        let (xi, yi) = (pixel_coord(gx), pixel_coord(gy));
         let Some(i) = output_index_at(&rects, xi, yi) else {
             return;
         };
-        let id = self.outputs[i].id;
+        let Some(target) = self.outputs.get(i) else {
+            return;
+        };
+        let id = target.id;
         if self.active != Some(id) {
             if let Some(prev) = self.active
                 && let Some(o) = self.outputs.iter().find(|o| o.id == prev)
@@ -554,10 +566,18 @@ impl CursorPlanes {
             }
             self.active = Some(id);
         }
-        let (ox, oy, width, height) = self.outputs[i].rect;
-        let (x, y) =
-            logical_to_physical_point(xi - ox, yi - oy, width, height, self.outputs[i].transform);
-        self.outputs[i].mover.move_to(x, y);
+        let Some(target) = self.outputs.get(i) else {
+            return;
+        };
+        let (ox, oy, width, height) = target.rect;
+        let (x, y) = logical_to_physical_point(
+            xi.saturating_sub(ox),
+            yi.saturating_sub(oy),
+            width,
+            height,
+            target.transform,
+        );
+        target.mover.move_to(x, y);
     }
 }
 
@@ -569,23 +589,49 @@ pub(crate) fn logical_to_physical_point(
     transform: settings_store::hardware::OutputTransform,
 ) -> (i32, i32) {
     use settings_store::hardware::OutputTransform as T;
-    let (width, height) = (logical_width as i32, logical_height as i32);
+    // Output dimensions never approach i32::MAX in practice; a saturated fallback just clamps
+    // rotation math rather than panicking or wrapping if that ever changes.
+    let width = i32::try_from(logical_width).unwrap_or(i32::MAX);
+    let height = i32::try_from(logical_height).unwrap_or(i32::MAX);
     match transform {
         T::Normal => (x, y),
-        T::Rotate90 => (height.saturating_sub(1) - y, x),
-        T::Rotate180 => (width.saturating_sub(1) - x, height.saturating_sub(1) - y),
-        T::Rotate270 => (y, width.saturating_sub(1) - x),
+        T::Rotate90 => (height.saturating_sub(1).saturating_sub(y), x),
+        T::Rotate180 => (
+            width.saturating_sub(1).saturating_sub(x),
+            height.saturating_sub(1).saturating_sub(y),
+        ),
+        T::Rotate270 => (y, width.saturating_sub(1).saturating_sub(x)),
     }
+}
+
+/// Truncate a sub-pixel logical coordinate to a whole pixel. Rust's `as` cast from `f64` to
+/// `i32` already saturates to `i32::MIN`/`MAX` and maps NaN to 0 (no panic, no wraparound), so an
+/// out-of-range or NaN pointer position clamps rather than misbehaving; dropping the fractional
+/// part is the intended pixel-snapping behaviour, not a bug.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "float-to-int `as` saturates and maps NaN to 0; truncating the fractional pixel is intentional"
+)]
+fn pixel_coord(value: f64) -> i32 {
+    value as i32
 }
 
 /// Index of the first output rect containing `(xi, yi)`, or `None` in a gap between mismatched-size outputs; pure so cursor routing is unit-testable without a DRM device.
 fn output_index_at(rects: &[(i32, i32, u32, u32)], xi: i32, yi: i32) -> Option<usize> {
     rects.iter().position(|&(ox, oy, ow, oh)| {
-        xi >= ox && xi < ox + ow as i32 && yi >= oy && yi < oy + oh as i32
+        let ow = i32::try_from(ow).unwrap_or(i32::MAX);
+        let oh = i32::try_from(oh).unwrap_or(i32::MAX);
+        let x_end = ox.saturating_add(ow);
+        let y_end = oy.saturating_add(oh);
+        xi >= ox && xi < x_end && yi >= oy && yi < y_end
     })
 }
 
 /// Holds the primary card open as master and owns the scanout buffers.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is independent hardware/fallback state (flip in flight, pageflip vs dirtyfb, dirtyfb support, hw cursor active); combining them into an enum would obscure which combinations are actually reachable without changing behaviour, and is out of scope for a lint pass"
+)]
 pub struct DrmScanout {
     card: Card,
     crtc: crtc::Handle,
@@ -619,7 +665,13 @@ impl DrmScanout {
                 card_path,
                 OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
             )
-            .map_err(|e| format!("session.open({card_path:?}): errno={:?}", e.as_errno()))?;
+            .map_err(|e| {
+                format!(
+                    "session.open({}): errno={:?}",
+                    card_path.display(),
+                    e.as_errno()
+                )
+            })?;
         let card = Card(fd);
         // Become DRM master so set_crtc is permitted. libseat normally grants it on the active session; acquire explicitly and log.
         match card.acquire_master_lock() {
@@ -635,6 +687,12 @@ impl DrmScanout {
 
     /// Single-output convenience: opens `card_path`, picks the first connected connector + mode +
     /// crtc, and brings it up. Returns `Err`, never panics; the runtime uses [`open_all_scanouts`] instead, sharing [`Self::from_card`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the card can't be opened, if `resource_handles` fails, if no connected
+    /// connector advertises a usable mode, if no crtc is available for the chosen connector, or
+    /// if the modeset/framebuffer setup in [`Self::from_card`] fails.
     pub fn new<S: Session>(session: &mut S, card_path: &Path) -> Result<Self, String> {
         let card = Self::open_card(session, card_path)?;
         let res = card
@@ -715,8 +773,10 @@ impl DrmScanout {
             match Self::setup_hw_cursor(&card, crtc, cursor_size) {
                 Ok(buf) => {
                     // Centre it so a fresh boot shows the pointer before input arrives.
+                    let center_x = i32::try_from(width / 2).unwrap_or(i32::MAX);
+                    let center_y = i32::try_from(height / 2).unwrap_or(i32::MAX);
                     #[allow(deprecated)]
-                    let _ = card.move_cursor(crtc, ((width / 2) as i32, (height / 2) as i32));
+                    let _ = card.move_cursor(crtc, (center_x, center_y));
                     tracing::info!("DRM scanout: hardware cursor plane active");
                     (Some(buf), true)
                 }
@@ -811,19 +871,25 @@ impl DrmScanout {
         // The in-flight flip died with the master lock; clearing this first lets the next frame present at all.
         self.flip_pending = false;
         // Re-binding the mode is what the kernel needs to scan out again.
-        if let Err(e) = self.card.set_crtc(
-            self.crtc,
-            Some(self.fbs[self.front]),
-            (0, 0),
-            &[self.connector],
-            Some(self.mode),
-        ) {
-            tracing::warn!("DRM scanout: modeset on resume failed: {e}");
+        if let Some(fb) = self.fb_at(self.front) {
+            if let Err(e) = self.card.set_crtc(
+                self.crtc,
+                Some(fb),
+                (0, 0),
+                &[self.connector],
+                Some(self.mode),
+            ) {
+                tracing::warn!("DRM scanout: modeset on resume failed: {e}");
+            } else {
+                tracing::info!(
+                    width = self.width,
+                    height = self.height,
+                    "DRM scanout: re-modeset after session resume"
+                );
+            }
         } else {
-            tracing::info!(
-                width = self.width,
-                height = self.height,
-                "DRM scanout: re-modeset after session resume"
+            tracing::warn!(
+                "DRM scanout: front buffer index out of range on resume; skipping re-modeset"
             );
         }
         // Per-CRTC state, gone with the rest — without this the pointer is invisible after every VT switch.
@@ -883,17 +949,22 @@ impl DrmScanout {
             return;
         }
 
-        // Back buffer when flipping, else the single live buffer.
+        // Back buffer when flipping, else the single live buffer. `front` is always 0 or 1, so
+        // this is equivalent to `1 - self.front`, just without unchecked subtraction.
         let idx = if self.use_pageflip {
-            1 - self.front
+            1usize.saturating_sub(self.front)
         } else {
             self.front
         };
 
-        let pitch = self.buffers[idx].pitch() as usize;
         let (dw, dh) = (self.width as usize, self.height as usize);
+        let Some(buffer) = self.buffers.get_mut(idx) else {
+            tracing::warn!("DRM scanout: back-buffer index {idx} out of range; skipping frame");
+            return;
+        };
+        let pitch = buffer.pitch() as usize;
         {
-            let mut map = match self.card.map_dumb_buffer(&mut self.buffers[idx]) {
+            let mut map = match self.card.map_dumb_buffer(buffer) {
                 Ok(m) => m,
                 Err(e) => {
                     tracing::warn!("DRM scanout: map_dumb_buffer: {e}");
@@ -906,26 +977,58 @@ impl DrmScanout {
             if !self.hw_cursor_active
                 && let Some((px, py)) = cursor
             {
-                draw_cursor(dst, pitch, dw, dh, px as i32, py as i32, self.cursor_size);
+                draw_cursor(
+                    dst,
+                    pitch,
+                    dw,
+                    dh,
+                    pixel_coord(px),
+                    pixel_coord(py),
+                    self.cursor_size,
+                );
             }
         }
 
         if self.use_pageflip {
             // Best-effort CPU→host transfer before flipping: on virtual GPUs dirty_framebuffer flushes the
             // dumb buffer into the host resource (without it a bare flip presents unreceived bytes); no-op/unsupported on real GPUs.
-            let clip = ClipRect::new(0, 0, self.width as u16, self.height as u16);
-            let _ = self.card.dirty_framebuffer(self.fbs[idx], &[clip]);
+            let (cw, ch) = self.clip_dims();
+            let clip = ClipRect::new(0, 0, cw, ch);
+            if let Some(fb) = self.fb_at(idx) {
+                let _ = self.card.dirty_framebuffer(fb, &[clip]);
+            }
             self.flip_to(idx);
         } else {
             self.flush_dirty(idx);
         }
     }
 
+    /// The framebuffer bound to buffer slot `idx`, if the index is in range. `idx` is always 0 or
+    /// 1 by construction (`front` toggles between the two dumb buffers), but it arrives as a
+    /// runtime `usize` rather than a value clippy can prove in bounds, so this stays defensive.
+    fn fb_at(&self, idx: usize) -> Option<framebuffer::Handle> {
+        self.fbs.get(idx).copied()
+    }
+
+    /// Mode dimensions as `u16` for `ClipRect`. Both fields originate from a DRM `Mode`'s `u16`
+    /// size in [`Self::from_card`], so this cannot lose precision in practice; `try_from` still
+    /// guards it defensively rather than assuming that invariant holds.
+    fn clip_dims(&self) -> (u16, u16) {
+        (
+            u16::try_from(self.width).unwrap_or(u16::MAX),
+            u16::try_from(self.height).unwrap_or(u16::MAX),
+        )
+    }
+
     /// Queue a page flip to buffer `idx`, making it the new front. A transient `EBUSY`/`EAGAIN` skips the frame; a "not supported" errno latches the page-flip path off, falling back to `dirty_framebuffer`.
     fn flip_to(&mut self, idx: usize) {
+        let Some(fb) = self.fb_at(idx) else {
+            tracing::warn!("DRM scanout: no framebuffer at index {idx}; skipping page flip");
+            return;
+        };
         match self
             .card
-            .page_flip(self.crtc, self.fbs[idx], PageFlipFlags::EVENT, None)
+            .page_flip(self.crtc, fb, PageFlipFlags::EVENT, None)
         {
             Ok(()) => {
                 self.flip_pending = true;
@@ -943,7 +1046,7 @@ impl DrmScanout {
                     self.use_pageflip = false;
                     let _ = self.card.set_crtc(
                         self.crtc,
-                        Some(self.fbs[idx]),
+                        Some(fb),
                         (0, 0),
                         &[self.connector],
                         Some(self.mode),
@@ -960,8 +1063,14 @@ impl DrmScanout {
             self.force_flush_via_set_crtc();
             return;
         }
-        let clip = ClipRect::new(0, 0, self.width as u16, self.height as u16);
-        if let Err(e) = self.card.dirty_framebuffer(self.fbs[idx], &[clip]) {
+        let Some(fb) = self.fb_at(idx) else {
+            tracing::warn!("DRM scanout: no framebuffer at index {idx}; falling back to set_crtc");
+            self.force_flush_via_set_crtc();
+            return;
+        };
+        let (cw, ch) = self.clip_dims();
+        let clip = ClipRect::new(0, 0, cw, ch);
+        if let Err(e) = self.card.dirty_framebuffer(fb, &[clip]) {
             tracing::warn!("DRM scanout: dirty_framebuffer unsupported ({e}); using set_crtc");
             self.dirtyfb_unsupported = true;
             self.force_flush_via_set_crtc();
@@ -1002,9 +1111,13 @@ impl DrmScanout {
     }
 
     fn force_flush_via_set_crtc(&self) {
+        let Some(fb) = self.fb_at(self.front) else {
+            tracing::warn!("DRM scanout: no front framebuffer; skipping forced flush");
+            return;
+        };
         let _ = self.card.set_crtc(
             self.crtc,
-            Some(self.fbs[self.front]),
+            Some(fb),
             (0, 0),
             &[self.connector],
             Some(self.mode),
@@ -1017,9 +1130,15 @@ impl DrmScanout {
         self.set_dpms_property(on);
         if on {
             // Re-modeset the saved framebuffer + mode so the last frame is back on screen; the next `present` resumes normal blitting.
+            let Some(fb) = self.fb_at(self.front) else {
+                tracing::warn!(
+                    "DRM scanout: set_dpms(on) has no front framebuffer; skipping restore"
+                );
+                return;
+            };
             if let Err(e) = self.card.set_crtc(
                 self.crtc,
-                Some(self.fbs[self.front]),
+                Some(fb),
                 (0, 0),
                 &[self.connector],
                 Some(self.mode),
@@ -1085,6 +1204,12 @@ pub struct ScanoutBuild {
 /// second `open` of an already-open node, and it means every crtc's flip completions arrive on one
 /// event stream, drained once and routed by crtc. A connector with no free crtc/mode is logged and
 /// skipped; `Err` only when nothing came up. Primary card only — secondary-GPU connectors need their own fd and GPU-to-GPU buffer handling.
+///
+/// # Errors
+///
+/// Returns `Err` if the primary card itself can't be opened, or if every connected connector
+/// failed to come up (each connector's own modeset failure is logged and skipped rather than
+/// propagated — this only errors when *none* came up).
 pub fn open_all_scanouts<S: Session>(
     session: &mut S,
     card_path: &Path,
@@ -1169,7 +1294,7 @@ fn pick_configured_mode(
                 })
                 .max_by_key(|m| {
                     let (w, h) = m.size();
-                    u32::from(w) * u32::from(h)
+                    u32::from(w).saturating_mul(u32::from(h))
                 })
         })
         .or_else(|| modes.first())
@@ -1211,14 +1336,17 @@ fn paint_cursor_argb(dst: &mut [u8], pitch: usize, cursor_size: u32) {
                 _ => continue,
             };
             let scale = (cursor_size.clamp(24, CURSOR_DIM) as usize).div_ceil(24);
-            for yy in row * scale..(row + 1) * scale {
-                for xx in col * scale..(col + 1) * scale {
-                    let o = yy * pitch + xx * 4;
-                    if o + 4 <= dst.len() {
-                        dst[o] = b;
-                        dst[o + 1] = g;
-                        dst[o + 2] = r;
-                        dst[o + 3] = 0xFF;
+            let y_start = row.saturating_mul(scale);
+            let y_end = y_start.saturating_add(scale);
+            let x_start = col.saturating_mul(scale);
+            let x_end = x_start.saturating_add(scale);
+            for yy in y_start..y_end {
+                for xx in x_start..x_end {
+                    let offset = yy
+                        .saturating_mul(pitch)
+                        .saturating_add(xx.saturating_mul(4));
+                    if let Some(pixel) = dst.get_mut(offset..offset.saturating_add(4)) {
+                        pixel.copy_from_slice(&[b, g, r, 0xFF]);
                     }
                 }
             }
@@ -1237,30 +1365,38 @@ fn draw_cursor(
     cursor_size: u32,
 ) {
     let scale = (cursor_size.clamp(24, CURSOR_DIM) as usize).div_ceil(24);
+    let dh_i32 = i32::try_from(dh).unwrap_or(i32::MAX);
     for (row, line) in CURSOR.iter().enumerate() {
-        let y = py + row as i32;
-        if y < 0 || y as usize >= dh {
+        // Coarse pre-check before scanning columns: scale >= 1, so the scaled per-pixel `y`
+        // computed below is always >= this unscaled estimate, so this never skips a row that
+        // would actually draw a pixel.
+        let row_estimate_y = py.saturating_add(i32::try_from(row).unwrap_or(i32::MAX));
+        if row_estimate_y < 0 || row_estimate_y >= dh_i32 {
             continue;
         }
         for (col, ch) in line.bytes().enumerate() {
-            let (r, g, b) = match ch {
+            let (red, green, blue) = match ch {
                 b'#' => (0u8, 0u8, 0u8),
                 b'.' => (0xFFu8, 0xFFu8, 0xFFu8),
                 _ => continue,
             };
             for yy in 0..scale {
+                let y_off = row.saturating_mul(scale).saturating_add(yy);
+                let y = py.saturating_add(i32::try_from(y_off).unwrap_or(i32::MAX));
                 for xx in 0..scale {
-                    let x = px + (col * scale + xx) as i32;
-                    let y = py + (row * scale + yy) as i32;
-                    if x < 0 || y < 0 || x as usize >= dw || y as usize >= dh {
+                    let x_off = col.saturating_mul(scale).saturating_add(xx);
+                    let x = px.saturating_add(i32::try_from(x_off).unwrap_or(i32::MAX));
+                    let (Ok(xu), Ok(yu)) = (usize::try_from(x), usize::try_from(y)) else {
+                        continue;
+                    };
+                    if xu >= dw || yu >= dh {
                         continue;
                     }
-                    let o = y as usize * pitch + x as usize * 4;
-                    if o + 4 <= dst.len() {
-                        dst[o] = b;
-                        dst[o + 1] = g;
-                        dst[o + 2] = r;
-                        dst[o + 3] = 0xFF;
+                    let offset = yu
+                        .saturating_mul(pitch)
+                        .saturating_add(xu.saturating_mul(4));
+                    if let Some(pixel) = dst.get_mut(offset..offset.saturating_add(4)) {
+                        pixel.copy_from_slice(&[blue, green, red, 0xFF]);
                     }
                 }
             }

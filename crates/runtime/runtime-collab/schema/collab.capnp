@@ -75,11 +75,9 @@ interface ChannelHandle {
   # up to older edits after late-join" UX; see
   # `ScrollbackBatch` for the response shape.
   #
-  # LEGACY — this method does not carry an artifact id, so the
-  # broker keys the read on a `nil` artifact (`ArtifactId::default()`).
-  # Callers that hold a specific artifact should prefer
-  # `fetchScrollbackFor @7`. Kept so schema-v1 clients still resolve.
-  fetchScrollback @6 (beforeSeq :UInt64, max :UInt32) -> (batch :ScrollbackBatch);
+  # Retired artifact-less scrollback ordinal. All reads name an artifact via
+  # `fetchScrollbackFor @7`; the ordinal remains reserved permanently.
+  retiredFetchScrollback @6 () -> ();
 
   # Fetch a page of previously-validated signed ops on a specific
   # artifact. `artifactId` is the 16-byte encoding of the artifact
@@ -320,11 +318,9 @@ interface PresenceHandle {
   # Publish this user's cursor position into the channel.
   publishCursor @0 (x :Float32, y :Float32) -> ();
 
-  # LEGACY — pre-`subscribeAll` remote-cursor stream. Yields only
-  # cursor-payload events, dropping caret / selection / arrived /
-  # left. Kept so schema-v1 clients keep compiling; new code uses
-  # `subscribeAll` and discriminates on the payload union.
-  subscribeRemoteCursors @1 () -> (stream :CursorStream);
+  # Retired cursor-only subscription ordinal. `subscribeAll @6` is the sole
+  # presence stream; this ordinal remains reserved permanently.
+  retiredRemoteCursors @1 () -> ();
 
   # Publish the local caret position on the artifact identified by
   # `keyBytes`. `keyBytes` is a postcard-encoded `ui::PresenceKey`;
@@ -366,13 +362,6 @@ interface PresenceHandle {
   # to end and never re-keys them, so exactly one receiver can place the
   # position and the rest can tell that it is not theirs.
   publishPointer @7 (keyBytes :Data, x :Float32, y :Float32) -> ();
-}
-
-interface CursorStream {
-  # Pull the next remote-cursor update. Returns the user id (as a
-  # short string id), the x/y position. Promise resolves when an
-  # update is available.
-  read @0 () -> (userId :Text, x :Float32, y :Float32);
 }
 
 interface PresenceStream {

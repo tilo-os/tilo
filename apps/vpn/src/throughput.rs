@@ -115,16 +115,24 @@ fn plot_series(
         &area,
     );
 
-    // Stroked line on top.
+    // Stroked line on top. Both `.first()`/`.last()` are unreachable `None`
+    // here — the `series.len() < 2` guard above already ensures at least two
+    // elements — but `.get()`-family documents that instead of indexing.
+    let Some(&first) = series.first() else {
+        return;
+    };
     let mut line = BezPath::new();
-    line.move_to(Point::new(x_at(0), y_at(series[0])));
+    line.move_to(Point::new(x_at(0), y_at(first)));
     for (i, &v) in series.iter().enumerate().skip(1) {
         line.line_to(Point::new(x_at(i), y_at(v)));
     }
     scene.stroke(&Stroke::new(2.0), transform, color, None, &line);
 
     // Highlight dot at the leading edge.
-    let last = Point::new(x_at(n - 1), y_at(series[n - 1]));
+    let Some(&last_val) = series.last() else {
+        return;
+    };
+    let last = Point::new(x_at(n - 1), y_at(last_val));
     scene.fill(
         Fill::NonZero,
         transform,

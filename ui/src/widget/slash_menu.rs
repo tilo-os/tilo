@@ -75,6 +75,29 @@ const PADDING_X: f64 = 10.0;
 const FILTER_HEIGHT: f64 = 32.0;
 const FILTER_GAP: f64 = 4.0;
 
+/// Row/column counts in this menu are always small (a handful of
+/// static rows), far inside `f64`'s exact-integer range, so this
+/// narrowing can't lose precision.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "menu row/column counts are always small, far inside f64's exact-integer range"
+)]
+fn px(n: usize) -> f64 {
+    n as f64
+}
+
+/// `base` composed with a translation to `(dx, dy)`. Wrapped so the one
+/// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
+/// `Mul` is pure floating-point matrix composition and cannot panic or
+/// overflow.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
+)]
+fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
+    base * Affine::translate((dx, dy))
+}
+
 pub struct SlashMenu {
     rows: Vec<MenuRow>,
     /// Indices into `rows` that match the current filter.
@@ -247,7 +270,7 @@ impl SlashMenu {
     /// Computed height for the current visible row set, including
     /// vertical padding.
     pub fn height(&self) -> f64 {
-        PADDING_Y * 2.0 + FILTER_HEIGHT + FILTER_GAP + ROW_HEIGHT * self.visible.len().max(1) as f64
+        PADDING_Y * 2.0 + FILTER_HEIGHT + FILTER_GAP + ROW_HEIGHT * px(self.visible.len().max(1))
     }
 
     /// Rect the popover would paint into at the current anchor.
@@ -268,7 +291,7 @@ impl SlashMenu {
     /// pointer automation rather than duplicating the filter/header geometry.
     pub fn row_rect(&self, visible_index: usize) -> Option<Rect> {
         (visible_index < self.visible.len()).then(|| {
-            let y0 = self.rows_top() + visible_index as f64 * ROW_HEIGHT;
+            let y0 = self.rows_top() + px(visible_index) * ROW_HEIGHT;
             let rect = self.rect();
             Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT)
         })
@@ -288,6 +311,14 @@ impl SlashMenu {
         if rel < 0.0 {
             return None;
         }
+        // `rel` is checked non-negative just above, and screen
+        // coordinates never approach `usize::MAX`, so this floor+cast is
+        // a safe, bounded pixel-to-row-index conversion.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "rel is non-negative here and bounded by real screen coordinates, far under usize::MAX"
+        )]
         let idx = (rel / ROW_HEIGHT).floor() as usize;
         (idx < self.visible.len()).then_some(idx)
     }
@@ -312,7 +343,7 @@ impl SlashMenu {
     pub fn click_at(&mut self, pt: Point) -> Option<BlockKind> {
         let idx = self.row_at(pt)?;
         let &row_idx = self.visible.get(idx)?;
-        let kind = self.rows[row_idx].kind.clone();
+        let kind = self.rows.get(row_idx)?.kind.clone();
         self.pending_selection = Some(kind.clone());
         self.set_visible(false);
         Some(kind)
@@ -368,7 +399,6 @@ impl SlashMenu {
                 KeyEvent {
                     logical_key,
                     state: ElementState::Pressed,
-                    text: _,
                     ..
                 },
             ..
@@ -379,19 +409,24 @@ impl SlashMenu {
         match logical_key {
             Key::Named(NamedKey::ArrowDown) => {
                 if !self.visible.is_empty() {
-                    self.cursor = (self.cursor + 1).min(self.visible.len() - 1);
+                    self.cursor = self
+                        .cursor
+                        .saturating_add(1)
+                        .min(self.visible.len().saturating_sub(1));
                 }
                 true
             }
             Key::Named(NamedKey::ArrowUp) => {
                 if self.cursor > 0 {
-                    self.cursor -= 1;
+                    self.cursor = self.cursor.saturating_sub(1);
                 }
                 true
             }
             Key::Named(NamedKey::Enter) => {
-                if let Some(&row_idx) = self.visible.get(self.cursor) {
-                    self.pending_selection = Some(self.rows[row_idx].kind.clone());
+                if let Some(&row_idx) = self.visible.get(self.cursor)
+                    && let Some(row) = self.rows.get(row_idx)
+                {
+                    self.pending_selection = Some(row.kind.clone());
                 }
                 self.set_visible(false);
                 true
@@ -495,8 +530,10 @@ impl SlashMenu {
 
         let font_size = tokens.typography.scale.sm;
         for (i, &row_idx) in self.visible.iter().enumerate() {
-            let row = &self.rows[row_idx];
-            let y0 = self.rows_top() + i as f64 * ROW_HEIGHT;
+            let Some(row) = self.rows.get(row_idx) else {
+                continue;
+            };
+            let y0 = self.rows_top() + px(i) * ROW_HEIGHT;
             let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
             if i == self.cursor {
                 let hl = RoundedRect::from_rect(row_rect, 4.0);
@@ -514,7 +551,7 @@ impl SlashMenu {
                 row.label,
                 font_size,
                 tokens.colors.text_primary,
-                transform * Affine::translate((row_rect.x0 + PADDING_X, text_y)),
+                translated(transform, row_rect.x0 + PADDING_X, text_y),
                 None,
             );
         }
@@ -526,7 +563,7 @@ impl SlashMenu {
                 "No matches",
                 font_size,
                 tokens.colors.text_dim,
-                transform * Affine::translate((rect.x0 + PADDING_X, y)),
+                translated(transform, rect.x0 + PADDING_X, y),
                 None,
             );
         }
@@ -625,7 +662,7 @@ impl Widget for SlashMenu {
                             selected: pos == self.cursor,
                             ..Default::default()
                         })
-                        .with_position(pos + 1, count)
+                        .with_position(pos.saturating_add(1), count)
                 })
             })
             .collect();

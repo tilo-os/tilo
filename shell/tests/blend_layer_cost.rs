@@ -6,6 +6,16 @@
 //! blend buffer for everything under a blend layer. Times both shapes at
 //! the compositor's actual run size.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::Instant;
 
 use crate::support::offscreen::OffscreenRenderer;

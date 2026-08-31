@@ -19,7 +19,7 @@ use std::time::SystemTime;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::presence::PresenceCtx;
@@ -56,6 +56,36 @@ const BUTTON_Y_OFFSET: f64 = 24.0;
 const POPOVER_H: f64 = 36.0;
 const NATURAL_H_PLAIN: f64 = 140.0;
 const NATURAL_H_GROUPED: f64 = 168.0;
+
+/// A tick index or entry count, widened for pixel-space layout math.
+/// Lossless in practice — a history never approaches `u32::MAX` entries —
+/// but `usize -> f64` cannot express that to the compiler, so this goes
+/// through `u32` (exactly representable in `f64`) with a saturating
+/// fallback rather than an `as` cast.
+fn px(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
+/// pure `f64` matrix multiply-add with no overflow trap, so it cannot panic
+/// regardless of operand magnitude, but going through `pre_translate`
+/// keeps that reasoning inside `kurbo` rather than repeating an `#[allow]`
+/// at every text transform composed in this file.
+fn translated(transform: Affine, offset: (f64, f64)) -> Affine {
+    transform.pre_translate(Vec2::new(offset.0, offset.1))
+}
+
+/// Turns a `[0.0, 1.0]` drag ratio into a tick index in `0..=max`. The
+/// ratio is clamped before rounding and `max` is a bounded entry count, so
+/// the result always fits `usize` without wrapping or losing its sign.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "ratio is clamped to [0,1] and max is a bounded entry count, so the rounded product always fits usize"
+)]
+fn tick_from_ratio(ratio: f64, max: usize) -> usize {
+    (ratio.clamp(0.0, 1.0) * px(max)).round() as usize
+}
 
 /// `FnMut` so the host can mutate captured state (e.g. flip a
 /// preview-mounted flag) without needing interior mutability.
@@ -112,6 +142,13 @@ enum ScrubButton {
 }
 
 /// Horizontal-slider history scrubber.
+// Four independent widget-state flags (snap-to-groups, dragging, hovered,
+// dirty) that can co-occur in any combination — not a state machine an
+// enum would clarify.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent widget-state flags, not related toggles"
+)]
 pub struct HistoryScrubber {
     entries: Vec<HistoryEntry>,
     groups: Vec<ScrubberGroup>,
@@ -264,21 +301,25 @@ impl HistoryScrubber {
         self.naming.as_ref().map(|(_, f)| f.text())
     }
 
+    #[must_use]
     pub fn on_preview<F: FnMut(&HistoryEntryId) + 'static>(mut self, f: F) -> Self {
         self.on_preview = Some(Box::new(f));
         self
     }
 
+    #[must_use]
     pub fn on_restore<F: FnMut(&HistoryEntryId) + 'static>(mut self, f: F) -> Self {
         self.on_restore = Some(Box::new(f));
         self
     }
 
+    #[must_use]
     pub fn on_name<F: FnMut(&GroupNameRequest) + 'static>(mut self, f: F) -> Self {
         self.on_name = Some(Box::new(f));
         self
     }
 
+    #[must_use]
     pub fn on_version<F: FnMut(&VersionAction) + 'static>(mut self, f: F) -> Self {
         self.on_version = Some(Box::new(f));
         self
@@ -311,7 +352,7 @@ impl HistoryScrubber {
         let new_tick = if self.entries.is_empty() {
             0
         } else {
-            tick.min(self.entries.len() - 1)
+            tick.min(self.entries.len().saturating_sub(1))
         };
         if new_tick != self.current_tick {
             self.current_tick = new_tick;
@@ -361,7 +402,7 @@ impl HistoryScrubber {
         if n <= 1 {
             return track.x1;
         }
-        let t = (i as f64) / ((n - 1) as f64);
+        let t = px(i) / px(n.saturating_sub(1));
         track.x0 + t * track.width()
     }
 
@@ -388,7 +429,7 @@ impl HistoryScrubber {
             return 0;
         }
         let t = ((x - track.x0) / track.width()).clamp(0.0, 1.0);
-        let raw = (t * ((n - 1) as f64)).round() as usize;
+        let raw = tick_from_ratio(t, n.saturating_sub(1));
         if !self.snaps_to_groups() {
             return raw;
         }
@@ -447,17 +488,14 @@ impl HistoryScrubber {
         } else {
             RESTORE_W
         };
-        let mut out: Vec<(ScrubButton, Rect, &'static str)> = Vec::new();
-        out.push((
-            ScrubButton::Restore,
-            Rect::new(
-                self.rect.x1 - TRACK_INSET - restore_w,
-                y0,
-                self.rect.x1 - TRACK_INSET,
-                y0 + BUTTON_H,
-            ),
-            restore_label,
-        ));
+        let restore_rect = Rect::new(
+            self.rect.x1 - TRACK_INSET - restore_w,
+            y0,
+            self.rect.x1 - TRACK_INSET,
+            y0 + BUTTON_H,
+        );
+        let mut out: Vec<(ScrubButton, Rect, &'static str)> =
+            vec![(ScrubButton::Restore, restore_rect, restore_label)];
 
         // Preview keeps the leftmost slot so hosts that reserved that
         // geometry stay aligned.
@@ -491,7 +529,7 @@ impl HistoryScrubber {
             ));
         }
 
-        let limit = out[0].1.x0 - 8.0;
+        let limit = restore_rect.x0 - 8.0;
         let mut x = self.rect.x0 + TRACK_INSET;
         for (kind, w, label) in left {
             if x + w > limit {
@@ -539,12 +577,12 @@ impl HistoryScrubber {
             return Rect::ZERO;
         }
         let layout = self.button_layout();
-        if layout.is_empty() {
+        let Some((_, first_button, _)) = layout.first() else {
             return Rect::ZERO;
-        }
+        };
         let first = layout.iter().map(|(_, r, _)| r.x0).fold(f64::MAX, f64::min);
         let last = layout.iter().map(|(_, r, _)| r.x1).fold(0.0_f64, f64::max);
-        let y = layout[0].1.y0;
+        let y = first_button.y0;
         Rect::new(
             first,
             y,
@@ -691,7 +729,7 @@ impl HistoryScrubber {
         let spacing = if n <= 1 {
             track.width()
         } else {
-            track.width() / (n - 1) as f64
+            track.width() / px(n.saturating_sub(1))
         };
         if spacing < MIN_TICK_SPACING {
             return;
@@ -734,9 +772,10 @@ impl HistoryScrubber {
         // a real boundary; spanning only first-tick..last-tick would leave a
         // gap between neighbours — 50 px on a twenty-change document.
         let mut cursor = band.x0;
+        let last_index = self.groups.len().saturating_sub(1);
         for (i, g) in self.groups.iter().enumerate() {
             let x0 = cursor;
-            let x1 = if i + 1 == self.groups.len() {
+            let x1 = if i == last_index {
                 band.x1
             } else {
                 self.tick_x(g.end).clamp(x0, band.x1)
@@ -778,11 +817,13 @@ impl HistoryScrubber {
                     &shown,
                     size,
                     ink,
-                    transform
-                        * Affine::translate((
+                    translated(
+                        transform,
+                        (
                             seg.x0 + (seg.width() - f64::from(lw)) / 2.0,
                             seg.center().y - f64::from(lh) / 2.0,
-                        )),
+                        ),
+                    ),
                     None,
                 );
             }
@@ -821,7 +862,6 @@ impl HistoryScrubber {
     /// Used for every button so styling stays uniform.
     #[allow(clippy::too_many_arguments)]
     fn draw_button(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -866,95 +906,52 @@ impl HistoryScrubber {
             &shown,
             size,
             text_color,
-            transform
-                * Affine::translate((
+            translated(
+                transform,
+                (
                     rect.x0 + (rect.width() - f64::from(w)) / 2.0,
                     rect.y0 + (rect.height() - f64::from(h)) / 2.0,
-                )),
+                ),
+            ),
             None,
         );
     }
-}
 
-impl Widget for HistoryScrubber {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let h = self.natural_height();
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let prev = self.rect;
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        if prev != self.rect {
-            self.dirty = true;
-        }
-    }
-
-    fn draw(
-        &mut self,
+    /// The whole strip, before any entries have arrived.
+    fn draw_empty_state(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
+        let label = "No history yet";
+        let size = theme.tokens.typography.scale.sm;
+        let (w, h) = text_renderer.measure(label, size, None);
+        text_renderer.draw_text(
+            scene,
+            label,
+            size,
+            theme.tokens.colors.text_dim,
+            translated(
+                transform,
+                (
+                    f64::midpoint(self.rect.x0, self.rect.x1) - f64::from(w) / 2.0,
+                    f64::midpoint(self.rect.y0, self.rect.y1) - f64::from(h) / 2.0,
+                ),
+            ),
             None,
-            &shape,
         );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
-        );
+    }
 
-        if self.entries.is_empty() {
-            let label = "No history yet";
-            let size = theme.tokens.typography.scale.sm;
-            let (w, h) = text_renderer.measure(label, size, None);
-            text_renderer.draw_text(
-                scene,
-                label,
-                size,
-                theme.tokens.colors.text_dim,
-                transform
-                    * Affine::translate((
-                        f64::midpoint(self.rect.x0, self.rect.x1) - f64::from(w) / 2.0,
-                        f64::midpoint(self.rect.y0, self.rect.y1) - f64::from(h) / 2.0,
-                    )),
-                None,
-            );
-            self.dirty = false;
-            return;
-        }
-
+    /// The track, its band and ticks, the live-state dot and the drag handle.
+    fn draw_track_and_handle(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let track = self.track_rect();
         let track_shape = RoundedRect::from_rect(track, 3.0);
         scene.fill(
@@ -1012,7 +1009,16 @@ impl Widget for HistoryScrubber {
             None,
             &handle_shape,
         );
+    }
 
+    /// The popover frame and, when there is a current entry, the text inside it.
+    fn draw_popover(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let pop = self.popover_rect();
         let pop_shape = RoundedRect::from_rect(pop, f64::from(theme.tokens.radii.sm));
         scene.fill(
@@ -1029,78 +1035,88 @@ impl Widget for HistoryScrubber {
             None,
             &pop_shape,
         );
-        if let Some(entry) = self.current_entry() {
-            let now = self.now();
-            let detail = format!(
-                "{} by {} \u{00b7} {}",
-                entry.summary,
-                entry.author.name,
-                format_relative_time(entry.timestamp, now)
-            );
-            // An unnamed segment of one change derives its title *from* that
-            // change, so a two-line popover would print the same words twice —
-            // once as the version and once as the change. Say it once.
-            let group_line = self.current_group().and_then(|g| {
-                let mut s = g.title().to_string();
-                if g.label.is_none() && !g.open && s == entry.summary {
-                    return None;
-                }
-                if g.open {
-                    s.push_str(" \u{00b7} still open");
-                }
-                Some(s)
-            });
-            let budget = pop.width() - 12.0;
-            if let Some(head) = group_line {
-                let head_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
-                let sub_size = (theme.tokens.typography.scale.sm - 3.0).max(9.0);
-                let head = fit(text_renderer, &head, head_size, budget);
-                let (hw, _) = text_renderer.measure(&head, head_size, None);
-                text_renderer.draw_text(
-                    scene,
-                    &head,
-                    head_size,
-                    theme.tokens.colors.text_primary,
-                    transform
-                        * Affine::translate((
-                            pop.x0 + (pop.width() - f64::from(hw)) / 2.0,
-                            pop.y0 + 5.0,
-                        )),
-                    None,
-                );
-                let detail = fit(text_renderer, &detail, sub_size, budget);
-                let (dw, _) = text_renderer.measure(&detail, sub_size, None);
-                text_renderer.draw_text(
-                    scene,
-                    &detail,
-                    sub_size,
-                    theme.tokens.colors.text_dim,
-                    transform
-                        * Affine::translate((
-                            pop.x0 + (pop.width() - f64::from(dw)) / 2.0,
-                            pop.y0 + 21.0,
-                        )),
-                    None,
-                );
-            } else {
-                let size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
-                let drawn = fit(text_renderer, &detail, size, budget);
-                let (lw, lh) = text_renderer.measure(&drawn, size, None);
-                text_renderer.draw_text(
-                    scene,
-                    &drawn,
-                    size,
-                    theme.tokens.colors.text_primary,
-                    transform
-                        * Affine::translate((
-                            pop.x0 + (pop.width() - f64::from(lw)) / 2.0,
-                            pop.y0 + (pop.height() - f64::from(lh)) / 2.0,
-                        )),
-                    None,
-                );
+        let Some(entry) = self.current_entry() else {
+            return;
+        };
+        let now = self.now();
+        let detail = format!(
+            "{} by {} \u{00b7} {}",
+            entry.summary,
+            entry.author.name,
+            format_relative_time(entry.timestamp, now)
+        );
+        // An unnamed segment of one change derives its title *from* that
+        // change, so a two-line popover would print the same words twice —
+        // once as the version and once as the change. Say it once.
+        let group_line = self.current_group().and_then(|g| {
+            let mut s = g.title().to_string();
+            if g.label.is_none() && !g.open && s == entry.summary {
+                return None;
             }
+            if g.open {
+                s.push_str(" \u{00b7} still open");
+            }
+            Some(s)
+        });
+        let budget = pop.width() - 12.0;
+        if let Some(head) = group_line {
+            let head_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+            let sub_size = (theme.tokens.typography.scale.sm - 3.0).max(9.0);
+            let head = fit(text_renderer, &head, head_size, budget);
+            let (hw, _) = text_renderer.measure(&head, head_size, None);
+            text_renderer.draw_text(
+                scene,
+                &head,
+                head_size,
+                theme.tokens.colors.text_primary,
+                translated(
+                    transform,
+                    (pop.x0 + (pop.width() - f64::from(hw)) / 2.0, pop.y0 + 5.0),
+                ),
+                None,
+            );
+            let detail = fit(text_renderer, &detail, sub_size, budget);
+            let (dw, _) = text_renderer.measure(&detail, sub_size, None);
+            text_renderer.draw_text(
+                scene,
+                &detail,
+                sub_size,
+                theme.tokens.colors.text_dim,
+                translated(
+                    transform,
+                    (pop.x0 + (pop.width() - f64::from(dw)) / 2.0, pop.y0 + 21.0),
+                ),
+                None,
+            );
+        } else {
+            let size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+            let drawn = fit(text_renderer, &detail, size, budget);
+            let (lw, lh) = text_renderer.measure(&drawn, size, None);
+            text_renderer.draw_text(
+                scene,
+                &drawn,
+                size,
+                theme.tokens.colors.text_primary,
+                translated(
+                    transform,
+                    (
+                        pop.x0 + (pop.width() - f64::from(lw)) / 2.0,
+                        pop.y0 + (pop.height() - f64::from(lh)) / 2.0,
+                    ),
+                ),
+                None,
+            );
         }
+    }
 
+    /// The naming field when a name is being typed, otherwise the button row.
+    fn draw_controls(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         // A name being typed replaces the row it belongs to, so the field is
         // where the button was.
         let layout = self.button_layout();
@@ -1122,11 +1138,13 @@ impl Widget for HistoryScrubber {
                     hint,
                     hint_size,
                     theme.tokens.colors.text_dim,
-                    transform
-                        * Affine::translate((
+                    translated(
+                        transform,
+                        (
                             box_rect.x1 + 10.0,
                             box_rect.center().y - f64::from(hh) / 2.0,
-                        )),
+                        ),
+                    ),
                     None,
                 );
             }
@@ -1137,7 +1155,7 @@ impl Widget for HistoryScrubber {
                 if *kind == ScrubButton::Restore && redacted {
                     continue;
                 }
-                self.draw_button(
+                Self::draw_button(
                     scene,
                     transform,
                     text_renderer,
@@ -1149,6 +1167,81 @@ impl Widget for HistoryScrubber {
                 );
             }
         }
+    }
+}
+
+impl Widget for HistoryScrubber {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let h = self.natural_height();
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "natural_height is one of two small compile-time constants (140.0 / 168.0), which round-trip exactly through f32"
+                )]
+                height: Dimension::length(h as f32),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        let prev = self.rect;
+        self.rect = Rect::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
+        );
+        if prev != self.rect {
+            self.dirty = true;
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &shape,
+        );
+
+        if self.entries.is_empty() {
+            self.draw_empty_state(scene, transform, text_renderer, theme);
+            self.dirty = false;
+            return;
+        }
+
+        self.draw_track_and_handle(scene, transform, text_renderer, theme);
+        self.draw_popover(scene, transform, text_renderer, theme);
+        self.draw_controls(scene, transform, text_renderer, theme);
 
         self.dirty = false;
     }
@@ -1165,34 +1258,7 @@ impl Widget for HistoryScrubber {
         node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        // A name field owns the keyboard while it is up.
-        if self.naming.is_some()
-            && matches!(
-                event,
-                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-            )
-        {
-            let outcome = self
-                .naming
-                .as_mut()
-                .map_or(NameFieldOutcome::Ignored, |(_, f)| {
-                    f.handle_event(event, modifiers)
-                });
-            match outcome {
-                NameFieldOutcome::Commit(_) => {
-                    self.commit_naming();
-                    *handled = true;
-                }
-                NameFieldOutcome::Cancel => {
-                    self.cancel_naming();
-                    *handled = true;
-                }
-                NameFieldOutcome::Edited => {
-                    self.dirty = true;
-                    *handled = true;
-                }
-                NameFieldOutcome::Ignored => {}
-            }
+        if self.handle_naming_event(event, *modifiers, handled) {
             return;
         }
 
@@ -1203,38 +1269,7 @@ impl Widget for HistoryScrubber {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_cursor = p;
-
-                let handle = self.handle_center();
-                let dx = p.x - handle.x;
-                let dy = p.y - handle.y;
-                let hovered = (dx * dx + dy * dy).sqrt() <= HANDLE_HIT_RADIUS;
-                if hovered != self.is_hovered {
-                    self.is_hovered = hovered;
-                    self.dirty = true;
-                    *handled = true;
-                }
-
-                let over = self
-                    .button_layout()
-                    .into_iter()
-                    .find(|(_, r, _)| r.contains(p))
-                    .map(|(k, _, _)| k);
-                if over != self.hover_button {
-                    self.hover_button = over;
-                    self.dirty = true;
-                    *handled = true;
-                }
-
-                if self.is_dragging {
-                    let tick = self.tick_at_x(p.x);
-                    if tick != self.current_tick {
-                        self.current_tick = tick;
-                        self.dirty = true;
-                        *handled = true;
-                    }
-                }
+                self.handle_cursor_moved(position, scale_factor, handled);
             }
             WindowEvent::MouseInput {
                 state: element_state,
@@ -1242,90 +1277,7 @@ impl Widget for HistoryScrubber {
                 ..
             } => {
                 if *element_state == ElementState::Pressed {
-                    // The field is drawn over the button row, so buttons
-                    // under it do not get the click: pressing in the field
-                    // does nothing (no caret to place), pressing elsewhere on
-                    // the strip abandons the name like Escape does. A press
-                    // outside the strip abandons it too but is left for
-                    // whatever the user actually clicked on.
-                    if self.naming.is_some() {
-                        let field = self.name_field_rect();
-                        if field.contains(self.last_cursor) {
-                            *handled = true;
-                            return;
-                        }
-                        self.cancel_naming();
-                        if self.rect.contains(self.last_cursor) {
-                            *handled = true;
-                            return;
-                        }
-                        return;
-                    }
-                    if let Some((kind, _, _)) = self
-                        .button_layout()
-                        .into_iter()
-                        .find(|(_, r, _)| r.contains(self.last_cursor))
-                    {
-                        match kind {
-                            ScrubButton::Preview => self.invoke_preview(),
-                            ScrubButton::Restore => self.invoke_restore(),
-                            ScrubButton::Name => {
-                                self.begin_naming_current_group();
-                            }
-                            ScrubButton::Version => {
-                                if self.open_group().is_some() {
-                                    self.finish_open_version();
-                                } else {
-                                    self.begin_new_version();
-                                }
-                            }
-                        }
-                        *handled = true;
-                        return;
-                    }
-
-                    let handle = self.handle_center();
-                    let dx = self.last_cursor.x - handle.x;
-                    let dy = self.last_cursor.y - handle.y;
-                    if (dx * dx + dy * dy).sqrt() <= HANDLE_HIT_RADIUS {
-                        self.is_dragging = true;
-                        *focus_target = Some(node_id);
-                        *handled = true;
-                        return;
-                    }
-
-                    // The band is part of the same control: clicking a
-                    // version's block is the most direct way to say "take
-                    // me there".
-                    let track = self.track_rect();
-                    let band = self.band_rect();
-                    let on_track_y = (self.last_cursor.y - track.center().y).abs() <= TICK_MARK_H;
-                    let in_band = band.area() > 0.0 && band.contains(self.last_cursor);
-                    let on_track_x =
-                        self.last_cursor.x >= track.x0 && self.last_cursor.x <= track.x1;
-                    if on_track_x && (on_track_y || in_band) {
-                        // A click in a segment goes to that segment's end
-                        // (the version it names); a click on the track snaps
-                        // normally.
-                        let tick = if in_band {
-                            let raw = {
-                                let t = ((self.last_cursor.x - track.x0) / track.width())
-                                    .clamp(0.0, 1.0);
-                                (t * ((self.entries.len().max(2) - 1) as f64)).round() as usize
-                            };
-                            self.groups
-                                .iter()
-                                .find(|g| raw >= g.start && raw <= g.end)
-                                .map_or_else(|| self.tick_at_x(self.last_cursor.x), |g| g.end)
-                        } else {
-                            self.tick_at_x(self.last_cursor.x)
-                        };
-                        self.current_tick = tick.min(self.entries.len() - 1);
-                        self.is_dragging = !in_band;
-                        *focus_target = Some(node_id);
-                        self.dirty = true;
-                        *handled = true;
-                    }
+                    self.handle_mouse_press(focus_target, node_id, handled);
                 } else if *element_state == ElementState::Released && self.is_dragging {
                     self.is_dragging = false;
                     self.dirty = true;
@@ -1355,7 +1307,10 @@ impl Widget for HistoryScrubber {
         let value = if total == 0 {
             "empty".to_string()
         } else {
-            let pos = format!("revision {} of {}", self.current_tick + 1, total);
+            let pos = format!(
+                "revision {} of {total}",
+                self.current_tick.saturating_add(1)
+            );
             match self.current_group() {
                 Some(g) => format!("{}, {pos}", g.title()),
                 None => pos,
@@ -1396,6 +1351,176 @@ impl Widget for HistoryScrubber {
     }
 }
 
+impl HistoryScrubber {
+    /// A name field owns the keyboard while it is up. Returns `true` when it
+    /// consumed the event, meaning `handle_event` should not process it any
+    /// further.
+    fn handle_naming_event(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) -> bool {
+        if !(self.naming.is_some()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            ))
+        {
+            return false;
+        }
+        let outcome = self
+            .naming
+            .as_mut()
+            .map_or(NameFieldOutcome::Ignored, |(_, f)| {
+                f.handle_event(event, &modifiers)
+            });
+        match outcome {
+            NameFieldOutcome::Commit(_) => {
+                self.commit_naming();
+                *handled = true;
+            }
+            NameFieldOutcome::Cancel => {
+                self.cancel_naming();
+                *handled = true;
+            }
+            NameFieldOutcome::Edited => {
+                self.dirty = true;
+                *handled = true;
+            }
+            NameFieldOutcome::Ignored => {}
+        }
+        true
+    }
+
+    fn handle_cursor_moved(
+        &mut self,
+        position: &winit::dpi::PhysicalPosition<f64>,
+        scale_factor: f64,
+        handled: &mut bool,
+    ) {
+        let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+        self.last_cursor = p;
+
+        let handle = self.handle_center();
+        let dx = p.x - handle.x;
+        let dy = p.y - handle.y;
+        let hovered = (dx * dx + dy * dy).sqrt() <= HANDLE_HIT_RADIUS;
+        if hovered != self.is_hovered {
+            self.is_hovered = hovered;
+            self.dirty = true;
+            *handled = true;
+        }
+
+        let over = self
+            .button_layout()
+            .into_iter()
+            .find(|(_, r, _)| r.contains(p))
+            .map(|(k, _, _)| k);
+        if over != self.hover_button {
+            self.hover_button = over;
+            self.dirty = true;
+            *handled = true;
+        }
+
+        if self.is_dragging {
+            let tick = self.tick_at_x(p.x);
+            if tick != self.current_tick {
+                self.current_tick = tick;
+                self.dirty = true;
+                *handled = true;
+            }
+        }
+    }
+
+    /// A left-button press. Handles the naming field's click-outside-to-abandon
+    /// behaviour, the button row, the drag handle and a click on the band or
+    /// track.
+    fn handle_mouse_press(
+        &mut self,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        handled: &mut bool,
+    ) {
+        // The field is drawn over the button row, so buttons under it do not
+        // get the click: pressing in the field does nothing (no caret to
+        // place), pressing elsewhere on the strip abandons the name like
+        // Escape does. A press outside the strip abandons it too but is left
+        // for whatever the user actually clicked on.
+        if self.naming.is_some() {
+            let field = self.name_field_rect();
+            if field.contains(self.last_cursor) {
+                *handled = true;
+                return;
+            }
+            self.cancel_naming();
+            if self.rect.contains(self.last_cursor) {
+                *handled = true;
+            }
+            return;
+        }
+        if let Some((kind, _, _)) = self
+            .button_layout()
+            .into_iter()
+            .find(|(_, r, _)| r.contains(self.last_cursor))
+        {
+            match kind {
+                ScrubButton::Preview => self.invoke_preview(),
+                ScrubButton::Restore => self.invoke_restore(),
+                ScrubButton::Name => {
+                    self.begin_naming_current_group();
+                }
+                ScrubButton::Version => {
+                    if self.open_group().is_some() {
+                        self.finish_open_version();
+                    } else {
+                        self.begin_new_version();
+                    }
+                }
+            }
+            *handled = true;
+            return;
+        }
+
+        let handle = self.handle_center();
+        let dx = self.last_cursor.x - handle.x;
+        let dy = self.last_cursor.y - handle.y;
+        if (dx * dx + dy * dy).sqrt() <= HANDLE_HIT_RADIUS {
+            self.is_dragging = true;
+            *focus_target = Some(node_id);
+            *handled = true;
+            return;
+        }
+
+        // The band is part of the same control: clicking a version's block is
+        // the most direct way to say "take me there".
+        let track = self.track_rect();
+        let band = self.band_rect();
+        let on_track_y = (self.last_cursor.y - track.center().y).abs() <= TICK_MARK_H;
+        let in_band = band.area() > 0.0 && band.contains(self.last_cursor);
+        let on_track_x = self.last_cursor.x >= track.x0 && self.last_cursor.x <= track.x1;
+        if on_track_x && (on_track_y || in_band) {
+            // A click in a segment goes to that segment's end (the version it
+            // names); a click on the track snaps normally.
+            let tick = if in_band {
+                let t = ((self.last_cursor.x - track.x0) / track.width()).clamp(0.0, 1.0);
+                let raw = tick_from_ratio(t, self.entries.len().max(2).saturating_sub(1));
+                self.groups
+                    .iter()
+                    .find(|g| raw >= g.start && raw <= g.end)
+                    .map_or_else(|| self.tick_at_x(self.last_cursor.x), |g| g.end)
+            } else {
+                self.tick_at_x(self.last_cursor.x)
+            };
+            self.current_tick = tick.min(self.entries.len().saturating_sub(1));
+            self.is_dragging = !in_band;
+            *focus_target = Some(node_id);
+            self.dirty = true;
+            *handled = true;
+        }
+    }
+}
+
 // =====================================================================
 // Tests
 // =====================================================================
@@ -1413,13 +1538,16 @@ mod tests {
     fn entry(id: u8) -> HistoryEntry {
         let mut bytes = [0u8; 16];
         bytes[0] = id;
+        let secs = u64::from(id).saturating_mul(60);
         HistoryEntry {
             id: HistoryEntryId(bytes),
             author: HistoryAuthor::new("Alice", 120.0, "deadbeef"),
             op_class: OpClass::Splice,
             artifact_kind: ArtifactKind::Note,
-            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(id as u64 * 60),
-            summary: format!("op {}", id),
+            timestamp: SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(secs))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+            summary: format!("op {id}"),
             text_delta: Some((1, 0)),
             diff_payload: None,
             redaction: None,
@@ -1427,10 +1555,17 @@ mod tests {
     }
 
     fn scrubber_at(rect: Rect, n: usize) -> HistoryScrubber {
-        let entries: Vec<HistoryEntry> = (0..n as u8).map(entry).collect();
+        let entries: Vec<HistoryEntry> = (0..u8::try_from(n)
+            .expect("test history size fits in u8"))
+            .map(entry)
+            .collect();
         let mut s = HistoryScrubber::new(entries);
         s.rect = rect;
-        s.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(3600));
+        s.set_now_for_test(
+            SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(3600))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+        );
         s
     }
 
@@ -1622,24 +1757,35 @@ mod version_tests {
     fn entry(id: u8) -> HistoryEntry {
         let mut bytes = [0u8; 16];
         bytes[0] = id;
+        let secs = u64::from(id).saturating_mul(60);
+        let len = usize::from(id).saturating_add(1);
         HistoryEntry {
             id: HistoryEntryId(bytes),
             author: HistoryAuthor::new("Alice", 120.0, "deadbeef"),
             op_class: OpClass::Splice,
             artifact_kind: ArtifactKind::Note,
-            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(id as u64 * 60),
-            summary: format!("+{} -0 chars", id as usize + 1),
-            text_delta: Some((id as usize + 1, 0)),
+            timestamp: SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(secs))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+            summary: format!("+{len} -0 chars"),
+            text_delta: Some((len, 0)),
             diff_payload: None,
             redaction: None,
         }
     }
 
     fn scrubber(w: f64, n: usize) -> HistoryScrubber {
-        let entries: Vec<HistoryEntry> = (0..n as u8).map(entry).collect();
+        let entries: Vec<HistoryEntry> = (0..u8::try_from(n)
+            .expect("test history size fits in u8"))
+            .map(entry)
+            .collect();
         let mut s = HistoryScrubber::new(entries);
         s.set_rect(Rect::new(0.0, 0.0, w, s.natural_height()));
-        s.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(100_000));
+        s.set_now_for_test(
+            SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(100_000))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+        );
         s
     }
 
@@ -1647,8 +1793,8 @@ mod version_tests {
         ScrubberGroup {
             start,
             end,
-            label: label.map(|s| s.to_string()),
-            derived: format!("{} edits", (end + 1).saturating_sub(start)),
+            label: label.map(str::to_string),
+            derived: format!("{} edits", end.saturating_add(1).saturating_sub(start)),
             record_id: label.map(|_| format!("qos:group:{start}")),
             open: false,
         }
@@ -1863,7 +2009,7 @@ mod version_tests {
         s.set_current_tick(19);
         // The middle of the "Intro rewrite" block (changes 10..=14).
         let band = s.band_rect();
-        let x = (s.tick_x(10) + s.tick_x(14)) / 2.0;
+        let x = f64::midpoint(s.tick_x(10), s.tick_x(14));
         click(&mut s, Point::new(x, band.center().y));
         assert_eq!(
             s.current_tick(),
@@ -1871,7 +2017,7 @@ mod version_tests {
             "the version's end is the state that version produced"
         );
         assert_eq!(
-            s.current_group().map(|g| g.title()),
+            s.current_group().map(ScrubberGroup::title),
             Some("Intro rewrite"),
             "and the handle is inside it"
         );
@@ -1885,7 +2031,10 @@ mod version_tests {
     fn the_popover_and_the_screen_reader_both_name_the_version() {
         let mut s = with_versions(900.0);
         s.set_current_tick(12);
-        assert_eq!(s.current_group().map(|g| g.title()), Some("Intro rewrite"));
+        assert_eq!(
+            s.current_group().map(ScrubberGroup::title),
+            Some("Intro rewrite")
+        );
         let node = Widget::accessibility(&s).unwrap();
         assert_eq!(
             node.value.as_deref(),
@@ -2056,7 +2205,7 @@ mod version_tests {
             group(8, 40, Some("Runs past the end")),
             group(6, 5, Some("Backwards")),
         ]);
-        let titles: Vec<&str> = s.groups().iter().map(|g| g.title()).collect();
+        let titles: Vec<&str> = s.groups().iter().map(ScrubberGroup::title).collect();
         assert_eq!(titles, vec!["Real"]);
     }
 
@@ -2123,34 +2272,48 @@ mod version_tests {
         assert_eq!(s.snap_targets(), vec![0, 7]);
     }
 
+    /// Rounds a rect coordinate into a device-pixel index for offscreen
+    /// sampling. Test geometry here is always non-negative and far below
+    /// `u32::MAX`, so this never loses the sign or truncates in practice.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test rect coordinates are non-negative and well under u32::MAX"
+    )]
+    fn px_u32(v: f64) -> u32 {
+        v.round() as u32
+    }
+
     /// Render the strip and report how many pixels inside `r` differ from the
     /// pixel in its top-left corner. A flat fill scores 0; ink drawn on top of it
     /// scores. Used to assert that a label reached the scene, rather than that a
     /// helper returned a string the paint path might not use.
-    fn ink_in(s: &mut HistoryScrubber, r: Rect) -> usize {
-        let (w, h) = (s.rect().width() as u32, s.rect().height() as u32);
+    fn ink_in(scrubber: &mut HistoryScrubber, r: Rect) -> usize {
+        let width = px_u32(scrubber.rect().width());
+        let height = px_u32(scrubber.rect().height());
         let theme = Theme::dark();
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
-        s.draw(
+        scrubber.draw(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
             &theme,
             &PresenceCtx::empty(),
         );
-        let rgba = crate::offscreen::OffscreenRenderer::new(w, h)
+        let rgba = crate::offscreen::OffscreenRenderer::new(width, height)
             .render(&scene, theme.tokens.colors.surfaces.base);
-        let base = crate::offscreen::OffscreenRenderer::sample(&rgba, w, r.x0 as u32, r.y0 as u32);
-        let mut n = 0;
-        for y in (r.y0 as u32)..(r.y1 as u32).min(h) {
-            for x in (r.x0 as u32)..(r.x1 as u32).min(w) {
-                if crate::offscreen::OffscreenRenderer::sample(&rgba, w, x, y) != base {
-                    n += 1;
+        let base =
+            crate::offscreen::OffscreenRenderer::sample(&rgba, width, px_u32(r.x0), px_u32(r.y0));
+        let mut diff: usize = 0;
+        for y in px_u32(r.y0)..px_u32(r.y1).min(height) {
+            for x in px_u32(r.x0)..px_u32(r.x1).min(width) {
+                if crate::offscreen::OffscreenRenderer::sample(&rgba, width, x, y) != base {
+                    diff = diff.saturating_add(1);
                 }
             }
         }
-        n
+        diff
     }
 
     /// The interior of segment `i`'s block, inset clear of the boundary strokes
@@ -2160,9 +2323,9 @@ mod version_tests {
         let x0 = if i == 0 {
             band.x0
         } else {
-            s.tick_x(s.groups()[i - 1].end)
+            s.tick_x(s.groups()[i.saturating_sub(1)].end)
         };
-        let x1 = if i + 1 == s.groups().len() {
+        let x1 = if i.saturating_add(1) == s.groups().len() {
             band.x1
         } else {
             s.tick_x(s.groups()[i].end)

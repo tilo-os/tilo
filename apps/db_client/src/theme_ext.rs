@@ -16,19 +16,6 @@ use ui::theme::Theme;
 /// A bundle of derived colours for one frame, computed from a [`Theme`].
 #[derive(Clone, Copy)]
 pub struct DbPalette {
-    // Editor surfaces
-    pub editor_bg: Color,
-    pub gutter_bg: Color,
-    pub gutter_fg: Color,
-    pub current_line: Color,
-    // Syntax highlight
-    pub kw: Color,
-    pub func: Color,
-    pub ty: Color,
-    pub num: Color,
-    pub str_lit: Color,
-    pub comment: Color,
-    pub op: Color,
     // Grid
     pub header_bg: Color,
     pub row_alt: Color,
@@ -66,24 +53,7 @@ impl ThemeExt for Theme {
         let sem = &c.semantic;
         let accent = self.accent_primary;
 
-        // Editor sits one shade darker than the panel background.
-        let editor_bg = mix(c.surfaces.base, Color::BLACK, 0.15);
         DbPalette {
-            editor_bg,
-            gutter_bg: mix(editor_bg, Color::BLACK, 0.2),
-            gutter_fg: self.text_dim,
-            current_line: with_alpha(accent, 22),
-
-            // Syntax colours pulled from semantic + ramp tints so they track
-            // the theme rather than fixed hexes.
-            kw: mix(accent, n[9], 0.1),
-            func: sem.info,
-            ty: sem.warning,
-            num: sem.success,
-            str_lit: mix(sem.warning, n[9], 0.35),
-            comment: self.text_dim,
-            op: mix(self.text_primary, accent, 0.3),
-
             header_bg: mix(c.surfaces.raised, Color::BLACK, 0.1),
             row_alt: with_alpha(n[7], 8),
             grid_line: self.border_standard,
@@ -104,10 +74,9 @@ impl ThemeExt for Theme {
             TypeClass::Real => sem.success,
             TypeClass::Numeric => self.accent_primary,
             TypeClass::Text => sem.warning,
-            TypeClass::Blob => self.text_dim,
             TypeClass::Boolean => sem.danger,
             TypeClass::DateTime => mix(sem.info, sem.success, 0.5),
-            TypeClass::Unknown => self.text_dim,
+            TypeClass::Blob | TypeClass::Unknown => self.text_dim,
         }
     }
 }

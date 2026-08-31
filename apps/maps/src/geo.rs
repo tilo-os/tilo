@@ -92,7 +92,12 @@ pub fn haversine_m(a: LatLon, b: LatLon) -> f64 {
 
 /// Total length of a polyline in metres.
 pub fn polyline_length_m(pts: &[LatLon]) -> f64 {
-    pts.windows(2).map(|w| haversine_m(w[0], w[1])).sum()
+    pts.windows(2)
+        .map(|w| {
+            let [a, b] = w else { return 0.0 };
+            haversine_m(*a, *b)
+        })
+        .sum()
 }
 
 /// Simplify a geographic polyline with Ramer–Douglas–Peucker, keeping every
@@ -115,39 +120,52 @@ pub fn simplify_polyline(pts: &[LatLon], tolerance_m: f64) -> Vec<LatLon> {
     if n <= 2 || tolerance_m <= 0.0 {
         return pts.to_vec();
     }
+    let Some(origin) = pts.first() else {
+        return pts.to_vec();
+    };
 
     // Local equirectangular projection to metres so perpendicular distances are
     // Euclidean. Anchored at the first point; accurate at route scale.
-    let lat0 = pts[0].lat.to_radians();
+    let lat0 = origin.lat.to_radians();
     let m_per_deg = EARTH_RADIUS_M * PI / 180.0;
     let cos_lat0 = lat0.cos();
     let xy = |p: LatLon| -> (f64, f64) {
         (
-            (p.lon - pts[0].lon) * m_per_deg * cos_lat0,
-            (p.lat - pts[0].lat) * m_per_deg,
+            (p.lon - origin.lon) * m_per_deg * cos_lat0,
+            (p.lat - origin.lat) * m_per_deg,
         )
     };
     let plane: Vec<(f64, f64)> = pts.iter().map(|p| xy(*p)).collect();
 
     let mut keep = vec![false; n];
-    keep[0] = true;
-    keep[n - 1] = true;
+    if let Some(k) = keep.first_mut() {
+        *k = true;
+    }
+    if let Some(k) = keep.last_mut() {
+        *k = true;
+    }
     let mut stack = vec![(0usize, n - 1)];
     let tol2 = tolerance_m * tolerance_m;
     while let Some((lo, hi)) = stack.pop() {
         if hi <= lo + 1 {
             continue;
         }
+        let (Some(&p_lo), Some(&p_hi)) = (plane.get(lo), plane.get(hi)) else {
+            continue;
+        };
         let (mut far, mut far_d2) = (lo, -1.0f64);
         for i in (lo + 1)..hi {
-            let d2 = perp_dist2(plane[i], plane[lo], plane[hi]);
+            let Some(&p_cur) = plane.get(i) else { continue };
+            let d2 = perp_dist2(p_cur, p_lo, p_hi);
             if d2 > far_d2 {
                 far = i;
                 far_d2 = d2;
             }
         }
         if far_d2 > tol2 {
-            keep[far] = true;
+            if let Some(k) = keep.get_mut(far) {
+                *k = true;
+            }
             stack.push((lo, far));
             stack.push((far, hi));
         }
@@ -198,17 +216,20 @@ pub fn fit_bounds(pts: &[LatLon], w: f64, h: f64, pad: f64) -> Option<(LatLon, f
     let avail_w = (w - 2.0 * pad).max(64.0);
     let avail_h = (h - 2.0 * pad).max(64.0);
 
-    // Find the largest zoom at which the bbox still fits.
+    // Find the largest zoom at which the bbox still fits. Bounded by the fixed
+    // 3.0..19.0 zoom range in 0.25 steps rather than a float `while`.
     let mut best = 3.0_f64;
-    let mut z = 3.0_f64;
-    while z < 19.0 {
+    for step in 0..64 {
+        let z = 3.0 + 0.25 * f64::from(step);
+        if z >= 19.0 {
+            break;
+        }
         let nw = lonlat_to_world(LatLon::new(max_lat, min_lon), z);
         let se = lonlat_to_world(LatLon::new(min_lat, max_lon), z);
         let span_x = (se.0 - nw.0).abs();
         let span_y = (se.1 - nw.1).abs();
         if span_x <= avail_w && span_y <= avail_h {
             best = z;
-            z += 0.25;
         } else {
             break;
         }
@@ -250,8 +271,8 @@ pub fn scale_bar(center: LatLon, zoom: f64, max_px: f64) -> (String, f64) {
     let max_m = mpp * max_px;
     // Largest nice value ≤ max_m from the 1-2-5 sequence.
     let nice = [
-        1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0,
-        20000.0, 50000.0, 100000.0,
+        1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1_000.0, 2_000.0, 5_000.0, 10_000.0,
+        20_000.0, 50_000.0, 100_000.0,
     ];
     let mut chosen = nice[0];
     for &n in &nice {

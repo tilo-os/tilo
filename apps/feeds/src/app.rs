@@ -28,6 +28,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextWeight};
@@ -44,8 +45,21 @@ use crate::model::{
     Article, BlockKind, Feed, FeedKind, Filter, Id, ReadFont, ReadSettings, ReadTheme, Store,
     relative_time,
 };
-use crate::portal::{self, ImportOutcome};
 use crate::reader_theme::ReaderPalette;
+
+fn opml_import_request() -> PickRequest {
+    PickRequest::open("Import OPML", "Import")
+        .thread_name("feeds-portal-import")
+        .filter(
+            FileFilter::new("OPML")
+                .mimetype("text/x-opml")
+                .mimetype("application/xml")
+                .mimetype("text/xml")
+                .glob("*.opml")
+                .glob("*.xml"),
+        )
+        .all_files()
+}
 use crate::{opml, sample};
 
 const SIDEBAR_W: f64 = 256.0;
@@ -328,6 +342,11 @@ enum DocWrite {
     Feed(Feed),
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent render/interaction cache (popover open, staged \\
+              --shots flags, animation settle state), not a state machine"
+)]
 pub struct FeedsApp {
     store: Store,
     filter: Filter,
@@ -358,7 +377,7 @@ pub struct FeedsApp {
     // --- OPML import (XDG portal) ---------------------------------------
     /// In-flight import file-chooser: the portal worker's receiver, drained
     /// once per frame in `sync`. `None` when no picker is open.
-    import_rx: Option<portal::ImportChannel>,
+    import_rx: Option<PortalChannel>,
 
     // --- per-feed context menu ------------------------------------------
     /// Right-click menu over a sidebar feed. Uses the shared `ui` primitive so
@@ -554,7 +573,7 @@ impl FeedsApp {
     }
 
     /// Open the Add-subscription dialog with `url` pre-typed into the field, so
-    /// a `--shots` capture shows the real modal + focused TextInput with a caret
+    /// a `--shots` capture shows the real modal + focused `TextInput` with a caret
     /// (the single-frame renderer can't reach it through live input).
     pub fn stage_add_subscription(&mut self, url: &str) {
         self.open_add_subscription();
@@ -633,15 +652,12 @@ impl FeedsApp {
     }
 
     fn ensure_selection(&mut self) {
-        let in_list = self
-            .selected
-            .map(|id| {
-                self.store
-                    .articles_for(self.filter)
-                    .iter()
-                    .any(|a| a.id == id)
-            })
-            .unwrap_or(false);
+        let in_list = self.selected.is_some_and(|id| {
+            self.store
+                .articles_for(self.filter)
+                .iter()
+                .any(|a| a.id == id)
+        });
         if !in_list {
             self.selected = self.store.articles_for(self.filter).first().map(|a| a.id);
         }
@@ -652,10 +668,7 @@ impl FeedsApp {
     }
 
     fn worker(&mut self) -> &mut FetchWorker {
-        if self.worker.is_none() {
-            self.worker = Some(FetchWorker::spawn());
-        }
-        self.worker.as_mut().unwrap()
+        self.worker.get_or_insert_with(FetchWorker::spawn)
     }
 
     /// Install a thread-less test worker and return the sender half of its
@@ -699,13 +712,11 @@ impl FeedsApp {
             Filter::Folder(id) => self
                 .store
                 .folder(id)
-                .map(|f| f.name.clone())
-                .unwrap_or_else(|| "Folder".into()),
+                .map_or_else(|| "Folder".into(), |f| f.name.clone()),
             Filter::Feed(id) => self
                 .store
                 .feed(id)
-                .map(|f| f.title.clone())
-                .unwrap_or_else(|| "Feed".into()),
+                .map_or_else(|| "Feed".into(), |f| f.title.clone()),
         }
     }
 
@@ -737,7 +748,7 @@ impl FeedsApp {
         self.selected = Some(id);
         self.reader_scroll = 0.0;
         if self.store.mark_read(id, true) {
-            self.perform_action(doc, actions::mark_read_action(id, true));
+            self.perform_action(doc, &actions::mark_read_action(id, true));
         }
         // Single-pane master→detail: selecting from the list pushes the reader in.
         if self.single_pane() {
@@ -769,44 +780,45 @@ impl FeedsApp {
             }
             None => 0,
         };
-        let id = ids[next];
+        let Some(&id) = ids.get(next) else {
+            return;
+        };
         self.select_article(id, doc);
         self.scroll_selection_into_view();
     }
 
     fn scroll_selection_into_view(&mut self) {
-        if let Some(sel) = self.selected {
-            if let Some(pos) = self
+        if let Some(sel) = self.selected
+            && let Some(pos) = self
                 .store
                 .articles_for(self.filter)
                 .iter()
                 .position(|a| a.id == sel)
-            {
-                let row_top = pos as f64 * LIST_ROW_H;
-                let row_bot = row_top + LIST_ROW_H;
-                let view_h = (self.list_rect.height() - HEADER_H).max(0.0);
-                if row_top < self.list_scroll {
-                    self.list_scroll = row_top;
-                } else if row_bot > self.list_scroll + view_h {
-                    self.list_scroll = row_bot - view_h;
-                }
+        {
+            let row_top = pos as f64 * LIST_ROW_H;
+            let row_bot = row_top + LIST_ROW_H;
+            let view_h = (self.list_rect.height() - HEADER_H).max(0.0);
+            if row_top < self.list_scroll {
+                self.list_scroll = row_top;
+            } else if row_bot > self.list_scroll + view_h {
+                self.list_scroll = row_bot - view_h;
             }
         }
     }
 
     fn toggle_star(&mut self, id: Id, doc: &mut AutoCommit) {
         if self.store.toggle_star(id) {
-            let starred = self.store.article(id).map(|a| a.starred).unwrap_or(false);
-            self.perform_action(doc, actions::set_starred_action(id, starred));
+            let starred = self.store.article(id).is_some_and(|a| a.starred);
+            self.perform_action(doc, &actions::set_starred_action(id, starred));
             self.set_toast(if starred { "Starred" } else { "Unstarred" });
         }
     }
 
     fn toggle_read(&mut self, doc: &mut AutoCommit) {
         if let Some(id) = self.selected {
-            let now_read = self.store.article(id).map(|a| !a.read).unwrap_or(true);
+            let now_read = self.store.article(id).is_none_or(|a| !a.read);
             if self.store.mark_read(id, now_read) {
-                self.perform_action(doc, actions::mark_read_action(id, now_read));
+                self.perform_action(doc, &actions::mark_read_action(id, now_read));
             }
         }
     }
@@ -814,7 +826,7 @@ impl FeedsApp {
     fn mark_all_read(&mut self, doc: &mut AutoCommit) {
         let ids = self.store.mark_all_read(self.filter);
         if !ids.is_empty() {
-            self.perform_action(doc, actions::mark_all_read_action(&ids));
+            self.perform_action(doc, &actions::mark_all_read_action(&ids));
         }
         self.set_toast(format!("Marked {} read", ids.len()));
     }
@@ -827,9 +839,9 @@ impl FeedsApp {
     /// peers), exactly as the palette does. The document heads captured just
     /// before the first action of the event are stashed so the host records
     /// **one** undo boundary bracketing it ([`Widget::take_committed_action`]).
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: FeedsAction) {
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: &FeedsAction) {
         self.actions
-            .dispatch(doc, actions::FEEDS_ACTION_TYPE, &action);
+            .dispatch(doc, actions::FEEDS_ACTION_TYPE, action);
         // The action just mutated the document; keep the reload watermark ahead
         // of it so `sync`'s out-of-band reload doesn't redundantly rebuild the
         // store for a change this widget already mirrored.
@@ -858,15 +870,14 @@ impl FeedsApp {
                 unread: self.store.unread_ids_for(Filter::Feed(f.id)),
             })
             .collect();
-        feeds.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+        feeds.sort_by_key(|f| f.title.to_lowercase());
         let next_folder_order = self
             .store
             .folders
             .iter()
             .map(|f| f.order)
             .max()
-            .map(|m| m + 1)
-            .unwrap_or(0);
+            .map_or(0, |m| m + 1);
         FeedsResourceCtx {
             folders,
             feeds,
@@ -959,7 +970,7 @@ impl FeedsApp {
     /// (mint the id here, create the feed row with a placeholder title + derived
     /// site-url in the store and document); populating its real title + articles
     /// is an external fetch, not an action.
-    fn subscribe(&mut self, url: String, doc: &mut AutoCommit) {
+    fn subscribe(&mut self, url: &str, doc: &mut AutoCommit) {
         let url = url.trim().to_string();
         if url.is_empty() {
             return;
@@ -984,7 +995,7 @@ impl FeedsApp {
         self.store.upsert_feed(feed);
         self.perform_action(
             doc,
-            actions::add_subscription_action(id, &url, folder, order),
+            &actions::add_subscription_action(id, &url, folder, order),
         );
         // Populate the new feed's title + articles off-thread (external).
         self.refresh_feeds(&[id]);
@@ -996,7 +1007,7 @@ impl FeedsApp {
         let xml = opml::export(&self.store);
         let path = std::env::temp_dir().join("feeds-subscriptions.opml");
         match std::fs::write(&path, xml) {
-            Ok(_) => self.set_toast(format!("Exported OPML → {}", path.display())),
+            Ok(()) => self.set_toast(format!("Exported OPML → {}", path.display())),
             Err(e) => self.set_toast(format!("Export failed: {e}")),
         }
     }
@@ -1011,7 +1022,7 @@ impl FeedsApp {
         if self.import_rx.is_some() {
             return;
         }
-        self.import_rx = Some(portal::request_import());
+        self.import_rx = Some(opml_import_request().send());
         self.set_toast("Choose an OPML file…");
     }
 
@@ -1033,7 +1044,7 @@ impl FeedsApp {
         };
         self.import_rx = None;
         match outcome {
-            ImportOutcome::Opened(path) => match std::fs::read_to_string(&path) {
+            PortalOutcome::Opened(path) => match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     let new_ids = self.apply_opml_import(&text, doc);
                     if new_ids.is_empty() {
@@ -1051,8 +1062,8 @@ impl FeedsApp {
                     true
                 }
             },
-            ImportOutcome::Cancelled => false,
-            ImportOutcome::Failed(reason) => {
+            PortalOutcome::Cancelled => false,
+            PortalOutcome::Failed(reason) => {
                 self.set_toast(format!("Import failed: {reason}"));
                 true
             }
@@ -1119,10 +1130,10 @@ impl FeedsApp {
     /// section headers have no per-feed menu).
     fn feed_at(&self, p: Point) -> Option<Id> {
         self.sidebar_rows.iter().find_map(|row| {
-            if row.rect.contains(p) {
-                if let RowRole::Feed { id, .. } = row.role {
-                    return Some(id);
-                }
+            if row.rect.contains(p)
+                && let RowRole::Feed { id, .. } = row.role
+            {
+                return Some(id);
             }
             None
         })
@@ -1163,7 +1174,7 @@ impl FeedsApp {
             FeedMenuAction::MarkAllRead => {
                 let ids = self.store.mark_all_read(Filter::Feed(feed_id));
                 if !ids.is_empty() {
-                    self.perform_action(doc, actions::mark_all_read_action(&ids));
+                    self.perform_action(doc, &actions::mark_all_read_action(&ids));
                 }
                 self.set_toast(format!("Marked {} read", ids.len()));
             }
@@ -1210,18 +1221,18 @@ impl FeedsApp {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = m.dialog.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(self.rect.width() as f32),
-                        height: Dimension::length(self.rect.height() as f32),
-                    },
-                    ..Default::default()
+        let Ok(root) = taffy.new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(self.rect.width() as f32),
+                    height: Dimension::length(self.rect.height() as f32),
                 },
-                &[node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[node],
+        ) else {
+            return;
+        };
         let _ = taffy.compute_layout(
             root,
             Size {
@@ -1241,31 +1252,32 @@ impl FeedsApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
     ) {
-        if let WindowEvent::KeyboardInput { event: ke, .. } = event {
-            if ke.state == ElementState::Pressed
-                && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
-            {
-                self.submit_modal(state);
-                *handled = true;
-                return;
-            }
+        if let WindowEvent::KeyboardInput { event: ke, .. } = event
+            && ke.state == ElementState::Pressed
+            && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
+        {
+            self.submit_modal(state);
+            *handled = true;
+            return;
         }
         let (submit, cancel) = {
             let Some(m) = self.modal.as_mut() else { return };
             // The dialog ignores the node/taffy it's handed (it drives its own
             // retained content tree), so a throwaway leaf is fine.
             let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
+            let Ok(node) = taffy.new_leaf(Style::default()) else {
+                return;
+            };
             let mut focus_target = None;
             m.dialog.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -1296,8 +1308,8 @@ impl FeedsApp {
         }
         self.modal = None;
         match intent {
-            ModalIntent::AddSubscription => self.subscribe(value, doc),
-            ModalIntent::RenameFeed { feed_id } => self.rename_feed(feed_id, value, doc),
+            ModalIntent::AddSubscription => self.subscribe(&value, doc),
+            ModalIntent::RenameFeed { feed_id } => self.rename_feed(feed_id, &value, doc),
             ModalIntent::Unsubscribe { feed_id } => self.unsubscribe_feed(feed_id, doc),
         }
     }
@@ -1311,13 +1323,13 @@ impl FeedsApp {
             .map(|f| f.title.clone())
             .unwrap_or_default();
         let removed = self.store.remove_feed(feed_id);
-        self.perform_action(doc, actions::remove_subscription_action(feed_id));
+        self.perform_action(doc, &actions::remove_subscription_action(feed_id));
         // If we were viewing the removed feed, fall back to All.
         if matches!(self.filter, Filter::Feed(id) if id == feed_id) {
             self.set_filter(Filter::All);
         }
         // Clear a selection that pointed at one of the removed articles.
-        if self.selected.map(|s| removed.contains(&s)).unwrap_or(false) {
+        if self.selected.is_some_and(|s| removed.contains(&s)) {
             self.selected = None;
         }
         self.ensure_selection();
@@ -1325,16 +1337,16 @@ impl FeedsApp {
     }
 
     /// Rename a feed in the store and persist the new title to the document.
-    fn rename_feed(&mut self, feed_id: Id, name: String, doc: &mut AutoCommit) {
+    fn rename_feed(&mut self, feed_id: Id, name: &str, doc: &mut AutoCommit) {
         let name = name.trim().to_string();
         if name.is_empty() {
             return;
         }
         if self.store.feeds.iter().any(|f| f.id == feed_id) {
             if let Some(f) = self.store.feeds.iter_mut().find(|f| f.id == feed_id) {
-                f.title = name.clone();
+                name.clone_into(&mut f.title);
             }
-            self.perform_action(doc, actions::rename_feed_action(feed_id, &name));
+            self.perform_action(doc, &actions::rename_feed_action(feed_id, &name));
             self.set_toast("Renamed feed");
         }
     }
@@ -1363,15 +1375,13 @@ impl FeedsApp {
                     articles,
                 } => {
                     let mut feed_changed = false;
-                    if let Some(t) = title {
-                        if !t.is_empty() {
-                            if let Some(f) = self.store.feeds.iter_mut().find(|f| f.id == feed_id) {
-                                if f.title != t {
-                                    f.title = t;
-                                    feed_changed = true;
-                                }
-                            }
-                        }
+                    if let Some(t) = title
+                        && !t.is_empty()
+                        && let Some(f) = self.store.feeds.iter_mut().find(|f| f.id == feed_id)
+                        && f.title != t
+                    {
+                        f.title = t;
+                        feed_changed = true;
                     }
                     let mut added = 0;
                     for a in articles {
@@ -1380,10 +1390,8 @@ impl FeedsApp {
                             added += 1;
                         }
                     }
-                    if feed_changed {
-                        if let Some(f) = self.store.feed(feed_id) {
-                            self.pending_doc_writes.push(DocWrite::Feed(f.clone()));
-                        }
+                    if feed_changed && let Some(f) = self.store.feed(feed_id) {
+                        self.pending_doc_writes.push(DocWrite::Feed(f.clone()));
                     }
                     // Progress accounting for this feed.
                     self.refresh.done += 1;
@@ -1483,7 +1491,7 @@ impl FeedsApp {
                 // The hamburger only appears while the docked rail is collapsing
                 // / collapsed, so a hidden rail can always be summoned back.
                 self.hamburger_rect = if reveal < 0.999 {
-                    self.toggle_button_rect(self.toolbar_rect)
+                    Self::toggle_button_rect(self.toolbar_rect)
                 } else {
                     Rect::ZERO
                 };
@@ -1516,7 +1524,7 @@ impl FeedsApp {
                 self.hamburger_rect = if self.detail_pushed {
                     Rect::ZERO
                 } else {
-                    self.toggle_button_rect(self.toolbar_rect)
+                    Self::toggle_button_rect(self.toolbar_rect)
                 };
             }
         }
@@ -1564,7 +1572,7 @@ impl FeedsApp {
     /// The hamburger / close toggle rect, pinned to the top-left of the
     /// content's toolbar so it never collides with the right-aligned action
     /// buttons.
-    fn toggle_button_rect(&self, toolbar: Rect) -> Rect {
+    fn toggle_button_rect(toolbar: Rect) -> Rect {
         let size = 36.0;
         let x = toolbar.x0 + 10.0;
         let cy = toolbar.y0 + HEADER_H / 2.0;
@@ -1584,6 +1592,11 @@ impl FeedsApp {
         };
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one push per sidebar section (smart filters, folders, feeds); the length \
+                  is the number of row kinds, not accidental complexity in any one section"
+    )]
     fn build_sidebar_rows(&mut self) {
         let mut rows = Vec::new();
         let x0 = self.sidebar_rect.x0;
@@ -1790,6 +1803,11 @@ impl FeedsApp {
 
     // --- drawing ---------------------------------------------------------
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over the app's fixed chrome regions; splitting it \
+                  would only relocate the line count, not the amount a reader must hold in mind"
+    )]
     fn paint(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         // Drain background-fetch results LIVE, every frame. `draw` has no
         // document handle, so this updates the in-memory store + progress and
@@ -1812,13 +1830,14 @@ impl FeedsApp {
         // `--shots` staging: with the sidebar geometry now known, open the
         // per-feed context menu over the first feed row so the single-frame
         // renderer captures it.
-        if self.stage_menu_shot && !self.feed_menu.is_open() {
-            if let Some((id, rect)) = self.sidebar_rows.iter().find_map(|r| match r.role {
+        if self.stage_menu_shot
+            && !self.feed_menu.is_open()
+            && let Some((id, rect)) = self.sidebar_rows.iter().find_map(|r| match r.role {
                 RowRole::Feed { id, .. } => Some((id, r.rect)),
                 _ => None,
-            }) {
-                self.open_feed_menu(id, Point::new(rect.x0 + 40.0, rect.y0 + 6.0));
-            }
+            })
+        {
+            self.open_feed_menu(id, Point::new(rect.x0 + 40.0, rect.y0 + 6.0));
         }
 
         let c = &theme.tokens.colors;
@@ -1982,10 +2001,10 @@ impl FeedsApp {
         }
 
         // Toast (auto-expires after 4s).
-        if let Some((msg, since)) = &self.toast {
-            if since.elapsed().as_secs_f32() < 4.0 {
-                draw_toast(scene, t, tr, theme, &self.rect, msg);
-            }
+        if let Some((msg, since)) = &self.toast
+            && since.elapsed().as_secs_f32() < 4.0
+        {
+            draw_toast(scene, t, tr, theme, &self.rect, msg);
         }
 
         // Dialog on top of everything — the shared ModalDialog paints its own
@@ -2000,6 +2019,11 @@ impl FeedsApp {
     /// settings popover (font size, font family incl. serif, reading theme).
     /// Recomputes `settings_btn_rect` + `settings_hits` for hit-testing. Chrome
     /// reads from the OS theme; only the reader page uses the reading palette.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a single linear draw pass over the settings popover's fixed rows; splitting \
+                  it would only relocate the line count, not the amount a reader must hold in mind"
+    )]
     fn draw_reader_settings(
         &mut self,
         scene: &mut Scene,
@@ -2286,6 +2310,11 @@ impl FeedsApp {
 
     // --- hit testing -----------------------------------------------------
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one guard per interactive region in hit-test priority order (modal, context \
+                  menu, toolbar, sidebar, list, reader); the length is the number of regions"
+    )]
     fn click(&mut self, p: Point, doc: &mut AutoCommit) -> bool {
         // Modal eats all clicks (outside = cancel).
         if self.modal.is_some() {
@@ -2410,11 +2439,11 @@ impl FeedsApp {
             }
         }
         // Reader: "open link" affordance + inline links.
-        if let Some(r) = self.reader_open_rect {
-            if r.contains(p) {
-                self.open_selected_link();
-                return true;
-            }
+        if let Some(r) = self.reader_open_rect
+            && r.contains(p)
+        {
+            self.open_selected_link();
+            return true;
         }
         for (rect, href) in self.reader_links.clone() {
             if rect.contains(p) {
@@ -2479,6 +2508,12 @@ fn hline(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, color: Color) {
 }
 
 /// Draw a pill badge with a number; returns its width.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares the standard (scene, t, tr, theme/palette) drawing-context params with \
+              every other draw helper in this file; bundling them into a context struct is a \
+              file-wide refactor out of scope here"
+)]
 fn badge(
     scene: &mut Scene,
     t: Affine,
@@ -2498,7 +2533,7 @@ fn badge(
         n.to_string()
     };
     let (tw, _) = tr.measure(&label, 11.0, None);
-    let w = (tw as f64 + 14.0).max(20.0);
+    let w = (f64::from(tw) + 14.0).max(20.0);
     let h = 18.0;
     let rect = Rect::new(right_x - w, cy - h / 2.0, right_x, cy + h / 2.0);
     scene.fill(
@@ -2513,12 +2548,17 @@ fn badge(
         &label,
         11.0,
         fg,
-        t * Affine::translate((rect.x0 + (w - tw as f64) / 2.0, cy - 7.0)),
+        t * Affine::translate((rect.x0 + (w - f64::from(tw)) / 2.0, cy - 7.0)),
         None,
     );
     w
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
+              only relocate the line count, not the amount a reader must hold in mind"
+)]
 fn draw_sidebar(
     scene: &mut Scene,
     t: Affine,
@@ -2545,20 +2585,17 @@ fn draw_sidebar(
 
     for row in rows {
         let cy = row.rect.y0 + row.rect.height() / 2.0;
-        match &row.role {
-            RowRole::Section => {
-                tr.draw_text_weighted(
-                    scene,
-                    &row.label,
-                    10.5,
-                    c.text_dim,
-                    t * Affine::translate((row.rect.x0 + row.indent, cy - 6.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
-                continue;
-            }
-            _ => {}
+        if let RowRole::Section = &row.role {
+            tr.draw_text_weighted(
+                scene,
+                &row.label,
+                10.5,
+                c.text_dim,
+                t * Affine::translate((row.rect.x0 + row.indent, cy - 6.0)),
+                None,
+                TextWeight::Semibold,
+            );
+            continue;
         }
 
         // Selection / hover background.
@@ -2603,7 +2640,7 @@ fn draw_sidebar(
                     SmartKind::All => icons::ring(scene, t, center, 5.0, c.text_dim),
                     SmartKind::Unread => icons::dot(scene, t, center, 4.0, c.accent[5]),
                     SmartKind::Starred => {
-                        icons::star(scene, t, center, 6.0, true, c.semantic.warning)
+                        icons::star(scene, t, center, 6.0, true, c.semantic.warning);
                     }
                 }
                 text_x = row.rect.x0 + 32.0;
@@ -2623,7 +2660,7 @@ fn draw_sidebar(
                     dot_color,
                 );
             }
-            _ => {}
+            RowRole::Section => {}
         }
 
         // Badge (right-aligned), then label clipped to the remaining width.
@@ -2657,7 +2694,7 @@ fn draw_sidebar(
         // background instead of hard-cutting — the requested fade-out.
         let full_w = tr.measure_weighted(&row.label, size, None, weight).0;
         let truncated = full_w > max_w;
-        let baseline = cy - (size as f64) * 0.62;
+        let baseline = cy - f64::from(size) * 0.62;
         if truncated {
             // Reserve room for the fade so a glyph never ends mid-fade.
             let fade_w = 22.0_f32.min(max_w * 0.4);
@@ -2673,8 +2710,8 @@ fn draw_sidebar(
                 weight,
             );
             // Fade band: transparent → sidebar background, over the row's height.
-            let fade_x1 = text_x + max_w as f64;
-            let fade_x0 = fade_x1 - fade_w as f64;
+            let fade_x1 = text_x + f64::from(max_w);
+            let fade_x0 = fade_x1 - f64::from(fade_w);
             let grad = vello::peniko::Gradient::new_linear(
                 Point::new(fade_x0, cy),
                 Point::new(fade_x1, cy),
@@ -2718,7 +2755,7 @@ fn draw_centered_onboarding(
     let gap = 10.0_f64;
     let title_w = measure_w(tr, title, title_size);
     let hint_w = measure_w(tr, hint, hint_size);
-    let block_h = title_size as f64 + gap + hint_size as f64;
+    let block_h = f64::from(title_size) + gap + f64::from(hint_size);
     let cx = area.center().x;
     let top = area.center().y - block_h / 2.0;
     tr.draw_text(
@@ -2734,12 +2771,17 @@ fn draw_centered_onboarding(
         hint,
         hint_size,
         c.text_dim,
-        t * Affine::translate((cx - hint_w / 2.0, top + title_size as f64 + gap)),
+        t * Affine::translate((cx - hint_w / 2.0, top + f64::from(title_size) + gap)),
         None,
     );
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
+              only relocate the line count, not the amount a reader must hold in mind"
+)]
 fn draw_list(
     scene: &mut Scene,
     t: Affine,
@@ -2912,10 +2954,7 @@ fn draw_list(
         );
 
         // Source + summary line.
-        let source = store
-            .feed(a.feed_id)
-            .map(|f| f.title.as_str())
-            .unwrap_or("");
+        let source = store.feed(a.feed_id).map_or("", |f| f.title.as_str());
         let meta = if a.summary.is_empty() {
             source.to_string()
         } else {
@@ -3071,6 +3110,11 @@ fn draw_refresh_strip(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
+              only relocate the line count, not the amount a reader must hold in mind"
+)]
 fn draw_reader(
     scene: &mut Scene,
     t: Affine,
@@ -3181,7 +3225,7 @@ fn draw_reader(
         t * Affine::translate((content_x, y)),
         palette.ink,
     );
-    y += th as f64 + 10.0;
+    y += f64::from(th) + 10.0;
 
     // Byline.
     let date = chrono_date(a.published, now);
@@ -3249,6 +3293,16 @@ fn draw_reader(
 /// family (incl. a genuine serif) is honoured. Body ink/rules come from the
 /// reading palette; sizes scale with the reading font setting.
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
+              only relocate the line count, not the amount a reader must hold in mind"
+)]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "conventional short names for the shared drawing context (t: transform, w/h: \
+              size, x/y: position) used consistently across every draw_* function in this file"
+)]
 fn draw_block(
     scene: &mut Scene,
     t: Affine,
@@ -3298,13 +3352,13 @@ fn draw_block(
                 t * Affine::translate((x, y + 6.0)),
                 palette.ink,
             );
-            y + h as f64 + 12.0
+            y + f64::from(h) + 12.0
         }
         BlockKind::Paragraph => {
             let layout = lay(tr, &block.text, body_size, w, family, false);
             let h = layout.height();
             tr.draw_rich(scene, &layout, t * Affine::translate((x, y)), palette.ink);
-            y + h as f64 + 14.0
+            y + f64::from(h) + 14.0
         }
         BlockKind::Bullet => {
             icons::dot(scene, t, Point::new(x + 6.0, y + 8.0), 2.5, palette.accent);
@@ -3317,7 +3371,7 @@ fn draw_block(
                 t * Affine::translate((x + 22.0, y)),
                 palette.ink,
             );
-            y + h as f64 + 8.0
+            y + f64::from(h) + 8.0
         }
         BlockKind::Quote => {
             let tw = w - 24.0;
@@ -3335,7 +3389,7 @@ fn draw_block(
                 1.0,
             );
             let h = layout.height();
-            let bar = Rect::new(x, y, x + 3.0, y + h as f64 + 4.0);
+            let bar = Rect::new(x, y, x + 3.0, y + f64::from(h) + 4.0);
             scene.fill(Fill::NonZero, t, palette.accent, None, &bar);
             tr.draw_rich(
                 scene,
@@ -3343,7 +3397,7 @@ fn draw_block(
                 t * Affine::translate((x + 18.0, y)),
                 palette.ink_dim,
             );
-            y + h as f64 + 16.0
+            y + f64::from(h) + 16.0
         }
         BlockKind::Code => {
             let inner = w - 28.0;
@@ -3357,7 +3411,7 @@ fn draw_block(
                 false,
             );
             let h = layout.height();
-            let box_rect = Rect::new(x, y, x + w as f64, y + h as f64 + 20.0);
+            let box_rect = Rect::new(x, y, x + f64::from(w), y + f64::from(h) + 20.0);
             scene.fill(
                 Fill::NonZero,
                 t,
@@ -3378,7 +3432,7 @@ fn draw_block(
                 t * Affine::translate((x + 14.0, y + 10.0)),
                 palette.ink,
             );
-            y + h as f64 + 30.0
+            y + f64::from(h) + 30.0
         }
         BlockKind::Link => {
             let layout = lay(tr, &block.text, body_size, w, family, false);
@@ -3396,18 +3450,22 @@ fn draw_block(
                 .map(|r| r.2)
                 .fold(0.0f32, f32::max)
                 .min(w);
-            let uw = if uw > 0.0 { uw as f64 } else { w as f64 };
-            hline(scene, t, x, x + uw, y + h as f64 - 1.0, palette.accent);
+            let uw = if uw > 0.0 {
+                f64::from(uw)
+            } else {
+                f64::from(w)
+            };
+            hline(scene, t, x, x + uw, y + f64::from(h) - 1.0, palette.accent);
             if let Some(href) = &block.href {
-                let rect = Rect::new(x, y, x + uw, y + h as f64);
+                let rect = Rect::new(x, y, x + uw, y + f64::from(h));
                 if rect.y1 > pane.y0 && rect.y0 < pane.y1 {
                     links.push((rect, href.clone()));
                 }
             }
-            y + h as f64 + 10.0
+            y + f64::from(h) + 10.0
         }
         BlockKind::Divider => {
-            hline(scene, t, x, x + w as f64, y + 8.0, palette.rule);
+            hline(scene, t, x, x + f64::from(w), y + 8.0, palette.rule);
             y + 24.0
         }
     }
@@ -3416,7 +3474,7 @@ fn draw_block(
 fn draw_toolbar(
     scene: &mut Scene,
     t: Affine,
-    tr: &mut TextRenderer,
+    tr: &TextRenderer,
     theme: &Theme,
     rect: &Rect,
     buttons: &[ToolbarButton],
@@ -3528,6 +3586,11 @@ fn draw_chrome_button(
     }
 }
 
+#[allow(
+    clippy::many_single_char_names,
+    reason = "conventional short names for the shared drawing context (t: transform, w/h: \
+              size, x/y: position) used consistently across every draw_* function in this file"
+)]
 fn draw_toast(
     scene: &mut Scene,
     t: Affine,
@@ -3538,7 +3601,7 @@ fn draw_toast(
 ) {
     let c = &theme.tokens.colors;
     let (tw, _) = tr.measure(msg, 13.0, None);
-    let w = tw as f64 + 36.0;
+    let w = f64::from(tw) + 36.0;
     let h = 38.0;
     let x = rect.x1 - w - 24.0;
     let y = rect.y1 - h - 24.0;
@@ -3570,7 +3633,7 @@ fn draw_toast(
 // --- text helpers -----------------------------------------------------
 
 fn measure_w(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
-    tr.measure(s, size, None).0 as f64
+    f64::from(tr.measure(s, size, None).0)
 }
 
 /// Truncate `s` with an ellipsis so it fits in `max_w` on a single line.
@@ -3631,7 +3694,7 @@ fn two_line_elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f32) -> Stri
     let mut take = words.len();
     while take > 1 {
         take -= 1;
-        let candidate = format!("{}…", words[..take].join(" "));
+        let candidate = format!("{}…", words.get(..take).unwrap_or(&[]).join(" "));
         if tr.measure(&candidate, size, Some(max_w)).1 <= line_h * 2.0 + 1.0 {
             return candidate;
         }
@@ -3640,10 +3703,10 @@ fn two_line_elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f32) -> Stri
 }
 
 fn chrono_date(published: i64, now: i64) -> String {
+    use chrono::{TimeZone, Utc};
     if published <= 0 {
         return String::new();
     }
-    use chrono::{TimeZone, Utc};
     match Utc.timestamp_opt(published, 0).single() {
         Some(dt) => {
             let rel = relative_time(published, now);
@@ -3676,10 +3739,10 @@ impl Widget for FeedsApp {
             }
             // Seed reading settings on first run; otherwise adopt the persisted
             // (and possibly collaborator-updated) preferences.
-            if !FeedsDoc::has_settings(state) {
-                FeedsDoc::write_settings(state, &self.settings);
-            } else {
+            if FeedsDoc::has_settings(state) {
                 self.settings = FeedsDoc::read_settings(state);
+            } else {
+                FeedsDoc::write_settings(state, &self.settings);
             }
             self.synced = true;
             self.store_heads = state.get_heads();
@@ -3703,10 +3766,10 @@ impl Widget for FeedsApp {
                 self.store = FeedsDoc::load(state);
                 // A palette delete can strand the selection on a now-gone
                 // article; drop it rather than render a dangling reader.
-                if let Some(sel) = self.selected {
-                    if self.store.article(sel).is_none() {
-                        self.selected = None;
-                    }
+                if let Some(sel) = self.selected
+                    && self.store.article(sel).is_none()
+                {
+                    self.selected = None;
                 }
                 self.store_heads = heads;
             }
@@ -3715,7 +3778,7 @@ impl Widget for FeedsApp {
 
     /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
     /// action palette scopes to them. Delegates to the [`ResourceProvider`]
-    /// (qos_actions::ResourceProvider) impl in [`crate::actions`].
+    /// (`qos_actions::ResourceProvider`) impl in [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
@@ -3749,15 +3812,18 @@ impl Widget for FeedsApp {
                     self.select_article(id, doc);
                 }
             }
-            Some(crate::search_provider::Activation::Feed(id)) => {
-                if self.store.feed(id).is_some() {
-                    self.set_filter(Filter::Feed(id));
-                }
+            Some(crate::search_provider::Activation::Feed(id)) if self.store.feed(id).is_some() => {
+                self.set_filter(Filter::Feed(id));
             }
-            None => {}
+            Some(crate::search_provider::Activation::Feed(_)) | None => {}
         }
     }
 
+    #[allow(
+        clippy::unwrap_used,
+        reason = "a fresh leaf on a live taffy tree cannot fail short of OOM, and \
+                  `Widget::build_layout` returns `NodeId` directly with no fallible path"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -3773,18 +3839,20 @@ impl Widget for FeedsApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         // The width is now known — reconcile the flap so a breakpoint crossing
         // adopts the new default (wide ⇒ docked-open, narrow ⇒ overlay-closed)
@@ -3849,7 +3917,7 @@ impl Widget for FeedsApp {
         }
         // An open dialog captures all input while it's up.
         if self.modal.is_some() {
-            self.handle_modal_event(event, scale_factor, modifiers, state, path, handled);
+            self.handle_modal_event(event, scale_factor, *modifiers, state, path, handled);
             return;
         }
         match event {
@@ -3884,7 +3952,7 @@ impl Widget for FeedsApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (*y as f64) * 48.0,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
                 if self.reader_rect.contains(self.last_mouse) {
@@ -3909,7 +3977,7 @@ impl Widget for FeedsApp {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "FeedsApp"
     }
 
@@ -3924,7 +3992,7 @@ impl Widget for FeedsApp {
         // strip is visible, while CRDT writes await a flush, and briefly while
         // a toast is visible.
         self.sidebar.is_animating(self.nav_layout())
-            || self.worker.as_ref().map(|w| w.pending() > 0).unwrap_or(false)
+            || self.worker.as_ref().is_some_and(|w| w.pending() > 0)
             || self.refresh.visible()
             || !self.pending_doc_writes.is_empty()
             // Keep frames flowing while a file-chooser portal is open so its
@@ -3933,8 +4001,7 @@ impl Widget for FeedsApp {
             || self
                 .toast
                 .as_ref()
-                .map(|(_, since)| since.elapsed().as_secs_f32() < 4.0)
-                .unwrap_or(false)
+                .is_some_and(|(_, since)| since.elapsed().as_secs_f32() < 4.0)
     }
 }
 
@@ -4108,7 +4175,7 @@ mod tests {
         );
     }
 
-    /// Run one full headless frame (sync → build_layout → compute → apply →
+    /// Run one full headless frame (sync → `build_layout` → compute → apply →
     /// draw), mirroring `ui::App`'s per-frame cycle, and return how long the
     /// **draw** pass took. No GPU — `TextRenderer`/`Scene` are CPU-side, so this
     /// exercises exactly the main-thread work a real frame does.
@@ -4231,7 +4298,7 @@ mod tests {
 
         // Point every feed at an unreachable host so the worker's fetches hang
         // on connect/timeout — the worst case for "does the UI block?".
-        for f in a.store.feeds.iter_mut() {
+        for f in &mut a.store.feeds {
             f.url = "https://10.255.255.1/feed.xml".to_string();
             f.kind = FeedKind::Rss;
         }
@@ -4425,7 +4492,7 @@ mod tests {
                     title: format!("Article {i} for feed"),
                     author: "a".into(),
                     url: format!("https://example.com/{fid}/{i}"),
-                    published: a.now - i as i64 * 60,
+                    published: a.now - i64::from(i) * 60,
                     summary: "summary text".into(),
                     blocks: vec![
                         crate::model::ContentBlock::new(
@@ -4986,7 +5053,7 @@ mod tests {
         a: &mut FeedsApp,
         doc: &mut AutoCommit,
         event: &WindowEvent,
-        mods: &winit::event::Modifiers,
+        mods: winit::event::Modifiers,
     ) -> bool {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
@@ -4995,7 +5062,7 @@ mod tests {
         a.handle_event(
             event,
             1.0,
-            mods,
+            &mods,
             doc,
             &automerge::ROOT,
             &mut handled,
@@ -5057,12 +5124,17 @@ mod tests {
     fn menu_point_for(a: &FeedsApp, idx: usize) -> Point {
         let r = a.feed_menu.get_rect();
         let x = r.x0 + 20.0;
-        let mut y = r.y0;
-        while y < r.y1 {
+        // Bounded by the menu's pixel height (+1 margin) rather than a float
+        // `while`, so a pathological rect can't spin forever on rounding.
+        let steps = (r.y1 - r.y0).max(0.0).ceil() as u32 + 1;
+        for step in 0..steps {
+            let y = r.y0 + f64::from(step);
+            if y >= r.y1 {
+                break;
+            }
             if a.feed_menu.item_at([x, y]) == Some(idx) {
                 return Point::new(x, y);
             }
-            y += 1.0;
         }
         panic!("no point maps to menu item {idx}");
     }
@@ -5129,7 +5201,7 @@ mod tests {
         std::fs::write(&path, opml::sample_opml()).unwrap();
 
         let feeds_before = a.store.feeds.len();
-        a.import_rx = Some(portal::inject_for_test(ImportOutcome::Opened(path.clone())));
+        a.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(path)));
         assert!(
             a.import_rx.is_some(),
             "a request is in flight until drained"
@@ -5169,7 +5241,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         a.sync(&mut doc, &automerge::ROOT);
         let before = a.store.feeds.len();
-        a.import_rx = Some(portal::inject_for_test(ImportOutcome::Cancelled));
+        a.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
         a.sync(&mut doc, &automerge::ROOT);
         assert!(a.import_rx.is_none(), "cancel clears the request");
         assert_eq!(a.store.feeds.len(), before, "cancel adds no feeds");
@@ -5316,7 +5388,7 @@ mod tests {
 
         // Commit a new name through the production mutation and assert it lands
         // in both the store and the document.
-        a.rename_feed(id, "My Renamed Feed".into(), &mut doc);
+        a.rename_feed(id, "My Renamed Feed", &mut doc);
         assert_eq!(a.store.feed(id).unwrap().title, "My Renamed Feed");
         let loaded = FeedsDoc::load(&doc);
         assert_eq!(
@@ -5428,7 +5500,7 @@ mod tests {
         ui::text_selection::clipboard_copy(url);
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
         assert!(
-            dispatch_mods(&mut a, &mut doc, &char_key("v"), &ctrl),
+            dispatch_mods(&mut a, &mut doc, &char_key("v"), ctrl),
             "Ctrl+V is consumed by the dialog"
         );
         assert_eq!(
@@ -5465,13 +5537,13 @@ mod tests {
         a.layout_modal();
         // Type two characters into the real field.
         let none = Modifiers::from(ModifiersState::empty());
-        dispatch_mods(&mut a, &mut doc, &char_key("h"), &none);
-        dispatch_mods(&mut a, &mut doc, &char_key("i"), &none);
+        dispatch_mods(&mut a, &mut doc, &char_key("h"), none);
+        dispatch_mods(&mut a, &mut doc, &char_key("i"), none);
         assert_eq!(a.modal.as_ref().unwrap().dialog.content().value(), "hi");
         // Select-all + replace, proving the selection core is live.
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        dispatch_mods(&mut a, &mut doc, &char_key("a"), &ctrl);
-        dispatch_mods(&mut a, &mut doc, &char_key("x"), &none);
+        dispatch_mods(&mut a, &mut doc, &char_key("a"), ctrl);
+        dispatch_mods(&mut a, &mut doc, &char_key("x"), none);
         assert_eq!(
             a.modal.as_ref().unwrap().dialog.content().value(),
             "x",

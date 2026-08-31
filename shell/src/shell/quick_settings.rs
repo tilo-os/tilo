@@ -11,7 +11,7 @@ pub enum QsLevel {
     WifiDetails(String),
     Bluetooth,
     BluetoothDetails(String),
-    /// Configured NetworkManager VPN profiles.
+    /// Configured `NetworkManager` VPN profiles.
     Vpn,
     /// Session-local notification history owned by shell chrome.
     Notifications,

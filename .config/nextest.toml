@@ -29,11 +29,41 @@ path = "junit.xml"
 # test its own process, so a mutex inside one serialises nothing. This does.
 [test-groups]
 compositor = { max-threads = 2 }
+gpu-golden = { max-threads = 1 }
+
+# Golden images must be rendered one at a time across *all* test binaries.
+# A Rust mutex cannot provide that guarantee because nextest launches each
+# test in its own process. The group serializes goldens with one another, but
+# it is not exclusive of ordinary tests. CI therefore removes this filter from
+# its parallel suites and runs it as an isolated nightly tail; the group still
+# protects that tail and direct/local nextest invocations from multiple Vulkan
+# contexts racing one another.
+[[profile.default.overrides]]
+filter = '(package(ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))'
+test-group = "gpu-golden"
+
+[[profile.ci.overrides]]
+filter = '(package(ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))'
+test-group = "gpu-golden"
 
 [[profile.default.overrides]]
-filter = 'binary(it) and (test(clipboard_e2e::) or test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::) or test(interaction_test::) or test(wayland_test::))'
+filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
 test-group = "compositor"
 
 [[profile.ci.overrides]]
-filter = 'binary(it) and (test(clipboard_e2e::) or test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::) or test(interaction_test::) or test(wayland_test::))'
+filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
 test-group = "compositor"
+
+# This is a real-time codec budget test: it must decode at least 30 frames in
+# three wall-clock seconds while keeping every frame below the latency ceiling.
+# Letting the rest of the suite contend for its CPU makes the result measure
+# nextest scheduling pressure rather than the share pipeline. Requiring every
+# test thread gives the benchmark a controlled local CPU budget without
+# relaxing either performance assertion.
+[[profile.default.overrides]]
+filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
+threads-required = "num-cpus"
+
+[[profile.ci.overrides]]
+filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
+threads-required = "num-cpus"

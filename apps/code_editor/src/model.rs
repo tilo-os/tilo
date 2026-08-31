@@ -101,8 +101,7 @@ impl Language {
             "go" => Language::Go,
             _ => match name {
                 "Cargo.lock" => Language::Toml,
-                "Makefile" => Language::Shell,
-                "Dockerfile" | "Containerfile" => Language::Shell,
+                "Makefile" | "Dockerfile" | "Containerfile" => Language::Shell,
                 _ => Language::PlainText,
             },
         }
@@ -387,6 +386,10 @@ impl Project {
     /// the language server's workspace root, a search hit, a save target — is
     /// absolute and symlink-resolved, and two ways of naming the same directory
     /// cannot open as two different projects.
+    ///
+    /// # Errors
+    /// Returns an error if `path` does not exist, is not a directory, or its
+    /// top level can't be read.
     pub fn from_dir(path: &Path) -> io::Result<Project> {
         let md = std::fs::metadata(path)?;
         if !md.is_dir() {
@@ -478,6 +481,9 @@ impl Project {
     /// directory containing just `path`. Returns the project and the file's
     /// node id (ready to open into a tab). The file's bytes are read lazily
     /// when the buffer is first opened (see [`Project::file_seed`]).
+    ///
+    /// # Errors
+    /// Returns an error if `path` does not exist or can't be read.
     pub fn open_single_file(path: &Path) -> io::Result<(Project, NodeId)> {
         // Surface an unreadable path up front (permission / not-found) rather
         // than silently opening an empty tab.
@@ -506,6 +512,9 @@ impl Project {
     /// (see [`crate::disk::IGNORED_DIRS`]): `target/` here holds more files
     /// than the rest of the repository by two orders of magnitude, and none of
     /// them is source anyone opens.
+    ///
+    /// # Errors
+    /// Returns an error if the folder's directory listing can't be read.
     pub fn load_children(&mut self, id: NodeId) -> io::Result<()> {
         let (path, already_loaded) = match self.nodes.get(&id) {
             Some(TreeNode {
@@ -570,6 +579,10 @@ impl Project {
     /// An unreadable file that opened as a silently-empty buffer would be saved
     /// back as an empty file the moment the user pressed Ctrl+S — the read
     /// error has to reach them before that.
+    ///
+    /// # Errors
+    /// Returns an error if the file has no in-memory seed and can't be read
+    /// from disk.
     pub fn file_seed(
         &self,
         id: NodeId,
@@ -630,8 +643,9 @@ impl Project {
         // rendered as a row (its name shows in the sidebar header instead).
         let mut kids: Vec<NodeId> = children.clone();
         kids.sort_by(|a, b| {
-            let na = &self.nodes[a];
-            let nb = &self.nodes[b];
+            let (Some(na), Some(nb)) = (self.nodes.get(a), self.nodes.get(b)) else {
+                return std::cmp::Ordering::Equal;
+            };
             match (na.is_folder(), nb.is_folder()) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
@@ -1080,6 +1094,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "each single-letter binding names exactly the file it opens (a.rs, b.rs, c.rs); spelling them out would just repeat the string literal two lines down"
+    )]
     fn close_tab_adjusts_active() {
         let mut p = Project::new("proj");
         let a = p.add_file(p.root, "a.rs", "");
@@ -1097,6 +1115,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "each single-letter binding names exactly the file it opens (a.rs, b.rs, c.rs); spelling them out would just repeat the string literal two lines down"
+    )]
     fn reorder_tab_moves_the_buffer_and_keeps_active_pointed_at_it() {
         let mut p = Project::new("proj");
         let a = p.add_file(p.root, "a.rs", "");

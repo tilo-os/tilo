@@ -29,8 +29,9 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Default visible height of the track. Picked to match the concept's
-/// `h-2` progress bars (8 px in Tailwind's spacing scale).
-const TRACK_HEIGHT: f64 = 8.0;
+/// `h-2` progress bars (8 px in Tailwind's spacing scale). `f32` because
+/// its only use is a taffy `Dimension`, which is `f32`-typed.
+const TRACK_HEIGHT: f32 = 8.0;
 
 /// Width of the moving segment in indeterminate mode, expressed as a
 /// fraction of the track width. `0.3` keeps the affordance readable on
@@ -87,6 +88,7 @@ impl ProgressBar {
 
     /// Give the bar an accessible label and make it a polite live region, so a
     /// screen reader announces progress updates without stealing focus.
+    #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
@@ -106,12 +108,14 @@ impl ProgressBar {
     }
 
     /// Opt this widget into presence tracking by binding it to a CRDT-style path.
+    #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
     /// Gate this widget behind a permission scope.
+    #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -141,6 +145,19 @@ impl ProgressBar {
     }
 }
 
+/// Rounds an already-clamped `[0, 100]` percentage to a whole-number
+/// `i64` for the accessible value string. The `.round()` and the
+/// `clamp(0.0, 1.0)` before it together bound the input to `[0, 100]`,
+/// far inside `i64`'s range, so the truncation the lint warns about
+/// can't occur.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "input is a rounded percentage already bounded to [0, 100]"
+)]
+fn pct_to_i64(pct: f32) -> i64 {
+    pct as i64
+}
+
 impl Widget for ProgressBar {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
@@ -153,7 +170,7 @@ impl Widget for ProgressBar {
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(TRACK_HEIGHT as f32),
+                height: Dimension::length(TRACK_HEIGHT),
             },
             ..Default::default()
         });
@@ -283,7 +300,7 @@ impl Widget for ProgressBar {
                 ..Default::default()
             })
         } else {
-            let pct = (self.progress.clamp(0.0, 1.0) * 100.0).round() as i64;
+            let pct = pct_to_i64((self.progress.clamp(0.0, 1.0) * 100.0).round());
             AccessNode::new(Role::ProgressBar).with_value(format!("{pct}%"))
         };
         if let Some(label) = &self.label {
@@ -438,7 +455,7 @@ mod tests {
     fn progress_bar_at_full_paints_track_width_fill() {
         let bar = bar_at(1.0);
         let track_width = bar.rect.width();
-        let fill_width = bar.progress() as f64 * track_width;
+        let fill_width = f64::from(bar.progress()) * track_width;
         assert!(
             (fill_width - track_width).abs() < 1e-6,
             "at progress=1.0 the fill must span the full track width \
@@ -466,7 +483,7 @@ mod tests {
     fn progress_bar_at_half_paints_half_fill_within_one_pixel() {
         let bar = bar_at(0.5);
         let track_width = bar.rect.width();
-        let fill_width = bar.progress() as f64 * track_width;
+        let fill_width = f64::from(bar.progress()) * track_width;
         let expected = track_width / 2.0;
         assert!(
             (fill_width - expected).abs() <= 1.0,
@@ -522,7 +539,9 @@ mod tests {
         let one_sweep = Duration::from_secs_f32(INDETERMINATE_PERIOD_SECS);
         // A quarter-sweep backdate so the moving segment is plainly off the
         // resting position (a full sweep would alias back to phase 0).
-        let backdate = Instant::now() - one_sweep / 4;
+        let backdate = Instant::now()
+            .checked_sub(one_sweep / 4)
+            .expect("process has been running longer than a quarter sweep");
 
         let mut fresh = ProgressBar::indeterminate();
         fresh.rect = Rect::new(0.0, 0.0, 200.0, 8.0);

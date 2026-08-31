@@ -9,6 +9,16 @@
 //! Concretely: after the author publishes, the author's inbound
 //! channel receives ZERO envelopes over the window.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};

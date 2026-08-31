@@ -187,6 +187,14 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`MailAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a Mail action into a
 /// replayable envelope.
+///
+/// # Panics
+/// Never in practice: [`MailAction`] is a plain derived-`Serialize` enum with
+/// no non-serializable fields, so encoding it cannot fail.
+#[allow(
+    clippy::expect_used,
+    reason = "MailAction is a plain derived-Serialize enum, so encoding cannot fail; an un-encodable action has no replayable form to fall back to"
+)]
 pub fn encode(action: &MailAction) -> EncodedAction {
     EncodedAction::encode(MAIL_ACTION_TYPE, action).expect("MailAction is always serializable")
 }
@@ -293,6 +301,13 @@ pub struct MailResourceCtx {
     pub has_draft: bool,
 }
 
+/// # Panics
+/// Never in practice: [`MailAction`] is a plain derived-`Serialize` enum with
+/// no non-serializable fields, so encoding it cannot fail.
+#[allow(
+    clippy::expect_used,
+    reason = "MailAction is a plain derived-Serialize enum, so encoding cannot fail; a spec that cannot encode its action would be an unusable palette entry"
+)]
 fn immediate_spec(id: &str, label: &str, action: &MailAction) -> ActionSpec {
     ActionSpec::immediate(id, label, MAIL_ACTION_TYPE, action).expect("encode mail action")
 }
@@ -448,14 +463,18 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => {
+                panic!("expected an immediate action: {}", spec.id)
+            }
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => {
+                panic!("expected a prompted action: {}", spec.id)
+            }
         }
     }
 

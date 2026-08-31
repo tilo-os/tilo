@@ -170,6 +170,7 @@ impl SlideData {
     /// pure "duplicate" payload. Ids are minted **here**, at authoring time, and
     /// baked into the returned data, so the resulting action replays identically
     /// on every peer.
+    #[must_use]
     pub fn reminted(&self) -> Self {
         let mut copy = self.clone();
         copy.id = new_id();
@@ -364,7 +365,7 @@ impl Action for SlidesAction {
 /// document's base state. Returns `None` when the slide has no elements. The
 /// z-values are gathered and reduced order-independently (max / min), so a
 /// `HashMap`/list iteration order can never make two replicas diverge.
-fn restack_z(doc: &mut Doc, slide: usize, front: bool) -> Option<i64> {
+fn restack_z(doc: &Doc, slide: usize, front: bool) -> Option<i64> {
     let deck = SlidesDoc::load(doc)?;
     let s = deck.slides.get(slide)?;
     if s.elements.is_empty() {
@@ -387,6 +388,15 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`SlidesAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a Slides action into a
 /// replayable envelope.
+///
+/// # Panics
+///
+/// Never in practice: [`SlidesAction`] is a plain derived-`Serialize` enum
+/// with no non-serializable fields, so encoding it cannot fail.
+#[allow(
+    clippy::expect_used,
+    reason = "SlidesAction is a plain derived-Serialize enum, so encoding cannot fail; an un-encodable action has no replayable form to fall back to"
+)]
 pub fn encode(action: &SlidesAction) -> EncodedAction {
     EncodedAction::encode(SLIDES_ACTION_TYPE, action).expect("SlidesAction is always serializable")
 }
@@ -593,6 +603,12 @@ pub struct SlidesResourceCtx {
     pub slides: Vec<SlideResource>,
 }
 
+// Same infallibility as `encode` above: `ActionSpec::immediate` can only fail
+// on JSON serialization, which `SlidesAction`'s primitive fields never trigger.
+#[allow(
+    clippy::expect_used,
+    reason = "SlidesAction always serializes; see encode()'s doc comment"
+)]
 fn immediate_spec(id: &str, label: &str, action: &SlidesAction) -> ActionSpec {
     ActionSpec::immediate(id, label, SLIDES_ACTION_TYPE, action).expect("encode slides action")
 }
@@ -631,15 +647,11 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
     // is not asserted for byte-equality against a builder — every other action
     // here is deterministic and is.
     let at = ctx.slides.len();
-    deck = deck.with_action(
-        ActionSpec::immediate(
-            "add-slide",
-            "Add slide",
-            SLIDES_ACTION_TYPE,
-            &insert_slide_action(at, &new_slide_template()),
-        )
-        .expect("encode add-slide"),
-    );
+    deck = deck.with_action(immediate_spec(
+        "add-slide",
+        "Add slide",
+        &insert_slide_action(at, &new_slide_template()),
+    ));
 
     // Deck-level: set the accent theme, one row per palette.
     for kind in PaletteKind::ALL {
@@ -664,18 +676,14 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
 
         // Duplicate this slide immediately after it. Its ids are reminted at
         // authoring, baked into the payload, so the action replays identically.
-        slide = slide.with_action(
-            ActionSpec::immediate(
-                "duplicate",
-                "Duplicate slide",
-                SLIDES_ACTION_TYPE,
-                &SlidesAction::InsertSlide {
-                    at: idx + 1,
-                    slide: sr.data.reminted(),
-                },
-            )
-            .expect("encode duplicate-slide"),
-        );
+        slide = slide.with_action(immediate_spec(
+            "duplicate",
+            "Duplicate slide",
+            &SlidesAction::InsertSlide {
+                at: idx + 1,
+                slide: sr.data.reminted(),
+            },
+        ));
 
         slide = slide.with_action(immediate_spec(
             "delete",
@@ -752,7 +760,7 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 

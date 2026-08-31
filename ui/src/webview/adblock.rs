@@ -36,6 +36,13 @@ pub enum AdblockError {
     Serialise(#[from] serde_json::Error),
 }
 
+/// # Errors
+///
+/// Returns [`AdblockError::Conversion`] if adblock-rust's content-blocking
+/// conversion fails, [`AdblockError::Empty`] if `lists` produces no rule
+/// convertible to `WebKit`'s declarative format, and
+/// [`AdblockError::Serialise`] if the compiled rules fail to serialise to
+/// JSON.
 pub fn compile_filter_lists<'a>(
     lists: impl IntoIterator<Item = &'a str>,
 ) -> Result<CompiledFilter, AdblockError> {
@@ -76,6 +83,15 @@ pub struct ChunkedFilter {
     pub skipped: usize,
 }
 
+/// Same compilation as [`compile_filter_lists`], split into chunks of at
+/// most `max_rules_per_chunk` rules each.
+///
+/// # Errors
+///
+/// Returns [`AdblockError::Conversion`] if adblock-rust's content-blocking
+/// conversion fails, [`AdblockError::Empty`] if `lists` produces no rule
+/// convertible to `WebKit`'s declarative format, and
+/// [`AdblockError::Serialise`] if a chunk fails to serialise to JSON.
 pub fn compile_filter_lists_chunked<'a>(
     lists: impl IntoIterator<Item = &'a str>,
     max_rules_per_chunk: usize,

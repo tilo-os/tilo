@@ -1,15 +1,28 @@
 //! `qos-relay` daemon entrypoint.
 //!
 //! Subcommands:
-//! - `init`   — write a default config to `--config` (or
-//!              `/etc/qos/relay.toml`) and exit.
-//! - `run`    — long-running daemon (systemd `Type=notify`).
+//! - `init` — write a default config to `--config` (or
+//!   `/etc/qos/relay.toml`) and exit.
+//! - `run` — long-running daemon (systemd `Type=notify`).
 //! - `status` — print a snapshot of the running daemon's counters
-//!              by reading the on-disk metrics dump.
+//!   by reading the on-disk metrics dump.
 //! - `bind-workspace <workspace_id> [--pin]` — add a workspace to
-//!              the config file so the next `run` picks it up.
+//!   the config file so the next `run` picks it up.
 
-use std::path::PathBuf;
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -65,7 +78,7 @@ fn install_logging() {
     fmt().with_env_filter(filter).with_target(true).init();
 }
 
-fn load_or_default(path: &PathBuf) -> anyhow::Result<RelayConfig> {
+fn load_or_default(path: &std::path::Path) -> anyhow::Result<RelayConfig> {
     if path.exists() {
         Ok(RelayConfig::load(path).with_context(|| format!("load {}", path.display()))?)
     } else {
@@ -86,7 +99,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn cmd_init(path: &PathBuf) -> anyhow::Result<()> {
+fn cmd_init(path: &std::path::Path) -> anyhow::Result<()> {
     if path.exists() {
         println!("config already exists: {}", path.display());
         return Ok(());
@@ -98,7 +111,7 @@ fn cmd_init(path: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_bind(path: &PathBuf, id: u64, pin: bool) -> anyhow::Result<()> {
+fn cmd_bind(path: &Path, id: u64, pin: bool) -> anyhow::Result<()> {
     let mut cfg = load_or_default(path)?;
     let added = cfg.add_workspace(id, pin);
     cfg.save(path)?;
@@ -110,7 +123,7 @@ fn cmd_bind(path: &PathBuf, id: u64, pin: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_unbind(path: &PathBuf, id: u64) -> anyhow::Result<()> {
+fn cmd_unbind(path: &Path, id: u64) -> anyhow::Result<()> {
     let mut cfg = load_or_default(path)?;
     let removed = cfg.remove_workspace(id);
     cfg.save(path)?;
@@ -122,7 +135,7 @@ fn cmd_unbind(path: &PathBuf, id: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_status(path: &PathBuf) -> anyhow::Result<()> {
+fn cmd_status(path: &Path) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
     println!(
         "qos-relay {} (config: {})",
@@ -151,7 +164,7 @@ fn cmd_status(path: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_run(path: &PathBuf) -> anyhow::Result<()> {
+fn cmd_run(path: &Path) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -165,7 +178,7 @@ fn cmd_run(path: &PathBuf) -> anyhow::Result<()> {
         // Best-effort sd_notify (silently no-ops outside systemd).
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]);
         // Park until Ctrl-C / SIGTERM.
-        wait_for_shutdown().await;
+        wait_for_shutdown().await?;
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
         relay.shutdown().await;
         Ok::<(), anyhow::Error>(())
@@ -197,12 +210,12 @@ fn load_identity(
     })
 }
 
-async fn wait_for_shutdown() {
+async fn wait_for_shutdown() -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
-        let mut term = signal(SignalKind::terminate()).expect("signal");
-        let mut intr = signal(SignalKind::interrupt()).expect("signal");
+        let mut term = signal(SignalKind::terminate()).context("install SIGTERM handler")?;
+        let mut intr = signal(SignalKind::interrupt()).context("install SIGINT handler")?;
         tokio::select! {
             _ = term.recv() => tracing::info!("SIGTERM"),
             _ = intr.recv() => tracing::info!("SIGINT"),
@@ -212,4 +225,5 @@ async fn wait_for_shutdown() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
+    Ok(())
 }

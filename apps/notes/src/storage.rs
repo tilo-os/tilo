@@ -80,6 +80,10 @@ pub fn default_root() -> Option<PathBuf> {
 }
 
 /// Ensure the workspace root + the `pages/` subdirectory exist. Idempotent.
+///
+/// # Errors
+///
+/// Returns `Err` if creating the directories fails (e.g. permissions).
 pub fn ensure_layout(root: &Path) -> io::Result<()> {
     std::fs::create_dir_all(root.join(PAGES_DIR))?;
     Ok(())
@@ -98,6 +102,11 @@ pub fn workspace_file_path(root: &Path) -> PathBuf {
 /// Read the body of one page off disk. Returns `Ok(String::new())` if
 /// the file doesn't exist — a page with no body is normal (Phase 1
 /// only ever produces empty bodies).
+///
+/// # Errors
+///
+/// Returns `Err` for any IO failure other than the file not existing
+/// (permissions, invalid UTF-8, etc.).
 pub fn read_page_body(root: &Path, id: PageId) -> io::Result<String> {
     let path = page_file_path(root, id);
     match std::fs::read_to_string(&path) {
@@ -109,6 +118,11 @@ pub fn read_page_body(root: &Path, id: PageId) -> io::Result<String> {
 
 /// Write `body` to the page file for `id`, creating the `pages/`
 /// directory if it doesn't exist yet.
+///
+/// # Errors
+///
+/// Returns `Err` if the directory can't be created or the atomic
+/// write fails.
 pub fn write_page_body(root: &Path, id: PageId, body: &str) -> io::Result<()> {
     ensure_layout(root)?;
     // These are the user's real markdown files. A plain write truncates in
@@ -119,6 +133,11 @@ pub fn write_page_body(root: &Path, id: PageId, body: &str) -> io::Result<()> {
 
 /// Delete the page file for `id`. Missing-file is success (the caller
 /// only cares that the file isn't there after this returns).
+///
+/// # Errors
+///
+/// Returns `Err` for any IO failure other than the file already being
+/// absent (e.g. permissions).
 pub fn delete_page_file(root: &Path, id: PageId) -> io::Result<()> {
     let path = page_file_path(root, id);
     match std::fs::remove_file(&path) {
@@ -133,22 +152,33 @@ pub fn delete_page_file(root: &Path, id: PageId) -> io::Result<()> {
 /// Text key. Choosing JSON-in-Text keeps Phase 1 simple while keeping
 /// the on-disk format compatible with a future automerge-native
 /// migration (we keep the same file extension).
-pub fn encode_workspace(workspace: &Workspace) -> Vec<u8> {
+///
+/// # Errors
+///
+/// Returns `Err` only if `workspace.data` fails to serialize to JSON;
+/// the automerge operations that follow are all against a
+/// freshly-created document and cannot themselves fail.
+pub fn encode_workspace(workspace: &Workspace) -> Result<Vec<u8>, String> {
     let mut doc = AutoCommit::new();
-    let json = serde_json::to_string(&workspace.data)
-        .expect("WorkspaceData serializes — no non-serializable fields");
+    let json = serde_json::to_string(&workspace.data).map_err(|e| e.to_string())?;
     let text_id = doc
         .put_object(&automerge::ROOT, WORKSPACE_TEXT_KEY, ObjType::Text)
-        .expect("put_object on the root never fails for a fresh doc");
+        .map_err(|e| e.to_string())?;
     doc.splice_text(&text_id, 0, 0, &json)
-        .expect("splice_text on a freshly-created Text object never fails");
+        .map_err(|e| e.to_string())?;
     doc.commit();
-    doc.save()
+    Ok(doc.save())
 }
 
 /// Inverse of [`encode_workspace`]. Returns `Err` only on truly
 /// corrupted bytes (bad automerge save, missing Text key, malformed
 /// JSON).
+///
+/// # Errors
+///
+/// Returns `Err` if `bytes` isn't a valid automerge save, is missing
+/// the workspace Text key, or its contents aren't valid
+/// [`WorkspaceData`] JSON.
 pub fn decode_workspace(bytes: &[u8]) -> Result<Workspace, String> {
     let doc = AutoCommit::load(bytes).map_err(|e| e.to_string())?;
     let text_id = match doc
@@ -169,6 +199,11 @@ pub fn decode_workspace(bytes: &[u8]) -> Result<Workspace, String> {
 /// Load the workspace metadata from `root/workspace.automerge`. Returns
 /// `Ok(None)` when the file simply doesn't exist yet — that's the
 /// first-launch signal the binary needs to seed a "Welcome" page.
+///
+/// # Errors
+///
+/// Returns `Err` if the file exists but can't be read, or its
+/// contents fail to decode (see [`decode_workspace`]).
 pub fn load_workspace(root: &Path) -> Result<Option<Workspace>, String> {
     let path = workspace_file_path(root);
     let bytes = match std::fs::read(&path) {
@@ -182,9 +217,14 @@ pub fn load_workspace(root: &Path) -> Result<Option<Workspace>, String> {
 /// Save the workspace metadata to `root/workspace.automerge`. Writes
 /// atomically (temp file + rename) so a crash mid-write can't leave a
 /// half-written file behind.
+///
+/// # Errors
+///
+/// Returns `Err` if the workspace directory can't be created, the
+/// workspace fails to encode, or the atomic write fails.
 pub fn save_workspace(root: &Path, workspace: &Workspace) -> io::Result<()> {
     ensure_layout(root)?;
-    let bytes = encode_workspace(workspace);
+    let bytes = encode_workspace(workspace).map_err(io::Error::other)?;
     atomic_file::write(&workspace_file_path(root), &bytes)?;
     Ok(())
 }
@@ -199,7 +239,7 @@ pub struct Saver {
     tx: Sender<SaverMsg>,
     debounce: Duration,
     status: Arc<AtomicU8>,
-    _join: Option<thread::JoinHandle<()>>,
+    join_handle: Option<thread::JoinHandle<()>>,
 }
 
 enum SaverMsg {
@@ -211,7 +251,12 @@ enum SaverMsg {
 impl Saver {
     /// Spawn the background save thread targeting `root` with the
     /// given debounce window.
-    pub fn spawn(root: PathBuf, debounce: Duration) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` only if the OS refuses to spawn the background
+    /// save thread (e.g. resource exhaustion).
+    pub fn spawn(root: PathBuf, debounce: Duration) -> io::Result<Self> {
         let (tx, rx) = mpsc::channel::<SaverMsg>();
         let pending: Arc<Mutex<Option<Workspace>>> = Arc::new(Mutex::new(None));
         let pending_thread = pending;
@@ -219,27 +264,23 @@ impl Saver {
         let debounce_thread = debounce;
         let status = Arc::new(AtomicU8::new(SaveStatus::Saved.as_u8()));
         let status_thread = status.clone();
-        let join = thread::Builder::new()
+        let join_handle = thread::Builder::new()
             .name("notes-saver".into())
             .spawn(move || {
                 saver_loop(
-                    rx,
-                    pending_thread,
-                    root_thread,
+                    &rx,
+                    &pending_thread,
+                    &root_thread,
                     debounce_thread,
-                    status_thread,
+                    &status_thread,
                 );
-            })
-            .expect("spawn notes saver thread");
-        // The receiver-side loop owns `pending` so we don't need to
-        // hold a clone here.
-        let _ = pending;
-        Self {
+            })?;
+        Ok(Self {
             tx,
             debounce,
             status,
-            _join: Some(join),
-        }
+            join_handle: Some(join_handle),
+        })
     }
 
     /// Request a save of `workspace`. The actual write happens after
@@ -275,7 +316,7 @@ impl Drop for Saver {
     fn drop(&mut self) {
         let _ = self.tx.send(SaverMsg::Flush);
         let _ = self.tx.send(SaverMsg::Stop);
-        if let Some(j) = self._join.take() {
+        if let Some(j) = self.join_handle.take() {
             let _ = j.join();
         }
     }
@@ -292,7 +333,7 @@ pub struct PageSaver {
     tx: Sender<PageSaverMsg>,
     debounce: Duration,
     status: Arc<AtomicU8>,
-    _join: Option<thread::JoinHandle<()>>,
+    join_handle: Option<thread::JoinHandle<()>>,
 }
 
 enum PageSaverMsg {
@@ -304,7 +345,12 @@ enum PageSaverMsg {
 impl PageSaver {
     /// Spawn the background save thread targeting `root` with the
     /// given debounce window.
-    pub fn spawn(root: PathBuf, debounce: Duration) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` only if the OS refuses to spawn the background
+    /// save thread (e.g. resource exhaustion).
+    pub fn spawn(root: PathBuf, debounce: Duration) -> io::Result<Self> {
         let (tx, rx) = mpsc::channel::<PageSaverMsg>();
         let pending: Arc<Mutex<std::collections::HashMap<PageId, String>>> =
             Arc::new(Mutex::new(std::collections::HashMap::new()));
@@ -313,24 +359,23 @@ impl PageSaver {
         let debounce_thread = debounce;
         let status = Arc::new(AtomicU8::new(SaveStatus::Saved.as_u8()));
         let status_thread = status.clone();
-        let join = thread::Builder::new()
+        let join_handle = thread::Builder::new()
             .name("notes-page-saver".into())
             .spawn(move || {
                 page_saver_loop(
-                    rx,
-                    pending_thread,
-                    root_thread,
+                    &rx,
+                    &pending_thread,
+                    &root_thread,
                     debounce_thread,
-                    status_thread,
+                    &status_thread,
                 );
-            })
-            .expect("spawn notes page saver thread");
-        Self {
+            })?;
+        Ok(Self {
             tx,
             debounce,
             status,
-            _join: Some(join),
-        }
+            join_handle: Some(join_handle),
+        })
     }
 
     /// Request a save of `body` for `id`. The actual write happens
@@ -390,31 +435,40 @@ impl Drop for PageSaver {
     fn drop(&mut self) {
         let _ = self.tx.send(PageSaverMsg::Flush);
         let _ = self.tx.send(PageSaverMsg::Stop);
-        if let Some(j) = self._join.take() {
+        if let Some(j) = self.join_handle.take() {
             let _ = j.join();
         }
     }
 }
 
+/// Lock `m`, recovering the inner value if a previous holder panicked
+/// mid-write rather than propagating the poison — a poisoned lock here
+/// would otherwise take down the whole background save thread, and
+/// carrying on with the last-known-good state beats not saving at all.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn page_saver_loop(
-    rx: Receiver<PageSaverMsg>,
-    pending: Arc<Mutex<std::collections::HashMap<PageId, String>>>,
-    root: PathBuf,
+    rx: &Receiver<PageSaverMsg>,
+    pending: &Arc<Mutex<std::collections::HashMap<PageId, String>>>,
+    root: &Path,
     debounce: Duration,
-    status: Arc<AtomicU8>,
+    status: &Arc<AtomicU8>,
 ) {
     let mut last_request: Option<Instant> = None;
     loop {
-        let timeout = match (last_request, !pending.lock().unwrap().is_empty()) {
+        let has_pending = !lock(pending).is_empty();
+        let timeout = match (last_request, has_pending) {
             (Some(t), true) => {
                 let elapsed = t.elapsed();
                 if elapsed >= debounce {
                     Duration::ZERO
                 } else {
-                    debounce.checked_sub(elapsed).unwrap()
+                    debounce.checked_sub(elapsed).unwrap_or(Duration::ZERO)
                 }
             }
-            _ => Duration::from_hours(1),
+            _ => Duration::from_secs(3600),
         };
         let msg = if timeout == Duration::ZERO {
             match rx.try_recv() {
@@ -432,18 +486,15 @@ fn page_saver_loop(
 
         match msg {
             Some(PageSaverMsg::Save(id, body)) => {
-                pending.lock().unwrap().insert(id, body);
+                lock(pending).insert(id, body);
                 last_request = Some(Instant::now());
                 status.store(SaveStatus::Saving.as_u8(), Ordering::Release);
             }
             Some(PageSaverMsg::Flush) => {
-                let drained: Vec<(PageId, String)> = {
-                    let mut p = pending.lock().unwrap();
-                    p.drain().collect()
-                };
+                let drained: Vec<(PageId, String)> = lock(pending).drain().collect();
                 let mut all_ok = true;
                 for (id, body) in drained {
-                    if let Err(e) = write_page_body(&root, id, &body) {
+                    if let Err(e) = write_page_body(root, id, &body) {
                         tracing::error!(error = %e, page = %id, "notes: page body save failed");
                         all_ok = false;
                     }
@@ -459,13 +510,10 @@ fn page_saver_loop(
             Some(PageSaverMsg::Stop) => return,
             None => {
                 // Timeout — flush every pending body.
-                let drained: Vec<(PageId, String)> = {
-                    let mut p = pending.lock().unwrap();
-                    p.drain().collect()
-                };
+                let drained: Vec<(PageId, String)> = lock(pending).drain().collect();
                 let mut all_ok = true;
                 for (id, body) in drained {
-                    if let Err(e) = write_page_body(&root, id, &body) {
+                    if let Err(e) = write_page_body(root, id, &body) {
                         tracing::error!(error = %e, page = %id, "notes: page body save failed");
                         all_ok = false;
                     }
@@ -483,27 +531,28 @@ fn page_saver_loop(
 }
 
 fn saver_loop(
-    rx: Receiver<SaverMsg>,
-    pending: Arc<Mutex<Option<Workspace>>>,
-    root: PathBuf,
+    rx: &Receiver<SaverMsg>,
+    pending: &Arc<Mutex<Option<Workspace>>>,
+    root: &Path,
     debounce: Duration,
-    status: Arc<AtomicU8>,
+    status: &Arc<AtomicU8>,
 ) {
     let mut last_request: Option<Instant> = None;
     loop {
         // Wait for the next message — block forever if there's nothing
         // pending, otherwise time out at the debounce deadline so we
         // can flush.
-        let timeout = match (last_request, pending.lock().unwrap().is_some()) {
+        let has_pending = lock(pending).is_some();
+        let timeout = match (last_request, has_pending) {
             (Some(t), true) => {
                 let elapsed = t.elapsed();
                 if elapsed >= debounce {
                     Duration::ZERO
                 } else {
-                    debounce.checked_sub(elapsed).unwrap()
+                    debounce.checked_sub(elapsed).unwrap_or(Duration::ZERO)
                 }
             }
-            _ => Duration::from_hours(1),
+            _ => Duration::from_secs(3600),
         };
         let msg = if timeout == Duration::ZERO {
             // Force an immediate flush — no wait.
@@ -522,15 +571,15 @@ fn saver_loop(
 
         match msg {
             Some(SaverMsg::Save(w)) => {
-                *pending.lock().unwrap() = Some(w);
+                *lock(pending) = Some(w);
                 last_request = Some(Instant::now());
                 status.store(SaveStatus::Saving.as_u8(), Ordering::Release);
             }
             Some(SaverMsg::Flush) => {
-                let to_write = pending.lock().unwrap().take();
+                let to_write = lock(pending).take();
                 let mut ok = true;
                 if let Some(w) = to_write
-                    && let Err(e) = save_workspace(&root, &w)
+                    && let Err(e) = save_workspace(root, &w)
                 {
                     tracing::error!(error = %e, "notes: workspace save failed");
                     ok = false;
@@ -546,10 +595,10 @@ fn saver_loop(
             Some(SaverMsg::Stop) => return,
             None => {
                 // Timeout — flush the pending snapshot.
-                let to_write = pending.lock().unwrap().take();
+                let to_write = lock(pending).take();
                 let mut ok = true;
                 if let Some(w) = to_write
-                    && let Err(e) = save_workspace(&root, &w)
+                    && let Err(e) = save_workspace(root, &w)
                 {
                     tracing::error!(error = %e, "notes: workspace save failed");
                     ok = false;
@@ -579,7 +628,7 @@ mod tests {
         w.rename(a, "Root");
         w.rename(b, "Child");
         w.set_selected(Some(b));
-        let bytes = encode_workspace(&w);
+        let bytes = encode_workspace(&w).unwrap();
         let back = decode_workspace(&bytes).unwrap();
         assert_eq!(back.pages().len(), 2);
         assert_eq!(back.get(a).unwrap().title, "Root");

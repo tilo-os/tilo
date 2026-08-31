@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -151,6 +151,8 @@ impl std::fmt::Debug for CommandEntry {
             .field("keybinding", &self.keybinding)
             .field("argument", &self.argument)
             .field("group", &self.group)
+            .field("group_total", &self.group_total)
+            .field("icon", &self.icon)
             .field("on_select", &self.on_select.as_ref().map(|_| "<fn>"))
             .finish()
     }
@@ -171,31 +173,37 @@ impl CommandEntry {
         }
     }
 
+    #[must_use]
     pub fn description(mut self, d: impl Into<String>) -> Self {
         self.description = Some(d.into());
         self
     }
 
+    #[must_use]
     pub fn group(mut self, g: impl Into<String>) -> Self {
         self.group = Some(g.into());
         self
     }
 
+    #[must_use]
     pub fn group_total(mut self, total: usize) -> Self {
         self.group_total = Some(total);
         self
     }
 
+    #[must_use]
     pub fn icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
     }
 
+    #[must_use]
     pub fn keybinding(mut self, k: impl Into<String>) -> Self {
         self.keybinding = Some(k.into());
         self
     }
 
+    #[must_use]
     pub fn with_argument(
         mut self,
         prompt: impl Into<String>,
@@ -212,6 +220,7 @@ impl CommandEntry {
 
     /// Prefill is fully selected when the argument step opens, so the first
     /// keystroke replaces it.
+    #[must_use]
     pub fn with_argument_prefill(mut self, prefill: impl Into<String>) -> Self {
         let prefill = prefill.into();
         match &mut self.argument {
@@ -226,6 +235,7 @@ impl CommandEntry {
         self
     }
 
+    #[must_use]
     pub fn on_select<F>(mut self, f: F) -> Self
     where
         F: Fn(&mut AutoCommit, &ObjId) + Send + Sync + 'static,
@@ -279,12 +289,18 @@ fn elide_middle(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> Str
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     for drop in 1..n {
-        let keep = n - drop;
-        let tail = (keep * 2) / 3;
-        let head = keep - tail;
-        let candidate: String = chars[..head].iter().collect::<String>()
+        let keep = n.saturating_sub(drop);
+        let tail = keep.saturating_mul(2) / 3;
+        let head = keep.saturating_sub(tail);
+        let Some(head_chars) = chars.get(..head) else {
+            continue;
+        };
+        let Some(tail_chars) = chars.get(n.saturating_sub(tail)..) else {
+            continue;
+        };
+        let candidate: String = head_chars.iter().collect::<String>()
             + "\u{2026}"
-            + &chars[n - tail..].iter().collect::<String>();
+            + &tail_chars.iter().collect::<String>();
         if f64::from(tr.measure(&candidate, size, None).0) <= max_w {
             return candidate;
         }
@@ -305,13 +321,14 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     let mut gaps = 0i32;
     let mut prev_match: Option<usize> = None;
     for (ti, ch) in t.iter().enumerate() {
-        if qi < q.len() && *ch == q[qi] {
+        if q.get(qi) == Some(ch) {
             if let Some(pm) = prev_match {
-                gaps += (ti - pm - 1) as i32;
+                let gap = ti.saturating_sub(pm).saturating_sub(1);
+                gaps = gaps.saturating_add(i32::try_from(gap).unwrap_or(i32::MAX));
             }
             prev_match = Some(ti);
-            qi += 1;
-            matches += 1;
+            qi = qi.saturating_add(1);
+            matches = matches.saturating_add(1);
             if qi == q.len() {
                 break;
             }
@@ -320,8 +337,21 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     if qi < q.len() {
         None
     } else {
-        Some(matches - gaps)
+        Some(matches.saturating_sub(gaps))
     }
+}
+
+/// Narrows a layout/measurement value to `f32` for vello/taffy. Every call
+/// site is a pixel size or offset inside this card (row widths, card
+/// dimensions), always many orders of magnitude below `f32::MAX`, so the
+/// truncation the lint warns about can't actually occur here.
+#[inline]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "screen-space pixel values in this widget never approach f32::MAX"
+)]
+fn px(v: f64) -> f32 {
+    v as f32
 }
 
 /// Shared by `draw` and the layout tests so they can't disagree.
@@ -345,9 +375,19 @@ struct ArgState {
 /// A predicate narrowing which [`CommandEntry`] rows are shown.
 type EntryFilter = Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>;
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent, orthogonal display/behavior toggle \
+              (focus, modal trap, fuzzy bypass, and two host-strip display \
+              modes) set individually by callers — bundling them into a \
+              bitflag or sub-struct would not make any call site clearer"
+)]
 pub struct CommandPalette {
     entries: Vec<CommandEntry>,
     query: String,
+    /// Hint shown while the main query is empty. Hosts use this to name the
+    /// resource being searched (files, commands, applications, ...).
+    query_placeholder: String,
     query_selection: crate::text_selection::Selection,
     query_composition: QueryComposition,
     filter: Option<EntryFilter>,
@@ -361,6 +401,9 @@ pub struct CommandPalette {
     /// Default `false`; [`PaletteMode::Commands`] turns it on.
     modal: bool,
     arg_state: Option<ArgState>,
+    /// Whether argument entry was opened without a backing list row. Escape
+    /// closes such a dedicated prompt instead of revealing an unrelated list.
+    direct_argument: bool,
     outcome: Option<CommandOutcome>,
     /// Skip the built-in fuzzy filter when `true`, for provider hosts whose
     /// pre-matched result set should show verbatim.
@@ -402,6 +445,7 @@ impl CommandPalette {
         Self {
             entries: Vec::new(),
             query: String::new(),
+            query_placeholder: "Search\u{2026}".to_string(),
             query_selection: crate::text_selection::Selection::collapsed(0),
             query_composition: QueryComposition::new(),
             filter: None,
@@ -413,6 +457,7 @@ impl CommandPalette {
             mode: PaletteMode::Search,
             modal: false,
             arg_state: None,
+            direct_argument: false,
             outcome: None,
             bypass_fuzzy: false,
             hide_filter_strip: false,
@@ -460,9 +505,38 @@ impl CommandPalette {
         self.query_selection = crate::text_selection::Selection::collapsed(0);
         self.query_composition.clear();
         self.arg_state = None;
+        self.direct_argument = false;
         self.outcome = None;
         self.cursor = 0;
         self.rebuild();
+    }
+
+    /// Open directly in the argument-entry step without first presenting a
+    /// selectable row. This is useful for dedicated shortcuts such as
+    /// "Go to line", while retaining the palette's shared text selection,
+    /// clipboard and IME behavior.
+    pub fn open_argument(
+        &mut self,
+        id: impl Into<String>,
+        prompt: impl Into<String>,
+        placeholder: impl Into<String>,
+        prefill: Option<String>,
+    ) {
+        let buffer = prefill.unwrap_or_default();
+        self.is_focused = true;
+        self.outcome = None;
+        self.direct_argument = true;
+        self.arg_state = Some(ArgState {
+            entry_id: id.into(),
+            prompt: prompt.into(),
+            placeholder: placeholder.into(),
+            selection: crate::text_selection::Selection {
+                anchor: 0,
+                cursor: buffer.len(),
+            },
+            buffer,
+            composition: QueryComposition::new(),
+        });
     }
 
     /// Discards any in-progress argument entry but keeps registered entries,
@@ -470,6 +544,7 @@ impl CommandPalette {
     pub fn close(&mut self) {
         self.is_focused = false;
         self.arg_state = None;
+        self.direct_argument = false;
         self.query_composition.clear();
     }
 
@@ -550,6 +625,11 @@ impl CommandPalette {
     /// Adds room only for the headers the plan actually has — reserving it
     /// unconditionally would let an ungrouped list paint an extra row into
     /// slack meant for something that isn't there.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "both counts are tiny UI row/header caps (<=8 and \
+                  <=MAX_HEADERS_IN_VIEW), far below f64's exact-integer range"
+    )]
     fn max_list_height(&self) -> f64 {
         let headers = self
             .rows
@@ -557,7 +637,7 @@ impl CommandPalette {
             .filter(|r| matches!(r, VisualRow::Header { .. }))
             .count()
             .min(MAX_HEADERS_IN_VIEW);
-        self.max_visible_rows() as f64 * self.row_height() + headers as f64 * HEADER_HEIGHT
+        Self::max_visible_rows() as f64 * self.row_height() + headers as f64 * HEADER_HEIGHT
     }
 
     fn filter_block(&self) -> f64 {
@@ -597,7 +677,7 @@ impl CommandPalette {
 
     /// Section headers get their own allowance on top; see
     /// [`Self::max_list_height`].
-    fn max_visible_rows(&self) -> usize {
+    fn max_visible_rows() -> usize {
         8
     }
 
@@ -610,22 +690,27 @@ impl CommandPalette {
         let Some(&idx) = self.visible.get(self.cursor) else {
             return;
         };
-        if let Some(spec) = self.entries[idx].argument.clone() {
+        let Some(entry) = self.entries.get(idx) else {
+            return;
+        };
+        let id = entry.id.clone();
+        let argument = entry.argument.clone();
+        if let Some(spec) = argument {
             let buffer = spec.prefill.clone().unwrap_or_default();
             let selection = crate::text_selection::Selection {
                 anchor: 0,
                 cursor: buffer.len(),
             };
             self.arg_state = Some(ArgState {
-                entry_id: self.entries[idx].id.clone(),
+                entry_id: id,
                 prompt: spec.prompt,
                 placeholder: spec.placeholder,
                 buffer,
                 selection,
                 composition: QueryComposition::new(),
             });
+            self.direct_argument = false;
         } else {
-            let id = self.entries[idx].id.clone();
             self.run_entry(state, path, id, None);
         }
     }
@@ -655,6 +740,16 @@ impl CommandPalette {
     }
 
     /// All keys are consumed so nothing leaks to the app behind.
+    /// One immediate-mode key-routing step for the argument-entry mode; the
+    /// full parameter list is the same key/state/path threading every other
+    /// event handler in this file needs, so splitting it up would only
+    /// fragment one cohesive state transition.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "immediate-mode key routing needs the raw event, the decoded \
+                  key and modifiers, and the CRDT handle to run the entry — \
+                  every parameter is independently load-bearing"
+    )]
     fn handle_arg_key(
         &mut self,
         event: &WindowEvent,
@@ -669,15 +764,19 @@ impl CommandPalette {
         *handled = true;
         match key {
             Key::Named(NamedKey::Enter) => {
-                let (id, value) = {
-                    let arg = self.arg_state.as_ref().unwrap();
-                    (arg.entry_id.clone(), arg.buffer.clone())
+                let Some(arg) = self.arg_state.as_ref() else {
+                    return;
                 };
+                let (id, value) = (arg.entry_id.clone(), arg.buffer.clone());
                 self.run_entry(state, path, id, Some(value));
                 return;
             }
             Key::Named(NamedKey::Escape) => {
                 self.arg_state = None;
+                if self.direct_argument {
+                    self.is_focused = false;
+                    self.direct_argument = false;
+                }
                 return;
             }
             // No list navigation while typing an argument.
@@ -686,7 +785,9 @@ impl CommandPalette {
             }
             _ => {}
         }
-        let arg = self.arg_state.as_mut().unwrap();
+        let Some(arg) = self.arg_state.as_mut() else {
+            return;
+        };
         arg.composition
             .handle_event(event, &mut arg.buffer, &mut arg.selection, shift, ctrl);
     }
@@ -762,13 +863,20 @@ impl CommandPalette {
         &self.query
     }
 
+    pub fn set_query_placeholder(&mut self, placeholder: impl Into<String>) {
+        self.query_placeholder = placeholder.into();
+    }
+
     pub fn set_filter(&mut self, f: Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>) {
         self.filter = Some(f);
         self.rebuild();
     }
 
     pub fn visible_entries(&self) -> Vec<&CommandEntry> {
-        self.visible.iter().map(|&i| &self.entries[i]).collect()
+        self.visible
+            .iter()
+            .filter_map(|&i| self.entries.get(i))
+            .collect()
     }
 
     pub fn cursor(&self) -> usize {
@@ -781,7 +889,7 @@ impl CommandPalette {
         if self.visible.is_empty() {
             self.cursor = 0;
         } else {
-            self.cursor = index.min(self.visible.len() - 1);
+            self.cursor = index.min(self.visible.len().saturating_sub(1));
         }
     }
 
@@ -789,7 +897,8 @@ impl CommandPalette {
     pub fn selected_id(&self) -> Option<&str> {
         self.visible
             .get(self.cursor)
-            .map(|&i| self.entries[i].id.as_str())
+            .and_then(|&i| self.entries.get(i))
+            .map(|e| e.id.as_str())
     }
 
     fn visual_index_of(&self, entry_i: usize) -> Option<usize> {
@@ -807,22 +916,28 @@ impl CommandPalette {
         loop {
             let mut used = 0.0;
             let mut end = start;
-            while end < self.rows.len() {
-                let h = self.visual_row_height(&self.rows[end]);
+            while let Some(row) = self.rows.get(end) {
+                let h = self.visual_row_height(row);
                 if used + h > budget {
                     break;
                 }
                 used += h;
-                end += 1;
+                end = end.saturating_add(1);
             }
-            if target < end || end >= self.rows.len() || start + 1 >= self.rows.len() {
+            if target < end || end >= self.rows.len() || start.saturating_add(1) >= self.rows.len()
+            {
                 // Pull the header back in rather than stranding its rows.
-                if start > 0 && matches!(self.rows[start - 1], VisualRow::Header { .. }) {
-                    start -= 1;
+                if start > 0
+                    && self
+                        .rows
+                        .get(start.saturating_sub(1))
+                        .is_some_and(|r| matches!(r, VisualRow::Header { .. }))
+                {
+                    start = start.saturating_sub(1);
                 }
                 return (start, end.max(start));
             }
-            start += 1;
+            start = start.saturating_add(1);
         }
     }
 
@@ -837,7 +952,8 @@ impl CommandPalette {
             return None;
         }
         let mut y0 = self.list_top_y();
-        for r in &self.rows[start..target] {
+        let window = self.rows.get(start..target)?;
+        for r in window {
             y0 += self.visual_row_height(r);
         }
         let y1 = y0 + self.row_height();
@@ -913,6 +1029,11 @@ impl CommandPalette {
         }
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a host-declared filter-strip row count, realistically a \
+                  handful of rows, far below f64's exact-integer range"
+    )]
     fn filter_strip_height(&self) -> f64 {
         FILTER_STRIP_HEIGHT * self.host_filter_strip_rows() as f64
     }
@@ -924,6 +1045,75 @@ impl CommandPalette {
             self.rect.x1 - PADDING,
             self.rect.y1 - PADDING,
         )
+    }
+
+    /// Draws either the in-progress argument buffer (with its prompt
+    /// heading) or the plain query, whichever step the palette is in.
+    fn draw_query_text(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: &InputRowLayout,
+    ) {
+        let colors = &theme.tokens.colors;
+        let text_size = theme.tokens.typography.scale.base;
+        let text_y =
+            layout.input_rect.y0 + (layout.input_rect.height() - f64::from(text_size)) / 2.0;
+        let mut tx = layout.input_rect.x0;
+        let style = theme.tokens.typography.style(TextRole::Body);
+        if let Some(arg) = &mut self.arg_state {
+            if !arg.prompt.is_empty() {
+                let heading = format!("{}:  ", arg.prompt);
+                text_renderer.draw_text(
+                    scene,
+                    &heading,
+                    text_size,
+                    colors.text_dim,
+                    transform.pre_translate(Vec2::new(tx, text_y)),
+                    None,
+                );
+                let (hw, _) = text_renderer.measure(&heading, text_size, None);
+                tx += f64::from(hw);
+            }
+            arg.composition.draw(
+                scene,
+                transform,
+                text_renderer,
+                &arg.buffer,
+                &arg.selection,
+                &arg.placeholder,
+                Rect::new(
+                    tx,
+                    layout.input_rect.y0,
+                    layout.input_rect.x1,
+                    layout.input_rect.y1,
+                ),
+                &style,
+                colors.text_primary,
+                colors.text_dim,
+                colors.accent[5].with_alpha_factor(0.3),
+                colors.accent[5],
+                self.is_focused,
+            );
+        } else {
+            self.query_composition.draw(
+                scene,
+                transform,
+                text_renderer,
+                &self.query,
+                &self.query_selection,
+                &self.query_placeholder,
+                layout.input_rect,
+                &style,
+                colors.text_primary,
+                colors.text_dim,
+                colors.accent[5].with_alpha_factor(0.3),
+                colors.accent[5],
+                self.is_focused,
+            );
+        }
     }
 
     /// `rounded-full` pill, `px-2 py-1` (≈ 12 px horizontal padding).
@@ -958,7 +1148,7 @@ impl CommandPalette {
             let chip_w = f64::from(w) + 16.0;
             let chip = Self::chip_rect(strip, x, chip_w);
             let active = self.search_filter.scope == scope;
-            self.draw_chip(
+            Self::draw_chip(
                 scene,
                 transform,
                 text_renderer,
@@ -978,7 +1168,7 @@ impl CommandPalette {
         let ft_on = self.search_filter.full_text;
         let ft_active_fill = Color::from_rgba8(34, 197, 94, 51); // emerald-500/20
         let ft_active_text = Color::from_rgba8(0x4a, 0xde, 0x80, 0xff); // emerald-400
-        self.draw_chip(
+        Self::draw_chip(
             scene,
             transform,
             text_renderer,
@@ -1001,7 +1191,7 @@ impl CommandPalette {
             }
             let chip = Self::chip_rect(strip, fx, chip_w);
             let active = self.search_filter.filetypes.contains(&ft);
-            self.draw_chip(
+            Self::draw_chip(
                 scene,
                 transform,
                 text_renderer,
@@ -1018,9 +1208,13 @@ impl CommandPalette {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one paint-helper signature reused by every chip in the \
+                  strip; each parameter is an independently load-bearing \
+                  piece of what gets drawn"
+    )]
     fn draw_chip(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -1042,7 +1236,7 @@ impl CommandPalette {
             label,
             text_size,
             text_color,
-            transform * Affine::translate((tx, ty)),
+            transform.pre_translate(Vec2::new(tx, ty)),
             None,
         );
     }
@@ -1109,11 +1303,10 @@ impl CommandPalette {
                 key,
                 size,
                 dim,
-                transform
-                    * Affine::translate((
-                        chip_rect.x0 + (chip_rect.width() - f64::from(kw)) / 2.0,
-                        chip_rect.y0 + (chip_rect.height() - f64::from(kh)) / 2.0,
-                    )),
+                transform.pre_translate(Vec2::new(
+                    chip_rect.x0 + (chip_rect.width() - f64::from(kw)) / 2.0,
+                    chip_rect.y0 + (chip_rect.height() - f64::from(kh)) / 2.0,
+                )),
                 None,
             );
             x = chip_rect.x1 + 4.0;
@@ -1123,7 +1316,7 @@ impl CommandPalette {
                 label,
                 size,
                 dim,
-                transform * Affine::translate((x, cy - f64::from(lh) / 2.0)),
+                transform.pre_translate(Vec2::new(x, cy - f64::from(lh) / 2.0)),
                 None,
             );
             x += f64::from(lw) + 12.0;
@@ -1142,11 +1335,10 @@ impl CommandPalette {
                 &right,
                 size,
                 dim,
-                transform
-                    * Affine::translate((
-                        footer.x1 - f64::from(sw) - 6.0,
-                        cy - f64::from(sh) / 2.0,
-                    )),
+                transform.pre_translate(Vec2::new(
+                    footer.x1 - f64::from(sw) - 6.0,
+                    cy - f64::from(sh) / 2.0,
+                )),
                 None,
             );
         }
@@ -1170,7 +1362,10 @@ impl CommandPalette {
         let (start, end) = self.painted_window();
         let mut y = self.list_top_y();
 
-        for row in &self.rows[start..end] {
+        let Some(window) = self.rows.get(start..end) else {
+            return;
+        };
+        for row in window {
             match row {
                 VisualRow::Header { label, total } => {
                     let hy = y + (HEADER_HEIGHT - f64::from(header_size)) / 2.0 + 2.0;
@@ -1180,7 +1375,7 @@ impl CommandPalette {
                         &upper,
                         header_size,
                         colors.text_dim,
-                        transform * Affine::translate((x0 + 12.0, hy)),
+                        transform.pre_translate(Vec2::new(x0 + 12.0, hy)),
                         None,
                     );
                     let count = total.to_string();
@@ -1190,26 +1385,31 @@ impl CommandPalette {
                         &count,
                         header_size,
                         colors.text_dim,
-                        transform * Affine::translate((x1 - 12.0 - f64::from(cw), hy)),
+                        transform.pre_translate(Vec2::new(x1 - 12.0 - f64::from(cw), hy)),
                         None,
                     );
                     y += HEADER_HEIGHT;
                 }
                 VisualRow::Entry(entry_i) => {
                     let row_rect = Rect::new(x0, y, x1, y + rh);
-                    let selected = *entry_i == self.cursor;
-                    let entry = &self.entries[self.visible[*entry_i]];
-                    self.draw_one_row(
-                        scene,
-                        transform,
-                        text_renderer,
-                        theme,
-                        row_rect,
-                        entry,
-                        selected,
-                        label_size,
-                        desc_size,
-                    );
+                    if let Some(entry) = self
+                        .visible
+                        .get(*entry_i)
+                        .and_then(|&idx| self.entries.get(idx))
+                    {
+                        let selected = *entry_i == self.cursor;
+                        Self::draw_one_row(
+                            scene,
+                            transform,
+                            text_renderer,
+                            theme,
+                            row_rect,
+                            entry,
+                            selected,
+                            label_size,
+                            desc_size,
+                        );
+                    }
                     y += rh;
                 }
             }
@@ -1227,76 +1427,91 @@ impl CommandPalette {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw_one_row(
-        &self,
+    /// The accent fill + stroke + left bar painted under a selected row.
+    fn draw_selection_highlight(
+        scene: &mut Scene,
+        transform: Affine,
+        row: Rect,
+        colors: &crate::tokens::Colors,
+        radius: f64,
+    ) {
+        let shape = RoundedRect::from_rect(row, radius);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.accent[5].with_alpha_factor(SELECTION_WASH),
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            colors.accent[5].with_alpha_factor(0.55),
+            None,
+            &shape,
+        );
+        let bar = RoundedRect::from_rect(
+            Rect::new(row.x0 + 1.0, row.y0 + 6.0, row.x0 + 4.0, row.y1 - 6.0),
+            1.5,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.accent[5],
+            None,
+            &bar,
+        );
+    }
+
+    /// Paints the row's leading icon, if any, and returns where the label
+    /// text should start.
+    fn draw_row_icon(
+        scene: &mut Scene,
+        transform: Affine,
+        row: Rect,
+        icon: Icon,
+        colors: &crate::tokens::Colors,
+        selected: bool,
+    ) -> f64 {
+        let size = 16.0;
+        let cy = f64::midpoint(row.y0, row.y1);
+        let icon_rect = Rect::new(
+            row.x0 + 12.0,
+            cy - size / 2.0,
+            row.x0 + 12.0 + size,
+            cy + size / 2.0,
+        );
+        let tint = if selected {
+            colors.text_primary
+        } else {
+            colors.text_dim
+        };
+        icons::draw_icon(scene, transform, icon_rect, icon, tint, 1.5);
+        icon_rect.x1 + 10.0
+    }
+
+    /// Paints the row's trailing decoration — a keybinding chip or an
+    /// argument-entry cue, mutually exclusive — and returns the x the label
+    /// text must stay clear of.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one paint-helper for the row's trailing decoration; each \
+                  parameter is independently load-bearing"
+    )]
+    fn draw_row_trailing(
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
-        theme: &Theme,
         row: Rect,
         entry: &CommandEntry,
-        selected: bool,
-        label_size: f32,
+        row_ground: Color,
+        colors: &crate::tokens::Colors,
         desc_size: f32,
-    ) {
-        let colors = &theme.tokens.colors;
-        let row_ground = Self::row_ground(colors, selected);
-        // Needs contrast against the selection wash: take the nearest
-        // legible step from the theme's dim tone rather than promoting it
-        // to the title's weight to survive.
-        let subtitle_ink = colors.ink_on(row_ground, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST);
-        if selected {
-            let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.md));
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                colors.accent[5].with_alpha_factor(SELECTION_WASH),
-                None,
-                &shape,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                colors.accent[5].with_alpha_factor(0.55),
-                None,
-                &shape,
-            );
-            let bar = RoundedRect::from_rect(
-                Rect::new(row.x0 + 1.0, row.y0 + 6.0, row.x0 + 4.0, row.y1 - 6.0),
-                1.5,
-            );
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                colors.accent[5],
-                None,
-                &bar,
-            );
-        }
-
-        let mut text_x = row.x0 + 12.0;
-        if let Some(icon) = entry.icon {
-            let size = 16.0;
-            let cy = f64::midpoint(row.y0, row.y1);
-            let icon_rect = Rect::new(
-                row.x0 + 12.0,
-                cy - size / 2.0,
-                row.x0 + 12.0 + size,
-                cy + size / 2.0,
-            );
-            let tint = if selected {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            };
-            icons::draw_icon(scene, transform, icon_rect, icon, tint, 1.5);
-            text_x = icon_rect.x1 + 10.0;
-        }
-
+        label_size: f32,
+        selected: bool,
+    ) -> f64 {
         // Reserved before measuring the text, so a long title is ellipsised
         // rather than painted under the chip.
-        let mut text_right = row.x1 - 12.0;
         if let Some(kb) = &entry.keybinding {
             let (kw, kh) = text_renderer.measure(kb, desc_size, None);
             let chip_w = f64::from(kw) + 14.0;
@@ -1330,11 +1545,13 @@ impl CommandPalette {
                 kb,
                 desc_size,
                 colors.ink_on(kb_fill, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST),
-                transform
-                    * Affine::translate((chip.x0 + 7.0, chip.center().y - f64::from(kh) / 2.0)),
+                transform.pre_translate(Vec2::new(
+                    chip.x0 + 7.0,
+                    chip.center().y - f64::from(kh) / 2.0,
+                )),
                 None,
             );
-            text_right = chip.x0 - 8.0;
+            chip.x0 - 8.0
         } else if entry.argument.is_some() {
             let cue = "\u{2192}"; // →
             let (hw, hh) = text_renderer.measure(cue, label_size, None);
@@ -1348,19 +1565,73 @@ impl CommandPalette {
                 cue,
                 label_size,
                 color,
-                transform
-                    * Affine::translate((
-                        row.x1 - f64::from(hw) - 14.0,
-                        f64::midpoint(row.y0, row.y1) - f64::from(hh) / 2.0,
-                    )),
+                transform.pre_translate(Vec2::new(
+                    row.x1 - f64::from(hw) - 14.0,
+                    f64::midpoint(row.y0, row.y1) - f64::from(hh) / 2.0,
+                )),
                 None,
             );
-            text_right = row.x1 - f64::from(hw) - 22.0;
+            row.x1 - f64::from(hw) - 22.0
+        } else {
+            row.x1 - 12.0
         }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "standard immediate-mode paint-helper signature for this \
+                  vello renderer (scene + transform + text_renderer + theme, \
+                  plus this row's own content); every parameter is \
+                  independently load-bearing"
+    )]
+    fn draw_one_row(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        entry: &CommandEntry,
+        selected: bool,
+        label_size: f32,
+        desc_size: f32,
+    ) {
+        let colors = &theme.tokens.colors;
+        let row_ground = Self::row_ground(colors, selected);
+        // Needs contrast against the selection wash: take the nearest
+        // legible step from the theme's dim tone rather than promoting it
+        // to the title's weight to survive.
+        let subtitle_ink = colors.ink_on(row_ground, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST);
+        if selected {
+            Self::draw_selection_highlight(
+                scene,
+                transform,
+                row,
+                colors,
+                f64::from(theme.tokens.radii.md),
+            );
+        }
+
+        let mut text_x = row.x0 + 12.0;
+        if let Some(icon) = entry.icon {
+            text_x = Self::draw_row_icon(scene, transform, row, icon, colors, selected);
+        }
+
+        let text_right = Self::draw_row_trailing(
+            scene,
+            transform,
+            text_renderer,
+            row,
+            entry,
+            row_ground,
+            colors,
+            desc_size,
+            label_size,
+            selected,
+        );
         let avail = (text_right - text_x).max(0.0);
 
         if let Some(desc) = &entry.description {
-            let label = text_renderer.elide_to_width(&entry.label, label_size, avail as f32);
+            let label = text_renderer.elide_to_width(&entry.label, label_size, px(avail));
             let sub = elide_middle(text_renderer, desc, desc_size, avail);
             let block = f64::from(label_size) + 3.0 + f64::from(desc_size);
             let ly = row.y0 + (row.height() - block) / 2.0;
@@ -1369,7 +1640,7 @@ impl CommandPalette {
                 &label,
                 label_size,
                 colors.text_primary,
-                transform * Affine::translate((text_x, ly)),
+                transform.pre_translate(Vec2::new(text_x, ly)),
                 None,
             );
             text_renderer.draw_text(
@@ -1377,18 +1648,18 @@ impl CommandPalette {
                 &sub,
                 desc_size,
                 subtitle_ink,
-                transform * Affine::translate((text_x, ly + f64::from(label_size) + 3.0)),
+                transform.pre_translate(Vec2::new(text_x, ly + f64::from(label_size) + 3.0)),
                 None,
             );
         } else {
-            let label = text_renderer.elide_to_width(&entry.label, label_size, avail as f32);
+            let label = text_renderer.elide_to_width(&entry.label, label_size, px(avail));
             let ly = row.y0 + (row.height() - f64::from(label_size)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &label,
                 label_size,
                 colors.text_primary,
-                transform * Affine::translate((text_x, ly)),
+                transform.pre_translate(Vec2::new(text_x, ly)),
                 None,
             );
         }
@@ -1431,15 +1702,14 @@ impl CommandPalette {
         } else {
             format!("No results for \u{201c}{}\u{201d}", self.query)
         };
-        let title =
-            text_renderer.elide_to_width(&title, title_size, (self.rect.width() - 48.0) as f32);
+        let title = text_renderer.elide_to_width(&title, title_size, px(self.rect.width() - 48.0));
         let (tw, _) = text_renderer.measure(&title, title_size, None);
         text_renderer.draw_text(
             scene,
             &title,
             title_size,
             colors.text_primary,
-            transform * Affine::translate((cx - f64::from(tw) / 2.0, cy)),
+            transform.pre_translate(Vec2::new(cx - f64::from(tw) / 2.0, cy)),
             None,
         );
         let hint_size = (theme.tokens.typography.scale.xs).max(10.0);
@@ -1450,8 +1720,10 @@ impl CommandPalette {
             hint,
             hint_size,
             colors.text_dim,
-            transform
-                * Affine::translate((cx - f64::from(hw) / 2.0, cy + f64::from(title_size) + 6.0)),
+            transform.pre_translate(Vec2::new(
+                cx - f64::from(hw) / 2.0,
+                cy + f64::from(title_size) + 6.0,
+            )),
             None,
         );
     }
@@ -1479,7 +1751,9 @@ impl CommandPalette {
         self.rows.clear();
         let mut current: Option<&str> = None;
         for (entry_i, &idx) in self.visible.iter().enumerate() {
-            let entry = &self.entries[idx];
+            let Some(entry) = self.entries.get(idx) else {
+                continue;
+            };
             if let Some(group) = entry.group.as_deref()
                 && current != Some(group)
             {
@@ -1487,10 +1761,15 @@ impl CommandPalette {
                 // Fall back to the contiguous run when the host gives no
                 // uncapped total.
                 let total = entry.group_total.unwrap_or_else(|| {
-                    self.visible[entry_i..]
-                        .iter()
-                        .take_while(|&&j| self.entries[j].group.as_deref() == Some(group))
-                        .count()
+                    self.visible.get(entry_i..).map_or(0, |rest| {
+                        rest.iter()
+                            .take_while(|&&j| {
+                                self.entries
+                                    .get(j)
+                                    .is_some_and(|e| e.group.as_deref() == Some(group))
+                            })
+                            .count()
+                    })
                 });
                 self.rows.push(VisualRow::Header {
                     label: group.to_string(),
@@ -1536,8 +1815,8 @@ impl Widget for CommandPalette {
         let (width, height) = self.desired_size();
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(width as f32),
-                height: Dimension::length(height as f32),
+                width: Dimension::length(px(width)),
+                height: Dimension::length(px(height)),
             },
             ..Default::default()
         });
@@ -1616,62 +1895,7 @@ impl Widget for CommandPalette {
         // No shortcut chip here: a kbd hint invites a chord you've already
         // pressed by now, and two different chords open this palette at two
         // scopes — one label would misname one of them.
-        let text_size = theme.tokens.typography.scale.base;
-        let text_y =
-            layout.input_rect.y0 + (layout.input_rect.height() - f64::from(text_size)) / 2.0;
-        let mut tx = layout.input_rect.x0;
-        let style = theme.tokens.typography.style(TextRole::Body);
-        if let Some(arg) = &mut self.arg_state {
-            if !arg.prompt.is_empty() {
-                let heading = format!("{}:  ", arg.prompt);
-                text_renderer.draw_text(
-                    scene,
-                    &heading,
-                    text_size,
-                    colors.text_dim,
-                    transform * Affine::translate((tx, text_y)),
-                    None,
-                );
-                let (hw, _) = text_renderer.measure(&heading, text_size, None);
-                tx += f64::from(hw);
-            }
-            arg.composition.draw(
-                scene,
-                transform,
-                text_renderer,
-                &arg.buffer,
-                &arg.selection,
-                &arg.placeholder,
-                Rect::new(
-                    tx,
-                    layout.input_rect.y0,
-                    layout.input_rect.x1,
-                    layout.input_rect.y1,
-                ),
-                &style,
-                colors.text_primary,
-                colors.text_dim,
-                colors.accent[5].with_alpha_factor(0.3),
-                colors.accent[5],
-                self.is_focused,
-            );
-        } else {
-            self.query_composition.draw(
-                scene,
-                transform,
-                text_renderer,
-                &self.query,
-                &self.query_selection,
-                "Search\u{2026}",
-                layout.input_rect,
-                &style,
-                colors.text_primary,
-                colors.text_dim,
-                colors.accent[5].with_alpha_factor(0.3),
-                colors.accent[5],
-                self.is_focused,
-            );
-        }
+        self.draw_query_text(scene, transform, text_renderer, theme, &layout);
 
         // Skipped when the host paints its own controls into the reserved band.
         if self.mode == PaletteMode::Search && !self.hide_filter_strip && !self.host_filter_strip {
@@ -1749,7 +1973,10 @@ impl Widget for CommandPalette {
             match logical_key {
                 Key::Named(NamedKey::ArrowDown) => {
                     if !self.visible.is_empty() {
-                        self.cursor = (self.cursor + 1).min(self.visible.len() - 1);
+                        self.cursor = self
+                            .cursor
+                            .saturating_add(1)
+                            .min(self.visible.len().saturating_sub(1));
                     }
                     // Consume even at the list end so it never scrolls the app.
                     *handled = true;
@@ -2173,7 +2400,7 @@ mod tests {
         );
     }
 
-    fn dispatch(p: &mut CommandPalette, event: WindowEvent, modifiers: Modifiers) {
+    fn dispatch(p: &mut CommandPalette, event: &WindowEvent, modifiers: Modifiers) {
         let mut doc = AutoCommit::new();
         let doc_root = automerge::ROOT.clone();
         let mut handled = false;
@@ -2181,7 +2408,7 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.leaf_node(Style::default());
         p.handle_event(
-            &event,
+            event,
             1.0,
             &modifiers,
             &mut doc,
@@ -2193,7 +2420,7 @@ mod tests {
         );
     }
 
-    /// ArrowLeft / ArrowRight move the caret inside the query without
+    /// `ArrowLeft` / `ArrowRight` move the caret inside the query without
     /// touching the row cursor.
     #[test]
     fn arrow_keys_move_caret_inside_query() {
@@ -2203,13 +2430,13 @@ mod tests {
         assert_eq!(p.query_selection.cursor, 5);
         dispatch(
             &mut p,
-            key_press(Key::Named(NamedKey::ArrowLeft)),
+            &key_press(Key::Named(NamedKey::ArrowLeft)),
             Modifiers::default(),
         );
         assert_eq!(p.query_selection.cursor, 4);
         dispatch(
             &mut p,
-            key_press(Key::Named(NamedKey::Home)),
+            &key_press(Key::Named(NamedKey::Home)),
             Modifiers::default(),
         );
         assert_eq!(p.query_selection.cursor, 0);
@@ -2224,7 +2451,7 @@ mod tests {
         p.query_selection.anchor = 1;
         dispatch(
             &mut p,
-            key_press(Key::Named(NamedKey::Backspace)),
+            &key_press(Key::Named(NamedKey::Backspace)),
             Modifiers::default(),
         );
         assert_eq!(p.query(), "bc");
@@ -2240,7 +2467,7 @@ mod tests {
         p.query_selection.anchor = 1;
         dispatch(
             &mut p,
-            key_press(Key::Character(SmolStr::new("b"))),
+            &key_press(Key::Character(SmolStr::new("b"))),
             Modifiers::default(),
         );
         assert_eq!(p.query(), "abc");
@@ -2256,7 +2483,7 @@ mod tests {
         mods_state.set(winit::keyboard::ModifiersState::CONTROL, true);
         dispatch(
             &mut p,
-            key_press(Key::Character(SmolStr::new("a"))),
+            &key_press(Key::Character(SmolStr::new("a"))),
             Modifiers::from(mods_state),
         );
         assert_eq!(p.query_selection.anchor, 0);
@@ -2293,7 +2520,7 @@ mod tests {
         p.query_selection.cursor = 4;
         dispatch(
             &mut p,
-            key_press(Key::Character(SmolStr::new("i"))),
+            &key_press(Key::Character(SmolStr::new("i"))),
             Modifiers::default(),
         );
         assert_eq!(p.query(), "hio");
@@ -2367,7 +2594,7 @@ mod tests {
         let mut handled = false;
         dispatch_h(
             &mut p,
-            key_press(Key::Named(NamedKey::ArrowUp)),
+            &key_press(Key::Named(NamedKey::ArrowUp)),
             Modifiers::default(),
             &mut handled,
         );
@@ -2377,7 +2604,7 @@ mod tests {
         let mut handled = false;
         dispatch_h(
             &mut p,
-            key_press(Key::Named(NamedKey::Enter)),
+            &key_press(Key::Named(NamedKey::Enter)),
             Modifiers::default(),
             &mut handled,
         );
@@ -2409,7 +2636,7 @@ mod tests {
         let mut handled = false;
         dispatch_h(
             &mut p,
-            key_press(Key::Named(NamedKey::Enter)),
+            &key_press(Key::Named(NamedKey::Enter)),
             Modifiers::default(),
             &mut handled,
         );
@@ -2428,7 +2655,7 @@ mod tests {
             let mut h = false;
             dispatch_h(
                 &mut p,
-                key_press(Key::Character(SmolStr::new(ch))),
+                &key_press(Key::Character(SmolStr::new(ch))),
                 Modifiers::default(),
                 &mut h,
             );
@@ -2439,7 +2666,7 @@ mod tests {
         let mut handled = false;
         dispatch_h(
             &mut p,
-            key_press(Key::Named(NamedKey::Enter)),
+            &key_press(Key::Named(NamedKey::Enter)),
             Modifiers::default(),
             &mut handled,
         );
@@ -2451,12 +2678,58 @@ mod tests {
     }
 
     #[test]
+    fn direct_argument_mode_skips_the_artificial_command_row() {
+        let mut p = CommandPalette::commands();
+        p.open_argument(
+            "goto-line",
+            "Go to line",
+            "Line number\u{2026}",
+            Some("42".into()),
+        );
+        assert!(p.is_open());
+        assert!(p.in_argument_mode());
+        assert_eq!(p.argument_buffer(), Some("42"));
+        let mut handled = false;
+        dispatch_h(
+            &mut p,
+            &key_press(Key::Named(NamedKey::Enter)),
+            Modifiers::default(),
+            &mut handled,
+        );
+        assert!(handled);
+        assert_eq!(
+            p.take_outcome(),
+            Some(CommandOutcome {
+                id: "goto-line".into(),
+                argument: Some("42".into()),
+            })
+        );
+        assert!(!p.is_open());
+    }
+
+    #[test]
+    fn escape_closes_a_direct_argument_prompt() {
+        let mut p = CommandPalette::commands();
+        p.open_argument("goto-line", "Go to line", "Line number…", None);
+        let mut handled = false;
+        dispatch_h(
+            &mut p,
+            &key_press(Key::Named(NamedKey::Escape)),
+            Modifiers::default(),
+            &mut handled,
+        );
+        assert!(handled);
+        assert!(!p.is_open());
+        assert!(!p.in_argument_mode());
+    }
+
+    #[test]
     fn command_mode_escape_from_argument_returns_to_list() {
         let mut p = seeded_command_palette();
         let mut h = false;
         dispatch_h(
             &mut p,
-            key_press(Key::Named(NamedKey::Enter)),
+            &key_press(Key::Named(NamedKey::Enter)),
             Modifiers::default(),
             &mut h,
         );
@@ -2464,7 +2737,7 @@ mod tests {
         let mut h = false;
         dispatch_h(
             &mut p,
-            key_press(Key::Named(NamedKey::Escape)),
+            &key_press(Key::Named(NamedKey::Escape)),
             Modifiers::default(),
             &mut h,
         );
@@ -2500,7 +2773,7 @@ mod tests {
         p.set_rect(Rect::new(0.0, 0.0, w, h));
         assert!(p.row_rect(0).is_some());
         assert!(
-            p.row_rect(p.max_visible_rows()).is_none(),
+            p.row_rect(CommandPalette::max_visible_rows()).is_none(),
             "row past the cap is scrolled off"
         );
 
@@ -2526,7 +2799,7 @@ mod tests {
             .iter()
             .filter_map(|r| match r {
                 VisualRow::Header { label, .. } => Some(label.as_str()),
-                _ => None,
+                VisualRow::Entry(_) => None,
             })
             .collect();
         assert_eq!(headers, vec!["Applications", "Files"]);
@@ -2551,7 +2824,7 @@ mod tests {
                 assert_eq!(label, "Files");
                 assert_eq!(*total, 40);
             }
-            other => panic!("expected a header, got {other:?}"),
+            VisualRow::Entry(i) => panic!("expected a header, got entry row {i}"),
         }
         assert_eq!(
             p.result_total(),
@@ -2709,7 +2982,7 @@ mod tests {
 
     fn dispatch_h(
         p: &mut CommandPalette,
-        event: WindowEvent,
+        event: &WindowEvent,
         modifiers: Modifiers,
         handled: &mut bool,
     ) {
@@ -2719,7 +2992,7 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.leaf_node(Style::default());
         p.handle_event(
-            &event, 1.0, &modifiers, &mut doc, &root, handled, &mut focus, node, &taffy,
+            event, 1.0, &modifiers, &mut doc, &root, handled, &mut focus, node, &taffy,
         );
     }
 }

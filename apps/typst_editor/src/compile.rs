@@ -252,6 +252,10 @@ pub fn compile_source(parts: &Arc<WorldParts>, src: &str, pixel_per_pt: f32) -> 
 /// On a clean compile the returned bytes are a complete PDF (they begin with the
 /// `%PDF` magic). A fatal compile error — or a failure inside the PDF backend —
 /// comes back as the flattened [`Diagnostic`]s so the caller can surface them.
+///
+/// # Errors
+/// Returns the flattened compiler [`Diagnostic`]s when `src` fails to compile,
+/// or when the PDF backend fails on an otherwise-valid document.
 pub fn compile_pdf(parts: &Arc<WorldParts>, src: &str) -> Result<Vec<u8>, Vec<Diagnostic>> {
     let world = TypstWorld::new(parts.clone(), src);
     let flatten_all = |errors: &[SourceDiagnostic]| -> Vec<Diagnostic> {
@@ -388,7 +392,7 @@ fn byte_to_line_col(text: &str, byte: usize) -> (usize, usize) {
     while byte > 0 && !text.is_char_boundary(byte) {
         byte -= 1;
     }
-    let before = &text[..byte];
+    let before = text.get(..byte).unwrap_or(text);
     let line = before.bytes().filter(|&b| b == b'\n').count() + 1;
     let col = before.rsplit('\n').next().map_or(0, |s| s.chars().count()) + 1;
     (line, col)
@@ -400,27 +404,31 @@ fn byte_to_line_col(text: &str, byte: usize) -> (usize, usize) {
 /// `tiny-skia` is pinned to the same `0.11` series typst-render uses, so the
 /// `Pixmap` type returned by `typst_render::render` unifies with this one.
 fn pixmap_to_rgba(pixmap: &tiny_skia::Pixmap) -> PageImage {
-    let w = pixmap.width();
-    let h = pixmap.height();
+    let width = pixmap.width();
+    let height = pixmap.height();
     let src = pixmap.data();
-    let mut out = vec![0u8; (w as usize) * (h as usize) * 4];
-    for (i, px) in src.chunks_exact(4).enumerate() {
-        let (r, g, b, a) = (px[0], px[1], px[2], px[3]);
+    let mut out = vec![0u8; (width as usize) * (height as usize) * 4];
+    for (dst, px) in out.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+        let (&[r, g, b, a], [d0, d1, d2, d3]) = (px, dst) else {
+            // `chunks_exact(4)` guarantees length 4 on both sides; this branch
+            // is unreachable, but skipping the pixel beats indexing blind.
+            continue;
+        };
         // Composite premultiplied colour over white: out = premul + (255 - a).
         let inv = 255 - a;
-        out[i * 4] = r.saturating_add(inv);
-        out[i * 4 + 1] = g.saturating_add(inv);
-        out[i * 4 + 2] = b.saturating_add(inv);
-        out[i * 4 + 3] = 255;
+        *d0 = r.saturating_add(inv);
+        *d1 = g.saturating_add(inv);
+        *d2 = b.saturating_add(inv);
+        *d3 = 255;
     }
     PageImage {
         rgba: Arc::from(out),
-        width: w,
-        height: h,
+        width,
+        height,
         // Filled in by the caller from the page frame; a sane default keeps the
         // aspect correct if ever constructed without a frame.
-        width_pt: f64::from(w),
-        height_pt: f64::from(h),
+        width_pt: f64::from(width),
+        height_pt: f64::from(height),
     }
 }
 

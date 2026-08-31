@@ -25,8 +25,10 @@
 use openh264::decoder::{Decoder, DecoderConfig};
 use openh264::formats::YUVSource;
 
+use crate::collab::colorimetry::Colorimetry;
+#[cfg(feature = "hdr-decode")]
 use crate::collab::colorimetry::{
-    ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
+    ColorPrimaries, ColorRange, MatrixCoefficients, TransferCharacteristics,
 };
 
 /// One decoded picture handed back to `PeerView`.
@@ -113,9 +115,13 @@ impl std::fmt::Display for DecoderError {
 impl std::error::Error for DecoderError {}
 
 impl VideoDecoder {
-    /// Pick a decoder from the wire label. Returns
-    /// [`DecoderError::UnknownCodec`] for an unrecognised string,
-    /// [`DecoderError::FeatureDisabled`] when the build lacks the required feature.
+    /// Pick a decoder from the wire label.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecoderError::UnknownCodec`] for an unrecognised string,
+    /// [`DecoderError::FeatureDisabled`] when the build lacks the required feature, or
+    /// [`DecoderError::Backend`] if the backend fails to initialize.
     pub fn for_wire_codec(codec: &str) -> Result<Self, DecoderError> {
         match codec {
             "h264" => Ok(VideoDecoder::H264(H264Decoder::new())),
@@ -175,6 +181,16 @@ pub struct H264Decoder {
 }
 
 impl H264Decoder {
+    /// # Panics
+    ///
+    /// Never in practice: openh264 is statically bundled with a fixed config, so
+    /// construction cannot fail in a shipped build (see the `allow` below).
+    #[allow(
+        clippy::expect_used,
+        reason = "the bundled openh264 lib is statically linked with a fixed config; \
+                  construction has no real failure mode to propagate, and threading a \
+                  Result through every PeerView/decoder call site buys nothing"
+    )]
     pub fn new() -> Self {
         let inner =
             Decoder::with_api_config(openh264::OpenH264API::from_source(), DecoderConfig::new())
@@ -187,19 +203,23 @@ impl H264Decoder {
     }
 
     /// Push NALU bytes and try to extract a decoded frame. Failures fold into `None` — see the module doc for why.
+    ///
+    /// `width`/`height` come from the peer's bitstream via openh264, so the size
+    /// computation and the down-cast to `u32` both degrade to `None` (dropped frame)
+    /// rather than trust an attacker-influenced dimension.
     pub fn decode(&mut self, nalus: &[u8]) -> Option<DecodedFrame> {
         let maybe = self.inner.decode(nalus).ok().flatten();
         let yuv = maybe?;
         let (width, height) = yuv.dimensions();
-        let needed = width * height * 4;
+        let needed = width.checked_mul(height)?.checked_mul(4)?;
         if self.rgba_scratch.len() != needed {
             self.rgba_scratch.resize(needed, 0);
         }
         yuv.write_rgba8(&mut self.rgba_scratch);
         self.last_colorimetry = Some(Colorimetry::sdr_bt709());
         Some(DecodedFrame {
-            width: width as u32,
-            height: height as u32,
+            width: u32::try_from(width).ok()?,
+            height: u32::try_from(height).ok()?,
             pixels: DecodedPixels::Rgba8(self.rgba_scratch.clone()),
             colorimetry: Colorimetry::sdr_bt709(),
         })
@@ -233,14 +253,17 @@ static FFMPEG_INIT: std::sync::Once = std::sync::Once::new();
 
 #[cfg(feature = "hdr-decode")]
 impl HevcDecoder {
-    /// Construct a new HEVC decoder. Errors with the libavcodec message when
-    /// the linked libavcodec has no HEVC decoder.
+    /// Construct a new HEVC decoder.
     ///
     /// That is the **expected** outcome on a stock qOS image: Fedora's
     /// `libavcodec-free` is configured `--disable-decoder='h264,hevc,vc1,vvc'`
     /// and carries no `hevc` entry at all. Only a host that replaced it
     /// (`libavcodec-freeworld`, or a self-built ffmpeg) can construct this
     /// decoder. Callers must treat the error as routine and fall back to SDR rather than dropping the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error with the libavcodec message when the linked libavcodec has no HEVC decoder.
     pub fn new() -> Result<Self, String> {
         FFMPEG_INIT.call_once(|| {
             let _ = ffmpeg_next::init();
@@ -281,6 +304,10 @@ impl HevcDecoder {
         // Grab P010 planes. Frame format may also be YUV420P10LE if the SW
         // decoder chose that — both are 10-bit-in-16-bit but the layout differs
         // (P010 = Y + interleaved UV; YUV420P10 = Y + U + V separate); handle both by re-packing YUV420P10 into P010-shaped UV.
+        // Every offset/length below is derived from the peer's decoded bitstream via
+        // libavcodec, not from anything this function can bound in advance; each
+        // `checked_*`/`try_from`/`?` degrades to "drop this frame" instead of
+        // trusting an attacker-influenced stride or plane size.
         let (y, uv, y_stride, uv_stride) = match frame.format() {
             ffmpeg_next::util::format::Pixel::P010LE => {
                 let y_stride_bytes = frame.stride(0);
@@ -290,8 +317,8 @@ impl HevcDecoder {
                 (
                     y_plane,
                     uv_plane,
-                    (y_stride_bytes / 2) as u32,
-                    (uv_stride_bytes / 2) as u32,
+                    u32::try_from(y_stride_bytes.saturating_div(2)).ok()?,
+                    u32::try_from(uv_stride_bytes.saturating_div(2)).ok()?,
                 )
             }
             ffmpeg_next::util::format::Pixel::YUV420P10LE => {
@@ -304,15 +331,17 @@ impl HevcDecoder {
                 let v_bytes = frame.data(2);
                 let uv_height = frame.plane_height(1) as usize;
                 let uv_width = frame.plane_width(1) as usize;
-                let mut uv = Vec::with_capacity(uv_width * 2 * uv_height);
+                let uv_capacity = uv_width.checked_mul(2)?.checked_mul(uv_height)?;
+                let mut uv = Vec::with_capacity(uv_capacity);
                 for row in 0..uv_height {
-                    let u_row_off = row * u_stride_bytes;
-                    let v_row_off = row * v_stride_bytes;
+                    let u_row_off = row.checked_mul(u_stride_bytes)?;
+                    let v_row_off = row.checked_mul(v_stride_bytes)?;
                     for col in 0..uv_width {
-                        let u_off = u_row_off + col * 2;
-                        let v_off = v_row_off + col * 2;
-                        let u_val = u16::from_le_bytes([u_bytes[u_off], u_bytes[u_off + 1]]);
-                        let v_val = u16::from_le_bytes([v_bytes[v_off], v_bytes[v_off + 1]]);
+                        let byte_off = col.checked_mul(2)?;
+                        let u_off = byte_off.checked_add(u_row_off)?;
+                        let v_off = byte_off.checked_add(v_row_off)?;
+                        let u_val = read_u16_le(u_bytes, u_off)?;
+                        let v_val = read_u16_le(v_bytes, v_off)?;
                         // P010 stores samples in the upper 10 bits of the u16; YUV420P10LE
                         // stores them in the lower 10 bits — shift on re-pack so downstream shaders always see the same upper-bit layout.
                         uv.push(u_val << 6);
@@ -324,8 +353,13 @@ impl HevcDecoder {
                 for sample in &mut y_shifted {
                     *sample <<= 6;
                 }
-                let uv_stride_u16 = (uv_width * 2) as u32;
-                (y_shifted, uv, (y_stride_bytes / 2) as u32, uv_stride_u16)
+                let uv_stride_u16 = u32::try_from(uv_width.checked_mul(2)?).ok()?;
+                (
+                    y_shifted,
+                    uv,
+                    u32::try_from(y_stride_bytes.saturating_div(2)).ok()?,
+                    uv_stride_u16,
+                )
             }
             _other => {
                 // Unexpected pixel format — drop the frame rather than downcast to 8-bit silently (defeats the whole reason for HDR).
@@ -351,19 +385,36 @@ impl HevcDecoder {
     }
 }
 
+/// Read a little-endian `u16` at `offset`, or `None` if it doesn't fit in `bytes` —
+/// used instead of direct indexing since every offset here is derived from a
+/// peer-controlled decoded frame.
+#[cfg(feature = "hdr-decode")]
+fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
+    let pair = bytes.get(offset..offset.checked_add(2)?)?;
+    let &[a, b] = pair else {
+        return None; // the range above is exactly 2 bytes wide
+    };
+    Some(u16::from_le_bytes([a, b]))
+}
+
 /// Copy a byte-strided plane into a `u16` Vec (native LE-encoded).
 #[cfg(feature = "hdr-decode")]
 fn plane_u16_from_bytes(bytes: &[u8], stride_bytes: usize) -> Vec<u16> {
-    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut out = Vec::with_capacity(bytes.len().saturating_div(2));
     // bytes.len() is stride_bytes * plane_height; iterate as pairs. The
     // stride includes libavcodec's per-row padding, which the receiver's y_stride/uv_stride preserve but don't read as samples.
     let _ = stride_bytes; // only referenced for clarity — length already accounts for it
     for pair in bytes.chunks_exact(2) {
-        out.push(u16::from_le_bytes([pair[0], pair[1]]));
+        let &[a, b] = pair else {
+            continue; // chunks_exact(2) guarantees len == 2
+        };
+        out.push(u16::from_le_bytes([a, b]));
     }
     // Handle odd-length tail (shouldn't happen for a well-formed P010 buffer, but be defensive).
-    if bytes.len() % 2 == 1 {
-        out.push(u16::from(bytes[bytes.len() - 1]));
+    if bytes.len() % 2 == 1
+        && let Some(&last) = bytes.last()
+    {
+        out.push(u16::from(last));
     }
     out
 }

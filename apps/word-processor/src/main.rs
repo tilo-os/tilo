@@ -29,7 +29,6 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-
 // Thin build only: pull the shared toolkit dylib
 // (`libruntime_dylib.so`) into the link graph. It statically contains
 // the `ui` toolkit this app links -- and with it wgpu, vello,
@@ -38,13 +37,27 @@
 // of baking ~18 MB of `.text` into this binary. Naming the crate here
 // is what keeps rustc from eliminating it as unused. Compiled out in
 // normal (static) builds.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
 use std::collections::HashMap;
 use std::error::Error;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::text_render::TextRenderer;
@@ -71,7 +84,10 @@ use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 /// share, so only a function of its own arguments can be tested against it.
 fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
     let hex = have.to_hex_string();
-    format!("{prefix}-{}", &hex[..hex.len().min(12)])
+    // `to_hex_string` is pure ASCII hex digits, so any byte offset is also a
+    // char boundary; `.get` still keeps this panic-free rather than trusting it.
+    let short = hex.get(..hex.len().min(12)).unwrap_or(hex.as_str());
+    format!("{prefix}-{short}")
 }
 
 /// The name this replica is given, if anything has named it. `QUICK_APP_ID` is
@@ -92,55 +108,66 @@ fn named_actor(prefix: &str) -> Option<String> {
     }
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = std::env::args().collect();
+fn main() {
+    ui::launch::run_or_exit(
+        &LaunchSpec::new_with_args("dev.qos.word-processor", live_root)
+            .max_positionals(1)
+            .allowed_flags(&["--history"])
+            .shot_handler(run_shot)
+            .live_handler(run_live),
+    );
+}
 
-    let mut shots: Option<String> = None;
-    let mut file: Option<PathBuf> = None;
-    let mut history = false;
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--shots" => {
-                shots = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--history" => {
-                history = true;
-                i += 1;
-            }
-            a if a.starts_with("--") => i += 1,
-            a => {
-                file = Some(PathBuf::from(a));
-                i += 1;
-            }
-        }
-    }
+fn file_arg(args: &LaunchArgs) -> Option<&Path> {
+    args.positionals().first().map(Path::new)
+}
 
-    if let (Some(out), true) = (shots.as_deref(), history) {
+fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    build(file_arg(args))
+        .map(|(_, widget)| widget)
+        .map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    render_requested_shot(args).map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
+    let out = args.shots.as_deref().ok_or("missing screenshot output")?;
+    let file = file_arg(args);
+    if args.has("--history") {
         // The strip renders the document's own change graph, so a shot of it is
         // only worth anything over a document that has one. Give the document a
         // few authored revisions first, through the same editing path a user
         // takes, then open the strip.
-        let (mut state, mut wp) = build_concrete(file.as_deref())?;
-        seed_revisions(&mut state, &mut wp);
+        let (mut state, mut wp) = build_concrete(file)?;
+        seed_revisions(&mut state, &mut wp)?;
         // Pin the floating status readout visible so the shot captures it.
         wp.arm_status_bubble_for_shots();
-        render_shot(state, Box::new(wp), (1000, 700), Path::new(out))?;
+        render_shot(state, Box::new(wp), (1000, 700), out)?;
         return Ok(());
     }
 
     // Plain `--shots`: build the concrete widget so the transient status bubble
     // (which replaced the bottom strip) can be armed — pinned fully visible — for
     // the single headless frame, then render.
-    if let Some(out) = shots.as_deref() {
-        let (state, mut wp) = build_concrete(file.as_deref())?;
-        wp.arm_status_bubble_for_shots();
-        render_shot(state, Box::new(wp), (1000, 700), Path::new(out))?;
-        return Ok(());
-    }
+    let (state, mut wp) = build_concrete(file)?;
+    wp.arm_status_bubble_for_shots();
+    render_shot(
+        state,
+        Box::new(wp),
+        args.viewport.unwrap_or((1000, 700)),
+        out,
+    )?;
+    Ok(())
+}
 
-    let (mut state, widget) = build(file.as_deref())?;
+fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
+    start_live(args).map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+fn start_live(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
+    let (mut state, widget) = build(file_arg(args))?;
     {
         // Give this instance a distinct CRDT actor so two editors are
         // distinguishable authors. Nothing else is wired here: the `App`
@@ -191,7 +218,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// shows a name somebody else wrote. Nothing here seeds the history *pane*: it
 /// seeds the document, and the pane derives its band from the resulting change
 /// graph exactly as for a document a user typed.
-fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
+///
+/// # Errors
+///
+/// Returns `Err` if the freshly-built demo document doesn't have the schema
+/// or the paragraph this seeding assumes, or if the collaborator fork fails
+/// to merge back — all of which would mean the widget/model plumbing above
+/// it is broken, not that the demo data itself is missing.
+fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(), Box<dyn Error>> {
     state
         .doc
         .set_actor(automerge::ActorId::from("alice".as_bytes()));
@@ -226,9 +260,11 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
     peer.set_actor(automerge::ActorId::from("Bob Chen".as_bytes()));
     let mut peer_first = None;
     for i in 0..4 {
-        let c = qdoc::model::open(&peer, &state.root).expect("qdoc schema");
+        let c = qdoc::model::open(&peer, &state.root)?;
         let blocks = qdoc::model::materialize(&peer, &c).blocks;
-        let last = blocks.last().expect("a paragraph to append to");
+        let last = blocks
+            .last()
+            .ok_or("seed_revisions: no paragraph to append to")?;
         let at = last.text.chars().count();
         let mut ids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
         let mut dm = qdoc::DocMut {
@@ -250,7 +286,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
         ui::history_groups::name_range(&mut peer, &start, Some(&end), "Costs section");
         qdoc::history::commit_stamped_at(&mut peer, base + 3600 + 150);
     }
-    state.doc.merge(&mut peer).expect("peers merge");
+    state.doc.merge(&mut peer)?;
 
     // Session three, three hours after that, back to the local author.
     wp.sync(&mut state.doc, &state.root);
@@ -274,6 +310,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
 
     wp.toggle_history(&mut state.doc);
     wp.sync(&mut state.doc, &state.root);
+    Ok(())
 }
 
 /// Like [`build`] but keeps the concrete widget type.

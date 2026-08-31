@@ -140,6 +140,12 @@ fn transform_from_label(label: &str) -> Option<OutputTransform> {
 
 /// One real display output, derived from a DRM connector.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool mirrors an independent DRM/compositor capability flag (connected, \
+              builtin, hdr, sink_hdr, vrr, sink_vrr); they are not related toggles that could \
+              collapse into an enum"
+)]
 pub struct DisplayOutput {
     /// User-facing name, e.g. `"Built-in display"` or `"HDMI-A-1"`.
     pub label: String,
@@ -374,11 +380,13 @@ impl DisplayPane {
     }
 
     /// Pin the output list (tests / `--shots`).
+    #[must_use]
     pub fn with_outputs(mut self, outputs: Vec<DisplayOutput>) -> Self {
         self.outputs = outputs;
         self
     }
 
+    #[must_use]
     pub fn with_ambient_sensor(mut self, available: bool) -> Self {
         self.ambient_sensor_available = available;
         self
@@ -397,37 +405,53 @@ impl DisplayPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        // --- Arrangement card: the real *connected* outputs.
         let connected = self.connected_outputs();
-        let disconnected = self.outputs.len() - connected.len();
-        let arrangement = if connected.is_empty() {
-            card(
+        let arrangement = self.build_arrangement_card(&connected);
+        let brightness = self.build_brightness_card();
+
+        let mut cards = vec![arrangement];
+        for (index, output) in connected.iter().enumerate() {
+            cards.push(self.build_output_card(index, output, &connected));
+        }
+        cards.push(self.build_safety_card());
+        cards.push(brightness);
+        crate::widgets::cards(cards)
+    }
+
+    /// The "Displays" arrangement card: one row per *connected* output plus a
+    /// caption about idle ports. See [`Self::connected_outputs`] for why
+    /// disconnected ports aren't enumerated.
+    fn build_arrangement_card(&self, connected: &[&DisplayOutput]) -> El {
+        if connected.is_empty() {
+            return card(
                 "Displays",
                 rows(vec![caption("No displays detected on this device.")]),
-            )
-        } else {
-            let mut out_rows: Vec<El> = Vec::new();
-            for (index, o) in connected.iter().enumerate() {
-                let config = self.output_config.outputs.get(&o.connector);
-                let status = if config.is_some_and(|config| !config.enabled) {
-                    "Disabled"
-                } else if config.map_or(index == 0, |config| config.primary) {
-                    "Active · primary"
-                } else {
-                    "Active"
-                };
-                out_rows.push(value_row(&o.label, status));
-            }
-            // One honest line about the idle ports rather than a row each.
-            out_rows.push(caption(if disconnected == 0 {
-                "Connect a second display to extend or mirror your screen."
+            );
+        }
+        let disconnected = self.outputs.len() - connected.len();
+        let mut out_rows: Vec<El> = Vec::new();
+        for (index, o) in connected.iter().enumerate() {
+            let config = self.output_config.outputs.get(&o.connector);
+            let status = if config.is_some_and(|config| !config.enabled) {
+                "Disabled"
+            } else if config.map_or(index == 0, |config| config.primary) {
+                "Active · primary"
             } else {
-                "Connect a display to a free port to extend or mirror your screen."
-            }));
-            card("Displays", rows(out_rows))
-        };
+                "Active"
+            };
+            out_rows.push(value_row(&o.label, status));
+        }
+        // One honest line about the idle ports rather than a row each.
+        out_rows.push(caption(if disconnected == 0 {
+            "Connect a second display to extend or mirror your screen."
+        } else {
+            "Connect a display to a free port to extend or mirror your screen."
+        }));
+        card("Displays", rows(out_rows))
+    }
 
-        // --- Brightness & comfort card.
+    /// The brightness slider + night-light comfort preferences card.
+    fn build_brightness_card(&self) -> El {
         let automatic_brightness = if self.ambient_sensor_available {
             setting_row(
                 "Automatic brightness",
@@ -439,7 +463,7 @@ impl DisplayPane {
         } else {
             value_row("Automatic brightness", "No ambient-light sensor detected")
         };
-        let brightness = card(
+        card(
             "Brightness",
             rows(vec![
                 setting_row(
@@ -477,234 +501,272 @@ impl DisplayPane {
                     "Night Light applies a whole-desktop colour transform. Automatic brightness follows the kernel ambient-light sensor with smoothing and a deadband.",
                 ),
             ]),
-        );
+        )
+    }
 
-        let mut cards = vec![arrangement];
-        for (index, output) in connected.iter().enumerate() {
-            let config = self
-                .output_config
-                .outputs
-                .get(&output.connector)
-                .cloned()
-                .unwrap_or_else(|| OutputConfig {
-                    primary: index == 0,
-                    x: index as i32 * 1920,
-                    ..Default::default()
-                });
-            let primary_key = output_key(&output.connector, "primary");
-            let enabled_key = output_key(&output.connector, "enabled");
-            let scale_key = output_key(&output.connector, "scale");
-            let position_key = output_key(&output.connector, "position");
-            let mirror_key = output_key(&output.connector, "mirror");
-            let mode_key = output_key(&output.connector, "mode");
-            let transform_key = output_key(&output.connector, "transform");
-            let hdr_key = output_key(&output.connector, "hdr");
-            let vrr_key = output_key(&output.connector, "vrr");
-            let profile_key = output_key(&output.connector, "color_profile");
-            let toggle_id = format!("settings.display.{}.primary", output.connector);
-            let mirror_placeholder = config
-                .mirror_of
-                .as_ref()
-                .and_then(|target| {
-                    connected
-                        .iter()
-                        .find(|candidate| candidate.connector == *target)
-                })
-                .map_or("Extend workspace".into(), |target| {
-                    format!("Mirror {}", target.label)
-                });
-            let mut output_rows = vec![
-                setting_row(
-                    "Use this display",
-                    Box::new(
-                        Toggle::new(
-                            &format!("settings.display.{}.enabled", output.connector),
-                            &enabled_key,
-                        )
-                        .with_id(&enabled_key),
-                    ),
+    /// The full per-output card: identity/arrangement rows, mode/rotation
+    /// rows, then capability rows (HDR/VRR/colour profile).
+    fn build_output_card(
+        &self,
+        index: usize,
+        output: &DisplayOutput,
+        connected: &[&DisplayOutput],
+    ) -> El {
+        let config = self
+            .output_config
+            .outputs
+            .get(&output.connector)
+            .cloned()
+            .unwrap_or_else(|| OutputConfig {
+                primary: index == 0,
+                x: index as i32 * 1920,
+                ..Default::default()
+            });
+        let mut output_rows = Self::build_output_primary_rows(output, connected, &config);
+        output_rows.extend(Self::build_output_mode_and_rotation_rows(output, &config));
+        output_rows.extend(Self::build_output_capability_rows(output, &config));
+        card(&output.label, rows(output_rows))
+    }
+
+    /// Enable/primary toggles + scale/position/mirroring dropdowns.
+    fn build_output_primary_rows(
+        output: &DisplayOutput,
+        connected: &[&DisplayOutput],
+        config: &OutputConfig,
+    ) -> Vec<El> {
+        let primary_key = output_key(&output.connector, "primary");
+        let enabled_key = output_key(&output.connector, "enabled");
+        let scale_key = output_key(&output.connector, "scale");
+        let position_key = output_key(&output.connector, "position");
+        let mirror_key = output_key(&output.connector, "mirror");
+        let toggle_id = format!("settings.display.{}.primary", output.connector);
+        let mirror_placeholder = config
+            .mirror_of
+            .as_ref()
+            .and_then(|target| {
+                connected
+                    .iter()
+                    .find(|candidate| candidate.connector == *target)
+            })
+            .map_or_else(
+                || "Extend workspace".into(),
+                |target| format!("Mirror {}", target.label),
+            );
+        vec![
+            setting_row(
+                "Use this display",
+                Box::new(
+                    Toggle::new(
+                        &format!("settings.display.{}.enabled", output.connector),
+                        &enabled_key,
+                    )
+                    .with_id(&enabled_key),
                 ),
-                setting_row(
-                    "Primary display",
-                    Box::new(Toggle::new(&toggle_id, &primary_key).with_id(&primary_key)),
-                ),
-                choice_row(
-                    "Scale",
-                    Box::new(
-                        Dropdown::new(
-                            DISPLAY_SCALES.iter().map(|(l, _)| (*l).into()).collect(),
-                            &scale_key,
-                        )
-                        .with_id(&scale_key)
-                        .with_placeholder(scale_label(config.scale)),
-                    ),
-                ),
-                choice_row(
-                    "Position",
-                    Box::new(
-                        Dropdown::new(
-                            std::iter::once("Automatic".into())
-                                .chain(
-                                    connected
-                                        .iter()
-                                        .filter(|candidate| candidate.connector != output.connector)
-                                        .flat_map(|candidate| {
-                                            ["Left", "Right", "Above", "Below"].map(|side| {
-                                                format!("{side} of {}", candidate.label)
-                                            })
-                                        }),
-                                )
-                                .collect(),
-                            &position_key,
-                        )
-                        .with_id(&position_key)
-                        .with_placeholder("Automatic"),
-                    ),
-                ),
-                choice_row(
-                    "Mirroring",
-                    Box::new(
-                        Dropdown::new(
-                            std::iter::once("Extend workspace".into())
-                                .chain(
-                                    connected
-                                        .iter()
-                                        .filter(|candidate| candidate.connector != output.connector)
-                                        .map(|candidate| format!("Mirror {}", candidate.label)),
-                                )
-                                .collect(),
-                            &mirror_key,
-                        )
-                        .with_id(&mirror_key)
-                        .with_placeholder(&mirror_placeholder),
-                    ),
-                ),
-            ];
-            if output.modes.is_empty() {
-                output_rows.push(value_row(
-                    "Resolution & refresh rate",
-                    "Compositor capability data unavailable",
-                ));
-            } else {
-                let mode_placeholder = config
-                    .mode
-                    .or(output.current_mode)
-                    .map_or_else(|| "Preferred".into(), OutputMode::label);
-                output_rows.push(choice_row(
-                    "Resolution & refresh rate",
-                    Box::new(
-                        Dropdown::new(
-                            output
-                                .modes
-                                .iter()
-                                .copied()
-                                .map(OutputMode::label)
-                                .collect(),
-                            &mode_key,
-                        )
-                        .with_id(&mode_key)
-                        .with_placeholder(&mode_placeholder),
-                    ),
-                ));
-            }
-            output_rows.push(choice_row(
-                "Rotation",
+            ),
+            setting_row(
+                "Primary display",
+                Box::new(Toggle::new(&toggle_id, &primary_key).with_id(&primary_key)),
+            ),
+            choice_row(
+                "Scale",
                 Box::new(
                     Dropdown::new(
-                        TRANSFORMS
-                            .iter()
-                            .map(|(label, _)| (*label).into())
-                            .collect(),
-                        &transform_key,
+                        DISPLAY_SCALES.iter().map(|(l, _)| (*l).into()).collect(),
+                        &scale_key,
                     )
-                    .with_id(&transform_key)
-                    .with_placeholder(transform_label(config.transform)),
+                    .with_id(&scale_key)
+                    .with_placeholder(scale_label(config.scale)),
+                ),
+            ),
+            choice_row(
+                "Position",
+                Box::new(
+                    Dropdown::new(
+                        std::iter::once("Automatic".into())
+                            .chain(
+                                connected
+                                    .iter()
+                                    .filter(|candidate| candidate.connector != output.connector)
+                                    .flat_map(|candidate| {
+                                        ["Left", "Right", "Above", "Below"]
+                                            .map(|side| format!("{side} of {}", candidate.label))
+                                    }),
+                            )
+                            .collect(),
+                        &position_key,
+                    )
+                    .with_id(&position_key)
+                    .with_placeholder("Automatic"),
+                ),
+            ),
+            choice_row(
+                "Mirroring",
+                Box::new(
+                    Dropdown::new(
+                        std::iter::once("Extend workspace".into())
+                            .chain(
+                                connected
+                                    .iter()
+                                    .filter(|candidate| candidate.connector != output.connector)
+                                    .map(|candidate| format!("Mirror {}", candidate.label)),
+                            )
+                            .collect(),
+                        &mirror_key,
+                    )
+                    .with_id(&mirror_key)
+                    .with_placeholder(&mirror_placeholder),
+                ),
+            ),
+        ]
+    }
+
+    /// Resolution/refresh-rate dropdown (or an unavailable note) + rotation.
+    fn build_output_mode_and_rotation_rows(
+        output: &DisplayOutput,
+        config: &OutputConfig,
+    ) -> Vec<El> {
+        let mode_key = output_key(&output.connector, "mode");
+        let transform_key = output_key(&output.connector, "transform");
+        let mut out_rows = Vec::new();
+        if output.modes.is_empty() {
+            out_rows.push(value_row(
+                "Resolution & refresh rate",
+                "Compositor capability data unavailable",
+            ));
+        } else {
+            let mode_placeholder = config
+                .mode
+                .or(output.current_mode)
+                .map_or_else(|| "Preferred".into(), OutputMode::label);
+            out_rows.push(choice_row(
+                "Resolution & refresh rate",
+                Box::new(
+                    Dropdown::new(
+                        output
+                            .modes
+                            .iter()
+                            .copied()
+                            .map(OutputMode::label)
+                            .collect(),
+                        &mode_key,
+                    )
+                    .with_id(&mode_key)
+                    .with_placeholder(&mode_placeholder),
                 ),
             ));
-            if output.hdr {
-                output_rows.push(setting_row(
-                    "HDR",
-                    Box::new(
-                        Toggle::new(
-                            &format!("settings.display.{}.hdr", output.connector),
-                            &hdr_key,
-                        )
-                        .with_id(&hdr_key),
-                    ),
-                ));
-            } else {
-                output_rows.push(value_row(
-                    "HDR",
-                    output
-                        .hdr_unavailable_reason
-                        .as_deref()
-                        .unwrap_or(if output.sink_hdr {
-                            "Display support detected; compositor output support unavailable"
-                        } else {
-                            "Not supported by this display"
-                        }),
-                ));
-            }
-            if output.vrr {
-                output_rows.push(setting_row(
-                    "Variable refresh rate",
-                    Box::new(
-                        Toggle::new(
-                            &format!("settings.display.{}.vrr", output.connector),
-                            &vrr_key,
-                        )
-                        .with_id(&vrr_key),
-                    ),
-                ));
-            } else {
-                output_rows.push(value_row(
-                    "Variable refresh rate",
-                    output
-                        .vrr_unavailable_reason
-                        .as_deref()
-                        .unwrap_or(if output.sink_vrr {
-                            "Display support detected; compositor output support unavailable"
-                        } else {
-                            "Not supported by this display"
-                        }),
-                ));
-            }
-            if output.color_profiles.is_empty() {
-                output_rows.push(value_row(
-                    "Colour profile",
-                    "System default · no valid ICC profiles detected",
-                ));
-            } else {
-                let mut choices = vec!["System default".into()];
-                choices.extend(output.color_profiles.iter().filter_map(|id| {
+        }
+        out_rows.push(choice_row(
+            "Rotation",
+            Box::new(
+                Dropdown::new(
+                    TRANSFORMS
+                        .iter()
+                        .map(|(label, _)| (*label).into())
+                        .collect(),
+                    &transform_key,
+                )
+                .with_id(&transform_key)
+                .with_placeholder(transform_label(config.transform)),
+            ),
+        ));
+        out_rows
+    }
+
+    /// HDR / variable-refresh-rate / colour-profile rows.
+    fn build_output_capability_rows(output: &DisplayOutput, config: &OutputConfig) -> Vec<El> {
+        let hdr_key = output_key(&output.connector, "hdr");
+        let vrr_key = output_key(&output.connector, "vrr");
+        let profile_key = output_key(&output.connector, "color_profile");
+        let mut out_rows = Vec::new();
+
+        if output.hdr {
+            out_rows.push(setting_row(
+                "HDR",
+                Box::new(
+                    Toggle::new(
+                        &format!("settings.display.{}.hdr", output.connector),
+                        &hdr_key,
+                    )
+                    .with_id(&hdr_key),
+                ),
+            ));
+        } else {
+            out_rows.push(value_row(
+                "HDR",
+                output
+                    .hdr_unavailable_reason
+                    .as_deref()
+                    .unwrap_or(if output.sink_hdr {
+                        "Display support detected; compositor output support unavailable"
+                    } else {
+                        "Not supported by this display"
+                    }),
+            ));
+        }
+        if output.vrr {
+            out_rows.push(setting_row(
+                "Variable refresh rate",
+                Box::new(
+                    Toggle::new(
+                        &format!("settings.display.{}.vrr", output.connector),
+                        &vrr_key,
+                    )
+                    .with_id(&vrr_key),
+                ),
+            ));
+        } else {
+            out_rows.push(value_row(
+                "Variable refresh rate",
+                output
+                    .vrr_unavailable_reason
+                    .as_deref()
+                    .unwrap_or(if output.sink_vrr {
+                        "Display support detected; compositor output support unavailable"
+                    } else {
+                        "Not supported by this display"
+                    }),
+            ));
+        }
+        if output.color_profiles.is_empty() {
+            out_rows.push(value_row(
+                "Colour profile",
+                "System default · no valid ICC profiles detected",
+            ));
+        } else {
+            let mut choices = vec!["System default".into()];
+            choices.extend(output.color_profiles.iter().filter_map(|id| {
+                output
+                    .color_profile_labels
+                    .get(id)
+                    .map(|label| format!("{label} · {id}"))
+            }));
+            let placeholder = config
+                .color_profile
+                .as_ref()
+                .and_then(|id| {
                     output
                         .color_profile_labels
                         .get(id)
                         .map(|label| format!("{label} · {id}"))
-                }));
-                let placeholder = config
-                    .color_profile
-                    .as_ref()
-                    .and_then(|id| {
-                        output
-                            .color_profile_labels
-                            .get(id)
-                            .map(|label| format!("{label} · {id}"))
-                    })
-                    .unwrap_or_else(|| "System default".into());
-                output_rows.push(choice_row(
-                    "Colour profile",
-                    Box::new(
-                        Dropdown::new(choices, &profile_key)
-                            .with_id(&profile_key)
-                            .with_placeholder(&placeholder),
-                    ),
-                ));
-            }
-            cards.push(card(&output.label, rows(output_rows)));
+                })
+                .unwrap_or_else(|| "System default".into());
+            out_rows.push(choice_row(
+                "Colour profile",
+                Box::new(
+                    Dropdown::new(choices, &profile_key)
+                        .with_id(&profile_key)
+                        .with_placeholder(&placeholder),
+                ),
+            ));
         }
+        out_rows
+    }
+
+    /// The safety/apply-transaction card, driven by the on-disk
+    /// [`DisplayTransaction`] state machine.
+    fn build_safety_card(&self) -> El {
         let transaction = DisplayTransaction::load();
-        let safety = match transaction.as_ref().map(|transaction| transaction.state) {
+        match transaction.as_ref().map(|transaction| transaction.state) {
             Some(DisplayTransactionState::AwaitingConfirmation) => {
                 let seconds = transaction
                     .as_ref()
@@ -740,9 +802,11 @@ impl DisplayPane {
                     ]),
                 )
             }
-            Some(DisplayTransactionState::Requested)
-            | Some(DisplayTransactionState::ConfirmRequested)
-            | Some(DisplayTransactionState::RevertRequested) => card(
+            Some(
+                DisplayTransactionState::Requested
+                | DisplayTransactionState::ConfirmRequested
+                | DisplayTransactionState::RevertRequested,
+            ) => card(
                 "Applying display configuration",
                 rows(vec![caption(
                     transaction
@@ -790,10 +854,7 @@ impl DisplayPane {
                 "Display configuration",
                 rows(vec![caption("No unapplied display changes.")]),
             ),
-        };
-        cards.push(safety);
-        cards.push(brightness);
-        crate::widgets::cards(cards)
+        }
     }
 
     /// Load prefs fresh, apply `f` to the display section, persist.
@@ -859,490 +920,22 @@ pub fn build() -> Box<dyn Widget> {
 
 impl Widget for DisplayPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(receiver) = &self.hardware_probe {
-            match receiver.try_recv() {
-                Ok((brightness, ambient)) => {
-                    self.initial_brightness = brightness;
-                    self.last_brightness = brightness;
-                    self.ambient_sensor_available = ambient;
-                    let _ = state.put(
-                        root,
-                        BRIGHTNESS_KEY,
-                        automerge::ScalarValue::F64(f64::from(brightness)),
-                    );
-                    self.hardware_probe = None;
-                    self.composed = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.hardware_probe = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-        }
-        if self.last_snapshot_check.elapsed() >= Duration::from_secs(1) {
-            self.last_snapshot_check = Instant::now();
-            let stamp = settings_store::hardware::display_snapshot_path()
-                .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
-            if stamp != self.snapshot_stamp {
-                self.snapshot_stamp = stamp;
-                self.outputs = read_outputs();
-                self.output_config = DisplayConfig::load();
-                self.needs_seed = true;
-                self.composed = None;
-            }
-        }
+        self.poll_hardware_probe(state, root);
+        self.refresh_outputs_if_stale();
         if self.needs_seed {
-            let _ = state.put(
-                root,
-                BRIGHTNESS_KEY,
-                automerge::ScalarValue::F64(f64::from(self.initial_brightness)),
-            );
-            let _ = state.put(
-                root,
-                AUTO_BRIGHTNESS_KEY,
-                automerge::ScalarValue::Boolean(self.initial_prefs.auto_brightness),
-            );
-            let _ = state.put(
-                root,
-                NIGHT_LIGHT_KEY,
-                automerge::ScalarValue::Boolean(self.initial_prefs.night_light),
-            );
-            let _ = state.put(
-                root,
-                NIGHT_LIGHT_TEMPERATURE_KEY,
-                temperature_label(self.initial_prefs.night_light_temperature),
-            );
-            let _ = state.put(
-                root,
-                DISPLAY_SCALE_KEY,
-                scale_label(self.initial_prefs.scale),
-            );
-            let _ = state.put(root, APPLY_DISPLAY_KEY, false);
-            let _ = state.put(root, KEEP_DISPLAY_KEY, false);
-            let _ = state.put(root, REVERT_DISPLAY_KEY, false);
-            let connected: Vec<_> = self
-                .outputs
-                .iter()
-                .filter(|o| o.connected)
-                .cloned()
-                .collect();
-            for (index, output) in connected.iter().enumerate() {
-                let cfg = self
-                    .output_config
-                    .outputs
-                    .entry(output.connector.clone())
-                    .or_insert_with(|| OutputConfig {
-                        primary: index == 0,
-                        x: index as i32 * 1920,
-                        ..Default::default()
-                    });
-                let _ = state.put(root, output_key(&output.connector, "primary"), cfg.primary);
-                let _ = state.put(root, output_key(&output.connector, "enabled"), cfg.enabled);
-                let _ = state.put(
-                    root,
-                    output_key(&output.connector, "scale"),
-                    scale_label(cfg.scale),
-                );
-                let _ = state.put(root, output_key(&output.connector, "position"), "Automatic");
-                let mirror = cfg
-                    .mirror_of
-                    .as_ref()
-                    .and_then(|target| {
-                        connected
-                            .iter()
-                            .find(|candidate| candidate.connector == *target)
-                    })
-                    .map_or("Extend workspace".into(), |target| {
-                        format!("Mirror {}", target.label)
-                    });
-                let _ = state.put(root, output_key(&output.connector, "mirror"), mirror);
-                if let Some(mode) = cfg.mode {
-                    let _ = state.put(root, output_key(&output.connector, "mode"), mode.label());
-                }
-                let _ = state.put(
-                    root,
-                    output_key(&output.connector, "transform"),
-                    transform_label(cfg.transform),
-                );
-                let _ = state.put(root, output_key(&output.connector, "hdr"), cfg.hdr);
-                let _ = state.put(root, output_key(&output.connector, "vrr"), cfg.vrr);
-                let profile = cfg
-                    .color_profile
-                    .as_ref()
-                    .and_then(|id| {
-                        output
-                            .color_profile_labels
-                            .get(id)
-                            .map(|label| format!("{label} · {id}"))
-                    })
-                    .unwrap_or_else(|| "System default".into());
-                let _ = state.put(
-                    root,
-                    output_key(&output.connector, "color_profile"),
-                    &profile,
-                );
-            }
-            self.last_prefs = self.initial_prefs;
-            self.needs_seed = false;
+            self.seed_state(state, root);
         }
+        self.sync_brightness(state, root);
+        self.sync_comfort_prefs(state, root);
 
-        // Brightness → dispatcher, guarded so we don't shell out every frame.
-        if let Ok(Some((val, _))) = state.get(root, BRIGHTNESS_KEY)
-            && let Value::Scalar(s) = val
-            && let automerge::ScalarValue::F64(f) = s.as_ref()
-        {
-            let new = *f as f32;
-            if (new - self.last_brightness).abs() > 0.001 {
-                self.last_brightness = new;
-                let percent = new.clamp(0.0, 1.0) * 100.0;
-                if let Some(sender) = &self.brightness_tx {
-                    let _ = sender.send(percent);
-                } else if let Err(e) = self.dispatcher.set_brightness(percent) {
-                    warn!(target: "qos::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
-                }
-            }
-        }
-
-        // Comfort preferences → persist to the shared store on change.
-        if let Some(b) = read_bool(state, root, AUTO_BRIGHTNESS_KEY)
-            && b != self.last_prefs.auto_brightness
-        {
-            let effective = b && self.ambient_sensor_available;
-            self.last_prefs.auto_brightness = effective;
-            Self::persist_display(|d| d.auto_brightness = effective);
-            if effective != b {
-                let _ = state.put(root, AUTO_BRIGHTNESS_KEY, false);
-            }
-        }
-        if let Some(b) = read_bool(state, root, NIGHT_LIGHT_KEY)
-            && b != self.last_prefs.night_light
-        {
-            self.last_prefs.night_light = b;
-            Self::persist_display(|d| d.night_light = b);
-        }
-        if let Some(label) = read_str(state, root, NIGHT_LIGHT_TEMPERATURE_KEY)
-            && let Some(kelvin) = temperature_from_label(&label)
-            && kelvin != self.last_prefs.night_light_temperature
-        {
-            self.last_prefs.night_light_temperature = kelvin;
-            Self::persist_display(|d| d.night_light_temperature = kelvin);
-        }
-        // Display scale → persist to the shared store on change. The
-        // compositor reads `display.scale` at session start and advertises
-        // it as the preferred fractional scale.
-        if let Some(label) = read_str(state, root, DISPLAY_SCALE_KEY)
-            && let Some(v) = scale_factor_of(&label)
-            && (v - self.last_prefs.scale).abs() > f64::EPSILON
-        {
-            self.last_prefs.scale = v;
-            Self::persist_display(|d| d.scale = v);
-        }
-
-        // Per-output intent is staged in a clone and only atomically saved
-        // after capability validation. Invalid/transient CRDT values never
-        // reach the compositor.
         let connected: Vec<_> = self
             .outputs
             .iter()
             .filter(|o| o.connected)
             .cloned()
             .collect();
-        let mut next = self.output_config.clone();
-        let mut changed = false;
-        for output in &connected {
-            let mut cfg = next
-                .outputs
-                .get(&output.connector)
-                .cloned()
-                .unwrap_or_default();
-            if let Some(enabled) = read_bool(state, root, &output_key(&output.connector, "enabled"))
-                && enabled != cfg.enabled
-            {
-                cfg.enabled = enabled;
-                if !enabled {
-                    cfg.primary = false;
-                }
-                changed = true;
-            }
-            if let Some(primary) = read_bool(state, root, &output_key(&output.connector, "primary"))
-                && primary != cfg.primary
-            {
-                if primary {
-                    for other in next.outputs.values_mut() {
-                        other.primary = false;
-                    }
-                }
-                cfg.primary = primary;
-                changed = true;
-            }
-            if let Some(label) = read_str(state, root, &output_key(&output.connector, "scale"))
-                && let Some(scale) = scale_factor_of(&label)
-                && (scale - cfg.scale).abs() > f64::EPSILON
-            {
-                cfg.scale = scale;
-                changed = true;
-            }
-            if let Some(label) = read_str(state, root, &output_key(&output.connector, "mode"))
-                && let Some(mode) = output
-                    .modes
-                    .iter()
-                    .copied()
-                    .find(|mode| mode.label() == label)
-                && cfg.mode != Some(mode)
-            {
-                cfg.mode = Some(mode);
-                changed = true;
-            }
-            if let Some(label) = read_str(state, root, &output_key(&output.connector, "transform"))
-                && let Some(transform) = transform_from_label(&label)
-                && transform != cfg.transform
-            {
-                cfg.transform = transform;
-                changed = true;
-            }
-            if output.hdr
-                && let Some(enabled) = read_bool(state, root, &output_key(&output.connector, "hdr"))
-                && enabled != cfg.hdr
-            {
-                cfg.hdr = enabled;
-                changed = true;
-            }
-            if output.vrr
-                && let Some(enabled) = read_bool(state, root, &output_key(&output.connector, "vrr"))
-                && enabled != cfg.vrr
-            {
-                cfg.vrr = enabled;
-                changed = true;
-            }
-            if let Some(label) =
-                read_str(state, root, &output_key(&output.connector, "color_profile"))
-            {
-                let selected = if label == "System default" {
-                    None
-                } else {
-                    output
-                        .color_profile_labels
-                        .iter()
-                        .find_map(|(id, candidate)| {
-                            (label == format!("{candidate} · {id}")).then(|| id.clone())
-                        })
-                };
-                if selected != cfg.color_profile {
-                    cfg.color_profile = selected;
-                    changed = true;
-                }
-            }
-            if let Some(label) = read_str(state, root, &output_key(&output.connector, "mirror")) {
-                let mirror = if label == "Extend workspace" {
-                    None
-                } else {
-                    connected
-                        .iter()
-                        .find(|candidate| label == format!("Mirror {}", candidate.label))
-                        .map(|candidate| candidate.connector.clone())
-                };
-                if mirror != cfg.mirror_of {
-                    cfg.mirror_of = mirror;
-                    changed = true;
-                }
-            }
-            if let Some(position) =
-                read_str(state, root, &output_key(&output.connector, "position"))
-            {
-                let relative = ["Left", "Right", "Above", "Below"].iter().find_map(|side| {
-                    let label = position.strip_prefix(&format!("{side} of "))?;
-                    let target = connected
-                        .iter()
-                        .find(|candidate| candidate.label == label)?;
-                    Some((*side, target))
-                });
-                if let Some((side, reference)) = relative {
-                    let reference_cfg = next
-                        .outputs
-                        .get(&reference.connector)
-                        .cloned()
-                        .unwrap_or_default();
-                    let point = match side {
-                        "Left" => Some((
-                            reference_cfg.x
-                                - output.current_mode.map_or(1920, |mode| mode.width) as i32,
-                            reference_cfg.y,
-                        )),
-                        "Right" => Some((
-                            reference_cfg.x
-                                + reference.current_mode.map_or(1920, |mode| mode.width) as i32,
-                            reference_cfg.y,
-                        )),
-                        "Above" => Some((
-                            reference_cfg.x,
-                            reference_cfg.y
-                                - output.current_mode.map_or(1080, |mode| mode.height) as i32,
-                        )),
-                        "Below" => Some((
-                            reference_cfg.x,
-                            reference_cfg.y
-                                + reference.current_mode.map_or(1080, |mode| mode.height) as i32,
-                        )),
-                        _ => None,
-                    };
-                    if let Some((x, y)) = point
-                        && (cfg.x, cfg.y) != (x, y)
-                    {
-                        cfg.x = x;
-                        cfg.y = y;
-                        changed = true;
-                    }
-                }
-            }
-            next.outputs.insert(output.connector.clone(), cfg);
-        }
-        let newly_selected_primary = connected.iter().find(|output| {
-            read_bool(state, root, &output_key(&output.connector, "primary")) == Some(true)
-                && !self
-                    .output_config
-                    .outputs
-                    .get(&output.connector)
-                    .is_some_and(|config| config.primary)
-        });
-        let selected_primary = newly_selected_primary
-            .map(|output| output.connector.as_str())
-            .or_else(|| {
-                connected.iter().find_map(|output| {
-                    next.outputs
-                        .get(&output.connector)
-                        .filter(|config| config.enabled && config.primary)
-                        .map(|_| output.connector.as_str())
-                })
-            })
-            .or_else(|| {
-                connected.iter().find_map(|output| {
-                    next.outputs
-                        .get(&output.connector)
-                        .filter(|config| config.enabled)
-                        .map(|_| output.connector.as_str())
-                })
-            });
-        if let Some(selected) = selected_primary {
-            for output in &connected {
-                let primary = output.connector == selected;
-                if let Some(config) = next.outputs.get_mut(&output.connector)
-                    && config.primary != primary
-                {
-                    config.primary = primary;
-                    changed = true;
-                }
-                let _ = state.put(root, output_key(&output.connector, "primary"), primary);
-            }
-        }
-        // Mirroring is one viewport sampled by two sinks. Pick the best mode
-        // both advertise and stage it on both connectors; merely sharing an
-        // origin with unrelated modes is not mirroring.
-        let mirror_pairs: Vec<(String, String)> = next
-            .outputs
-            .iter()
-            .filter_map(|(connector, config)| {
-                config
-                    .mirror_of
-                    .as_ref()
-                    .map(|target| (connector.clone(), target.clone()))
-            })
-            .collect();
-        for (connector, target) in mirror_pairs {
-            let Some(source) = connected
-                .iter()
-                .find(|output| output.connector == connector)
-            else {
-                continue;
-            };
-            let Some(sink) = connected.iter().find(|output| output.connector == target) else {
-                continue;
-            };
-            let common = source
-                .modes
-                .iter()
-                .filter(|mode| sink.modes.contains(mode))
-                .copied()
-                .max_by_key(|mode| {
-                    (
-                        u64::from(mode.width) * u64::from(mode.height),
-                        mode.refresh_mhz,
-                    )
-                });
-            if let Some(mode) = common {
-                if let Some(config) = next.outputs.get_mut(&connector)
-                    && config.mode != Some(mode)
-                {
-                    config.mode = Some(mode);
-                    changed = true;
-                }
-                if let Some(config) = next.outputs.get_mut(&target)
-                    && config.mode != Some(mode)
-                {
-                    config.mode = Some(mode);
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            let descriptors: Vec<_> = connected
-                .iter()
-                .map(|o| OutputDescriptor {
-                    connector: o.connector.clone(),
-                    modes: o.modes.clone(),
-                    hdr: o.hdr,
-                    vrr: o.vrr,
-                    color_profiles: o.color_profiles.clone(),
-                })
-                .collect();
-            match next.validate_for(&descriptors) {
-                Ok(()) => self.pending_candidate = Some(next),
-                Err(error) => {
-                    warn!(target: "qos::settings", ?error, "rejected invalid display configuration")
-                }
-            }
-        }
-
-        if read_bool(state, root, APPLY_DISPLAY_KEY) == Some(true) {
-            let _ = state.put(root, APPLY_DISPLAY_KEY, false);
-            if let Some(candidate) = self.pending_candidate.clone()
-                && let Err(error) = DisplayTransaction::request(candidate)
-            {
-                warn!(target: "qos::settings", %error, "failed to stage display configuration");
-            }
-        }
-        if read_bool(state, root, KEEP_DISPLAY_KEY) == Some(true) {
-            let _ = state.put(root, KEEP_DISPLAY_KEY, false);
-            if let Some(mut transaction) = DisplayTransaction::load()
-                && let Err(error) = transaction.request_confirmation()
-            {
-                warn!(target: "qos::settings", %error, "failed to confirm display configuration");
-            }
-        }
-        if read_bool(state, root, REVERT_DISPLAY_KEY) == Some(true) {
-            let _ = state.put(root, REVERT_DISPLAY_KEY, false);
-            if let Some(mut transaction) = DisplayTransaction::load()
-                && let Err(error) = transaction.request_revert()
-            {
-                warn!(target: "qos::settings", %error, "failed to revert display configuration");
-            }
-        }
-        if let Some(transaction) = DisplayTransaction::load() {
-            let marker = (transaction.id, transaction.state);
-            if self.last_seen_transaction != Some(marker) {
-                self.last_seen_transaction = Some(marker);
-                if matches!(
-                    transaction.state,
-                    DisplayTransactionState::Confirmed
-                        | DisplayTransactionState::Reverted
-                        | DisplayTransactionState::Rejected
-                ) {
-                    self.output_config = DisplayConfig::load();
-                    self.pending_candidate = None;
-                    let committed = self.output_config.clone();
-                    self.write_output_controls(state, root, &committed);
-                }
-            }
-        }
+        self.sync_output_config(state, root, &connected);
+        self.sync_transaction_controls(state, root);
 
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
@@ -1456,6 +1049,580 @@ impl Widget for DisplayPane {
     }
 }
 
+/// `sync` helper methods, split out of the trait method above (which must
+/// stay a plain dispatcher) purely to stay under the line-count lint.
+impl DisplayPane {
+    /// Drain the background brightness/ambient-sensor probe, seeding the
+    /// CRDT and dropping the receiver once it has reported (or hung up).
+    fn poll_hardware_probe(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let Some(receiver) = &self.hardware_probe else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok((brightness, ambient)) => {
+                self.initial_brightness = brightness;
+                self.last_brightness = brightness;
+                self.ambient_sensor_available = ambient;
+                let _ = state.put(
+                    root,
+                    BRIGHTNESS_KEY,
+                    automerge::ScalarValue::F64(f64::from(brightness)),
+                );
+                self.hardware_probe = None;
+                self.composed = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.hardware_probe = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    /// Re-read the DRM connector snapshot when its mtime has moved, at most
+    /// once a second.
+    fn refresh_outputs_if_stale(&mut self) {
+        if self.last_snapshot_check.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.last_snapshot_check = Instant::now();
+        let stamp = settings_store::hardware::display_snapshot_path()
+            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        if stamp != self.snapshot_stamp {
+            self.snapshot_stamp = stamp;
+            self.outputs = read_outputs();
+            self.output_config = DisplayConfig::load();
+            self.needs_seed = true;
+            self.composed = None;
+        }
+    }
+
+    /// First-sync seed: writes the initial brightness/comfort preferences
+    /// and every connected output's current config into the CRDT.
+    fn seed_state(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let _ = state.put(
+            root,
+            BRIGHTNESS_KEY,
+            automerge::ScalarValue::F64(f64::from(self.initial_brightness)),
+        );
+        let _ = state.put(
+            root,
+            AUTO_BRIGHTNESS_KEY,
+            automerge::ScalarValue::Boolean(self.initial_prefs.auto_brightness),
+        );
+        let _ = state.put(
+            root,
+            NIGHT_LIGHT_KEY,
+            automerge::ScalarValue::Boolean(self.initial_prefs.night_light),
+        );
+        let _ = state.put(
+            root,
+            NIGHT_LIGHT_TEMPERATURE_KEY,
+            temperature_label(self.initial_prefs.night_light_temperature),
+        );
+        let _ = state.put(
+            root,
+            DISPLAY_SCALE_KEY,
+            scale_label(self.initial_prefs.scale),
+        );
+        let _ = state.put(root, APPLY_DISPLAY_KEY, false);
+        let _ = state.put(root, KEEP_DISPLAY_KEY, false);
+        let _ = state.put(root, REVERT_DISPLAY_KEY, false);
+        let connected: Vec<_> = self
+            .outputs
+            .iter()
+            .filter(|o| o.connected)
+            .cloned()
+            .collect();
+        for (index, output) in connected.iter().enumerate() {
+            let cfg = self
+                .output_config
+                .outputs
+                .entry(output.connector.clone())
+                .or_insert_with(|| OutputConfig {
+                    primary: index == 0,
+                    x: index as i32 * 1920,
+                    ..Default::default()
+                });
+            let _ = state.put(root, output_key(&output.connector, "primary"), cfg.primary);
+            let _ = state.put(root, output_key(&output.connector, "enabled"), cfg.enabled);
+            let _ = state.put(
+                root,
+                output_key(&output.connector, "scale"),
+                scale_label(cfg.scale),
+            );
+            let _ = state.put(root, output_key(&output.connector, "position"), "Automatic");
+            let mirror = cfg
+                .mirror_of
+                .as_ref()
+                .and_then(|target| {
+                    connected
+                        .iter()
+                        .find(|candidate| candidate.connector == *target)
+                })
+                .map_or_else(
+                    || "Extend workspace".into(),
+                    |target| format!("Mirror {}", target.label),
+                );
+            let _ = state.put(root, output_key(&output.connector, "mirror"), mirror);
+            if let Some(mode) = cfg.mode {
+                let _ = state.put(root, output_key(&output.connector, "mode"), mode.label());
+            }
+            let _ = state.put(
+                root,
+                output_key(&output.connector, "transform"),
+                transform_label(cfg.transform),
+            );
+            let _ = state.put(root, output_key(&output.connector, "hdr"), cfg.hdr);
+            let _ = state.put(root, output_key(&output.connector, "vrr"), cfg.vrr);
+            let profile = cfg
+                .color_profile
+                .as_ref()
+                .and_then(|id| {
+                    output
+                        .color_profile_labels
+                        .get(id)
+                        .map(|label| format!("{label} · {id}"))
+                })
+                .unwrap_or_else(|| "System default".into());
+            let _ = state.put(
+                root,
+                output_key(&output.connector, "color_profile"),
+                &profile,
+            );
+        }
+        self.last_prefs = self.initial_prefs;
+        self.needs_seed = false;
+    }
+
+    /// Brightness → dispatcher, guarded so we don't shell out every frame.
+    fn sync_brightness(&mut self, state: &AutoCommit, root: &ObjId) {
+        if let Ok(Some((val, _))) = state.get(root, BRIGHTNESS_KEY)
+            && let Value::Scalar(s) = val
+            && let automerge::ScalarValue::F64(f) = s.as_ref()
+        {
+            let new = *f as f32;
+            if (new - self.last_brightness).abs() > 0.001 {
+                self.last_brightness = new;
+                let percent = new.clamp(0.0, 1.0) * 100.0;
+                if let Some(sender) = &self.brightness_tx {
+                    let _ = sender.send(percent);
+                } else if let Err(e) = self.dispatcher.set_brightness(percent) {
+                    warn!(target: "qos::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
+                }
+            }
+        }
+    }
+
+    /// Comfort preferences → persist to the shared store on change.
+    fn sync_comfort_prefs(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if let Some(b) = read_bool(state, root, AUTO_BRIGHTNESS_KEY)
+            && b != self.last_prefs.auto_brightness
+        {
+            let effective = b && self.ambient_sensor_available;
+            self.last_prefs.auto_brightness = effective;
+            Self::persist_display(|d| d.auto_brightness = effective);
+            if effective != b {
+                let _ = state.put(root, AUTO_BRIGHTNESS_KEY, false);
+            }
+        }
+        if let Some(b) = read_bool(state, root, NIGHT_LIGHT_KEY)
+            && b != self.last_prefs.night_light
+        {
+            self.last_prefs.night_light = b;
+            Self::persist_display(|d| d.night_light = b);
+        }
+        if let Some(label) = read_str(state, root, NIGHT_LIGHT_TEMPERATURE_KEY)
+            && let Some(kelvin) = temperature_from_label(&label)
+            && kelvin != self.last_prefs.night_light_temperature
+        {
+            self.last_prefs.night_light_temperature = kelvin;
+            Self::persist_display(|d| d.night_light_temperature = kelvin);
+        }
+        // Display scale → persist to the shared store on change. The
+        // compositor reads `display.scale` at session start and advertises
+        // it as the preferred fractional scale.
+        if let Some(label) = read_str(state, root, DISPLAY_SCALE_KEY)
+            && let Some(v) = scale_factor_of(&label)
+            && (v - self.last_prefs.scale).abs() > f64::EPSILON
+        {
+            self.last_prefs.scale = v;
+            Self::persist_display(|d| d.scale = v);
+        }
+    }
+
+    /// Per-output intent is staged in a clone and only atomically saved
+    /// after capability validation. Invalid/transient CRDT values never
+    /// reach the compositor.
+    fn sync_output_config(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        connected: &[DisplayOutput],
+    ) {
+        let mut next = self.output_config.clone();
+        let mut changed = false;
+        for output in connected {
+            let mut cfg = next
+                .outputs
+                .get(&output.connector)
+                .cloned()
+                .unwrap_or_default();
+            if Self::apply_output_field_overrides(state, root, output, &mut next, &mut cfg) {
+                changed = true;
+            }
+            if Self::apply_output_placement_overrides(
+                state, root, output, connected, &next, &mut cfg,
+            ) {
+                changed = true;
+            }
+            next.outputs.insert(output.connector.clone(), cfg);
+        }
+        self.apply_primary_selection(state, root, connected, &mut next, &mut changed);
+        Self::apply_mirror_pairs(connected, &mut next, &mut changed);
+        if changed {
+            self.stage_output_candidate(connected, next);
+        }
+    }
+
+    /// Enable/primary/scale/mode/transform/HDR/VRR/colour-profile overrides
+    /// for one output. Returns whether anything changed.
+    fn apply_output_field_overrides(
+        state: &AutoCommit,
+        root: &ObjId,
+        output: &DisplayOutput,
+        next: &mut DisplayConfig,
+        cfg: &mut OutputConfig,
+    ) -> bool {
+        let mut changed = false;
+        if let Some(enabled) = read_bool(state, root, &output_key(&output.connector, "enabled"))
+            && enabled != cfg.enabled
+        {
+            cfg.enabled = enabled;
+            if !enabled {
+                cfg.primary = false;
+            }
+            changed = true;
+        }
+        if let Some(primary) = read_bool(state, root, &output_key(&output.connector, "primary"))
+            && primary != cfg.primary
+        {
+            if primary {
+                for other in next.outputs.values_mut() {
+                    other.primary = false;
+                }
+            }
+            cfg.primary = primary;
+            changed = true;
+        }
+        if let Some(label) = read_str(state, root, &output_key(&output.connector, "scale"))
+            && let Some(scale) = scale_factor_of(&label)
+            && (scale - cfg.scale).abs() > f64::EPSILON
+        {
+            cfg.scale = scale;
+            changed = true;
+        }
+        if let Some(label) = read_str(state, root, &output_key(&output.connector, "mode"))
+            && let Some(mode) = output
+                .modes
+                .iter()
+                .copied()
+                .find(|mode| mode.label() == label)
+            && cfg.mode != Some(mode)
+        {
+            cfg.mode = Some(mode);
+            changed = true;
+        }
+        if let Some(label) = read_str(state, root, &output_key(&output.connector, "transform"))
+            && let Some(transform) = transform_from_label(&label)
+            && transform != cfg.transform
+        {
+            cfg.transform = transform;
+            changed = true;
+        }
+        if output.hdr
+            && let Some(enabled) = read_bool(state, root, &output_key(&output.connector, "hdr"))
+            && enabled != cfg.hdr
+        {
+            cfg.hdr = enabled;
+            changed = true;
+        }
+        if output.vrr
+            && let Some(enabled) = read_bool(state, root, &output_key(&output.connector, "vrr"))
+            && enabled != cfg.vrr
+        {
+            cfg.vrr = enabled;
+            changed = true;
+        }
+        if let Some(label) = read_str(state, root, &output_key(&output.connector, "color_profile"))
+        {
+            let selected = if label == "System default" {
+                None
+            } else {
+                output
+                    .color_profile_labels
+                    .iter()
+                    .find_map(|(id, candidate)| {
+                        (label == format!("{candidate} · {id}")).then(|| id.clone())
+                    })
+            };
+            if selected != cfg.color_profile {
+                cfg.color_profile = selected;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Mirror-target/relative-position overrides for one output. Returns
+    /// whether anything changed.
+    fn apply_output_placement_overrides(
+        state: &AutoCommit,
+        root: &ObjId,
+        output: &DisplayOutput,
+        connected: &[DisplayOutput],
+        next: &DisplayConfig,
+        cfg: &mut OutputConfig,
+    ) -> bool {
+        let mut changed = false;
+        if let Some(label) = read_str(state, root, &output_key(&output.connector, "mirror")) {
+            let mirror = if label == "Extend workspace" {
+                None
+            } else {
+                connected
+                    .iter()
+                    .find(|candidate| label == format!("Mirror {}", candidate.label))
+                    .map(|candidate| candidate.connector.clone())
+            };
+            if mirror != cfg.mirror_of {
+                cfg.mirror_of = mirror;
+                changed = true;
+            }
+        }
+        if let Some(position) = read_str(state, root, &output_key(&output.connector, "position")) {
+            let relative = ["Left", "Right", "Above", "Below"].iter().find_map(|side| {
+                let label = position.strip_prefix(&format!("{side} of "))?;
+                let target = connected
+                    .iter()
+                    .find(|candidate| candidate.label == label)?;
+                Some((*side, target))
+            });
+            if let Some((side, reference)) = relative {
+                let reference_cfg = next
+                    .outputs
+                    .get(&reference.connector)
+                    .cloned()
+                    .unwrap_or_default();
+                let point = match side {
+                    "Left" => Some((
+                        reference_cfg.x
+                            - output.current_mode.map_or(1920, |mode| mode.width) as i32,
+                        reference_cfg.y,
+                    )),
+                    "Right" => Some((
+                        reference_cfg.x
+                            + reference.current_mode.map_or(1920, |mode| mode.width) as i32,
+                        reference_cfg.y,
+                    )),
+                    "Above" => Some((
+                        reference_cfg.x,
+                        reference_cfg.y
+                            - output.current_mode.map_or(1080, |mode| mode.height) as i32,
+                    )),
+                    "Below" => Some((
+                        reference_cfg.x,
+                        reference_cfg.y
+                            + reference.current_mode.map_or(1080, |mode| mode.height) as i32,
+                    )),
+                    _ => None,
+                };
+                if let Some((x, y)) = point
+                    && (cfg.x, cfg.y) != (x, y)
+                {
+                    cfg.x = x;
+                    cfg.y = y;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// Which output should be primary this frame: a newly-toggled one wins,
+    /// else keep whichever staged output is already both enabled and
+    /// primary, else fall back to the first enabled output. Always writes
+    /// the resolved `primary` key back so exactly one output reads true.
+    fn apply_primary_selection(
+        &self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        connected: &[DisplayOutput],
+        next: &mut DisplayConfig,
+        changed: &mut bool,
+    ) {
+        let newly_selected_primary = connected.iter().find(|output| {
+            read_bool(state, root, &output_key(&output.connector, "primary")) == Some(true)
+                && !self
+                    .output_config
+                    .outputs
+                    .get(&output.connector)
+                    .is_some_and(|config| config.primary)
+        });
+        let selected_primary = newly_selected_primary
+            .map(|output| output.connector.as_str())
+            .or_else(|| {
+                connected.iter().find_map(|output| {
+                    next.outputs
+                        .get(&output.connector)
+                        .filter(|config| config.enabled && config.primary)
+                        .map(|_| output.connector.as_str())
+                })
+            })
+            .or_else(|| {
+                connected.iter().find_map(|output| {
+                    next.outputs
+                        .get(&output.connector)
+                        .filter(|config| config.enabled)
+                        .map(|_| output.connector.as_str())
+                })
+            });
+        if let Some(selected) = selected_primary {
+            for output in connected {
+                let primary = output.connector == selected;
+                if let Some(config) = next.outputs.get_mut(&output.connector)
+                    && config.primary != primary
+                {
+                    config.primary = primary;
+                    *changed = true;
+                }
+                let _ = state.put(root, output_key(&output.connector, "primary"), primary);
+            }
+        }
+    }
+
+    /// Mirroring is one viewport sampled by two sinks. Pick the best mode
+    /// both advertise and stage it on both connectors; merely sharing an
+    /// origin with unrelated modes is not mirroring.
+    fn apply_mirror_pairs(
+        connected: &[DisplayOutput],
+        next: &mut DisplayConfig,
+        changed: &mut bool,
+    ) {
+        let mirror_pairs: Vec<(String, String)> = next
+            .outputs
+            .iter()
+            .filter_map(|(connector, config)| {
+                config
+                    .mirror_of
+                    .as_ref()
+                    .map(|target| (connector.clone(), target.clone()))
+            })
+            .collect();
+        for (connector, target) in mirror_pairs {
+            let Some(source) = connected
+                .iter()
+                .find(|output| output.connector == connector)
+            else {
+                continue;
+            };
+            let Some(sink) = connected.iter().find(|output| output.connector == target) else {
+                continue;
+            };
+            let common = source
+                .modes
+                .iter()
+                .filter(|mode| sink.modes.contains(mode))
+                .copied()
+                .max_by_key(|mode| {
+                    (
+                        u64::from(mode.width) * u64::from(mode.height),
+                        mode.refresh_mhz,
+                    )
+                });
+            if let Some(mode) = common {
+                if let Some(config) = next.outputs.get_mut(&connector)
+                    && config.mode != Some(mode)
+                {
+                    config.mode = Some(mode);
+                    *changed = true;
+                }
+                if let Some(config) = next.outputs.get_mut(&target)
+                    && config.mode != Some(mode)
+                {
+                    config.mode = Some(mode);
+                    *changed = true;
+                }
+            }
+        }
+    }
+
+    /// Validate the staged config against real output capabilities and, if
+    /// valid, make it the pending candidate the "Apply" button can request.
+    fn stage_output_candidate(&mut self, connected: &[DisplayOutput], next: DisplayConfig) {
+        let descriptors: Vec<_> = connected
+            .iter()
+            .map(|o| OutputDescriptor {
+                connector: o.connector.clone(),
+                modes: o.modes.clone(),
+                hdr: o.hdr,
+                vrr: o.vrr,
+                color_profiles: o.color_profiles.clone(),
+            })
+            .collect();
+        match next.validate_for(&descriptors) {
+            Ok(()) => self.pending_candidate = Some(next),
+            Err(error) => {
+                warn!(target: "qos::settings", ?error, "rejected invalid display configuration");
+            }
+        }
+    }
+
+    /// Apply/Keep/Revert button keys, plus reseeding controls once the
+    /// compositor settles a transaction (confirmed, reverted, or rejected).
+    fn sync_transaction_controls(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if read_bool(state, root, APPLY_DISPLAY_KEY) == Some(true) {
+            let _ = state.put(root, APPLY_DISPLAY_KEY, false);
+            if let Some(candidate) = self.pending_candidate.clone()
+                && let Err(error) = DisplayTransaction::request(candidate)
+            {
+                warn!(target: "qos::settings", %error, "failed to stage display configuration");
+            }
+        }
+        if read_bool(state, root, KEEP_DISPLAY_KEY) == Some(true) {
+            let _ = state.put(root, KEEP_DISPLAY_KEY, false);
+            if let Some(mut transaction) = DisplayTransaction::load()
+                && let Err(error) = transaction.request_confirmation()
+            {
+                warn!(target: "qos::settings", %error, "failed to confirm display configuration");
+            }
+        }
+        if read_bool(state, root, REVERT_DISPLAY_KEY) == Some(true) {
+            let _ = state.put(root, REVERT_DISPLAY_KEY, false);
+            if let Some(mut transaction) = DisplayTransaction::load()
+                && let Err(error) = transaction.request_revert()
+            {
+                warn!(target: "qos::settings", %error, "failed to revert display configuration");
+            }
+        }
+        if let Some(transaction) = DisplayTransaction::load() {
+            let marker = (transaction.id, transaction.state);
+            if self.last_seen_transaction != Some(marker) {
+                self.last_seen_transaction = Some(marker);
+                if matches!(
+                    transaction.state,
+                    DisplayTransactionState::Confirmed
+                        | DisplayTransactionState::Reverted
+                        | DisplayTransactionState::Rejected
+                ) {
+                    self.output_config = DisplayConfig::load();
+                    self.pending_candidate = None;
+                    let committed = self.output_config.clone();
+                    self.write_output_controls(state, root, &committed);
+                }
+            }
+        }
+    }
+}
+
 /// Read a `bool` scalar at `key`.
 fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
     match state.get(root, key) {
@@ -1547,7 +1714,9 @@ mod tests {
                 automerge::ScalarValue::F64(f) => assert!((f - 0.42).abs() < 1e-6, "got {f}"),
                 other => panic!("expected F64 scalar, got {other:?}"),
             },
-            other => panic!("expected scalar, got {other:?}"),
+            automerge::Value::Object(obj_type) => {
+                panic!("expected scalar, got object {obj_type:?}")
+            }
         }
     }
 

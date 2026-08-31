@@ -521,7 +521,7 @@ pub fn search(doc: &Document, query: &str, opts: SearchOptions) -> Vec<Match> {
             let hay_bytes = hay.as_bytes();
             let mut from = 0usize;
             while from <= hay.len() {
-                let Some(rel) = hay[from..].find(&needle) else {
+                let Some(rel) = hay.get(from..).and_then(|rest| rest.find(&needle)) else {
                     break;
                 };
                 let start = from + rel;
@@ -548,174 +548,244 @@ pub fn search(doc: &Document, query: &str, opts: SearchOptions) -> Vec<Match> {
 // The bundled sample document
 // ----------------------------------------------------------------------
 
-/// Build the bundled sample PDF: a believable multi-page technical
-/// document. Real text so search, highlight ranges and selection all
-/// operate on genuine content.
-pub fn sample_document() -> Document {
-    let b = |s: &str| Block::Body(s.to_string());
-    let pages = vec![
-        Page {
-            number: 1,
-            blocks: vec![
-                Block::Spacer(40.0),
-                Block::Title("qOS: A Collaborative Spatial Operating System".to_string()),
-                Block::Spacer(6.0),
-                Block::Caption("Technical Overview  ·  Revision 7  ·  Example Systems".to_string()),
-                Block::Spacer(20.0),
-                Block::H1("Abstract".to_string()),
-                b("qOS is an immutable, container-based Linux platform that treats \
+fn sample_body(s: &str) -> Block {
+    Block::Body(s.to_string())
+}
+
+fn sample_page_abstract() -> Page {
+    Page {
+        number: 1,
+        blocks: vec![
+            Block::Spacer(40.0),
+            Block::Title("qOS: A Collaborative Spatial Operating System".to_string()),
+            Block::Spacer(6.0),
+            Block::Caption("Technical Overview  ·  Revision 7  ·  Example Systems".to_string()),
+            Block::Spacer(20.0),
+            Block::H1("Abstract".to_string()),
+            sample_body(
+                "qOS is an immutable, container-based Linux platform that treats \
 collaboration and spatial organisation as first-class primitives rather than \
 features bolted onto a single-user desktop. This document describes the layered \
 architecture: an immutable bootc image, a tiling Wayland compositor with a \
 two-dimensional cluster model, a peer-to-peer filesystem that projects remote \
 files and hydrates them on demand, and a CRDT-native user-interface toolkit \
-shared by every system application."),
-                Block::Spacer(8.0),
-                b("The design goal is a daily-driver operating system where two people \
+shared by every system application.",
+            ),
+            Block::Spacer(8.0),
+            sample_body(
+                "The design goal is a daily-driver operating system where two people \
 can sit inside the same workspace, edit the same document, and watch each other's \
 cursors move, with the security boundary enforced by the compositor's per-cluster \
-sandbox instead of by convention."),
-                Block::Spacer(16.0),
-                Block::H2("Document scope".to_string()),
-                b("Sections two through five cover the compositor, the filesystem, the \
+sandbox instead of by convention.",
+            ),
+            Block::Spacer(16.0),
+            Block::H2("Document scope".to_string()),
+            sample_body(
+                "Sections two through five cover the compositor, the filesystem, the \
 toolkit and the security model in turn. Appendix A records the on-disk image \
 layout. Readers implementing a competing client should treat section four as \
-normative."),
-                Block::Spacer(18.0),
-                Block::Quote("\"Make the collaborative case the default case, and the \
-single-user case a degenerate instance of it.\"".to_string()),
-            ],
-        },
-        Page {
-            number: 2,
-            blocks: vec![
-                Block::Spacer(28.0),
-                Block::H1("1  The Compositor".to_string()),
-                b("The compositor arranges windows into clusters. A cluster is a group \
+normative.",
+            ),
+            Block::Spacer(18.0),
+            Block::Quote(
+                "\"Make the collaborative case the default case, and the \
+single-user case a degenerate instance of it.\""
+                    .to_string(),
+            ),
+        ],
+    }
+}
+
+fn sample_page_compositor() -> Page {
+    Page {
+        number: 2,
+        blocks: vec![
+            Block::Spacer(28.0),
+            Block::H1("1  The Compositor".to_string()),
+            sample_body(
+                "The compositor arranges windows into clusters. A cluster is a group \
 of tiled windows that never overlap; clusters themselves tile across an infinite \
 two-dimensional canvas. Panning the canvas is the primary navigation gesture, \
-replacing the alt-tab stack of conventional desktops."),
-                Block::Spacer(10.0),
-                Block::H2("1.1  Per-cluster sandboxing".to_string()),
-                b("Each cluster runs inside its own Bubblewrap sandbox with an explicit \
+replacing the alt-tab stack of conventional desktops.",
+            ),
+            Block::Spacer(10.0),
+            Block::H2("1.1  Per-cluster sandboxing".to_string()),
+            sample_body(
+                "Each cluster runs inside its own Bubblewrap sandbox with an explicit \
 file-access policy. When an application requests a path outside the cluster's \
 allow-list the compositor pauses the request and prompts the user, who can grant \
 access temporarily or permanently. Because the sandbox is the boundary, sharing a \
-cluster with a remote peer never widens the host's exposure beyond that cluster."),
-                Block::Spacer(10.0),
-                Block::Figure { height: 150.0, label: "Figure 1. Two clusters tiled on the spatial canvas, each a separate sandbox.".to_string() },
-                Block::Spacer(10.0),
-                Block::H2("1.2  Remote input injection".to_string()),
-                b("Collaboration streams Wayland buffers to invited peers and injects \
+cluster with a remote peer never widens the host's exposure beyond that cluster.",
+            ),
+            Block::Spacer(10.0),
+            Block::Figure {
+                height: 150.0,
+                label:
+                    "Figure 1. Two clusters tiled on the spatial canvas, each a separate sandbox."
+                        .to_string(),
+            },
+            Block::Spacer(10.0),
+            Block::H2("1.2  Remote input injection".to_string()),
+            sample_body(
+                "Collaboration streams Wayland buffers to invited peers and injects \
 their pointer and keyboard events back into the originating cluster. Coordination \
 runs over an Iroh gossip mesh reached through authenticated invite addresses \
-segment and through relays elsewhere."),
-            ],
-        },
-        Page {
-            number: 3,
-            blocks: vec![
-                Block::Spacer(28.0),
-                Block::H1("2  The Filesystem".to_string()),
-                b("The peer-to-peer filesystem mounts at a well-known path and projects \
+segment and through relays elsewhere.",
+            ),
+        ],
+    }
+}
+
+fn sample_page_filesystem() -> Page {
+    Page {
+        number: 3,
+        blocks: vec![
+            Block::Spacer(28.0),
+            Block::H1("2  The Filesystem".to_string()),
+            sample_body(
+                "The peer-to-peer filesystem mounts at a well-known path and projects \
 metadata for remote files immediately while deferring content until first read. \
 Metadata propagates through the same gossip layer the compositor uses; content is \
-addressed by a BLAKE3 hash and fetched on demand from whichever peer holds it."),
-                Block::Spacer(10.0),
-                Block::H2("2.1  Projection versus hydration".to_string()),
-                b("A directory listing is cheap: it is a projection of gossiped \
+addressed by a BLAKE3 hash and fetched on demand from whichever peer holds it.",
+            ),
+            Block::Spacer(10.0),
+            Block::H2("2.1  Projection versus hydration".to_string()),
+            sample_body(
+                "A directory listing is cheap: it is a projection of gossiped \
 metadata. Opening a file is where hydration happens. The first read blocks while \
 the content is fetched and verified against its hash, then subsequent reads are \
-served from a local cache with a short metadata time-to-live."),
-                Block::Spacer(10.0),
-                Block::H2("2.2  Conflict handling".to_string()),
-                b("Concurrent writes to the same path produce conflict copies rather \
+served from a local cache with a short metadata time-to-live.",
+            ),
+            Block::Spacer(10.0),
+            Block::H2("2.2  Conflict handling".to_string()),
+            sample_body(
+                "Concurrent writes to the same path produce conflict copies rather \
 than silent overwrites. The losing writer's bytes are preserved under a suffixed \
 name so no edit is ever destroyed, and the user resolves the divergence \
-explicitly. This mirrors the toolkit's CRDT philosophy at the file granularity."),
-                Block::Spacer(12.0),
-                Block::Quote("Never assume that open() means the bytes are already local.".to_string()),
-            ],
-        },
-        Page {
-            number: 4,
-            blocks: vec![
-                Block::Spacer(28.0),
-                Block::H1("3  The UI Toolkit".to_string()),
-                b("Every system application is built on a retained-mode toolkit whose \
+explicitly. This mirrors the toolkit's CRDT philosophy at the file granularity.",
+            ),
+            Block::Spacer(12.0),
+            Block::Quote("Never assume that open() means the bytes are already local.".to_string()),
+        ],
+    }
+}
+
+fn sample_page_toolkit() -> Page {
+    Page {
+        number: 4,
+        blocks: vec![
+            Block::Spacer(28.0),
+            Block::H1("3  The UI Toolkit".to_string()),
+            sample_body(
+                "Every system application is built on a retained-mode toolkit whose \
 widgets read their state from a shared CRDT document rather than from local \
 fields. A frame is five passes: synchronise from the document, build the layout \
 tree, apply the computed layout, draw into a vector scene, and handle input \
-events that may mutate the document directly."),
-                Block::Spacer(10.0),
-                Block::H2("3.1  State lives in the document".to_string()),
-                b("Because all durable state is in the CRDT, undo and redo are simply \
+events that may mutate the document directly.",
+            ),
+            Block::Spacer(10.0),
+            Block::H2("3.1  State lives in the document".to_string()),
+            sample_body(
+                "Because all durable state is in the CRDT, undo and redo are simply \
 snapshots of the document, and live collaboration falls out for free: two \
 instances editing the same object converge without a message-passing layer. \
-Widgets keep only ephemeral caches such as caret position and scroll offset."),
-                Block::Spacer(10.0),
-                Block::H2("3.2  Theming is OS-controlled".to_string()),
-                b("Widgets never hard-code colour. Every fill and stroke is read from a \
+Widgets keep only ephemeral caches such as caret position and scroll offset.",
+            ),
+            Block::Spacer(10.0),
+            Block::H2("3.2  Theming is OS-controlled".to_string()),
+            sample_body(
+                "Widgets never hard-code colour. Every fill and stroke is read from a \
 theme handed in at draw time, which lets the operating system enforce a coherent \
 look across applications and switch palettes without each app participating. This \
 PDF reader obeys the same rule: its highlights, ink and chrome all resolve through \
-the active theme."),
-            ],
-        },
-        Page {
-            number: 5,
-            blocks: vec![
-                Block::Spacer(28.0),
-                Block::H1("4  Security Model".to_string()),
-                b("Trust in qOS flows outward from the compositor. The sandbox is the \
+the active theme.",
+            ),
+        ],
+    }
+}
+
+fn sample_page_security() -> Page {
+    Page {
+        number: 5,
+        blocks: vec![
+            Block::Spacer(28.0),
+            Block::H1("4  Security Model".to_string()),
+            sample_body(
+                "Trust in qOS flows outward from the compositor. The sandbox is the \
 unit of isolation; a cluster cannot read files, capture input, or stream buffers \
 beyond the grants the user has approved for it. Collaboration never relaxes this: \
-an invited peer is granted presence inside one cluster, not access to the host."),
-                Block::Spacer(10.0),
-                Block::H2("4.1  Capability grants".to_string()),
-                b("Grants are explicit, revocable, and scoped to a single cluster. A \
+an invited peer is granted presence inside one cluster, not access to the host.",
+            ),
+            Block::Spacer(10.0),
+            Block::H2("4.1  Capability grants".to_string()),
+            sample_body(
+                "Grants are explicit, revocable, and scoped to a single cluster. A \
 temporary grant expires when the cluster closes; a permanent grant is recorded \
 against the cluster's policy and surfaced for review. There is no ambient \
-authority that an application can escalate into."),
-                Block::Spacer(10.0),
-                Block::H2("4.2  Signing and attestation".to_string()),
-                b("Documents carry detached signatures. A signature records the signer, \
+authority that an application can escalate into.",
+            ),
+            Block::Spacer(10.0),
+            Block::H2("4.2  Signing and attestation".to_string()),
+            sample_body(
+                "Documents carry detached signatures. A signature records the signer, \
 the time, and the page region it attests to. Cryptographic verification of the \
 signing key against a workspace identity is layered on top and is described in the \
-companion identity specification."),
-                Block::Spacer(14.0),
-                Block::Divider,
-                Block::Spacer(10.0),
-                Block::Caption("Signed below to acknowledge review of this revision.".to_string()),
-            ],
-        },
-        Page {
-            number: 6,
-            blocks: vec![
-                Block::Spacer(28.0),
-                Block::H1("Appendix A  Image Layout".to_string()),
-                b("The production image is derived from a Fedora bootc base. Persistent \
+companion identity specification.",
+            ),
+            Block::Spacer(14.0),
+            Block::Divider,
+            Block::Spacer(10.0),
+            Block::Caption("Signed below to acknowledge review of this revision.".to_string()),
+        ],
+    }
+}
+
+fn sample_page_appendix() -> Page {
+    Page {
+        number: 6,
+        blocks: vec![
+            Block::Spacer(28.0),
+            Block::H1("Appendix A  Image Layout".to_string()),
+            sample_body(
+                "The production image is derived from a Fedora bootc base. Persistent \
 state lives under a writable subtree while the root filesystem stays read-only, \
 which is what makes atomic updates and rollback possible. Binaries for the \
 compositor, the filesystem driver and the system applications are baked into the \
-image at build time."),
-                Block::Spacer(10.0),
-                Block::H2("A.1  Boot chain".to_string()),
-                b("Firmware hands off to the boot loader, which starts the login \
+image at build time.",
+            ),
+            Block::Spacer(10.0),
+            Block::H2("A.1  Boot chain".to_string()),
+            sample_body(
+                "Firmware hands off to the boot loader, which starts the login \
 greeter. The greeter launches the session, which mounts the peer-to-peer \
 filesystem before starting the compositor. First-boot setup runs once to seed \
-per-user state and then disables itself."),
-                Block::Spacer(10.0),
-                Block::H2("A.2  Updates".to_string()),
-                b("A timer pulls new image layers in the background and stages them for \
+per-user state and then disables itself.",
+            ),
+            Block::Spacer(10.0),
+            Block::H2("A.2  Updates".to_string()),
+            sample_body(
+                "A timer pulls new image layers in the background and stages them for \
 the next boot. Because the root is immutable, a failed update never leaves the \
 system in a half-written state: the previous deployment remains bootable and is \
-selected automatically if the new one fails its health check."),
-            ],
-        },
-    ];
+selected automatically if the new one fails its health check.",
+            ),
+        ],
+    }
+}
 
-    let outline = vec![
+fn sample_pages() -> Vec<Page> {
+    vec![
+        sample_page_abstract(),
+        sample_page_compositor(),
+        sample_page_filesystem(),
+        sample_page_toolkit(),
+        sample_page_security(),
+        sample_page_appendix(),
+    ]
+}
+
+fn sample_outline() -> Vec<OutlineItem> {
+    vec![
         OutlineItem {
             title: "Abstract".into(),
             page: 1,
@@ -786,14 +856,19 @@ selected automatically if the new one fails its health check."),
             page: 6,
             level: 0,
         },
-    ];
+    ]
+}
 
+/// Build the bundled sample PDF: a believable multi-page technical
+/// document. Real text so search, highlight ranges and selection all
+/// operate on genuine content.
+pub fn sample_document() -> Document {
     Document {
         title: "qOS Technical Overview".into(),
         author: "Example Systems".into(),
         subject: "Architecture specification".into(),
-        pages,
-        outline,
+        pages: sample_pages(),
+        outline: sample_outline(),
         page_w: PAGE_W,
         page_h: PAGE_H,
     }

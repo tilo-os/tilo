@@ -11,6 +11,16 @@
 //!    1/120 fixed-point encoding), so the scale is genuinely fractional
 //!    rather than rounded to 1x or 2x.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -158,7 +168,9 @@ fn pump(
     predicate: impl Fn(&ClientAppState) -> bool,
     label: &str,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(3))
+        .unwrap_or_else(Instant::now);
     while Instant::now() < deadline {
         let _ = conn.flush();
         let _ = display.dispatch_clients(server_state);

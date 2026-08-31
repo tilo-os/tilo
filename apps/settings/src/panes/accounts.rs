@@ -173,10 +173,10 @@ impl AccountsPane {
         panel.push(card("External accounts", rows(intro)));
 
         if self.form_open {
-            panel.push(self.mail_form());
+            panel.push(Self::mail_form());
         }
         if let Some(id) = &self.reauth_id {
-            panel.push(self.reauth_form(id));
+            panel.push(Self::reauth_form(id));
         }
         if let Some((kind, id)) = &self.pending_remove
             && let Some(view) = self
@@ -334,8 +334,7 @@ impl AccountsPane {
                 |status| {
                     let when = status
                         .last_success_unix
-                        .map(relative_sync_time)
-                        .unwrap_or_else(|| "never completed".into());
+                        .map_or_else(|| "never completed".into(), relative_sync_time);
                     match status.message.as_deref() {
                         Some(message) => format!("Last successful sync: {when} · {message}"),
                         None => format!("Last successful sync: {when}"),
@@ -352,7 +351,7 @@ impl AccountsPane {
     }
 
     /// The inline add-email form: fields bound to CRDT keys plus Save/Cancel.
-    fn mail_form(&self) -> El {
+    fn mail_form() -> El {
         let name = TextInput::new(Vec::new())
             .with_id("accounts.form.name")
             .with_on_change_path(FORM_NAME_KEY)
@@ -403,7 +402,7 @@ impl AccountsPane {
         )
     }
 
-    fn reauth_form(&self, id: &str) -> El {
+    fn reauth_form(id: &str) -> El {
         let password = TextInput::new(Vec::new())
             .with_id("accounts.reauth.password")
             .with_on_change_path(REAUTH_PASSWORD_KEY)
@@ -448,13 +447,7 @@ impl AccountsPane {
 
     /// Persist a new mail account from the form fields. Returns whether an
     /// account was actually added (an empty address is a no-op).
-    fn save_mail_account(
-        &mut self,
-        name: String,
-        email: String,
-        username: String,
-        password: String,
-    ) -> bool {
+    fn save_mail_account(name: &str, email: &str, username: &str, password: &str) -> bool {
         if email.trim().is_empty() {
             return false;
         }
@@ -498,7 +491,7 @@ impl AccountsPane {
     }
 
     /// Remove an account of `kind` by id from its owning store, persisting.
-    fn remove_account(&mut self, kind: AccountKind, id: &str) {
+    fn remove_account(kind: AccountKind, id: &str) {
         let res = match kind {
             // Email + CalDAV live in the shared canonical store; remove from it
             // (and drop any sealed credential) so the removal is real.
@@ -532,6 +525,178 @@ impl AccountsPane {
             }
         }
     }
+
+    /// Open the add-email form (and seed its bound `Text` objects).
+    fn handle_add_mail(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if read_bool(state, root, ADD_MAIL_KEY) {
+            let _ = state.put(root, ADD_MAIL_KEY, automerge::ScalarValue::Boolean(false));
+            if !self.form_open {
+                self.form_open = true;
+                seed_form_fields(state, root);
+                self.structure_dirty = true;
+            }
+        }
+    }
+
+    fn handle_form_cancel(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if read_bool(state, root, FORM_CANCEL_KEY) {
+            let _ = state.put(
+                root,
+                FORM_CANCEL_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            if self.form_open {
+                self.form_open = false;
+                clear_form(state, root);
+                self.structure_dirty = true;
+            }
+        }
+    }
+
+    /// Save the form → create + persist a real mail account.
+    fn handle_form_save(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if read_bool(state, root, FORM_SAVE_KEY) {
+            let _ = state.put(root, FORM_SAVE_KEY, automerge::ScalarValue::Boolean(false));
+            let name = read_str(state, root, FORM_NAME_KEY).unwrap_or_default();
+            let email = read_str(state, root, FORM_EMAIL_KEY).unwrap_or_default();
+            let user = read_str(state, root, FORM_USER_KEY).unwrap_or_default();
+            let password = read_str(state, root, FORM_PASSWORD_KEY).unwrap_or_default();
+            if Self::save_mail_account(&name, &email, &user, &password) {
+                self.form_open = false;
+                clear_form(state, root);
+                self.reload();
+                self.structure_dirty = true;
+            }
+        }
+    }
+
+    /// Per-account reauthentication triggers for accounts with a stored
+    /// password (sample rows never offer reauth).
+    fn handle_reauth_triggers(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if self.is_sample {
+            return;
+        }
+        let views: Vec<_> = [
+            AccountKind::Mail,
+            AccountKind::CalDav,
+            AccountKind::WebDav,
+            AccountKind::Nextcloud,
+        ]
+        .into_iter()
+        .flat_map(|kind| self.dir.views_of(kind))
+        .collect();
+        for view in views {
+            let has_password = self
+                .vault
+                .get(&accounts::AccountId::from(view.id.clone()))
+                .is_some_and(|secret| !secret.password.is_empty());
+            if !has_password {
+                continue;
+            }
+            let key = reauth_key(&view.id);
+            if read_bool(state, root, &key) {
+                let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
+                self.reauth_id = Some(view.id);
+                let _ = crate::ensure_text_object(state, root, REAUTH_PASSWORD_KEY);
+                self.structure_dirty = true;
+            }
+        }
+    }
+
+    fn handle_reauth_cancel(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if read_bool(state, root, REAUTH_CANCEL_KEY) {
+            let _ = state.put(
+                root,
+                REAUTH_CANCEL_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            self.reauth_id = None;
+            crate::clear_text_object(state, root, REAUTH_PASSWORD_KEY);
+            self.structure_dirty = true;
+        }
+    }
+
+    fn handle_reauth_save(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if read_bool(state, root, REAUTH_SAVE_KEY) {
+            let _ = state.put(
+                root,
+                REAUTH_SAVE_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            if let Some(id) = self.reauth_id.take() {
+                let password = read_str(state, root, REAUTH_PASSWORD_KEY).unwrap_or_default();
+                if !password.trim().is_empty() {
+                    let mut vault = accounts::SecretVault::open();
+                    let account_id = accounts::AccountId::from(id);
+                    let mut secret = vault.get(&account_id).unwrap_or_default();
+                    secret.password = password.trim().to_string();
+                    vault.put(&account_id, &secret);
+                    vault.save();
+                }
+                crate::clear_text_object(state, root, REAUTH_PASSWORD_KEY);
+                self.structure_dirty = true;
+            }
+        }
+    }
+
+    fn handle_remove_cancel(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if read_bool(state, root, REMOVE_CANCEL_KEY) {
+            let _ = state.put(
+                root,
+                REMOVE_CANCEL_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            self.pending_remove = None;
+            self.structure_dirty = true;
+        }
+    }
+
+    fn handle_remove_confirm(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if read_bool(state, root, REMOVE_CONFIRM_KEY) {
+            let _ = state.put(
+                root,
+                REMOVE_CONFIRM_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            if let Some((kind, id)) = self.pending_remove.take() {
+                Self::remove_account(kind, &id);
+                self.removed.push(id);
+                self.reload();
+                self.structure_dirty = true;
+            }
+        }
+    }
+
+    /// Per-account Remove buttons. Snapshot (kind, id, key) so we don't hold
+    /// a borrow across the mutating store calls.
+    fn handle_remove_triggers(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if self.is_sample {
+            return;
+        }
+        let targets: Vec<(AccountKind, String, String)> = [
+            AccountKind::Mail,
+            AccountKind::CalDav,
+            AccountKind::WebDav,
+            AccountKind::Nextcloud,
+        ]
+        .into_iter()
+        .flat_map(|kind| {
+            self.dir
+                .views_of(kind)
+                .into_iter()
+                .map(move |v| (kind, v.id.clone(), remove_key(&v.id)))
+        })
+        .collect();
+        for (kind, id, key) in targets {
+            if !read_bool(state, root, &key) || self.removed.contains(&id) {
+                continue;
+            }
+            let _ = state.put(root, key.as_str(), automerge::ScalarValue::Boolean(false));
+            self.pending_remove = Some((kind, id));
+            self.structure_dirty = true;
+            break;
+        }
+    }
 }
 
 fn relative_sync_time(unix: i64) -> String {
@@ -559,151 +724,15 @@ pub fn build_with(dir: &AccountDirectory) -> Box<dyn Widget> {
 
 impl Widget for AccountsPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        // Open the add-email form.
-        if read_bool(state, root, ADD_MAIL_KEY) {
-            let _ = state.put(root, ADD_MAIL_KEY, automerge::ScalarValue::Boolean(false));
-            if !self.form_open {
-                self.form_open = true;
-                // Seed the fields' Text objects so they are typeable the moment
-                // the form appears.
-                seed_form_fields(state, root);
-                self.structure_dirty = true;
-            }
-        }
-        // Cancel the form.
-        if read_bool(state, root, FORM_CANCEL_KEY) {
-            let _ = state.put(
-                root,
-                FORM_CANCEL_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
-            if self.form_open {
-                self.form_open = false;
-                clear_form(state, root);
-                self.structure_dirty = true;
-            }
-        }
-        // Save the form → create + persist a real mail account.
-        if read_bool(state, root, FORM_SAVE_KEY) {
-            let _ = state.put(root, FORM_SAVE_KEY, automerge::ScalarValue::Boolean(false));
-            let name = read_str(state, root, FORM_NAME_KEY).unwrap_or_default();
-            let email = read_str(state, root, FORM_EMAIL_KEY).unwrap_or_default();
-            let user = read_str(state, root, FORM_USER_KEY).unwrap_or_default();
-            let password = read_str(state, root, FORM_PASSWORD_KEY).unwrap_or_default();
-            if self.save_mail_account(name, email, user, password) {
-                self.form_open = false;
-                clear_form(state, root);
-                self.reload();
-                self.structure_dirty = true;
-            }
-        }
-        if !self.is_sample {
-            let views: Vec<_> = [
-                AccountKind::Mail,
-                AccountKind::CalDav,
-                AccountKind::WebDav,
-                AccountKind::Nextcloud,
-            ]
-            .into_iter()
-            .flat_map(|kind| self.dir.views_of(kind))
-            .collect();
-            for view in views {
-                let has_password = self
-                    .vault
-                    .get(&accounts::AccountId::from(view.id.clone()))
-                    .is_some_and(|secret| !secret.password.is_empty());
-                if !has_password {
-                    continue;
-                }
-                let key = reauth_key(&view.id);
-                if read_bool(state, root, &key) {
-                    let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
-                    self.reauth_id = Some(view.id);
-                    let _ = crate::ensure_text_object(state, root, REAUTH_PASSWORD_KEY);
-                    self.structure_dirty = true;
-                }
-            }
-        }
-        if read_bool(state, root, REAUTH_CANCEL_KEY) {
-            let _ = state.put(
-                root,
-                REAUTH_CANCEL_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
-            self.reauth_id = None;
-            crate::clear_text_object(state, root, REAUTH_PASSWORD_KEY);
-            self.structure_dirty = true;
-        }
-        if read_bool(state, root, REAUTH_SAVE_KEY) {
-            let _ = state.put(
-                root,
-                REAUTH_SAVE_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
-            if let Some(id) = self.reauth_id.take() {
-                let password = read_str(state, root, REAUTH_PASSWORD_KEY).unwrap_or_default();
-                if !password.trim().is_empty() {
-                    let mut vault = accounts::SecretVault::open();
-                    let account_id = accounts::AccountId::from(id);
-                    let mut secret = vault.get(&account_id).unwrap_or_default();
-                    secret.password = password.trim().to_string();
-                    vault.put(&account_id, &secret);
-                    vault.save();
-                }
-                crate::clear_text_object(state, root, REAUTH_PASSWORD_KEY);
-                self.structure_dirty = true;
-            }
-        }
-
-        if read_bool(state, root, REMOVE_CANCEL_KEY) {
-            let _ = state.put(
-                root,
-                REMOVE_CANCEL_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
-            self.pending_remove = None;
-            self.structure_dirty = true;
-        }
-        if read_bool(state, root, REMOVE_CONFIRM_KEY) {
-            let _ = state.put(
-                root,
-                REMOVE_CONFIRM_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
-            if let Some((kind, id)) = self.pending_remove.take() {
-                self.remove_account(kind, &id);
-                self.removed.push(id);
-                self.reload();
-                self.structure_dirty = true;
-            }
-        }
-        // Per-account Remove buttons. Snapshot (kind, id, key) so we don't
-        // hold a borrow across the mutating store calls.
-        if !self.is_sample {
-            let targets: Vec<(AccountKind, String, String)> = [
-                AccountKind::Mail,
-                AccountKind::CalDav,
-                AccountKind::WebDav,
-                AccountKind::Nextcloud,
-            ]
-            .into_iter()
-            .flat_map(|kind| {
-                self.dir
-                    .views_of(kind)
-                    .into_iter()
-                    .map(move |v| (kind, v.id.clone(), remove_key(&v.id)))
-            })
-            .collect();
-            for (kind, id, key) in targets {
-                if !read_bool(state, root, &key) || self.removed.contains(&id) {
-                    continue;
-                }
-                let _ = state.put(root, key.as_str(), automerge::ScalarValue::Boolean(false));
-                self.pending_remove = Some((kind, id));
-                self.structure_dirty = true;
-                break;
-            }
-        }
+        self.handle_add_mail(state, root);
+        self.handle_form_cancel(state, root);
+        self.handle_form_save(state, root);
+        self.handle_reauth_triggers(state, root);
+        self.handle_reauth_cancel(state, root);
+        self.handle_reauth_save(state, root);
+        self.handle_remove_cancel(state, root);
+        self.handle_remove_confirm(state, root);
+        self.handle_remove_triggers(state, root);
 
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
@@ -728,13 +757,20 @@ impl Widget for AccountsPane {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap();
+        // A wrapping-node failure would mean the taffy tree rejected a node it
+        // just handed back to us; fall back to the child itself so layout
+        // still proceeds, just without the outer flex column.
+        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        // No computed layout for `node` means `build_layout` wasn't run first;
+        // keep the previous rect rather than panicking.
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -966,12 +1002,6 @@ mod tests {
     fn save_with_empty_email_is_a_noop() {
         // Guard: saving a blank address must not create an account (and must
         // not touch disk). We assert the pure guard directly.
-        let mut pane = AccountsPane::from_dir(AccountDirectory::default(), false);
-        assert!(!pane.save_mail_account(
-            "Nobody".into(),
-            "  ".into(),
-            String::new(),
-            String::new()
-        ));
+        assert!(!AccountsPane::save_mail_account("Nobody", "  ", "", ""));
     }
 }

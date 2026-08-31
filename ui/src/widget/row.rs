@@ -11,6 +11,18 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::WindowEvent;
 
+/// `base` composed with a translation to `(dx, dy)`. Wrapped so the one
+/// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
+/// `Mul` is pure floating-point matrix composition and cannot panic or
+/// overflow.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
+)]
+fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
+    base * Affine::translate((dx, dy))
+}
+
 pub struct Row {
     children: Vec<Box<dyn Widget>>,
     rect: vello::kurbo::Rect,
@@ -49,28 +61,33 @@ impl Row {
         }
     }
 
+    #[must_use]
     pub fn push(mut self, child: Box<dyn Widget>) -> Self {
         self.children.push(child);
         self
     }
 
+    #[must_use]
     pub fn no_wrap(mut self) -> Self {
         self.no_wrap = true;
         self
     }
 
+    #[must_use]
     pub fn with_fill_remaining_height(mut self) -> Self {
         self.fill_height = true;
         self
     }
 
     /// Opt this layout into presence tracking by binding it to a CRDT-style path.
+    #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
     /// Gate this layout behind a permission scope.
+    #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -192,9 +209,11 @@ impl Widget for Row {
         // Same pointer-capture short-circuit as `Column::handle_event` —
         // a dragging child gets exclusive event routing so the drag
         // survives the cursor wandering through peer widgets.
-        if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
-            let cnode = child_nodes[idx];
-            self.children[idx].handle_event(
+        if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture())
+            && let Some(&cnode) = child_nodes.get(idx)
+            && let Some(child) = self.children.get_mut(idx)
+        {
+            child.handle_event(
                 event,
                 scale_factor,
                 modifiers,
@@ -316,8 +335,8 @@ impl Widget for Row {
         }
         // Subtree cache — see `Column::draw_with_presence` for the
         // `Affine::IDENTITY` rebuild requirement.
-        let size_changed = self.rect.width() != self.cache_rect.width()
-            || self.rect.height() != self.cache_rect.height();
+        let size_changed = (self.rect.width() - self.cache_rect.width()).abs() > f64::EPSILON
+            || (self.rect.height() - self.cache_rect.height()).abs() > f64::EPSILON;
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
         let needs_rebuild =
             self.cache_rect == vello::kurbo::Rect::ZERO || size_changed || any_child_dirty;
@@ -344,10 +363,7 @@ impl Widget for Row {
         } else {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
-            scene.append(
-                &self.subtree_cache,
-                Some(transform * Affine::translate((dx, dy))),
-            );
+            scene.append(&self.subtree_cache, Some(translated(transform, dx, dy)));
         }
 
         if let Some(scope) = self.permission_scope()

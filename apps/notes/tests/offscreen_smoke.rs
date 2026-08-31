@@ -4,6 +4,16 @@
 //! apply_layout → draw` cycle the live `ui::App` uses, with no panic
 //! / no missing layout slot.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use notes::{NotesApp, WELCOME_BODY};
@@ -18,6 +28,30 @@ use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
+
+/// Sanity-assert the editor laid out multiple non-degenerate blocks for
+/// the kitchen-sink Welcome body. Pinned so a future regression in
+/// `MainPanel`'s flex chain (where an outside `set_style` accidentally
+/// drops `flex_direction: Column`, collapsing every block to width 0 —
+/// this has regressed before) gets caught here instead of in a quiet
+/// snapshot.
+fn assert_blocks_non_degenerate(app: &mut NotesApp) {
+    let panel = app.main_panel_mut();
+    let n = panel.editor().blocks().len();
+    assert!(
+        n >= 6,
+        "Welcome seed should parse into at least 6 blocks; got {n}",
+    );
+    for b in panel.editor().blocks() {
+        let r = b.line.get_rect();
+        // Dividers have zero text but still get a non-degenerate
+        // row (the horizontal rule paints across the whole row).
+        assert!(
+            r.width() > 0.0 && r.height() > 0.0,
+            "block rect must be non-degenerate (got {r:?})"
+        );
+    }
+}
 
 #[test]
 fn render_one_frame_against_seeded_workspace() {
@@ -64,7 +98,7 @@ fn hello() {}
 
 - `?` opens the shortcuts overlay
 ";
-            panel.load_page(id, "Welcome".into(), demo.into());
+            panel.load_page(id, "Welcome", demo.into());
         }
     }
     // The full welcome body still has to round-trip for the
@@ -87,13 +121,13 @@ fn hello() {}
 
     app.sync(&mut state.doc, &state.root);
     let child = app.build_layout(&mut taffy, &theme, &mut node_map);
-    let (w, h) = (1024u32, 768u32);
+    let (w, h) = (1024u16, 768u16);
     let root = taffy
         .new_with_children(
             Style {
                 size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
+                    width: Dimension::length(f32::from(w)),
+                    height: Dimension::length(f32::from(h)),
                 },
                 ..Default::default()
             },
@@ -107,8 +141,8 @@ fn hello() {}
             .compute_layout_with_measure(
                 root,
                 taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
+                    width: AvailableSpace::Definite(f32::from(w)),
+                    height: AvailableSpace::Definite(f32::from(h)),
                 },
                 |known, avail, node_id, _, _| {
                     if let Some(&ptr) = measure_map.get(&node_id) {
@@ -122,30 +156,7 @@ fn hello() {}
     }
     app.apply_layout(&taffy, child, Point::ORIGIN);
 
-    // Sanity-assert the editor laid out multiple non-degenerate
-    // blocks for the kitchen-sink Welcome body. Pinned so a future
-    // regression in MainPanel's flex chain (where an outside
-    // `set_style` accidentally drops `flex_direction: Column`,
-    // collapsing every block to width 0 — happened in the first
-    // round of Phase 2 wiring) gets caught here instead of in a
-    // quiet snapshot.
-    {
-        let panel = app.main_panel_mut();
-        let n = panel.editor().blocks().len();
-        assert!(
-            n >= 6,
-            "Welcome seed should parse into at least 6 blocks; got {n}",
-        );
-        for b in panel.editor().blocks() {
-            let r = b.line.get_rect();
-            // Dividers have zero text but still get a non-degenerate
-            // row (the horizontal rule paints across the whole row).
-            assert!(
-                r.width() > 0.0 && r.height() > 0.0,
-                "block rect must be non-degenerate (got {r:?})"
-            );
-        }
-    }
+    assert_blocks_non_degenerate(&mut app);
 
     let mut scene = Scene::new();
     app.draw_with_presence(
@@ -166,7 +177,7 @@ fn hello() {}
     // result. Skipped in CI to avoid the wgpu device init cost on
     // every run.
     if let Ok(path) = std::env::var("NOTES_SNAPSHOT") {
-        let mut renderer = OffscreenRenderer::new(w, h);
+        let mut renderer = OffscreenRenderer::new(u32::from(w), u32::from(h));
         renderer.render_png(&scene, Color::TRANSPARENT, std::path::Path::new(&path));
         eprintln!("notes: snapshot written to {path}");
     }

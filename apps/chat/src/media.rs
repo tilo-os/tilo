@@ -373,7 +373,7 @@ mod live {
             let mut recv = connection.accept_uni().await?;
             loop {
                 match read_frame(&mut recv).await {
-                    Ok(buf) if buf.is_empty() => continue,
+                    Ok(buf) if buf.is_empty() => {}
                     Ok(buf) => {
                         if let Some(obj) = MediaObject::from_wire(&buf) {
                             // Receiver gone (transport dropped) → stop reading.
@@ -474,13 +474,11 @@ mod live {
             let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
             let endpoint = self.endpoint.clone();
             self.rt.spawn(async move {
-                let conn = match endpoint.connect(addr, MEDIA_ALPN).await {
-                    Ok(c) => c,
-                    Err(_) => return,
+                let Ok(conn) = endpoint.connect(addr, MEDIA_ALPN).await else {
+                    return;
                 };
-                let mut send = match conn.open_uni().await {
-                    Ok(s) => s,
-                    Err(_) => return,
+                let Ok(mut send) = conn.open_uni().await else {
+                    return;
                 };
                 while let Some(bytes) = out_rx.recv().await {
                     if write_frame(&mut send, &bytes).await.is_err() {
@@ -567,7 +565,7 @@ mod live {
                     .first()
                     .map(ashpd::desktop::screencast::Stream::pipe_wire_node_id)
             };
-            tokio::time::timeout(std::time::Duration::from_mins(2), flow)
+            tokio::time::timeout(std::time::Duration::from_secs(120), flow)
                 .await
                 .ok()
                 .flatten()
@@ -718,14 +716,11 @@ mod tests {
                 eprintln!("CHAT_LIVE_MEDIA_TEST not set — skipping live iroh+GStreamer loopback");
                 return;
             }
-            let mut a = match IrohTransport::try_new() {
-                Some(t) => t,
-                // No usable network stack in this environment: skip cleanly
-                // rather than fail (the transport itself is still real).
-                None => {
-                    eprintln!("no iroh endpoint could bind; skipping live loopback");
-                    return;
-                }
+            // No usable network stack in this environment: skip cleanly
+            // rather than fail (the transport itself is still real).
+            let Some(mut a) = IrohTransport::try_new() else {
+                eprintln!("no iroh endpoint could bind; skipping live loopback");
+                return;
             };
             let mut b = IrohTransport::try_new().expect("second endpoint binds once the first did");
 

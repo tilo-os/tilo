@@ -10,6 +10,19 @@
 //! The on-disk WIT package is also exposed as a path constant so the host's
 //! integration tests can find it during cargo runs without environment plumbing.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use serde::{Deserialize, Serialize};
 
 /// Path to this crate's `wit/` directory, made available to consumers at compile

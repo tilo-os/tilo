@@ -41,8 +41,8 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider,
 };
 
 use crate::doc::SheetsDoc;
@@ -165,12 +165,7 @@ impl Action for SheetsAction {
                 row,
                 raw,
                 fmt,
-            } => {
-                SheetsDoc::set_cell_raw(doc, *sheet, (*col, *row), raw);
-                if let Some(f) = fmt {
-                    SheetsDoc::set_cell_format(doc, *sheet, (*col, *row), CellFormat::from_str(f));
-                }
-            }
+            } => apply_set_cell(doc, *sheet, (*col, *row), raw, fmt.as_deref()),
             SheetsAction::SetFormat {
                 sheet,
                 col,
@@ -179,31 +174,8 @@ impl Action for SheetsAction {
             } => {
                 SheetsDoc::set_cell_format(doc, *sheet, (*col, *row), CellFormat::from_str(fmt));
             }
-            SheetsAction::SetCells { sheet, cells } => {
-                // Applied in the payload's given order — the builder emits cells
-                // in a stable order, so replay reproduces the identical change.
-                for w in cells {
-                    SheetsDoc::set_cell_raw(doc, *sheet, (w.col, w.row), &w.raw);
-                    if let Some(f) = &w.fmt {
-                        SheetsDoc::set_cell_format(
-                            doc,
-                            *sheet,
-                            (w.col, w.row),
-                            CellFormat::from_str(f),
-                        );
-                    }
-                }
-            }
-            SheetsAction::SetFormats { sheet, cells } => {
-                for w in cells {
-                    SheetsDoc::set_cell_format(
-                        doc,
-                        *sheet,
-                        (w.col, w.row),
-                        CellFormat::from_str(&w.fmt),
-                    );
-                }
-            }
+            SheetsAction::SetCells { sheet, cells } => apply_set_cells(doc, *sheet, cells),
+            SheetsAction::SetFormats { sheet, cells } => apply_set_formats(doc, *sheet, cells),
             SheetsAction::AddSheet { name } => {
                 SheetsDoc::add_sheet(doc, name);
             }
@@ -226,40 +198,16 @@ impl Action for SheetsAction {
                 SheetsDoc::set_sheet_color(doc, *idx, *color);
             }
             SheetsAction::InsertRow { sheet, at } => {
-                let at = *at;
-                restructure(doc, *sheet, |(c, r)| {
-                    Some((c, if r >= at { r + 1 } else { r }))
-                });
+                restructure(doc, *sheet, insert_row_map(*at));
             }
             SheetsAction::DeleteRow { sheet, at } => {
-                let at = *at;
-                restructure(doc, *sheet, |(c, r)| {
-                    if r == at {
-                        None
-                    } else if r > at {
-                        Some((c, r - 1))
-                    } else {
-                        Some((c, r))
-                    }
-                });
+                restructure(doc, *sheet, delete_row_map(*at));
             }
             SheetsAction::InsertColumn { sheet, at } => {
-                let at = *at;
-                restructure(doc, *sheet, |(c, r)| {
-                    Some((if c >= at { c + 1 } else { c }, r))
-                });
+                restructure(doc, *sheet, insert_column_map(*at));
             }
             SheetsAction::DeleteColumn { sheet, at } => {
-                let at = *at;
-                restructure(doc, *sheet, |(c, r)| {
-                    if c == at {
-                        None
-                    } else if c > at {
-                        Some((c - 1, r))
-                    } else {
-                        Some((c, r))
-                    }
-                });
+                restructure(doc, *sheet, delete_column_map(*at));
             }
             SheetsAction::SetDocSettings {
                 currency,
@@ -281,6 +229,58 @@ impl Action for SheetsAction {
 
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
+    }
+}
+
+fn apply_set_cell(doc: &mut Doc, sheet: usize, addr: Addr, raw: &str, fmt: Option<&str>) {
+    SheetsDoc::set_cell_raw(doc, sheet, addr, raw);
+    if let Some(f) = fmt {
+        SheetsDoc::set_cell_format(doc, sheet, addr, CellFormat::from_str(f));
+    }
+}
+
+fn apply_set_cells(doc: &mut Doc, sheet: usize, cells: &[CellWrite]) {
+    // Applied in the payload's given order — the builder emits cells
+    // in a stable order, so replay reproduces the identical change.
+    for w in cells {
+        SheetsDoc::set_cell_raw(doc, sheet, (w.col, w.row), &w.raw);
+        if let Some(f) = &w.fmt {
+            SheetsDoc::set_cell_format(doc, sheet, (w.col, w.row), CellFormat::from_str(f));
+        }
+    }
+}
+
+fn apply_set_formats(doc: &mut Doc, sheet: usize, cells: &[FormatWrite]) {
+    for w in cells {
+        SheetsDoc::set_cell_format(doc, sheet, (w.col, w.row), CellFormat::from_str(&w.fmt));
+    }
+}
+
+/// The `restructure` shift map for inserting a blank row above `at`.
+fn insert_row_map(at: u32) -> impl Fn(Addr) -> Option<Addr> {
+    move |(c, r)| Some((c, if r >= at { r + 1 } else { r }))
+}
+
+/// The `restructure` shift map for deleting row `at`.
+fn delete_row_map(at: u32) -> impl Fn(Addr) -> Option<Addr> {
+    move |(c, r)| match r.cmp(&at) {
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some((c, r - 1)),
+        std::cmp::Ordering::Less => Some((c, r)),
+    }
+}
+
+/// The `restructure` shift map for inserting a blank column left of `at`.
+fn insert_column_map(at: u32) -> impl Fn(Addr) -> Option<Addr> {
+    move |(c, r)| Some((if c >= at { c + 1 } else { c }, r))
+}
+
+/// The `restructure` shift map for deleting column `at`.
+fn delete_column_map(at: u32) -> impl Fn(Addr) -> Option<Addr> {
+    move |(c, r)| match c.cmp(&at) {
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some((c - 1, r)),
+        std::cmp::Ordering::Less => Some((c, r)),
     }
 }
 
@@ -333,11 +333,23 @@ pub fn register(registry: &mut ActionRegistry) {
     registry.register::<SheetsAction>(SHEETS_ACTION_TYPE);
 }
 
+/// An [`EncodedAction`] that decodes to nothing: an empty payload matches no
+/// `SheetsAction` variant, so the executor's own contract (a malformed
+/// payload is a no-op, never a crash) absorbs it harmlessly. Used only as the
+/// fallback if serializing a real action fails — every `SheetsAction`
+/// variant holds plain owned data, so that never happens in practice.
+fn inert_encoded_action() -> EncodedAction {
+    EncodedAction {
+        type_id: SHEETS_ACTION_TYPE.to_string(),
+        payload: b"{}".to_vec(),
+    }
+}
+
 /// Encode any [`SheetsAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a Sheets action into a
 /// replayable envelope.
 pub fn encode(action: &SheetsAction) -> EncodedAction {
-    EncodedAction::encode(SHEETS_ACTION_TYPE, action).expect("SheetsAction is always serializable")
+    EncodedAction::encode(SHEETS_ACTION_TYPE, action).unwrap_or_else(|_| inert_encoded_action())
 }
 
 // ===========================================================================
@@ -484,7 +496,18 @@ pub struct SheetsResourceCtx {
 }
 
 fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, SHEETS_ACTION_TYPE, action).expect("encode sheets action")
+    ActionSpec::immediate(id, label, SHEETS_ACTION_TYPE, action)
+        // `ActionSpec`'s fields are private now that it carries typed
+        // parameters; build the fallback through the constructor that
+        // takes an already-encoded action.
+        .unwrap_or_else(|_| {
+            ActionSpec::immediate_encoded(
+                id,
+                label.to_string(),
+                ExecutionLocus::ClientLocal,
+                inert_encoded_action(),
+            )
+        })
 }
 
 /// Build the resource tree Sheets currently has open: the workbook (always
@@ -602,14 +625,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 

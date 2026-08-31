@@ -12,6 +12,16 @@
 //! `get_rect`, `children`) so the assertions ride the production layout — no
 //! private hooks, no re-created widgets.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use file_explorer::FileExplorerWidget;
@@ -121,6 +131,11 @@ impl Harness {
 
     /// Render the current laid-out frame to a PNG — the same offscreen path
     /// `--shots` uses, so the image is what a live window would show.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "self.w/self.h are small positive test-viewport literals set by `new`, never hostile input"
+    )]
     fn shot(&mut self, out: &std::path::Path) {
         use ui::offscreen::OffscreenRenderer;
         use ui::permissions::PermissionContext;
@@ -148,13 +163,13 @@ impl Harness {
         renderer.render_png(&scene, vello::peniko::Color::from_rgb8(18, 18, 22), out);
     }
 
-    fn dispatch(&mut self, event: &WindowEvent, modifiers: &Modifiers) -> bool {
+    fn dispatch(&mut self, event: &WindowEvent, modifiers: Modifiers) -> bool {
         let mut handled = false;
         let mut focus_target = None;
         self.widget.handle_event(
             event,
             1.0,
-            modifiers,
+            &modifiers,
             &mut self.state.doc,
             &self.state.root,
             &mut handled,
@@ -173,7 +188,7 @@ impl Harness {
             delta: MouseScrollDelta::LineDelta(0.0, -notches_down),
             phase: TouchPhase::Moved,
         };
-        self.dispatch(&ev, &Modifiers::default());
+        self.dispatch(&ev, Modifiers::default());
     }
 
     fn cursor(&mut self, x: f64, y: f64) {
@@ -181,7 +196,7 @@ impl Harness {
             device_id: unsafe { std::mem::zeroed() },
             position: winit::dpi::PhysicalPosition::new(x, y),
         };
-        self.dispatch(&ev, &Modifiers::default());
+        self.dispatch(&ev, Modifiers::default());
     }
 
     fn mouse(&mut self, state: ElementState) -> bool {
@@ -190,7 +205,7 @@ impl Harness {
             state,
             button: MouseButton::Left,
         };
-        self.dispatch(&ev, &Modifiers::default())
+        self.dispatch(&ev, Modifiers::default())
     }
 
     /// Rect of the first descendant whose `name()` matches, searched over the

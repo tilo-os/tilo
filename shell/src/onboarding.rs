@@ -27,6 +27,8 @@ use std::path::{Path, PathBuf};
 pub enum Screen {
     /// What an identity is and what it signs for.
     Intro,
+    /// Import an existing identity record instead of minting a new one.
+    Connect,
     /// The consequence of losing the device, and the acknowledgement.
     NoRecovery,
     /// The minted key: fingerprint and path.
@@ -142,6 +144,13 @@ impl Onboarding {
         }
     }
 
+    /// Choose the connect-existing branch from the intro screen.
+    pub fn begin_connect(&mut self) {
+        if self.screen == Screen::Intro {
+            self.screen = Screen::Connect;
+        }
+    }
+
     /// Toggle the acknowledgement — reversible: unticking must lose the ability to proceed again, or the gate is decorative.
     pub fn set_acknowledged(&mut self, value: bool) {
         self.acknowledged = value;
@@ -164,6 +173,16 @@ impl Onboarding {
             return false;
         }
         self.minted = Some(minted);
+        self.screen = Screen::Done;
+        true
+    }
+
+    /// Finish after an existing identity was validated and imported.
+    pub fn complete_connected(&mut self, identity: MintedIdentity) -> bool {
+        if self.screen != Screen::Connect {
+            return false;
+        }
+        self.minted = Some(identity);
         self.screen = Screen::Done;
         true
     }
@@ -203,6 +222,11 @@ impl Error for OnboardingError {}
 /// Delegates to [`crate::firstboot::ensure_collaboration_identity`] so the
 /// human root, certified device key, and Iroh endpoint identity are created
 /// as one idempotent ceremony.
+///
+/// # Errors
+///
+/// Returns an error if minting the collaboration identity fails, or if one
+/// already exists but its fingerprint can't be read back.
 pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
     let identity_paths = crate::firstboot::collaboration_identity_paths();
     mint_into_with_paths(identity_dir, &identity_paths)
@@ -243,11 +267,13 @@ fn read_fingerprint(path: &Path) -> Result<String, String> {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
     const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0xF) as usize] as char);
+        // `b >> 4` and `b & 0xF` are both always in 0..16, so these never miss;
+        // `.get()` documents that rather than indexing directly.
+        out.push(HEX.get((b >> 4) as usize).copied().unwrap_or(b'?') as char);
+        out.push(HEX.get((b & 0xF) as usize).copied().unwrap_or(b'?') as char);
     }
     out
 }

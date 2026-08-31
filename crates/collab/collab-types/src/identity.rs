@@ -107,6 +107,10 @@ pub struct Attestation {
 impl Attestation {
     /// Canonical bytes the issuer signs to mint this attestation; omits
     /// `signature` so signing is well-defined.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if canonicalising the view fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         // Postcard is structural, so build a struct-shaped tuple mirroring
         // `Attestation`'s field order minus `signature` — a named helper

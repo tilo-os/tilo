@@ -2,6 +2,8 @@
 name = "git_client"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "git_client"
@@ -25,7 +27,7 @@ winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
-git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
 
 [dev-dependencies]
 tempfile.workspace = true

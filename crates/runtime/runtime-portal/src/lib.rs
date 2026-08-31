@@ -19,12 +19,24 @@
 //! [`NotAvailable::ServiceFdMissing`] rather than panicking, and the app is
 //! expected to fall back to a local-only mode.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use std::env;
 use std::io;
 use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 use capnp::capability::Promise;
-use capnp::message::ReaderOptions;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use nix::fcntl::{F_GETFD, fcntl};
 use tokio::net::UnixStream;
@@ -86,14 +98,8 @@ impl UnixCapnpClient {
     ///
     /// # Errors
     ///
-    /// [`NotAvailable::ConnectionFailed`], carrying the underlying `io::Error`, when the fd
-    /// cannot be turned into a working async socket: it is not a connected `SOCK_STREAM`
-    /// Unix socket, the peer already hung up, or — the case that bites in tests — the call
-    /// was made outside a tokio runtime, so the stream has no reactor to register with.
-    /// The fd is consumed either way and must not be closed again by the caller.
-    ///
-    /// No protocol traffic happens here, so [`NotAvailable::ProtocolMismatch`] and
-    /// [`NotAvailable::Capnp`] cannot come from this call; they surface on later RPCs.
+    /// Returns [`NotAvailable::ConnectionFailed`] if the fd cannot be put in
+    /// non-blocking mode or handed to tokio's reactor.
     pub fn from_connected_fd(
         fd: RawFd,
         side: rpc_twoparty_capnp::Side,
@@ -115,7 +121,7 @@ impl UnixCapnpClient {
             read_compat,
             write_compat,
             side,
-            ReaderOptions::default(),
+            capnp::message::ReaderOptions::default(),
         ));
         let rpc_system = RpcSystem::new(network, None);
         Ok(Self {
@@ -150,14 +156,9 @@ impl UnixCapnpClient {
 ///
 /// # Errors
 ///
-/// [`NotAvailable::ServiceFdMissing`] whenever [`service_fd`] declines to hand one over:
-/// `QOS_SVC_<NAME>_FD` unset (the app is running as a plain Flatpak, or the manifest never
-/// declared this service), set to something that is not an integer, or naming an fd slot
-/// that is no longer open. This is the expected outcome off qOS, not a fault — callers are
-/// meant to fall back to local-only mode.
-///
-/// Otherwise [`NotAvailable::ConnectionFailed`] from
-/// [`UnixCapnpClient::from_connected_fd`].
+/// Returns [`NotAvailable::ServiceFdMissing`] if no fd is open for `name`,
+/// or [`NotAvailable::ConnectionFailed`] if the fd can't be lifted to an RPC
+/// connection.
 pub fn try_open_service<C>(name: &str) -> Result<C, NotAvailable>
 where
     C: capnp::capability::FromClientHook,
@@ -175,9 +176,8 @@ where
 ///
 /// # Errors
 ///
-/// Only [`NotAvailable::ConnectionFailed`], from
-/// [`UnixCapnpClient::from_connected_fd`] — the fd came from the caller, so there is no
-/// environment lookup to fail and [`NotAvailable::ServiceFdMissing`] is never returned.
+/// Returns [`NotAvailable::ConnectionFailed`] if `fd` can't be lifted to an
+/// RPC connection.
 pub fn open_service_on_fd<C>(fd: RawFd) -> Result<C, NotAvailable>
 where
     C: capnp::capability::FromClientHook,

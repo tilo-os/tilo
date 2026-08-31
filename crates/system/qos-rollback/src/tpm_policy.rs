@@ -173,7 +173,8 @@ pub fn nv_index_name(index: u32, attributes: u32, auth_policy: &[u8], data_size:
     marshalled.extend_from_slice(&index.to_be_bytes());
     marshalled.extend_from_slice(&ALG_SHA256.to_be_bytes());
     marshalled.extend_from_slice(&attributes.to_be_bytes());
-    marshalled.extend_from_slice(&(auth_policy.len() as u16).to_be_bytes());
+    let policy_len = u16::try_from(auth_policy.len()).unwrap_or(u16::MAX);
+    marshalled.extend_from_slice(&policy_len.to_be_bytes());
     marshalled.extend_from_slice(auth_policy);
     marshalled.extend_from_slice(&data_size.to_be_bytes());
 

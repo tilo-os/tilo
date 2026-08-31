@@ -25,6 +25,12 @@ use crate::model::{
 pub struct FeedsDoc;
 
 impl FeedsDoc {
+    #[allow(
+        clippy::expect_used,
+        reason = "creating a root-level Automerge map object cannot fail under \
+                  normal operation, and every caller here returns a value type with \
+                  no fallible path to propagate to"
+    )]
     fn map_field(doc: &mut AutoCommit, key: &str) -> ObjId {
         match doc.get(&ROOT, key) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -97,6 +103,15 @@ impl FeedsDoc {
 
     // --- writers ---------------------------------------------------------
 
+    /// # Panics
+    /// Panics if creating the folder's Automerge map object fails — not
+    /// expected under normal operation (see the `expect_used` allow below).
+    #[allow(
+        clippy::expect_used,
+        reason = "creating a root-level Automerge map object cannot fail under \
+                  normal operation, and every caller here returns a value type with \
+                  no fallible path to propagate to"
+    )]
     pub fn upsert_folder(doc: &mut AutoCommit, f: &Folder) {
         let folders = Self::map_field(doc, "folders");
         let key = f.id.to_string();
@@ -107,10 +122,19 @@ impl FeedsDoc {
                 .expect("folder map"),
         };
         ui::doc::put_if_changed(doc, &obj, "name", f.name.as_str());
-        ui::doc::put_if_changed(doc, &obj, "order", f.order as i64);
+        ui::doc::put_if_changed(doc, &obj, "order", i64::from(f.order));
         ui::doc::put_if_changed(doc, &obj, "collapsed", f.collapsed);
     }
 
+    /// # Panics
+    /// Panics if creating the feed's Automerge map object fails — not
+    /// expected under normal operation (see the `expect_used` allow below).
+    #[allow(
+        clippy::expect_used,
+        reason = "creating a root-level Automerge map object cannot fail under \
+                  normal operation, and every caller here returns a value type with \
+                  no fallible path to propagate to"
+    )]
     pub fn upsert_feed(doc: &mut AutoCommit, f: &Feed) {
         let feeds = Self::map_field(doc, "feeds");
         let key = f.id.to_string();
@@ -129,10 +153,19 @@ impl FeedsDoc {
             "folder",
             f.folder.map(|x| x.to_string()).unwrap_or_default(),
         );
-        ui::doc::put_if_changed(doc, &obj, "order", f.order as i64);
+        ui::doc::put_if_changed(doc, &obj, "order", i64::from(f.order));
         ui::doc::put_if_changed(doc, &obj, "kind", Self::kind_str(f.kind));
     }
 
+    /// # Panics
+    /// Panics if creating the article's Automerge map object fails — not
+    /// expected under normal operation (see the `expect_used` allow below).
+    #[allow(
+        clippy::expect_used,
+        reason = "creating a root-level Automerge map object cannot fail under \
+                  normal operation, and every caller here returns a value type with \
+                  no fallible path to propagate to"
+    )]
     pub fn upsert_article(doc: &mut AutoCommit, a: &Article) {
         let articles = Self::map_field(doc, "articles");
         let key = a.id.to_string();
@@ -168,19 +201,17 @@ impl FeedsDoc {
             for key in keys {
                 if let Ok(Some((Value::Object(ObjType::Map), obj))) =
                     doc.get(&articles, key.as_str())
+                    && Self::get_str(doc, &obj, "feed") == feed_key
                 {
-                    if Self::get_str(doc, &obj, "feed") == feed_key {
-                        let _ = doc.delete(&articles, key.as_str());
-                    }
+                    let _ = doc.delete(&articles, key.as_str());
                 }
             }
         }
     }
 
-    fn article_obj(doc: &mut AutoCommit, id: Id) -> Option<ObjId> {
-        let articles = match doc.get(&ROOT, "articles") {
-            Ok(Some((Value::Object(ObjType::Map), m))) => m,
-            _ => return None,
+    fn article_obj(doc: &AutoCommit, id: Id) -> Option<ObjId> {
+        let Ok(Some((Value::Object(ObjType::Map), articles))) = doc.get(&ROOT, "articles") else {
+            return None;
         };
         match doc.get(&articles, id.to_string().as_str()) {
             Ok(Some((Value::Object(ObjType::Map), o))) => Some(o),
@@ -188,10 +219,9 @@ impl FeedsDoc {
         }
     }
 
-    fn feed_obj(doc: &mut AutoCommit, id: Id) -> Option<ObjId> {
-        let feeds = match doc.get(&ROOT, "feeds") {
-            Ok(Some((Value::Object(ObjType::Map), m))) => m,
-            _ => return None,
+    fn feed_obj(doc: &AutoCommit, id: Id) -> Option<ObjId> {
+        let Ok(Some((Value::Object(ObjType::Map), feeds))) = doc.get(&ROOT, "feeds") else {
+            return None;
         };
         match doc.get(&feeds, id.to_string().as_str()) {
             Ok(Some((Value::Object(ObjType::Map), o))) => Some(o),
@@ -199,10 +229,9 @@ impl FeedsDoc {
         }
     }
 
-    fn folder_obj(doc: &mut AutoCommit, id: Id) -> Option<ObjId> {
-        let folders = match doc.get(&ROOT, "folders") {
-            Ok(Some((Value::Object(ObjType::Map), m))) => m,
-            _ => return None,
+    fn folder_obj(doc: &AutoCommit, id: Id) -> Option<ObjId> {
+        let Ok(Some((Value::Object(ObjType::Map), folders))) = doc.get(&ROOT, "folders") else {
+            return None;
         };
         match doc.get(&folders, id.to_string().as_str()) {
             Ok(Some((Value::Object(ObjType::Map), o))) => Some(o),
@@ -248,10 +277,10 @@ impl FeedsDoc {
         if let Ok(Some((Value::Object(ObjType::Map), feeds))) = doc.get(&ROOT, "feeds") {
             let feed_keys: Vec<String> = doc.keys(&feeds).collect();
             for fk in feed_keys {
-                if let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&feeds, fk.as_str()) {
-                    if Self::get_str(doc, &obj, "folder") == key {
-                        let _ = doc.put(&obj, "folder", "");
-                    }
+                if let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&feeds, fk.as_str())
+                    && Self::get_str(doc, &obj, "folder") == key
+                {
+                    let _ = doc.put(&obj, "folder", "");
                 }
             }
         }
@@ -274,9 +303,8 @@ impl FeedsDoc {
     }
 
     pub fn set_folder_collapsed(doc: &mut AutoCommit, id: Id, collapsed: bool) {
-        let folders = match doc.get(&ROOT, "folders") {
-            Ok(Some((Value::Object(ObjType::Map), m))) => m,
-            _ => return,
+        let Ok(Some((Value::Object(ObjType::Map), folders))) = doc.get(&ROOT, "folders") else {
+            return;
         };
         if let Ok(Some((Value::Object(ObjType::Map), obj))) =
             doc.get(&folders, id.to_string().as_str())
@@ -317,7 +345,7 @@ impl FeedsDoc {
         let obj = Self::map_field(doc, "settings");
         // font_scale is an f64 — guard with a bit-exact compare rather than the
         // generic put_if_changed, so a NaN would not defeat the equality check.
-        let fs = s.font_scale as f64;
+        let fs = f64::from(s.font_scale);
         if Self::get_f64(doc, &obj, "font_scale", f64::NAN).to_bits() != fs.to_bits() {
             let _ = doc.put(&obj, "font_scale", fs);
         }
@@ -327,18 +355,18 @@ impl FeedsDoc {
 
     pub fn read_settings(doc: &AutoCommit) -> ReadSettings {
         let default = ReadSettings::default();
-        let obj = match doc.get(&ROOT, "settings") {
-            Ok(Some((Value::Object(ObjType::Map), o))) => o,
-            _ => return default,
+        let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&ROOT, "settings") else {
+            return default;
         };
         ReadSettings {
-            font_scale: Self::get_f64(doc, &obj, "font_scale", default.font_scale as f64) as f32,
+            font_scale: Self::get_f64(doc, &obj, "font_scale", f64::from(default.font_scale))
+                as f32,
             font: {
                 let s = Self::get_str(doc, &obj, "font");
                 if s.is_empty() {
                     default.font
                 } else {
-                    ReadFont::from_str(&s)
+                    ReadFont::from_key(&s)
                 }
             },
             theme: {
@@ -346,7 +374,7 @@ impl FeedsDoc {
                 if s.is_empty() {
                     default.theme
                 } else {
-                    ReadTheme::from_str(&s)
+                    ReadTheme::from_key(&s)
                 }
             },
         }

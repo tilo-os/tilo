@@ -2,6 +2,8 @@
 name = "totp"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "totp"
@@ -24,7 +26,6 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
@@ -62,7 +63,7 @@ image = { workspace = true, features = ["png", "jpeg"] }
 # qOS the compositor's portal backend renders qOS's picker (and hosts the
 # per-cluster file-access prompt). The portal call runs off the UI thread on
 # its own small Tokio runtime and the chosen path comes back over a channel
-# (see `app::portal`). All three are already resolved in the shared workspace
+# through `ui::portal`. All three are already resolved in the shared workspace
 # lockfile, so this adds no registry fetch and keeps the fleet build green.
 
 # --- Encryption-at-rest for the vault ---------------------------------

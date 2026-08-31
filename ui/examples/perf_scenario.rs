@@ -49,7 +49,7 @@ fn list_app(rows: usize) -> (State, Box<dyn Widget>) {
 
 pub fn run(args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
-    let count = arg_value(&args, "--count")
+    let count = arg_value(args, "--count")
         .and_then(|v| v.parse().ok())
         .unwrap_or(120usize);
     let json = args.iter().any(|a| a == "--json");

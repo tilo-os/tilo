@@ -143,12 +143,14 @@ impl Scrollbar {
     }
 
     /// Override the minimum thumb length (default [`MIN_THUMB_LEN`]).
+    #[must_use]
     pub fn with_min_thumb(mut self, px: f64) -> Self {
         self.min_thumb = px;
         self
     }
 
     /// Override the page fraction (default [`PAGE_FRACTION`]).
+    #[must_use]
     pub fn with_page_fraction(mut self, frac: f64) -> Self {
         self.page_fraction = frac;
         self
@@ -348,7 +350,7 @@ mod tests {
         let mut bar = Scrollbar::vertical();
         let m = ScrollMetrics::new(1200.0, 300.0, 0.0); // max_scroll = 900
         let thumb = bar.thumb_rect(v_track(), m).unwrap();
-        let mid = Point::new(96.0, (thumb.y0 + thumb.y1) / 2.0);
+        let mid = Point::new(96.0, thumb.y0.midpoint(thumb.y1));
         assert_eq!(bar.press(v_track(), m, mid), PressOutcome::Thumb);
         assert!(bar.is_dragging());
         // Drag down 100 px. travel = 300 - thumb_len(=75) = 225.
@@ -365,7 +367,7 @@ mod tests {
         let mut bar = Scrollbar::vertical();
         let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
         let thumb = bar.thumb_rect(v_track(), m).unwrap();
-        let mid = Point::new(96.0, (thumb.y0 + thumb.y1) / 2.0);
+        let mid = Point::new(96.0, thumb.y0.midpoint(thumb.y1));
         bar.press(v_track(), m, mid);
         // Huge downward drag → clamped to max_scroll.
         let off = bar
@@ -425,7 +427,7 @@ mod tests {
             "h-thumb starts at track left"
         );
         assert!(thumb.width() < track.width(), "h-thumb shorter than track");
-        let mid = Point::new((thumb.x0 + thumb.x1) / 2.0, 96.0);
+        let mid = Point::new(thumb.x0.midpoint(thumb.x1), 96.0);
         assert_eq!(bar.press(track, m, mid), PressOutcome::Thumb);
         let off = bar
             .drag_to(track, m, Point::new(mid.x + 100.0, 96.0))
@@ -438,7 +440,7 @@ mod tests {
         let mut bar = Scrollbar::vertical();
         let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
         let thumb = bar.thumb_rect(v_track(), m).unwrap();
-        let on = Point::new(96.0, (thumb.y0 + thumb.y1) / 2.0);
+        let on = Point::new(96.0, thumb.y0.midpoint(thumb.y1));
         assert!(bar.update_hover(v_track(), m, on), "hover turns on");
         assert!(
             !bar.update_hover(v_track(), m, on),

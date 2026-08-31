@@ -37,7 +37,7 @@ impl HttpMethod {
         HttpMethod::Options,
     ];
 
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             HttpMethod::Get => "GET",
             HttpMethod::Post => "POST",
@@ -67,7 +67,7 @@ impl HttpMethod {
 
     /// Whether this verb conventionally carries a request body. Used to
     /// decide whether the Body tab is meaningful for the current request.
-    pub fn has_body(&self) -> bool {
+    pub fn has_body(self) -> bool {
         matches!(self, HttpMethod::Post | HttpMethod::Put | HttpMethod::Patch)
     }
 }
@@ -150,7 +150,7 @@ pub enum BodyMode {
 }
 
 impl BodyMode {
-    pub fn label(&self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             BodyMode::None => "None",
             BodyMode::Json => "JSON",
@@ -177,7 +177,7 @@ pub enum RequestTab {
 }
 
 impl RequestTab {
-    pub fn label(&self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             RequestTab::Params => "Params",
             RequestTab::Headers => "Headers",
@@ -203,7 +203,7 @@ pub enum ResponseView {
 }
 
 impl ResponseView {
-    pub fn label(&self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             ResponseView::Pretty => "Pretty",
             ResponseView::Raw => "Raw",

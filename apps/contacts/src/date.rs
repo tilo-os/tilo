@@ -19,7 +19,6 @@ pub fn today() -> (i32, u32, u32) {
 pub fn days_in_month(year: i32, month: u32) -> u32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
         2 => {
             if is_leap(year) {
                 29
@@ -27,6 +26,7 @@ pub fn days_in_month(year: i32, month: u32) -> u32 {
                 28
             }
         }
+        // 4, 6, 9, 11 (and any out-of-range month) all land on 30.
         _ => 30,
     }
 }

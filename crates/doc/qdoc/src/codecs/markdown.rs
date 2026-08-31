@@ -8,6 +8,7 @@
 //! fences → `code`=true block (+ optional `lang`).
 
 use crate::document::{MarkSpan, MarkValue};
+use crate::export::InlinePlan;
 use crate::format::{CodecError, Confidence, FormatProvider};
 use crate::model::{DocMut, DocRef};
 use crate::schema::{
@@ -15,6 +16,7 @@ use crate::schema::{
 };
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot, NoteView};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use std::collections::BTreeMap;
 // `write!` into a `String` cannot fail; the discarded `Result` is the
 // `fmt::Write` contract, not a swallowed error.
 use std::fmt::Write as _;
@@ -70,28 +72,30 @@ fn front_matter_prop(key: &str) -> Option<&'static str> {
 /// lines into document properties and returns the remaining body (no YAML dependency,
 /// bare scalars only); a malformed/unterminated block is returned verbatim as body.
 fn apply_front_matter<'a>(src: &'a str, doc: &mut DocMut) -> &'a str {
-    let rest = match src
+    let Some(rest) = src
         .strip_prefix("---\n")
         .or_else(|| src.strip_prefix("---\r\n"))
-    {
-        Some(r) => r,
-        None => return src,
+    else {
+        return src;
     };
     let mut idx = 0usize;
     let mut body_start: Option<usize> = None;
     for line in rest.split_inclusive('\n') {
         let trimmed = line.trim_end_matches(['\n', '\r']);
         if trimmed == "---" || trimmed == "..." {
-            body_start = Some(idx + line.len());
+            body_start = Some(idx.saturating_add(line.len()));
             break;
         }
-        idx += line.len();
+        idx = idx.saturating_add(line.len());
     }
     let Some(body_start) = body_start else {
         return src;
     };
-    let yaml = &rest[..idx];
-    let body = &rest[body_start..];
+    // `idx`/`body_start` are sums of `line.len()` from `split_inclusive('\n')`, always valid
+    // UTF-8 boundaries into `rest`; `.get()` still guards against a future change breaking that.
+    let (Some(yaml), Some(body)) = (rest.get(..idx), rest.get(body_start..)) else {
+        return src;
+    };
 
     for line in yaml.lines() {
         let line = line.trim();
@@ -114,15 +118,11 @@ fn apply_front_matter<'a>(src: &'a str, doc: &mut DocMut) -> &'a str {
 
 /// Strips a layer of matching quotes from a scalar value, unescaping `\"` (inverse of [`render_front_matter`]).
 fn strip_scalar_quotes(v: &str) -> String {
-    let bytes = v.as_bytes();
-    if v.len() >= 2 {
-        let (f, l) = (bytes[0], bytes[bytes.len() - 1]);
-        if f == b'"' && l == b'"' {
-            return v[1..v.len() - 1].replace("\\\"", "\"");
-        }
-        if f == b'\'' && l == b'\'' {
-            return v[1..v.len() - 1].to_string();
-        }
+    if let Some(inner) = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        return inner.replace("\\\"", "\"");
+    }
+    if let Some(inner) = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+        return inner.to_string();
     }
     v.to_string()
 }
@@ -195,7 +195,15 @@ fn marks_from_span_style(style: &str) -> Vec<(&'static str, String)> {
                     .trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%')
                     .trim();
                 if let Ok(f) = num.parse::<f64>() {
-                    out.push(("fontSize", (f.round() as i64).to_string()));
+                    // Floats have no checked int conversion; clamp to a range no real
+                    // CSS font-size approaches before the cast, rather than trust the input.
+                    let clamped = f.round().clamp(-1_000_000.0, 1_000_000.0);
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "clamped to ±1_000_000 above, far inside i64 range"
+                    )]
+                    let n = clamped as i64;
+                    out.push(("fontSize", n.to_string()));
                 }
             }
             "font-family" => {
@@ -232,9 +240,11 @@ fn generic_font_family(val: &str) -> &'static str {
     let v = val.to_ascii_lowercase();
     if v.contains("mono") || v.contains("courier") || v.contains("consol") {
         "mono"
-    } else if v.contains("serif") && !v.contains("sans") {
-        "serif"
-    } else if v.contains("times") || v.contains("georgia") || v.contains("garamond") {
+    } else if (v.contains("serif") && !v.contains("sans"))
+        || v.contains("times")
+        || v.contains("georgia")
+        || v.contains("garamond")
+    {
         "serif"
     } else {
         "sans"
@@ -244,164 +254,206 @@ fn generic_font_family(val: &str) -> &'static str {
 fn span_style_attr(tag: &str) -> Option<String> {
     let lower = tag.to_ascii_lowercase();
     let idx = lower.find("style")?;
-    let rest = &tag[idx + "style".len()..];
+    // `to_ascii_lowercase` only rewrites ASCII bytes in place, so byte offsets in `lower`
+    // are valid offsets into `tag` too.
+    let rest = tag.get(idx.checked_add("style".len())?..)?;
     let rest = rest.trim_start();
     let rest = rest.strip_prefix('=')?.trim_start();
     let quote = rest.chars().next()?;
     if quote != '"' && quote != '\'' {
         return None;
     }
-    let after = &rest[1..];
+    let after = rest.get(1..)?;
     let end = after.find(quote)?;
-    Some(after[..end].to_string())
+    Some(after.get(..end)?.to_string())
 }
 
-fn import_md(src: &str, doc: &mut DocMut) {
-    let mut opts = Options::empty();
-    opts.insert(Options::ENABLE_TABLES);
-    opts.insert(Options::ENABLE_TASKLISTS);
-    opts.insert(Options::ENABLE_STRIKETHROUGH);
-    opts.insert(Options::ENABLE_FOOTNOTES);
-
-    let mut prev: Option<String> = None;
-    let mut cur: Option<String> = None;
-    let mut cur_len: usize = 0;
-    let mut in_item = false;
-    let mut in_cell = false;
-    let mut ordered_stack: Vec<bool> = Vec::new();
-    let mut mark_stack: Vec<(&'static str, usize)> = Vec::new();
-    let mut link_stack: Vec<(String, usize)> = Vec::new();
-    let mut span_stack: Vec<(Vec<(&'static str, String)>, usize)> = Vec::new();
+/// Per-document parser state threaded through the pulldown-cmark event loop; bundled into one
+/// struct so the loop can be split into named helpers below instead of one 300-line function.
+#[derive(Default)]
+struct ImportState {
+    prev: Option<String>,
+    cur: Option<String>,
+    cur_len: usize,
+    in_item: bool,
+    in_cell: bool,
+    ordered_stack: Vec<bool>,
+    mark_stack: Vec<(&'static str, usize)>,
+    link_stack: Vec<(String, usize)>,
+    span_stack: Vec<(Vec<(&'static str, String)>, usize)>,
     // Open inline `<sup>`/`<sub>` wrappers — the super/subscript marks Markdown has no native syntax for.
-    let mut wrap_stack: Vec<(&'static str, usize)> = Vec::new();
-    let mut pending_marks: Vec<PendingMark> = Vec::new();
-
-    let mut table_id: Option<String> = None;
-    let mut trow: usize = 0;
-    let mut tcol: usize = 0;
-    let mut table_seq: usize = 0;
-
+    wrap_stack: Vec<(&'static str, usize)>,
+    pending_marks: Vec<PendingMark>,
+    table_id: Option<String>,
+    trow: usize,
+    tcol: usize,
+    table_seq: usize,
     // Footnote state: a `[^id]` reference lazily creates a note; defs may precede/follow
     // refs, so notes are keyed by label and wired up after the parse.
-    use std::collections::BTreeMap;
-    let mut note_ids: BTreeMap<String, String> = BTreeMap::new();
-    let mut note_refs: Vec<(String, usize, String)> = Vec::new();
-    let mut note_defs: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut def_label: Option<String> = None;
-    let mut def_para: Option<String> = None;
-    let note_id_for =
-        |note_ids: &mut BTreeMap<String, String>, doc: &mut DocMut, label: &str| -> String {
-            note_ids
-                .entry(label.to_string())
-                .or_insert_with(|| doc.insert_note(crate::model::NoteKind::Footnote))
-                .clone()
-        };
+    note_ids: BTreeMap<String, String>,
+    ref_sites: Vec<(String, usize, String)>,
+    footnote_bodies: BTreeMap<String, Vec<String>>,
+    def_label: Option<String>,
+    def_para: Option<String>,
+}
 
-    for ev in Parser::new_ext(src, opts) {
-        // Inside a footnote definition, text is captured into the note body, not the document body.
-        if def_label.is_some() {
-            match &ev {
-                Event::End(TagEnd::FootnoteDefinition) => {
-                    if let (Some(label), Some(p)) = (def_label.take(), def_para.take()) {
-                        note_defs.entry(label).or_default().push(p);
-                    } else {
-                        def_label = None;
-                        def_para = None;
-                    }
-                    continue;
-                }
-                Event::Start(Tag::Paragraph) => {
-                    def_para = Some(String::new());
-                    continue;
-                }
-                Event::End(TagEnd::Paragraph) => {
-                    if let (Some(label), Some(p)) = (def_label.clone(), def_para.take()) {
-                        note_defs.entry(label).or_default().push(p);
-                    }
-                    continue;
-                }
-                Event::Text(t) | Event::Code(t) => {
-                    if let Some(p) = def_para.as_mut() {
-                        p.push_str(t);
-                    }
-                    continue;
-                }
-                Event::SoftBreak | Event::HardBreak => {
-                    if let Some(p) = def_para.as_mut() {
-                        p.push(' ');
-                    }
-                    continue;
-                }
-                // Nested footnote refs inside a definition aren't modeled; everything else here is ignored.
-                _ => continue,
-            }
+impl ImportState {
+    /// Id for the note a footnote label refers to, creating (and registering) it on first mention.
+    fn note_id_for(&mut self, doc: &mut DocMut, label: &str) -> String {
+        self.note_ids
+            .entry(label.to_string())
+            .or_insert_with(|| doc.insert_note(crate::model::NoteKind::Footnote))
+            .clone()
+    }
+
+    /// Inside a footnote definition, text is captured into the note body, not the document
+    /// body. Returns `true` when the event was consumed by capture mode.
+    fn capture_footnote_definition(&mut self, ev: &Event) -> bool {
+        if self.def_label.is_none() {
+            return false;
         }
         match ev {
-            Event::Start(Tag::Heading { level, .. }) => {
-                let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "heading");
-                doc.set_attr(&id, "level", level as i64);
+            Event::End(TagEnd::FootnoteDefinition) => {
+                if let (Some(label), Some(p)) = (self.def_label.take(), self.def_para.take()) {
+                    self.footnote_bodies.entry(label).or_default().push(p);
+                } else {
+                    self.def_label = None;
+                    self.def_para = None;
+                }
             }
-            Event::End(TagEnd::Heading(_)) => cur = None,
+            Event::Start(Tag::Paragraph) => self.def_para = Some(String::new()),
+            Event::End(TagEnd::Paragraph) => {
+                if let (Some(label), Some(p)) = (self.def_label.clone(), self.def_para.take()) {
+                    self.footnote_bodies.entry(label).or_default().push(p);
+                }
+            }
+            Event::Text(t) | Event::Code(t) => {
+                if let Some(p) = self.def_para.as_mut() {
+                    p.push_str(t);
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some(p) = self.def_para.as_mut() {
+                    p.push(' ');
+                }
+            }
+            // Nested footnote refs inside a definition aren't modeled; everything else here is ignored.
+            _ => {}
+        }
+        true
+    }
+
+    /// Block-structure events: headings, paragraphs, lists, tables, code blocks.
+    fn handle_block_event(&mut self, doc: &mut DocMut, ev: &Event) {
+        match ev {
+            Event::Start(Tag::Heading { level, .. }) => {
+                let id = start_block(
+                    doc,
+                    &mut self.prev,
+                    &mut self.cur,
+                    &mut self.cur_len,
+                    "heading",
+                );
+                doc.set_attr(&id, "level", *level as i64);
+            }
+            Event::End(TagEnd::Heading(_) | TagEnd::CodeBlock) => self.cur = None,
             Event::Start(Tag::Paragraph) => {
-                if !in_item && !in_cell {
-                    start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
+                if !self.in_item && !self.in_cell {
+                    start_block(
+                        doc,
+                        &mut self.prev,
+                        &mut self.cur,
+                        &mut self.cur_len,
+                        "paragraph",
+                    );
                 }
             }
             Event::End(TagEnd::Paragraph) => {
-                if !in_item && !in_cell {
-                    cur = None;
+                if !self.in_item && !self.in_cell {
+                    self.cur = None;
                 }
             }
-            Event::Start(Tag::List(start)) => ordered_stack.push(start.is_some()),
+            Event::Start(Tag::List(start)) => self.ordered_stack.push(start.is_some()),
             Event::End(TagEnd::List(_)) => {
-                ordered_stack.pop();
+                self.ordered_stack.pop();
             }
             Event::Start(Tag::Item) => {
-                let ordered = *ordered_stack.last().unwrap_or(&false);
+                let ordered = *self.ordered_stack.last().unwrap_or(&false);
                 // Nesting depth = list stack depth - 1 (top-level lists are level 0).
-                let level = ordered_stack.len().saturating_sub(1);
-                let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "list_item");
+                let level = self.ordered_stack.len().saturating_sub(1);
+                let id = start_block(
+                    doc,
+                    &mut self.prev,
+                    &mut self.cur,
+                    &mut self.cur_len,
+                    "list_item",
+                );
                 doc.set_attr(&id, "ordered", ordered);
-                if level > 0 {
-                    doc.set_attr(&id, "level", level as i64);
+                if level > 0
+                    && let Ok(level) = i64::try_from(level)
+                {
+                    doc.set_attr(&id, "level", level);
                 }
-                in_item = true;
+                self.in_item = true;
             }
             Event::End(TagEnd::Item) => {
-                cur = None;
-                in_item = false;
+                self.cur = None;
+                self.in_item = false;
             }
             Event::TaskListMarker(checked) => {
-                if let Some(b) = cur.as_deref() {
-                    doc.set_attr(b, "checked", checked);
+                if let Some(b) = self.cur.as_deref() {
+                    doc.set_attr(b, "checked", *checked);
                 }
             }
+            _ => self.handle_table_or_code_event(doc, ev),
+        }
+    }
+
+    /// Table and fenced-code-block events (part of [`Self::handle_block_event`],
+    /// split out to keep each half under the line-count lint).
+    fn handle_table_or_code_event(&mut self, doc: &mut DocMut, ev: &Event) {
+        match ev {
             Event::Start(Tag::Table(_)) => {
-                table_seq += 1;
-                table_id = Some(format!("t{table_seq}"));
-                trow = 0;
+                self.table_seq = self.table_seq.saturating_add(1);
+                self.table_id = Some(format!("t{}", self.table_seq));
+                self.trow = 0;
             }
-            Event::End(TagEnd::Table) => table_id = None,
-            Event::Start(Tag::TableHead) => tcol = 0,
-            Event::End(TagEnd::TableHead) => trow += 1,
-            Event::Start(Tag::TableRow) => tcol = 0,
-            Event::End(TagEnd::TableRow) => trow += 1,
+            Event::End(TagEnd::Table) => self.table_id = None,
+            Event::Start(Tag::TableHead | Tag::TableRow) => self.tcol = 0,
+            Event::End(TagEnd::TableHead | TagEnd::TableRow) => {
+                self.trow = self.trow.saturating_add(1);
+            }
             Event::Start(Tag::TableCell) => {
-                if let Some(tid) = table_id.clone() {
-                    let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "cell");
+                if let Some(tid) = self.table_id.clone() {
+                    let id = start_block(
+                        doc,
+                        &mut self.prev,
+                        &mut self.cur,
+                        &mut self.cur_len,
+                        "cell",
+                    );
                     doc.set_attr(&id, "table", tid.as_str());
-                    doc.set_attr(&id, "row", trow as i64);
-                    doc.set_attr(&id, "col", tcol as i64);
-                    in_cell = true;
+                    if let (Ok(row), Ok(col)) = (i64::try_from(self.trow), i64::try_from(self.tcol))
+                    {
+                        doc.set_attr(&id, "row", row);
+                        doc.set_attr(&id, "col", col);
+                    }
+                    self.in_cell = true;
                 }
             }
             Event::End(TagEnd::TableCell) => {
-                cur = None;
-                in_cell = false;
-                tcol += 1;
+                self.cur = None;
+                self.in_cell = false;
+                self.tcol = self.tcol.saturating_add(1);
             }
             Event::Start(Tag::CodeBlock(kind)) => {
-                let id = start_block(doc, &mut prev, &mut cur, &mut cur_len, "paragraph");
+                let id = start_block(
+                    doc,
+                    &mut self.prev,
+                    &mut self.cur,
+                    &mut self.cur_len,
+                    "paragraph",
+                );
                 doc.set_attr(&id, "code", true);
                 if let CodeBlockKind::Fenced(lang) = kind
                     && !lang.is_empty()
@@ -409,38 +461,23 @@ fn import_md(src: &str, doc: &mut DocMut) {
                     doc.set_attr(&id, "lang", lang.as_ref());
                 }
             }
-            Event::End(TagEnd::CodeBlock) => cur = None,
-            Event::Start(Tag::Strong) => mark_stack.push(("strong", cur_len)),
-            Event::End(TagEnd::Strong) => {
-                if let (Some((name, start)), Some(b)) = (mark_stack.pop(), cur.as_ref()) {
-                    pending_marks.push(PendingMark {
+            _ => {}
+        }
+    }
+
+    /// Toggle-mark and inline-content events: strong/em/strike, links, footnote refs, text,
+    /// inline code, breaks, and the `<span>`/`<sup>`/`<sub>` HTML fallback.
+    fn handle_inline_event(&mut self, doc: &mut DocMut, ev: &Event) {
+        match ev {
+            Event::Start(Tag::Strong) => self.mark_stack.push(("strong", self.cur_len)),
+            Event::Start(Tag::Emphasis) => self.mark_stack.push(("em", self.cur_len)),
+            Event::Start(Tag::Strikethrough) => self.mark_stack.push(("strike", self.cur_len)),
+            Event::End(TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough) => {
+                if let (Some((name, start)), Some(b)) = (self.mark_stack.pop(), self.cur.as_ref()) {
+                    self.pending_marks.push(PendingMark {
                         block: b.clone(),
                         start,
-                        end: cur_len,
-                        name,
-                        value: None,
-                    });
-                }
-            }
-            Event::Start(Tag::Emphasis) => mark_stack.push(("em", cur_len)),
-            Event::End(TagEnd::Emphasis) => {
-                if let (Some((name, start)), Some(b)) = (mark_stack.pop(), cur.as_ref()) {
-                    pending_marks.push(PendingMark {
-                        block: b.clone(),
-                        start,
-                        end: cur_len,
-                        name,
-                        value: None,
-                    });
-                }
-            }
-            Event::Start(Tag::Strikethrough) => mark_stack.push(("strike", cur_len)),
-            Event::End(TagEnd::Strikethrough) => {
-                if let (Some((name, start)), Some(b)) = (mark_stack.pop(), cur.as_ref()) {
-                    pending_marks.push(PendingMark {
-                        block: b.clone(),
-                        start,
-                        end: cur_len,
+                        end: self.cur_len,
                         name,
                         value: None,
                     });
@@ -450,138 +487,168 @@ fn import_md(src: &str, doc: &mut DocMut) {
             Event::Start(Tag::FootnoteDefinition(label)) => {
                 let label = label.to_string();
                 // Ensure the note exists even without a reference, mirroring CommonMark's lenience.
-                let _ = note_id_for(&mut note_ids, doc, &label);
-                def_label = Some(label);
-                def_para = None;
+                let _ = self.note_id_for(doc, &label);
+                self.def_label = Some(label);
+                self.def_para = None;
             }
             // A footnote reference: places a `note-ref` marker at the current position, deferred so trailing text doesn't expand it.
             Event::FootnoteReference(label) => {
-                if let Some(b) = cur.as_ref() {
-                    let note_id = note_id_for(&mut note_ids, doc, &label);
-                    doc.splice_text(b, cur_len, 0, &crate::schema::FIELD_PLACEHOLDER.to_string());
-                    note_refs.push((b.clone(), cur_len, note_id));
-                    cur_len += 1;
+                if let Some(b) = self.cur.clone() {
+                    let note_id = self.note_id_for(doc, label);
+                    doc.splice_text(
+                        &b,
+                        self.cur_len,
+                        0,
+                        &crate::schema::FIELD_PLACEHOLDER.to_string(),
+                    );
+                    self.ref_sites.push((b, self.cur_len, note_id));
+                    self.cur_len = self.cur_len.saturating_add(1);
                 }
             }
             // A hyperlink: models the href as a `link` mark over the linked range (mirrors .odt, so links round-trip and merge).
             Event::Start(Tag::Link { dest_url, .. }) => {
-                link_stack.push((dest_url.to_string(), cur_len));
+                self.link_stack.push((dest_url.to_string(), self.cur_len));
             }
             Event::End(TagEnd::Link) => {
-                if let (Some((href, start)), Some(b)) = (link_stack.pop(), cur.as_ref()) {
-                    pending_marks.push(PendingMark {
+                if let (Some((href, start)), Some(b)) = (self.link_stack.pop(), self.cur.as_ref()) {
+                    self.pending_marks.push(PendingMark {
                         block: b.clone(),
                         start,
-                        end: cur_len,
+                        end: self.cur_len,
                         name: "link",
                         value: Some(href),
                     });
                 }
             }
             Event::Text(t) => {
-                if let Some(b) = cur.as_ref() {
-                    doc.splice_text(b, cur_len, 0, &t);
-                    cur_len += t.chars().count();
+                if let Some(b) = self.cur.as_ref() {
+                    doc.splice_text(b, self.cur_len, 0, t);
+                    self.cur_len = self.cur_len.saturating_add(t.chars().count());
                 }
             }
             Event::Code(t) => {
-                if let Some(b) = cur.as_ref() {
-                    let start = cur_len;
-                    doc.splice_text(b, cur_len, 0, &t);
-                    cur_len += t.chars().count();
-                    pending_marks.push(PendingMark {
+                if let Some(b) = self.cur.as_ref() {
+                    let start = self.cur_len;
+                    doc.splice_text(b, self.cur_len, 0, t);
+                    self.cur_len = self.cur_len.saturating_add(t.chars().count());
+                    self.pending_marks.push(PendingMark {
                         block: b.clone(),
                         start,
-                        end: cur_len,
+                        end: self.cur_len,
                         name: "fontFamily",
                         value: Some("mono".to_string()),
                     });
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
-                if let Some(b) = cur.as_ref() {
-                    doc.splice_text(b, cur_len, 0, " ");
-                    cur_len += 1;
+                if let Some(b) = self.cur.as_ref() {
+                    doc.splice_text(b, self.cur_len, 0, " ");
+                    self.cur_len = self.cur_len.saturating_add(1);
                 }
             }
             // Inline HTML carries colour/size/font marks via `<span style=…>` (emitted by `render_inline`); each tag is its own event, tracked on a stack.
-            Event::InlineHtml(html) | Event::Html(html) => {
-                let t = html.trim();
-                let lower = t.to_ascii_lowercase();
-                if t.eq_ignore_ascii_case("</span>") {
-                    if let (Some((marks, start)), Some(b)) = (span_stack.pop(), cur.as_ref()) {
-                        for (name, value) in marks {
-                            pending_marks.push(PendingMark {
-                                block: b.clone(),
-                                start,
-                                end: cur_len,
-                                name,
-                                value: Some(value),
-                            });
-                        }
-                    }
-                } else if lower.starts_with("<span") {
-                    let marks = span_style_attr(t)
-                        .map(|s| marks_from_span_style(&s))
-                        .unwrap_or_default();
-                    span_stack.push((marks, cur_len));
-                } else if lower == "<sup>" {
-                    wrap_stack.push(("super", cur_len));
-                } else if lower == "<sub>" {
-                    wrap_stack.push(("sub", cur_len));
-                } else if lower == "</sup>" || lower == "</sub>" {
-                    let want = if lower == "</sup>" { "super" } else { "sub" };
-                    if let Some(pos) = wrap_stack.iter().rposition(|(n, _)| *n == want) {
-                        let (name, start) = wrap_stack.remove(pos);
-                        if let Some(b) = cur.as_ref() {
-                            pending_marks.push(PendingMark {
-                                block: b.clone(),
-                                start,
-                                end: cur_len,
-                                name,
-                                value: None,
-                            });
-                        }
-                    }
-                }
-            }
+            Event::InlineHtml(html) | Event::Html(html) => self.handle_inline_html(html),
             _ => {}
         }
     }
 
-    for pm in pending_marks {
-        match pm.value {
-            // `fontSize` is an integer mark (points); other valued marks are strings.
-            Some(v) if pm.name == "fontSize" => {
-                if let Ok(n) = v.parse::<i64>() {
-                    doc.add_mark(&pm.block, pm.start, pm.end, pm.name, n);
+    fn handle_inline_html(&mut self, html: &str) {
+        let t = html.trim();
+        let lower = t.to_ascii_lowercase();
+        if t.eq_ignore_ascii_case("</span>") {
+            if let (Some((marks, start)), Some(b)) = (self.span_stack.pop(), self.cur.clone()) {
+                for (name, value) in marks {
+                    self.pending_marks.push(PendingMark {
+                        block: b.clone(),
+                        start,
+                        end: self.cur_len,
+                        name,
+                        value: Some(value),
+                    });
                 }
             }
-            Some(v) => doc.add_mark(&pm.block, pm.start, pm.end, pm.name, v.as_str()),
-            None => doc.add_mark(&pm.block, pm.start, pm.end, pm.name, true),
+        } else if lower.starts_with("<span") {
+            let marks = span_style_attr(t)
+                .map(|s| marks_from_span_style(&s))
+                .unwrap_or_default();
+            self.span_stack.push((marks, self.cur_len));
+        } else if lower == "<sup>" {
+            self.wrap_stack.push(("super", self.cur_len));
+        } else if lower == "<sub>" {
+            self.wrap_stack.push(("sub", self.cur_len));
+        } else if lower == "</sup>" || lower == "</sub>" {
+            let want = if lower == "</sup>" { "super" } else { "sub" };
+            if let Some(pos) = self.wrap_stack.iter().rposition(|(n, _)| *n == want) {
+                let (name, start) = self.wrap_stack.remove(pos);
+                if let Some(b) = self.cur.as_ref() {
+                    self.pending_marks.push(PendingMark {
+                        block: b.clone(),
+                        start,
+                        end: self.cur_len,
+                        name,
+                        value: None,
+                    });
+                }
+            }
         }
     }
 
-    // Cover each footnote-reference placeholder with a `note-ref` mark valued with its note id (indices already settled).
-    for (block, idx, note_id) in note_refs {
-        doc.add_mark(&block, idx, idx + 1, MARK_NOTE_REF, note_id.as_str());
-    }
+    /// Applies every mark gathered during parsing, then the footnote-reference and
+    /// footnote-body wiring; called once after the event loop ends.
+    fn finish(self, doc: &mut DocMut) {
+        for pm in self.pending_marks {
+            match pm.value {
+                // `fontSize` is an integer mark (points); other valued marks are strings.
+                Some(v) if pm.name == "fontSize" => {
+                    if let Ok(n) = v.parse::<i64>() {
+                        doc.add_mark(&pm.block, pm.start, pm.end, pm.name, n);
+                    }
+                }
+                Some(v) => doc.add_mark(&pm.block, pm.start, pm.end, pm.name, v.as_str()),
+                None => doc.add_mark(&pm.block, pm.start, pm.end, pm.name, true),
+            }
+        }
 
-    // Fill each note's body from its definition's paragraphs; defs with no matching id are dropped.
-    for (label, paras) in note_defs {
-        let Some(note_id) = note_ids.get(&label) else {
+        // Cover each footnote-reference placeholder with a `note-ref` mark valued with its note id (indices already settled).
+        for (block, idx, note_id) in self.ref_sites {
+            let end = idx.saturating_add(1);
+            doc.add_mark(&block, idx, end, MARK_NOTE_REF, note_id.as_str());
+        }
+
+        // Fill each note's body from its definition's paragraphs; defs with no matching id are dropped.
+        for (label, paras) in self.footnote_bodies {
+            let Some(note_id) = self.note_ids.get(&label) else {
+                continue;
+            };
+            let mut prev_nb: Option<String> = None;
+            for para in paras {
+                if let Some(nb) = doc.insert_note_block(note_id, prev_nb.as_deref(), "paragraph") {
+                    if !para.is_empty() {
+                        doc.splice_note_text(note_id, &nb, 0, 0, &para);
+                    }
+                    prev_nb = Some(nb);
+                }
+            }
+        }
+    }
+}
+
+fn import_md(src: &str, doc: &mut DocMut) {
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_TABLES);
+    opts.insert(Options::ENABLE_TASKLISTS);
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    opts.insert(Options::ENABLE_FOOTNOTES);
+
+    let mut state = ImportState::default();
+    for ev in Parser::new_ext(src, opts) {
+        if state.capture_footnote_definition(&ev) {
             continue;
-        };
-        let mut prev_nb: Option<String> = None;
-        for para in paras {
-            if let Some(nb) = doc.insert_note_block(note_id, prev_nb.as_deref(), "paragraph") {
-                if !para.is_empty() {
-                    doc.splice_note_text(note_id, &nb, 0, 0, &para);
-                }
-                prev_nb = Some(nb);
-            }
         }
+        state.handle_block_event(doc, &ev);
+        state.handle_inline_event(doc, &ev);
     }
+    state.finish(doc);
 }
 
 fn export_md(snap: &DocSnapshot) -> String {
@@ -592,8 +659,7 @@ fn export_md(snap: &DocSnapshot) -> String {
     let blocks = &snap.blocks;
     let mut i = 0;
     let mut prev_kind: Option<&str> = None;
-    while i < blocks.len() {
-        let b = &blocks[i];
+    while let Some(b) = blocks.get(i) {
         if let Some(pk) = prev_kind {
             if pk == "list_item" && b.kind == "list_item" {
                 out.push('\n');
@@ -606,11 +672,15 @@ fn export_md(snap: &DocSnapshot) -> String {
             "cell" => {
                 let tid = cell_table(b);
                 let start = i;
-                while i < blocks.len() && blocks[i].kind == "cell" && cell_table(&blocks[i]) == tid
+                while blocks
+                    .get(i)
+                    .is_some_and(|blk| blk.kind == "cell" && cell_table(blk) == tid)
                 {
-                    i += 1;
+                    i = i.saturating_add(1);
                 }
-                out.push_str(&render_table(&blocks[start..i]));
+                if let Some(run) = blocks.get(start..i) {
+                    out.push_str(&render_table(run));
+                }
                 prev_kind = Some("cell");
                 continue;
             }
@@ -619,7 +689,7 @@ fn export_md(snap: &DocSnapshot) -> String {
                     Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
                     _ => 1,
                 };
-                out.push_str(&"#".repeat(level as usize));
+                out.push_str(&"#".repeat(usize::try_from(level).unwrap_or(1)));
                 out.push(' ');
                 out.push_str(&render_inline_notes(
                     &b.text,
@@ -629,7 +699,7 @@ fn export_md(snap: &DocSnapshot) -> String {
             }
             "list_item" => {
                 let level = match b.attrs.get("level") {
-                    Some(AttrVal::Int(n)) => (*n).max(0) as usize,
+                    Some(AttrVal::Int(n)) => usize::try_from((*n).max(0)).unwrap_or(0),
                     _ => 0,
                 };
                 out.push_str(&"  ".repeat(level));
@@ -669,14 +739,18 @@ fn export_md(snap: &DocSnapshot) -> String {
             }
         }
         prev_kind = Some(&b.kind);
-        i += 1;
+        i = i.saturating_add(1);
     }
     out.push('\n');
     // Append `[^N]: …` footnote definitions for every referenced note, after a blank-line separator when there's body content.
     let defs = footnotes.render_definitions();
     if !defs.is_empty() {
         // Separate defs from body with a blank line; if body was empty (only front-matter), defs become the whole doc.
-        if out.len() > body_start && !out[body_start..].trim().is_empty() {
+        if out.len() > body_start
+            && out
+                .get(body_start..)
+                .is_some_and(|rest| !rest.trim().is_empty())
+        {
             out.push('\n');
         }
         out.push_str(&defs);
@@ -694,7 +768,7 @@ fn cell_table(b: &BlockView) -> String {
 
 fn cell_rc(b: &BlockView) -> (usize, usize) {
     let g = |k: &str| match b.attrs.get(k) {
-        Some(AttrVal::Int(n)) => (*n).max(0) as usize,
+        Some(AttrVal::Int(n)) => usize::try_from((*n).max(0)).unwrap_or(0),
         _ => 0,
     };
     (g("row"), g("col"))
@@ -707,8 +781,18 @@ fn escape_cell(s: &str) -> String {
 
 /// Renders a run of `cell` blocks (one table) as a GitHub pipe table (row 0 = header, then a delimiter row).
 fn render_table(cells: &[BlockView]) -> String {
-    let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
-    let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
+    let nrows = cells
+        .iter()
+        .map(|c| cell_rc(c).0)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    let ncols = cells
+        .iter()
+        .map(|c| cell_rc(c).1)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
     let mut out = String::new();
     for r in 0..nrows {
         out.push('|');
@@ -768,13 +852,10 @@ fn span_decl(m: &MarkSpan) -> Option<String> {
     }
 }
 
-/// Combined `style="…"` value for all styling marks covering char `i`; sorted for a stable, idempotent round-trip.
-fn span_style_at(marks: &[MarkSpan], i: usize) -> Option<String> {
-    let mut decls: Vec<String> = marks
-        .iter()
-        .filter(|m| i >= m.start && i < m.end)
-        .filter_map(span_decl)
-        .collect();
+/// Combined `style="…"` value for a run's styling marks; sorted for a
+/// stable, idempotent round-trip.
+fn span_style(marks: &[&MarkSpan]) -> Option<String> {
+    let mut decls: Vec<String> = marks.iter().filter_map(|mark| span_decl(mark)).collect();
     if decls.is_empty() {
         return None;
     }
@@ -783,11 +864,12 @@ fn span_style_at(marks: &[MarkSpan], i: usize) -> Option<String> {
     Some(decls.join("; "))
 }
 
-/// Vertical wrapper (`sup`/`sub`) covering char `i`; `super` wins on overlap (shouldn't occur in modeled data).
-fn vert_wrap_at(marks: &[MarkSpan], i: usize) -> Option<&'static str> {
+/// Vertical wrapper (`sup`/`sub`) for a run; `super` wins on overlap (which
+/// should not occur in modeled data).
+fn vert_wrap(marks: &[&MarkSpan]) -> Option<&'static str> {
     let mut sup = false;
     let mut sub = false;
-    for m in marks.iter().filter(|m| i >= m.start && i < m.end) {
+    for m in marks {
         match m.name.as_str() {
             "super" => sup = true,
             "sub" => sub = true,
@@ -801,21 +883,6 @@ fn vert_wrap_at(marks: &[MarkSpan], i: usize) -> Option<&'static str> {
     } else {
         None
     }
-}
-
-fn link_href(marks: &[MarkSpan], i: usize) -> Option<&str> {
-    marks
-        .iter()
-        .find(|m| m.name == "link" && i >= m.start && i < m.end)
-        .and_then(|m| m.value.as_str())
-}
-
-/// Note id of a `note-ref` mark covering exactly `[i, i+1)` (a footnote placeholder), if any.
-fn note_ref_at(marks: &[MarkSpan], i: usize) -> Option<&str> {
-    marks
-        .iter()
-        .find(|m| m.name == MARK_NOTE_REF && m.start == i && m.end == i + 1)
-        .and_then(|m| m.value.as_str())
 }
 
 /// Export-time footnote registry: assigns each referenced note a sequential 1-based
@@ -840,7 +907,7 @@ impl<'a> Footnotes<'a> {
         if let Some(n) = self.numbers.get(note_id) {
             return *n;
         }
-        let n = self.order.len() + 1;
+        let n = self.order.len().saturating_add(1);
         self.numbers.insert(note_id.to_string(), n);
         self.order.push(note_id.to_string());
         n
@@ -850,7 +917,9 @@ impl<'a> Footnotes<'a> {
     fn render_definitions(&self) -> String {
         let mut out = String::new();
         for id in &self.order {
-            let n = self.numbers[id];
+            let Some(n) = self.numbers.get(id) else {
+                continue;
+            };
             let body = self
                 .index
                 .get(id)
@@ -862,7 +931,7 @@ impl<'a> Footnotes<'a> {
                         .join(" ")
                 })
                 .unwrap_or_default();
-            let _ = write!(out, "[^{n}]: {body}\n");
+            let _ = writeln!(out, "[^{n}]: {body}");
         }
         out
     }
@@ -880,10 +949,11 @@ fn render_inline_notes(
     marks: &[MarkSpan],
     mut footnotes: Option<&mut Footnotes>,
 ) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
-    let mut open_at: Vec<Vec<&'static str>> = vec![Vec::new(); n + 1];
-    let mut close_at: Vec<Vec<&'static str>> = vec![Vec::new(); n + 1];
+    let plan = InlinePlan::new(text, marks);
+    let n = text.chars().count();
+    let cap = n.saturating_add(1);
+    let mut open_at: Vec<Vec<&'static str>> = vec![Vec::new(); cap];
+    let mut close_at: Vec<Vec<&'static str>> = vec![Vec::new(); cap];
     for m in marks {
         if let Some(d) = mark_delim(m) {
             let s = m.start.min(n);
@@ -891,26 +961,31 @@ fn render_inline_notes(
             if s >= e {
                 continue;
             }
-            open_at[s].push(d);
-            close_at[e].push(d);
+            if let Some(slot) = open_at.get_mut(s) {
+                slot.push(d);
+            }
+            if let Some(slot) = close_at.get_mut(e) {
+                slot.push(d);
+            }
         }
     }
     let mut out = String::new();
     let mut cur_link: Option<&str> = None;
     let mut cur_span: Option<String> = None;
     let mut cur_wrap: Option<&'static str> = None;
-    for i in 0..=n {
-        for d in &close_at[i] {
+    for point in plan.points() {
+        for d in close_at.get(point.offset).into_iter().flatten() {
             out.push_str(d);
         }
-        // Span wrapper sits inside the link around toggle marks (close on link change, reopen after); `<sup>`/`<sub>` nests one level deeper.
-        let span = if i < n { span_style_at(marks, i) } else { None };
-        let wrap = if i < n { vert_wrap_at(marks, i) } else { None };
-        let link = if i < n { link_href(marks, i) } else { None };
+        let span = point.run.as_ref().and_then(|run| span_style(&run.marks));
+        let wrap = point.run.as_ref().and_then(|run| vert_wrap(&run.marks));
+        let link = point.run.as_ref().and_then(|run| run.link);
         let link_changing = link != cur_link;
         // Close the vertical wrapper first (innermost) when it, the span, or the link changes.
-        if (link_changing || span != cur_span || wrap != cur_wrap) && cur_wrap.is_some() {
-            let _ = write!(out, "</{}>", cur_wrap.take().unwrap());
+        if (link_changing || span != cur_span || wrap != cur_wrap)
+            && let Some(w) = cur_wrap.take()
+        {
+            let _ = write!(out, "</{w}>");
         }
         if (link_changing || span != cur_span) && cur_span.is_some() {
             out.push_str("</span>");
@@ -939,15 +1014,15 @@ fn render_inline_notes(
             let _ = write!(out, "<{w}>");
             cur_wrap = Some(w);
         }
-        for d in &open_at[i] {
+        for d in open_at.get(point.offset).into_iter().flatten() {
             out.push_str(d);
         }
-        if i < n {
-            if let (Some(fns), Some(note_id)) = (footnotes.as_deref_mut(), note_ref_at(marks, i)) {
+        if let Some(run) = &point.run {
+            if let (Some(fns), Some(note_id)) = (footnotes.as_deref_mut(), run.note_reference) {
                 let num = fns.number(note_id);
                 let _ = write!(out, "[^{num}]");
             } else {
-                out.push(chars[i]);
+                out.push_str(run.text);
             }
         }
     }

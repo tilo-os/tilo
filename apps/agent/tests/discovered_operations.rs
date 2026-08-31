@@ -4,6 +4,19 @@
 //! under test is [`qos_agent::Session`]'s discovery, dispatch and capability
 //! gating while it participates through the same endpoint as an app.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard; the arithmetic \
+              here is wall-clock timeout deadlines bounded by a short-lived \
+              test run, not real user data"
+)]
+
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
@@ -92,7 +105,7 @@ fn run(
     }
 
     let room = Uuid::new_v4();
-    let mut peer = UnixStream::connect(&sock).expect("peer connects");
+    let mut peer = UnixStream::connect(&sock);
     send(
         &mut peer,
         &CollabRequest::Hello {
@@ -108,12 +121,16 @@ fn run(
     let cfg = cfg_of(sock, room);
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
-        s.run_until(Instant::now() + within).expect("agent session")
+        let until = Instant::now()
+            .checked_add(within)
+            .expect("test duration does not overflow Instant");
+        s.run_until(until).expect("agent session")
     });
 
-    peer.set_read_timeout(Some(Duration::from_millis(200)))
-        .unwrap();
-    let deadline = Instant::now() + within;
+    peer.set_read_timeout(Some(Duration::from_millis(200)));
+    let deadline = Instant::now()
+        .checked_add(within)
+        .expect("test duration does not overflow Instant");
     let mut done = false;
     while Instant::now() < deadline && !done {
         let Some(event) = recv(&mut peer) else {
@@ -231,24 +248,10 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
 /// its own contract ([`qos_agent::apply::attribute`],
 /// [`qos_agent::apply::Editor::merge_full_any`]) — this is the live path
 /// that gives them one.
-#[test]
-fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
-    let dir = tempfile::tempdir().unwrap();
-    let sock = dir.path().join("collab.sock");
-    let _broker = typed_peer::spawn(&sock);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let room = Uuid::new_v4();
-
-    // The word processor: the page the agent was invited to, carrying the
-    // instruction.
-    let mut wp_peer = UnixStream::connect(&sock).expect("word processor connects");
+/// Connect the word-processor peer to `sock`, announce it, and seed its
+/// replica with the instruction naming a discoverable operation.
+fn connect_word_processor(sock: &std::path::Path, room: Uuid) -> (UnixStream, AutoCommit) {
+    let mut wp_peer = UnixStream::connect(sock);
     send(
         &mut wp_peer,
         &CollabRequest::Hello {
@@ -259,11 +262,15 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
         },
     )
     .unwrap();
-    let mut wp_replica = seed_document_with_image("Scribe: rotate the photograph right");
+    let wp_replica = seed_document_with_image("Scribe: rotate the photograph right");
+    (wp_peer, wp_replica)
+}
 
-    // The photo editor: a second application's document, in the same room,
-    // that the agent was never told about.
-    let mut photo_peer = UnixStream::connect(&sock).expect("photo editor connects");
+/// Connect the photo-editor peer to `sock` under the same room, announce it,
+/// and seed its replica with one open image — a second application's
+/// document the agent was never told about.
+fn connect_photo_editor(sock: &std::path::Path, room: Uuid) -> (UnixStream, AutoCommit) {
+    let mut photo_peer = UnixStream::connect(sock);
     send(
         &mut photo_peer,
         &CollabRequest::Hello {
@@ -282,28 +289,137 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
         Some(&photos::OpenImage::from_path("photo.png", 40, 24)),
     );
     photo_replica.commit();
+    (photo_peer, photo_replica)
+}
+
+/// The capability the agent needs to touch both applications in this room.
+fn word_processor_and_photos_permissions() -> ui::permissions::PermissionContext {
+    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    PermissionContext::from_capabilities(
+        Actor::agent("Scribe"),
+        vec![
+            CapOverride::grant(
+                Subject::agent("Scribe"),
+                Scope::App("word-processor".to_string()),
+                Verb::Write,
+            )
+            .with_id("wp"),
+            CapOverride::grant(
+                Subject::agent("Scribe"),
+                Scope::App("photos".to_string()),
+                Verb::Write,
+            )
+            .with_id("photos"),
+        ],
+    )
+}
+
+/// Drive the photo peer's side of the exchange: answer the agent's presence
+/// with a snapshot, signal `photo_ready_tx` once that snapshot is sent, and
+/// stop once the discovered rotate lands or the 15s deadline passes.
+fn drive_photo_peer(
+    mut photo_peer: UnixStream,
+    mut photo_replica: AutoCommit,
+    photo_ready_tx: &std::sync::mpsc::SyncSender<()>,
+) -> AutoCommit {
+    photo_peer.set_read_timeout(Some(Duration::from_millis(200)));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut signalled = false;
+    while Instant::now() < deadline {
+        let Some(event) = recv(&mut photo_peer) else {
+            continue;
+        };
+        match event {
+            CollabEvent::RemotePresenceUpdate {
+                payload: PresencePayload::Arrived,
+                ..
+            } => {
+                let snap = CollabRequest::SyncCRDT {
+                    data: photo_replica.save(),
+                };
+                send(&mut photo_peer, &snap).unwrap();
+                if !signalled {
+                    let _ = photo_ready_tx.send(());
+                    signalled = true;
+                }
+            }
+            CollabEvent::CRDTIncremental { data } => {
+                let _ = photo_replica.load_incremental(&data);
+                if photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters != 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    photo_replica
+}
+
+/// Drive the word-processor peer's side: wait for the photo peer's own
+/// `Arrived` handshake before answering (pins reply order so `offers` is
+/// stable when the agent acts), then answer with a snapshot and watch for
+/// the instruction to be resolved.
+fn drive_word_processor_peer(
+    mut wp_peer: UnixStream,
+    mut wp_replica: AutoCommit,
+    photo_ready_rx: &std::sync::mpsc::Receiver<()>,
+) -> (AutoCommit, bool) {
+    wp_peer.set_read_timeout(Some(Duration::from_millis(200)));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut done = false;
+    while Instant::now() < deadline && !done {
+        let Some(event) = recv(&mut wp_peer) else {
+            continue;
+        };
+        match event {
+            CollabEvent::RemotePresenceUpdate {
+                payload: PresencePayload::Arrived,
+                ..
+            } => {
+                photo_ready_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("the photo peer never answered its own Arrived");
+                let snap = CollabRequest::SyncCRDT {
+                    data: wp_replica.save(),
+                };
+                send(&mut wp_peer, &snap).unwrap();
+            }
+            CollabEvent::CRDTIncremental { data } if wp_replica.load_incremental(&data).is_ok() => {
+                done = !blocks(&wp_replica)
+                    .iter()
+                    .any(|x| x.text.starts_with("Scribe:"));
+            }
+            _ => {}
+        }
+    }
+    (wp_replica, done)
+}
+
+#[test]
+fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("collab.sock");
+    let _broker = typed_peer::spawn(&sock);
+    let started = Instant::now();
+    while !sock.exists() {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "relay never bound"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let room = Uuid::new_v4();
+
+    // The word processor: the page the agent was invited to, carrying the
+    // instruction.
+    let (wp_peer, wp_replica) = connect_word_processor(&sock, room);
+
+    // The photo editor: a second application's document, in the same room,
+    // that the agent was never told about.
+    let (photo_peer, photo_replica) = connect_photo_editor(&sock, room);
     std::thread::sleep(Duration::from_millis(100));
 
-    let permissions = {
-        use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
-        PermissionContext::from_capabilities(
-            Actor::agent("Scribe"),
-            vec![
-                CapOverride::grant(
-                    Subject::agent("Scribe"),
-                    Scope::App("word-processor".to_string()),
-                    Verb::Write,
-                )
-                .with_id("wp"),
-                CapOverride::grant(
-                    Subject::agent("Scribe"),
-                    Scope::App("photos".to_string()),
-                    Verb::Write,
-                )
-                .with_id("photos"),
-            ],
-        )
-    };
+    let permissions = word_processor_and_photos_permissions();
     let cfg = Config {
         endpoint: Some(sock),
         app_id: APP.into(),
@@ -335,72 +451,11 @@ fn a_discovered_operation_reaches_a_second_application_held_as_a_peer() {
     // processor to answer, which is what pins the order rather than hoping
     // for it.
     let (photo_ready_tx, photo_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
-    let photo_thread = std::thread::spawn(move || {
-        photo_peer
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(15);
-        let mut signalled = false;
-        while Instant::now() < deadline {
-            let Some(event) = recv(&mut photo_peer) else {
-                continue;
-            };
-            match event {
-                CollabEvent::RemotePresenceUpdate {
-                    payload: PresencePayload::Arrived,
-                    ..
-                } => {
-                    let snap = CollabRequest::SyncCRDT {
-                        data: photo_replica.save(),
-                    };
-                    send(&mut photo_peer, &snap).unwrap();
-                    if !signalled {
-                        let _ = photo_ready_tx.send(());
-                        signalled = true;
-                    }
-                }
-                CollabEvent::CRDTIncremental { data } => {
-                    let _ = photo_replica.load_incremental(&data);
-                    if photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters != 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        photo_replica
-    });
+    let photo_thread =
+        std::thread::spawn(move || drive_photo_peer(photo_peer, photo_replica, &photo_ready_tx));
 
-    wp_peer
-        .set_read_timeout(Some(Duration::from_millis(200)))
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut done = false;
-    while Instant::now() < deadline && !done {
-        let Some(event) = recv(&mut wp_peer) else {
-            continue;
-        };
-        match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
-                photo_ready_rx
-                    .recv_timeout(Duration::from_secs(10))
-                    .expect("the photo peer never answered its own Arrived");
-                let snap = CollabRequest::SyncCRDT {
-                    data: wp_replica.save(),
-                };
-                send(&mut wp_peer, &snap).unwrap();
-            }
-            CollabEvent::CRDTIncremental { data } if wp_replica.load_incremental(&data).is_ok() => {
-                done = !blocks(&wp_replica)
-                    .iter()
-                    .any(|x| x.text.starts_with("Scribe:"));
-            }
-            _ => {}
-        }
-    }
+    let (wp_replica, done) = drive_word_processor_peer(wp_peer, wp_replica, &photo_ready_rx);
+
     assert!(agent.join().unwrap(), "the agent reports having acted");
     assert!(
         done,

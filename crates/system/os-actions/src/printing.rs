@@ -81,7 +81,10 @@ pub enum JobState {
 impl PrintJob {
     pub fn progress_percent(&self) -> Option<u8> {
         let total = self.impressions_total.filter(|total| *total > 0)?;
-        Some(((self.impressions_completed.unwrap_or(0).min(total) * 100) / total) as u8)
+        let completed = self.impressions_completed.unwrap_or(0).min(total);
+        // `completed <= total`, so the percentage is always in `0..=100`.
+        let percent = completed.saturating_mul(100).checked_div(total)?;
+        Some(u8::try_from(percent).unwrap_or(100))
     }
 }
 
@@ -91,6 +94,11 @@ pub struct Scanner {
     pub description: String,
 }
 
+/// List CUPS print queues, enriched with live IPP telemetry where a printer answers it.
+///
+/// # Errors
+///
+/// Returns an error message if `lpstat` is not installed or the command fails.
 pub fn queues() -> Result<Vec<PrinterQueue>, String> {
     let printers = run_capture("lpstat", &["-p", "-d"])?;
     let accepting = run_capture("lpstat", &["-a"]).unwrap_or_default();
@@ -103,6 +111,11 @@ pub fn queues() -> Result<Vec<PrinterQueue>, String> {
     Ok(queues)
 }
 
+/// List CUPS print jobs, enriched with live IPP telemetry where a destination answers it.
+///
+/// # Errors
+///
+/// Returns an error message if `lpstat` is not installed or the command fails.
 pub fn jobs() -> Result<Vec<PrintJob>, String> {
     let mut jobs = parse_jobs(&run_capture("lpstat", &["-o"])?);
     let destinations: BTreeSet<String> = jobs.iter().map(|job| job.destination.clone()).collect();
@@ -121,7 +134,7 @@ pub fn jobs() -> Result<Vec<PrintJob>, String> {
             };
             if let Some(details) = telemetry.get(&number) {
                 job.state = details.state;
-                job.state_reasons = details.state_reasons.clone();
+                job.state_reasons.clone_from(&details.state_reasons);
                 job.impressions_completed = details.impressions_completed;
                 job.impressions_total = details.impressions_total;
             }
@@ -142,10 +155,20 @@ fn query_ipp(queue: &str, test: &str) -> Result<String, String> {
 /// Discover only driverless IPP devices.  `driverless` delegates DNS-SD and
 /// IPP capability probing to cups-filters and therefore avoids a qOS-specific
 /// discovery stack or legacy PPD downloads.
+///
+/// # Errors
+///
+/// Returns an error message if `driverless` is not installed or the command fails.
 pub fn discover_driverless() -> Result<Vec<DiscoveredPrinter>, String> {
     Ok(parse_driverless(&run_capture("driverless", &[])?))
 }
 
+/// Add a driverless IPP printer at `uri`, naming the queue `requested_name`.
+///
+/// # Errors
+///
+/// Returns an error message if `uri` or `requested_name` fails validation, or `lpadmin` is not
+/// installed or the command fails.
 pub fn add_driverless(uri: &str, requested_name: &str) -> Result<(), String> {
     validate_uri(uri)?;
     let name = queue_name(requested_name)?;
@@ -155,16 +178,34 @@ pub fn add_driverless(uri: &str, requested_name: &str) -> Result<(), String> {
     )
 }
 
+/// Remove the print queue `name`.
+///
+/// # Errors
+///
+/// Returns an error message if `name` fails validation, or `lpadmin` is not installed or the
+/// command fails.
 pub fn remove_queue(name: &str) -> Result<(), String> {
     let name = queue_name(name)?;
     run("lpadmin", &["-x", &name])
 }
 
+/// Make `name` the default print queue.
+///
+/// # Errors
+///
+/// Returns an error message if `name` fails validation, or `lpoptions` is not installed or the
+/// command fails.
 pub fn set_default(name: &str) -> Result<(), String> {
     let name = queue_name(name)?;
     run("lpoptions", &["-d", &name])
 }
 
+/// Enable/accept or disable/reject jobs on the print queue `name`.
+///
+/// # Errors
+///
+/// Returns an error message if `name` fails validation, or the underlying `cupsenable` /
+/// `cupsaccept` / `cupsreject` / `cupsdisable` call is not installed or fails.
 pub fn set_enabled(name: &str, enabled: bool) -> Result<(), String> {
     let name = queue_name(name)?;
     if enabled {
@@ -178,16 +219,33 @@ pub fn set_enabled(name: &str, enabled: bool) -> Result<(), String> {
     }
 }
 
+/// Cancel the CUPS job `id`.
+///
+/// # Errors
+///
+/// Returns an error message if `id` fails validation, or `cancel` is not installed or the
+/// command fails.
 pub fn cancel_job(id: &str) -> Result<(), String> {
     validate_job_id(id)?;
     run("cancel", &[id])
 }
 
+/// Restart the CUPS job `id`.
+///
+/// # Errors
+///
+/// Returns an error message if `id` fails validation, or `lp` is not installed or the command
+/// fails.
 pub fn retry_job(id: &str) -> Result<(), String> {
     validate_job_id(id)?;
     run("lp", &["-i", id, "-H", "restart"])
 }
 
+/// List SANE scanners via `scanimage -L`.
+///
+/// # Errors
+///
+/// Returns an error message if `scanimage` is not installed or the command fails.
 pub fn scanners() -> Result<Vec<Scanner>, String> {
     Ok(parse_scanners(&run_capture("scanimage", &["-L"])?))
 }
@@ -208,7 +266,7 @@ fn queue_name(raw: &str) -> Result<String, String> {
 fn validate_uri(uri: &str) -> Result<(), String> {
     if uri.len() > 2048
         || uri.bytes().any(|b| b == 0 || b == b'\r' || b == b'\n')
-        || !matches!(uri.split_once(":"), Some(("ipp" | "ipps", rest)) if rest.starts_with("//"))
+        || !matches!(uri.split_once(':'), Some(("ipp" | "ipps", rest)) if rest.starts_with("//"))
     {
         return Err("only a valid ipp:// or ipps:// printer URI is accepted".into());
     }
@@ -347,7 +405,8 @@ pub fn parse_ipp_printer_attributes(text: &str) -> PrinterTelemetry {
                         .trim()
                         .parse::<i16>()
                         .ok()
-                        .and_then(|level| (0..=100).contains(&level).then_some(level as u8))
+                        .and_then(|level| u8::try_from(level).ok())
+                        .filter(|level| *level <= 100)
                 })
                 .collect();
         }
@@ -423,9 +482,9 @@ pub fn parse_driverless(text: &str) -> Vec<DiscoveredPrinter> {
             // cups-filters prints: URI "make model" "location"
             let line = line.trim();
             let split = line.find(char::is_whitespace)?;
-            let uri = line[..split].trim();
+            let uri = line.get(..split)?.trim();
             validate_uri(uri).ok()?;
-            let quoted: Vec<&str> = line[split..].split('"').collect();
+            let quoted: Vec<&str> = line.get(split..)?.split('"').collect();
             let name = quoted
                 .get(1)
                 .map(|s| sanitize_text(s, 100))

@@ -167,7 +167,7 @@ pub fn changed_on_disk(path: &Path, stamp: &Stamp) -> bool {
 /// source files do not contain NUL; ELF objects, images and archives do, within
 /// the first few bytes.
 fn looks_like_text(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(8192)];
+    let head = bytes.get(..bytes.len().min(8192)).unwrap_or(bytes);
     !head.contains(&0)
 }
 
@@ -214,7 +214,7 @@ pub fn human_bytes(n: u64) -> String {
     if u == 0 {
         format!("{n} {}", UNITS[0])
     } else {
-        format!("{v:.1} {}", UNITS[u])
+        format!("{v:.1} {}", UNITS.get(u).unwrap_or(&"?"))
     }
 }
 
@@ -260,8 +260,11 @@ mod tests {
         let d = tmpdir();
         let p = d.path().join("a.rs");
         let s1 = save(&p, "one", None).unwrap();
-        let s2 = save(&p, "two", Some(&s1)).expect("we are still in agreement with the file");
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "two");
+        // Change the length as well as the contents so the new stamp is
+        // observably different even on filesystems whose mtimes have coarse
+        // resolution (or when both atomic renames land in the same clock tick).
+        let s2 = save(&p, "two!", Some(&s1)).expect("we are still in agreement with the file");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "two!");
         assert_ne!(s1, s2, "the stamp advances with the content");
     }
 

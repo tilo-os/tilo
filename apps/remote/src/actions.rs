@@ -142,6 +142,18 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`RemoteAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch — the single point that turns a Remote action into
 /// a replayable envelope.
+///
+/// # Panics
+///
+/// Panics if `action` fails to serialize. [`RemoteAction`] is a plain,
+/// non-recursive enum of owned strings, ids, and booleans, so this cannot
+/// happen for any value this module constructs.
+#[allow(
+    clippy::expect_used,
+    reason = "RemoteAction always serializes (derived impl over plain data); \
+              returning Result here would ripple through every call site in \
+              app.rs and this module for an error path that can't occur"
+)]
 pub fn encode(action: &RemoteAction) -> EncodedAction {
     EncodedAction::encode(REMOTE_ACTION_TYPE, action).expect("RemoteAction is always serializable")
 }
@@ -186,6 +198,18 @@ pub fn rename_action(id: ConnectionId, name: &str) -> RemoteAction {
 // Resource tree
 // ===========================================================================
 
+/// Build an immediate [`ActionSpec`] wrapping a [`RemoteAction`] — the resource
+/// tree's per-connection buttons (favourite, delete) both go through this so the
+/// encode-can't-fail invariant lives in one place rather than at each call site.
+#[allow(
+    clippy::expect_used,
+    reason = "wraps ActionSpec::immediate, which cannot fail for RemoteAction \
+              — see encode()'s doc comment"
+)]
+fn immediate_spec(id: &str, label: &str, action: &RemoteAction) -> ActionSpec {
+    ActionSpec::immediate(id, label, REMOTE_ACTION_TYPE, action).expect("encode remote action")
+}
+
 /// Every saved connection, exported as a Ctrl+K resource with its rename /
 /// favourite / delete actions. Level-triggered: recomputed from `doc` each
 /// frame, so the labels and the favourite target always track the live state
@@ -214,28 +238,20 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                 ExecutionLocus::ClientLocal,
                 move |text| encode(&rename_action(id, text)),
             ))
-            .with_action(
-                ActionSpec::immediate(
-                    "favorite",
-                    if c.favorite {
-                        "Remove from favourites"
-                    } else {
-                        "Add to favourites"
-                    },
-                    REMOTE_ACTION_TYPE,
-                    &set_favorite_action(id, !c.favorite),
-                )
-                .expect("encode favourite action"),
-            )
-            .with_action(
-                ActionSpec::immediate(
-                    "delete",
-                    "Delete connection",
-                    REMOTE_ACTION_TYPE,
-                    &delete_action(id),
-                )
-                .expect("encode delete action"),
-            )
+            .with_action(immediate_spec(
+                "favorite",
+                if c.favorite {
+                    "Remove from favourites"
+                } else {
+                    "Add to favourites"
+                },
+                &set_favorite_action(id, !c.favorite),
+            ))
+            .with_action(immediate_spec(
+                "delete",
+                "Delete connection",
+                &delete_action(id),
+            ))
         })
         .collect()
 }
@@ -271,7 +287,7 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 

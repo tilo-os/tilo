@@ -9,6 +9,16 @@
 //! [`Widget::update`] runs in production and assert the persisted value
 //! followed (both directions).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use shell::shell::build_nirios_overlay_host_with_chrome;
@@ -137,6 +147,9 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
 
 #[test]
 fn shell_tick_writes_maximize_click_through_to_persisted_state() {
+    use winit::dpi::PhysicalPosition;
+    use winit::event::WindowEvent;
+
     let (tree, strip_id, group_id) = single_group_tree();
 
     // The host captures per-strip GroupRow pointers internally and wires
@@ -168,8 +181,6 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
     }
     // The drain runs inside `WindowGroup::handle_event`, so the widget tree
     // needs an event to drive it.
-    use winit::dpi::PhysicalPosition;
-    use winit::event::WindowEvent;
     let moved = WindowEvent::CursorMoved {
         device_id: unsafe { std::mem::zeroed() },
         position: PhysicalPosition::new(9000.0, 9000.0),

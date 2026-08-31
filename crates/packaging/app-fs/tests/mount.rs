@@ -11,6 +11,16 @@
 //! need `/dev/fuse` + `fusermount3` and are skipped in constrained CI
 //! (`cargo test -p app-fs -- --include-ignored` locally).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::sync::Arc;
 
 use app_fs::{
@@ -18,15 +28,18 @@ use app_fs::{
     store::CountingStore,
 };
 
-/// Common fixture: put a single 1 KiB file at bin/hello into a
-/// counting-wrapped memory store, build a filesystem, and return
-/// (fs, counter, hash, bytes).
-fn fixture_1k() -> (
+/// (fs, counter, hash, bytes) as returned by [`fixture_1k`].
+type Fixture = (
     QosAppFs<Arc<CountingStore<MemoryBlobStore>>>,
     Arc<CountingStore<MemoryBlobStore>>,
     [u8; 32],
     Vec<u8>,
-) {
+);
+
+/// Common fixture: put a single 1 KiB file at bin/hello into a
+/// counting-wrapped memory store, build a filesystem, and return
+/// (fs, counter, hash, bytes).
+fn fixture_1k() -> Fixture {
     let inner = MemoryBlobStore::new();
     // 1 KiB of "aB" repeating so partial reads are easy to eyeball.
     let bytes: Vec<u8> = (0..1024)
@@ -45,7 +58,7 @@ fn fixture_1k() -> (
 /// that, only `range_calls` matters.
 #[test]
 fn lookup_resolves_without_fetch() {
-    let (fs, counter, _hash, _bytes) = fixture_1k();
+    let (fs, counter, hash, _bytes) = fixture_1k();
 
     // Construction should have called size() exactly once (one blob), and no range reads.
     let snap = counter.snapshot();
@@ -80,7 +93,7 @@ fn lookup_resolves_without_fetch() {
     );
 
     // Sanity: the hash we resolved matches the collection.
-    assert_eq!(blob_hash, _hash);
+    assert_eq!(blob_hash, hash);
 }
 
 /// Reading the first 100 bytes must fetch at most one page from the
@@ -131,7 +144,9 @@ fn mount_and_read_single_file() {
     let (fs_bytes, hash) = {
         let inner = MemoryBlobStore::new();
         // Distinct bytes so we notice off-by-one issues.
-        let payload: Vec<u8> = (0..1024).map(|i| (i & 0xff) as u8).collect();
+        let payload: Vec<u8> = (0..1024)
+            .map(|i| u8::try_from(i & 0xff).unwrap_or(0))
+            .collect();
         let h = inner.put(&payload);
         (payload, (inner, h))
     };
@@ -143,7 +158,7 @@ fn mount_and_read_single_file() {
         &collection,
         store,
         mountpoint.path(),
-        MountOptions::default(),
+        &MountOptions::default(),
     ) {
         Ok(m) => m,
         Err(e) => {

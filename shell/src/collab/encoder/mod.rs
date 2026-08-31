@@ -105,8 +105,8 @@ impl Codec {
             (Codec::HevcMain10, EncoderKind::VaApi) => Some("hevc_vaapi"),
             (Codec::H264, EncoderKind::NvEnc) => Some("h264_nvenc"),
             (Codec::HevcMain10, EncoderKind::NvEnc) => Some("hevc_nvenc"),
-            (Codec::H264, EncoderKind::Openh264) => None, // uses in-tree openh264, not libav
-            (Codec::HevcMain10, EncoderKind::Openh264) => None,
+            // Openh264 is not a libavcodec encoder — it has its own in-tree wrapper.
+            (Codec::H264 | Codec::HevcMain10, EncoderKind::Openh264) => None,
         }
     }
 
@@ -233,6 +233,12 @@ pub trait Encoder: Send {
     /// from the codec context, NVENC exposes it via
     /// `nvEncGetEncodeStats`) can `reserve` without allocating a new
     /// vec per frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EncoderError::EncodeFailed`] if the backend rejects
+    /// `input` (wrong `FrameInput` variant for this backend, a device
+    /// that disappeared mid-session, or any other runtime encode failure).
     fn encode(
         &mut self,
         input: FrameInput<'_>,
@@ -446,6 +452,13 @@ fn nvenc_probe(codec: Codec) -> ProbeOutcome {
 /// Construct the chosen encoder. Returns `EncoderError::Unavailable`
 /// only if the chosen backend fails to instantiate after a successful
 /// probe — a rare race (device disappeared between probe + open).
+///
+/// # Errors
+///
+/// Returns [`EncoderError::Unavailable`] if `kind` names a backend not
+/// compiled into this build (or the rare probe/open race above), or
+/// [`EncoderError::ConfigFailed`] if the backend rejects `init` (e.g. bad
+/// dimensions or an out-of-range bitrate).
 pub fn build(kind: EncoderKind, init: EncoderInit) -> Result<Box<dyn Encoder>, EncoderError> {
     match kind {
         EncoderKind::Openh264 => {
