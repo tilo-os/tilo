@@ -175,7 +175,22 @@ fn circle_path(cx: f64, cy: f64, r: f64) -> BezPath {
 /// `pub(crate)` so unit tests can poke at the raw shapes without
 /// duplicating the data table; widgets call [`draw_icon`] instead.
 pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
-    match icon {
+    icon_subpaths_group1(icon)
+        .or_else(|| icon_subpaths_group2(icon))
+        .or_else(|| icon_subpaths_group3(icon))
+        .or_else(|| icon_subpaths_group4(icon))
+        .or_else(|| icon_subpaths_group5(icon))
+        // Every `Icon` variant is listed across the five groups above;
+        // this is only reached by a variant added to the enum without a
+        // matching arm in any group, so an empty (invisible) icon is a
+        // safer degrade than a panic.
+        .unwrap_or_default()
+}
+
+/// Group 1/5 of `icon_subpaths`'s data table, split for `too_many_lines`.
+/// `None` means `icon` belongs to a different group.
+fn icon_subpaths_group1(icon: Icon) -> Option<Vec<BezPath>> {
+    Some(match icon {
         Icon::LayoutGrid => vec![
             rect_path(3.0, 3.0, 7.0, 7.0, 1.0),
             rect_path(14.0, 3.0, 7.0, 7.0, 1.0),
@@ -237,6 +252,14 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         ],
         Icon::Code => vec![path_from_d("m16 18 6-6-6-6"), path_from_d("m8 6-6 6 6 6")],
         Icon::Terminal => vec![path_from_d("M12 19h8"), path_from_d("m4 17 6-6-6-6")],
+        _ => return None,
+    })
+}
+
+/// Group 2/5 of `icon_subpaths`'s data table, split for `too_many_lines`.
+/// `None` means `icon` belongs to a different group.
+fn icon_subpaths_group2(icon: Icon) -> Option<Vec<BezPath>> {
+    Some(match icon {
         Icon::FileText => vec![
             path_from_d("M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"),
             path_from_d("M14 2v4a2 2 0 0 0 2 2h4"),
@@ -328,6 +351,14 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::ArrowLeft => vec![path_from_d("m12 19-7-7 7-7"), path_from_d("M19 12H5")],
         Icon::ArrowRight => vec![path_from_d("M5 12h14"), path_from_d("m12 5 7 7-7 7")],
         Icon::ArrowUp => vec![path_from_d("m5 12 7-7 7 7"), path_from_d("M12 19V5")],
+        _ => return None,
+    })
+}
+
+/// Group 3/5 of `icon_subpaths`'s data table, split for `too_many_lines`.
+/// `None` means `icon` belongs to a different group.
+fn icon_subpaths_group3(icon: Icon) -> Option<Vec<BezPath>> {
+    Some(match icon {
         Icon::ChevronRight => vec![path_from_d("m9 18 6-6-6-6")],
         Icon::RotateCw => vec![
             path_from_d("M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"),
@@ -426,6 +457,14 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M5 6h14"),
             rect_path(3.0, 10.0, 18.0, 12.0, 2.0),
         ],
+        _ => return None,
+    })
+}
+
+/// Group 4/5 of `icon_subpaths`'s data table, split for `too_many_lines`.
+/// `None` means `icon` belongs to a different group.
+fn icon_subpaths_group4(icon: Icon) -> Option<Vec<BezPath>> {
+    Some(match icon {
         Icon::History => vec![
             path_from_d("M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"),
             path_from_d("M3 3v5h5"),
@@ -541,6 +580,14 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M8 12h13"),
             path_from_d("M8 19h13"),
         ],
+        _ => return None,
+    })
+}
+
+/// Group 5/5 of `icon_subpaths`'s data table, split for `too_many_lines`.
+/// `None` means `icon` belongs to a different group.
+fn icon_subpaths_group5(icon: Icon) -> Option<Vec<BezPath>> {
+    Some(match icon {
         Icon::HardDrive => vec![
             line_path(22.0, 12.0, 2.0, 12.0),
             path_from_d(
@@ -622,7 +669,8 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M20 4v7a4 4 0 0 1-4 4H4"),
             path_from_d("M9 10 4 15l5 5"),
         ],
-    }
+        _ => return None,
+    })
 }
 
 /// Map a filesystem entry to the most appropriate [`Icon`]. Directories
@@ -695,6 +743,12 @@ impl Icon {
         let glyph = LUCIDE_VIEWBOX * scale;
         let tx = rect.x0 + (size.width - glyph) / 2.0;
         let ty = rect.y0 + (size.height - glyph) / 2.0;
+        // `Affine`'s `Mul` composes transform matrices; it has no failure
+        // mode, but clippy can't see that for a non-primitive operator.
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine's Mul composes transform matrices and cannot overflow/panic"
+        )]
         let local = transform * Affine::translate((tx, ty)) * Affine::scale(scale);
         for sub in icon_subpaths(self) {
             scene.fill(Fill::NonZero, local, color, None, &sub);
@@ -742,6 +796,12 @@ pub fn draw_icon(
     let glyph_h = LUCIDE_VIEWBOX * scale;
     let tx = rect.x0 + (size.width - glyph_w) / 2.0;
     let ty = rect.y0 + (size.height - glyph_h) / 2.0;
+    // `Affine`'s `Mul` composes transform matrices; it has no failure
+    // mode, but clippy can't see that for a non-primitive operator.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Affine's Mul composes transform matrices and cannot overflow/panic"
+    )]
     let local = transform * Affine::translate((tx, ty)) * Affine::scale(scale);
 
     let stroke = Stroke::new(stroke_px / scale)
@@ -779,6 +839,12 @@ pub fn draw_icon_layered(
     let glyph = LUCIDE_VIEWBOX * scale;
     let tx = rect.x0 + (size.width - glyph) / 2.0;
     let ty = rect.y0 + (size.height - glyph) / 2.0;
+    // `Affine`'s `Mul` composes transform matrices; it has no failure
+    // mode, but clippy can't see that for a non-primitive operator.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Affine's Mul composes transform matrices and cannot overflow/panic"
+    )]
     let local = transform * Affine::translate((tx, ty)) * Affine::scale(scale);
     let stroke = Stroke::new(stroke_px / scale)
         .with_caps(Cap::Round)

@@ -82,6 +82,71 @@ fn take_value(argv: &mut Vec<String>, flag: &str) -> Result<String, String> {
     Ok(v)
 }
 
+/// Parse `--mode`'s value. Split out of `Args::apply_flag` to keep it short.
+fn parse_mode_flag(v: &str) -> Result<Mode, String> {
+    match v {
+        "window" => Ok(Mode::Window),
+        "offscreen" => Ok(Mode::Offscreen),
+        "headless" => Ok(Mode::Headless),
+        "recording" => Ok(Mode::Recording),
+        other => Err(format!(
+            "--mode: unknown value '{other}' (expected window|offscreen|headless|recording)"
+        )),
+    }
+}
+
+/// Parse `--scenes`' comma-separated value into `args.scenes`, rejecting any
+/// name outside [`ShellDriver::ALL_SCENES`]. Split out of `Args::apply_flag`
+/// to keep it short.
+fn apply_scenes_flag(
+    args: &mut Args,
+    argv: &mut Vec<String>,
+    scenes_explicit: &mut bool,
+) -> Result<(), String> {
+    let v = take_value(argv, "--scenes")?;
+    args.scenes = v.split(',').map(|s| s.trim().to_string()).collect();
+    for s in &args.scenes {
+        if !ShellDriver::ALL_SCENES.contains(&s.as_str()) {
+            return Err(format!(
+                "unknown scene '{s}'. Valid: {}",
+                ShellDriver::ALL_SCENES.join(", ")
+            ));
+        }
+    }
+    *scenes_explicit = true;
+    Ok(())
+}
+
+/// Parse `--sweep`'s optional value: a flag-like or missing next token keeps
+/// [`DEFAULT_SWEEP`], otherwise it's a comma-separated `WxH` list. Split out
+/// of `Args::apply_flag` to keep it short.
+fn apply_sweep_flag(argv: &mut Vec<String>) -> Result<Vec<(u32, u32)>, String> {
+    let next = argv.first().cloned();
+    let resolutions: Vec<(u32, u32)> = match next {
+        Some(v) if !v.starts_with("--") => {
+            argv.remove(0);
+            parse_sweep_list(&v)?
+        }
+        _ => DEFAULT_SWEEP.to_vec(),
+    };
+    if resolutions.is_empty() {
+        return Err("--sweep: at least one resolution required".into());
+    }
+    Ok(resolutions)
+}
+
+/// Parse `--per-frame`'s value, rejecting `0`. Split out of
+/// `Args::apply_flag` to keep it short.
+fn apply_per_frame_flag(argv: &mut Vec<String>) -> Result<u32, String> {
+    let v: u32 = take_value(argv, "--per-frame")?
+        .parse()
+        .map_err(|e| format!("--per-frame: {e}"))?;
+    if v == 0 {
+        return Err("--per-frame must be > 0".into());
+    }
+    Ok(v)
+}
+
 impl Args {
     fn parse() -> Result<Self, String> {
         let mut args = Args {
@@ -137,33 +202,9 @@ impl Args {
                 print_help();
                 std::process::exit(0);
             }
-            "--mode" => {
-                args.mode = match take_value(argv, "--mode")?.as_str() {
-                    "window" => Mode::Window,
-                    "offscreen" => Mode::Offscreen,
-                    "headless" => Mode::Headless,
-                    "recording" => Mode::Recording,
-                    other => {
-                        return Err(format!(
-                            "--mode: unknown value '{other}' (expected window|offscreen|headless|recording)"
-                        ));
-                    }
-                };
-            }
+            "--mode" => args.mode = parse_mode_flag(&take_value(argv, "--mode")?)?,
             "--scenario" => args.scenario = Some(take_value(argv, "--scenario")?),
-            "--scenes" => {
-                let v = take_value(argv, "--scenes")?;
-                args.scenes = v.split(',').map(|s| s.trim().to_string()).collect();
-                for s in &args.scenes {
-                    if !ShellDriver::ALL_SCENES.contains(&s.as_str()) {
-                        return Err(format!(
-                            "unknown scene '{s}'. Valid: {}",
-                            ShellDriver::ALL_SCENES.join(", ")
-                        ));
-                    }
-                }
-                *scenes_explicit = true;
-            }
+            "--scenes" => apply_scenes_flag(args, argv, scenes_explicit)?,
             "--out" => args.out = PathBuf::from(take_value(argv, "--out")?),
             "--width" => {
                 args.width = take_value(argv, "--width")?
@@ -186,32 +227,8 @@ impl Args {
                     .map_err(|e| format!("--step-duration: {e}"))?;
             }
             "--list-scenarios" => args.list_scenarios = true,
-            "--sweep" => {
-                // Optional value. If the next arg looks like a flag
-                // (or there isn't one) we use the default set;
-                // otherwise parse a comma-separated WxH list.
-                let next = argv.first().cloned();
-                let resolutions: Vec<(u32, u32)> = match next {
-                    Some(v) if !v.starts_with("--") => {
-                        argv.remove(0);
-                        parse_sweep_list(&v)?
-                    }
-                    _ => DEFAULT_SWEEP.to_vec(),
-                };
-                if resolutions.is_empty() {
-                    return Err("--sweep: at least one resolution required".into());
-                }
-                args.sweep = Some(resolutions);
-            }
-            "--per-frame" => {
-                let v: u32 = take_value(argv, "--per-frame")?
-                    .parse()
-                    .map_err(|e| format!("--per-frame: {e}"))?;
-                if v == 0 {
-                    return Err("--per-frame must be > 0".into());
-                }
-                args.per_frame = Some(v);
-            }
+            "--sweep" => args.sweep = Some(apply_sweep_flag(argv)?),
+            "--per-frame" => args.per_frame = Some(apply_per_frame_flag(argv)?),
             "--baseline" => args.baseline = Some(PathBuf::from(take_value(argv, "--baseline")?)),
             "--diff-threshold" => {
                 args.diff_threshold = take_value(argv, "--diff-threshold")?
@@ -455,11 +472,7 @@ fn run_capture(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-fn run_capture_one(
-    args: &Args,
-    viewport: (u32, u32),
-    out: &std::path::Path,
-) -> Result<(), String> {
+fn run_capture_one(args: &Args, viewport: (u32, u32), out: &std::path::Path) -> Result<(), String> {
     match args.mode {
         Mode::Offscreen => match args.scenario.as_deref() {
             Some(name) => {

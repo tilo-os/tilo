@@ -1755,7 +1755,6 @@ fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
 mod overview_add_workspace {
     use super::*;
     use shell::shell::overlay_host::ShellOverlayHost;
-    use vello::kurbo::Rect;
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
