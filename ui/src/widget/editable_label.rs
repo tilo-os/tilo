@@ -26,7 +26,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{FontChoice, TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
-use crate::widget::{TextInput, Widget};
+use crate::widget::{TextInput, TextInputKind, Widget};
 
 /// Same ratio [`TextInput`] centres its own glyph band against, so text
 /// doesn't jump vertically when the field enters/leaves edit mode.
@@ -63,7 +63,7 @@ impl EditableLabel {
         Self {
             id: String::new(),
             value: value.to_string(),
-            input: TextInput::local(),
+            input: TextInput::local().with_kind(TextInputKind::Name),
             editing: false,
             family: FontChoice::SansSerif,
             size: 16.0,

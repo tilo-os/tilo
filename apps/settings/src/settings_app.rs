@@ -192,6 +192,7 @@ impl SettingsApp {
     fn build_search_field() -> Box<dyn Widget> {
         Box::new(
             TextInput::new(Vec::new())
+                .with_kind(ui::widget::TextInputKind::Search)
                 .with_id("settings.search")
                 .with_on_change_path(sidebar::SEARCH_KEY)
                 .with_placeholder("\u{f0349}  Search settings")
