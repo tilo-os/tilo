@@ -514,7 +514,7 @@ impl RemoteInputFirewall {
             prune(&mut state.clicks, now, CLICK_BURST_WINDOW);
             state.clicks.push_back(now);
             if state.clicks.len() > CLICK_BURST_LIMIT {
-                state.blocked_until = Some(now + CLICK_BURST_BLOCK);
+                state.blocked_until = Some(now.checked_add(CLICK_BURST_BLOCK).unwrap_or(now));
                 state.clicks.clear();
                 return Err(Denial::ClickBurst);
             }
@@ -1301,7 +1301,7 @@ mod production_path {
         let started = std::time::Instant::now();
 
         for i in 0..MAX_EVENTS_PER_SECOND {
-            let y = 10.0 + (i % 100) as f64;
+            let y = 10.0 + f64::from(u32::try_from(i % 100).unwrap_or(0));
             state
                 .review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 10.0, y })
                 .unwrap_or_else(|d| panic!("event {i} refused as {d:?}, inside the budget"));

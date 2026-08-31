@@ -43,7 +43,7 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
     let strip_id = StripId::new();
 
     let mk_tab = |gid: u64| Tab {
-        id: gid * 10 + 1,
+        id: gid.saturating_mul(10).saturating_add(1),
         title: format!("G{gid}"),
         tile: TileContent::Stub {
             kind: AppKind::Other("Test".into()),
@@ -55,7 +55,7 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
         .map(|&gid| WindowGroup {
             id: gid,
             tabs: vec![mk_tab(gid)],
-            active_tab: gid * 10 + 1,
+            active_tab: gid.saturating_mul(10).saturating_add(1),
             width: WindowWidth::Normal,
             maximized: false,
         })

@@ -689,6 +689,11 @@ mod tests {
         const GUID: &str = "0123456789abcdef0123456789abcdef";
 
         let (cmd_tx, cmd_rx) = channel::<MprisCommand>();
+        // `mpsc::Receiver` isn't `Sync`, so a plain `&Receiver` held across
+        // an `.await` in `assert_commands_forwarded` makes that future
+        // `!Send`; a `Mutex` around it is `Sync` and fixes that with no
+        // behaviour change (this test never contends the lock).
+        let cmd_rx = std::sync::Mutex::new(cmd_rx);
         let snap = PlayerSnapshot {
             status: PlaybackStatus::Playing,
             track_id: "yt:abc123".into(),
@@ -775,7 +780,7 @@ mod tests {
     #[cfg(feature = "mpris")]
     async fn assert_commands_forwarded(
         player_proxy: &zbus::Proxy<'_>,
-        cmd_rx: &std::sync::mpsc::Receiver<MprisCommand>,
+        cmd_rx: &std::sync::Mutex<std::sync::mpsc::Receiver<MprisCommand>>,
     ) {
         player_proxy
             .call_method("Pause", &())
@@ -791,7 +796,13 @@ mod tests {
             .expect("Play call");
         let mut got = Vec::new();
         for _ in 0..3 {
-            got.push(cmd_rx.recv().expect("command delivered"));
+            got.push(
+                cmd_rx
+                    .lock()
+                    .expect("test-local mutex is never poisoned")
+                    .recv()
+                    .expect("command delivered"),
+            );
         }
         assert_eq!(
             got,

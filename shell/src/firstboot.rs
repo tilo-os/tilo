@@ -60,6 +60,21 @@ fn effective_uid() -> u32 {
     1000
 }
 
+/// Current wall-clock time as nanoseconds since the epoch, clamped to
+/// `u64::MAX` rather than truncated — a value that large is centuries past
+/// any real device-cert issuance this crate computes against.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "clamped to 0..=u64::MAX immediately above, so it always fits u64"
+)]
+fn now_ns_u64() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .min(u128::from(u64::MAX)) as u64
+}
+
 /// Pure form of [`run`] that takes env-var values as arguments instead
 /// of reading the real environment — tests drive this with a `tempdir`-rooted fixture so the suite never pokes the developer's real `$HOME`.
 pub fn run_with_env(
@@ -296,11 +311,7 @@ pub fn ensure_collaboration_identity(
             ));
         }
     } else if device_owner {
-        let issued_at_ns = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-            .min(u128::from(u64::MAX)) as u64;
+        let issued_at_ns = now_ns_u64();
         let mut cert = DeviceCert {
             user_public_key: root_public,
             device_public_key: device.verifying_key().to_bytes(),
@@ -386,11 +397,7 @@ fn ensure_device_certificate_for_identity(
         return Ok(cert_path);
     }
 
-    let issued_at_ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .min(u128::from(u64::MAX)) as u64;
+    let issued_at_ns = now_ns_u64();
     let mut cert = DeviceCert {
         user_public_key,
         device_public_key: device.verifying_key().to_bytes(),
@@ -444,7 +451,7 @@ fn protect_identity_record(identity_dir: &Path) -> io::Result<()> {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     const HEX: &[u8; 16] = b"0123456789abcdef";
     for b in bytes {
         out.push(HEX[(b >> 4) as usize] as char);

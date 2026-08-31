@@ -94,6 +94,11 @@ struct RefMaps<'a> {
 /// All per-parse mutable state for [`parse_body`]'s event loop, bundled so the loop can be split
 /// into named handlers below instead of one 450-line function.
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent XML-parse-state flag, set by name at its own open/close \
+              tag handler, never positionally — there is no risk of two flags being swapped"
+)]
 struct BodyState {
     in_body: bool,
     prev: Option<String>,
@@ -198,20 +203,18 @@ impl BodyState {
             let ordered = reg.num_ordered.get(&numid).copied().unwrap_or(false);
             doc.set_attr(&id, "ordered", ordered);
             // Numbering fidelity (ordered lists only): preserve format + start so the list re-exports intact.
-            if ordered {
-                if let Some(def) = reg.num_def.get(&numid) {
-                    if let Some(f) = def.num_format {
-                        if f != "decimal" {
-                            doc.set_attr(&id, "num_format", f);
-                        }
-                    }
-                    if let Some(s) = def.num_start {
-                        if s != 1 {
-                            doc.set_attr(&id, "num_start", s);
-                            // OOXML numbering restarts by default; a non-1 start implies a restart at that value.
-                            doc.set_attr(&id, "num_restart", true);
-                        }
-                    }
+            if ordered && let Some(def) = reg.num_def.get(&numid) {
+                if let Some(f) = def.num_format
+                    && f != "decimal"
+                {
+                    doc.set_attr(&id, "num_format", f);
+                }
+                if let Some(s) = def.num_start
+                    && s != 1
+                {
+                    doc.set_attr(&id, "num_start", s);
+                    // OOXML numbering restarts by default; a non-1 start implies a restart at that value.
+                    doc.set_attr(&id, "num_restart", true);
                 }
             }
             // Direct `w:jc` wins; otherwise inherit alignment from the style.
@@ -340,43 +343,42 @@ impl BodyState {
                 }
             }
             Event::End(e) if e.name().as_ref() == b"w:drawing" => {
-                if let Some(dr) = self.drawing.take() {
-                    let bytes = dr.rel.as_deref().and_then(|r| image_map.get(r));
-                    if let Some(bytes) = bytes {
-                        let hash = doc.put_blob(bytes);
-                        // Reuse the enclosing (image-only) paragraph if empty, else open a fresh block, as `image`.
-                        let id = if let (Some(c), 0) = (self.cur.clone(), self.cur_len) {
-                            doc.set_kind(&c, "image");
-                            c
-                        } else {
-                            self.start_block(doc, "image")
-                        };
-                        doc.set_attr(&id, "blob", hash.as_str());
-                        let anchor = if !dr.floating {
-                            "inline"
-                        } else if dr.page_relative {
-                            "page"
-                        } else {
-                            "paragraph"
-                        };
-                        doc.set_attr(&id, "anchor", anchor);
-                        if let Some(w) = dr.width
-                            && w > 0
-                        {
-                            doc.set_attr(&id, "width", w);
-                        }
-                        if let Some(h) = dr.height
-                            && h > 0
-                        {
-                            doc.set_attr(&id, "height", h);
-                        }
-                        if let Some(w) = dr.wrap {
-                            doc.set_attr(&id, "wrap", w.as_str());
-                        }
-                        // An image block isn't a text container; close it.
-                        self.prev = Some(id);
-                        self.cur = None;
+                if let Some(dr) = self.drawing.take()
+                    && let Some(bytes) = dr.rel.as_deref().and_then(|r| image_map.get(r))
+                {
+                    let hash = doc.put_blob(bytes);
+                    // Reuse the enclosing (image-only) paragraph if empty, else open a fresh block, as `image`.
+                    let id = if let (Some(c), 0) = (self.cur.clone(), self.cur_len) {
+                        doc.set_kind(&c, "image");
+                        c
+                    } else {
+                        self.start_block(doc, "image")
+                    };
+                    doc.set_attr(&id, "blob", hash.as_str());
+                    let anchor = if !dr.floating {
+                        "inline"
+                    } else if dr.page_relative {
+                        "page"
+                    } else {
+                        "paragraph"
+                    };
+                    doc.set_attr(&id, "anchor", anchor);
+                    if let Some(w) = dr.width
+                        && w > 0
+                    {
+                        doc.set_attr(&id, "width", w);
                     }
+                    if let Some(h) = dr.height
+                        && h > 0
+                    {
+                        doc.set_attr(&id, "height", h);
+                    }
+                    if let Some(w) = dr.wrap {
+                        doc.set_attr(&id, "wrap", w.as_str());
+                    }
+                    // An image block isn't a text container; close it.
+                    self.prev = Some(id);
+                    self.cur = None;
                 }
                 self.in_run = false;
             }

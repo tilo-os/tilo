@@ -190,19 +190,22 @@ fn render_blocks(
     depth: usize,
 ) {
     let mut i = 0;
-    while i < blocks.len() {
-        if blocks[i].kind == "list_item" {
+    while let Some(block) = blocks.get(i) {
+        if block.kind == "list_item" {
             // Consume the maximal run of consecutive list items and render it
             // as one (possibly nested) list.
             let mut j = i;
-            while j < blocks.len() && blocks[j].kind == "list_item" {
-                j += 1;
+            while blocks.get(j).is_some_and(|b| b.kind == "list_item") {
+                j = j.saturating_add(1);
             }
-            render_list(out, &blocks[i..j], opts, depth);
+            // `get(..)` degrades an inverted/out-of-range slice to empty
+            // rather than panicking; `i..j` is always ascending and
+            // in-bounds by construction, so this never actually triggers.
+            render_list(out, blocks.get(i..j).unwrap_or(&[]), opts, depth);
             i = j;
         } else {
-            render_block(out, snap, &blocks[i], opts, depth);
-            i += 1;
+            render_block(out, snap, block, opts, depth);
+            i = i.saturating_add(1);
         }
     }
 }
@@ -228,6 +231,11 @@ fn render_block(
 /// Heading level (1..=6), defaulting to 1 if absent/out of range.
 fn heading_level(block: &BlockView) -> u8 {
     match block.attrs.get("level") {
+        // Clamped to 1..=6 just above, so this always fits `u8`.
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "clamped to 1..=6 above, so the value is always positive and fits u8"
+        )]
         Some(AttrVal::Int(n)) => (*n).clamp(1, 6) as u8,
         _ => 1,
     }
@@ -267,13 +275,13 @@ fn render_quote(
     let attrs = block_attrs(block);
     let _ = writeln!(out, "{pad}<blockquote{attrs}>");
     if !block.text.is_empty() {
-        let inner = indent_for(opts, depth + 1);
+        let inner = indent_for(opts, depth.saturating_add(1));
         let _ = write!(out, "{inner}<p>");
         out.push_str(&render_inline(&block.text, &block.marks));
         out.push_str("</p>\n");
     }
     // Child blocks (multi-paragraph quotes) render inside the blockquote.
-    render_blocks(out, snap, &block.children, opts, depth + 1);
+    render_blocks(out, snap, &block.children, opts, depth.saturating_add(1));
     let _ = writeln!(out, "{pad}</blockquote>");
 }
 
@@ -306,8 +314,11 @@ fn render_list(out: &mut String, items: &[BlockView], opts: &HtmlOptions, depth:
     // Stack of currently-open lists: (level, ordered) — for closing correctly.
     let mut open: Vec<(i64, bool)> = Vec::new();
 
+    // `level` comes from the document; clamp to a nesting depth no real
+    // list reaches, so a corrupt/hostile attribute can't turn the
+    // indent-string repeats below into an unbounded allocation.
     let item_level = |b: &BlockView| match b.attrs.get("level") {
-        Some(AttrVal::Int(n)) => (*n).max(0),
+        Some(AttrVal::Int(n)) => (*n).clamp(0, 64),
         _ => 0,
     };
     let item_ordered = |b: &BlockView| matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)));
@@ -329,13 +340,19 @@ fn render_list(out: &mut String, items: &[BlockView], opts: &HtmlOptions, depth:
 
         // Open lists until we reach this item's level.
         while open.last().map_or(-1, |&(l, _)| l) < level {
-            let new_level = open.last().map_or(0, |&(l, _)| l + 1).max(0);
+            let new_level = open.last().map_or(0, |&(l, _)| l.saturating_add(1)).max(0);
             open.push((new_level, ordered));
             open_list(out, item, new_level, ordered, opts, depth);
         }
 
-        // Emit the item.
-        let pad = indent_for(opts, depth + level as usize + 1);
+        // Emit the item. `level` is clamped to 0..=64 above, so this cast
+        // never loses the sign or truncates.
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation,
+            reason = "level is clamped to 0..=64 above, so it is always non-negative and small"
+        )]
+        let pad = indent_for(opts, depth.saturating_add(level as usize).saturating_add(1));
         let attrs = block_attrs(item);
         let _ = write!(out, "{pad}<li{attrs}>");
         out.push_str(&render_inline(&item.text, &item.marks));
@@ -356,7 +373,13 @@ fn open_list(
     opts: &HtmlOptions,
     depth: usize,
 ) {
-    let pad = indent_for(opts, depth + level as usize);
+    // `level` is always a value `render_list` already clamped to 0..=64.
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "render_list, this function's only caller, clamps level to 0..=64 before passing it"
+    )]
+    let pad = indent_for(opts, depth.saturating_add(level as usize));
     if ordered {
         let fmt = match item.attrs.get("num_format") {
             Some(AttrVal::Str(s)) => s.as_str(),
@@ -378,7 +401,13 @@ fn open_list(
 }
 
 fn close_list(out: &mut String, level: i64, ordered: bool, opts: &HtmlOptions, depth: usize) {
-    let pad = indent_for(opts, depth + level as usize);
+    // `level` is always a value `render_list` already clamped to 0..=64.
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "render_list, this function's only caller, clamps level to 0..=64 before passing it"
+    )]
+    let pad = indent_for(opts, depth.saturating_add(level as usize));
     let tag = if ordered { "</ol>" } else { "</ul>" };
     let _ = writeln!(out, "{pad}{tag}");
 }
@@ -402,6 +431,13 @@ fn render_table(
             .collect()
     } else if !block.children.is_empty() {
         let cols = match block.attrs.get("cols") {
+            // `.max(1)` already rules out sign loss; an oversized `cols`
+            // just makes `chunks` below yield one chunk, not a hazard.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "cols only sizes a chunks() call; an oversized value degrades to one chunk, not a hazard"
+            )]
             Some(AttrVal::Int(n)) => (*n).max(1) as usize,
             _ => block.children.len().max(1),
         };
@@ -415,8 +451,8 @@ fn render_table(
     };
 
     let pad = indent_for(opts, depth);
-    let row_pad = indent_for(opts, depth + 1);
-    let cell_pad = indent_for(opts, depth + 2);
+    let row_pad = indent_for(opts, depth.saturating_add(1));
+    let cell_pad = indent_for(opts, depth.saturating_add(2));
     let attrs = block_attrs(block);
     let _ = writeln!(out, "{pad}<table{attrs}>");
     for row in &rows {
@@ -428,7 +464,7 @@ fn render_table(
                 out.push_str(&render_inline(&cell.text, &cell.marks));
             } else {
                 out.push('\n');
-                render_blocks(out, snap, &cell.children, opts, depth + 3);
+                render_blocks(out, snap, &cell.children, opts, depth.saturating_add(3));
                 out.push_str(&cell_pad);
             }
             out.push_str("</td>\n");
@@ -551,11 +587,21 @@ fn render_inline(text: &str, marks: &[MarkSpan]) -> String {
 
     let mut out = String::new();
     for w in bounds.windows(2) {
-        let (seg_start, seg_end) = (w[0], w[1]);
+        // `windows(2)` guarantees exactly 2 elements per window, so both
+        // `.first()`/`.get(1)` are always `Some`.
+        let (Some(&seg_start), Some(&seg_end)) = (w.first(), w.get(1)) else {
+            continue;
+        };
         if seg_start >= seg_end {
             continue;
         }
-        let segment = &text[seg_start..seg_end];
+        // Every value pushed into `bounds` above is either `0`, `text.len()`,
+        // or filtered through `is_char_boundary`, so this range always lands
+        // on valid UTF-8 boundaries — `.get()` still degrades to skipping
+        // the segment instead of panicking if that invariant is ever broken.
+        let Some(segment) = text.get(seg_start..seg_end) else {
+            continue;
+        };
         // Marks active over this whole segment (a mark covers [start, end)).
         let active: Vec<&MarkSpan> = marks
             .iter()

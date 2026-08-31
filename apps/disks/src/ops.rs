@@ -26,6 +26,7 @@
 //! (`DISKS_LIVE`), so hermetic builds/tests and `--shots` stay inert — they
 //! only ever build the plans.
 
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::process::Command;
@@ -83,8 +84,9 @@ pub fn udisks_object_path(dev_leaf: &str) -> String {
         if b.is_ascii_alphanumeric() {
             s.push(b as char);
         } else {
-            s.push('_');
-            s.push_str(&format!("{b:02x}"));
+            // `write!` into the existing buffer rather than `format!` + a
+            // second allocation per escaped byte.
+            let _ = write!(s, "_{b:02x}");
         }
     }
     s
@@ -253,8 +255,8 @@ pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
     let sstart = Instant::now();
     for _ in 0..SEEKS {
         rng = rng
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         let off = (rng % size.saturating_sub(4096).max(1)) & !0xFFF;
         let _ = f.seek(SeekFrom::Start(off));
         let _ = f.read(&mut small);
