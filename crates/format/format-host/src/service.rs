@@ -25,6 +25,14 @@ impl FormatRouterService {
 }
 
 impl format_router::Server for FormatRouterService {
+    // capnp-rpc's generated `Results`/`Params` types are `Rc`-based and
+    // never `Send` by design — this whole server runs on capnp-rpc's own
+    // single-threaded local executor, with `spawn_blocking` below the only
+    // bridge to a real thread. There is no Send-safe alternative shape.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based Results/Params are never Send; this runs on its local executor"
+    )]
     fn detect(
         self: capnp::capability::Rc<Self>,
         params: format_router::DetectParams,
@@ -58,6 +66,11 @@ impl format_router::Server for FormatRouterService {
         }
     }
 
+    // See the comment on `detect` above — same capnp-rpc Rc-based shape.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based Results/Params are never Send; this runs on its local executor"
+    )]
     fn import_as(
         self: capnp::capability::Rc<Self>,
         params: format_router::ImportAsParams,
@@ -85,6 +98,11 @@ impl format_router::Server for FormatRouterService {
         }
     }
 
+    // See the comment on `detect` above — same capnp-rpc Rc-based shape.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based Results/Params are never Send; this runs on its local executor"
+    )]
     fn export_as(
         self: capnp::capability::Rc<Self>,
         params: format_router::ExportAsParams,
@@ -113,6 +131,11 @@ impl format_router::Server for FormatRouterService {
         }
     }
 
+    // See the comment on `detect` above — same capnp-rpc Rc-based shape.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based Results/Params are never Send; this runs on its local executor"
+    )]
     fn list(
         self: capnp::capability::Rc<Self>,
         _params: format_router::ListParams,
@@ -121,9 +144,12 @@ impl format_router::Server for FormatRouterService {
         let router = self.router.clone();
         async move {
             let ids = router.list();
-            let mut out = results.get().init_providers(ids.len() as u32);
+            // Bounded by how many format providers are registered — nowhere
+            // near `u32::MAX`; `try_from` spells that out instead of `as`.
+            let count = u32::try_from(ids.len()).unwrap_or(u32::MAX);
+            let mut out = results.get().init_providers(count);
             for (i, id) in ids.iter().enumerate() {
-                out.set(i as u32, id.as_str());
+                out.set(u32::try_from(i).unwrap_or(u32::MAX), id.as_str());
             }
             Ok(())
         }

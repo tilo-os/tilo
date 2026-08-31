@@ -99,10 +99,10 @@ fn legacy_libp2p_invite_error(json: &[u8]) -> Option<String> {
     }
     RoomId::parse(&token.room_id).filter(|room| !room.is_nil())?;
     let protobuf = B64.decode(token.owner_public_key.as_bytes()).ok()?;
-    if protobuf.len() != 36 || protobuf[..4] != [0x08, 0x01, 0x12, 0x20] {
+    if protobuf.len() != 36 || protobuf.get(..4)? != [0x08, 0x01, 0x12, 0x20] {
         return None;
     }
-    let public: [u8; 32] = protobuf[4..].try_into().ok()?;
+    let public: [u8; 32] = protobuf.get(4..)?.try_into().ok()?;
     let endpoint = crate::network::behaviour::endpoint_from_legacy_peer_id(&token.owner_peer_id)?;
     if endpoint.as_bytes() != &public {
         return None;

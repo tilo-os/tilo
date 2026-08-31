@@ -262,11 +262,13 @@ fn read_fingerprint(path: &Path) -> Result<String, String> {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     const HEX: &[u8; 16] = b"0123456789abcdef";
     for b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0xF) as usize] as char);
+        // `b >> 4` and `b & 0xF` are both always in 0..16, so these never miss;
+        // `.get()` documents that rather than indexing directly.
+        out.push(HEX.get((b >> 4) as usize).copied().unwrap_or(b'?') as char);
+        out.push(HEX.get((b & 0xF) as usize).copied().unwrap_or(b'?') as char);
     }
     out
 }

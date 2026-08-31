@@ -388,7 +388,7 @@ pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile
         .map(|profile| profile.id.as_str());
     let next_index = current
         .and_then(|id| ids.iter().position(|candidate| candidate == id))
-        .map_or(0, |index| (index + 1) % ids.len());
+        .map_or(0, |index| index.wrapping_add(1).wrapping_rem(ids.len()));
     let next_id = &ids[next_index];
     registry.bind_workspace(room.to_string(), next_id)?;
     let profile = registry.identities.get(next_id).cloned();

@@ -101,6 +101,21 @@ fn active_identity(
     Ok((room, profile))
 }
 
+/// Current wall-clock time as nanoseconds since the epoch, clamped to
+/// `u64::MAX` rather than truncated — a value that large is centuries past
+/// any real expiry/enrollment window this crate computes against.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "clamped to 0..=u64::MAX immediately above, so it always fits u64"
+)]
+fn now_ns_u64() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .min(u128::from(u64::MAX)) as u64
+}
+
 fn parse_device_key(value: &str) -> Result<[u8; 32], ActionError> {
     let value = value.trim();
     if value.len() != 64 {
@@ -110,7 +125,12 @@ fn parse_device_key(value: &str) -> Result<[u8; 32], ActionError> {
     }
     let mut key = [0_u8; 32];
     for (index, slot) in key.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+        let start = index.saturating_mul(2);
+        let end = start.saturating_add(2);
+        let chunk = value
+            .get(start..end)
+            .ok_or_else(|| ActionError::Refused("device fingerprint is not hex".into()))?;
+        *slot = u8::from_str_radix(chunk, 16)
             .map_err(|_| ActionError::Refused("device fingerprint is not hex".into()))?;
     }
     Ok(key)
@@ -381,11 +401,7 @@ impl Action {
             "Copy a five-minute enrollment token for a member device",
             |st, _| {
                 let (_, profile) = active_identity(st)?;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-                    .min(u128::from(u64::MAX)) as u64;
+                let now = now_ns_u64();
                 let expires = now.saturating_add(5 * 60 * 1_000_000_000);
                 let token = crate::device_fleet::DeviceFleetStore::from_env()
                     .and_then(|store| {
@@ -429,11 +445,7 @@ impl Action {
                         ));
                     }
                 };
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-                    .min(u128::from(u64::MAX)) as u64;
+                let now = now_ns_u64();
                 crate::device_fleet::DeviceFleetStore::from_env()
                     .and_then(|store| store.revoke(&profile.id, key, reason, now))
                     .map_err(|error| ActionError::Refused(error.to_string()))?;

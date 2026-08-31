@@ -75,7 +75,15 @@ fn hdr10_baseline_supports_pq_and_prefers_hdr_format() {
     let caps = DisplayCapabilities::hdr10_baseline();
     assert!(caps.supports_pq_output);
     assert!(caps.bt2020_gamut);
-    assert_eq!(caps.max_luminance_nits as u32, 1000);
+    // Fixture value; clamped to a range f32 represents exactly, so the cast
+    // below can't misbehave regardless of the source value.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0.0..=1_000_000.0 immediately above, so it always fits a non-negative u32"
+    )]
+    let max_luminance_nits_u32 = caps.max_luminance_nits.round().clamp(0.0, 1_000_000.0) as u32;
+    assert_eq!(max_luminance_nits_u32, 1000);
     let fmt = preferred_hdr_swapchain_format(&caps).expect("HDR10 has a format");
     // Either scRGB or HDR10 primary — both are HDR-capable.
     use vello::wgpu::TextureFormat;

@@ -168,7 +168,9 @@ fn pump(
     predicate: impl Fn(&ClientAppState) -> bool,
     label: &str,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(3))
+        .unwrap_or_else(Instant::now);
     while Instant::now() < deadline {
         let _ = conn.flush();
         let _ = display.dispatch_clients(server_state);

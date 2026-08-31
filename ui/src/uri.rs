@@ -93,7 +93,7 @@ mod tests {
             vec![
                 ("error".into(), "access_denied".into()),
                 ("desc".into(), "User said no".into()),
-                ("empty".into(), "".into()),
+                ("empty".into(), String::new()),
             ]
         );
     }
