@@ -242,6 +242,11 @@ pub struct MediaData {
     /// `None`, i.e. an ordinary reference.
     #[serde(default)]
     pub text: Option<crate::model::TextSource>,
+    /// Whether a picture source also carries sound. Travels with the item so
+    /// a collaborator's mixer finds the same audio ours does; absent in a
+    /// payload written before the mixer could read it, hence `default`.
+    #[serde(default)]
+    pub has_audio: bool,
 }
 
 impl MediaData {
@@ -258,11 +263,13 @@ impl MediaData {
             path: m.path.clone(),
             hydration: m.hydration.as_str().to_string(),
             text: m.text.clone(),
+            has_audio: m.has_audio,
         }
     }
 
     fn to_media(&self) -> Option<MediaItem> {
         Some(MediaItem {
+            has_audio: self.has_audio,
             id: self.id.parse::<Uuid>().ok()?,
             name: self.name.clone(),
             kind: MediaKind::from_str(&self.kind),
