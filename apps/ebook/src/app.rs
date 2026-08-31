@@ -47,6 +47,7 @@ use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Widget};
 
+use crate::color_picker::{ColorEdit, ColorPicker, PickTarget, PickerPress};
 use crate::comment_overlay::{CommentAction, CommentOverlay};
 use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
@@ -340,11 +341,6 @@ enum Action {
     /// Open the colour picker on one colour slot (0=page,1=ink,2=accent) of a
     /// scheme.
     PickSchemeColor(String, usize),
-    PickerDone,
-    PickerCancel,
-    /// Snap the picker to a hue-wheel primary (palette chips): a fast path to
-    /// a pure hue alongside the SV square / hue strip.
-    PickerSwatch([u8; 3]),
     BeginRenameScheme(String),
 
     // --- settings screen: fonts ------------------------------------------
@@ -359,50 +355,6 @@ enum Action {
     AddSystemFont(String),
     BeginRenameFont(String),
     // --- library shelf ---------------------------------------------------
-}
-
-/// What the colour picker is editing.
-#[derive(Clone, PartialEq, Eq)]
-enum PickTarget {
-    /// Create a brand-new scheme from the chosen background colour on Done.
-    NewScheme,
-    /// Live-edit one colour slot (0=page,1=ink,2=accent) of an existing scheme.
-    Slot(String, usize),
-}
-
-/// Which sub-control of the colour picker a drag is currently steering.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PickPart {
-    /// The saturation × value square.
-    Sv,
-    /// The vertical hue strip.
-    Hue,
-}
-
-/// Live colour-picker state, edited in HSV (so hue survives dragging value to
-/// black) and committed back as an sRGB triple.
-#[derive(Clone)]
-struct ColorPick {
-    target: PickTarget,
-    /// Current hue in degrees (preserved across value/sat drags on greys).
-    hue: f32,
-    sat: f32,
-    val: f32,
-}
-
-impl ColorPick {
-    fn from_rgb(target: PickTarget, rgb: [u8; 3]) -> Self {
-        let (h, s, v) = crate::model::rgb_to_hsv(rgb);
-        Self {
-            target,
-            hue: h,
-            sat: s,
-            val: v,
-        }
-    }
-    fn rgb(&self) -> [u8; 3] {
-        crate::model::hsv_to_rgb(self.hue, self.sat, self.val)
-    }
 }
 
 /// Icon glyphs the chrome draws (each maps to a `paint::*` vector helper).
@@ -588,12 +540,8 @@ pub struct BooksApp {
     renaming: Option<Rename>,
     /// Shared spin buttons used by the quick-reading and font-manager panels.
     number_controls: NumberControls,
-    picker: Option<ColorPick>,
-    /// Which picker sub-control a drag currently steers.
-    pick_drag: Option<PickPart>,
-    /// Picker sub-control geometry, recorded in draw for drag hit-testing.
-    pick_sv: Rect,
-    pick_hue: Rect,
+    /// Modal colour editor; owns HSV state, drawing, hit regions and drags.
+    color_picker: ColorPicker,
     default_font_menu: bool,
     library_prefs: crate::model::LibraryPrefs,
     watched_folders: Vec<PathBuf>,
@@ -763,10 +711,7 @@ impl BooksApp {
             settings_tab: SettingsTab::Fonts,
             renaming: None,
             number_controls: NumberControls::default(),
-            picker: None,
-            pick_drag: None,
-            pick_sv: Rect::ZERO,
-            pick_hue: Rect::ZERO,
+            color_picker: ColorPicker::default(),
             default_font_menu: false,
             library_prefs: crate::model::LibraryPrefs::default(),
             watched_folders: Vec::new(),
@@ -1107,10 +1052,8 @@ impl BooksApp {
                     [0x1A, 0x22, 0x33],
                 ));
                 self.shot_schemes = Some(sc);
-                self.picker = Some(ColorPick::from_rgb(
-                    PickTarget::Slot("scheme1".into(), 0),
-                    [0x1A, 0x22, 0x33],
-                ));
+                self.color_picker
+                    .open(PickTarget::Slot("scheme1".into(), 0), [0x1A, 0x22, 0x33]);
             }
             _ => return false,
         }
@@ -1634,9 +1577,6 @@ impl BooksApp {
             Action::CloseSchemeEditor => self.on_close_scheme_editor(doc),
             Action::NewSchemeViaPicker => self.on_new_scheme_via_picker(doc),
             Action::PickSchemeColor(id, slot) => self.on_pick_scheme_color(id, slot, doc),
-            Action::PickerSwatch(rgb) => self.on_picker_swatch(rgb, doc),
-            Action::PickerDone => self.commit_picker(doc),
-            Action::PickerCancel => self.on_picker_cancel(),
             Action::BeginRenameScheme(id) => self.on_begin_rename_scheme(id, doc),
 
             // --- settings screen: fonts ----------------------------------
@@ -1959,7 +1899,7 @@ impl BooksApp {
         self.type_popover = false;
         // Numeric controls retain their own edit state and commit on blur.
         self.font_picker = false;
-        self.picker = None;
+        self.color_picker.cancel();
         self.default_font_menu = false;
         self.editing_scheme = None;
         self.renaming = None;
@@ -1969,7 +1909,7 @@ impl BooksApp {
     fn on_close_settings(&mut self, doc: &mut AutoCommit) {
         self.commit_rename(doc);
         self.font_picker = false;
-        self.picker = None;
+        self.color_picker.cancel();
         self.default_font_menu = false;
         self.editing_scheme = None;
         self.view = if self.library.is_empty() {
@@ -1982,7 +1922,7 @@ impl BooksApp {
     fn on_set_settings_tab(&mut self, tab: SettingsTab, doc: &mut AutoCommit) {
         self.commit_rename(doc);
         self.default_font_menu = false;
-        self.picker = None;
+        self.color_picker.cancel();
         self.settings_tab = tab;
         self.settings_scroll = 0.0;
     }
@@ -2046,11 +1986,8 @@ impl BooksApp {
         // Open the colour picker to choose a background; the scheme is
         // derived + created when the picker is committed.
         self.commit_rename(doc);
-        self.picker = Some(ColorPick::from_rgb(
-            PickTarget::NewScheme,
-            [0x1B, 0x18, 0x16],
-        ));
-        self.pick_drag = None;
+        self.color_picker
+            .open(PickTarget::NewScheme, [0x1B, 0x18, 0x16]);
     }
 
     fn on_pick_scheme_color(&mut self, id: String, slot: usize, doc: &mut AutoCommit) {
@@ -2061,24 +1998,7 @@ impl BooksApp {
             .iter()
             .find(|s| s.id == id)
             .map_or([0x80, 0x80, 0x80], |s| s.slots()[slot].1);
-        self.picker = Some(ColorPick::from_rgb(PickTarget::Slot(id, slot), cur));
-        self.pick_drag = None;
-    }
-
-    fn on_picker_swatch(&mut self, rgb: [u8; 3], doc: &mut AutoCommit) {
-        if let Some(p) = self.picker.as_mut() {
-            let (h, s, v) = crate::model::rgb_to_hsv(rgb);
-            p.hue = h;
-            p.sat = s;
-            p.val = v;
-            let t = p.target.clone();
-            self.apply_live_pick(doc, &t);
-        }
-    }
-
-    fn on_picker_cancel(&mut self) {
-        self.picker = None;
-        self.pick_drag = None;
+        self.color_picker.open(PickTarget::Slot(id, slot), cur);
     }
 
     fn on_begin_rename_scheme(&mut self, id: String, doc: &mut AutoCommit) {
@@ -2210,59 +2130,33 @@ impl BooksApp {
     /// Apply the picker's live colour to its target (called on every drag). For
     /// a slot, this live-edits the scheme so the manager previews the change;
     /// for a new scheme, nothing is written until [`Self::commit_picker`].
-    fn apply_live_pick(&self, doc: &mut AutoCommit, target: &PickTarget) {
-        let Some(p) = self.picker.as_ref() else {
-            return;
-        };
-        let rgb = p.rgb();
-        if let PickTarget::Slot(id, slot) = target {
+    fn apply_live_pick(&self, doc: &mut AutoCommit, edit: &ColorEdit) {
+        if let PickTarget::Slot(id, slot) = &edit.target {
             let mut sc = self.schemes.clone();
             if let Some(s) = sc.iter_mut().find(|s| &s.id == id && !s.builtin) {
-                s.set_slot(*slot, rgb);
+                s.set_slot(*slot, edit.rgb);
                 BooksDoc::write_schemes(doc, &sc);
             }
         }
     }
 
-    /// Steer the picker from a pointer position within the SV square or hue
-    /// strip, then apply the resulting colour live.
-    fn apply_pick_drag(&mut self, p: Point, doc: &mut AutoCommit) {
-        let Some(part) = self.pick_drag else { return };
-        let (sv, hue) = (self.pick_sv, self.pick_hue);
-        let target = match self.picker.as_ref() {
-            Some(pk) => pk.target.clone(),
-            None => return,
-        };
-        if let Some(pk) = self.picker.as_mut() {
-            match part {
-                PickPart::Sv => {
-                    let sx = ((p.x - sv.x0) / sv.width().max(1.0)).clamp(0.0, 1.0) as f32;
-                    let sy = ((p.y - sv.y0) / sv.height().max(1.0)).clamp(0.0, 1.0) as f32;
-                    pk.sat = sx;
-                    pk.val = 1.0 - sy;
-                }
-                PickPart::Hue => {
-                    let hy = ((p.y - hue.y0) / hue.height().max(1.0)).clamp(0.0, 1.0) as f32;
-                    pk.hue = hy * 360.0;
-                }
-            }
-        }
-        self.apply_live_pick(doc, &target);
-    }
-
     /// Commit the colour picker: create the new scheme (for a from-background
     /// pick) or finalise the slot edit, then close.
     fn commit_picker(&mut self, doc: &mut AutoCommit) {
-        let Some(p) = self.picker.take() else { return };
-        self.pick_drag = None;
-        let rgb = p.rgb();
-        match p.target {
+        let Some(edit) = self.color_picker.take() else {
+            return;
+        };
+        match edit.target {
             PickTarget::NewScheme => {
                 let mut sc = self.schemes.clone();
                 let ids: Vec<String> = sc.iter().map(|s| s.id.clone()).collect();
                 let new_id = Self::fresh_id("scheme", &ids);
                 let n = sc.iter().filter(|s| !s.builtin).count() + 1;
-                sc.push(ColorScheme::from_bg(&new_id, &format!("Scheme {n}"), rgb));
+                sc.push(ColorScheme::from_bg(
+                    &new_id,
+                    &format!("Scheme {n}"),
+                    edit.rgb,
+                ));
                 BooksDoc::write_schemes(doc, &sc);
                 self.editing_scheme = Some(new_id.clone());
                 self.bump_setting(doc, |st| st.scheme_id = new_id);
@@ -2270,7 +2164,7 @@ impl BooksApp {
             PickTarget::Slot(id, slot) => {
                 let mut sc = self.schemes.clone();
                 if let Some(s) = sc.iter_mut().find(|s| s.id == id && !s.builtin) {
-                    s.set_slot(slot, rgb);
+                    s.set_slot(slot, edit.rgb);
                 }
                 BooksDoc::write_schemes(doc, &sc);
             }
@@ -3531,9 +3425,12 @@ impl BooksApp {
             *handled = true;
             return;
         }
-        // Colour-picker drag: steer the SV square / hue strip.
-        if self.mouse_down && self.pick_drag.is_some() {
-            self.apply_pick_drag(p, doc);
+        // The modal colour picker owns its drag geometry and HSV state; the
+        // app only persists the semantic colour edit it emits.
+        if self.mouse_down
+            && let Some(edit) = self.color_picker.drag_to(p)
+        {
+            self.apply_live_pick(doc, &edit);
             self.refresh_from_doc(doc);
             *handled = true;
             return;
@@ -3589,6 +3486,19 @@ impl BooksApp {
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
+        if let Some(action) = self.color_picker.press(self.cursor) {
+            self.mouse_down = true;
+            match action {
+                PickerPress::Swallow => {}
+                PickerPress::Cancel => self.color_picker.cancel(),
+                PickerPress::Done => self.commit_picker(doc),
+                PickerPress::Edit(edit) => self.apply_live_pick(doc, &edit),
+            }
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
         if let Some(action) = self.note_composer.hit_test(self.cursor) {
             match action {
                 NoteAction::Swallow => {}
@@ -3631,26 +3541,6 @@ impl BooksApp {
         self.mouse_down = true;
         self.dragging_sel = false;
         self.press_pos = self.cursor;
-
-        // Colour-picker SV/hue press begins a drag and steers immediately,
-        // taking priority over the panel's tap-swallow.
-        if self.picker.is_some() {
-            let part = if self.pick_sv.contains(self.cursor) {
-                Some(PickPart::Sv)
-            } else if self.pick_hue.contains(self.cursor) {
-                Some(PickPart::Hue)
-            } else {
-                None
-            };
-            if let Some(part) = part {
-                self.pick_drag = Some(part);
-                self.apply_pick_drag(self.cursor, doc);
-                self.refresh_from_doc(doc);
-                self.dirty = true;
-                *handled = true;
-                return;
-            }
-        }
 
         // A press on a highlight's margin marker begins a re-anchor
         // drag, taking priority over text selection. A press that
@@ -3790,7 +3680,7 @@ impl BooksApp {
         }
         self.drag_select.release();
         let was_drag = self.dragging_sel;
-        if self.pick_drag.take().is_some() {
+        if self.color_picker.end_drag() {
             self.dirty = true;
             *handled = true;
         }
@@ -3922,9 +3812,8 @@ impl BooksApp {
 
     fn handle_settings_escape_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
         if let Key::Named(NamedKey::Escape) = key {
-            if self.picker.is_some() {
-                self.picker = None;
-                self.pick_drag = None;
+            if self.color_picker.is_open() {
+                self.color_picker.cancel();
             } else if self.font_picker {
                 self.font_picker = false;
             } else if self.default_font_menu {
@@ -8076,8 +7965,9 @@ impl BooksApp {
             self.draw_font_picker(scene, t, tr, theme, &c);
         }
         // The colour picker floats above everything when open.
-        if self.picker.is_some() {
-            self.draw_color_picker(scene, t, tr, theme, &c);
+        if self.color_picker.is_open() {
+            self.color_picker
+                .draw(scene, t, tr, theme, self.rect, self.cursor);
         }
     }
 
@@ -9450,278 +9340,6 @@ impl BooksApp {
         self.push_hit(drect, Action::CloseSchemeEditor);
     }
 
-    /// The reusable colour picker: HSV square + hue strip + quick palette,
-    /// live preview and hex readout. Records the SV/hue rects for drag steering.
-    fn draw_color_picker(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-    ) {
-        let Some(pick) = self.picker.clone() else {
-            return;
-        };
-        let r = self.rect;
-        let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(0.45);
-        scene.fill(Fill::NonZero, t, scrim, None, &r);
-        // Tap-away cancels.
-        self.push_hit(r, Action::PickerCancel);
-
-        let pw = 372.0_f64.min(r.width() - 40.0);
-        let ph = 396.0_f64.min(r.height() - 40.0);
-        let px0 = r.x0 + (r.width() - pw) / 2.0;
-        let py0 = r.y0 + (r.height() - ph) / 2.0;
-        let panel = Rect::new(px0, py0, px0 + pw, py0 + ph);
-        paint::fill_round(
-            scene,
-            t,
-            panel,
-            f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            t,
-            panel,
-            f64::from(theme.tokens.radii.lg),
-            c.border_standard,
-            1.0,
-        );
-        self.push_hit(panel, Action::Swallow);
-
-        let ix0 = px0 + 20.0;
-        let ix1 = px0 + pw - 20.0;
-        let title = match &pick.target {
-            PickTarget::NewScheme => "New scheme — pick a background",
-            PickTarget::Slot(_, 0) => "Page colour",
-            PickTarget::Slot(_, 1) => "Text colour",
-            PickTarget::Slot(..) => "Accent colour",
-        };
-        tr.draw_text_weighted(
-            scene,
-            title,
-            15.0,
-            c.text_primary,
-            t * Affine::translate((ix0, py0 + 16.0)),
-            None,
-            TextWeight::Bold,
-        );
-
-        let top = py0 + 46.0;
-        let sv_size = 190.0;
-        self.draw_color_picker_sv_hue(scene, t, c, ix0, ix1, top, sv_size, &pick);
-
-        let prev_y = top + sv_size + 16.0;
-        Self::draw_color_picker_preview(scene, t, tr, c, ix0, prev_y, &pick);
-
-        let chip_y = prev_y + 46.0;
-        self.draw_color_picker_chips(scene, t, theme, c, ix0, ix1, chip_y);
-
-        let btn_y = py0 + ph - 46.0;
-        self.draw_color_picker_buttons(scene, t, tr, theme, c, ix1, btn_y);
-    }
-
-    /// SV square + hue strip. Also records `pick_sv`/`pick_hue` so
-    /// `handle_event` can steer drags against the same rects.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t, s, v, h, i are the standard transform/HSV-channel/loop-index names \
-                  used throughout this file's colour-grid drawing"
-    )]
-    fn draw_color_picker_sv_hue(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        top: f64,
-        sv_size: f64,
-        pick: &ColorPick,
-    ) {
-        let hue_w = 22.0;
-        let sv = Rect::new(ix0, top, ix0 + sv_size, top + sv_size);
-        let hue = Rect::new(ix1 - hue_w, top, ix1, top + sv_size);
-        self.pick_sv = sv;
-        self.pick_hue = hue;
-
-        // SV square: a grid of cells sampling hsv(hue, s, v). Cheap enough for a
-        // one-frame modal and keeps the picker self-contained (no gradient rig).
-        let (cols, rows) = (20usize, 20usize);
-        let cw = sv_size / cols as f64;
-        let chh = sv_size / rows as f64;
-        for gy in 0..rows {
-            for gx in 0..cols {
-                let s = (gx as f32 + 0.5) / cols as f32;
-                let v = 1.0 - (gy as f32 + 0.5) / rows as f32;
-                let rgb = crate::model::hsv_to_rgb(pick.hue, s, v);
-                let cell = Rect::new(
-                    sv.x0 + gx as f64 * cw,
-                    sv.y0 + gy as f64 * chh,
-                    sv.x0 + gx as f64 * cw + cw + 0.8,
-                    sv.y0 + gy as f64 * chh + chh + 0.8,
-                );
-                paint::fill_rect(scene, t, cell, Color::from_rgb8(rgb[0], rgb[1], rgb[2]));
-            }
-        }
-        paint::stroke_round(scene, t, sv, 6.0, c.border_standard, 1.0);
-        // SV cursor.
-        let cur = Point::new(
-            sv.x0 + f64::from(pick.sat) * sv_size,
-            sv.y0 + f64::from(1.0 - pick.val) * sv_size,
-        );
-        paint::circle(scene, t, cur, 7.0, Color::from_rgba8(255, 255, 255, 230));
-        let ring = Rect::new(cur.x - 6.0, cur.y - 6.0, cur.x + 6.0, cur.y + 6.0);
-        paint::stroke_round(scene, t, ring, 6.0, Color::from_rgba8(0, 0, 0, 180), 1.5);
-
-        // Hue strip.
-        let bands = 48usize;
-        let bh = sv_size / bands as f64;
-        for i in 0..bands {
-            let h = i as f32 / bands as f32 * 360.0;
-            let rgb = crate::model::hsv_to_rgb(h, 1.0, 1.0);
-            let by = hue.y0 + i as f64 * bh;
-            paint::fill_rect(
-                scene,
-                t,
-                Rect::new(hue.x0, by, hue.x1, by + bh + 0.8),
-                Color::from_rgb8(rgb[0], rgb[1], rgb[2]),
-            );
-        }
-        paint::stroke_round(scene, t, hue, 4.0, c.border_standard, 1.0);
-        let hy = hue.y0 + f64::from(pick.hue / 360.0) * sv_size;
-        let hmark = Rect::new(hue.x0 - 3.0, hy - 3.0, hue.x1 + 3.0, hy + 3.0);
-        paint::stroke_round(scene, t, hmark, 3.0, Color::from_rgb8(250, 250, 252), 2.0);
-    }
-
-    /// Preview swatch + hex readout for the color under the cursor.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_color_picker_preview(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        prev_y: f64,
-        pick: &ColorPick,
-    ) {
-        let rgb = pick.rgb();
-        let sw = Rect::new(ix0, prev_y, ix0 + 54.0, prev_y + 34.0);
-        paint::fill_round(scene, t, sw, 8.0, Color::from_rgb8(rgb[0], rgb[1], rgb[2]));
-        paint::stroke_round(scene, t, sw, 8.0, c.border_standard, 1.0);
-        tr.draw_text_weighted(
-            scene,
-            &crate::model::hex_string(rgb),
-            15.0,
-            c.text_primary,
-            t * Affine::translate((ix0 + 66.0, prev_y + 9.0)),
-            None,
-            TextWeight::Semibold,
-        );
-    }
-
-    /// Quick palette chips.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_color_picker_chips(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        chip_y: f64,
-    ) {
-        let chips: [[u8; 3]; 10] = [
-            [0xEF, 0x44, 0x44],
-            [0xF5, 0x9E, 0x0B],
-            [0xFA, 0xCC, 0x15],
-            [0x10, 0xB9, 0x81],
-            [0x3B, 0x82, 0xF6],
-            [0xA7, 0x8B, 0xFA],
-            [0xF6, 0xEC, 0xD8],
-            [0xFC, 0xFC, 0xFA],
-            [0x2A, 0x2A, 0x2E],
-            [0x14, 0x18, 0x22],
-        ];
-        let chip = 26.0;
-        let cgap = (ix1 - ix0 - chips.len() as f64 * chip) / (chips.len() as f64 - 1.0);
-        let mut cx = ix0;
-        for col in chips {
-            let cr = Rect::new(cx, chip_y, cx + chip, chip_y + chip);
-            paint::fill_round(scene, t, cr, 6.0, Color::from_rgb8(col[0], col[1], col[2]));
-            let hov = self.is_hover(cr);
-            paint::stroke_round(
-                scene,
-                t,
-                cr,
-                6.0,
-                if hov {
-                    theme.border_focus
-                } else {
-                    c.border_standard
-                },
-                if hov { 2.0 } else { 1.0 },
-            );
-            self.push_hit(cr, Action::PickerSwatch(col));
-            cx += chip + cgap;
-        }
-    }
-
-    /// Cancel / Done buttons.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_color_picker_buttons(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix1: f64,
-        btn_y: f64,
-    ) {
-        let done_w = f64::from(
-            tr.measure_weighted("Done", 13.0, None, TextWeight::Semibold)
-                .0,
-        ) + 44.0;
-        let drect = Rect::new(ix1 - done_w, btn_y, ix1, btn_y + 34.0);
-        paint::fill_round(scene, t, drect, 17.0, theme.accent_primary);
-        tr.draw_text_weighted(
-            scene,
-            "Done",
-            13.0,
-            Color::from_rgb8(248, 248, 252),
-            t * Affine::translate((ix1 - done_w + 22.0, btn_y + 9.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        self.push_hit(drect, Action::PickerDone);
-        let can_w = f64::from(
-            tr.measure_weighted("Cancel", 13.0, None, TextWeight::Medium)
-                .0,
-        ) + 30.0;
-        let crect = Rect::new(
-            ix1 - done_w - 10.0 - can_w,
-            btn_y,
-            ix1 - done_w - 10.0,
-            btn_y + 34.0,
-        );
-        paint::fill_round(scene, t, crect, 17.0, c.surfaces.overlay);
-        tr.draw_text_weighted(
-            scene,
-            "Cancel",
-            13.0,
-            c.text_primary,
-            t * Affine::translate((crect.x0 + 15.0, btn_y + 9.0)),
-            None,
-            TextWeight::Medium,
-        );
-        self.push_hit(crect, Action::PickerCancel);
-    }
-
     fn draw_font_picker(
         &mut self,
         scene: &mut Scene,
@@ -10603,7 +10221,7 @@ mod interaction_tests {
         let newbtn = find_hit(&app, |a| matches!(a, Action::NewSchemeViaPicker))
             .expect("a New scheme button");
         assert!(click(&mut app, &mut doc, newbtn), "new-via-picker handled");
-        assert!(app.picker.is_some(), "the colour picker opened");
+        assert!(app.color_picker.is_open(), "the colour picker opened");
         assert_eq!(
             BooksDoc::read_schemes(&doc).len(),
             before,
@@ -10612,7 +10230,7 @@ mod interaction_tests {
         // Commit the picker -> a scheme is derived from the chosen background,
         // selected, and opened in the editor.
         frame(&mut app, &mut doc, 1200.0, 860.0);
-        let done = find_hit(&app, |a| matches!(a, Action::PickerDone)).expect("a Done button");
+        let done = app.color_picker.done_center().expect("a Done button");
         assert!(click(&mut app, &mut doc, done), "picker done handled");
         let schemes = BooksDoc::read_schemes(&doc);
         assert_eq!(
@@ -10662,10 +10280,10 @@ mod interaction_tests {
             click(&mut app, &mut doc, sw),
             "picker opened on the page slot"
         );
-        assert!(app.picker.is_some());
+        assert!(app.color_picker.is_open());
         // Drag on the SV square: a press + move within it applies a new colour.
         frame(&mut app, &mut doc, 1200.0, 900.0);
-        let sv = app.pick_sv;
+        let sv = app.color_picker.sv_rect();
         ptr_move(
             &mut app,
             &mut doc,
