@@ -58,6 +58,10 @@ pub mod offscreen {
     /// is `Some(n)`, every `Wait(k)` step in the scenario is expanded
     /// into `n` intermediate snapshots so animation curves are inspectable
     /// frame-by-frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the output directory cannot be created.
     pub fn run_scenario(
         driver: &mut ShellDriver,
         scenario: &Scenario,
@@ -84,6 +88,10 @@ pub mod offscreen {
 
     /// Backwards-compat scene-set path: render each named scene with a
     /// fresh driver (so flag mutations don't bleed between scenes).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the output directory cannot be created or if scene setup fails.
     pub fn run_scenes(scenes: &[String], dir: &Path, viewport: (u32, u32)) {
         std::fs::create_dir_all(dir).expect("create offscreen output dir");
         let mut renderer = OffscreenRenderer::new(viewport.0, viewport.1);
@@ -122,6 +130,11 @@ pub mod offscreen {
 pub mod headless {
     use super::{JsonDirSink, Path, Scenario, ShellDriver, scenario};
 
+    /// Run a scenario through the headless state dumper.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the output directory cannot be created.
     pub fn run_scenario(
         driver: &mut ShellDriver,
         scenario: &Scenario,
@@ -164,6 +177,10 @@ pub mod recording {
     ///
     /// Output is a raw Annex-B byte stream (no MP4 container). ffplay /
     /// mpv / vlc all play `.h264` directly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the output file cannot be created or the encoder encounters an error.
     pub fn run_scenario(
         driver: &mut ShellDriver,
         scenario: &Scenario,
