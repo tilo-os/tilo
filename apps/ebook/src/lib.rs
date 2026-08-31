@@ -48,6 +48,7 @@ mod input_controls;
 pub mod model;
 pub mod paginate;
 pub mod paint;
+mod reader_bubble;
 pub mod reader_theme;
 pub mod search_provider;
 pub mod xhtml;
