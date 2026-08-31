@@ -141,6 +141,23 @@ const PIP_INSET: f64 = 0.04;
 /// Width of the key control at the head of an animatable inspector row.
 const KEY_BOX: f64 = 20.0;
 
+/// The keyboard cursor's ring, in the width every shared widget in `ui` draws
+/// focus at (`Button`, `DataTable`, `IconGrid`, `ToggleGroup` all stroke 2px in
+/// `Theme::border_focus`). The colour is always read from the theme — in the
+/// high-contrast theme it is a yellow nothing else uses, which is the whole
+/// point of a focus colour being a token rather than a literal.
+const FOCUS_RING_W: f64 = 2.0;
+/// How far inside a control's own outline the ring is drawn where the two would
+/// otherwise land on the same edge.
+///
+/// A palette declares one accent and its focus colour normally follows it, so
+/// `border_focus` and `accent[5]` are the same colour in most themes. The bin's
+/// selected row already carries an accent outline on its edge; a ring laid on
+/// that edge would disappear into it, so the cursor's ring sits inside and the
+/// two read as concentric. Around the transport's round buttons the offset goes
+/// the other way — see [`draw_focus_ring_circle`].
+const FOCUS_RING_INSET: f64 = 3.0;
+
 const BIN_BREAKPOINT: f64 = 900.0;
 
 /// Width the project button takes when the topbar has room for it, and the
@@ -558,6 +575,58 @@ impl NumField {
             NumField::TitleBackdrop => "Backdrop",
             NumField::CurveMix => "Amount",
         }
+    }
+
+    /// A stable tag naming which control this is, which is what the accessible
+    /// key hashes.
+    ///
+    /// It cannot be the visible label. `Rotation` and `MaskRotation` both read
+    /// "Rotation" — correctly, each inside its own section — and the key was
+    /// `hash_key(&label())`, so the two hashed identically: an action routed at
+    /// the mask's tilt landed on whichever of the two rows the walk reached
+    /// first, which is the transform's. The tag is derived from the variant
+    /// instead, so two rows may share a word without sharing an identity, and a
+    /// key stays stable across a re-layout and a relabelling.
+    ///
+    /// Dotted and prefixed like [`PickField::tag`], for the same reason: the
+    /// two live in one namespace once they are hashed.
+    fn tag(self) -> &'static str {
+        match self {
+            NumField::Opacity => "clip.opacity",
+            NumField::Volume => "clip.volume",
+            NumField::Brightness => "clip.brightness",
+            NumField::Contrast => "clip.contrast",
+            NumField::Saturation => "clip.saturation",
+            NumField::FadeIn => "clip.fade_in",
+            NumField::FadeOut => "clip.fade_out",
+            NumField::TransitionLen => "clip.transition_len",
+            NumField::ScaleX => "clip.scale_x",
+            NumField::ScaleY => "clip.scale_y",
+            NumField::PosX => "clip.pos_x",
+            NumField::PosY => "clip.pos_y",
+            NumField::Rotation => "clip.rotation",
+            NumField::CropLeft => "clip.crop_left",
+            NumField::CropRight => "clip.crop_right",
+            NumField::CropTop => "clip.crop_top",
+            NumField::CropBottom => "clip.crop_bottom",
+            NumField::KeyTolerance => "clip.key.tolerance",
+            NumField::KeySoftness => "clip.key.softness",
+            NumField::KeySpill => "clip.key.spill",
+            NumField::MaskX => "clip.mask.x",
+            NumField::MaskY => "clip.mask.y",
+            NumField::MaskW => "clip.mask.w",
+            NumField::MaskH => "clip.mask.h",
+            NumField::MaskRotation => "clip.mask.rotation",
+            NumField::MaskFeather => "clip.mask.feather",
+            NumField::Speed => "clip.speed",
+            NumField::TitleSize => "media.title.size",
+            NumField::TitleBackdrop => "media.title.backdrop",
+            NumField::CurveMix => "clip.curves.mix",
+        }
+    }
+
+    fn a11y_key(self) -> u64 {
+        ui::a11y::hash_key(&self.tag())
     }
 
     /// The animatable parameter this control drives, if any. Crop and anchor
@@ -978,6 +1047,20 @@ pub enum ShotScenario {
     /// open under the marker list, stating the frame and offering the size
     /// and rate presets.
     ProjectFormat,
+    /// The keyboard cursor inside the inspector, on a slider row -- the ring
+    /// that says where the next arrow key lands. The panel's controls are on
+    /// the focus walk, and a walk you cannot see is a walk you cannot use.
+    FocusInspector,
+    /// The same cursor in the media bin, on a row: the ring inside the
+    /// selection outline the row already carries, so the two read apart.
+    FocusBin,
+    /// The same cursor on a transport button, where it rings the outside of a
+    /// round control rather than the inside of a rectangular one.
+    FocusTransport,
+    /// A running J/L shuttle: the playhead moving at 8x with the transport
+    /// naming the direction and the rate, and the play button wearing the
+    /// pause glyph because something is already moving.
+    Shuttle,
 }
 
 impl ShotScenario {
@@ -1006,6 +1089,7 @@ impl ShotScenario {
                 | ShotScenario::Curves
                 | ShotScenario::Collaborators
                 | ShotScenario::ProjectFormat
+                | ShotScenario::FocusInspector
         )
     }
 
@@ -1044,6 +1128,10 @@ impl ShotScenario {
             "exportfailed" => ShotScenario::ExportFailed,
             "range" => ShotScenario::RenderRange,
             "format" => ShotScenario::ProjectFormat,
+            "focusinspector" => ShotScenario::FocusInspector,
+            "focusbin" => ShotScenario::FocusBin,
+            "focustransport" => ShotScenario::FocusTransport,
+            "shuttle" => ShotScenario::Shuttle,
             _ => return None,
         })
     }
@@ -2483,7 +2571,49 @@ impl VideoEditorApp {
             || self.inspector_flap.is_animating(self.inspector_split())
     }
 
+    /// Whether the playhead is running under its own steam: playing forwards at
+    /// 1×, or shuttling at some rate in either direction.
+    ///
+    /// One predicate, because the play button, the transport readout and the
+    /// name a reader hears for that button all have to agree about it. They did
+    /// not: every one of them was gated on `playing`, so a shuttle at 16× wore
+    /// a play triangle and reported itself nowhere.
+    fn is_moving(&self) -> bool {
+        self.playing || self.shuttle != 0.0
+    }
+
+    /// The words the transport puts above the scrubber for what the playhead is
+    /// doing, or `None` when it is standing still.
+    fn motion_words(&self) -> Option<String> {
+        if self.playing {
+            return Some("PLAYING".to_string());
+        }
+        if self.shuttle == 0.0 {
+            return None;
+        }
+        // Direction as well as rate: "8×" alone does not say which way the
+        // footage is running, and reverse is half of what J/L are for.
+        let arrows = if self.shuttle > 0.0 {
+            "\u{25B6}\u{25B6}"
+        } else {
+            "\u{25C0}\u{25C0}"
+        };
+        Some(format!("SHUTTLE {arrows} {:.0}\u{d7}", self.shuttle.abs()))
+    }
+
     fn toggle_play(&mut self) {
+        // A running shuttle is what this button stops. Shuttle and playback are
+        // mutually exclusive — `shuttle_key` stops playback for the same reason
+        // — and the button wears the pause glyph while either is running, so
+        // pressing it has to stop whichever one it is. Starting playback on top
+        // of a shuttle instead left a non-zero rate behind the readout, which
+        // is a state with nothing on screen for it.
+        if self.shuttle != 0.0 {
+            self.shuttle = 0.0;
+            self.last_tick = Instant::now();
+            self.chase_playhead = true;
+            return;
+        }
         self.playing = !self.playing;
         self.last_tick = Instant::now();
         if self.playing && self.playhead >= self.project.duration() {
@@ -5400,6 +5530,38 @@ impl VideoEditorApp {
                     reason: "no encoder for H.264 on this machine".to_string(),
                 };
             }
+            // The keyboard cursor, which nothing painted at all until now.
+            // `has_focus` is what the host sets when it hands this widget the
+            // keyboard, and it is the gate the ring is drawn behind -- so a
+            // capture of the cursor has to stand in for that hand-over.
+            ShotScenario::FocusBin => {
+                self.has_focus = true;
+                self.focus.pane = Pane::Bin;
+                self.focus.bin = 2;
+                // Arrowing onto a bin row selects it, so the capture shows the
+                // ring against the selection outline it has to stay legible
+                // beside rather than against a bare row.
+                self.selected_media = self.a11y_bin_items().get(self.focus.bin).copied();
+            }
+            ShotScenario::FocusTransport => {
+                self.has_focus = true;
+                self.focus.pane = Pane::Transport;
+                // The play button: the one control in the strip with a filled
+                // accent circle under it, which is the hardest ground for a
+                // ring in the accent-derived focus colour to stay visible on.
+                self.focus.transport = 2;
+                self.playhead = 12.0;
+            }
+            ShotScenario::Shuttle => {
+                // Three presses of L, through the production key path: 1x, 2x,
+                // then 4x... and a fourth for 8x, which is fast enough that a
+                // still with no readout would be indistinguishable from a
+                // stopped playhead.
+                self.playhead = 8.0;
+                for _ in 0..4 {
+                    self.shuttle_key(1.0);
+                }
+            }
             ShotScenario::RenderRange => {
                 // A range that starts inside the timeline and ends well
                 // before its end, so both brackets and both scrims are on
@@ -5566,6 +5728,7 @@ impl VideoEditorApp {
                 | ShotScenario::Keyframes
                 | ShotScenario::Markers
                 | ShotScenario::Effects
+                | ShotScenario::FocusInspector
         ) {
             self.reveal_inspector();
             self.inspector_flap.snap(true);
@@ -5573,6 +5736,25 @@ impl VideoEditorApp {
         match self.shot_scenario {
             ShotScenario::Collaborators => {
                 self.seed_shot_collaborators();
+            }
+            ShotScenario::FocusInspector => {
+                if let Some(c) = self.project.top_video_clip_at(4.0) {
+                    self.selection.select_only(c.id);
+                    self.selected_media = Some(c.media);
+                }
+                self.playhead = 4.0;
+                self.inspector_scroll = 0.0;
+                self.has_focus = true;
+                self.focus.pane = Pane::Inspector;
+                // On one of the grade sliders: the block above the first
+                // section header, which is the part of the panel no keyboard
+                // could reach at all until recently, and the reason a cursor
+                // nobody can see matters more here than it used to.
+                self.focus.inspector = self
+                    .a11y_inspector_rows()
+                    .iter()
+                    .position(|row| *row == InspectorRow::Field(NumField::Brightness))
+                    .unwrap_or(0);
             }
             ShotScenario::ProjectMenu => {
                 let btn = r.project_btn;
@@ -6084,6 +6266,31 @@ impl InspectorLayout {
     /// The track laid out for `field`, if it is on screen right now.
     fn num(&self, field: NumField) -> Option<Rect> {
         self.nums.iter().find(|(f, _)| *f == field).map(|(_, r)| *r)
+    }
+}
+
+/// A clip's animatable geometry, sampled at one instant.
+///
+/// Named rather than a tuple because both summaries read all five and getting
+/// two of them the wrong way round is invisible in a `(f64, f64, f64, f64,
+/// f64)`.
+#[derive(Clone, Copy, Debug)]
+struct GeometryNow {
+    scale_x: f64,
+    scale_y: f64,
+    pos_x: f64,
+    pos_y: f64,
+    rotation: f64,
+}
+
+impl GeometryNow {
+    /// Whether the picture is anywhere other than the plain aspect-fit.
+    fn is_placed(self) -> bool {
+        (self.scale_x - 1.0).abs() > 1e-6
+            || (self.scale_y - 1.0).abs() > 1e-6
+            || self.pos_x.abs() > 1e-6
+            || self.pos_y.abs() > 1e-6
+            || self.rotation.abs() > 1e-6
     }
 }
 
@@ -6839,6 +7046,11 @@ impl Widget for VideoEditorApp {
                 ..
             } => {
                 self.handle_press(state, &r, modifiers.state().shift_key());
+                // Take the keyboard, the way every shared widget in `ui` does
+                // on a press. Without it the editor only ever held focus after
+                // a Tab, so a user who clicked into it and then used the arrow
+                // keys moved a pane cursor that nothing was allowed to paint.
+                *focus_target = Some(node_id);
                 *handled = true;
             }
             WindowEvent::MouseInput {
@@ -7790,8 +8002,10 @@ impl VideoEditorApp {
             .enumerate()
             .map(|(i, (action, name))| {
                 // The play button is the one whose name changes with state; a
-                // reader must hear what pressing it will do now.
-                let name = if *action == TransportAction::PlayPause && self.playing {
+                // reader must hear what pressing it will do now. A running
+                // shuttle counts: pressing it there stops the shuttle, so
+                // "Play" would name something the press does not do.
+                let name = if *action == TransportAction::PlayPause && self.is_moving() {
                     "Pause"
                 } else {
                     name
@@ -7963,7 +8177,9 @@ impl VideoEditorApp {
                     let node = AccessNode::new(Role::Slider)
                         .with_name(f.label())
                         .with_optional_value(value.map(|v| f.readout(v)))
-                        .with_hashed_key(f.label())
+                        // Keyed on the variant, not the label: two rows may
+                        // legitimately read "Rotation" in their own sections.
+                        .with_key(f.a11y_key())
                         .with_state(AccessState {
                             focusable: true,
                             focused,
@@ -8239,28 +8455,83 @@ impl VideoEditorApp {
             .with_children(kids)
     }
 
+    /// A clip's geometry as it is at the playhead: every channel read through
+    /// `param_at`, so an animated one gives the value the compositor is
+    /// actually placing the picture with.
+    ///
+    /// Cropping and the anchor are absent because the model does not animate
+    /// them — they frame the shot rather than move it — so their constants
+    /// really are their values, and a caller reads them off `clip.transform`.
+    fn geometry_at_playhead(&self, clip: &Clip) -> GeometryNow {
+        let at = self.playhead;
+        GeometryNow {
+            scale_x: clip.param_at(Param::ScaleX, at),
+            scale_y: clip.param_at(Param::ScaleY, at),
+            pos_x: clip.param_at(Param::PosX, at),
+            pos_y: clip.param_at(Param::PosY, at),
+            rotation: clip.param_at(Param::Rotation, at),
+        }
+    }
+
+    /// Whether any of the geometry channels carries a curve.
+    ///
+    /// A fact about the section in its own right, not merely a way of reading
+    /// its numbers: keying a parameter from its default leaves the constant at
+    /// exactly the aspect-fit, so a summary gated on the constants alone
+    /// reported nothing at all about a clip whose picture crosses the frame.
+    fn transform_is_animated(clip: &Clip) -> bool {
+        [
+            Param::ScaleX,
+            Param::ScaleY,
+            Param::PosX,
+            Param::PosY,
+            Param::Rotation,
+        ]
+        .into_iter()
+        .any(|p| clip.anim.is_animated(p))
+    }
+
     /// What a folded section says about itself.
+    ///
+    /// Every animatable number here is read through `param_at` at the playhead
+    /// — the one door every other reader (compositor, mixer, export, the
+    /// sliders themselves) already goes through. Read as raw fields they told a
+    /// reader the value the clip is *not* playing: a keyframe supersedes the
+    /// constant, so a clip pushing in reported "scale 1.00×" and a key ramping
+    /// on reported that it was keying nothing.
     fn a11y_section_summary(&self, section: Section) -> String {
         let clip = self.selected().and_then(|id| self.project.clip(id));
+        let at = self.playhead;
         match (section, clip) {
-            (Section::Transform, Some(c)) => format!(
-                "scale {:.2}×, position {:+.2}, {:+.2}, rotation {:.0}°",
-                c.transform.scale_x, c.transform.pos_x, c.transform.pos_y, c.transform.rotation
-            ),
+            (Section::Transform, Some(c)) => {
+                let g = self.geometry_at_playhead(c);
+                let mut s = format!(
+                    "scale {:.2}×, position {:+.2}, {:+.2}, rotation {:.0}°",
+                    g.scale_x, g.pos_x, g.pos_y, g.rotation
+                );
+                // Whether those numbers are going anywhere. Without it a
+                // reader hears one still frame's worth of a moving picture and
+                // has no way to know the section is animated at all.
+                if Self::transform_is_animated(c) {
+                    s.push_str(", animated");
+                }
+                s
+            }
             (Section::Speed, Some(c)) => c.speed.label(),
             // Worded from the same fields the visible summary reads, so a
             // reader is never told a tidier story than the screen tells.
             (Section::Key, Some(c)) => {
+                let tolerance = c.param_at(Param::KeyTolerance, at);
                 if !c.key.enabled {
                     "off".into()
-                } else if c.key.tolerance <= 1e-6 {
+                } else if tolerance <= 1e-6 {
                     "on, but the tolerance keys nothing".into()
                 } else {
                     format!(
                         "keying {:.0}% tolerance, {:.0}% softness, {:.0}% spill removal",
-                        c.key.tolerance * 100.0,
-                        c.key.softness * 100.0,
-                        c.key.spill * 100.0
+                        tolerance * 100.0,
+                        c.param_at(Param::KeySoftness, at) * 100.0,
+                        c.param_at(Param::KeySpill, at) * 100.0
                     )
                 }
             }
@@ -8271,8 +8542,8 @@ impl VideoEditorApp {
                     format!(
                         "{} {:.0}% by {:.0}%, {}",
                         c.mask.shape.label().to_lowercase(),
-                        c.mask.w * 100.0,
-                        c.mask.h * 100.0,
+                        c.param_at(Param::MaskW, at) * 100.0,
+                        c.param_at(Param::MaskH, at) * 100.0,
                         if c.mask.invert {
                             "keeping the outside"
                         } else {
@@ -8295,7 +8566,9 @@ impl VideoEditorApp {
             }
             // The same words the folded header shows, so a reader is never
             // told a tidier story than the panel tells.
-            (Section::Curves, Some(c)) => curve_summary(c).unwrap_or_else(|| "unchanged".into()),
+            (Section::Curves, Some(c)) => {
+                curve_summary(c, self.playhead).unwrap_or_else(|| "unchanged".into())
+            }
             (Section::Title, Some(_)) => "title properties".into(),
             // Worded, not counted: the frame is the fact a reader needs from
             // this header whether or not it is folded.
@@ -8653,6 +8926,94 @@ impl VideoEditorApp {
         self.clamp_pane_cursor();
     }
 
+    /// Whether `pane` should paint the keyboard cursor right now.
+    ///
+    /// Gated on the host having actually given this widget the keyboard: a ring
+    /// drawn while the focus is somewhere else entirely would point at a
+    /// control the next key will not reach, which is the opposite of what a
+    /// focus indicator is for. Only the pane holding the cursor paints one —
+    /// the other three keep their cursors so Tab returns to them, but they are
+    /// not where the keyboard is.
+    fn shows_focus_cursor(&self, pane: Pane) -> bool {
+        self.has_focus && self.focus.pane == pane
+    }
+
+    /// The box the keyboard cursor's ring is drawn in for one inspector row,
+    /// resolved through the very layout the renderer and the hit test read.
+    ///
+    /// A slider row is more than its 9px track — the label above it and the key
+    /// control at its head belong to the same stop — so a `Field`'s ring is
+    /// grown up over them, which is also what keeps the ring inside the 34px
+    /// row pitch instead of hugging a bar the eye reads as the value. Every
+    /// other row is its own painted box already.
+    ///
+    /// `None` means the panel is not drawing that control right now, in which
+    /// case there is nothing to ring.
+    fn inspector_focus_band(l: &InspectorLayout, row: InspectorRow) -> Option<Rect> {
+        let rect = Self::inspector_row_rect(l, row)?;
+        if matches!(row, InspectorRow::Field(_)) {
+            return Some(Rect::new(
+                rect.x0 - 3.0,
+                rect.y0 - 21.0,
+                rect.x1 + 3.0,
+                rect.y1 + 2.0,
+            ));
+        }
+        Some(rect.inset(2.0))
+    }
+
+    /// The rect the panel laid out for one walked row. The row list and the
+    /// layout are built by different code, so this is the single place that
+    /// maps between them — the keyboard cursor and the tests that prove every
+    /// stop is a control the panel really drew both read it.
+    fn inspector_row_rect(l: &InspectorLayout, row: InspectorRow) -> Option<Rect> {
+        match row {
+            InspectorRow::Header(s) => l.sections.iter().find(|(x, _)| *x == s).map(|(_, r)| *r),
+            InspectorRow::Field(NumField::Opacity) => l.opacity,
+            InspectorRow::Field(NumField::Volume) => l.volume,
+            InspectorRow::Field(NumField::Brightness) => l.brightness,
+            InspectorRow::Field(NumField::Contrast) => l.contrast,
+            InspectorRow::Field(NumField::Saturation) => l.saturation,
+            InspectorRow::Field(NumField::FadeIn) => l.fade_in,
+            InspectorRow::Field(NumField::FadeOut) => l.fade_out,
+            InspectorRow::Field(NumField::TransitionLen) => l.transition_len,
+            InspectorRow::Field(f) => l.num(f),
+            InspectorRow::Marker(m) => l
+                .marker_rows
+                .iter()
+                .find(|(x, _)| x.id == m.id)
+                .map(|(_, r)| *r),
+            InspectorRow::AddMarker => l.add_marker,
+            InspectorRow::Pick(PickField::Frame(i)) => {
+                FRAME_PRESETS.get(i).and_then(|(_, w, h)| {
+                    l.project_frames
+                        .iter()
+                        .find(|((pw, ph), _)| pw == w && ph == h)
+                        .map(|(_, r)| *r)
+                })
+            }
+            InspectorRow::Pick(PickField::Rate(i)) => RATE_PRESETS.get(i).and_then(|rate| {
+                l.project_rates
+                    .iter()
+                    .find(|(x, _)| (x - rate).abs() < 1e-9)
+                    .map(|(_, r)| *r)
+            }),
+            InspectorRow::Pick(PickField::MatchFormat) => l.project_match,
+            InspectorRow::Pick(PickField::KeyEnable) => l.key_enable,
+            InspectorRow::Pick(PickField::MaskShape(shape)) => l
+                .mask_shapes
+                .iter()
+                .find(|(x, _)| *x == shape)
+                .map(|(_, r)| *r),
+            InspectorRow::Pick(PickField::Transition(t)) => {
+                l.transitions.iter().find(|(x, _)| *x == t).map(|(_, r)| *r)
+            }
+            InspectorRow::Pick(PickField::Label(slot)) => {
+                l.colors.iter().find(|(x, _)| *x == slot).map(|(_, r)| *r)
+            }
+        }
+    }
+
     fn clamp_pane_cursor(&mut self) {
         let bin = self.a11y_bin_items().len();
         self.focus.bin = self.focus.bin.min(bin.saturating_sub(1));
@@ -8789,7 +9150,7 @@ impl VideoEditorApp {
                     ]
                 }
                 Some(InspectorRow::Field(f)) => {
-                    let key = hash_key(&f.label());
+                    let key = f.a11y_key();
                     Self::a11y_row_path(&self.a11y_inspector_rows(), self.focus.inspector, key)
                 }
                 Some(InspectorRow::Pick(pk)) => {
@@ -8815,7 +9176,7 @@ impl VideoEditorApp {
                     TransportAction::ToStart => "Jump to start",
                     TransportAction::StepBack => "Step back one frame",
                     TransportAction::PlayPause => {
-                        if self.playing {
+                        if self.is_moving() {
                             "Pause"
                         } else {
                             "Play"
@@ -9031,7 +9392,7 @@ impl VideoEditorApp {
                         _ => false,
                     };
                 }
-                InspectorRow::Field(f) if hash_key(&f.label()) == key => {
+                InspectorRow::Field(f) if f.a11y_key() == key => {
                     self.focus.inspector = i;
                     return match action {
                         Action::Focus => true,
@@ -12086,6 +12447,21 @@ impl VideoEditorApp {
                 );
             }
         }
+        // The keyboard cursor, inside the list's clip layer so a row scrolled
+        // out of view does not wear a ring over the timeline. `focus.bin`
+        // indexes `bin_order`, which is the list `bin_item_rects` walks, so the
+        // ring and the row a reader is told about are the same row.
+        if self.shows_focus_cursor(Pane::Bin)
+            && let Some((_, row)) = self.bin_item_rects(r).get(self.focus.bin)
+        {
+            draw_focus_ring(
+                scene,
+                tf,
+                theme,
+                row.inset(-FOCUS_RING_INSET),
+                8.0 - FOCUS_RING_INSET,
+            );
+        }
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Bin, r);
         scene.pop_layer();
         // Last import outcome, pinned to the foot of the pane. It used to be
@@ -12423,7 +12799,8 @@ impl VideoEditorApp {
             tf,
             &r.transport,
         );
-        for (action, rect) in self.transport_buttons(r) {
+        let cursor = self.shows_focus_cursor(Pane::Transport);
+        for (i, (action, rect)) in self.transport_buttons(r).into_iter().enumerate() {
             let is_play = action == TransportAction::PlayPause;
             let hovered = rect.contains(self.last_mouse);
             let bg = if is_play {
@@ -12446,6 +12823,12 @@ impl VideoEditorApp {
                 c.text_primary
             };
             self.draw_transport_icon(scene, tf, action, rect.center(), col);
+            // The keyboard cursor. `focus.transport` indexes `TRANSPORT_NAMES`,
+            // which is this array's order, so the ring lands on the button a
+            // reader is told it is on.
+            if cursor && self.focus.transport == i {
+                draw_focus_ring_circle(scene, tf, theme, rect.center(), rect.width() / 2.0);
+            }
         }
         // Undo / redo. Ghost squares rather than the transport's filled
         // circles: nothing here moves the playhead, and the difference in
@@ -12483,14 +12866,23 @@ impl VideoEditorApp {
             "{}×{} · {:.0} fps",
             self.project.width, self.project.height, self.project.fps
         );
+        // What the playhead is *doing* — playing, or shuttling in some
+        // direction at some rate. It shares the readout's line rather than the
+        // 16px band above the scrubber the old "PLAYING" used, which on a 58px
+        // strip sits inside the 18px timecode's own line box.
+        let motion = self.motion_words();
         let (bw, _) = tr.measure_weighted(&big, 18.0, None, TextWeight::Bold);
         let (tw, _) = tr.measure(&total, 13.0, None);
         let (mw, _) = tr.measure(&meta, 11.5, None);
+        let motion_w = motion
+            .as_deref()
+            .map_or(0.0, |s| f64::from(tr.measure(s, 10.0, None).0));
         let fit = readout_fit(
             r.transport,
             self.transport_content_x(r),
             bw as f64,
             tw as f64,
+            motion_w,
             mw as f64,
         );
         if let Some(x) = fit.big_x {
@@ -12517,6 +12909,19 @@ impl VideoEditorApp {
                 x,
                 r.transport.y0 + 13.0,
             );
+        }
+        // Playing is reported in the success tint it always was; a shuttle
+        // takes the accent, so the two states are not one word apart. This used
+        // to be gated on `playing` alone, which meant a shuttle running at 16×
+        // reported itself nowhere at all: the playhead moved under its own
+        // steam with nothing on screen naming why, or how fast, or which way.
+        if let (Some(x), Some(words)) = (fit.motion_x, motion.as_deref()) {
+            let tint = if self.playing {
+                c.semantic.success
+            } else {
+                c.accent[5]
+            };
+            text(scene, tr, tf, words, 10.0, tint, x, r.transport.y0 + 13.0);
         }
         if let Some(x) = fit.meta_x {
             text(
@@ -12548,18 +12953,6 @@ impl VideoEditorApp {
         let knob = Circle::new(Point::new(filled.x1, scrub.center().y), 6.0);
         scene.fill(Fill::NonZero, tf, c.surfaces.raised, None, &knob);
         scene.stroke(&Stroke::new(1.5), tf, c.border_focus, None, &knob);
-        if self.playing {
-            text(
-                scene,
-                tr,
-                tf,
-                "PLAYING",
-                10.0,
-                c.semantic.success,
-                scrub.x0,
-                scrub.y0 - 16.0,
-            );
-        }
         scene.pop_layer();
     }
 
@@ -12574,7 +12967,10 @@ impl VideoEditorApp {
         let s = 6.0;
         match action {
             TransportAction::PlayPause => {
-                if self.playing {
+                // Pause bars whenever the playhead is running, shuttle
+                // included: a play triangle over a moving playhead offers to
+                // start something that is already going.
+                if self.is_moving() {
                     fill_rect(
                         scene,
                         tf,
@@ -12702,6 +13098,18 @@ impl VideoEditorApp {
                 r.inspector.y1,
             );
             fill_rect(scene, tf, with_alpha(c.surfaces.raised, 0.6), veil);
+        }
+        // The keyboard cursor, drawn over the lock veil rather than under it:
+        // where the keyboard *is* stays legible even where the controls are
+        // inert, because the walk still visits them. Inside the pane's clip
+        // layer, so a row scrolled out of view keeps its ring off the timeline.
+        if self.shows_focus_cursor(Pane::Inspector) {
+            let rows = self.a11y_inspector_rows();
+            if let Some(row) = rows.get(self.focus.inspector).copied()
+                && let Some(band) = Self::inspector_focus_band(&self.inspector_layout(r), row)
+            {
+                draw_focus_ring(scene, tf, theme, band, 5.0);
+            }
         }
         // Soft edges where the pane cuts its content. A row sliced in half by
         // a hard boundary reads as a broken control; the same row fading out
@@ -13877,21 +14285,37 @@ impl VideoEditorApp {
         media: Option<&MediaItem>,
     ) -> Option<String> {
         match section {
-            Section::Curves => curve_summary(clip),
+            Section::Curves => curve_summary(clip, self.playhead),
             Section::Transform => {
-                if clip.transform.is_identity() {
+                // The geometry the clip is *playing*, not the constants under
+                // it: a keyframe supersedes the constant for every other
+                // reader, so a folded header reading `transform.scale_x`
+                // reported 1.00× beside a canvas that was pushing in.
+                let g = self.geometry_at_playhead(clip);
+                // `is_identity()` on the constants alone was the whole gate,
+                // and keying a parameter from its default leaves that constant
+                // exactly at the aspect-fit — so a clip whose picture swings
+                // across the frame between two keys reported nothing at all.
+                let animated = Self::transform_is_animated(clip);
+                // `is_identity()` still carries the crop and the anchor, which
+                // the model does not animate; the two new disjuncts are what it
+                // could never see — a keyed channel away from its rest value,
+                // and the existence of a curve at all.
+                if clip.transform.is_identity() && !g.is_placed() && !animated {
                     return None;
                 }
-                let t = &clip.transform;
                 let mut parts = Vec::new();
-                if (t.scale_x - 1.0).abs() > 1e-6 || (t.scale_y - 1.0).abs() > 1e-6 {
-                    parts.push(format!("{:.2}×", t.scale_x));
+                if (g.scale_x - 1.0).abs() > 1e-6 || (g.scale_y - 1.0).abs() > 1e-6 {
+                    parts.push(format!("{:.2}×", g.scale_x));
                 }
-                if t.rotation.abs() > 1e-6 {
-                    parts.push(format!("{:.0}°", t.rotation));
+                if g.rotation.abs() > 1e-6 {
+                    parts.push(format!("{:.0}°", g.rotation));
                 }
-                if t.is_cropped() {
+                if clip.transform.is_cropped() {
                     parts.push("cropped".into());
+                }
+                if animated {
+                    parts.push("animated".into());
                 }
                 if parts.is_empty() {
                     parts.push("moved".into());
@@ -13901,12 +14325,15 @@ impl VideoEditorApp {
             Section::Speed => (!clip.speed.is_normal()).then(|| clip.speed.label()),
             // A key that is switched on but keying nothing still has to
             // say so: "on" and "removing something" are different states,
-            // and a fold that reported neither would hide both.
+            // and a fold that reported neither would hide both. The tolerance
+            // is read at the playhead, because it is animatable: a key ramping
+            // on read as "keys nothing" for the whole clip.
             Section::Key => clip.key.enabled.then(|| {
-                if clip.key.tolerance <= 1e-6 {
+                let tolerance = clip.param_at(Param::KeyTolerance, self.playhead);
+                if tolerance <= 1e-6 {
                     "on · keys nothing".to_string()
                 } else {
-                    format!("keyed {:.0}%", clip.key.tolerance * 100.0)
+                    format!("keyed {:.0}%", tolerance * 100.0)
                 }
             }),
             Section::Mask => clip.mask.is_active().then(|| {
@@ -15502,6 +15929,40 @@ fn draw_danger_button(
 /// `track` is the 9px band the inspector lays out; the face wants a taller box
 /// to centre its knob in, so it is grown symmetrically about the same centre —
 /// the hit-test in `hit_slider` already allows that much slop.
+/// The keyboard cursor: a ring around the control the next key will reach.
+///
+/// The editor paints its own panes, so it has no child widgets to inherit a
+/// focus treatment from — this is the same one the shared widgets draw
+/// (`Stroke::new(2.0)` in `border_focus`, over a rounded box the shape of the
+/// control), so the cursor reads the same here as it does anywhere else in the
+/// fleet.
+fn draw_focus_ring(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, radius: f64) {
+    if rect.width() <= FOCUS_RING_W || rect.height() <= FOCUS_RING_W {
+        return;
+    }
+    scene.stroke(
+        &Stroke::new(FOCUS_RING_W),
+        tf,
+        theme.tokens.colors.border_focus,
+        None,
+        &RoundedRect::from_rect(rect, radius.max(0.0)),
+    );
+}
+
+/// The same cursor around a round control. The transport's buttons are filled
+/// circles carrying a glyph, so the ring goes *outside* them: a rounded
+/// rectangle would read as a second, squarer control, and an inset ring would
+/// draw a line through the icon.
+fn draw_focus_ring_circle(scene: &mut Scene, tf: Affine, theme: &Theme, centre: Point, r: f64) {
+    scene.stroke(
+        &Stroke::new(FOCUS_RING_W),
+        tf,
+        theme.tokens.colors.border_focus,
+        None,
+        &Circle::new(centre, r + FOCUS_RING_INSET),
+    );
+}
+
 fn draw_track(
     scene: &mut Scene,
     tf: Affine,
@@ -15549,11 +16010,20 @@ fn draw_segmented(
 /// arriving as "00:4" states a length that is simply false. So a part that
 /// cannot be drawn in full is not drawn at all, and the parts are dropped in
 /// reverse order of what the user cannot get anywhere else: the playhead's
-/// own time is the last to go, the total next, the static frame size first.
+/// own time is the last to go, then the total, then what the playhead is
+/// *doing*, and the static frame size first — the frame is also stated in the
+/// inspector's PROJECT section, while "shuttling backwards at 8x" is stated
+/// nowhere else at all.
 #[derive(Debug, Default, PartialEq)]
 struct ReadoutFit {
     big_x: Option<f64>,
     total_x: Option<f64>,
+    /// What the playhead is doing, beside the total rather than over the top
+    /// of the playhead time. The old "PLAYING" line was drawn 16px above the
+    /// scrubber, which on this 58px strip is inside the 18px timecode's own
+    /// line box — the two overlapped, and a longer shuttle readout made a
+    /// pre-existing collision unmissable.
+    motion_x: Option<f64>,
     meta_x: Option<f64>,
 }
 
@@ -15562,6 +16032,7 @@ fn readout_fit(
     content_x: f64,
     big_w: f64,
     total_w: f64,
+    motion_w: f64,
     meta_w: f64,
 ) -> ReadoutFit {
     let right_edge = transport.x1 - 12.0;
@@ -15582,6 +16053,14 @@ fn readout_fit(
     if total_x + total_w <= right_edge {
         fit.total_x = Some(total_x);
         used_to = total_x + total_w;
+    }
+    // Zero width is "the playhead is standing still", which places nothing.
+    if motion_w > 0.0 {
+        let motion_x = used_to + 14.0;
+        if motion_x + motion_w <= right_edge {
+            fit.motion_x = Some(motion_x);
+            used_to = motion_x + motion_w;
+        }
     }
     let meta_x = transport.x1 - 16.0 - meta_w;
     if meta_x > used_to + 16.0 {
@@ -15678,14 +16157,18 @@ const ANCHOR_GLYPHS: [&str; 9] = ["↖", "↑", "↗", "←", "•", "→", "↙
 /// a shaped curve is turned down or bypassed: "RGB" and "RGB · bypassed" are
 /// different states, and a summary that showed only the first would hide the
 /// second.
-fn curve_summary(clip: &Clip) -> Option<String> {
+fn curve_summary(clip: &Clip, at: f64) -> Option<String> {
     let shaped = clip.curves.shaped_channels();
     if shaped.is_empty() {
         return None;
     }
     let names: Vec<&str> = shaped.iter().map(|c| c.label()).collect();
     let mut s = names.join(", ");
-    let mix = clip.curves.mix;
+    // How much of the curve is mixed in *at the playhead*. The amount is an
+    // animatable parameter, so the raw `curves.mix` is dead the moment it is
+    // keyed — a grade ramping on reported itself as bypassed for its whole
+    // length while the canvas beside it graded.
+    let mix = clip.param_at(Param::CurveMix, at);
     if mix <= 1e-9 {
         s.push_str(" · bypassed");
     } else if mix < 0.999 {
@@ -18199,15 +18682,67 @@ mod tests {
         );
     }
 
+    /// Dragging the brightness slider writes the grade through to the CRDT.
+    ///
+    /// This used to call `set_filter` — a helper whose only other caller is a
+    /// screenshot scenario — so it proved that a function nothing on the live
+    /// path goes through could write a document. The slider a person actually
+    /// drags goes `press_inspector` → `preview_param` → `commit_drag`: it has
+    /// to hit-test the track, resolve the value from the pointer, hold the edit
+    /// in memory while the drag is live so the preview can follow it without
+    /// writing a document per frame, and dispatch exactly one action on
+    /// release. That is four more places to break than the helper had, and the
+    /// verification covenant asks for the production path rather than a
+    /// stand-in for it.
     #[test]
-    fn brightness_filter_writes_through_to_the_crdt() {
+    fn dragging_the_brightness_slider_writes_the_grade_to_the_crdt() {
         let (mut app, mut doc) = app_and_doc();
-        // Select a video clip so the brightness control exists.
-        let id = app.project.top_video_clip_at(5.0).unwrap().id;
+        // A video clip, so the panel lays out a brightness row at all.
+        let id = app
+            .project
+            .top_video_clip_at(5.0)
+            .expect("the fixture has a video clip at 5s")
+            .id;
         app.selection.select_only(id);
-        app.set_filter(&mut doc, FilterField::Brightness, 0.9);
-        let reloaded = VideoDoc::load_project(&doc);
-        assert!((reloaded.clip(id).unwrap().filters.brightness - 0.9).abs() < 1e-9);
+        app.playhead = 5.0;
+        app.inspector_scroll = 0.0;
+        let r = app.regions();
+        let track = app
+            .inspector_layout(&r)
+            .brightness
+            .expect("a selected video clip is offered a brightness slider");
+        let want = 0.9;
+        let x = track.x0 + track.width() * want;
+
+        click(&mut app, &mut doc, x, track.center().y);
+        let previewed = app.project.clip(id).expect("clip").filters.brightness;
+        assert!(
+            (previewed - want).abs() < 1e-9,
+            "the live drag previews the value under the pointer, got {previewed}",
+        );
+        assert!(
+            (VideoDoc::load_project(&doc)
+                .clip(id)
+                .expect("clip")
+                .filters
+                .brightness
+                - previewed)
+                .abs()
+                > 1e-9,
+            "and holds it in memory until the drag ends, so a drag is one undo \
+             step rather than one per frame",
+        );
+
+        release(&mut app, &mut doc);
+        let written = VideoDoc::load_project(&doc)
+            .clip(id)
+            .expect("the clip survives its own edit")
+            .filters
+            .brightness;
+        assert!(
+            (written - want).abs() < 1e-9,
+            "the release wrote the grade to the CRDT, got {written}",
+        );
         assert!(
             app.actions.take_committed().is_some(),
             "the grade dispatched an action, arming one undo boundary",
@@ -20264,16 +20799,22 @@ mod tests {
         // Widths in the neighbourhood of the real measurements: an 18px bold
         // "00:23:00" is ~74px, the "/  00:42:00" tail ~62px, the meta ~96px.
         let (big, total, meta) = (74.0, 62.0, 96.0);
+        // A stopped playhead has no motion readout, which is what a zero width
+        // stands for — so every assertion below is on the same geometry the
+        // strip had before the shuttle got a slot in it.
+        const STILL: f64 = 0.0;
         // On a wide strip the readout starts past the history buttons.
         let wide = readout_fit(
             Rect::new(0.0, 0.0, 700.0, 58.0),
             TRANSPORT_RIGHT_X,
             big,
             total,
+            STILL,
             meta,
         );
         assert_eq!(wide.big_x, Some(TRANSPORT_RIGHT_X));
         assert_eq!(wide.total_x, Some(TRANSPORT_RIGHT_X + big + 4.0));
+        assert_eq!(wide.motion_x, None, "a still playhead places no readout");
         assert!(wide.meta_x.unwrap() > wide.total_x.unwrap() + total);
         // The 900x700 case: too narrow for the history buttons, so the
         // readout gets the space back and the playhead time still fits. The
@@ -20283,6 +20824,7 @@ mod tests {
             TRANSPORT_PLAIN_X,
             big,
             total,
+            STILL,
             meta,
         );
         assert_eq!(mid.big_x, Some(488.0), "the playhead time still fits");
@@ -20294,21 +20836,56 @@ mod tests {
             TRANSPORT_PLAIN_X,
             big,
             total,
+            STILL,
             meta,
         );
         assert_eq!(tight, ReadoutFit::default());
-        // Whatever is drawn always ends inside the pane, at either offset.
-        for w in [200.0_f64, 260.0, 300.0, 420.0, 500.0, 700.0, 1200.0] {
-            for content_x in [TRANSPORT_PLAIN_X, TRANSPORT_RIGHT_X] {
-                let t = Rect::new(0.0, 0.0, w, 58.0);
-                let f = readout_fit(t, content_x, big, total, meta);
-                for (x, width) in [(f.big_x, big), (f.total_x, total), (f.meta_x, meta)] {
-                    if let Some(x) = x {
-                        assert!(x + width <= t.x1, "{w}px: a part overruns the transport");
+        // Whatever is drawn always ends inside the pane, at either offset —
+        // with and without a shuttle running, because the motion readout is
+        // one more part that must not be cut in half either.
+        for motion in [STILL, 88.0] {
+            for w in [200.0_f64, 260.0, 300.0, 420.0, 500.0, 700.0, 1200.0] {
+                for content_x in [TRANSPORT_PLAIN_X, TRANSPORT_RIGHT_X] {
+                    let t = Rect::new(0.0, 0.0, w, 58.0);
+                    let f = readout_fit(t, content_x, big, total, motion, meta);
+                    for (x, width) in [
+                        (f.big_x, big),
+                        (f.total_x, total),
+                        (f.motion_x, motion),
+                        (f.meta_x, meta),
+                    ] {
+                        if let Some(x) = x {
+                            assert!(x + width <= t.x1, "{w}px: a part overruns the transport");
+                        }
+                    }
+                    // Nothing overlaps anything: the parts share one line.
+                    if let (Some(tx), Some(mx)) = (f.total_x, f.motion_x) {
+                        assert!(
+                            mx >= tx + total,
+                            "{w}px: the motion readout sits on the total"
+                        );
+                    }
+                    if let (Some(mx), Some(ex)) = (f.motion_x, f.meta_x) {
+                        assert!(
+                            ex >= mx + motion,
+                            "{w}px: the frame size sits on the motion"
+                        );
                     }
                 }
             }
         }
+        // A shuttle is reported ahead of the static frame size: the rate is
+        // stated nowhere else, and the frame is also in the inspector.
+        let squeezed = readout_fit(
+            Rect::new(0.0, 0.0, 500.0, 58.0),
+            TRANSPORT_PLAIN_X,
+            big,
+            total,
+            88.0,
+            meta,
+        );
+        assert!(squeezed.motion_x.is_some(), "the shuttle rate is kept");
+        assert_eq!(squeezed.meta_x, None, "and the frame size gives way to it");
     }
 
     /// The history buttons are the first thing to go when the strip runs out
@@ -22680,6 +23257,175 @@ mod tests {
         assert!(!c.curves.red.is_identity(), "and the others were not");
     }
 
+    /// A folded section reports the value the clip is *playing*, not the
+    /// constant a keyframe has superseded.
+    ///
+    /// The summaries read `transform.scale_x`, `key.tolerance`, `mask.w` and
+    /// `curves.mix` straight off the clip. A curve overrides every one of those
+    /// for every other reader — the compositor, the mixer, the export and the
+    /// sliders themselves all go through `param_at` — so a folded header stated
+    /// something the canvas beside it contradicted: a clip pushing in read
+    /// "1.00×", a key ramping on read "keys nothing", and a grade ramping on
+    /// read "bypassed".
+    ///
+    /// The playhead is held still and each constant is left at its rest value,
+    /// so the only place the reported number can come from is the curve.
+    #[test]
+    fn a_folded_section_reports_the_value_the_clip_is_playing() {
+        let (mut app, _doc) = app_and_doc();
+        let cid = app
+            .project
+            .top_video_clip_at(23.0)
+            .expect("a video clip at 23s")
+            .id;
+        app.selection.select_only(cid);
+        let start = app.project.clip(cid).expect("clip").start;
+        let at = start + 1.0;
+        {
+            let c = app.project.clip_mut(cid).expect("clip");
+            // Every constant left where a clip that has never been touched
+            // leaves it, and a single key on each — so the constant and the
+            // curve disagree, and only one of them is what is playing.
+            c.key.enabled = true;
+            c.key.tolerance = 0.0;
+            c.mask.shape = crate::model::MaskShape::Ellipse;
+            c.curves.master.set_point(0.5, 0.8);
+            c.curves.mix = 0.0;
+            c.set_key_at(Param::ScaleX, at, 2.5, Interp::Linear);
+            c.set_key_at(Param::ScaleY, at, 2.5, Interp::Linear);
+            c.set_key_at(Param::KeyTolerance, at, 0.4, Interp::Linear);
+            c.set_key_at(Param::KeySoftness, at, 0.2, Interp::Linear);
+            c.set_key_at(Param::MaskW, at, 1.2, Interp::Linear);
+            c.set_key_at(Param::MaskH, at, 0.3, Interp::Linear);
+            c.set_key_at(Param::CurveMix, at, 0.8, Interp::Linear);
+        }
+        app.playhead = at;
+        let clip = app.project.clip(cid).expect("clip").clone();
+
+        // Collected rather than asserted one at a time, so a run names every
+        // summary still reading a superseded constant instead of the first.
+        let mut wrong: Vec<String> = Vec::new();
+        fn missing(what: &str, got: &str, needles: &[&str]) -> Vec<String> {
+            needles
+                .iter()
+                .filter(|n| !got.contains(**n))
+                .map(|n| format!("{what} should carry {n:?} and reads {got:?}"))
+                .collect()
+        }
+        // What the panel paints on the folded header.
+        let seen_transform = app
+            .section_summary(Section::Transform, &clip, None)
+            .expect("a placed clip reports itself");
+        wrong.extend(missing(
+            "the painted geometry header (the scale the compositor is using)",
+            &seen_transform,
+            &["2.50×"],
+        ));
+        let seen_key = app
+            .section_summary(Section::Key, &clip, None)
+            .expect("a switched-on key reports itself");
+        wrong.extend(missing(
+            "the painted key header (the tolerance in force)",
+            &seen_key,
+            &["40%"],
+        ));
+        let seen_curves = app
+            .section_summary(Section::Curves, &clip, None)
+            .expect("a shaped curve reports itself");
+        wrong.extend(missing(
+            "the painted curves header (a grade keyed on at 80% is not bypassed)",
+            &seen_curves,
+            &["80%"],
+        ));
+        if seen_curves.contains("bypassed") {
+            wrong.push(format!(
+                "the painted curves header calls a grade keyed on at 80% bypassed: \
+                 {seen_curves:?}"
+            ));
+        }
+
+        // And what a reader hears, which has to be the same story.
+        let heard_transform = app.a11y_section_summary(Section::Transform);
+        wrong.extend(missing(
+            "the spoken geometry summary",
+            &heard_transform,
+            &["2.50"],
+        ));
+        let heard_key = app.a11y_section_summary(Section::Key);
+        wrong.extend(missing(
+            "the spoken key summary",
+            &heard_key,
+            &["40%", "20%"],
+        ));
+        let heard_mask = app.a11y_section_summary(Section::Mask);
+        wrong.extend(missing(
+            "the spoken mask summary",
+            &heard_mask,
+            &["120%", "30%"],
+        ));
+        let heard_curves = app.a11y_section_summary(Section::Curves);
+        if heard_curves != seen_curves {
+            wrong.push(format!(
+                "the eye is told {seen_curves:?} and a reader {heard_curves:?}"
+            ));
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("; "));
+    }
+
+    /// A heavily keyframed clip whose *constants* happen to be the aspect-fit
+    /// still reports its geometry.
+    ///
+    /// `if clip.transform.is_identity() { return None }` was the whole gate, and
+    /// keying a parameter from its default leaves that constant at exactly the
+    /// aspect-fit — which is what keying from the inspector does. So the one
+    /// clip whose geometry section had most to say about it said nothing at
+    /// all. The playhead here sits on the instant the animation crosses zero,
+    /// so the *only* thing that can produce a summary is the existence of the
+    /// curve.
+    #[test]
+    fn a_keyframed_clip_reports_its_geometry_even_where_the_curve_crosses_rest() {
+        let (mut app, _doc) = app_and_doc();
+        let cid = app
+            .project
+            .top_video_clip_at(23.0)
+            .expect("a video clip at 23s")
+            .id;
+        app.selection.select_only(cid);
+        let start = app.project.clip(cid).expect("clip").start;
+        {
+            let c = app.project.clip_mut(cid).expect("clip");
+            c.set_key_at(Param::PosX, start + 0.5, -0.4, Interp::Linear);
+            c.set_key_at(Param::PosX, start + 3.0, 0.4, Interp::Linear);
+        }
+        // Half way between the two keys, where the curve reads exactly rest.
+        app.playhead = start + 1.75;
+        let clip = app.project.clip(cid).expect("clip").clone();
+        assert!(
+            clip.transform.is_identity(),
+            "the constants really are the plain aspect-fit — which is what \
+             keying from the default leaves behind",
+        );
+        assert!(
+            clip.param_at(Param::PosX, app.playhead).abs() < 1e-6,
+            "and the curve reads rest right here, so nothing but the animation \
+             itself can produce a summary",
+        );
+
+        let seen = app
+            .section_summary(Section::Transform, &clip, None)
+            .expect("an animated geometry section has something to report");
+        assert!(
+            seen.contains("animated"),
+            "the folded header has to say the section is going somewhere: {seen}",
+        );
+        let heard = app.a11y_section_summary(Section::Transform);
+        assert!(
+            heard.contains("animated"),
+            "and a reader has to hear it, or one still frame's numbers are the \
+             whole story they get: {heard}",
+        );
+    }
+
     #[test]
     fn the_curve_summary_is_the_same_story_for_the_eye_and_for_a_reader() {
         let (mut app, mut doc) = app_and_doc();
@@ -23446,52 +24192,12 @@ mod tests {
     /// The rect the panel laid out for one walked row, resolved through the
     /// very layout the renderer and the hit test read. `None` means the panel
     /// drew no such control — which for a row on the walk is the defect.
+    ///
+    /// The production mapping, not a copy of it: the keyboard cursor's ring is
+    /// placed with the same call, so this test cannot pass against a table that
+    /// has drifted from the one the panel paints through.
     fn walked_row_rect(l: &InspectorLayout, row: InspectorRow) -> Option<Rect> {
-        match row {
-            InspectorRow::Header(s) => l.sections.iter().find(|(x, _)| *x == s).map(|(_, r)| *r),
-            InspectorRow::Field(NumField::Opacity) => l.opacity,
-            InspectorRow::Field(NumField::Volume) => l.volume,
-            InspectorRow::Field(NumField::Brightness) => l.brightness,
-            InspectorRow::Field(NumField::Contrast) => l.contrast,
-            InspectorRow::Field(NumField::Saturation) => l.saturation,
-            InspectorRow::Field(NumField::FadeIn) => l.fade_in,
-            InspectorRow::Field(NumField::FadeOut) => l.fade_out,
-            InspectorRow::Field(NumField::TransitionLen) => l.transition_len,
-            InspectorRow::Field(f) => l.num(f),
-            InspectorRow::Marker(m) => l
-                .marker_rows
-                .iter()
-                .find(|(x, _)| x.id == m.id)
-                .map(|(_, r)| *r),
-            InspectorRow::AddMarker => l.add_marker,
-            InspectorRow::Pick(PickField::Frame(i)) => {
-                FRAME_PRESETS.get(i).and_then(|(_, w, h)| {
-                    l.project_frames
-                        .iter()
-                        .find(|((pw, ph), _)| pw == w && ph == h)
-                        .map(|(_, r)| *r)
-                })
-            }
-            InspectorRow::Pick(PickField::Rate(i)) => RATE_PRESETS.get(i).and_then(|rate| {
-                l.project_rates
-                    .iter()
-                    .find(|(x, _)| (x - rate).abs() < 1e-9)
-                    .map(|(_, r)| *r)
-            }),
-            InspectorRow::Pick(PickField::MatchFormat) => l.project_match,
-            InspectorRow::Pick(PickField::KeyEnable) => l.key_enable,
-            InspectorRow::Pick(PickField::MaskShape(shape)) => l
-                .mask_shapes
-                .iter()
-                .find(|(x, _)| *x == shape)
-                .map(|(_, r)| *r),
-            InspectorRow::Pick(PickField::Transition(t)) => {
-                l.transitions.iter().find(|(x, _)| *x == t).map(|(_, r)| *r)
-            }
-            InspectorRow::Pick(PickField::Label(slot)) => {
-                l.colors.iter().find(|(x, _)| *x == slot).map(|(_, r)| *r)
-            }
-        }
+        VideoEditorApp::inspector_row_rect(l, row)
     }
 
     #[test]
@@ -23539,6 +24245,470 @@ mod tests {
         }
     }
 
+    /// No two inspector rows share an accessible key.
+    ///
+    /// `NumField::Rotation` and `NumField::MaskRotation` both label themselves
+    /// "Rotation" — each correctly, inside its own section — and the key was
+    /// `hash_key(&label())`, so the two hashed to the same number. An action
+    /// routed at the mask's tilt was applied to whichever row the walk reached
+    /// first, which is the transform's: the caller asked to rotate a mask and
+    /// rotated the picture, and was told it had worked.
+    ///
+    /// Asserted across the whole enum rather than on the one known pair, so the
+    /// next two rows that happen to share a word fail here instead of shipping.
+    #[test]
+    fn no_two_inspector_controls_answer_to_the_same_accessible_key() {
+        const EVERY: [NumField; 30] = [
+            NumField::Opacity,
+            NumField::Volume,
+            NumField::Brightness,
+            NumField::Contrast,
+            NumField::Saturation,
+            NumField::FadeIn,
+            NumField::FadeOut,
+            NumField::TransitionLen,
+            NumField::ScaleX,
+            NumField::ScaleY,
+            NumField::PosX,
+            NumField::PosY,
+            NumField::Rotation,
+            NumField::CropLeft,
+            NumField::CropRight,
+            NumField::CropTop,
+            NumField::CropBottom,
+            NumField::KeyTolerance,
+            NumField::KeySoftness,
+            NumField::KeySpill,
+            NumField::MaskX,
+            NumField::MaskY,
+            NumField::MaskW,
+            NumField::MaskH,
+            NumField::MaskRotation,
+            NumField::MaskFeather,
+            NumField::Speed,
+            NumField::TitleSize,
+            NumField::TitleBackdrop,
+            NumField::CurveMix,
+        ];
+        // The pair that was actually broken, named so the regression is legible
+        // even if the loop below is ever loosened.
+        assert_eq!(
+            NumField::Rotation.label(),
+            NumField::MaskRotation.label(),
+            "both rows still read \u{201c}Rotation\u{201d} — which is fine, and is \
+             exactly why the key cannot be the label",
+        );
+        assert_ne!(
+            NumField::Rotation.a11y_key(),
+            NumField::MaskRotation.a11y_key(),
+            "the transform's tilt and the mask's tilt are different controls",
+        );
+        let mut seen: HashMap<u64, NumField> = HashMap::new();
+        for f in EVERY {
+            if let Some(other) = seen.insert(f.a11y_key(), f) {
+                panic!(
+                    "{} and {} hash to one accessible key, so an action routed at \
+                     one lands on the other",
+                    f.tag(),
+                    other.tag(),
+                );
+            }
+        }
+        // And the pick fields share the same hashed namespace once they are in
+        // the tree, so a control and a segment must not collide either.
+        for f in EVERY {
+            for pk in [
+                PickField::KeyEnable,
+                PickField::MatchFormat,
+                PickField::MaskShape(crate::model::MaskShape::Ellipse),
+                PickField::Transition(Transition::CrossDissolve),
+                PickField::Label(3),
+                PickField::Frame(0),
+                PickField::Rate(0),
+            ] {
+                assert_ne!(
+                    f.a11y_key(),
+                    pk.a11y_key(),
+                    "{} collides with {}",
+                    f.tag(),
+                    pk.tag(),
+                );
+            }
+        }
+    }
+
+    /// And the routing really lands on the row that was named.
+    ///
+    /// The key test above proves the two identities differ; this proves the
+    /// walk uses them — a reader nudging the mask's rotation has to move the
+    /// mask, and leave the picture where it is.
+    #[test]
+    fn a_reader_nudging_the_masks_tilt_does_not_rotate_the_picture() {
+        let (mut app, mut doc) = with_video_clip_selected();
+        let cid = app.selected().expect("a clip is selected");
+        // A mask has to exist for its geometry rows to be laid out at all.
+        app.collapsed.remove(&Section::Mask);
+        app.set_mask_shape(&mut doc, crate::model::MaskShape::Ellipse);
+        app.sync(&mut doc, &automerge::ROOT);
+        let before = app.project.clip(cid).expect("clip").clone();
+
+        let rows = app.a11y_inspector_rows();
+        let at = rows
+            .iter()
+            .position(|r| *r == InspectorRow::Field(NumField::MaskRotation))
+            .expect("the mask's rotation is a stop once a shape is chosen");
+        app.focus.pane = Pane::Inspector;
+        app.focus.inspector = at;
+        let path = vec![
+            Pane::Inspector.key(),
+            ui::a11y::hash_key(&Section::Mask.label()),
+            NumField::MaskRotation.a11y_key(),
+        ];
+        let root = automerge::ROOT;
+        assert!(
+            app.perform_action_at(&ui::a11y::Action::Increment, &path, &mut doc, &root),
+            "the mask's rotation answers a reader's increment",
+        );
+        let after = VideoDoc::load_project(&doc)
+            .clip(cid)
+            .expect("the clip survives")
+            .clone();
+        assert!(
+            (after.mask.rotation - before.mask.rotation).abs() > 1e-6,
+            "the mask turned: {} -> {}",
+            before.mask.rotation,
+            after.mask.rotation,
+        );
+        assert!(
+            (after.transform.rotation - before.transform.rotation).abs() < 1e-9,
+            "and the picture did not: asking to turn the mask turned the whole \
+             clip, because both rows hashed to one key ({} -> {})",
+            before.transform.rotation,
+            after.transform.rotation,
+        );
+    }
+
+    // ---- the keyboard cursor ---------------------------------------------
+
+    /// Every pane that carries a keyboard cursor paints it, and paints it on
+    /// the control the cursor is on rather than over the whole pane.
+    ///
+    /// The inspector, the bin and the transport all export a focused element to
+    /// the accessibility tree, and nothing painted it: a sighted keyboard user
+    /// could arrow through the panel and had no way to tell where they were.
+    /// That matters most in the inspector, whose controls only recently joined
+    /// the walk at all.
+    ///
+    /// Two renders of the same app, differing in `has_focus` and nothing else —
+    /// so the only thing that can move a pixel is the cursor. (Nothing in
+    /// `draw` reads `has_focus` apart from the ring, and the fixture is not
+    /// playing, so the playhead does not advance between the frames either.)
+    #[test]
+    fn every_pane_with_a_keyboard_cursor_paints_it_on_the_control_it_is_on() {
+        let theme = Theme::dark();
+        let (w, h) = (1280u32, 800u32);
+
+        // (what the pane is, where the cursor is put, the rect the ring must
+        // land in, a rect in the same pane it must NOT touch)
+        type Place = fn(&mut VideoEditorApp) -> (Rect, Rect);
+        let cases: [(&str, Place); 3] = [
+            ("the media bin", |app: &mut VideoEditorApp| {
+                app.focus.pane = Pane::Bin;
+                app.focus.bin = 2;
+                let r = app.regions();
+                let rows = app.bin_item_rects(&r);
+                (rows[2].1, rows[0].1)
+            }),
+            ("the transport", |app: &mut VideoEditorApp| {
+                app.focus.pane = Pane::Transport;
+                app.focus.transport = 2;
+                let r = app.regions();
+                let btns = app.transport_buttons(&r);
+                // Grown, because a round control wears its ring outside the
+                // fill rather than over the glyph.
+                (btns[2].1.inset(6.0), btns[0].1.inset(6.0))
+            }),
+            ("the inspector", |app: &mut VideoEditorApp| {
+                let cid = app
+                    .project
+                    .top_video_clip_at(4.0)
+                    .expect("the fixture has a video clip at 4s")
+                    .id;
+                app.selection.select_only(cid);
+                app.playhead = 4.0;
+                app.inspector_scroll = 0.0;
+                app.focus.pane = Pane::Inspector;
+                let rows = app.a11y_inspector_rows();
+                app.focus.inspector = rows
+                    .iter()
+                    .position(|row| *row == InspectorRow::Field(NumField::Brightness))
+                    .expect("brightness is a stop");
+                let l = app.inspector_layout(&app.regions());
+                let on = VideoEditorApp::inspector_focus_band(
+                    &l,
+                    InspectorRow::Field(NumField::Brightness),
+                )
+                .expect("the brightness row is drawn");
+                let off = VideoEditorApp::inspector_focus_band(
+                    &l,
+                    InspectorRow::Field(NumField::Saturation),
+                )
+                .expect("the saturation row is drawn");
+                (on, off)
+            }),
+        ];
+
+        // Collected rather than asserted pane by pane, so a run names every
+        // pane that is missing its cursor instead of only the first.
+        let mut wrong: Vec<String> = Vec::new();
+        for (what, place) in cases {
+            let render = |focused: bool| -> (Vec<u8>, Rect, Rect) {
+                let (mut app, _doc) = app_and_doc();
+                let (on, off) = place(&mut app);
+                app.has_focus = focused;
+                (render_pixels(&mut app, w, h, &theme), on, off)
+            };
+            let (dark, on, off) = render(false);
+            let (lit, _, _) = render(true);
+            let painted = region_diff(&dark, &lit, w, h, on);
+            if painted <= 100 {
+                wrong.push(format!(
+                    "{what} paints nothing where its keyboard cursor is ({painted} px), \
+                     so a sighted keyboard user cannot see which control the next key \
+                     reaches"
+                ));
+            }
+            let spilled = region_diff(&dark, &lit, w, h, off);
+            if spilled != 0 {
+                wrong.push(format!(
+                    "{what} also marked a control the cursor is not on ({spilled} px): \
+                     the ring has to name one stop, not light the whole pane"
+                ));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("; "));
+    }
+
+    /// The ring is the theme's focus colour, not a colour of the editor's own.
+    ///
+    /// Proved on the high-contrast theme, where `border_focus` is a yellow
+    /// nothing else in the inspector uses — so a ring painted in the accent, or
+    /// in a literal, puts no yellow on screen and fails here.
+    #[test]
+    fn the_keyboard_cursor_takes_its_colour_from_the_theme() {
+        let theme = Theme::high_contrast();
+        let want = theme.tokens.colors.border_focus.to_rgba8();
+        let (w, h) = (1280u32, 800u32);
+
+        let render = |focused: bool| -> (Vec<u8>, Rect) {
+            let (mut app, _doc) = app_and_doc();
+            let cid = app
+                .project
+                .top_video_clip_at(4.0)
+                .expect("a video clip at 4s")
+                .id;
+            app.selection.select_only(cid);
+            app.playhead = 4.0;
+            app.inspector_scroll = 0.0;
+            app.focus.pane = Pane::Inspector;
+            app.focus.inspector = app
+                .a11y_inspector_rows()
+                .iter()
+                .position(|row| *row == InspectorRow::Field(NumField::Brightness))
+                .expect("brightness is a stop");
+            app.has_focus = focused;
+            let band = VideoEditorApp::inspector_focus_band(
+                &app.inspector_layout(&app.regions()),
+                InspectorRow::Field(NumField::Brightness),
+            )
+            .expect("the brightness row is drawn");
+            (render_pixels(&mut app, w, h, &theme), band)
+        };
+
+        let count = |px: &[u8], band: Rect| -> usize {
+            let mut n = 0;
+            for y in band.y0.max(0.0) as u32..(band.y1 as u32).min(h) {
+                for x in band.x0.max(0.0) as u32..(band.x1 as u32).min(w) {
+                    let i = ((y * w + x) * 4) as usize;
+                    if i + 3 < px.len()
+                        && px[i].abs_diff(want.r) < 12
+                        && px[i + 1].abs_diff(want.g) < 12
+                        && px[i + 2].abs_diff(want.b) < 12
+                    {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+
+        let (dark, band) = render(false);
+        let (lit, _) = render(true);
+        assert_eq!(
+            count(&dark, band),
+            0,
+            "the focus colour appears in that row only when the keyboard is on it",
+        );
+        assert!(
+            count(&lit, band) > 100,
+            "the cursor's ring must be `Theme::border_focus` — only {} pixels of \
+             it are on screen",
+            count(&lit, band),
+        );
+    }
+
+    // ---- the shuttle -----------------------------------------------------
+
+    /// J/L run the playhead at up to 16×, and the transport has to say so.
+    ///
+    /// Every readout in the strip was gated on `playing`, so a shuttle reported
+    /// itself nowhere: the playhead moved under its own steam with nothing
+    /// naming why, how fast, or which way.
+    #[test]
+    fn the_transport_names_the_shuttle_direction_and_rate() {
+        let (mut app, mut doc) = app_and_doc();
+        assert_eq!(app.motion_words(), None, "a still playhead says nothing");
+
+        app.playing = true;
+        assert_eq!(app.motion_words().as_deref(), Some("PLAYING"));
+        app.playing = false;
+
+        // Through the production key path: L, L, L is the standard 1× → 2× → 4×.
+        for _ in 0..3 {
+            assert!(key_press(&mut app, &mut doc, "l", false), "L handled");
+        }
+        let fwd = app
+            .motion_words()
+            .expect("a running shuttle reports itself");
+        assert!(
+            fwd.contains('4') && fwd.contains('\u{d7}'),
+            "the rate has to be named, not just the fact of moving: {fwd:?}",
+        );
+        assert!(
+            fwd.contains('\u{25B6}'),
+            "and which way it is running: {fwd:?}",
+        );
+
+        // J reverses at 1×, and the wording has to change with it — "4×" on its
+        // own does not say which direction the footage is travelling.
+        assert!(key_press(&mut app, &mut doc, "j", false), "J handled");
+        let back = app
+            .motion_words()
+            .expect("a reversed shuttle reports itself");
+        assert!(
+            back.contains('\u{25C0}') && !back.contains('\u{25B6}'),
+            "reverse reads as reverse: {back:?}",
+        );
+
+        // K stops it, and the readout goes with it rather than lingering.
+        assert!(key_press(&mut app, &mut doc, "k", false), "K handled");
+        assert_eq!(app.motion_words(), None);
+    }
+
+    /// And the strip really paints those words, on the readout's own line.
+    ///
+    /// The band under test is the slot [`readout_fit`] gives the motion readout
+    /// — 14px clear of the total, so a timecode that has ticked on between the
+    /// two frames cannot reach into it. A shuttling playhead does advance
+    /// between them; that is why the assertion is "this band is blank when
+    /// nothing is moving and carries ink when something is" rather than a diff
+    /// of two frames, which the moving timecode would satisfy for free.
+    #[test]
+    fn the_shuttle_readout_is_really_painted_beside_the_timecode() {
+        let theme = Theme::dark();
+        let (w, h) = (1280u32, 800u32);
+        let (mut app, mut doc) = app_and_doc();
+        app.playhead = 8.0;
+        for _ in 0..3 {
+            assert!(key_press(&mut app, &mut doc, "l", false));
+        }
+        let words = app.motion_words().expect("the shuttle is running");
+
+        // Where the strip puts it, through the production placement.
+        let mut tr = TextRenderer::new();
+        let r = app.regions();
+        let big = timecode(app.playhead, app.project.fps);
+        let total = format!("/  {}", timecode(app.project.duration(), app.project.fps));
+        let meta = format!(
+            "{}×{} · {:.0} fps",
+            app.project.width, app.project.height, app.project.fps
+        );
+        let motion_w = f64::from(tr.measure(&words, 10.0, None).0);
+        let fit = readout_fit(
+            r.transport,
+            app.transport_content_x(&r),
+            f64::from(tr.measure_weighted(&big, 18.0, None, TextWeight::Bold).0),
+            f64::from(tr.measure(&total, 13.0, None).0),
+            motion_w,
+            f64::from(tr.measure(&meta, 11.5, None).0),
+        );
+        let x = fit.motion_x.expect("a 1280px strip has room for the rate");
+        let band = Rect::new(
+            x - 4.0,
+            r.transport.y0 + 10.0,
+            x + motion_w + 4.0,
+            r.transport.y0 + 28.0,
+        );
+
+        let shuttling = render_pixels(&mut app, w, h, &theme);
+        assert!(
+            region_colours(&shuttling, w, h, band) > 1,
+            "the shuttle's direction and rate must be on screen while it runs",
+        );
+
+        // The same band on a still playhead: blank strip, nothing lingering.
+        let (mut still, _doc) = app_and_doc();
+        still.playhead = 8.0;
+        let stopped = render_pixels(&mut still, w, h, &theme);
+        assert_eq!(
+            region_colours(&stopped, w, h, band),
+            1,
+            "a stopped playhead leaves that slot empty rather than claiming a rate",
+        );
+    }
+
+    /// The play button is the control that stops whatever is moving, so it has
+    /// to wear the pause glyph while a shuttle runs — and pressing it has to
+    /// stop the shuttle, not start playback on top of it and leave a rate
+    /// running behind the readout.
+    #[test]
+    fn the_play_button_shows_and_stops_a_running_shuttle() {
+        let theme = Theme::dark();
+        let (w, h) = (1280u32, 800u32);
+
+        // The button's own rect never moves with the playhead, so this frame
+        // pair isolates the glyph.
+        let render = |shuttling: bool| -> (Vec<u8>, Rect) {
+            let (mut app, mut doc) = app_and_doc();
+            app.playhead = 8.0;
+            if shuttling {
+                assert!(key_press(&mut app, &mut doc, "l", false));
+            }
+            let rect = app.transport_buttons(&app.regions())[2].1;
+            (render_pixels(&mut app, w, h, &theme), rect)
+        };
+        let (stopped, btn) = render(false);
+        let (running, _) = render(true);
+        assert!(
+            region_diff(&stopped, &running, w, h, btn) > 20,
+            "a shuttling playhead still wore a play triangle: the button offered \
+             to start something that was already running",
+        );
+
+        // And the press stops it.
+        let (mut app, mut doc) = app_and_doc();
+        app.playhead = 8.0;
+        assert!(key_press(&mut app, &mut doc, "l", false));
+        assert!(app.shuttle > 0.0, "the shuttle is running");
+        app.toggle_play();
+        assert_eq!(app.shuttle, 0.0, "the play/pause press stopped the shuttle");
+        assert!(
+            !app.playing,
+            "and did not start playback on top of it, which would have left the \
+             transport reporting a state nothing on screen accounted for",
+        );
+    }
+
     #[test]
     fn an_audio_clip_is_offered_its_volume_where_a_video_clip_has_a_grade() {
         // The walk must offer exactly the controls that are drawn: an audio
@@ -23578,7 +24748,7 @@ mod tests {
             .expect("opacity is a stop");
         app.focus.pane = Pane::Inspector;
         app.focus.inspector = at;
-        let path = vec![Pane::Inspector.key(), ui::a11y::hash_key(&"Opacity")];
+        let path = vec![Pane::Inspector.key(), NumField::Opacity.a11y_key()];
         let root = automerge::ROOT;
         assert!(
             app.perform_action_at(&ui::a11y::Action::Decrement, &path, &mut doc, &root),
