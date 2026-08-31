@@ -27,7 +27,10 @@ pub mod priority_contacts;
 // First-boot setup invoked by `quick-desktop-firstboot.service` via `quick-desktop --firstboot`.
 pub mod bluetooth;
 pub mod bluetooth_prompt;
+pub mod device_fleet;
 pub mod firstboot;
+pub mod identity_broker;
+pub mod identity_registry;
 pub mod onboarding;
 pub mod onboarding_view;
 // Observability counters aggregated per peer surface — read by the OSD overlay and the flatpak-share e2e test.

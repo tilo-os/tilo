@@ -50,6 +50,7 @@ pub mod livetest;
 pub mod location;
 pub mod model;
 pub mod net;
+mod offline_panel;
 pub mod rank;
 pub mod sample;
 pub mod tiles;

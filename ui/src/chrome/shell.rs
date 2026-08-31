@@ -879,10 +879,10 @@ mod tests {
         let radii = &theme.tokens.radii;
         let on_scale = [
             0.0,
-            radii.sm as f64,
-            radii.md as f64,
-            radii.lg as f64,
-            radii.xl as f64,
+            f64::from(radii.sm),
+            f64::from(radii.md),
+            f64::from(radii.lg),
+            f64::from(radii.xl),
         ];
         for role in [
             ChromeRole::Bar,
@@ -960,13 +960,13 @@ mod tests {
     /// the same fraction of every code value, which is why it reads as two
     /// different amounts of dimming on a light page versus a dark desktop.
     fn lstar(v: u8) -> f64 {
-        let s = v as f64 / 255.0;
+        let s = f64::from(v) / 255.0;
         let y = if s <= 0.04045 {
             s / 12.92
         } else {
             ((s + 0.055) / 1.055).powf(2.4)
         };
-        if y > 0.008856 {
+        if y > 0.008_856 {
             116.0 * y.cbrt() - 16.0
         } else {
             903.3 * y
@@ -975,12 +975,20 @@ mod tests {
 
     /// The flat fill this replaced, so comparisons below are against what
     /// was actually on screen rather than a remembered number.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "explicitly clamped to 0.0..=1.0 immediately before the *255.0 scale, \
+                  so the final value is always within 0..=255"
+    )]
     fn flat_wash(v: u8, strength: f32, theme: &Theme) -> u8 {
-        let a = strength.clamp(0.0, 1.0) as f64;
+        let a = f64::from(strength.clamp(0.0, 1.0));
         let hue = theme.tokens.colors.surfaces.scrim;
-        let grey =
-            (0.2126 * hue.r() as f64 + 0.7152 * hue.g() as f64 + 0.0722 * hue.b() as f64) / 255.0;
-        let out = (v as f64 / 255.0) * (1.0 - a) + grey * a;
+        let grey = (0.2126 * f64::from(hue.r())
+            + 0.7152 * f64::from(hue.g())
+            + 0.0722 * f64::from(hue.b()))
+            / 255.0;
+        let out = (f64::from(v) / 255.0) * (1.0 - a) + grey * a;
         (out.clamp(0.0, 1.0) * 255.0).round() as u8
     }
 
@@ -1084,6 +1092,10 @@ mod tests {
         for (name, theme) in themes() {
             let mut last = 253u8;
             for step in 0..=8 {
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "step ranges 0..=8, far below where f32 loses integer precision"
+                )]
                 let openness = step as f32 / 8.0;
                 let page = scrim_maps(252, 0.45 * openness, &theme);
                 assert!(
@@ -1108,7 +1120,7 @@ mod tests {
         let ink = scrim_maps(255, 0.45, &theme);
         let ground = scrim_maps(0, 0.45, &theme);
         let lum = |v: u8| {
-            let s = v as f64 / 255.0;
+            let s = f64::from(v) / 255.0;
             if s <= 0.03928 {
                 s / 12.92
             } else {
@@ -1215,10 +1227,20 @@ impl StripRibbon {
             return 0.0;
         }
         let focused = usize::from(self.focused < self.count);
-        let plain = self.count - focused;
-        plain as f64 * RIBBON_SEG_H
-            + focused as f64 * RIBBON_SEG_H_FOCUSED
-            + (self.count.saturating_sub(1)) as f64 * RIBBON_GAP
+        // `self.count >= 1` here (checked above), and `focused` is 0 or 1, so
+        // this never underflows; saturating_sub documents that rather than
+        // relying on the reader to re-derive it.
+        let plain = self.count.saturating_sub(focused);
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "tab/strip counts are tiny, far below where f64 loses \
+                      integer precision"
+        )]
+        {
+            plain as f64 * RIBBON_SEG_H
+                + focused as f64 * RIBBON_SEG_H_FOCUSED
+                + (self.count.saturating_sub(1)) as f64 * RIBBON_GAP
+        }
     }
 
     pub fn segment_rect(&self, i: usize) -> Option<Rect> {
@@ -1366,10 +1388,20 @@ impl StripRail {
             return 0.0;
         }
         let focused = usize::from(self.focused < self.count);
-        let plain = self.count - focused;
-        plain as f64 * RAIL_SEG_W
-            + focused as f64 * RAIL_SEG_W_FOCUSED
-            + (self.count.saturating_sub(1)) as f64 * RAIL_GAP
+        // `self.count >= 1` here (checked above), and `focused` is 0 or 1, so
+        // this never underflows; saturating_sub documents that rather than
+        // relying on the reader to re-derive it.
+        let plain = self.count.saturating_sub(focused);
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "tab/strip counts are tiny, far below where f64 loses \
+                      integer precision"
+        )]
+        {
+            plain as f64 * RAIL_SEG_W
+                + focused as f64 * RAIL_SEG_W_FOCUSED
+                + (self.count.saturating_sub(1)) as f64 * RAIL_GAP
+        }
     }
 
     pub fn segment_rect(&self, i: usize) -> Option<Rect> {
@@ -1604,7 +1636,7 @@ mod ribbon_tests {
             };
             let first = r.segment_rect(0).unwrap();
             let last = r.segment_rect(3).unwrap();
-            let mid = (first.y0 + last.y1) / 2.0;
+            let mid = f64::midpoint(first.y0, last.y1);
             assert!(
                 (mid - content.center().y).abs() < 0.001,
                 "focus {focused}: ribbon centre {mid} drifted off {}",
