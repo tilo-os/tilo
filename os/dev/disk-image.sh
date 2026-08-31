@@ -316,7 +316,13 @@ if [ "$COMPOSEFS" = yes ]; then
   fails with \"Invalid splitstream content type\". The disk step therefore needs a
   registry it can reach over HTTP. Start one and set QOS_DISK_REG_PORT, or install
   docker.io/library/registry:2 so this can start its own."
-  repo="$(basename "${IMAGE%%:*}")"
+  # The source may be digest-pinned (`registry/owner/qos@sha256:...`). Splitting
+  # at the first colon turns that into the invalid repository `qos@sha256`.
+  # Isolate the final path component first, then remove either digest or tag.
+  repo="$(basename "$IMAGE")"
+  repo="${repo%%@*}"
+  repo="${repo%%:*}"
+  [ -n "$repo" ] || die "cannot derive a local registry repository from $IMAGE"
   msg "publishing $IMAGE to $REG/$repo:disk-install"
   podman push --tls-verify=false "$IMAGE" "$REG/$repo:disk-install" \
     || die "pushing $IMAGE to $REG failed. The composefs backend has to install from a
