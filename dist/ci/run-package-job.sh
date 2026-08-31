@@ -22,7 +22,7 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     [[ ! -e $output ]] || { echo "output path already exists: $output" >&2; exit 1; }
     mkdir -p "$output"
 
-    docker run --rm --platform "linux/$arch" \
+    container=$(docker create --platform "linux/$arch" \
         --entrypoint /bin/sh \
         --env QOS_IN_PACKAGE_CONTAINER=1 \
         --env QOS_PACKAGE_DISTRO="$distro" \
@@ -30,15 +30,21 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         --env QOS_DEB_REVISION="$revision" \
         --env CARGO_INCREMENTAL=0 \
         --env CARGO_TERM_COLOR=never \
-        --volume "$repo_root:/source:ro" \
-        --volume "$output:/artifacts" \
         "$image" -c '
             set -eu
-            mkdir /workspace
-            cp -a /source/. /workspace/
+            mkdir /artifacts
             cd /workspace
             exec dist/ci/run-package-job.sh
-        '
+        ')
+    cleanup_container() {
+        docker rm --force "$container" >/dev/null 2>&1 || true
+    }
+    trap cleanup_container EXIT
+    # docker cp works with Docker-in-Docker and socket-mounted runners where a
+    # bind path inside the runner is not a real path from the daemon's view.
+    docker cp "$repo_root/." "$container:/workspace"
+    docker start --attach "$container"
+    docker cp "$container:/artifacts/." "$output/"
     exit
 fi
 
