@@ -31,7 +31,6 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_TERM_COLOR: never
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-      SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
