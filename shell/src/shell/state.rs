@@ -26,6 +26,88 @@ impl WorkspaceId {
     }
 }
 
+#[cfg(test)]
+mod identity_fs_tests {
+    use super::*;
+
+    #[test]
+    #[serial_test::serial(identity_env)]
+    fn filesystem_export_maps_selected_person_through_verified_device_chain() {
+        let temp = tempfile::tempdir().expect("temp");
+        let xdg = temp.path().join("config");
+        let system = temp.path().join("system");
+        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        let old_root = std::env::var_os("QOS_IDENTITY_ROOT");
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &xdg);
+            std::env::set_var("QOS_IDENTITY_ROOT", &system);
+        }
+        let identity_dir = xdg.join("qos/identity");
+        let paths = qos_user_identity::IdentityPaths::under(&system);
+        crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+        let profile = crate::identity_registry::IdentityRegistryStore::at(&identity_dir)
+            .load()
+            .expect("registry")
+            .selected_for_workspace("new-room")
+            .expect("profile")
+            .clone();
+
+        let mut tree = WorkspaceTree::default();
+        let mut workspace = Workspace::test_default(WorkspaceId(1), "Files");
+        workspace.capabilities.push(CapOverride::grant(
+            Subject::person(profile.principal_id()),
+            Scope::FsPath("/var/workspace/files".into()),
+            Verb::Write,
+        ));
+        tree.workspaces.push(workspace);
+        let output = temp.path().join("fs-caps.json");
+        tree.fs_acl_path = Some(output.clone());
+        tree.export_fs_capabilities();
+
+        let exported: Vec<CapOverride> =
+            serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
+        let device = qos_user_identity::persist::read_device_key(&paths.device_privkey)
+            .expect("device")
+            .verifying_key()
+            .to_bytes();
+        assert!(exported.iter().any(|capability| {
+            matches!(
+                capability.subject,
+                Subject::User(key) if key.as_bytes() == &device
+            ) && capability.verb == Verb::Write
+        }));
+
+        crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths.clone())
+            .revoke(
+                &profile.id,
+                device,
+                qos_user_identity::RevocationReason::Retired,
+                1,
+            )
+            .expect("revoke current device");
+        tree.export_fs_capabilities();
+        let after_revoke: Vec<CapOverride> =
+            serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
+        assert!(after_revoke.iter().all(|capability| {
+            !matches!(
+                capability.subject,
+                Subject::User(key) if key.as_bytes() == &device
+            )
+        }));
+
+        unsafe {
+            match old_xdg {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            match old_root {
+                Some(value) => std::env::set_var("QOS_IDENTITY_ROOT", value),
+                None => std::env::remove_var("QOS_IDENTITY_ROOT"),
+            }
+        }
+    }
+}
+
 /// Durable, globally-unique identity of a workspace as a collaboration
 /// room. Unlike [`WorkspaceId`] (a local counter) it is minted once as a
 /// random v4 uuid and carried rather than recomputed, so machines that
@@ -813,6 +895,18 @@ pub fn local_user_id() -> UserId {
     std::env::var("USER").unwrap_or_else(|_| "local".to_string())
 }
 
+/// Identity acting in a specific durable room.
+///
+/// Registry errors fail back to the session identity for compatibility, but
+/// a valid explicit binding always wins. Callers that launch an app use the
+/// stricter path resolver and fail closed if its private record is unavailable.
+pub fn local_user_id_for_room(room: &RoomId) -> UserId {
+    crate::identity_registry::selected_principal_id(&room.to_string())
+        .ok()
+        .flatten()
+        .unwrap_or_else(local_user_id)
+}
+
 /// The name a session goes by before it says who is sitting at it.
 /// Derived from the Iroh peer handle, so it must match the fallback
 /// label [`crate::shell::peer_presence::fold_inbound`] gives an
@@ -1190,7 +1284,7 @@ impl Workspace {
         self.grant_capability(
             CapOverride::membership(
                 Subject::Principal(Principal::Person(user)),
-                self.id.raw().to_string(),
+                self.room.to_string(),
                 Verb::Admin,
             )
             .with_id(format!("owner-{}", self.id.raw())),
@@ -1203,11 +1297,13 @@ impl Workspace {
     /// for a room this machine doesn't own.
     pub fn surrender_governance(&mut self) -> bool {
         let had_owner = self.owner.take().is_some();
-        let room = self.id.raw().to_string();
         let dropped = self.revoke_matching(|c| {
             let is_person = matches!(c.subject, Subject::Principal(Principal::Person(_)));
-            let covers_room = matches!(&c.scope, Scope::Room(r) if *r == room)
-                || matches!(c.scope, Scope::Workspace);
+            // Capability vectors are already owned by one workspace. Accept
+            // legacy local-id and current durable-room spellings alike so a
+            // replicated membership cannot disappear on a peer whose local
+            // workspace handle differs.
+            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
             is_person && covers_room && c.verb.implies(Verb::Admin)
         });
         had_owner || !dropped.is_empty()
@@ -1220,7 +1316,6 @@ impl Workspace {
         if self.owner.as_deref() == Some(user.as_str()) {
             return Some(CapRole::Owner);
         }
-        let room = self.id.raw().to_string();
         let subject_is_user = |c: &CapOverride| match &c.subject {
             Subject::Principal(Principal::Person(p)) => p == user,
             _ => false,
@@ -1232,8 +1327,7 @@ impl Workspace {
             if !subject_is_user(c) || !c.is_live_at(now) {
                 continue;
             }
-            let covers_room = matches!(&c.scope, Scope::Room(r) if *r == room)
-                || matches!(c.scope, Scope::Workspace);
+            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
             if !covers_room {
                 continue;
             }
@@ -1263,35 +1357,33 @@ impl Workspace {
 
     /// Build the [`Actor`] for a person acting in this room.
     pub fn actor_for_person(&self, user: &UserId) -> Actor {
-        Actor::person(self.role_of(user), user.clone()).in_room(self.id.raw().to_string())
+        Actor::person(self.role_of(user), user.clone()).in_room(self.room.to_string())
     }
 
     /// Build the [`Actor`] for an app running in this room. Carries the
     /// room as principal but **no role** — an app has no base authority,
     /// only what's granted to it by name.
     pub fn actor_for_app(&self, app_id: &str) -> Actor {
-        Actor::app(app_id).in_room(self.id.raw().to_string())
+        Actor::app(app_id).in_room(self.room.to_string())
     }
 
     /// Build the [`Actor`] for an agent acting for the user. Same
     /// authority shape as an app: scoped, revocable, no role.
     pub fn actor_for_agent(&self, agent_id: &str) -> Actor {
-        Actor::agent(agent_id).in_room(self.id.raw().to_string())
+        Actor::agent(agent_id).in_room(self.room.to_string())
     }
 
     /// The room roster: the people who are *members*. Built from
     /// room-scoped capabilities only — someone with a capability on one
     /// file and nothing else is **not** here. See [`Self::shares_of`].
     pub fn roster(&self) -> Vec<(UserId, CapRole)> {
-        let room = self.id.raw().to_string();
         let now = Some(now_unix());
         let mut seen: Vec<UserId> = Vec::new();
         for c in &self.capabilities {
             if !c.is_live_at(now) || c.effect != Effect::Grant {
                 continue;
             }
-            let covers_room = matches!(&c.scope, Scope::Room(r) if *r == room)
-                || matches!(c.scope, Scope::Workspace);
+            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
             if !covers_room {
                 continue;
             }
@@ -1314,7 +1406,6 @@ impl Workspace {
     /// The role an *agent* holds — same derivation as [`Self::role_of`]
     /// minus the owner short-circuit, since an agent is never the owner.
     pub fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
-        let room = self.id.raw().to_string();
         let now = Some(now_unix());
         let mut best: Option<Verb> = None;
         let mut blocked = false;
@@ -1326,8 +1417,7 @@ impl Workspace {
             if !subject_matches || !c.is_live_at(now) {
                 continue;
             }
-            let covers_room = matches!(&c.scope, Scope::Room(r) if *r == room)
-                || matches!(c.scope, Scope::Workspace);
+            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
             if !covers_room {
                 continue;
             }
@@ -1357,15 +1447,13 @@ impl Workspace {
     /// from [`Self::roster`], since an agent is not a person and
     /// rendering them undifferentiated would misrepresent who's present.
     pub fn agent_members(&self) -> Vec<(String, CapRole)> {
-        let room = self.id.raw().to_string();
         let now = Some(now_unix());
         let mut seen: Vec<String> = Vec::new();
         for c in &self.capabilities {
             if !c.is_live_at(now) || c.effect != Effect::Grant {
                 continue;
             }
-            let covers_room = matches!(&c.scope, Scope::Room(r) if *r == room)
-                || matches!(c.scope, Scope::Workspace);
+            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
             if !covers_room {
                 continue;
             }
@@ -4033,20 +4121,69 @@ impl WorkspaceTree {
     /// export together since `/var/workspace` is one mount, so two
     /// workspaces granting the same path to different subjects union.
     ///
-    /// Two open gaps: `qos-fs` reads this file once at mount, so a
-    /// grant/revoke after that needs a remount (only expiry is live); and
-    /// `fs.service` doesn't pass `--acl`, so the shipped image's mount
-    /// runs unenforced.
+    /// The filesystem authenticates the machine's device key. For a local
+    /// identity's path grants, export an equivalent device-key binding only
+    /// after the registry and root-signed device certificate establish the
+    /// `identity -> device` relationship. Restrictions are duplicated too,
+    /// so translation can never widen a grant.
     pub fn export_fs_capabilities(&self) {
         let Some(path) = &self.fs_acl_path else {
             return;
         };
-        let caps: Vec<&CapOverride> = self
-            .workspaces
-            .iter()
-            .flat_map(|w| w.capabilities.iter())
-            .filter(|c| matches!(c.scope, Scope::FsPath(_)))
-            .collect();
+        let identity_paths = crate::firstboot::collaboration_identity_paths();
+        let device_public_key =
+            qos_user_identity::persist::read_device_key(identity_paths.device_privkey.as_path())
+                .ok()
+                .map(|key| key.verifying_key().to_bytes());
+        let mut caps: Vec<CapOverride> = Vec::new();
+        for workspace in &self.workspaces {
+            let profile =
+                crate::identity_registry::selected_identity_profile(&workspace.room.to_string())
+                    .ok()
+                    .flatten()
+                    .filter(|profile| {
+                        let Some(device) = device_public_key else {
+                            return false;
+                        };
+                        let paths = crate::firstboot::collaboration_identity_paths();
+                        qos_user_identity::persist::read_device_cert(
+                            &paths.device_cert_for_user(&profile.user_public_key),
+                        )
+                        .ok()
+                        .filter(|cert| qos_user_identity::verify_device_cert(cert).is_ok())
+                        .is_some_and(|cert| {
+                            cert.user_public_key == profile.user_public_key
+                                && cert.device_public_key == device
+                                && !crate::device_fleet::DeviceFleetStore::from_env()
+                                    .and_then(|store| store.load(&profile.id))
+                                    .is_ok_and(|fleet| fleet.is_revoked(&device))
+                        })
+                    });
+            let identity_actor = profile.as_ref().map(|profile| Actor {
+                role: None,
+                key: Some(collab_types::crypto::Ed25519PublicKey::from_bytes(
+                    profile.user_public_key,
+                )),
+                principals: vec![Principal::person_from_key(
+                    collab_types::crypto::Ed25519PublicKey::from_bytes(profile.user_public_key),
+                )],
+            });
+            for capability in workspace
+                .capabilities
+                .iter()
+                .filter(|capability| matches!(capability.scope, Scope::FsPath(_)))
+            {
+                caps.push(capability.clone());
+                if let (Some(device), Some(actor)) = (device_public_key, identity_actor.as_ref())
+                    && capability.subject.matches_actor(actor)
+                {
+                    let mut device_capability = capability.clone();
+                    device_capability.subject =
+                        Subject::User(collab_types::crypto::Ed25519PublicKey::from_bytes(device));
+                    caps.push(device_capability);
+                }
+            }
+        }
         let Ok(json) = serde_json::to_vec_pretty(&caps) else {
             return;
         };
@@ -4064,6 +4201,16 @@ impl WorkspaceTree {
     /// joining someone else's room, and adopting would hand that room
     /// back to this machine on the next boot.
     pub fn adopt_ownerless_workspaces(&mut self, user: &UserId) -> Vec<WorkspaceId> {
+        self.adopt_ownerless_workspaces_with(|_| user.clone())
+    }
+
+    /// Give each ownerless locally-governed workspace to the identity selected
+    /// for its room. This is the multi-identity form of
+    /// [`Self::adopt_ownerless_workspaces`].
+    pub fn adopt_ownerless_workspaces_with(
+        &mut self,
+        identity_for_room: impl Fn(&RoomId) -> UserId,
+    ) -> Vec<WorkspaceId> {
         let governed_elsewhere: Vec<RoomId> = self
             .room_authority
             .iter()
@@ -4073,11 +4220,12 @@ impl WorkspaceTree {
         let mut adopted = Vec::new();
         for ws in &mut self.workspaces {
             if ws.owner.is_none() && !governed_elsewhere.contains(&ws.room) {
+                let user = identity_for_room(&ws.room);
                 ws.set_owner(user.clone());
-                adopted.push(ws.id);
+                adopted.push((ws.id, user));
             }
         }
-        for id in &adopted {
+        for (id, user) in &adopted {
             self.doc_set_owner(*id, user);
             let caps: Vec<CapOverride> = self
                 .workspaces
@@ -4092,7 +4240,7 @@ impl WorkspaceTree {
         if !adopted.is_empty() {
             self.flush_to_disk();
         }
-        adopted
+        adopted.into_iter().map(|(id, _)| id).collect()
     }
 
     /// Mint a durable [`RoomId`] for every workspace that has none, and
@@ -8318,6 +8466,25 @@ mod agent_membership {
             "revoking the capability is the whole of taking the agent out",
         );
         assert_eq!(ws.role_of_agent("scribe"), None);
+    }
+
+    #[test]
+    fn replicated_membership_does_not_depend_on_the_local_workspace_handle() {
+        let mut ws = room();
+        ws.grant_capability(CapOverride::membership(
+            Subject::person("remote-editor"),
+            "a-different-peers-local-id",
+            Verb::Write,
+        ));
+        assert_eq!(
+            ws.role_of(&"remote-editor".to_string()),
+            Some(CapRole::Editor)
+        );
+        assert!(ws.allows(
+            &ws.actor_for_person(&"remote-editor".to_string()),
+            &ResourceRef::App("dev.qos.notes".into()),
+            Verb::Write,
+        ));
     }
 
     /// The two lists are disjoint. A person in the roster must never
