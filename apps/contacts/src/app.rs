@@ -4479,9 +4479,10 @@ impl ContactsApp {
     fn handle_popup_type_menu(&mut self, target: TypeTarget, anchor: Rect, p: Point) {
         let (_panel, rows) = self.popup_menu_geometry(anchor, TYPE_OPTIONS.len(), 140.0);
         if let Some(i) = rows.iter().position(|r| r.contains(p))
-            && let Some(label) = TYPE_OPTIONS.get(i).map(|s| s.to_string())
+            && let Some(label) = TYPE_OPTIONS.get(i).map(|s| (*s).to_string())
+            && let Some(form) = &mut self.form
         {
-            if let Some(form) = &mut self.form {
+            {
                 match target {
                     TypeTarget::Phone(idx) => {
                         if let Some(x) = form.draft.phones.get_mut(idx) {
