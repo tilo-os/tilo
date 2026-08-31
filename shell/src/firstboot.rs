@@ -310,7 +310,7 @@ pub fn ensure_collaboration_identity(
 
     let (device, _) =
         persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
-    if paths.device_cert.exists() {
+    if device_owner && paths.device_cert.exists() {
         let cert = persist::read_device_cert(&paths.device_cert)
             .map_err(|e| io::Error::other(e.to_string()))?;
         qos_user_identity::verify_device_cert(&cert)
@@ -323,7 +323,7 @@ pub fn ensure_collaboration_identity(
                 "device certificate does not match the provisioned identity keys",
             ));
         }
-    } else {
+    } else if device_owner {
         let issued_at_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -349,7 +349,99 @@ pub fn ensure_collaboration_identity(
             .map_err(|e| io::Error::other(e.to_string()))?;
     }
 
+    // Keep an identity-keyed copy as well. A device has one keypair, but it
+    // needs a separate root-signed certificate for every identity it may
+    // present in a workspace.
+    ensure_device_certificate_for_root(
+        &root,
+        paths,
+        if device_owner {
+            "Primary device"
+        } else {
+            "Shared device"
+        },
+    )?;
+
+    // Keep the legacy primary path working while making it the first entry in
+    // the multi-identity registry. A registry write failure is a provisioning
+    // failure: silently creating a key that no workspace can select strands
+    // the identity immediately.
+    let registry = crate::identity_registry::IdentityRegistryStore::at(identity_dir)
+        .migrate_legacy_primary()?;
+    if let Some(identity_id) = registry.default_identity {
+        crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone())
+            .register_current_device(&identity_id)?;
+    }
+
     Ok(outcome)
+}
+
+/// Enrol the machine's existing device key under an imported local identity.
+///
+/// This keeps app signing and collaboration transport authentication on the
+/// same `identity -> device` chain immediately after setup/import.
+pub fn ensure_device_certificate_for_record(
+    record_path: &Path,
+    paths: &IdentityPaths,
+) -> Result<PathBuf, io::Error> {
+    let bytes = fs::read(record_path)?;
+    let record = IdentityRecord::from_json_bytes(&bytes)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let identity = record
+        .into_threshold_identity()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let root_seed = identity.single_device_seed().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity cannot issue a device certificate from this record",
+        )
+    })?;
+    let root = ed25519_dalek::SigningKey::from_bytes(&root_seed);
+    ensure_device_certificate_for_root(&root, paths, "This device")
+}
+
+fn ensure_device_certificate_for_root(
+    root: &ed25519_dalek::SigningKey,
+    paths: &IdentityPaths,
+    device_label: &str,
+) -> Result<PathBuf, io::Error> {
+    let (device, _) =
+        persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
+    let user_public_key = root.verifying_key().to_bytes();
+    let cert_path = paths.device_cert_for_user(&user_public_key);
+    if cert_path.exists() {
+        let cert =
+            persist::read_device_cert(&cert_path).map_err(|e| io::Error::other(e.to_string()))?;
+        qos_user_identity::verify_device_cert(&cert)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        if cert.user_public_key != user_public_key
+            || cert.device_public_key != device.verifying_key().to_bytes()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "identity-specific device certificate does not match its keys",
+            ));
+        }
+        return Ok(cert_path);
+    }
+
+    let issued_at_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .min(u128::from(u64::MAX)) as u64;
+    let mut cert = DeviceCert {
+        user_public_key,
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: device_label.into(),
+        capabilities: DeviceCapabilities::primary(),
+        issued_at_ns,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut cert, root).map_err(|e| io::Error::other(e.to_string()))?;
+    persist::write_device_cert(&cert_path, &cert).map_err(|e| io::Error::other(e.to_string()))?;
+    Ok(cert_path)
 }
 
 /// Resolve the system identity root, with the same test/development override
@@ -588,6 +680,39 @@ mod tests {
         assert_eq!(
             ensure_collaboration_identity(&personal, &paths).unwrap(),
             ProvisionOutcome::Existing
+        );
+    }
+
+    #[test]
+    fn multiple_os_users_share_one_device_without_replacing_its_owner() {
+        let tmp = TmpDir::new("multi-user-device");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        let alice = tmp.path().join("alice/qos/identity");
+        let bob = tmp.path().join("bob/qos/identity");
+        ensure_collaboration_identity(&alice, &paths).expect("alice provisions owner");
+        let owner = persist::read_public_key(&paths.user_pubkey).expect("owner key");
+
+        ensure_collaboration_identity(&bob, &paths).expect("bob joins shared device");
+        assert_eq!(
+            persist::read_public_key(&paths.user_pubkey).expect("owner remains"),
+            owner
+        );
+        let bob_record = IdentityRecord::from_json_bytes(
+            &std::fs::read(bob.join(PRIMARY_IDENTITY_FILE)).expect("bob record"),
+        )
+        .expect("bob identity");
+        let bob_key = bob_record.threshold_identity.group_public_key;
+        assert_ne!(bob_key, owner);
+        let bob_cert = persist::read_device_cert(&paths.device_cert_for_user(&bob_key))
+            .expect("bob device cert");
+        qos_user_identity::verify_device_cert(&bob_cert).expect("valid bob chain");
+        assert_eq!(bob_cert.user_public_key, bob_key);
+        assert_eq!(
+            bob_cert.device_public_key,
+            persist::read_device_key(&paths.device_privkey)
+                .expect("device key")
+                .verifying_key()
+                .to_bytes()
         );
     }
 

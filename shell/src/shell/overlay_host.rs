@@ -4544,7 +4544,8 @@ impl ShellOverlayHost {
         let Some(workspace) = tree.active_workspace() else {
             return false;
         };
-        let actor = workspace.actor_for_person(&st.local_user_id);
+        let actor_id = st.local_user_for_room(&workspace.room);
+        let actor = workspace.actor_for_person(&actor_id);
         CapabilityVisibility::new(workspace, actor).can_see(
             &ResourceRef::new("actions", "peer.invite"),
             &crate::shell::search::ResourceKind::Action,
@@ -8035,7 +8036,7 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
     if let Some(forced) = state.test_only_owner_override {
         return forced;
     }
-    let user = state.local_user_id.clone();
+    let user = state.active_local_user();
     state
         .tree()
         .active_workspace()
@@ -8086,7 +8087,7 @@ where
     F: FnOnce(&mut crate::shell::state::Workspace, &crate::shell::state::UserId) -> CapEdit,
 {
     let mut st = chrome.borrow_mut();
-    let actor = st.local_user_id.clone();
+    let actor = st.active_local_user();
     let outcome = {
         let mut tree = st.tree_mut();
         let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {

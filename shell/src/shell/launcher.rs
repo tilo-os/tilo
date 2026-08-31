@@ -168,6 +168,8 @@ pub enum LaunchError {
     NoWorkspace,
     /// A typed intent addresses shell chrome, not an application package.
     ShellOwnedIntent,
+    /// The workspace's selected identity could not be resolved safely.
+    IdentityUnavailable { detail: String },
     /// The registry file exists but could not be read or parsed.
     RegistryUnreadable { detail: String },
     /// No `.desktop` entry with this id (distinct from
@@ -195,6 +197,9 @@ impl LaunchError {
             LaunchError::NoWorkspace => "there is no active workspace to open it in".to_string(),
             LaunchError::ShellOwnedIntent => {
                 "this destination belongs to shell chrome, not an application".to_string()
+            }
+            LaunchError::IdentityUnavailable { detail } => {
+                format!("the workspace identity could not be loaded: {detail}")
             }
             LaunchError::RegistryUnreadable { detail } => {
                 format!("the app registry could not be read: {detail}")
@@ -671,6 +676,7 @@ pub fn build_launch_command(
     wayland_socket: &Path,
     room: RoomId,
     capabilities_file: Option<&Path>,
+    identity_path: Option<&Path>,
     render_node: Option<&Path>,
     document: Option<&Path>,
 ) -> LaunchCommand {
@@ -732,6 +738,10 @@ fn build_launch_command_for(
     ];
     if let Some(path) = capabilities_file {
         args.push("--capabilities".to_string());
+        args.push(path.display().to_string());
+    }
+    if let Some(path) = identity_path {
+        args.push("--identity".to_string());
         args.push(path.display().to_string());
     }
     if let Some(node) = render_node {
@@ -860,6 +870,10 @@ fn launch_with_context(
             None
         }
     };
+    let identity_path = crate::identity_registry::selected_identity_path(&room.to_string())
+        .map_err(|error| LaunchError::IdentityUnavailable {
+            detail: error.to_string(),
+        })?;
 
     let mut command = build_launch_command_for(
         &app,
@@ -1377,6 +1391,7 @@ mod tests {
             Path::new("/run/user/1000/wayland-3"),
             RoomId::new(),
             None,
+            None,
             Some(Path::new("/dev/dri/renderD128")),
             None,
         );
@@ -1423,6 +1438,7 @@ mod tests {
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
             RoomId::new(),
+            None,
             None,
             None,
             None,
@@ -1678,6 +1694,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(
             cmd.args
@@ -1705,6 +1722,7 @@ mod tests {
             )),
             None,
             None,
+            None,
         );
         let pos = cmd
             .args
@@ -1714,6 +1732,29 @@ mod tests {
         assert_eq!(
             cmd.args[pos + 1],
             "/run/user/1000/qos/capabilities/dev.qos.books.json"
+        );
+    }
+
+    #[test]
+    fn launch_command_names_the_workspace_selected_identity() {
+        let cmd = build_launch_command(
+            &test_app("dev.qos.books"),
+            Path::new("/usr/bin/qos-launcher"),
+            Path::new("/run/user/1000/wayland-3"),
+            RoomId::new(),
+            None,
+            Some(Path::new("/home/alice/.config/qos/identity/alice.json")),
+            None,
+            None,
+        );
+        let position = cmd
+            .args
+            .iter()
+            .position(|arg| arg == "--identity")
+            .expect("--identity flag");
+        assert_eq!(
+            cmd.args[position + 1],
+            "/home/alice/.config/qos/identity/alice.json"
         );
     }
 

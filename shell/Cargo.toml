@@ -245,6 +245,7 @@ rand_core = { workspace = true, features = ["getrandom"] }
 # the SDK-side client wrappers we reuse in tests; `runtime-portal`
 # supplies the connected-fd lift + service-fd lookup.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
+runtime-identity = { path = "../crates/runtime/runtime-identity" }
 # Launching installed applications: the shell reads the app registry and
 # package manifests through this crate's types, then execs its
 # `qos-launcher` binary to build the actual bwrap + seccomp + Landlock
