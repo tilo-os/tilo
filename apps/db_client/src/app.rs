@@ -600,8 +600,17 @@ impl Widget for DbClientApp {
         // Modal swallows events while open.
         if self.modal.is_open() {
             let mut act = None;
-            self.modal
-                .handle_event(event, scale_factor, modifiers, handled, &mut act);
+            self.modal.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                node_id,
+                taffy,
+                handled,
+                &mut act,
+            );
             if let Some(profile) = act {
                 self.save_connection(profile, state);
                 self.dirty = true;
