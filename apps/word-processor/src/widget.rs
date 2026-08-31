@@ -41,6 +41,9 @@ use crate::recovery_banner::AUTOSAVE_EDIT_THRESHOLD;
 use crate::recovery_banner::{RecoveryBanner, RecoveryDecision, RecoveryPalette};
 use crate::style_color_picker::StyleColorPicker;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
+#[cfg(test)]
+use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN};
+use crate::zoom_control::{STEP as ZOOM_STEP, ZoomControl};
 use ui::portal;
 
 /// Convert the model's `(block, start, end)` ranges into serializable
@@ -360,22 +363,9 @@ enum ToolAction {
     NewMenu,
 }
 
-/// A clickable zoom control (the toolbar's right-aligned zoom stepper).
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum StatusAction {
-    Out,
-    In,
-    Reset,
-}
-
-/// Zoom bounds + step for the page/content scale.
-const ZOOM_MIN: f64 = 0.5;
-const ZOOM_MAX: f64 = 3.0;
-const ZOOM_STEP: f64 = 0.1;
 /// Width of the toolbar's right-aligned zoom stepper cluster `[−] [100%] [+]`
 /// (= `bw + gap + val_w + gap + bw` in `draw_zoom_control`). Reserved on the
 /// toolbar's last row, right of the colour swatches, so buttons never pack under it.
-const ZOOM_CLUSTER_W: f64 = 88.0;
 /// Gap between the zoom stepper cluster and the colour-swatch strips on the
 /// toolbar's last row.
 const ZOOM_SWATCH_GAP: f64 = 16.0;
@@ -1732,16 +1722,8 @@ pub struct WordProcessorWidget {
     edit_buf: String,
     /// An active drag-to-scrub on a numeric field, if any.
     scrub: Option<ScrubState>,
-    /// Page+content zoom factor (1.0 = 100%). Applied to the page transform and
-    /// accounted for in hit-testing + scroll. Lives in widget state (a view
-    /// preference), not the document. Clamped to `[ZOOM_MIN, ZOOM_MAX]`.
-    zoom: f64,
-    /// The screen-space anchor used for the content zoom transform this frame
-    /// (top-center of the canvas). Cached so the event handler can map pointer
-    /// positions from screen space back into unscaled content space.
-    zoom_anchor: Point,
-    /// Clickable zoom-stepper controls (now in the toolbar): `(action, rect)`.
-    status_buttons: Vec<(StatusAction, Rect)>,
+    /// Local page scale plus its toolbar drawing and hit-testing.
+    zoom: ZoomControl,
     /// Transient floating status readout (word/char count + modified dot,
     /// filename and format), in place of a permanent bottom status strip. Pokes
     /// on a label change, reveals while the pointer hovers the bottom-right
@@ -1906,9 +1888,7 @@ impl WordProcessorWidget {
             editing_field: None,
             edit_buf: String::new(),
             scrub: None,
-            zoom: 1.0,
-            zoom_anchor: Point::ZERO,
-            status_buttons: Vec::new(),
+            zoom: ZoomControl::new(),
             status_bubble: ui::StatusBubble::new(),
             last_status: String::new(),
             shots_status: false,
@@ -2501,9 +2481,7 @@ impl WordProcessorWidget {
     /// Set the zoom factor (clamped) and request a repaint. Returns whether it
     /// changed.
     fn set_zoom(&mut self, z: f64) -> bool {
-        let z = z.clamp(ZOOM_MIN, ZOOM_MAX);
-        if (z - self.zoom).abs() > 1e-6 {
-            self.zoom = z;
+        if self.zoom.set(z) {
             self.dirty = true;
             true
         } else {
@@ -2512,24 +2490,22 @@ impl WordProcessorWidget {
     }
 
     fn zoom_by(&mut self, delta: f64) -> bool {
-        // Round to the nearest step so the displayed percentage stays tidy.
-        let raw = self.zoom + delta;
-        let snapped = (raw / ZOOM_STEP).round() * ZOOM_STEP;
-        self.set_zoom(snapped)
+        let changed = self.zoom.step(delta);
+        self.dirty |= changed;
+        changed
     }
 
     /// The content (page) transform for this frame: a scale about the cached
     /// top-center anchor. Everything inside the page clip draws through this so
     /// the toolbar / find-bar / status bar stay unscaled.
     fn content_transform(&self, base: Affine) -> Affine {
-        base * Affine::scale_about(self.zoom, self.zoom_anchor)
+        self.zoom.transform(base)
     }
 
     /// Map a screen-space pointer into the unscaled content coordinate space the
     /// `Laid` rects live in (the inverse of `content_transform`'s scale-about).
     fn pointer_to_content(&self, p: Point) -> Point {
-        let a = self.zoom_anchor;
-        Point::new(a.x + (p.x - a.x) / self.zoom, a.y + (p.y - a.y) / self.zoom)
+        self.zoom.screen_to_content(p)
     }
 
     /// Select (so it highlights) + scroll to the active match.
@@ -3177,12 +3153,12 @@ impl WordProcessorWidget {
     /// Map an unscaled content x (the page coordinate space) to screen x using the
     /// cached zoom + anchor — the same scale-about the page content draws through.
     fn content_x_to_screen(&self, cx: f64) -> f64 {
-        self.zoom_anchor.x + (cx - self.zoom_anchor.x) * self.zoom
+        self.zoom.content_x_to_screen(cx)
     }
 
     /// Inverse of [`Self::content_x_to_screen`].
     fn screen_x_to_content(&self, sx: f64) -> f64 {
-        self.zoom_anchor.x + (sx - self.zoom_anchor.x) / self.zoom
+        self.zoom.screen_x_to_content(sx)
     }
 
     /// The screen-space x of every ruler marker for the current margins + caret
@@ -5182,7 +5158,8 @@ impl WordProcessorWidget {
         // top of the (scrolled) content stays pinned to the canvas top as zoom
         // changes. The toolbar/find-bar/status bar are drawn with the unscaled
         // `transform` and are unaffected.
-        self.zoom_anchor = Point::new(f64::midpoint(canvas.x0, canvas.x1), canvas.y0);
+        self.zoom
+            .set_anchor(Point::new(f64::midpoint(canvas.x0, canvas.x1), canvas.y0));
         let ctf = self.content_transform(transform);
 
         // Per-side page geometry — every margin is independently customizable.
@@ -6054,7 +6031,8 @@ impl WordProcessorWidget {
         // is magnified by `zoom`, so the visible window covers `fg.canvas.height() /
         // zoom` of content — divide by zoom so the overflow (and thus max scroll)
         // grows when zoomed in and shrinks when zoomed out.
-        self.max_scroll = (extent + 2.0 * PAGE_TOP - fg.canvas.height() / self.zoom).max(0.0);
+        self.max_scroll =
+            (extent + 2.0 * PAGE_TOP - fg.canvas.height() / self.zoom.factor()).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
         let sy = self.scroll_y;
         if sy != 0.0 {
@@ -7704,20 +7682,8 @@ impl WordProcessorWidget {
             return true;
         }
         if self.pointer.y < self.rect.y0 + tb_h {
-            // The zoom stepper lives in the toolbar (right-aligned); its
-            // buttons are tracked in `self.status_buttons`, separate from
-            // the chrome toolbar buttons — check them first.
-            if let Some(action) = self
-                .status_buttons
-                .iter()
-                .find(|(_, r)| r.contains(self.pointer))
-                .map(|(a, _)| *a)
-            {
-                match action {
-                    StatusAction::Out => self.zoom_by(-ZOOM_STEP),
-                    StatusAction::In => self.zoom_by(ZOOM_STEP),
-                    StatusAction::Reset => self.set_zoom(1.0),
-                };
+            // The right-aligned zoom component owns its hit targets and scale.
+            if self.zoom.click(self.pointer) {
                 self.dirty = true;
                 *handled = true;
                 return true;
@@ -9994,10 +9960,7 @@ impl WordProcessorWidget {
         self.status_bubble.poke(std::time::Instant::now());
     }
 
-    /// Draw the toolbar's zoom control: a − button, the current percentage, a +
-    /// button, right-aligned within `row` (the toolbar's last row). The
-    /// percentage chip doubles as a click-to-reset-to-100% target. Each control
-    /// is registered in `self.status_buttons` for click hit-testing.
+    /// Draw the zoom component in the toolbar's last row.
     fn draw_zoom_control(
         &mut self,
         scene: &mut Scene,
@@ -10005,60 +9968,14 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         row: Rect,
     ) {
-        let cc = self.chrome;
-        self.status_buttons.clear();
-        let cy = f64::midpoint(row.y0, row.y1);
-        let bw = 18.0;
-        let bh = 18.0;
-        let y0 = cy - bh / 2.0;
-        let pct = format!("{}%", num::i32_of_f64((self.zoom * 100.0).round()));
-        // Layout: [−] [ 100% ] [+]  — right-aligned in the row (its width is
-        // `ZOOM_CLUSTER_W`), matching the swatch strip's edge margin.
-        let val_w = 44.0;
-        let total = bw + 4.0 + val_w + 4.0 + bw;
-        let mut x = row.x1 - 14.0 - total;
-
-        let btn = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str| -> Rect {
-            let r = Rect::new(x, y0, x + bw, y0 + bh);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                cc.chip,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(r, 4.0),
-            );
-            let tx = r.x0 + (bw - num::f64_of_usize(label.chars().count()) * 6.5).max(2.0) / 2.0;
-            tr.draw_text(
-                scene,
-                label,
-                13.0,
-                cc.text,
-                transform * Affine::translate((tx, cy - 8.0)),
-                None,
-            );
-            r
-        };
-
-        let minus = btn(scene, tr, x, "−");
-        self.status_buttons.push((StatusAction::Out, minus));
-        x += bw + 4.0;
-
-        // The percentage chip doubles as a reset target (click to return to 100%).
-        let vr = Rect::new(x, y0, x + val_w, y0 + bh);
-        let pw = num::f64_of_usize(pct.chars().count()) * 6.8;
-        tr.draw_text(
+        self.zoom.draw(
             scene,
-            &pct,
-            12.5,
-            cc.text,
-            transform * Affine::translate((x + (val_w - pw) / 2.0, cy - 8.0)),
-            None,
+            transform,
+            tr,
+            row,
+            self.chrome.chip,
+            self.chrome.text,
         );
-        self.status_buttons.push((StatusAction::Reset, vr));
-        x += val_w + 4.0;
-
-        let plus = btn(scene, tr, x, "+");
-        self.status_buttons.push((StatusAction::In, plus));
     }
 
     /// Build the toolbar's button spec list (action, label, width,
@@ -10198,7 +10115,7 @@ impl WordProcessorWidget {
         // Reserve the right-aligned swatch strips + zoom stepper (drawn directly,
         // not as chrome buttons) as a trailing phantom item so no button row
         // extends under them; `toolbar_item_widths` mirrors this exactly.
-        widths.push(swatch_reserve_width() + ZOOM_CLUSTER_W + ZOOM_SWATCH_GAP);
+        widths.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
         starts.push(true);
         let rows = pack_toolbar_rows(&widths, &starts, tb.width());
         self.toolbar_rows = rows.len();
@@ -10256,7 +10173,7 @@ impl WordProcessorWidget {
         // it). The colour/highlight swatch strips pack to its left.
         let last_row = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
         self.draw_zoom_control(scene, transform, tr, last_row);
-        let swatch_x1 = (tb.x1 - ZOOM_CLUSTER_W - ZOOM_SWATCH_GAP).max(tb.x0);
+        let swatch_x1 = (tb.x1 - ZoomControl::WIDTH - ZOOM_SWATCH_GAP).max(tb.x0);
         let swatch_band = Rect::new(tb.x0, last_row_y, swatch_x1, last_row_y + row_h);
         let text_left = self.draw_color_swatches(scene, transform, tr, swatch_band);
         // Highlight swatch strip, packed just left of the text-colour strip.
@@ -10318,7 +10235,7 @@ impl WordProcessorWidget {
         w.push(48.0); // TOC
         // right-aligned colour + highlight swatches, plus the zoom stepper cluster
         // (mirrors the reservation in `draw_toolbar`).
-        w.push(swatch_reserve_width() + ZOOM_CLUSTER_W + ZOOM_SWATCH_GAP);
+        w.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
         w
     }
 
@@ -11905,7 +11822,7 @@ mod tests {
         let centre_content = Point::new(f64::midpoint(hb.x0, hb.x1), f64::midpoint(hb.y0, hb.y1));
         let screen = Point::new(
             wp.content_x_to_screen(centre_content.x),
-            wp.zoom_anchor.y + (centre_content.y - wp.zoom_anchor.y) * wp.zoom,
+            wp.zoom.anchor().y + (centre_content.y - wp.zoom.anchor().y) * wp.zoom.factor(),
         );
 
         left_click(&mut wp, &mut state, screen);
@@ -12398,7 +12315,7 @@ mod tests {
             "zoom doubles the scale"
         );
         // The anchor maps to itself.
-        let a = wp.zoom_anchor;
+        let a = wp.zoom.anchor();
         let mapped_anchor = ctf * a;
         assert!(
             (mapped_anchor.x - a.x).abs() < 1e-6 && (mapped_anchor.y - a.y).abs() < 1e-6,
@@ -12468,29 +12385,35 @@ mod tests {
     #[test]
     fn zoom_clamps_and_resets() {
         let mut wp = WordProcessorWidget::new();
-        assert!((wp.zoom - 1.0).abs() < 1e-9, "default zoom is 100%");
+        assert!(
+            (wp.zoom.factor() - 1.0).abs() < 1e-9,
+            "default zoom is 100%"
+        );
         // Clamp at the bounds.
         for _ in 0..100 {
             wp.zoom_by(-ZOOM_STEP);
         }
         assert!(
-            (wp.zoom - ZOOM_MIN).abs() < 1e-6,
+            (wp.zoom.factor() - ZOOM_MIN).abs() < 1e-6,
             "zoom clamps to the minimum"
         );
         for _ in 0..100 {
             wp.zoom_by(ZOOM_STEP);
         }
         assert!(
-            (wp.zoom - ZOOM_MAX).abs() < 1e-6,
+            (wp.zoom.factor() - ZOOM_MAX).abs() < 1e-6,
             "zoom clamps to the maximum"
         );
         wp.set_zoom(1.0);
-        assert!((wp.zoom - 1.0).abs() < 1e-9, "reset returns to 100%");
+        assert!(
+            (wp.zoom.factor() - 1.0).abs() < 1e-9,
+            "reset returns to 100%"
+        );
     }
 
     /// The zoom stepper lives right-aligned in the toolbar. Driving its buttons
     /// through the real event handler must zoom out/in/reset, proving
-    /// `status_buttons` hit-testing fires correctly from the toolbar band.
+    /// the component's hit-testing fires correctly from the toolbar band.
     #[test]
     fn toolbar_zoom_stepper_drives_zoom_from_its_new_home() {
         let mut state = ui::State::new();
@@ -12500,12 +12423,9 @@ mod tests {
 
         // Every zoom button sits inside the toolbar band, not a bottom strip.
         let tb_h = wp.toolbar_height(1000.0);
-        assert_eq!(
-            wp.status_buttons.len(),
-            3,
-            "the −/%/+ stepper registered three targets"
-        );
-        for (_, r) in &wp.status_buttons {
+        let rects = wp.zoom.hit_rects();
+        assert_eq!(rects.len(), 3, "the −/%/+ stepper registered three targets");
+        for r in &rects {
             assert!(
                 r.y1 <= tb_h + 1.0,
                 "zoom button is in the toolbar (rect={r:?}, toolbar_h={tb_h})"
@@ -12516,43 +12436,41 @@ mod tests {
             );
         }
 
-        let center = |wp: &WordProcessorWidget, want: StatusAction| -> Point {
-            let (_, r) = wp
-                .status_buttons
-                .iter()
-                .find(|(a, _)| *a == want)
-                .expect("zoom button present");
+        // Component order is −, percentage/reset, +.
+        let center = |wp: &WordProcessorWidget, index: usize| -> Point {
+            let rects = wp.zoom.hit_rects();
+            let r = &rects[index];
             Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
         };
 
         // Click + : zoom in one step.
-        let p = center(&wp, StatusAction::In);
+        let p = center(&wp, 2);
         left_click(&mut wp, &mut state, p);
         assert!(
-            (wp.zoom - (1.0 + ZOOM_STEP)).abs() < 1e-6,
+            (wp.zoom.factor() - (1.0 + ZOOM_STEP)).abs() < 1e-6,
             "clicking + zooms in one step: {}",
-            wp.zoom
+            wp.zoom.factor()
         );
 
         // Click − : back to 100%.
         pipeline_draw(&mut wp, &mut state, 1000, 700);
-        let p = center(&wp, StatusAction::Out);
+        let p = center(&wp, 0);
         left_click(&mut wp, &mut state, p);
         assert!(
-            (wp.zoom - 1.0).abs() < 1e-6,
+            (wp.zoom.factor() - 1.0).abs() < 1e-6,
             "clicking − zooms out one step: {}",
-            wp.zoom
+            wp.zoom.factor()
         );
 
         // Click the percentage chip: reset to 100% from any zoom.
         wp.set_zoom(1.6);
         pipeline_draw(&mut wp, &mut state, 1000, 700);
-        let p = center(&wp, StatusAction::Reset);
+        let p = center(&wp, 1);
         left_click(&mut wp, &mut state, p);
         assert!(
-            (wp.zoom - 1.0).abs() < 1e-9,
+            (wp.zoom.factor() - 1.0).abs() < 1e-9,
             "clicking the % chip resets to 100%: {}",
-            wp.zoom
+            wp.zoom.factor()
         );
     }
 
@@ -14199,7 +14117,7 @@ mod tests {
         );
 
         // At zoom 1.0 content-x == screen-x (anchor scale is identity).
-        assert!((wp.zoom - 1.0).abs() < 1e-6, "default zoom");
+        assert!((wp.zoom.factor() - 1.0).abs() < 1e-6, "default zoom");
         let markers = wp.ruler_markers(page_x, page_w);
         let mx = |m: RulerMarker| {
             markers
@@ -14230,7 +14148,7 @@ mod tests {
         // Zooming in moves the markers further from the anchor by the zoom factor.
         wp.set_zoom(2.0);
         pipeline_draw(&mut wp, &mut state, 1200, 760);
-        let anchor = wp.zoom_anchor.x;
+        let anchor = wp.zoom.anchor().x;
         let zoomed = wp.ruler_markers(wp.page_rect.x0, wp.page_rect.width());
         let zx = |m: RulerMarker| {
             zoomed
