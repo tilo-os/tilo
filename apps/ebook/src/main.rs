@@ -43,7 +43,7 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// Returns an error if a `--shots` capture fails to render or write its PNG.
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new_with_args("dev.qos.ebook", live_root)
+        &LaunchSpec::new_with_args("dev.qos.ebook", live_root)
             .max_positionals(1)
             .shot_root(shot_root)
             .shot_viewport(shot_viewport)
@@ -86,6 +86,10 @@ pub fn main() {
     );
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::LaunchSpec::new_with_args"
+)]
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
     let path = args.positionals().first().map(std::path::PathBuf::from);
     match path.filter(|path| {

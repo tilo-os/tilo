@@ -376,6 +376,10 @@ impl DiffView {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/y/c follow this file's graphics convention (transform, position, colour tokens); n/s/w are the line number and its formatted string/measured width"
+    )]
     fn draw_half(
         scene: &mut Scene,
         tr: &mut TextRenderer,

@@ -161,6 +161,7 @@ impl ClipboardBackend for WaylandClipboard {
             ClipboardTarget::Clipboard => inner.load(),
             ClipboardTarget::Primary => inner.load_primary(),
         };
+        drop(inner);
         match read {
             Ok(text) => Some(text),
             // Empty and failed both read as "nothing to paste" to a widget;

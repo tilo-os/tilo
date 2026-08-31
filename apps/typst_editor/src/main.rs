@@ -57,7 +57,7 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// offscreen frame (a taffy layout error, or an I/O failure writing the PNG).
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.typst-editor", typst_editor::app_root)
+        &LaunchSpec::new("dev.qos.typst-editor", typst_editor::app_root)
             .shot_handler(shot_handler)
             .allowed_options(&["--theme"])
             .scenarios(&[

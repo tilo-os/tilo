@@ -147,6 +147,22 @@ impl ExportDialog {
         );
         let geometry = self.geometry(window, store, sort);
         menu_panel(scene, transform, theme, geometry.panel);
+        self.draw_header(scene, transform, text, theme, &geometry);
+        self.draw_rows(scene, transform, text, theme, store, pointer, &geometry);
+        Self::draw_footer_buttons(scene, transform, text, theme, &geometry, pointer);
+    }
+
+    /// The title, selection count, and Select all/none chips (part of
+    /// [`Self::draw`]).
+    fn draw_header(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        geometry: &Geometry,
+    ) {
+        let colors = &theme.tokens.colors;
         text.draw_text_weighted(
             scene,
             "Export contacts",
@@ -182,7 +198,24 @@ impl ExportDialog {
             "Select none",
             false,
         );
+    }
 
+    /// The scrolling, clipped contact list (part of [`Self::draw`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_rows(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        store: &ContactStore,
+        pointer: Point,
+        geometry: &Geometry,
+    ) {
+        let colors = &theme.tokens.colors;
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -223,7 +256,17 @@ impl ExportDialog {
             );
         }
         scene.pop_layer();
+    }
 
+    /// The Cancel / Export 3.0 / Export 4.0 buttons (part of [`Self::draw`]).
+    fn draw_footer_buttons(
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        geometry: &Geometry,
+        pointer: Point,
+    ) {
         toolbar_button(
             scene,
             transform,

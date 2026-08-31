@@ -3390,7 +3390,7 @@ impl Widget for SheetsApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press(modifiers, state, path, handled);
+                self.handle_left_press(*modifiers, state, path, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -3418,18 +3418,19 @@ impl Widget for SheetsApp {
                 self.handle_mouse_wheel(delta, scale_factor, handled);
             }
             WindowEvent::KeyboardInput { .. } => {
+                let mut ctx = PaletteRouteCtx {
+                    path,
+                    focus_target,
+                    node_id,
+                    taffy,
+                };
                 self.handle_keyboard_input(
                     event,
                     scale_factor,
-                    modifiers,
+                    *modifiers,
                     state,
                     handled,
-                    PaletteRouteCtx {
-                        path,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    },
+                    &mut ctx,
                 );
             }
             _ => {}
@@ -3469,7 +3470,7 @@ impl SheetsApp {
     /// grid body, in priority order.
     fn handle_left_press(
         &mut self,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -3679,7 +3680,7 @@ impl SheetsApp {
     fn try_chrome_click(
         &mut self,
         p: Point,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
@@ -3736,7 +3737,7 @@ impl SheetsApp {
     fn try_grid_click(
         &mut self,
         p: Point,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
@@ -3826,16 +3827,16 @@ impl SheetsApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
-        ctx: PaletteRouteCtx<'_>,
+        ctx: &mut PaletteRouteCtx<'_>,
     ) {
         if self.palette.is_open() {
             self.palette.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 ctx.path,
                 handled,
@@ -3870,7 +3871,7 @@ impl SheetsApp {
             if let WindowEvent::KeyboardInput { event: ke, .. } = event
                 && ke.state.is_pressed()
             {
-                self.name_box_key(ke, *modifiers);
+                self.name_box_key(ke, modifiers);
             }
             self.pending.redraw = true;
             *handled = true;
@@ -3882,7 +3883,7 @@ impl SheetsApp {
             if let WindowEvent::KeyboardInput { event: ke, .. } = event
                 && ke.state.is_pressed()
             {
-                self.tab_rename_key(state, ke, *modifiers);
+                self.tab_rename_key(state, ke, modifiers);
             }
             self.pending.redraw = true;
             *handled = true;
@@ -3916,7 +3917,7 @@ impl SheetsApp {
         }
 
         let mut out = Vec::new();
-        if self.grid.key(event, modifiers, &mut out) {
+        if self.grid.key(event, &modifiers, &mut out) {
             *handled = true;
         }
         self.apply_cmds(state, out);
@@ -3928,7 +3929,7 @@ impl SheetsApp {
     fn handle_grid_clipboard_chord(
         &mut self,
         event: &WindowEvent,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
@@ -3983,7 +3984,7 @@ impl SheetsApp {
     fn handle_edit_clipboard_chord(
         &mut self,
         event: &WindowEvent,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         handled: &mut bool,
     ) -> bool {
         let WindowEvent::KeyboardInput { event: ke, .. } = event else {

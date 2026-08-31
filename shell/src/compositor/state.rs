@@ -1986,7 +1986,7 @@ mod tick_hook_tests {
         const SURFACE: SurfaceId = 42;
 
         let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, W, H, cfg()).expect("session"),
+            SharedFlatpakSession::start(HOST, "app", SURFACE, W, H, &cfg()).expect("session"),
         );
         session.add_viewer(VIEWER, false);
 
@@ -2040,7 +2040,7 @@ mod tick_hook_tests {
         const SURFACE: SurfaceId = 55;
 
         let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, cfg()).expect("session"),
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
         );
         let mut state = make_state();
         state.register_share_session(session);
@@ -2055,7 +2055,7 @@ mod tick_hook_tests {
         const SURFACE: SurfaceId = 77;
 
         let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, cfg()).expect("session"),
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
         );
         let mut state = make_state();
         state.register_share_session(session);

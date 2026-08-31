@@ -1751,7 +1751,7 @@ fn trial_digest(f: &Fixture, steps: &[&[&str]]) -> Vec<u8> {
     d
 }
 
-/// PolicyCommandCode, PolicyAuthValue and PolicyNvWritten (both ways) each match the TPM's own
+/// `PolicyCommandCode`, `PolicyAuthValue` and `PolicyNvWritten` (both ways) each match the TPM's own
 /// trial-session digest.
 fn assert_simple_policy_primitives_match(f: &Fixture, sess_s: &str) {
     assert_eq!(
@@ -1787,7 +1787,7 @@ fn assert_simple_policy_primitives_match(f: &Fixture, sess_s: &str) {
     );
 }
 
-/// PolicyNV (both comparison operations we rely on) matches the TPM's own trial-session
+/// `PolicyNV` (both comparison operations we rely on) matches the TPM's own trial-session
 /// digest. Returns the operand file path, reused by the end-to-end approval check.
 fn assert_policy_nv_matches(f: &Fixture, sess_s: &str, idx: &str, nv_name: &[u8]) -> PathBuf {
     let operand = f.dir().join("purity_operand.bin");
@@ -1838,8 +1838,8 @@ fn assert_policy_nv_matches(f: &Fixture, sess_s: &str, idx: &str, nv_name: &[u8]
     operand
 }
 
-/// PolicyAuthorize (the signed branch) and the one-time materialise branch each match the
-/// TPM's own trial-session digest, and PolicyOR of the two equals the index's authPolicy.
+/// `PolicyAuthorize` (the signed branch) and the one-time materialise branch each match the
+/// TPM's own trial-session digest, and `PolicyOR` of the two equals the index's authPolicy.
 fn assert_policy_authorize_and_or_match(f: &Fixture, sess_s: &str) {
     let name_file = f.dir().join("purity_key.name");
     std::fs::write(&name_file, &f.authority_name).expect("write key name");
@@ -1891,7 +1891,7 @@ fn assert_policy_authorize_and_or_match(f: &Fixture, sess_s: &str) {
     );
 }
 
-/// The end-to-end approval policy — command code + PolicyNV for `target - 1` — matches what
+/// The end-to-end approval policy — command code + `PolicyNV` for `target - 1` — matches what
 /// `approval::approved_policy` computes. `operand` is the file [`assert_policy_nv_matches`]
 /// already created; it gets overwritten here with `target - 1`.
 fn assert_approval_policy_matches(

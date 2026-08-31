@@ -404,6 +404,14 @@ impl ImportState {
                     doc.set_attr(b, "checked", *checked);
                 }
             }
+            _ => self.handle_table_or_code_event(doc, ev),
+        }
+    }
+
+    /// Table and fenced-code-block events (part of [`Self::handle_block_event`],
+    /// split out to keep each half under the line-count lint).
+    fn handle_table_or_code_event(&mut self, doc: &mut DocMut, ev: &Event) {
+        match ev {
             Event::Start(Tag::Table(_)) => {
                 self.table_seq = self.table_seq.saturating_add(1);
                 self.table_id = Some(format!("t{}", self.table_seq));
@@ -992,10 +1000,10 @@ fn render_inline_notes(
         let link = if i < n { link_href(marks, i) } else { None };
         let link_changing = link != cur_link;
         // Close the vertical wrapper first (innermost) when it, the span, or the link changes.
-        if link_changing || span != cur_span || wrap != cur_wrap {
-            if let Some(w) = cur_wrap.take() {
-                let _ = write!(out, "</{w}>");
-            }
+        if (link_changing || span != cur_span || wrap != cur_wrap)
+            && let Some(w) = cur_wrap.take()
+        {
+            let _ = write!(out, "</{w}>");
         }
         if (link_changing || span != cur_span) && cur_span.is_some() {
             out.push_str("</span>");

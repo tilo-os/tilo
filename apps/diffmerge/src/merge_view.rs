@@ -25,7 +25,7 @@ use ui::widget::Widget;
 use crate::actions::{self, DiffmergeAction, HunkChoice, MergeResourceCtx};
 use crate::doc::MergeDoc;
 use crate::highlight;
-use crate::model::{MergeModel, Resolution};
+use crate::model::{MergeHunk, MergeModel, Resolution};
 
 const ROW_H: f64 = 19.0;
 const HEADER_H: f64 = 30.0;
@@ -323,6 +323,152 @@ impl MergeView {
     /// Draw every hunk row in the source band: side tints, the active-hunk
     /// ring, the three code columns and (for change hunks) the resolution
     /// chips. Populates `self.action_hits` for the next click hit-test.
+    /// Hunk tint per side plus the active-hunk highlight ring (part of
+    /// [`Self::draw_hunks`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
+    )]
+    fn draw_hunk_tint(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        r: Rect,
+        col_w: f64,
+        y: f64,
+        block_h: f64,
+        h: &MergeHunk,
+        is_active: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        // Hunk tint per side.
+        let (ours_tint, theirs_tint) = match h.resolution {
+            Resolution::Unchanged => (None, None),
+            Resolution::Conflict => (
+                Some(with_alpha(c.semantic.danger, 34)),
+                Some(with_alpha(c.semantic.danger, 34)),
+            ),
+            Resolution::Ours | Resolution::TookOurs => {
+                (Some(with_alpha(c.semantic.success, 40)), None)
+            }
+            Resolution::Theirs | Resolution::TookTheirs => {
+                (None, Some(with_alpha(c.semantic.info, 40)))
+            }
+            Resolution::TookBoth => (
+                Some(with_alpha(c.semantic.success, 36)),
+                Some(with_alpha(c.semantic.info, 36)),
+            ),
+        };
+
+        if let Some(t) = ours_tint {
+            let rect = Rect::new(r.x0 + col_w, y, r.x0 + 2.0 * col_w, y + block_h);
+            scene.fill(Fill::NonZero, transform, t, None, &rect);
+        }
+        if let Some(t) = theirs_tint {
+            let rect = Rect::new(r.x0 + 2.0 * col_w, y, r.x1, y + block_h);
+            scene.fill(Fill::NonZero, transform, t, None, &rect);
+        }
+
+        // Active hunk highlight ring.
+        if is_active && h.is_change {
+            let ring = RoundedRect::new(r.x0 + 1.0, y - 1.0, r.x1 - 1.0, y + block_h + 1.0, 3.0);
+            scene.stroke(&Stroke::new(1.5), transform, c.accent[5], None, &ring);
+        }
+    }
+
+    /// The resolution status label + take-ours/theirs/both chips for a
+    /// change hunk (part of [`Self::draw_hunks`]). `action_hits` is passed
+    /// explicitly (rather than through `&mut self`) so the caller can keep
+    /// its own `&self.model.hunks` borrow alive across the call.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
+    )]
+    fn draw_hunk_action_chips(
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        col_w: f64,
+        y: f64,
+        block_h: f64,
+        hi: usize,
+        h: &MergeHunk,
+        action_hits: &mut Vec<ActionHit>,
+    ) {
+        let c = &theme.tokens.colors;
+        let ay = y + block_h + 2.0;
+        // Chip hues track the theme so a palette / high-contrast swap
+        // keeps the resolution controls coherent: ours = success (green),
+        // theirs = info (blue), both = the neutral dim tone — mirroring
+        // the status label's own `ColorClass` mapping.
+        let chips: &[(&str, HunkChoice, Color)] = if h.resolution.is_conflict() {
+            &[
+                ("Take ours", HunkChoice::Ours, c.semantic.success),
+                ("Take theirs", HunkChoice::Theirs, c.semantic.info),
+                ("Take both", HunkChoice::Both, c.text_dim),
+            ]
+        } else {
+            // Auto-resolved — still allow flipping.
+            &[
+                ("Ours", HunkChoice::Ours, c.semantic.success),
+                ("Theirs", HunkChoice::Theirs, c.semantic.info),
+                ("Both", HunkChoice::Both, c.text_dim),
+            ]
+        };
+        // Status label on the left.
+        let status = resolution_label(h.resolution);
+        tr.draw_text(
+            scene,
+            status.0,
+            11.5,
+            status.1.color(c),
+            transform * Affine::translate((r.x0 + col_w + PAD_X, ay + 5.0)),
+            None,
+        );
+
+        let mut cx = r.x0 + 2.0 * col_w + PAD_X;
+        for (label, choice, col) in chips {
+            let w = label.len() as f64 * 7.2 + 16.0;
+            let chip = Rect::new(cx, ay, cx + w, ay + ACTION_H - 6.0);
+            let selected = chip_is_selected(h.resolution, *choice);
+            let bg = if selected {
+                with_alpha(*col, 220)
+            } else {
+                with_alpha(*col, 50)
+            };
+            let rr = RoundedRect::from_rect(chip, 5.0);
+            scene.fill(Fill::NonZero, transform, bg, None, &rr);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                with_alpha(*col, 160),
+                None,
+                &rr,
+            );
+            let text_col = if selected {
+                Color::from_rgb8(10, 14, 22)
+            } else {
+                *col
+            };
+            tr.draw_text(
+                scene,
+                label,
+                11.5,
+                text_col,
+                transform * Affine::translate((cx + 8.0, ay + 4.0)),
+                None,
+            );
+            action_hits.push(ActionHit {
+                rect: chip,
+                hunk: hi,
+                choice: *choice,
+            });
+            cx += w + 6.0;
+        }
+    }
+
     fn draw_hunks(
         &mut self,
         scene: &mut Scene,
@@ -330,7 +476,6 @@ impl MergeView {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let c = &theme.tokens.colors;
         let r = self.rect;
         let col_w = r.width() / 3.0;
         let band_top = r.y0 + HEADER_H;
@@ -347,40 +492,17 @@ impl MergeView {
                 continue;
             }
 
-            // Hunk tint per side.
-            let (ours_tint, theirs_tint) = match h.resolution {
-                Resolution::Unchanged => (None, None),
-                Resolution::Conflict => (
-                    Some(with_alpha(c.semantic.danger, 34)),
-                    Some(with_alpha(c.semantic.danger, 34)),
-                ),
-                Resolution::Ours | Resolution::TookOurs => {
-                    (Some(with_alpha(c.semantic.success, 40)), None)
-                }
-                Resolution::Theirs | Resolution::TookTheirs => {
-                    (None, Some(with_alpha(c.semantic.info, 40)))
-                }
-                Resolution::TookBoth => (
-                    Some(with_alpha(c.semantic.success, 36)),
-                    Some(with_alpha(c.semantic.info, 36)),
-                ),
-            };
-
-            if let Some(t) = ours_tint {
-                let rect = Rect::new(r.x0 + col_w, y, r.x0 + 2.0 * col_w, y + block_h);
-                scene.fill(Fill::NonZero, transform, t, None, &rect);
-            }
-            if let Some(t) = theirs_tint {
-                let rect = Rect::new(r.x0 + 2.0 * col_w, y, r.x1, y + block_h);
-                scene.fill(Fill::NonZero, transform, t, None, &rect);
-            }
-
-            // Active hunk highlight ring.
-            if Some(hi) == self.active_hunk && h.is_change {
-                let ring =
-                    RoundedRect::new(r.x0 + 1.0, y - 1.0, r.x1 - 1.0, y + block_h + 1.0, 3.0);
-                scene.stroke(&Stroke::new(1.5), transform, c.accent[5], None, &ring);
-            }
+            Self::draw_hunk_tint(
+                scene,
+                transform,
+                theme,
+                r,
+                col_w,
+                y,
+                block_h,
+                h,
+                Some(hi) == self.active_hunk,
+            );
 
             // Lines for each column.
             draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base);
@@ -405,75 +527,19 @@ impl MergeView {
 
             // Action chips for change hunks.
             if h.is_change {
-                let ay = y + block_h + 2.0;
-                // Chip hues track the theme so a palette / high-contrast swap
-                // keeps the resolution controls coherent: ours = success (green),
-                // theirs = info (blue), both = the neutral dim tone — mirroring
-                // the status label's own `ColorClass` mapping.
-                let chips: &[(&str, HunkChoice, Color)] = if h.resolution.is_conflict() {
-                    &[
-                        ("Take ours", HunkChoice::Ours, c.semantic.success),
-                        ("Take theirs", HunkChoice::Theirs, c.semantic.info),
-                        ("Take both", HunkChoice::Both, c.text_dim),
-                    ]
-                } else {
-                    // Auto-resolved — still allow flipping.
-                    &[
-                        ("Ours", HunkChoice::Ours, c.semantic.success),
-                        ("Theirs", HunkChoice::Theirs, c.semantic.info),
-                        ("Both", HunkChoice::Both, c.text_dim),
-                    ]
-                };
-                // Status label on the left.
-                let status = resolution_label(h.resolution);
-                tr.draw_text(
+                Self::draw_hunk_action_chips(
                     scene,
-                    status.0,
-                    11.5,
-                    status.1.color(c),
-                    transform * Affine::translate((r.x0 + col_w + PAD_X, ay + 5.0)),
-                    None,
+                    transform,
+                    tr,
+                    theme,
+                    r,
+                    col_w,
+                    y,
+                    block_h,
+                    hi,
+                    h,
+                    &mut self.action_hits,
                 );
-
-                let mut cx = r.x0 + 2.0 * col_w + PAD_X;
-                for (label, choice, col) in chips {
-                    let w = label.len() as f64 * 7.2 + 16.0;
-                    let chip = Rect::new(cx, ay, cx + w, ay + ACTION_H - 6.0);
-                    let selected = chip_is_selected(h.resolution, *choice);
-                    let bg = if selected {
-                        with_alpha(*col, 220)
-                    } else {
-                        with_alpha(*col, 50)
-                    };
-                    let rr = RoundedRect::from_rect(chip, 5.0);
-                    scene.fill(Fill::NonZero, transform, bg, None, &rr);
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        with_alpha(*col, 160),
-                        None,
-                        &rr,
-                    );
-                    let text_col = if selected {
-                        Color::from_rgb8(10, 14, 22)
-                    } else {
-                        *col
-                    };
-                    tr.draw_text(
-                        scene,
-                        label,
-                        11.5,
-                        text_col,
-                        transform * Affine::translate((cx + 8.0, ay + 4.0)),
-                        None,
-                    );
-                    self.action_hits.push(ActionHit {
-                        rect: chip,
-                        hunk: hi,
-                        choice: *choice,
-                    });
-                    cx += w + 6.0;
-                }
             }
         }
     }

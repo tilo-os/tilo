@@ -108,6 +108,12 @@ impl PriorityContactRegistry {
     /// Replace the whole projection. This is called only after the D-Bus
     /// service verifies `dev.qos.contacts`; keeping the check at that boundary
     /// means this storage type never tries to infer authority from a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `contacts` exceeds the maximum count, if the
+    /// registry's lock is poisoned, or if persisting the updated record
+    /// fails.
     pub fn replace_verified(&self, contacts: Vec<ContactProjection>) -> Result<usize, String> {
         if contacts.len() > MAX_CONTACTS {
             return Err("too many priority contacts".into());

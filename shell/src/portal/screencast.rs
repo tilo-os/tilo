@@ -105,25 +105,25 @@ impl ScreenCastBackend {
 impl ScreenCastBackend {
     /// Source types the compositor can capture.
     #[zbus(property)]
-    async fn available_source_types(&self) -> u32 {
+    fn available_source_types(&self) -> u32 {
         source_type::ALL
     }
 
     /// Cursor modes the compositor supports.
     #[zbus(property)]
-    async fn available_cursor_modes(&self) -> u32 {
+    fn available_cursor_modes(&self) -> u32 {
         cursor_mode::ALL
     }
 
     /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise `PascalCase` it to `Version`).
     #[zbus(property, name = "version")]
-    async fn version(&self) -> u32 {
+    fn version(&self) -> u32 {
         SCREENCAST_VERSION
     }
 
     /// `CreateSession` — register the session so `SelectSources`/`Start` can
     /// carry the negotiated selection. Consent-neutral: response=0, empty results.
-    async fn create_session(
+    fn create_session(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
         _handle: ObjectPath<'_>,
@@ -226,6 +226,10 @@ impl ScreenCastBackend {
 
     /// `Start` — provision a real `PipeWire` node per selected source and
     /// return the streams. Issues a fresh `restore_token` when the session asked to persist.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.ScreenCast.Start D-Bus signature"
+    )]
     async fn start(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
@@ -316,7 +320,7 @@ impl ScreenCastBackend {
 
     /// `OpenPipeWireRemote` — hand back the fd of a `PipeWire` remote the app
     /// attaches the provisioned nodes to. See the module docs for where this sits relative to the reference frontend.
-    async fn open_pipe_wire_remote(
+    fn open_pipe_wire_remote(
         &self,
         session_handle: ObjectPath<'_>,
         _app_id: String,

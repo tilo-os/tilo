@@ -53,11 +53,11 @@ pub struct ImageStore {
 impl ImageStore {
     /// Build a store with the default worker count.
     pub fn new(fetch: Fetcher) -> Self {
-        Self::with_workers(fetch, 6)
+        Self::with_workers(&fetch, 6)
     }
 
     /// Build a store with `workers` background fetch/decode threads (min 1).
-    pub fn with_workers(fetch: Fetcher, workers: usize) -> Self {
+    pub fn with_workers(fetch: &Fetcher, workers: usize) -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let shared = Arc::new(Shared {
             slots: Mutex::new(HashMap::new()),
@@ -70,7 +70,7 @@ impl ImageStore {
             let fetch = fetch.clone();
             let _ = std::thread::Builder::new()
                 .name(format!("ui-image-{i}"))
-                .spawn(move || worker_loop(rx, shared, fetch));
+                .spawn(move || worker_loop(&rx, &shared, &fetch));
         }
         Self { shared, tx }
     }
@@ -110,8 +110,7 @@ impl ImageStore {
         self.shared
             .slots
             .lock()
-            .map(|slots| slots.contains_key(url))
-            .unwrap_or(false)
+            .is_ok_and(|slots| slots.contains_key(url))
     }
 
     /// Number of in-flight loads (queued or decoding).
@@ -135,14 +134,11 @@ impl ImageStore {
     }
 }
 
-fn worker_loop(rx: Arc<Mutex<Receiver<String>>>, shared: Arc<Shared>, fetch: Fetcher) {
+fn worker_loop(rx: &Arc<Mutex<Receiver<String>>>, shared: &Arc<Shared>, fetch: &Fetcher) {
     loop {
         // Hold the receiver lock only long enough to pull one job.
         let url = {
-            let guard = match rx.lock() {
-                Ok(g) => g,
-                Err(_) => break,
-            };
+            let Ok(guard) = rx.lock() else { break };
             match guard.recv() {
                 Ok(u) => u,
                 Err(_) => break, // sender dropped: store gone
@@ -173,8 +169,8 @@ fn worker_loop(rx: Arc<Mutex<Receiver<String>>>, shared: Arc<Shared>, fetch: Fet
 /// Oversized sources are downscaled to 600px so texture memory stays bounded
 /// — album art never needs more.
 fn decode_rgba(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
-    let img = image::load_from_memory(bytes).ok()?;
     const MAX: u32 = 600;
+    let img = image::load_from_memory(bytes).ok()?;
     let img = if img.width().max(img.height()) > MAX {
         img.resize(MAX, MAX, image::imageops::FilterType::Triangle)
     } else {

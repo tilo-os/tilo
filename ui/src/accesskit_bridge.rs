@@ -57,10 +57,9 @@ pub fn map_role(role: Role) -> AkRole {
         Role::Menu => AkRole::Menu,
         Role::MenuItem => AkRole::MenuItem,
 
-        Role::Button => AkRole::Button,
         // No dedicated "toggle button" role; a Button with `toggled` state
         // (applied in `apply_state`) is the AccessKit idiom.
-        Role::ToggleButton => AkRole::Button,
+        Role::Button | Role::ToggleButton => AkRole::Button,
         Role::Checkbox => AkRole::CheckBox,
         Role::RadioButton => AkRole::RadioButton,
         Role::Switch => AkRole::Switch,
@@ -70,14 +69,12 @@ pub fn map_role(role: Role) -> AkRole {
         Role::TextInput => AkRole::TextInput,
         Role::MultilineTextInput => AkRole::MultilineTextInput,
         Role::Link => AkRole::Link,
-        Role::ProgressBar => AkRole::ProgressIndicator,
         // Indeterminate progress indicator; busy flag applied in `apply_state`.
-        Role::Spinner => AkRole::ProgressIndicator,
+        Role::ProgressBar | Role::Spinner => AkRole::ProgressIndicator,
         Role::Tooltip => AkRole::Tooltip,
 
         Role::Image => AkRole::Image,
-        Role::Label => AkRole::Label,
-        Role::StaticText => AkRole::Label,
+        Role::Label | Role::StaticText => AkRole::Label,
         Role::Heading { .. } => AkRole::Heading,
         Role::Paragraph => AkRole::Paragraph,
         Role::Document => AkRole::Document,
@@ -92,9 +89,8 @@ pub fn map_role(role: Role) -> AkRole {
 #[must_use]
 pub fn map_action(action: &Action) -> AkAction {
     match action {
-        Action::Activate => AkAction::Click,
+        Action::Activate | Action::ToggleCheck => AkAction::Click,
         Action::Focus => AkAction::Focus,
-        Action::ToggleCheck => AkAction::Click,
         Action::Increment => AkAction::Increment,
         Action::Decrement => AkAction::Decrement,
         Action::Expand => AkAction::Expand,
@@ -786,9 +782,7 @@ mod tests {
             .iter()
             .find(|(_, ptr)| {
                 let w = unsafe { &***ptr };
-                w.accessibility()
-                    .map(|n| n.role == Role::Button)
-                    .unwrap_or(false)
+                w.accessibility().is_some_and(|n| n.role == Role::Button)
             })
             .map(|(&id, _)| id);
         assert!(focused_taffy.is_some());

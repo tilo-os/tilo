@@ -46,7 +46,8 @@ fn hdr10_pq() -> Colorimetry {
 
 #[test]
 fn default_stream_start_reports_sdr_bt709() {
-    let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, sdr_config()).expect("session");
+    let session =
+        SharedFlatpakSession::start(1, "app", 42, 64, 64, &sdr_config()).expect("session");
     match session.stream_start_msg() {
         NeighbourMsg::SurfaceStreamStart {
             codec,
@@ -66,7 +67,8 @@ fn default_stream_start_reports_sdr_bt709() {
 
 #[test]
 fn client_attached_image_description_wins_over_config() {
-    let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, sdr_config()).expect("session");
+    let session =
+        SharedFlatpakSession::start(1, "app", 42, 64, 64, &sdr_config()).expect("session");
     // What the compositor's `wp_color_management_surface_v1` dispatch does
     // after a `commit`: push the client's declared colorimetry onto the session.
     session.set_color_override(hdr10_pq(), Some(Hdr10Metadata::reference_bt2020()));
@@ -92,7 +94,8 @@ fn client_attached_image_description_wins_over_config() {
 
 #[test]
 fn unset_image_description_falls_back_to_config_default() {
-    let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, sdr_config()).expect("session");
+    let session =
+        SharedFlatpakSession::start(1, "app", 42, 64, 64, &sdr_config()).expect("session");
     session.set_color_override(hdr10_pq(), None);
     // `unset_image_description` — the compositor calls `clear_color_override`.
     session.clear_color_override();
@@ -118,7 +121,7 @@ fn client_sdr_override_downgrades_hdr_config() {
     // description: client intent wins, so the session must not force PQ.
     let mut cfg = sdr_config();
     cfg.hdr = Some(shell::collab::hdr_metadata::HdrConfig::pq_reference());
-    let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, cfg).expect("session");
+    let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, &cfg).expect("session");
     session.set_color_override(Colorimetry::sdr_bt709(), None);
 
     match session.stream_start_msg() {

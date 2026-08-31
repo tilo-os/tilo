@@ -347,6 +347,11 @@ mod tests {
     /// Drive a two-finger swipe as a sequence of precise scroll samples
     /// within one gesture (single `Begin`), returning the first direction
     /// the recogniser commits to.
+    #[allow(
+        clippy::similar_names,
+        reason = "total_dx/total_dy is the standard delta-x/delta-y naming convention; \
+                  distinguishing them further would reduce clarity"
+    )]
     fn swipe(
         recognizer: &mut NavGestureRecognizer,
         total_dx: f64,

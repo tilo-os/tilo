@@ -46,6 +46,11 @@ struct Fixture {
     state: ChannelState,
 }
 
+#[allow(
+    clippy::similar_names,
+    reason = "sk/pk (secret key/public key) is the standard cryptography naming pair; \
+              renaming either away from it would hurt readability, not help it"
+)]
 fn fixture() -> Fixture {
     let (owner_sk, owner_pk) = generate_keypair();
     let (editor_sk, editor_pk) = generate_keypair();
@@ -133,6 +138,17 @@ fn threshold_sign(
 }
 
 #[test]
+#[allow(
+    clippy::similar_names,
+    reason = "sk/pk (secret key/public key) is the standard cryptography naming pair; \
+              renaming either away from it would hurt readability, not help it"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "state borrows out of guard and is used through the end of the test, \
+              including the compliance-record recheck after compaction, so the guard \
+              must stay held for the whole function"
+)]
 fn signed_ops_accept_valid_reject_invalid_and_replay() {
     let mut f = fixture();
     let valid = signed_op(
@@ -210,7 +226,7 @@ fn redaction_authorization_markers_filtering_and_persistence_are_one_policy() {
     let denied = redact(&f, &target, Role::Editor, 2);
     assert!(matches!(
         validate_inbound_op(&denied, &mut f.state),
-        Err(ValidationError::RoleForbidsOpClass { .. })
+        Err(ValidationError::RoleForbidsOpClass)
     ));
 
     let accepted = redact(&f, &target, Role::Owner, 10);
@@ -356,7 +372,7 @@ fn scrollback_recent_empty_paging_compaction_and_authorization_compose() {
     );
     assert!(matches!(
         validate_inbound_op(&editor_compaction, &mut f.state),
-        Err(ValidationError::RoleForbidsOpClass { .. })
+        Err(ValidationError::RoleForbidsOpClass)
     ));
     let owner_compaction = signed_op(
         &f.owner_sk,
@@ -388,6 +404,11 @@ fn scrollback_recent_empty_paging_compaction_and_authorization_compose() {
 }
 
 #[test]
+#[allow(
+    clippy::similar_names,
+    reason = "sk/pk (secret key/public key) is the standard cryptography naming pair; \
+              renaming either away from it would hurt readability, not help it"
+)]
 fn threshold_mls_validation_and_compaction_compose() {
     let (owner_sk, owner_pk) = generate_keypair();
     let (threshold_a, threshold_b) = threshold_pair();

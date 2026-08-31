@@ -233,7 +233,7 @@ fn run_handoff() {
 
     // Wait for a prompt before typing: the first layer mirrors ~22k
     // directories and runs `/etc/profile.d`, so early writes are lost.
-    let prompt = read_until(fd, "]#", Duration::from_mins(4));
+    let prompt = read_until(fd, "]#", Duration::from_secs(240));
     assert!(
         prompt.contains("]#"),
         "no prompt appeared within the timeout. What came back:\n{prompt}"
@@ -248,7 +248,7 @@ fn run_handoff() {
     let written = unsafe { libc::write(fd, script.as_ptr().cast::<libc::c_void>(), script.len()) };
     assert!(written > 0, "could not write to the pty");
 
-    let seen = read_until(fd, marker, Duration::from_mins(1));
+    let seen = read_until(fd, marker, Duration::from_secs(60));
     assert!(
         seen.contains(marker),
         "no shell answered on the pty within the timeout. What came back:\n{seen}"

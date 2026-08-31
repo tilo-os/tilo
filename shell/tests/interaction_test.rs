@@ -62,7 +62,7 @@ fn spawn_wayland_server(
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(20) {
             while let Ok(input) = input_tx_rx.try_recv() {
-                server_state.handle_input(input);
+                server_state.handle_input(&input);
             }
             let _ = display.dispatch_clients(&mut server_state);
             let _ = display.flush_clients();

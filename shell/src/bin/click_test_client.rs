@@ -140,23 +140,23 @@ impl WindowHandler for ClientApp {
     ) {
         self.width = configure.new_size.0.map_or(256, std::num::NonZero::get);
         self.height = configure.new_size.1.map_or(256, std::num::NonZero::get);
-        let Some((w, h, stride)) = buffer_geometry(self.width, self.height) else {
+        let Some((w_px, h_px, stride)) = buffer_geometry(self.width, self.height) else {
             return;
         };
-        let Ok((buffer, canvas)) = self
-            .pool
-            .create_buffer(w, h, stride, wl_shm::Format::Argb8888)
+        let Ok((buffer, canvas)) =
+            self.pool
+                .create_buffer(w_px, h_px, stride, wl_shm::Format::Argb8888)
         else {
             return;
         };
         for chunk in canvas.chunks_exact_mut(4) {
-            let [b, g, r, a] = chunk else {
+            let [blue, green, red, alpha] = chunk else {
                 continue; // chunks_exact_mut(4) guarantees len == 4
             };
-            *b = 0x00;
-            *g = 0x00;
-            *r = 0xFF;
-            *a = 0xFF;
+            *blue = 0x00;
+            *green = 0x00;
+            *red = 0xFF;
+            *alpha = 0xFF;
         }
         if self.first_configure {
             self.first_configure = false;

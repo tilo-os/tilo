@@ -25,7 +25,7 @@ use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
 
 /// Five minutes: long enough to survive reading a paragraph before typing
 /// the next one, short enough that a coffee break shows up as a break.
-pub const DEFAULT_IDLE_GAP: Duration = Duration::from_mins(5);
+pub const DEFAULT_IDLE_GAP: Duration = Duration::from_secs(300);
 
 /// Ceiling on how many changes one automatic group may hold.
 pub const DEFAULT_MAX_GROUP: usize = 200;

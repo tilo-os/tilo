@@ -469,7 +469,7 @@ pub fn spawn_channel<T: Send + 'static>(
                     // instead of "one hour from now" is a harmless fallback,
                     // not a panic.
                     let now = Instant::now()
-                        .checked_add(Duration::from_hours(1))
+                        .checked_add(Duration::from_secs(3600))
                         .unwrap_or_else(Instant::now);
                     for payload in link.drain_ready(now) {
                         if out_tx.send(payload).is_err() {

@@ -83,7 +83,7 @@ fn screenshots_dir() -> PathBuf {
         || {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
-                .unwrap_or(Path::new("."))
+                .unwrap_or_else(|| Path::new("."))
                 .join("target")
         },
         PathBuf::from,
@@ -212,26 +212,26 @@ impl Harness {
     /// topbar hit regions — kept for when that regression is fixed.
     #[allow(dead_code)]
     fn click(&mut self, x: f64, y: f64) {
-        self.pump(WindowEvent::CursorMoved {
+        self.pump(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(x, y),
         });
-        self.pump(WindowEvent::MouseInput {
+        self.pump(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
-        self.pump(WindowEvent::MouseInput {
+        self.pump(&WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
             button: MouseButton::Left,
         });
     }
 
-    fn pump(&mut self, event: WindowEvent) -> bool {
+    fn pump(&mut self, event: &WindowEvent) -> bool {
         let mut handled = false;
         self.root.handle_event(
-            &event,
+            event,
             1.0,
             &self.modifiers,
             &mut self.doc,
@@ -248,7 +248,7 @@ impl Harness {
     /// zeroed taffy node, relying on the hotkey pre-pass returning before any
     /// child walk.
     fn key(&mut self, key: Key) -> bool {
-        self.pump(key_press(key))
+        self.pump(&key_press(key))
     }
 }
 
@@ -341,7 +341,7 @@ fn e2e_open_close_overview() {
         &out_dir.join("e2e-02-overview-open.png"),
     );
 
-    h.pump(escape_event());
+    h.pump(&escape_event());
     assert!(
         !h.chrome.borrow().overlays.overview,
         "Escape should close the overview overlay"
@@ -552,9 +552,9 @@ impl DragCtx<'_> {
             self.child,
             self.doc,
             self.doc_root,
-            self.modifiers,
+            *self.modifiers,
             self.focus,
-            event,
+            &event,
         );
     }
 
@@ -709,13 +709,13 @@ fn e2e_tab_drag_reorder() {
         &out_dir.join("e2e-06-tabs-reordered.png"),
     );
 
-    assert_drag_reorder_goldens(&renderer_opt, &out_dir);
+    assert_drag_reorder_goldens(renderer_opt.as_ref(), &out_dir);
 }
 
 /// The three captures' non-emptiness plus the settled-frame golden, or a
 /// skip notice with no wgpu adapter. Split out of [`e2e_tab_drag_reorder`]
 /// to keep that test short.
-fn assert_drag_reorder_goldens(renderer_opt: &Option<OffscreenRenderer>, out_dir: &Path) {
+fn assert_drag_reorder_goldens(renderer_opt: Option<&OffscreenRenderer>, out_dir: &Path) {
     if renderer_opt.is_some() {
         for name in [
             "e2e-04-tabs-initial.png",
@@ -1217,21 +1217,26 @@ fn probe_tab_rects() -> Vec<vello::kurbo::Rect> {
 
 // Helpers
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors Widget::handle_event's own parameter list, forwarded verbatim from the \
+              test harness"
+)]
 fn pump(
     widget: &mut Box<dyn Widget>,
     taffy: &TaffyTree<()>,
     root_node: NodeId,
     doc: &mut AutoCommit,
     doc_root: &ObjId,
-    modifiers: &Modifiers,
+    modifiers: Modifiers,
     focus: &mut Option<NodeId>,
-    event: WindowEvent,
+    event: &WindowEvent,
 ) {
     let mut handled = false;
     widget.handle_event(
-        &event,
+        event,
         1.0,
-        modifiers,
+        &modifiers,
         doc,
         doc_root,
         &mut handled,
@@ -1242,6 +1247,7 @@ fn pump(
 }
 
 fn assert_png_nonempty(path: &Path) {
+    use std::io::Read;
     let meta = std::fs::metadata(path)
         .unwrap_or_else(|e| panic!("expected PNG at {}: {e}", path.display()));
     assert!(
@@ -1251,7 +1257,6 @@ fn assert_png_nonempty(path: &Path) {
     );
     let mut file = std::fs::File::open(path).unwrap();
     let mut sig = [0u8; 8];
-    use std::io::Read;
     file.read_exact(&mut sig).unwrap();
     assert_eq!(
         &sig[..4],
@@ -1293,7 +1298,7 @@ fn key_press(logical_key: Key) -> WindowEvent {
 fn pump_host(
     host: &mut shell::shell::overlay_host::ShellOverlayHost,
     event: &WindowEvent,
-    modifiers: &Modifiers,
+    modifiers: Modifiers,
 ) -> bool {
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT.clone();
@@ -1305,7 +1310,7 @@ fn pump_host(
     host.handle_event(
         event,
         1.0,
-        modifiers,
+        &modifiers,
         &mut doc,
         &root,
         &mut handled,
@@ -1328,7 +1333,7 @@ fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
     assert!(!host.palette_visible(), "palette starts closed");
 
     let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-    let handled = pump_host(&mut host, &key_press(Key::Character("k".into())), &mods);
+    let handled = pump_host(&mut host, &key_press(Key::Character("k".into())), mods);
     assert!(handled, "Ctrl+K must be consumed by the overlay host");
     assert!(
         host.palette_visible(),
@@ -1347,16 +1352,12 @@ fn e2e_escape_closes_search_palette() {
     // Open via Ctrl+K rather than bypassing the host's state machine, guarding
     // against a mutation-ordering regression.
     let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-    let _ = pump_host(&mut host, &key_press(Key::Character("k".into())), &mods);
+    let _ = pump_host(&mut host, &key_press(Key::Character("k".into())), mods);
     assert!(host.palette_visible());
 
     // Escape priority order: palette > overview > ws_settings > quick_settings.
     let no_mods = Modifiers::default();
-    let handled = pump_host(
-        &mut host,
-        &key_press(Key::Named(NamedKey::Escape)),
-        &no_mods,
-    );
+    let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Escape)), no_mods);
     assert!(handled, "Escape must be consumed while the palette is open");
     assert!(
         !host.palette_visible(),
@@ -1374,7 +1375,7 @@ fn e2e_ctrl_tab_toggles_overview_in_live_binary_path() {
     assert!(!chrome.borrow().overlays.overview);
 
     let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-    let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), &mods);
+    let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), mods);
     assert!(handled, "Ctrl+Tab must be consumed by the overlay host");
     assert!(
         chrome.borrow().overlays.overview,
@@ -1401,7 +1402,7 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
     assert!(pump_host(
         &mut host,
         &key_press(Key::Named(NamedKey::Tab)),
-        &ctrl
+        ctrl
     ));
     assert!(
         chrome.borrow().overlays.overview,
@@ -1412,7 +1413,7 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
     let handled = pump_host(
         &mut host,
         &key_press(Key::Named(NamedKey::ArrowDown)),
-        &no_mods,
+        no_mods,
     );
     assert!(
         handled,
@@ -1420,7 +1421,7 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
          desktop underneath it scroll"
     );
 
-    let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Enter)), &no_mods);
+    let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Enter)), no_mods);
     assert!(handled, "Enter must be consumed by the open panel");
     assert!(
         !chrome.borrow().overlays.overview,
@@ -1579,13 +1580,13 @@ impl UndoHarness {
         }
     }
 
-    fn pump_event(&mut self, event: WindowEvent, modifiers: &Modifiers) {
+    fn pump_event(&mut self, event: &WindowEvent, modifiers: Modifiers) {
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
         self.group.handle_event(
-            &event,
+            event,
             1.0,
-            modifiers,
+            &modifiers,
             &mut self.state.doc,
             &self.state.root,
             &mut handled,
@@ -1645,7 +1646,7 @@ fn e2e_undo_redo_round_trip_restores_golden() {
 
     // --- Mutate: type 'a'; EditorApp splices into state.doc's BODY_KEY Text. ---
     let mods = Modifiers::default();
-    h.pump_event(char_key_press("a"), &mods);
+    h.pump_event(&char_key_press("a"), mods);
     // Finalise the transaction, as the App loop does after a handled event.
     h.state.commit_action(None, None);
 
@@ -1679,7 +1680,7 @@ fn e2e_undo_redo_round_trip_restores_golden() {
         &out_dir.join("e2e-undo-restored.png"),
     );
 
-    assert_undo_redo_goldens(&renderer_opt, &out_dir);
+    assert_undo_redo_goldens(renderer_opt.as_ref(), &out_dir);
 }
 
 /// Click the (possibly nonexistent) tab's close button and report whether
@@ -1692,31 +1693,31 @@ fn probe_tab_close_undo_gap(h: &mut UndoHarness) {
     // one tab, probe_tab_rects()[0].x1 is close enough to the live pill's edge.
     let probe = probe_tab_rects();
     if let Some(pill) = probe.first() {
-        let close_cx = pill.x1 - 13.0; // x0 = x1 - 22 + 9 for centre
-        let close_cy = f64::midpoint(pill.y0, pill.y1);
+        // x0 = x1 - 22 + 9 for centre
+        let close_center = Point::new(pill.x1 - 13.0, f64::midpoint(pill.y0, pill.y1));
         let mods = Modifiers::default();
         h.pump_event(
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
-                position: PhysicalPosition::new(close_cx, close_cy),
+                position: PhysicalPosition::new(close_center.x, close_center.y),
             },
-            &mods,
+            mods,
         );
         h.pump_event(
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            &mods,
+            mods,
         );
         h.pump_event(
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
                 state: ElementState::Released,
                 button: MouseButton::Left,
             },
-            &mods,
+            mods,
         );
         h.state.commit_action(None, None);
     }
@@ -1735,7 +1736,7 @@ fn probe_tab_close_undo_gap(h: &mut UndoHarness) {
 /// The three-PNG non-emptiness, diff, and golden checks for the undo
 /// round trip, or a skip notice with no wgpu adapter. Split out of
 /// [`e2e_undo_redo_round_trip_restores_golden`] to keep that test short.
-fn assert_undo_redo_goldens(renderer_opt: &Option<OffscreenRenderer>, out_dir: &Path) {
+fn assert_undo_redo_goldens(renderer_opt: Option<&OffscreenRenderer>, out_dir: &Path) {
     if renderer_opt.is_some() {
         let baseline = out_dir.join("e2e-undo-baseline.png");
         let after = out_dir.join("e2e-undo-after-mutation.png");
@@ -1787,7 +1788,7 @@ fn e2e_redo_after_undo_rehydrates_golden() {
     );
 
     let mods = Modifiers::default();
-    h.pump_event(char_key_press("a"), &mods);
+    h.pump_event(&char_key_press("a"), mods);
     h.state.commit_action(None, None);
     assert!(h.state.peek_last_undo().is_some());
 
@@ -1822,7 +1823,7 @@ fn e2e_redo_after_undo_rehydrates_golden() {
         renderer_opt.as_mut(),
         &out_dir.join("e2e-redo-rehydrated-precaret.png"),
     );
-    h.pump_event(key_press(Key::Named(NamedKey::End)), &mods);
+    h.pump_event(&key_press(Key::Named(NamedKey::End)), mods);
     h.render_to(
         renderer_opt.as_mut(),
         &out_dir.join("e2e-redo-rehydrated.png"),

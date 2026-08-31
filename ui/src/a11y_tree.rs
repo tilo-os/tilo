@@ -437,10 +437,11 @@ impl Build<'_> {
                     Some(t) => SemanticId::widget(t),
                     // Rare (never laid out); key under the parent so it
                     // still gets a stable id.
-                    None => SemanticId::synthetic(
-                        parent_children.last().unwrap_or(&SemanticId::root()),
-                        parent_children.len(),
-                    ),
+                    None => {
+                        let root = SemanticId::root();
+                        let parent = parent_children.last().unwrap_or(&root);
+                        SemanticId::synthetic(parent, parent_children.len())
+                    }
                 };
 
                 let mut children: Vec<SemanticId> = Vec::new();
@@ -661,9 +662,7 @@ mod tests {
         let first_button_taffy = node_map
             .iter()
             .find_map(|(t, &w)| {
-                let focusable = unsafe { (*w).accessibility() }
-                    .map(|a| a.state.focusable)
-                    .unwrap_or(false);
+                let focusable = unsafe { (*w).accessibility() }.is_some_and(|a| a.state.focusable);
                 focusable.then_some(*t)
             })
             .expect("a focusable button exists");

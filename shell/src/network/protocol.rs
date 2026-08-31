@@ -274,25 +274,36 @@ mod tests {
         ))
     }
 
+    /// Room id shared by every fixture that names one.
+    const ROOM: &str = "6b3f9a10-0000-4000-8000-00000000000c";
+
+    /// Every [`NeighbourMsg`] variant, split into thematic groups so no one
+    /// function runs long — the round-trip test below exercises the
+    /// concatenation.
     fn fixtures() -> Vec<(&'static str, NeighbourMsg)> {
+        let mut all = fixtures_sync_presence_and_streams();
+        all.extend(fixtures_input_permissions_and_identity());
+        all.extend(fixtures_app_crdt_and_scrollback());
+        all
+    }
+
+    fn fixtures_sync_presence_and_streams() -> Vec<(&'static str, NeighbourMsg)> {
         use crate::collab::colorimetry::Colorimetry;
         use crate::collab::hdr_metadata::Hdr10Metadata;
-        use collab_types::{ArtifactId, PeerPresence, PeerPresencePayload};
 
-        let room = "6b3f9a10-0000-4000-8000-00000000000c";
         vec![
             (
                 "sync request",
                 NeighbourMsg::SyncReq {
                     since: vec![1, 2, 3],
-                    room: room.into(),
+                    room: ROOM.into(),
                 },
             ),
             (
                 "sync response",
                 NeighbourMsg::SyncResp {
                     changes: vec![vec![0xAA, 0xBB], vec![0xCC]],
-                    room: room.into(),
+                    room: ROOM.into(),
                 },
             ),
             (
@@ -358,6 +369,11 @@ mod tests {
                     ts: 1_700_000_004,
                 },
             ),
+        ]
+    }
+
+    fn fixtures_input_permissions_and_identity() -> Vec<(&'static str, NeighbourMsg)> {
+        vec![
             (
                 "remote input",
                 NeighbourMsg::RemoteInput {
@@ -383,7 +399,7 @@ mod tests {
             (
                 "heartbeat",
                 NeighbourMsg::Heartbeat {
-                    peer: 0xDEADBEEF,
+                    peer: 0xDEAD_BEEF,
                     ts: 1_700_000_005,
                 },
             ),
@@ -402,12 +418,19 @@ mod tests {
                     revocations: Vec::new(),
                 },
             ),
+        ]
+    }
+
+    fn fixtures_app_crdt_and_scrollback() -> Vec<(&'static str, NeighbourMsg)> {
+        use collab_types::{ArtifactId, PeerPresence, PeerPresencePayload};
+
+        vec![
             (
                 "app incremental",
                 NeighbourMsg::AppCrdtIncremental {
-                    peer: 0xABCDEF,
+                    peer: 0x00AB_CDEF,
                     app_id: "terminal".into(),
-                    cluster_id: room.into(),
+                    cluster_id: ROOM.into(),
                     record_id: "file:/work/report.odt".into(),
                     data: vec![1, 2, 3, 4],
                 },
@@ -415,9 +438,9 @@ mod tests {
             (
                 "signed app incremental",
                 NeighbourMsg::AppCrdtIncrementalSigned {
-                    peer: 0xABCDEF,
+                    peer: 0x00AB_CDEF,
                     app_id: "notes".into(),
-                    cluster_id: room.into(),
+                    cluster_id: ROOM.into(),
                     record_id: "uuid:1c2f".into(),
                     envelope: dummy_envelope(),
                 },
@@ -425,9 +448,9 @@ mod tests {
             (
                 "app presence",
                 NeighbourMsg::AppPresenceV2 {
-                    peer: 0xABCDEF,
+                    peer: 0x00AB_CDEF,
                     app_id: "notes".into(),
-                    cluster_id: room.into(),
+                    cluster_id: ROOM.into(),
                     presence: PeerPresence {
                         key: vec![4, 5],
                         payload: PeerPresencePayload::Selection { start: 3, end: 8 },
@@ -437,9 +460,9 @@ mod tests {
             (
                 "app snapshot",
                 NeighbourMsg::AppCrdtSnapshot {
-                    peer: 0xABCDEF,
+                    peer: 0x00AB_CDEF,
                     app_id: "dev.qos.word-processor".into(),
-                    cluster_id: room.into(),
+                    cluster_id: ROOM.into(),
                     record_id: "file:/work/report.odt".into(),
                     data: vec![0x85, 0x6F, 0x4A, 0x83],
                 },
@@ -450,7 +473,7 @@ mod tests {
                     artifact: ArtifactId::new(),
                     before_seq: 42,
                     max: 50,
-                    requester: 0xABCDEF,
+                    requester: 0x00AB_CDEF,
                 },
             ),
             (

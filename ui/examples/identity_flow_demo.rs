@@ -95,11 +95,13 @@ impl IdentityStore for DemoFileStore {
         // 0600 lands on the temp file, so the record is never readable by
         // anyone else at its final path.
         atomic_file::write_with_mode(&self.path, &bytes, 0o600).map_err(IdentityFlowError::Io)?;
-        let mut cached = self
-            .cached
-            .lock()
-            .map_err(|err| IdentityFlowError::Io(io::Error::other(err.to_string())))?;
-        *cached = Some(record.clone());
+        {
+            let mut cached = self
+                .cached
+                .lock()
+                .map_err(|err| IdentityFlowError::Io(io::Error::other(err.to_string())))?;
+            *cached = Some(record.clone());
+        }
         eprintln!(
             "identity_flow_demo: wrote identity to {} (0600)",
             self.path.display()
@@ -189,7 +191,7 @@ fn seed_flow(flow: &mut IdentityFlow) -> Result<(), IdentityFlowError> {
     // from now never overflows; falling back to "now" keeps this a real
     // handled path rather than a panic if it somehow ever did.
     let expires_at = SystemTime::now()
-        .checked_add(std::time::Duration::from_hours(1))
+        .checked_add(std::time::Duration::from_secs(3600))
         .unwrap_or_else(SystemTime::now);
     let env: InviteEnvelope = mint_invite(
         ChannelId::new(),

@@ -223,9 +223,11 @@ mod tests {
 
     #[test]
     fn visible_chevrons_emit_the_matching_navigation_action() {
-        let mut bubble = ReaderBubble::default();
-        bubble.previous_rect = Rect::new(10.0, 10.0, 30.0, 30.0);
-        bubble.next_rect = Rect::new(50.0, 10.0, 70.0, 30.0);
+        let bubble = ReaderBubble {
+            previous_rect: Rect::new(10.0, 10.0, 30.0, 30.0),
+            next_rect: Rect::new(50.0, 10.0, 70.0, 30.0),
+            ..ReaderBubble::default()
+        };
         assert_eq!(
             bubble.hit_test(Point::new(20.0, 20.0)),
             Some(ReaderBubbleAction::PreviousPage)

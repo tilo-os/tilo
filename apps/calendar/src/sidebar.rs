@@ -169,6 +169,47 @@ impl Sidebar {
 
         let pad = 18.0;
         let mut y = rect.y0 + 22.0;
+        self.draw_chrome_collapse_or_dismiss(
+            scene, transform, theme, rect, window, overlay, pointer, pad, y, &mut hits,
+        );
+        y += 30.0;
+
+        if overlay && !switcher_in_topbar {
+            y += self.draw_chrome_view_switcher(
+                scene, transform, text, theme, rect, view, pointer, y, &mut hits,
+            );
+        }
+
+        self.draw_chrome_footer_buttons(scene, transform, text, theme, rect, y, pointer, &mut hits);
+
+        Some(Chrome {
+            body_y: y + 46.0,
+            hits,
+        })
+    }
+
+    /// The collapse (persistent mode) or dismiss (overlay mode, once the
+    /// drawer covers the full window) button, top-right of the sidebar
+    /// header. Split out of [`Self::draw_chrome`] to keep that under the
+    /// line cap.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_chrome_collapse_or_dismiss(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        window: Rect,
+        overlay: bool,
+        pointer: Point,
+        pad: f64,
+        y: f64,
+        hits: &mut Vec<(Rect, Action)>,
+    ) {
+        let colors = &theme.tokens.colors;
         if !overlay {
             let button = Rect::new(rect.x1 - pad - 24.0, y - 3.0, rect.x1 - pad, y + 21.0);
             if button.contains(pointer) {
@@ -182,62 +223,101 @@ impl Sidebar {
             draw_cross(scene, transform, colors.neutral[8], button.center());
             hits.push((button, Action::Dismiss));
         }
-        y += 30.0;
+    }
 
-        if overlay && !switcher_in_topbar {
-            let segmented = Rect::new(rect.x0 + 12.0, y, rect.x1 - 12.0, y + 36.0);
-            fill_round(scene, transform, colors.surfaces.base, segmented, 9.0);
-            stroke_round(
-                scene,
-                transform,
-                colors.border_standard,
-                segmented,
-                9.0,
-                1.0,
+    /// The overlay-mode Month/Week/Day/Agenda segmented switcher, shown only
+    /// when the switcher doesn't already live in the top bar. Returns the
+    /// vertical space it consumed (`0.0` if not drawn). Split out of
+    /// [`Self::draw_chrome`] to keep that under the line cap.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_chrome_view_switcher(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        view: View,
+        pointer: Point,
+        y: f64,
+        hits: &mut Vec<(Rect, Action)>,
+    ) -> f64 {
+        let colors = &theme.tokens.colors;
+        let segmented = Rect::new(rect.x0 + 12.0, y, rect.x1 - 12.0, y + 36.0);
+        fill_round(scene, transform, colors.surfaces.base, segmented, 9.0);
+        stroke_round(
+            scene,
+            transform,
+            colors.border_standard,
+            segmented,
+            9.0,
+            1.0,
+        );
+        let cell_width = segmented.width() / View::ALL.len() as f64;
+        for (index, candidate) in View::ALL.iter().enumerate() {
+            let cell = Rect::new(
+                segmented.x0 + cell_width * index as f64,
+                segmented.y0,
+                segmented.x0 + cell_width * (index as f64 + 1.0),
+                segmented.y1,
             );
-            let cell_width = segmented.width() / View::ALL.len() as f64;
-            for (index, candidate) in View::ALL.iter().enumerate() {
-                let cell = Rect::new(
-                    segmented.x0 + cell_width * index as f64,
-                    segmented.y0,
-                    segmented.x0 + cell_width * (index as f64 + 1.0),
-                    segmented.y1,
-                );
-                if view == *candidate {
-                    fill_round(
-                        scene,
-                        transform,
-                        colors.accent[5],
-                        cell.inflate(-3.0, -3.0),
-                        7.0,
-                    );
-                } else if cell.contains(pointer) {
-                    fill_round(
-                        scene,
-                        transform,
-                        colors.surface_white_5,
-                        cell.inflate(-3.0, -3.0),
-                        7.0,
-                    );
-                }
-                center_text(
+            if view == *candidate {
+                fill_round(
                     scene,
-                    text,
-                    candidate.label(),
-                    13.0,
-                    if view == *candidate {
-                        Color::WHITE
-                    } else {
-                        colors.neutral[7]
-                    },
-                    cell,
                     transform,
+                    colors.accent[5],
+                    cell.inflate(-3.0, -3.0),
+                    7.0,
                 );
-                hits.push((cell, Action::View(*candidate)));
+            } else if cell.contains(pointer) {
+                fill_round(
+                    scene,
+                    transform,
+                    colors.surface_white_5,
+                    cell.inflate(-3.0, -3.0),
+                    7.0,
+                );
             }
-            y += 50.0;
+            center_text(
+                scene,
+                text,
+                candidate.label(),
+                13.0,
+                if view == *candidate {
+                    Color::WHITE
+                } else {
+                    colors.neutral[7]
+                },
+                cell,
+                transform,
+            );
+            hits.push((cell, Action::View(*candidate)));
         }
+        50.0
+    }
 
+    /// The Export/Import footer buttons, side by side at the bottom of the
+    /// sidebar header. Split out of [`Self::draw_chrome`] to keep that under
+    /// the line cap.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_chrome_footer_buttons(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        y: f64,
+        pointer: Point,
+        hits: &mut Vec<(Rect, Action)>,
+    ) {
+        let colors = &theme.tokens.colors;
         let button_width = (rect.width() - 24.0 - 8.0) / 2.0;
         let export = Rect::new(rect.x0 + 12.0, y, rect.x0 + 12.0 + button_width, y + 32.0);
         draw_icon_button(scene, transform, theme, export, export.contains(pointer));
@@ -274,11 +354,6 @@ impl Sidebar {
             None,
         );
         hits.push((import, Action::Import));
-
-        Some(Chrome {
-            body_y: y + 46.0,
-            hits,
-        })
     }
 }
 

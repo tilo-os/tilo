@@ -19,7 +19,7 @@ use crate::sources::{
 };
 use crate::{FlatpakRef, StoreItem};
 
-const REFRESH_INTERVAL: Duration = Duration::from_mins(15);
+const REFRESH_INTERVAL: Duration = Duration::from_secs(900);
 const CACHE_CAP: usize = 128;
 
 #[derive(Clone, Debug)]

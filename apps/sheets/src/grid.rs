@@ -1737,7 +1737,7 @@ impl Grid {
                         transform,
                         tr,
                         raw,
-                        CellTextStyle {
+                        &CellTextStyle {
                             size: text_size,
                             color,
                         },
@@ -1766,7 +1766,7 @@ impl Grid {
                         transform,
                         tr,
                         &text,
-                        CellTextStyle {
+                        &CellTextStyle {
                             size: text_size,
                             color,
                         },
@@ -1933,7 +1933,7 @@ impl Grid {
         transform: Affine,
         tr: &mut TextRenderer,
         text: &str,
-        style: CellTextStyle,
+        style: &CellTextStyle,
         cell: Rect,
         right_align: bool,
     ) {

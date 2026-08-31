@@ -411,10 +411,10 @@ fn plane_u16_from_bytes(bytes: &[u8], stride_bytes: usize) -> Vec<u16> {
         out.push(u16::from_le_bytes([a, b]));
     }
     // Handle odd-length tail (shouldn't happen for a well-formed P010 buffer, but be defensive).
-    if bytes.len() % 2 == 1 {
-        if let Some(&last) = bytes.last() {
-            out.push(u16::from(last));
-        }
+    if bytes.len() % 2 == 1
+        && let Some(&last) = bytes.last()
+    {
+        out.push(u16::from(last));
     }
     out
 }

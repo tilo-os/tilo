@@ -72,13 +72,14 @@ struct Args {
     max_diff_pixels: u64,
 }
 
-/// Consume the next argv value for `flag`, erroring if there isn't one.
-fn take_value(argv: &mut Vec<String>, flag: &str) -> Result<String, String> {
-    let v = argv
+/// Consume the next value for `flag` from the remaining arguments, erroring
+/// if there isn't one.
+fn take_value(rest: &mut Vec<String>, flag: &str) -> Result<String, String> {
+    let v = rest
         .first()
         .ok_or_else(|| format!("{flag} needs a value"))?
         .clone();
-    argv.remove(0);
+    rest.remove(0);
     Ok(v)
 }
 
@@ -100,10 +101,10 @@ fn parse_mode_flag(v: &str) -> Result<Mode, String> {
 /// to keep it short.
 fn apply_scenes_flag(
     args: &mut Args,
-    argv: &mut Vec<String>,
+    rest: &mut Vec<String>,
     scenes_explicit: &mut bool,
 ) -> Result<(), String> {
-    let v = take_value(argv, "--scenes")?;
+    let v = take_value(rest, "--scenes")?;
     args.scenes = v.split(',').map(|s| s.trim().to_string()).collect();
     for s in &args.scenes {
         if !ShellDriver::ALL_SCENES.contains(&s.as_str()) {
@@ -120,11 +121,11 @@ fn apply_scenes_flag(
 /// Parse `--sweep`'s optional value: a flag-like or missing next token keeps
 /// [`DEFAULT_SWEEP`], otherwise it's a comma-separated `WxH` list. Split out
 /// of `Args::apply_flag` to keep it short.
-fn apply_sweep_flag(argv: &mut Vec<String>) -> Result<Vec<(u32, u32)>, String> {
-    let next = argv.first().cloned();
+fn apply_sweep_flag(rest: &mut Vec<String>) -> Result<Vec<(u32, u32)>, String> {
+    let next = rest.first().cloned();
     let resolutions: Vec<(u32, u32)> = match next {
         Some(v) if !v.starts_with("--") => {
-            argv.remove(0);
+            rest.remove(0);
             parse_sweep_list(&v)?
         }
         _ => DEFAULT_SWEEP.to_vec(),
@@ -137,8 +138,8 @@ fn apply_sweep_flag(argv: &mut Vec<String>) -> Result<Vec<(u32, u32)>, String> {
 
 /// Parse `--per-frame`'s value, rejecting `0`. Split out of
 /// `Args::apply_flag` to keep it short.
-fn apply_per_frame_flag(argv: &mut Vec<String>) -> Result<u32, String> {
-    let v: u32 = take_value(argv, "--per-frame")?
+fn apply_per_frame_flag(rest: &mut Vec<String>) -> Result<u32, String> {
+    let v: u32 = take_value(rest, "--per-frame")?
         .parse()
         .map_err(|e| format!("--per-frame: {e}"))?;
     if v == 0 {
@@ -171,30 +172,30 @@ impl Args {
         };
         let mut scenes_explicit = false;
 
-        let mut argv: Vec<String> = std::env::args().skip(1).collect();
+        let mut rest: Vec<String> = std::env::args().skip(1).collect();
         // Subcommand detection — `shots check ...` runs the baseline
         // diff path. Anything else falls through to the modes.
-        if let Some(first) = argv.first()
+        if let Some(first) = rest.first()
             && first == "check"
         {
             args.subcommand = Some("check".to_string());
-            argv.remove(0);
+            rest.remove(0);
         }
-        while let Some(arg) = argv.first().cloned() {
-            argv.remove(0);
-            Self::apply_flag(&mut args, &arg, &mut argv, &mut scenes_explicit)?;
+        while let Some(arg) = rest.first().cloned() {
+            rest.remove(0);
+            Self::apply_flag(&mut args, &arg, &mut rest, &mut scenes_explicit)?;
         }
         Self::validate(&mut args, scenes_explicit)?;
         Ok(args)
     }
 
     /// Handle one `--flag [value]` argument, consuming its value(s) from
-    /// `argv` and updating `args` in place. Split out of `parse` to keep
+    /// `rest` and updating `args` in place. Split out of `parse` to keep
     /// the top-level loop short.
     fn apply_flag(
         args: &mut Args,
         arg: &str,
-        argv: &mut Vec<String>,
+        rest: &mut Vec<String>,
         scenes_explicit: &mut bool,
     ) -> Result<(), String> {
         match arg {
@@ -202,41 +203,41 @@ impl Args {
                 print_help();
                 std::process::exit(0);
             }
-            "--mode" => args.mode = parse_mode_flag(&take_value(argv, "--mode")?)?,
-            "--scenario" => args.scenario = Some(take_value(argv, "--scenario")?),
-            "--scenes" => apply_scenes_flag(args, argv, scenes_explicit)?,
-            "--out" => args.out = PathBuf::from(take_value(argv, "--out")?),
+            "--mode" => args.mode = parse_mode_flag(&take_value(rest, "--mode")?)?,
+            "--scenario" => args.scenario = Some(take_value(rest, "--scenario")?),
+            "--scenes" => apply_scenes_flag(args, rest, scenes_explicit)?,
+            "--out" => args.out = PathBuf::from(take_value(rest, "--out")?),
             "--width" => {
-                args.width = take_value(argv, "--width")?
+                args.width = take_value(rest, "--width")?
                     .parse()
                     .map_err(|e| format!("--width: {e}"))?;
             }
             "--height" => {
-                args.height = take_value(argv, "--height")?
+                args.height = take_value(rest, "--height")?
                     .parse()
                     .map_err(|e| format!("--height: {e}"))?;
             }
             "--fps" => {
-                args.fps = take_value(argv, "--fps")?
+                args.fps = take_value(rest, "--fps")?
                     .parse()
                     .map_err(|e| format!("--fps: {e}"))?;
             }
             "--step-duration" => {
-                args.step_duration = take_value(argv, "--step-duration")?
+                args.step_duration = take_value(rest, "--step-duration")?
                     .parse()
                     .map_err(|e| format!("--step-duration: {e}"))?;
             }
             "--list-scenarios" => args.list_scenarios = true,
-            "--sweep" => args.sweep = Some(apply_sweep_flag(argv)?),
-            "--per-frame" => args.per_frame = Some(apply_per_frame_flag(argv)?),
-            "--baseline" => args.baseline = Some(PathBuf::from(take_value(argv, "--baseline")?)),
+            "--sweep" => args.sweep = Some(apply_sweep_flag(rest)?),
+            "--per-frame" => args.per_frame = Some(apply_per_frame_flag(rest)?),
+            "--baseline" => args.baseline = Some(PathBuf::from(take_value(rest, "--baseline")?)),
             "--diff-threshold" => {
-                args.diff_threshold = take_value(argv, "--diff-threshold")?
+                args.diff_threshold = take_value(rest, "--diff-threshold")?
                     .parse()
                     .map_err(|e| format!("--diff-threshold: {e}"))?;
             }
             "--max-diff-pixels" => {
-                args.max_diff_pixels = take_value(argv, "--max-diff-pixels")?
+                args.max_diff_pixels = take_value(rest, "--max-diff-pixels")?
                     .parse()
                     .map_err(|e| format!("--max-diff-pixels: {e}"))?;
             }
@@ -245,7 +246,7 @@ impl Args {
         Ok(())
     }
 
-    /// Cross-flag validation once the whole argv has been consumed, plus
+    /// Cross-flag validation once every argument has been consumed, plus
     /// the mode-specific `out` default (recording mode writes a single
     /// file, not a directory). Split out of `parse` to keep it short.
     fn validate(args: &mut Args, scenes_explicit: bool) -> Result<(), String> {
@@ -255,7 +256,9 @@ impl Args {
         if args.fps == 0 {
             return Err("--fps must be > 0".into());
         }
-        if !(args.step_duration > 0.0) {
+        // Not `<= 0.0`: comparisons against NaN are always false, so that
+        // rewrite would silently accept a NaN step duration.
+        if args.step_duration.is_nan() || args.step_duration <= 0.0 {
             return Err("--step-duration must be > 0".into());
         }
         if args.subcommand.as_deref() == Some("check") {
@@ -307,6 +310,12 @@ impl Args {
 
 /// Parse a comma-separated `WxH,WxH,...` resolution list. Rejects empty
 /// entries and zero dimensions. Pure function for unit-test coverage.
+///
+/// # Errors
+///
+/// Returns an error if a non-empty entry isn't `WxH`, doesn't parse as two
+/// integers, or names a zero width or height, or if no non-empty entry
+/// remains once empty ones are skipped.
 pub fn parse_sweep_list(raw: &str) -> Result<Vec<(u32, u32)>, String> {
     let mut out = Vec::new();
     for entry in raw.split(',') {
@@ -413,8 +422,8 @@ fn main() -> Result<(), String> {
     let _startup_dump = qos_startup_metrics::ScopedDumper;
     qos_startup_metrics::mark("main-start");
 
-    // cosmic-text + Vello warmup on a background thread, overlapping argv
-    // parsing / driver bring-up. FontSystem-only by default (~90 ms
+    // cosmic-text + Vello warmup on a background thread, overlapping
+    // argument parsing / driver bring-up. FontSystem-only by default (~90 ms
     // cold-start win, measured on this harness); Vello scratch-render
     // opt-in via QOS_STARTUP_WARM_VELLO=1. Disabled with QOS_STARTUP_WARM=off.
     let want_vello = std::env::var("QOS_STARTUP_WARM_VELLO")
@@ -600,6 +609,13 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
     }
 }
 
+#[allow(
+    clippy::exit,
+    reason = "matches Args::parse's own exit(2) on a bad CLI argument in main; \
+              propagating this as a Result instead would fall through to main's \
+              generic Result-error exit code (1), silently changing the exit code \
+              a script checks for an unknown --scenario name"
+)]
 fn require_scenario(name: &str) -> Scenario {
     lookup(name).unwrap_or_else(|| {
         eprintln!("shots: unknown scenario '{name}'. Try --list-scenarios to see the catalogue.");

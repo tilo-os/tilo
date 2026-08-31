@@ -77,6 +77,10 @@ fn now_ns_u64() -> u64 {
 
 /// Pure form of [`run`] that takes env-var values as arguments instead
 /// of reading the real environment — tests drive this with a `tempdir`-rooted fixture so the suite never pokes the developer's real `$HOME`.
+///
+/// # Errors
+///
+/// Returns an error when directory creation fails (permission denied, ENOSPC).
 pub fn run_with_env(
     xdg_config_home: Option<OsString>,
     home: Option<OsString>,
@@ -93,6 +97,10 @@ pub fn run_with_env(
 /// by the person it belongs to. The session would then find no identity
 /// and boot without one, exactly the failure this guard prevents. A
 /// signing identity is *personal*: minted in the user's own session, by [`crate::onboarding`], after the user has been told what it is.
+///
+/// # Errors
+///
+/// Returns an error when directory creation fails (permission denied, ENOSPC).
 pub fn run_as(
     xdg_config_home: Option<OsString>,
     home: Option<OsString>,
@@ -252,6 +260,14 @@ pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, 
 /// single transport identity used by the shell, filesystem synchroniser, and
 /// hosted relay. Existing records are migrated idempotently; an existing
 /// device key is never replaced.
+///
+/// # Errors
+///
+/// Returns an error if the identity directory can't be created or its
+/// permissions set, if the primary identity can't be provisioned or loaded,
+/// if it isn't a single-device identity, if the device key or certificate
+/// can't be created, loaded, verified, or signed, or if the identity
+/// registry can't be migrated or saved.
 pub fn ensure_collaboration_identity(
     identity_dir: &Path,
     paths: &IdentityPaths,
@@ -363,6 +379,12 @@ pub fn ensure_collaboration_identity(
 ///
 /// This keeps app signing and collaboration transport authentication on the
 /// same `identity -> device` chain immediately after setup/import.
+///
+/// # Errors
+///
+/// Returns an error if the record at `record_path` can't be loaded, or if
+/// the device key or its certificate can't be created, loaded, verified, or
+/// signed.
 pub fn ensure_device_certificate_for_record(
     record_path: &Path,
     paths: &IdentityPaths,
@@ -451,8 +473,8 @@ fn protect_identity_record(identity_dir: &Path) -> io::Result<()> {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for b in bytes {
         out.push(HEX[(b >> 4) as usize] as char);
         out.push(HEX[(b & 0xF) as usize] as char);
@@ -528,6 +550,8 @@ mod tests {
 
     #[test]
     fn run_provisions_identity_when_missing() {
+        use ed25519_dalek::Verifier;
+
         let tmp = TmpDir::new("mint-identity");
         // An explicit non-root uid: `run_with_env` reads the real one, and as
         // root the guard returns before minting, so this asserted nothing on a
@@ -555,7 +579,6 @@ mod tests {
         let sig = ident.sign(b"firstboot-check").expect("sign ok");
         let vk =
             ed25519_dalek::VerifyingKey::from_bytes(&ident.group_public_key()).expect("vk decode");
-        use ed25519_dalek::Verifier;
         let sig = ed25519_dalek::Signature::from_bytes(&sig);
         vk.verify(b"firstboot-check", &sig)
             .expect("dalek verify must succeed against derived pubkey");
@@ -619,7 +642,9 @@ mod tests {
             ProvisionOutcome::Created { pubkey_hex } => {
                 assert_eq!(pubkey_hex.len(), 64, "hex of 32 bytes is 64 chars");
             }
-            other => panic!("expected Created on empty dir, got {other:?}"),
+            other @ ProvisionOutcome::Existing => {
+                panic!("expected Created on empty dir, got {other:?}")
+            }
         }
         // Second run leaves it alone.
         assert_eq!(

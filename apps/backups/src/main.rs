@@ -53,7 +53,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.backups", backups::app_root)
+        &LaunchSpec::new("dev.qos.backups", backups::app_root)
             .shot_root(shot_root)
             .scenarios(&["status"])
             .allowed_flags(&["--empty"])

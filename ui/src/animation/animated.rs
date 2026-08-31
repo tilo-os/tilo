@@ -5,6 +5,7 @@ use crate::color_compat::ColorCompat;
 use std::time::{Duration, Instant};
 
 pub trait Lerp {
+    #[must_use]
     fn lerp(self, other: Self, t: f32) -> Self;
 }
 
@@ -87,6 +88,12 @@ impl Curve {
 /// Solves `m * x'' + c * x' + k * x = k` with `x(0) = 0`, `x'(0) = 0`, so
 /// the position approaches `1.0` as `t -> infinity`. `t` is the `0..1`
 /// duration ratio.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "m/c/k/t/s mirror the differential equation spelled out in the doc \
+              comment above; naming them mass/damping/stiffness/time/aux would \
+              just make the formula below harder to check against a textbook"
+)]
 fn spring_unit_step(stiffness: f32, damping: f32, mass: f32, t: f32) -> f32 {
     let m = mass.max(1e-4);
     let k = stiffness.max(0.0);

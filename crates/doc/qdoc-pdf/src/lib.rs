@@ -196,6 +196,13 @@ impl Layout {
 /// a well-formed snapshot — undecodable image blobs degrade to a
 /// placeholder box rather than erroring; an empty document still yields
 /// a valid, single-page PDF.
+///
+/// # Errors
+///
+/// Never in the current implementation: every failure mode (an undecodable
+/// image blob, a missing blob hash) degrades to a placeholder box instead of
+/// propagating. The `Result` is kept so a future encoding failure has
+/// somewhere to surface without a signature change.
 pub fn render_pdf(snap: &DocSnapshot) -> Result<Vec<u8>, DocPdfError> {
     let mut layout = Layout::new();
 
@@ -329,14 +336,12 @@ fn render_image(layout: &mut Layout, snap: &DocSnapshot, block: &BlockView) {
         placeholder(layout, "image (no blob)");
         return;
     };
-    let bytes = if let Some(b) = snap.blobs.get(&hash) {
-        b
-    } else {
+    let Some(bytes) = snap.blobs.get(&hash) else {
         placeholder(layout, "image (missing blob)");
         return;
     };
     match decode_image(bytes) {
-        Ok(img) => place_image(layout, img),
+        Ok(img) => place_image(layout, &img),
         Err(_) => placeholder(layout, "image (undecodable)"),
     }
 }
@@ -463,7 +468,7 @@ fn decode_image(bytes: &[u8]) -> Result<DecodedImage, DocPdfError> {
     })
 }
 
-fn place_image(layout: &mut Layout, img: DecodedImage) {
+fn place_image(layout: &mut Layout, img: &DecodedImage) {
     // Scale to text width, preserving aspect; cap height to one page's content.
     // A display-only aspect ratio; no real decoded image dimension
     // approaches f32's precision limit.

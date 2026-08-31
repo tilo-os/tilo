@@ -110,7 +110,7 @@ fn named_actor(prefix: &str) -> Option<String> {
 
 fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new_with_args("dev.qos.word-processor", live_root)
+        &LaunchSpec::new_with_args("dev.qos.word-processor", live_root)
             .max_positionals(1)
             .allowed_flags(&["--history"])
             .shot_handler(run_shot)

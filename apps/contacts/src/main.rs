@@ -100,7 +100,7 @@ fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.contacts", contacts::app_root)
+        &LaunchSpec::new("dev.qos.contacts", contacts::app_root)
             .shot_handler(shot_handler)
             .allowed_flags(&["--detail"])
             .scenarios(&[

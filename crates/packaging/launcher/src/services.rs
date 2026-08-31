@@ -137,6 +137,13 @@ pub fn identity_socket() -> PathBuf {
 
 /// Connect the per-session identity broker and authenticate the launch
 /// context before the sandboxed app can write to the stream.
+///
+/// # Errors
+///
+/// Returns [`ServiceError`] if the handshake can't be serialized, if it's
+/// too large to fit a `u32` length prefix, or if writing/flushing it to the
+/// socket fails. A missing service or a refused connection is not an error
+/// — both degrade to `Ok(None)`.
 pub fn resolve_identity_bind(
     app_id: &str,
     workspace_id: Option<&str>,

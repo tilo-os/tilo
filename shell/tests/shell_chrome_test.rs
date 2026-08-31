@@ -29,6 +29,8 @@ fn visual_smoke_checklist_is_documented() {
     }
 }
 
+use std::collections::HashMap;
+
 use shell::shell::overview::OverviewView;
 use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
 
@@ -47,8 +49,8 @@ fn overview_view_click_activates_workspace() {
     let mut tree = WorkspaceTree {
         workspaces: vec![a, b],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
@@ -225,8 +227,8 @@ fn topbar_leftnav_navigates_workspaces() {
     let mut tree = WorkspaceTree {
         workspaces: vec![ws_a, ws_b, ws_c],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
@@ -262,8 +264,8 @@ fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
     let mut tree = WorkspaceTree {
         workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![collab_1, collab_2, collab_3, collab_4],
         ..Default::default()
     };
@@ -286,8 +288,8 @@ fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
     let mut tree = WorkspaceTree {
         workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![collab_1, collab_2],
         ..Default::default()
     };
@@ -310,8 +312,8 @@ fn topbar_chrome_clock_renders_at_bold_weight() {
     let tree = WorkspaceTree {
         workspaces: vec![mk_workspace(0, "A")],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
@@ -390,8 +392,8 @@ fn topbar_chrome_active_center_dot_is_larger_than_inactive() {
     let tree = WorkspaceTree {
         workspaces: vec![mk_workspace(0, "A")],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
@@ -417,8 +419,8 @@ fn sidebar_wheel_switches_active_strip() {
     let mut tree = WorkspaceTree {
         workspaces: vec![ws],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
@@ -448,8 +450,8 @@ fn sidebar_wheel_overscroll_commits_new_workspace_past_threshold() {
     let mut tree = WorkspaceTree {
         workspaces: vec![ws],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
@@ -488,8 +490,8 @@ fn sidebar_wheel_overscroll_below_threshold_snaps_back() {
     let mut tree = WorkspaceTree {
         workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
@@ -509,8 +511,8 @@ fn sidebar_wheel_management_button_creates_workspace() {
     let mut tree = WorkspaceTree {
         workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };

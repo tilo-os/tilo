@@ -309,7 +309,7 @@ impl Topology {
         }
     }
 
-    /// The sample NVMe drive: EFI + root + home + swap, all healthy (part
+    /// The sample `NVMe` drive: EFI + root + home + swap, all healthy (part
     /// of [`Self::sample`]).
     fn sample_nvme() -> Drive {
         Drive {
@@ -510,11 +510,11 @@ fn attr(id: u16, name: &str, value: &str, severity: AttrSeverity) -> SmartAttr {
 /// Format a byte count as a short decimal-SI string (drive vendors use
 /// powers of 1000), e.g. `931.5 GB`, `512 MB`, `16.0 GB`.
 pub fn fmt_size(bytes: u64) -> String {
-    let b = bytes as f64;
     const KB: f64 = 1_000.0;
     const MB: f64 = 1_000_000.0;
     const GB: f64 = 1_000_000_000.0;
     const TB: f64 = 1_000_000_000_000.0;
+    let b = bytes as f64;
     if b >= TB {
         format!("{:.2} TB", b / TB)
     } else if b >= GB {

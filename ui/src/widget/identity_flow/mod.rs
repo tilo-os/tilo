@@ -493,12 +493,12 @@ pub enum InviteExpiry {
 impl InviteExpiry {
     pub fn resolve(self, now: SystemTime) -> SystemTime {
         let duration = match self {
-            InviteExpiry::OneHour => Duration::from_hours(1),
-            InviteExpiry::OneDay => Duration::from_hours(24),
-            InviteExpiry::OneWeek => Duration::from_hours(168),
+            InviteExpiry::OneHour => Duration::from_secs(3600),
+            InviteExpiry::OneDay => Duration::from_secs(86400),
+            InviteExpiry::OneWeek => Duration::from_secs(604800),
             // `Never` is encoded as +100 years; downstream verifiers
             // treat that as "no practical expiry".
-            InviteExpiry::Never => Duration::from_hours(876_000),
+            InviteExpiry::Never => Duration::from_secs(3_153_600_000),
         };
         // `now` is a real wall-clock time, nowhere near the range limit
         // `SystemTime` can represent, so this can't realistically
@@ -687,7 +687,9 @@ pub fn build_attestation_from_invite(
     // `SystemTime` can represent, so this can't realistically overflow;
     // `checked_add` with a same-value fallback keeps the function
     // panic-free without changing observable behaviour.
-    let valid_until = now.checked_add(Duration::from_hours(8760)).unwrap_or(now);
+    let valid_until = now
+        .checked_add(Duration::from_secs(31536000))
+        .unwrap_or(now);
     let mut attestation = Attestation {
         id: AttestationId::new(),
         issued_by: envelope.delegation_pubkey,
@@ -1658,7 +1660,7 @@ mod tests {
             &sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + Duration::from_hours(1),
+            SystemTime::now() + Duration::from_secs(3600),
         )
         .unwrap();
         let url = env.to_url().unwrap();
@@ -1679,7 +1681,7 @@ mod tests {
             &sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + Duration::from_hours(1),
+            SystemTime::now() + Duration::from_secs(3600),
         )
         .unwrap();
         env.channel_name = "treasury".into();
@@ -1726,7 +1728,7 @@ mod tests {
             &owner_sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + Duration::from_hours(1),
+            SystemTime::now() + Duration::from_secs(3600),
         )
         .unwrap();
         let (_invitee_sk, invitee_pk) = generate_keypair();

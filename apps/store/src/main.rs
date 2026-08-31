@@ -50,7 +50,7 @@ fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     ui::launch::run_or_exit(
-        LaunchSpec::new_with_args("dev.qos.store", live_root)
+        &LaunchSpec::new_with_args("dev.qos.store", live_root)
             .max_positionals(1)
             .shot_handler(shot_handler),
     );

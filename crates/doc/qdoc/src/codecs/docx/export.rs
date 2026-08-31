@@ -2583,12 +2583,9 @@ mod tests {
         assert_eq!(snap.notes[0].blocks[0].text, "the footnote");
     }
 
-    #[test]
-    fn footnote_and_endnote_roundtrip_through_docx() {
-        use crate::document::MarkValue;
-        use crate::schema::MARK_NOTE_REF;
-        // A footnote + an endnote built from scratch: export must write both note parts + refs
-        // + content-types/rels, re-importing the same markers/notes/kinds.
+    /// Builds the footnote+endnote fixture and exports it to `.docx` bytes
+    /// (part of [`footnote_and_endnote_roundtrip_through_docx`]).
+    fn export_footnote_endnote_fixture() -> Vec<u8> {
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "see ref");
@@ -2604,8 +2601,14 @@ mod tests {
         let eb = d.insert_note_block(&endnote_id, None, "paragraph").unwrap();
         d.splice_note_text(&endnote_id, &eb, 0, 0, "an endnote");
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
-        let cont = DocxContainer::read(&exported).unwrap();
+        DocxCodec.export(d.as_ref()).unwrap()
+    }
+
+    /// Asserts the exported `.docx` carries both note parts, their refs, and
+    /// the content-types/rels registrations (part of
+    /// [`footnote_and_endnote_roundtrip_through_docx`]).
+    fn assert_footnote_endnote_docx_xml(exported: &[u8]) {
+        let cont = DocxContainer::read(exported).unwrap();
         let ftn = std::str::from_utf8(
             cont.get("word/footnotes.xml")
                 .expect("footnotes.xml written"),
@@ -2634,9 +2637,17 @@ mod tests {
             rels.contains(r#"Target="footnotes.xml""#) && rels.contains(r#"Target="endnotes.xml""#),
             "note rels registered: {rels}"
         );
+    }
+
+    /// Re-imports the exported `.docx`, asserting the ref marker and both
+    /// note bodies/kinds survive (part of
+    /// [`footnote_and_endnote_roundtrip_through_docx`]). Returns the
+    /// re-imported document for the caller's second round-trip check.
+    fn assert_footnote_endnote_reimport(exported: &[u8]) -> Document {
+        use crate::schema::MARK_NOTE_REF;
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        DocxCodec.import(exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
         assert_eq!(
             snap.blocks[0]
@@ -2669,6 +2680,18 @@ mod tests {
             .find(|n| n.kind == "endnote")
             .expect("endnote present");
         assert_eq!(end_note.blocks[0].text, "an endnote");
+
+        d2
+    }
+
+    #[test]
+    fn footnote_and_endnote_roundtrip_through_docx() {
+        // A footnote + an endnote built from scratch: export must write both note parts + refs
+        // + content-types/rels, re-importing the same markers/notes/kinds.
+        let exported = export_footnote_endnote_fixture();
+        assert_footnote_endnote_docx_xml(&exported);
+
+        let d2 = assert_footnote_endnote_reimport(&exported);
 
         let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();

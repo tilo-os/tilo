@@ -458,7 +458,7 @@ fn state_commit_action_stamps_the_change() {
         .duration_since(entries[0].timestamp)
         .expect("timestamp is in the past, not 1970-adjacent nonsense");
     assert!(
-        age < Duration::from_mins(10),
+        age < Duration::from_secs(600),
         "a just-committed action must be stamped with now, got {age:?} ago"
     );
 }

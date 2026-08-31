@@ -1498,7 +1498,7 @@ impl Widget for TerminalWidget {
                 state: element_state,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_left_click_event(*element_state, modifiers, handled),
+            } => self.handle_left_click_event(*element_state, *modifiers, handled),
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Middle,
@@ -1519,12 +1519,7 @@ impl Widget for TerminalWidget {
                     },
                 ..
             } if *element_state == ElementState::Pressed => {
-                self.handle_key_press_event(
-                    logical_key,
-                    text.as_ref().map(|t| t.as_str()),
-                    modifiers,
-                    handled,
-                );
+                self.handle_key_press_event(logical_key, text.as_deref(), *modifiers, handled);
             }
             _ => {}
         }
@@ -1673,7 +1668,7 @@ impl TerminalWidget {
     fn handle_left_click_event(
         &mut self,
         element_state: ElementState,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) {
         // A left click while the context menu is open routes to the menu
@@ -1732,7 +1727,7 @@ impl TerminalWidget {
         &mut self,
         logical_key: &Key,
         text: Option<&str>,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) {
         // Escape dismisses an open context menu before the app sees it.
@@ -1801,7 +1796,7 @@ impl TerminalWidget {
             }
         }
 
-        let mut bytes = self.map_key(logical_key, *modifiers);
+        let mut bytes = self.map_key(logical_key, modifiers);
         if bytes.is_none()
             && let Some(t) = text
             && !t.chars().any(|c| c as u32 == 0x23CE || c as u32 == 0x21B5)
@@ -2721,7 +2716,7 @@ impl TerminalWidget {
 
         match key {
             Key::Named(named) => {
-                Self::map_named_key(named, shift, mod_param, self.modes.app_cursor_keys)
+                Self::map_named_key(*named, shift, mod_param, self.modes.app_cursor_keys)
             }
             Key::Character(c) if ctrl => Self::map_ctrl_char(c.as_str(), alt),
             Key::Character(c) if alt && !ctrl && !mods.super_key() => {
@@ -2780,7 +2775,7 @@ impl TerminalWidget {
     }
 
     fn map_named_key(
-        named: &NamedKey,
+        named: NamedKey,
         shift: bool,
         mod_param: Option<u8>,
         app_cursor_keys: bool,
@@ -2843,7 +2838,7 @@ impl TerminalWidget {
     /// Alt-as-Meta for plain alphanumerics (readline word ops: Alt-f,
     /// Alt-b, Alt-d, numeric arguments). Restricted to ASCII
     /// alphanumeric logical keys so AltGr-composed symbols on layouts
-    /// like de_DE (AltGr+q=@, AltGr+e=€, AltGr+7={ …) are never poached
+    /// like `de_DE` (AltGr+q=@, AltGr+e=€, AltGr+7={ …) are never poached
     /// — those resolve to non-alphanumeric logical keys and fall
     /// through to their composed `text`.
     fn map_alt_char(s: &str) -> Option<Vec<u8>> {
@@ -2995,11 +2990,8 @@ impl Perform for TerminalPerformer<'_> {
         if self.cursor_x > chars.len() {
             chars.resize(self.cursor_x, ' ');
         }
-        let mut repl: Vec<char> = Vec::with_capacity(char_w);
-        repl.push(c);
-        for _ in 1..char_w {
-            repl.push(' ');
-        }
+        let mut repl: Vec<char> = vec![c];
+        repl.resize(char_w, ' ');
         if self.cursor_x < chars.len() {
             let end = (self.cursor_x + char_w).min(chars.len());
             chars.splice(self.cursor_x..end, repl);
@@ -3063,7 +3055,8 @@ impl Perform for TerminalPerformer<'_> {
                 let next = ((self.cursor_x / 8) + 1) * 8;
                 self.cursor_x = next.min(self.width.saturating_sub(1));
             }
-            7 => {} // BEL — no audible bell in the toolkit yet.
+            // Everything else, including 7 (BEL), is a no-op — the toolkit
+            // has no audible bell yet and no other single byte has meaning.
             _ => {}
         }
         self.update_cursor();
@@ -4623,7 +4616,7 @@ impl TerminalWidget {
             loop {
                 let mut r = reader.lock().unwrap();
                 match std::io::Read::read(&mut *r, &mut buf) {
-                    Ok(0) => break,
+                    Ok(0) | Err(_) => break,
                     Ok(n) => {
                         if output_tx.send(buf[..n].to_vec()).is_err() {
                             break;
@@ -4649,7 +4642,6 @@ impl TerminalWidget {
                             }
                         }
                     }
-                    Err(_) => break,
                 }
             }
         });
