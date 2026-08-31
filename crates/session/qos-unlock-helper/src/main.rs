@@ -43,12 +43,9 @@ fn main() {
         std::env::var("QOS_UNLOCK_PAM_SERVICE").unwrap_or_else(|_| DEFAULT_SERVICE.to_string());
     let lib = std::env::var("QOS_PAM_LIB").unwrap_or_else(|_| DEFAULT_LIB.to_string());
 
-    let password = match read_password(io::stdin().lock()) {
-        Ok(p) => p,
-        Err(_) => {
-            // Could not even read the credential — fail-closed.
-            std::process::exit(outcome_to_exit(Outcome::Error));
-        }
+    // Could not even read the credential — fail-closed.
+    let Ok(password) = read_password(io::stdin().lock()) else {
+        std::process::exit(outcome_to_exit(Outcome::Error));
     };
 
     let outcome = pam::authenticate(&lib, &service, &username, &password);
