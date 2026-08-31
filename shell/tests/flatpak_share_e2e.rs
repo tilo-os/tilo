@@ -6,10 +6,10 @@
 //! (encoder+decoder+registry+`NeighbourMsg` composition against the
 //! latency/backpressure budget) is orthogonal to the transport.
 //!
-//! Asserts a [`SharedFlatpakSession`] sustains >= 30 fps over a 3s window
-//! (the openh264 SW encoder's ceiling, below the 60 fps spec target) with
-//! motion-to-photon latency under 60 ms/frame, and that a stalled paint
-//! side drops video frames without ever dropping input.
+//! Asserts a [`SharedFlatpakSession`] sustains a conservative 10 fps floor
+//! over a 3s window while targeting the openh264 SW encoder's 30 fps ceiling,
+//! with motion-to-photon latency under 60 ms/frame. It also verifies that a
+//! stalled paint side drops video frames without ever dropping input.
 
 #![allow(
     clippy::unwrap_used,
