@@ -609,9 +609,12 @@ fn sidebar_wheel_event_routes_through_shell() {
     // Either the index advanced or the clamp held at the last strip — both
     // valid. This only asserts the shell routed the wheel to the sidebar
     // widget without mutating the search/overview flags.
+    // Deliberately not asserted on: `active_strip_index` is still a placeholder
+    // that always answers 0, so comparing it would pass whatever the wheel did.
+    // The binding stays to mark the spot for when it reports a real index.
+    let _ = strips_before;
     assert!(!shell.search_visible());
     assert!(!shell.overview_visible());
-    // strips_before is asserted-on implicitly via observable shell state above
 }
 
 #[test]

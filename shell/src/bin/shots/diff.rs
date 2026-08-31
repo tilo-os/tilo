@@ -190,7 +190,9 @@ fn write_diff_overlay(baseline: &Path, current: &Path, threshold: u8) -> Result<
     }
     for (a, b) in c_pix.chunks_exact_mut(4).zip(b_pix.chunks_exact(4)) {
         if let ([ra, ga, ba, aa], [rb, gb, bb, _ab]) = (a, b) {
-            if ra.abs_diff(*rb) > threshold || ga.abs_diff(*gb) > threshold || ba.abs_diff(*bb) > threshold
+            if ra.abs_diff(*rb) > threshold
+                || ga.abs_diff(*gb) > threshold
+                || ba.abs_diff(*bb) > threshold
             {
                 *ra = 255;
                 *ga = 0;

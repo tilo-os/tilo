@@ -70,18 +70,20 @@ pub fn store_path() -> Option<PathBuf> {
 /// empty) below `appearance.studio`, preserving Settings-owned preferences.
 /// Returns the pretty-printed document.
 pub fn to_json_merged(spec: &ThemeSpec, existing: &str) -> String {
-    let mut root: serde_json::Value =
-        serde_json::from_str(existing).unwrap_or(serde_json::Value::Null);
-    if !root.is_object() {
-        root = serde_json::json!({});
-    }
-    let obj = root.as_object_mut().expect("just ensured object");
+    let root: serde_json::Value = serde_json::from_str(existing).unwrap_or(serde_json::Value::Null);
+    // Coerce to a JSON object, discarding anything malformed rather than
+    // indexing into it and panicking — `existing` is a document another
+    // process (or an older schema version) may have written.
+    let mut obj = match root {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
     obj.insert("version".into(), serde_json::json!(1));
-    let appearance = obj.entry(SECTION).or_insert_with(|| serde_json::json!({}));
-    if !appearance.is_object() {
-        *appearance = serde_json::json!({});
-    }
-    let appearance = appearance.as_object_mut().expect("just ensured object");
+
+    let mut appearance = match obj.remove(SECTION) {
+        Some(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
 
     let active = crate::model::builtin_theme(&spec.id)
         .map(|theme| theme.name)
@@ -102,7 +104,9 @@ pub fn to_json_merged(spec: &ThemeSpec, existing: &str) -> String {
             "theme": serde_json::to_value(spec).unwrap_or(serde_json::Value::Null),
         }),
     );
-    serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".into())
+    obj.insert(SECTION.into(), serde_json::Value::Object(appearance));
+
+    serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap_or_else(|_| "{}".into())
 }
 
 /// The active theme's id in a settings document, if the `appearance`

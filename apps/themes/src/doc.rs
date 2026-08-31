@@ -86,13 +86,17 @@ pub fn put_f64(doc: &mut AutoCommit, root: &ObjId, key: &str, val: f64) {
     let _ = doc.put(root, key, val);
 }
 
-/// Replace the `Text` blob at `key` with `val`, creating it if needed.
+/// Replace the `Text` blob at `key` with `val`, creating it if needed. A
+/// silent no-op if the object can't be created — only possible if `root`
+/// itself no longer exists in the document, in which case there is nothing
+/// left to write into.
 pub fn put_text(doc: &mut AutoCommit, root: &ObjId, key: &str, val: &str) {
     let id = match doc.get(root, key) {
         Ok(Some((Value::Object(ObjType::Text), id))) => id,
-        _ => doc
-            .put_object(root, key, ObjType::Text)
-            .expect("put_object text never fails"),
+        _ => match doc.put_object(root, key, ObjType::Text) {
+            Ok(id) => id,
+            Err(_) => return,
+        },
     };
     ui::doc::splice_text_diffed(doc, &id, val);
 }
