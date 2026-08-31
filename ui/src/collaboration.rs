@@ -1645,17 +1645,16 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                     }
                 }
                 runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
-                runtime_collab::PresencePayload::Left => PresencePayload::Left,
+                // `Cursor` is fully handled and returned by the outer match, so
+                // it never reaches here; folding it in with `Left` keeps this
+                // exhaustive without a panic on a branch that cannot run.
+                runtime_collab::PresencePayload::Left
+                | runtime_collab::PresencePayload::Cursor { .. } => PresencePayload::Left,
                 // Keeps the coordinate space its key carries, where
                 // `Cursor` has nowhere to put one.
                 runtime_collab::PresencePayload::Pointer { x, y } => {
                     PresencePayload::Pointer { x, y }
                 }
-                // Cursor is fully handled (and returned) in the outer match
-                // above, so `other` is never actually this variant; `Left`
-                // is a harmless placeholder to keep this match exhaustive
-                // without panicking on a branch that cannot run.
-                runtime_collab::PresencePayload::Cursor { .. } => PresencePayload::Left,
             };
             CollabEvent::RemotePresenceUpdate {
                 user_id: evt.user_id,

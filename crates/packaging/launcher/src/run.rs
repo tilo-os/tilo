@@ -1207,6 +1207,11 @@ fn resolve_identity_broker(
 /// `cli_bin()` (falling back to `bin`) and splices `QOS_CLI_COMMAND` /
 /// forwards passthrough argv. Returns `(argv, extra_setenv, passthrough)`.
 #[allow(clippy::too_many_arguments)]
+/// What an argv builder produces: the bwrap command line, an optional
+/// `(name, value)` environment pair the caller must splice in, and the
+/// trailing arguments passed through to the app.
+type BuiltArgv = (Vec<String>, Option<(String, String)>, Vec<String>);
+
 fn build_initial_argv(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -1216,7 +1221,7 @@ fn build_initial_argv(
     dbus_plan: Option<&DBusBindPlan>,
     identity_arg: Option<&Path>,
     capabilities: &CapabilityPlan,
-) -> Result<(Vec<String>, Option<(String, String)>, Vec<String>), RunError> {
+) -> Result<BuiltArgv, RunError> {
     match &opts.mode {
         LaunchMode::Gui => Ok((
             build_bwrap_argv(
