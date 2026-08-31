@@ -27,7 +27,7 @@ similar = "2.6"
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
 # chooser; on qOS the compositor's portal backend renders qOS's picker. The
 # portal call runs off the UI thread on its own small Tokio runtime and the
-# chosen path is delivered back over a channel (see `app::portal`). An app
+# chosen path is delivered back over a channel from `ui::portal`. An app
 # never draws its own file picker (HIG §5).
 
 [lints]

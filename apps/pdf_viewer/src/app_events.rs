@@ -2188,7 +2188,7 @@ mod event_tests {
 
         // Pre-arm a portal request so applying Open can't launch a real host
         // dialog during the test; the in-flight guard must preserve it.
-        let sentinel = crate::portal::inject_for_test(crate::portal::PortalOutcome::Cancelled);
+        let sentinel = ui::portal::inject_for_test(ui::portal::PortalOutcome::Cancelled);
         app.portal_rx = Some(sentinel);
         app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
         assert!(
@@ -2215,8 +2215,8 @@ mod event_tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/sample.pdf"
         ));
-        app.portal_rx = Some(crate::portal::inject_for_test(
-            crate::portal::PortalOutcome::Opened(path),
+        app.portal_rx = Some(ui::portal::inject_for_test(
+            ui::portal::PortalOutcome::Opened(path),
         ));
 
         // The per-frame sync drains the portal channel and loads the doc.
@@ -2241,8 +2241,8 @@ mod event_tests {
         let (mut app, mut st) = app(); // sample document already loaded
         let before = app.has_document;
         let name_before = app.doc_name.clone();
-        app.portal_rx = Some(crate::portal::inject_for_test(
-            crate::portal::PortalOutcome::Cancelled,
+        app.portal_rx = Some(ui::portal::inject_for_test(
+            ui::portal::PortalOutcome::Cancelled,
         ));
         app.sync(&mut st.doc, &st.root);
         assert_eq!(

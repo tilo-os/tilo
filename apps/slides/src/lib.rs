@@ -42,7 +42,6 @@ pub mod chrome;
 pub mod doc;
 pub mod model;
 pub mod odp;
-pub mod portal;
 mod presentation;
 pub mod render;
 pub mod search_provider;

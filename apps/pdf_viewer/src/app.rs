@@ -23,6 +23,7 @@ use std::time::Duration;
 use ui::Widget;
 use ui::gesture::{DragSelect, Granularity};
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -76,6 +77,35 @@ const RASTER_SS: f64 = 2.0;
 /// are always drawn (a cache hit is ~free), so steady-state scrolling is
 /// unaffected.
 const MAX_NEW_PAGE_RASTERS_PER_FRAME: usize = 1;
+
+fn pdf_filter() -> FileFilter {
+    FileFilter::new("PDF documents").mimetype("application/pdf")
+}
+
+fn pdf_open_request() -> PickRequest {
+    PickRequest::open("Open a PDF", "Open")
+        .thread_name("pdf-portal-open")
+        .filter(pdf_filter())
+        .all_files()
+}
+
+fn pdf_import_request() -> PickRequest {
+    PickRequest::open("Import pages from a PDF or image", "Import")
+        .thread_name("pdf-portal-import")
+        .filter(
+            FileFilter::new("PDF or image")
+                .mimetype("application/pdf")
+                .mimetype("image/png")
+                .mimetype("image/jpeg"),
+        )
+        .all_files()
+}
+
+fn pdf_save_request(suggested_name: &str) -> PickRequest {
+    PickRequest::save("Save annotated PDF", "Save", suggested_name)
+        .thread_name("pdf-portal-save")
+        .filter(pdf_filter())
+}
 /// Same budget for rail thumbnails, which are also full pdfium page renders (a
 /// scanned page's thumbnail can cost 15-30ms). A couple per frame keeps the
 /// rail filling in briskly without the open frame paying for a whole rail-full.
@@ -374,7 +404,7 @@ pub struct PdfApp {
     /// duplicate, import) since the last save — the reader shows a save hint.
     pages_dirty: bool,
     /// An in-flight XDG-portal *import* request (add a PDF/image as pages).
-    portal_import_rx: Option<crate::portal::PortalChannel>,
+    portal_import_rx: Option<PortalChannel>,
     selected_anno: Option<String>,
     /// Active inline text edit (comment body, thread reply, or signer name).
     editing: Option<Editing>,
@@ -456,7 +486,7 @@ pub struct PdfApp {
     /// the next document action.
     status_note: Option<String>,
     /// An in-flight XDG-portal *save* request (mirrors `portal_rx`).
-    portal_save_rx: Option<crate::portal::PortalChannel>,
+    portal_save_rx: Option<PortalChannel>,
 
     // Interaction transients.
     last_mouse: Point,
@@ -494,7 +524,7 @@ pub struct PdfApp {
     /// chosen path back over this channel, which is drained once per frame in
     /// [`Widget::sync`]. `None` when no picker is in flight — the app never
     /// draws its own picker (HIG §5).
-    portal_rx: Option<crate::portal::PortalChannel>,
+    portal_rx: Option<PortalChannel>,
 
     /// When the window is too narrow to reserve space for the side panels,
     /// the rail + sidebar become closed-by-default overlays drawn over the
@@ -1329,7 +1359,7 @@ impl PdfApp {
         if self.portal_import_rx.is_some() {
             return;
         }
-        self.portal_import_rx = Some(crate::portal::request_import());
+        self.portal_import_rx = Some(pdf_import_request().send());
         self.dirty = true;
     }
 
@@ -1341,11 +1371,11 @@ impl PdfApp {
             Ok(outcome) => {
                 self.portal_import_rx = None;
                 match outcome {
-                    crate::portal::PortalOutcome::Opened(path) => {
+                    PortalOutcome::Opened(path) => {
                         self.import_file(&path);
                     }
-                    crate::portal::PortalOutcome::Cancelled => {}
-                    crate::portal::PortalOutcome::Failed(reason) => {
+                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Failed(reason) => {
                         self.status_note =
                             Some(format!("Couldn't open the import dialog: {reason}"));
                         self.dirty = true;
@@ -1669,7 +1699,7 @@ impl PdfApp {
         if self.portal_save_rx.is_some() {
             return;
         }
-        self.portal_save_rx = Some(crate::portal::request_save(&self.suggested_save_name()));
+        self.portal_save_rx = Some(pdf_save_request(&self.suggested_save_name()).send());
         self.dirty = true;
     }
 
@@ -1683,12 +1713,12 @@ impl PdfApp {
             Ok(outcome) => {
                 self.portal_save_rx = None;
                 match outcome {
-                    crate::portal::PortalOutcome::Opened(path) => {
+                    PortalOutcome::Opened(path) => {
                         let path = ensure_pdf_extension(path);
                         self.save_annotated_to(&path);
                     }
-                    crate::portal::PortalOutcome::Cancelled => {}
-                    crate::portal::PortalOutcome::Failed(reason) => {
+                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Failed(reason) => {
                         self.status_note = Some(format!("Couldn't open the save dialog: {reason}"));
                         self.dirty = true;
                     }
@@ -2309,7 +2339,7 @@ impl PdfApp {
 
     /// Ask the host desktop's file chooser to open a PDF. Per HIG §5 the app
     /// never draws its own picker: the portal round-trip runs on a worker
-    /// thread ([`crate::portal::request_open`]) and the chosen path comes back
+    /// thread ([`ui::portal::PickRequest`]) and the chosen path comes back
     /// over a channel drained each frame in [`Self::drain_portal`]. A second
     /// request while one is in flight is ignored, so a double-click on the
     /// Open button can't stack two host dialogs.
@@ -2317,7 +2347,7 @@ impl PdfApp {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(crate::portal::request_open());
+        self.portal_rx = Some(pdf_open_request().send());
         self.dirty = true;
     }
 
@@ -2333,10 +2363,10 @@ impl PdfApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    crate::portal::PortalOutcome::Opened(path) => self.load_path(&path, state),
+                    PortalOutcome::Opened(path) => self.load_path(&path, state),
                     // A cancel is not an error — leave the current view intact.
-                    crate::portal::PortalOutcome::Cancelled => {}
-                    crate::portal::PortalOutcome::Failed(reason) => {
+                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Failed(reason) => {
                         if !self.has_document {
                             self.load_error =
                                 Some(format!("Couldn't open the file chooser: {reason}"));

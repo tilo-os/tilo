@@ -40,7 +40,6 @@ pub mod app;
 pub mod date;
 pub mod doc;
 pub mod model;
-pub mod portal;
 mod priority_contacts;
 pub mod responsive;
 pub mod search_provider;

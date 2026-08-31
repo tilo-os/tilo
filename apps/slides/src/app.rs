@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::mpsc::TryRecvError;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
@@ -22,6 +23,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::text_selection::{
@@ -43,13 +45,91 @@ use crate::model::{
     Background, Deck, Element, ElementKind, FILL_ROLES, Id, Layout, Palette, PaletteKind, SLIDE_H,
     SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, seed_deck, starter_deck,
 };
-use crate::portal;
 use crate::presentation::{Blank, Command as PresentCommand, Presentation};
 use crate::render;
 use crate::toolbar_tools::{MenuPress, ToolbarTools, ToolbarToolsLayout};
 
 /// Logical pixels scrolled per mouse-wheel line notch.
 const WHEEL_LINE_PX: f64 = 48.0;
+
+fn image_open_request() -> PickRequest {
+    PickRequest::open("Insert image", "Insert")
+        .thread_name("slides-portal-open")
+        .filter(
+            FileFilter::new("Images")
+                .glob("*.png")
+                .glob("*.jpg")
+                .glob("*.jpeg")
+                .glob("*.gif")
+                .glob("*.webp")
+                .glob("*.bmp")
+                .glob("*.svg"),
+        )
+        .all_files()
+}
+
+fn presentation_filter() -> FileFilter {
+    FileFilter::new("Presentations").glob("*.odp")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DocOutcome {
+    Open(PathBuf),
+    Save(PathBuf),
+    Cancelled,
+    Failed(String),
+}
+
+struct DocPortalChannel {
+    rx: PortalChannel,
+    save: bool,
+}
+
+impl DocPortalChannel {
+    fn try_recv(&self) -> Result<DocOutcome, TryRecvError> {
+        self.rx.try_recv().map(|outcome| match outcome {
+            PortalOutcome::Opened(path) if self.save => DocOutcome::Save(path),
+            PortalOutcome::Opened(path) => DocOutcome::Open(path),
+            PortalOutcome::Cancelled => DocOutcome::Cancelled,
+            PortalOutcome::Failed(error) => DocOutcome::Failed(error),
+        })
+    }
+}
+
+fn open_document_request() -> DocPortalChannel {
+    DocPortalChannel {
+        rx: PickRequest::open("Open presentation", "Open")
+            .thread_name("slides-portal-open-doc")
+            .filter(presentation_filter())
+            .all_files()
+            .send(),
+        save: false,
+    }
+}
+
+fn save_document_request(suggested_name: &str) -> DocPortalChannel {
+    DocPortalChannel {
+        rx: PickRequest::save("Save presentation", "Save", suggested_name)
+            .thread_name("slides-portal-save-doc")
+            .filter(presentation_filter())
+            .send(),
+        save: true,
+    }
+}
+
+#[cfg(test)]
+fn inject_doc_for_test(outcome: DocOutcome) -> DocPortalChannel {
+    let (outcome, save) = match outcome {
+        DocOutcome::Open(path) => (PortalOutcome::Opened(path), false),
+        DocOutcome::Save(path) => (PortalOutcome::Opened(path), true),
+        DocOutcome::Cancelled => (PortalOutcome::Cancelled, false),
+        DocOutcome::Failed(error) => (PortalOutcome::Failed(error), false),
+    };
+    DocPortalChannel {
+        rx: ui::portal::inject_for_test(outcome),
+        save,
+    }
+}
 
 const TOOLBAR_H: f64 = 56.0;
 const RAIL_W: f64 = 212.0;
@@ -462,11 +542,11 @@ pub struct SlidesApp {
     /// file chooser is open on a worker thread; the chosen path arrives over
     /// this channel and is drained each frame in [`SlidesApp::drain_portal`].
     /// `None` when idle. Per-peer/transient (not CRDT).
-    portal_rx: Option<portal::PortalChannel>,
+    portal_rx: Option<PortalChannel>,
     /// An in-flight host file open/save for `.odp` documents. Same
     /// worker-thread/channel contract as [`Self::portal_rx`]; `save` carries
     /// the deck bytes to write once the user names a destination.
-    doc_portal_rx: Option<portal::DocPortalChannel>,
+    doc_portal_rx: Option<DocPortalChannel>,
 
     /// Right-click context menu (element / slide actions) — the shared
     /// [`ui::widget::ContextMenu`] primitive, driven standalone. `ctx_hits`
@@ -2274,7 +2354,7 @@ impl SlidesApp {
 
     /// Ask the host desktop's file chooser to pick an image, via the XDG
     /// Desktop Portal. Per HIG §5 the app never draws its own picker: the
-    /// portal round-trip runs on a worker thread ([`portal::request_open`]) and
+    /// portal round-trip runs on a worker thread ([`ui::portal::PickRequest`]) and
     /// the chosen path comes back over a channel drained each frame in
     /// [`Self::drain_portal`]. A second request while one is in flight is
     /// ignored, so a double-click can't stack two host dialogs.
@@ -2282,7 +2362,7 @@ impl SlidesApp {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(portal::request_open());
+        self.portal_rx = Some(image_open_request().send());
     }
 
     /// Ask the host to pick a `.odp` presentation to open (Ctrl+O). The chosen
@@ -2292,7 +2372,7 @@ impl SlidesApp {
         if self.doc_portal_rx.is_some() {
             return;
         }
-        self.doc_portal_rx = Some(portal::request_open_document());
+        self.doc_portal_rx = Some(open_document_request());
     }
 
     /// Ask the host where to save the current deck as a `.odp` (Ctrl+S).
@@ -2301,7 +2381,7 @@ impl SlidesApp {
             return;
         }
         let name = format!("{}.odp", sanitize_filename(&self.deck.title));
-        self.doc_portal_rx = Some(portal::request_save_document(&name));
+        self.doc_portal_rx = Some(save_document_request(&name));
     }
 
     /// Drain a completed `.odp` open/save request, loading or writing the deck.
@@ -2314,13 +2394,13 @@ impl SlidesApp {
             Ok(outcome) => {
                 self.doc_portal_rx = None;
                 match outcome {
-                    portal::DocOutcome::Open(path) => {
+                    DocOutcome::Open(path) => {
                         self.load_odp(doc, &path);
                     }
-                    portal::DocOutcome::Save(path) => {
+                    DocOutcome::Save(path) => {
                         self.save_odp(&path);
                     }
-                    portal::DocOutcome::Cancelled | portal::DocOutcome::Failed(_) => {}
+                    DocOutcome::Cancelled | DocOutcome::Failed(_) => {}
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -2374,10 +2454,10 @@ impl SlidesApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    portal::PortalOutcome::Opened(path) => self.insert_image_from_path(doc, &path),
+                    PortalOutcome::Opened(path) => self.insert_image_from_path(doc, &path),
                     // A cancel or a portal failure is not a bug — leave the deck
                     // untouched (we never fabricate a placeholder element).
-                    portal::PortalOutcome::Cancelled | portal::PortalOutcome::Failed(_) => {}
+                    PortalOutcome::Cancelled | PortalOutcome::Failed(_) => {}
                 }
             }
             // Still waiting on the host dialog, or the worker vanished.
@@ -8276,9 +8356,9 @@ mod tests {
         // Feed the exact per-frame drain path a chosen-file outcome and confirm
         // it lands a real image element (with its src) in the CRDT.
         let path = write_png("slides-unit-insert.png", 12, 8);
-        app.portal_rx = Some(crate::portal::inject_for_test(
-            crate::portal::PortalOutcome::Opened(path.clone()),
-        ));
+        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
+            path.clone(),
+        )));
         app.drain_portal(&mut doc);
         assert!(
             app.portal_rx.is_none(),
@@ -8316,9 +8396,7 @@ mod tests {
         app.reload(&doc);
         let before = app.slide().map_or(0, |s| s.elements.len());
 
-        app.portal_rx = Some(crate::portal::inject_for_test(
-            crate::portal::PortalOutcome::Cancelled,
-        ));
+        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
         app.drain_portal(&mut doc);
         assert!(
             app.portal_rx.is_none(),
@@ -8570,9 +8648,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
         app.reload(&doc);
-        app.doc_portal_rx = Some(crate::portal::inject_doc_for_test(
-            crate::portal::DocOutcome::Open(path),
-        ));
+        app.doc_portal_rx = Some(inject_doc_for_test(DocOutcome::Open(path)));
         app.drain_doc_portal(&mut doc);
         assert!(
             app.doc_portal_rx.is_none(),
