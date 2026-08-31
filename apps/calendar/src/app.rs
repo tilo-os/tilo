@@ -4472,13 +4472,19 @@ impl CalendarApp {
             false,
         );
         hits.push((rec_chip, Action::CycleRecurrence));
-        #[allow(clippy::similar_names, reason = "rem_label and rem_chip serve distinct purposes")]
+        #[allow(
+            clippy::similar_names,
+            reason = "rem_label and rem_chip serve distinct purposes"
+        )]
         let rem_label = match e.reminder_min {
             None => "No reminder".to_string(),
             Some(m) if m >= 60 => format!("⏰ {}h before", m / 60),
             Some(m) => format!("⏰ {m}m before"),
         };
-        #[allow(clippy::similar_names, reason = "rem_label and rem_chip serve distinct purposes")]
+        #[allow(
+            clippy::similar_names,
+            reason = "rem_label and rem_chip serve distinct purposes"
+        )]
         let rem_chip = chip(
             scene,
             t,

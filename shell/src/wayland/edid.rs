@@ -74,7 +74,10 @@ impl HdrDisplayInfo {
 /// [`HdrDisplayInfo::default_sdr`] when the blob is too small or the
 /// CTA-861 extension block doesn't contain an HDR Static Metadata
 /// data block.
-#[allow(clippy::similar_names, reason = "R/G/B/W xy component names come from the EDID 1.4 chromaticity layout")]
+#[allow(
+    clippy::similar_names,
+    reason = "R/G/B/W xy component names come from the EDID 1.4 chromaticity layout"
+)]
 pub fn parse_hdr_display_info(edid: &[u8]) -> HdrDisplayInfo {
     let mut info = HdrDisplayInfo::default_sdr();
     // A fixed-size view, so every constant index below is in bounds by type
@@ -302,7 +305,10 @@ mod tests {
     /// Constructed by hand rather than copied from a real device
     /// dump so the fields we test on are deterministic and legally
     /// clear. Layout follows VESA E-EDID 1.4 + CTA-861-G exactly.
-    #[allow(clippy::similar_names, reason = "R/G/B/W xy component names come from the EDID 1.4 chromaticity layout")]
+    #[allow(
+        clippy::similar_names,
+        reason = "R/G/B/W xy component names come from the EDID 1.4 chromaticity layout"
+    )]
     fn hdr_edid_blob() -> [u8; 256] {
         // Split a 10-bit chromaticity value into its (low 2, high 8) bit halves.
         fn split(v: u16) -> (u8, u8) {
