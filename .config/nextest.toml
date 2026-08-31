@@ -33,9 +33,11 @@ gpu-golden = { max-threads = 1 }
 
 # Golden images must be rendered one at a time across *all* test binaries.
 # A Rust mutex cannot provide that guarantee because nextest launches each
-# test in its own process. Concurrent llvmpipe/Vulkan contexts have produced
-# both small nondeterministic pixel deltas and Mesa crashes; serialization is
-# cheap here because this is a tiny tail of the otherwise-parallel suite.
+# test in its own process. The group serializes goldens with one another, but
+# it is not exclusive of ordinary tests. CI therefore removes this filter from
+# its parallel suites and runs it as an isolated nightly tail; the group still
+# protects that tail and direct/local nextest invocations from multiple Vulkan
+# contexts racing one another.
 [[profile.default.overrides]]
 filter = '(package(ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))'
 test-group = "gpu-golden"
