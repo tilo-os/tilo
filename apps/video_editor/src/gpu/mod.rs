@@ -1624,6 +1624,50 @@ mod tests {
         );
     }
 
+    /// Reusing the readback buffer must not change a single pixel, including
+    /// across a change of output size.
+    ///
+    /// The buffer the finished frame is copied into is kept between frames
+    /// rather than rebuilt, because an export allocates and frees 8 MB per
+    /// frame otherwise. The risk that buys is staleness: a buffer sized for
+    /// one output serving another would read back the wrong rows, or read
+    /// somebody else's leftovers into the picture. So render the same frame
+    /// at two sizes, alternating, and require each to be identical to what a
+    /// compositor that had only ever seen that size produces.
+    #[test]
+    #[serial_test::serial(video_editor_gst)]
+    fn a_reused_readback_buffer_returns_the_same_picture() {
+        let p = crate::doc::sample_project();
+        let small = (160u32, 90u32);
+        let large = (320u32, 180u32);
+
+        // References, each from a compositor that has seen one size only.
+        let want_small = compositor().frame(&p, 6.0, small.0, small.1, &mut NoSources);
+        let want_large = compositor().frame(&p, 6.0, large.0, large.1, &mut NoSources);
+        assert_eq!(want_small.len(), (small.0 * small.1 * 4) as usize);
+        assert_eq!(want_large.len(), (large.0 * large.1 * 4) as usize);
+        assert!(
+            want_small.iter().any(|&b| b != 0),
+            "the reference frame is blank, so comparing against it proves nothing",
+        );
+
+        // One compositor, alternating sizes, so the buffer is reused within a
+        // size and rebuilt across one.
+        let mut c = compositor();
+        for round in 0..3 {
+            let got_small = c.frame(&p, 6.0, small.0, small.1, &mut NoSources);
+            assert_eq!(
+                got_small, want_small,
+                "round {round}: the small frame differs after the buffer was reused",
+            );
+            let got_large = c.frame(&p, 6.0, large.0, large.1, &mut NoSources);
+            assert_eq!(
+                got_large, want_large,
+                "round {round}: the large frame differs after the buffer was resized",
+            );
+        }
+    }
+
     /// A file the decoder can never read is given up on, rather than retried
     /// for the life of the editor.
     ///
