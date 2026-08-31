@@ -53,3 +53,17 @@ test-group = "compositor"
 [[profile.ci.overrides]]
 filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
 test-group = "compositor"
+
+# This is a real-time codec budget test: it must decode at least 30 frames in
+# three wall-clock seconds while keeping every frame below the latency ceiling.
+# Letting the rest of the suite contend for its CPU makes the result measure
+# nextest scheduling pressure rather than the share pipeline. Requiring every
+# test thread gives the benchmark a controlled local CPU budget without
+# relaxing either performance assertion.
+[[profile.default.overrides]]
+filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
+threads-required = "num-cpus"
+
+[[profile.ci.overrides]]
+filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
+threads-required = "num-cpus"
