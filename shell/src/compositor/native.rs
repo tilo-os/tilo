@@ -585,6 +585,7 @@ impl ControlState for FrameBuilderControlState<'_> {
     fn chrome_state_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         let overlays = &chrome.overlays;
+        let peer_sync = self.fb.host().peer_sync_snapshot();
         serde_json::json!({
             "overlays": {
                 "overview": overlays.overview,
@@ -620,13 +621,13 @@ impl ControlState for FrameBuilderControlState<'_> {
                 .is_some_and(|ws| ws.may_administer(&chrome.local_user_for_room(&ws.room))),
             // The peer-sync card's contents — the invite token, exposed for scripts as it is on screen.
             "peer_sync": {
-                "invite_token": chrome.peer_sync_invite_token,
-                "connect_input": chrome.peer_sync_connect_input,
-                "status": chrome.peer_sync_status,
+                "invite_token": peer_sync.invite_token,
+                "connect_input": peer_sync.connect_input,
+                "status": peer_sync.status,
                 // The invite composer: what's typed into "who are you inviting?", and who
                 // the on-screen token was minted for — the same two facts the card shows.
-                "invite_name": chrome.peer_sync_invite_name,
-                "invite_for": chrome.peer_sync_invite_for,
+                "invite_name": peer_sync.invite_name,
+                "invite_for": peer_sync.invite_for,
             },
             // Whether apps can share edits at all, and why not when they can't — else
             // a harness can't tell "off" from "on and idle".

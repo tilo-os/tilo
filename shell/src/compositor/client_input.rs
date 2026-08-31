@@ -808,6 +808,7 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().file_picker().is_some() {
         return true;
     }
+    let peer_sync_visible = fb.host().peer_sync_card_visible();
     let chrome = fb.chrome();
     chrome.overlays.overview
         || chrome.overlays.quick_settings
@@ -818,9 +819,7 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
         // paints it from — its handler runs before every other overlay,
         // but this predicate decides whether an event reaches it. Without
         // it, a card raised over a focused client sent its Escape to the client, undismissable, with a live invite token exposed.
-        || chrome.peer_sync_invite_token.is_some()
-        || chrome.peer_sync_connect_input.is_some()
-        || chrome.peer_sync_invite_name.is_some()
+        || peer_sync_visible
         || chrome.editing_workspace_name.is_some()
         || !chrome.pending_grants.is_empty()
 }
@@ -2358,13 +2357,17 @@ mod tests {
                 "nothing is up yet, so a client should still own the keyboard"
             );
 
-            fb.with_chrome(|chrome| {
-                match field {
-                    "invite_token" => chrome.peer_sync_invite_token = Some("a-signed-blob".into()),
-                    _ => chrome.peer_sync_connect_input = Some(String::new()),
-                }
-                chrome.bump();
-            });
+            let snapshot = match field {
+                "invite_token" => crate::shell::overlay_host::PeerSyncSnapshot {
+                    invite_token: Some("a-signed-blob".into()),
+                    ..Default::default()
+                },
+                _ => crate::shell::overlay_host::PeerSyncSnapshot {
+                    connect_input: Some(String::new()),
+                    ..Default::default()
+                },
+            };
+            fb.host_mut().set_peer_sync_snapshot_for_tests(snapshot);
             let _ = fb.paint_settled();
 
             assert!(

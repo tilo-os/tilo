@@ -330,22 +330,6 @@ pub struct ChromeState {
     /// rewrites every frame — a value parked there by Expand would be
     /// wiped on the next tick. Both feed [`Self::is_fullscreen`].
     maximized_group: Option<u64>,
-    /// Shown on screen so anyone checking the command did anything
-    /// can see it even without a clipboard (headless sessions have
-    /// none).
-    pub peer_sync_invite_token: Option<String>,
-    /// `Some` means the `/connect` token prompt is open; an overlay
-    /// rather than a widget since it owns the keyboard outright.
-    pub peer_sync_connect_input: Option<String>,
-    /// "Who are you inviting?" — asked before minting, since the
-    /// answer is what the room will call them.
-    pub peer_sync_invite_name: Option<String>,
-    /// Who [`Self::peer_sync_invite_token`] was minted for, so the
-    /// card can show a name instead of a base64 token.
-    pub peer_sync_invite_for: Option<String>,
-    /// The room joined, or why the token was refused — rendered under
-    /// the prompt.
-    pub peer_sync_status: Option<String>,
     /// Whether the palette should offer invite/connect commands.
     /// Mirrored from the overlay host's own flag.
     pub peer_sync_enabled: bool,
@@ -413,11 +397,6 @@ impl ChromeState {
             session_locked: false,
             fullscreen_group: None,
             maximized_group: None,
-            peer_sync_invite_token: None,
-            peer_sync_connect_input: None,
-            peer_sync_invite_name: None,
-            peer_sync_invite_for: None,
-            peer_sync_status: None,
             peer_sync_enabled: false,
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
