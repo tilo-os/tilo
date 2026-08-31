@@ -771,8 +771,8 @@ mod tests {
     /// screen.
     #[test]
     fn ptcl_floor_covers_a_clipped_foreign_surface_composite_first_frame() {
-        let width_in_tiles = 1600u32.div_ceil(16);
-        let height_in_tiles = 900u32.div_ceil(16);
+        let width_in_tiles = 1600_u32.div_ceil(16);
+        let height_in_tiles = 900_u32.div_ceil(16);
         let n_tiles = width_in_tiles * height_in_tiles;
         // BumpAllocators.ptcl measured on that frame; already excludes
         // the structural `n_tiles * PTCL_INITIAL_ALLOC` term (see
@@ -799,7 +799,7 @@ mod tests {
     /// likely to be measured and most likely to be somebody's actual desktop.
     #[test]
     fn lines_floor_scales_with_the_viewport_it_has_to_cover() {
-        let n_tiles = 1920u32.div_ceil(16) * 1080u32.div_ceil(16);
+        let n_tiles = 1920_u32.div_ceil(16) * 1080_u32.div_ceil(16);
         let measured_lines = 105_450;
         let floor = BumpBudget::floor_for_viewport(n_tiles);
         assert!(
@@ -810,7 +810,7 @@ mod tests {
         );
         // And the viewport is what decides: a desktop must reserve more than a
         // small window, or the floor is flat in disguise.
-        let small = BumpBudget::floor_for_viewport(320u32.div_ceil(16) * 240u32.div_ceil(16));
+        let small = BumpBudget::floor_for_viewport(320_u32.div_ceil(16) * 240_u32.div_ceil(16));
         assert!(
             floor.lines > small.lines,
             "a desktop reserves {} lines and a 320x240 window {} -- the floor is not \
