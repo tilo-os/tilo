@@ -154,7 +154,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
 
     // Local typed collaboration broker, held for the lifetime of `app.run()`.
     // When peer sync is enabled it also bridges app changes between machines.
-    let _collab_broker = spawn_collab_broker(peer_sync.as_ref());
+    let _collab_broker = spawn_collab_broker(peer_sync.as_ref(), tree_handle.clone());
 
     let identity_socket = launcher::services::identity_socket();
     let _identity_broker = if std::os::unix::net::UnixStream::connect(&identity_socket).is_ok() {
@@ -229,12 +229,13 @@ fn adopt_tree_ownership(tree: &mut WorkspaceTree) {
         );
     }
 
-    // Someone has to own each room or nobody can grant anything in it; workspaces restored from a state file written before ownership existed carry no owner, so the local user adopts them here.
-    let local_user = crate::shell::state::local_user_id();
-    let adopted = tree.adopt_ownerless_workspaces(&local_user);
+    // Someone has to own each room or nobody can grant anything in it.
+    // Resolve per room so hosted mode uses the same selected identity that
+    // its certified collaboration join presents.
+    let adopted = tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
     if !adopted.is_empty() {
         tracing::info!(
-            "capabilities: {} workspace(s) adopted by {local_user}",
+            "capabilities: {} workspace(s) adopted by their selected identities",
             adopted.len()
         );
     }
@@ -462,11 +463,16 @@ fn bring_up_portal(
 /// peer sync is enabled it also bridges app changes between machines.
 fn spawn_collab_broker(
     peer_sync: Option<&Arc<ShellNetwork>>,
+    membership: crate::shell::state::WorkspaceTreeHandle,
 ) -> Option<crate::shell::collab_broker::BrokerHandle> {
     let path = std::env::var_os("QUICK_COLLAB_CAPNP_SOCK")?;
     let socket_path = std::path::PathBuf::from(path);
     let peer_sync_owned = peer_sync.cloned();
-    match crate::shell::collab_broker::spawn_native(socket_path.clone(), &peer_sync_owned) {
+    match crate::shell::collab_broker::spawn_native(
+        socket_path.clone(),
+        &peer_sync_owned,
+        membership,
+    ) {
         Ok(handle) => {
             tracing::info!(
                 "collab_broker: bound {} (capnp) — peer_sync={}",

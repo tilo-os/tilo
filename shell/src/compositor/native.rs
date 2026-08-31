@@ -1702,7 +1702,12 @@ fn spawn_session_collab_broker(
     }
 
     let peer_sync_owned = peer_sync.cloned();
-    match crate::shell::collab_broker::spawn_native(capnp_path.clone(), &peer_sync_owned) {
+    let membership = chrome.borrow().tree_handle();
+    match crate::shell::collab_broker::spawn_native(
+        capnp_path.clone(),
+        &peer_sync_owned,
+        membership,
+    ) {
         Ok(handle) => {
             tracing::info!(
                 "collab: typed broker listening on {} — peer_sync={}",
