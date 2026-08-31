@@ -35,6 +35,12 @@ fn label(scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, s: &str, x: f6
     );
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "a shots scene is a straight-line recipe — build the widgets, lay them \
+              out, paint, save. Splitting it hides the order the frames are produced \
+              in, which is the one thing this file exists to show"
+)]
 pub fn run(_args: &[String]) {
     let dir = std::env::var("TEXTINPUT_EXT_SHOTS_OUT")
         .unwrap_or_else(|_| "target/textinput_ext_shots".to_string());
@@ -189,10 +195,9 @@ pub fn run(_args: &[String]) {
     let mut fields: Vec<_> = specs
         .iter()
         .map(|(_, kind, value)| {
-            let input = TextInput::local()
+            TextInput::local()
                 .with_kind(*kind)
-                .with_initial_value(*value);
-            input
+                .with_initial_value(value)
         })
         .collect();
     if let Some(first) = fields.first_mut() {
@@ -224,7 +229,7 @@ pub fn run(_args: &[String]) {
         None,
     );
     for (index, ((caption, _, _), input)) in specs.iter().zip(fields.iter_mut()).enumerate() {
-        let y = 88.0 + index as f64 * 72.0;
+        let y = 88.0 + f64::from(u32::try_from(index).unwrap_or(u32::MAX)) * 72.0;
         label(&mut scene4, &mut tr, &theme, caption, 32.0, y);
         input.apply_layout_external(Rect::new(180.0, y - 12.0, 646.0, y + 30.0));
         input.draw(&mut scene4, Affine::IDENTITY, &mut tr, &theme, &presence);

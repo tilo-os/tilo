@@ -152,6 +152,22 @@ jobs:
           bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
           cargo check --locked --all-targets ${{ matrix.packages }}
 
+      # The workspace lints are `deny`, so this fails on the first new
+      # violation rather than letting one land and be found by the weekly
+      # ratchet up to six days later. It reuses the rlibs the two steps above
+      # just built, so the marginal cost is clippy's own analysis.
+      #
+      # The pre-commit hook runs the same lints on the crates a commit
+      # touches, but a hook is per-clone and `--no-verify`-able. This is the
+      # gate that actually holds.
+      - name: Clippy shard ${{ matrix.shard }}
+        env:
+          XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+        run: >-
+          bash tools/ci-measure.sh "clippy shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "cargo clippy (affected shard ${{ matrix.shard }})" --
+          cargo clippy --locked --all-targets ${{ matrix.packages }}
+
       - name: Report remote compiler-cache effectiveness
         if: always()
         run: |
