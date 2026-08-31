@@ -4,7 +4,7 @@
 //!
 //! A check that quietly passes when it could not observe the thing it claims
 //! to check is worthless — it reads exactly like a real pass. So nothing here
-//! returns "skipped": a missing clip, a GStreamer that will not initialise, or
+//! returns "skipped": a missing clip, a `GStreamer` that will not initialise, or
 //! a pipeline that produces no frame all **fail**, with a message saying what
 //! was missing.
 //!
@@ -15,13 +15,20 @@
 //! conclusion the test proves and prints, never an assumption it makes to get
 //! out of asserting.
 
+// Everything below is reached only from the decode-gated test modules, so it
+// carries the same gate they do: without it a hermetic build (no gstreamer dev
+// stack, `--features decode` off) compiles a fixture loader nothing can call
+// and warns about every item in the file.
+#[cfg(feature = "decode")]
 use std::path::PathBuf;
 
 /// Frames per second of the fixture clip.
+#[cfg(feature = "decode")]
 pub const FIXTURE_FPS: f64 = 30.0;
 
 /// One frame interval, milliseconds. A seek that lands within this of its
 /// target landed on the right picture.
+#[cfg(feature = "decode")]
 pub const FRAME_MS: u64 = 33;
 
 /// The fixture's keyframe interval. Verified with
@@ -32,9 +39,11 @@ pub const FRAME_MS: u64 = 33;
 /// time in the middle of a GOP cannot do better than the nearest of those, so
 /// the difference between snapping and decoding to the target is measured in
 /// **seconds**, not milliseconds.
+#[cfg(feature = "decode")]
 pub const FIXTURE_GOP_MS: u64 = 8_333;
 
 /// The fixture clip: 1080p H.264 in MP4, 30fps, 57.2s, 1717 frames.
+#[cfg(feature = "decode")]
 pub fn fixture_path() -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../.claude/demo-artifacts/qos-demo-57s.mp4");
@@ -45,6 +54,7 @@ pub fn fixture_path() -> PathBuf {
 
 /// The fixture, failing loudly if it is not there. A decode test with no clip
 /// has observed nothing and must not report success.
+#[cfg(feature = "decode")]
 pub fn require_fixture() -> PathBuf {
     let p = fixture_path();
     assert!(
@@ -58,6 +68,7 @@ pub fn require_fixture() -> PathBuf {
 }
 
 /// The fixture as a [`media::Source`].
+#[cfg(feature = "decode")]
 pub fn fixture_source() -> media::Source {
     media::Source::LocalFile(require_fixture())
 }

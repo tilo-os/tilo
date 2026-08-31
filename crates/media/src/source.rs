@@ -118,7 +118,7 @@ impl Source {
 ///
 /// A relative path is resolved against the current directory first. `file://`
 /// requires an absolute path — the text after the `//` is a *hostname*, so
-/// `file://clips/a.mp4` names a host called `clips`, which every GStreamer
+/// `file://clips/a.mp4` names a host called `clips`, which every `GStreamer`
 /// source element rejects ("the hostname of the URI is invalid"). Resolving
 /// here turns a silently unplayable source into a working one.
 pub fn path_to_file_uri(path: &Path) -> String {
@@ -126,9 +126,7 @@ pub fn path_to_file_uri(path: &Path) -> String {
     let path = if path.is_absolute() {
         path
     } else {
-        absolute = std::env::current_dir()
-            .map(|d| d.join(path))
-            .unwrap_or_else(|_| path.to_path_buf());
+        absolute = std::env::current_dir().map_or_else(|_| path.to_path_buf(), |d| d.join(path));
         &absolute
     };
     let s = path.to_string_lossy();
