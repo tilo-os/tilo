@@ -43,7 +43,7 @@ grep -q "listening on 127.0.0.1:17000" "$receiver_log"
 set +e
 DOUBLETAKE_CODE=4821 timeout --signal=TERM 12s \
   "$sender_bin" -target 127.0.0.1 -port 17000 \
-  -test -no-audio -hwaccel openh264 -fps 30 \
+  -test -no-audio -hwaccel openh264 -fps 30 -debug \
   -creds "$test_root/pairing.json" >"$sender_log" 2>&1
 sender_status=$?
 set -e
