@@ -1400,7 +1400,9 @@ impl BooksApp {
         }
         self.book_idx = i.min(self.library.len() - 1);
         self.view = View::Reader;
-        let id = self.library[self.book_idx].id.clone();
+        let Some(id) = self.library.get(self.book_idx).map(|b| b.id.clone()) else {
+            return;
+        };
         let mut p = BooksDoc::read_progress(doc, &id);
         let nchap = self.num_chapters().saturating_sub(1);
         self.chapter = p.chapter.min(nchap);
@@ -1716,8 +1718,9 @@ impl BooksApp {
         if !shown.is_empty() {
             let cur = self.active_font().id;
             let idx = shown.iter().position(|f| f.id == cur).unwrap_or(0);
-            let next = shown[(idx + 1) % shown.len()].id.clone();
-            self.bump_setting(doc, |s| s.font_id = next);
+            if let Some(next) = shown.get((idx + 1) % shown.len()).map(|f| f.id.clone()) {
+                self.bump_setting(doc, |s| s.font_id = next);
+            }
         }
     }
 
@@ -2018,7 +2021,8 @@ impl BooksApp {
             .schemes
             .iter()
             .find(|s| s.id == id)
-            .map_or([0x80, 0x80, 0x80], |s| s.slots()[slot].1);
+            .and_then(|s| s.slots().get(slot).map(|&(_, c)| c))
+            .unwrap_or([0x80, 0x80, 0x80]);
         self.color_picker.open(PickTarget::Slot(id, slot), cur);
     }
 
@@ -2271,7 +2275,8 @@ impl BooksApp {
             .or_else(|| self.fonts.iter().find(|f| f.id == "serif"))
             .or_else(|| self.fonts.first())
             .cloned()
-            .unwrap_or_else(|| default_fonts()[0].clone())
+            .or_else(|| default_fonts().first().cloned())
+            .unwrap_or_else(|| FontEntry::new("default", FontKind::Default, "Default", 1.0, true))
     }
 
     /// The fonts offered in the quick display-settings picker.
@@ -3084,6 +3089,15 @@ impl Widget for BooksApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
+        // cannot actually return `Err` for a fresh leaf (see the
+        // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
+        // `Widget::build_layout` returns a bare `NodeId` across every
+        // implementor, so there is nowhere to surface a theoretical error.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -3098,7 +3112,7 @@ impl Widget for BooksApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -3303,7 +3317,7 @@ impl BooksApp {
         let settings_actions = self.reading_settings.handle_event(
             event,
             scale_factor,
-            &modifiers,
+            modifiers,
             doc,
             path,
             node_id,
@@ -4753,21 +4767,35 @@ impl BooksApp {
     /// key (ties broken by title so the order is stable).
     fn shelf_display_order(&self, lib: &[Book]) -> Vec<usize> {
         use crate::model::LibrarySort;
-        let frac = |i: usize| self.shelf_fraction.get(&lib[i].id).copied().unwrap_or(0.0);
-        let opened = |i: usize| self.shelf_opened.get(&lib[i].id).copied().unwrap_or(0);
-        let title = |i: usize| lib[i].title.to_lowercase();
+        // `i`/`a`/`b` below are always drawn from `0..lib.len()` (or from
+        // `idx`, which is built from that same range), so every lookup is
+        // in-bounds by construction — `.get()` still keeps the closures
+        // panic-free for clippy without depending on that invariant.
+        let frac = |i: usize| {
+            lib.get(i).map_or(0.0, |b| {
+                self.shelf_fraction.get(&b.id).copied().unwrap_or(0.0)
+            })
+        };
+        let opened = |i: usize| {
+            lib.get(i)
+                .map_or(0, |b| self.shelf_opened.get(&b.id).copied().unwrap_or(0))
+        };
+        let title = |i: usize| {
+            lib.get(i)
+                .map_or_else(String::new, |b| b.title.to_lowercase())
+        };
+        let author = |i: usize| {
+            lib.get(i)
+                .map_or_else(String::new, |b| b.author.to_lowercase())
+        };
         let mut idx: Vec<usize> = (0..lib.len())
             .filter(|&i| !self.library_prefs.hide_read || frac(i) < 0.985)
             .collect();
         match self.library_prefs.sort {
             LibrarySort::Title => idx.sort_by_key(|&a| title(a)),
-            LibrarySort::Author => idx.sort_by(|&a, &b| {
-                lib[a]
-                    .author
-                    .to_lowercase()
-                    .cmp(&lib[b].author.to_lowercase())
-                    .then(title(a).cmp(&title(b)))
-            }),
+            LibrarySort::Author => {
+                idx.sort_by(|&a, &b| author(a).cmp(&author(b)).then(title(a).cmp(&title(b))));
+            }
             LibrarySort::Recent => {
                 idx.sort_by(|&a, &b| opened(b).cmp(&opened(a)).then(title(a).cmp(&title(b))));
             }
@@ -5214,12 +5242,12 @@ impl BooksApp {
         // Plus mark inside a soft accent disc.
         let disc_cx = x + w / 2.0;
         let disc_cy = y + cover_h * 0.40;
-        let disc_r = 24.0;
+        let disc_radius = 24.0;
         paint::circle(
             scene,
             t,
             Point::new(disc_cx, disc_cy),
-            disc_r,
+            disc_radius,
             theme.accent_primary.with_alpha_factor(0.16),
         );
         paint::plus(
@@ -5237,13 +5265,16 @@ impl BooksApp {
 
         // Title + hint, centred under the mark.
         let title = "Add a book";
-        let (title_w, _) = tr.measure_weighted(title, 15.0, None, TextWeight::Semibold);
+        let (title_width, _) = tr.measure_weighted(title, 15.0, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
             title,
             15.0,
             c.text_primary,
-            t * Affine::translate((disc_cx - f64::from(title_w) / 2.0, disc_cy + disc_r + 16.0)),
+            t * Affine::translate((
+                disc_cx - f64::from(title_width) / 2.0,
+                disc_cy + disc_radius + 16.0,
+            )),
             None,
             TextWeight::Semibold,
         );
@@ -5254,7 +5285,10 @@ impl BooksApp {
             hint,
             12.0,
             c.text_dim,
-            t * Affine::translate((disc_cx - f64::from(hint_w) / 2.0, disc_cy + disc_r + 38.0)),
+            t * Affine::translate((
+                disc_cx - f64::from(hint_w) / 2.0,
+                disc_cy + disc_radius + 38.0,
+            )),
             None,
         );
 
@@ -5735,14 +5769,14 @@ impl BooksApp {
         }
 
         // first visible block on the top-left pane → bookmark target
-        self.page_top_block = {
-            let (ts, te) = (panes[0].win_start, panes[0].win_end);
+        self.page_top_block = panes.first().map_or(0, |pane| {
+            let (ts, te) = (pane.win_start, pane.win_end);
             layout
                 .blocks
                 .iter()
                 .find(|b| b.lines.iter().any(|l| l.y >= ts - 0.5 && l.y < te))
                 .map_or(0, |b| b.index)
-        };
+        });
         panes
     }
 
@@ -6023,11 +6057,11 @@ impl BooksApp {
                 .iter()
                 .filter(|l| pane.shows(l.y, b.line_height))
                 .collect();
-            if visible.is_empty() {
+            let (Some(first), Some(last)) = (visible.first(), visible.last()) else {
                 continue;
-            }
-            let by0 = pane.screen_y(visible.first().unwrap().y) - 3.0;
-            let by1 = pane.screen_y(visible.last().unwrap().y) + f64::from(b.line_height);
+            };
+            let by0 = pane.screen_y(first.y) - 3.0;
+            let by1 = pane.screen_y(last.y) + f64::from(b.line_height);
             for a in annos
                 .iter()
                 .filter(|a| a.chapter == chapter && a.block == b.index)
@@ -6246,7 +6280,9 @@ impl BooksApp {
                 if lo < hi {
                     let (bx0, bx1) =
                         run_sub_x(x0, f64::from(w), run.char_start, run.char_len, lo, hi);
-                    grow(&mut hi_span[i], bx0, bx1);
+                    if let Some(span) = hi_span.get_mut(i) {
+                        grow(span, bx0, bx1);
+                    }
                 }
             }
         }
@@ -6297,7 +6333,7 @@ impl BooksApp {
             &mut hi_span,
         );
         for (i, a) in block_ranged.iter().enumerate() {
-            if let Some((mnx, mxx)) = hi_span[i] {
+            if let Some((mnx, mxx)) = hi_span.get(i).copied().flatten() {
                 let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
                 paint::fill_round(scene, t, band, 4.0, palette.highlight_fill(a.color));
                 self.hi_bands.push(band);
@@ -6615,9 +6651,12 @@ impl BooksApp {
             let mapped = match action {
                 ui::HudAction::Copy => Action::CopySelection,
                 ui::HudAction::Note => Action::AddNote,
-                ui::HudAction::Highlight(i) => {
-                    Action::SetColor(HiColor::ALL[i.min(HiColor::ALL.len() - 1)])
-                }
+                ui::HudAction::Highlight(i) => Action::SetColor(
+                    HiColor::ALL
+                        .get(i.min(HiColor::ALL.len() - 1))
+                        .copied()
+                        .unwrap_or(HiColor::ALL[0]),
+                ),
                 ui::HudAction::Delete => match del_group {
                     Some(g) => Action::DeleteHighlight(g),
                     None => Action::Swallow,
@@ -7683,9 +7722,10 @@ impl BooksApp {
             }
             let s = p.to_string_lossy().to_string();
             match &home {
-                Some(h) if !h.is_empty() && s.starts_with(h.as_str()) => {
-                    format!("~{}", &s[h.len()..])
-                }
+                Some(h) if !h.is_empty() => match s.strip_prefix(h.as_str()) {
+                    Some(rest) => format!("~{rest}"),
+                    None => s,
+                },
                 _ => s,
             }
         };
@@ -8961,7 +9001,10 @@ fn ellipsize(
     let mut lo = 0;
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        let candidate: String = chars[..mid].iter().collect::<String>() + "…";
+        let candidate: String = chars
+            .get(..mid)
+            .map_or_else(String::new, |s| s.iter().collect())
+            + "…";
         if f64::from(tr.measure_weighted(&candidate, size, None, weight).0) <= max_w {
             best = candidate;
             lo = mid;

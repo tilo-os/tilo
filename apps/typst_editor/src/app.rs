@@ -654,7 +654,9 @@ impl TypstApp {
             .iter()
             .position(|d| d.name == name && d.from_disk)
         {
-            self.documents[i].source = src;
+            if let Some(existing) = self.documents.get_mut(i) {
+                existing.source = src;
+            }
             i
         } else {
             self.documents.push(Document {
@@ -794,7 +796,12 @@ impl TypstApp {
         let caret = self.editor.caret().min(self.source_cache.len());
         let mut line = 1usize;
         let mut col = 1usize;
-        for ch in self.source_cache[..caret].chars() {
+        // Walk char boundaries directly rather than byte-slicing the source —
+        // `caret` is a byte offset and isn't guaranteed to land on one.
+        for (i, ch) in self.source_cache.char_indices() {
+            if i >= caret {
+                break;
+            }
             if ch == '\n' {
                 line += 1;
                 col = 1;
@@ -1631,7 +1638,7 @@ fn elide_to_width(tr: &mut TextRenderer, s: &str, max_w: f64) -> String {
     let mut keep = chars.len();
     while keep > 1 {
         keep -= 1;
-        let candidate: String = chars[..keep].iter().collect::<String>() + "…";
+        let candidate: String = chars.iter().take(keep).collect::<String>() + "…";
         let (w, _) = tr.measure_weighted(&candidate, PILL_FONT, None, TextWeight::Semibold);
         if f64::from(w) <= max_w {
             return candidate;
@@ -1679,6 +1686,8 @@ impl Widget for TypstApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` on a freshly created tree never fails.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -1693,7 +1702,9 @@ impl Widget for TypstApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         let rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),

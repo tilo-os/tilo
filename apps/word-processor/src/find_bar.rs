@@ -418,7 +418,7 @@ impl FindBar {
             let mut start = 0;
             while start + needle.len() <= haystack.len() {
                 let end = start + needle.len();
-                if haystack[start..end] == needle[..]
+                if haystack.get(start..end) == Some(&needle[..])
                     && (!self.options.whole_word || is_word_match(&raw, start, end))
                 {
                     self.matches.push((block.id.clone(), start, end));

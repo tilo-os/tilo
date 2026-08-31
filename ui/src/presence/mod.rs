@@ -1258,18 +1258,18 @@ pub fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
     let bytes = s.as_bytes();
     match bytes.len() {
         3 => {
-            let r =
-                u8::from_str_radix(std::str::from_utf8(&[bytes[0], bytes[0]]).ok()?, 16).ok()?;
-            let g =
-                u8::from_str_radix(std::str::from_utf8(&[bytes[1], bytes[1]]).ok()?, 16).ok()?;
-            let b =
-                u8::from_str_radix(std::str::from_utf8(&[bytes[2], bytes[2]]).ok()?, 16).ok()?;
+            let b0 = *bytes.first()?;
+            let b1 = *bytes.get(1)?;
+            let b2 = *bytes.get(2)?;
+            let r = u8::from_str_radix(std::str::from_utf8(&[b0, b0]).ok()?, 16).ok()?;
+            let g = u8::from_str_radix(std::str::from_utf8(&[b1, b1]).ok()?, 16).ok()?;
+            let b = u8::from_str_radix(std::str::from_utf8(&[b2, b2]).ok()?, 16).ok()?;
             Some((r, g, b))
         }
         6 | 8 => {
-            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            let r = u8::from_str_radix(s.get(0..2)?, 16).ok()?;
+            let g = u8::from_str_radix(s.get(2..4)?, 16).ok()?;
+            let b = u8::from_str_radix(s.get(4..6)?, 16).ok()?;
             Some((r, g, b))
         }
         _ => None,

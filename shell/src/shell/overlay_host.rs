@@ -4954,7 +4954,7 @@ impl ShellOverlayHost {
         logical_key: &Key,
         super_down: bool,
         shift_down: bool,
-        state: &mut AutoCommit,
+        state: &AutoCommit,
         path: &ObjId,
         handled: &mut bool,
     ) -> bool {
@@ -5331,8 +5331,8 @@ impl ShellOverlayHost {
         mut sel: ui::text_selection::Selection,
     ) -> (bool, bool, ui::text_selection::Selection) {
         use ui::text_selection::{
-            Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
-            prev_char_boundary, prev_word_boundary,
+            Selection, next_char_boundary, next_word_boundary, prev_char_boundary,
+            prev_word_boundary,
         };
         let mut consumed = true;
         let mut needs_bump = true;
@@ -5401,45 +5401,12 @@ impl ShellOverlayHost {
                 buf.replace_range(r.clone(), " ");
                 sel = Selection::collapsed(r.start.saturating_add(1));
             }
-            Key::Character(s) if ctrl => match s.as_str() {
-                "a" | "A" => {
-                    sel.anchor = 0;
-                    sel.cursor = buf.len();
-                    needs_bump = false;
-                }
-                "c" | "C" => {
-                    let r = sel.range();
-                    if let Some(selected) = buf.get(r) {
-                        clipboard_copy(selected);
-                    }
-                    needs_bump = false;
-                }
-                "x" | "X" => {
-                    let r = sel.range();
-                    if r.is_empty() {
-                        needs_bump = false;
-                    } else if let Some(selected) = buf.get(r.clone()) {
-                        clipboard_copy(selected);
-                        buf.replace_range(r.clone(), "");
-                        sel = Selection::collapsed(r.start);
-                    } else {
-                        needs_bump = false;
-                    }
-                }
-                "v" | "V" => {
-                    if let Some(paste) = clipboard_paste() {
-                        let r = sel.range();
-                        buf.replace_range(r.clone(), &paste);
-                        sel = Selection::collapsed(r.start.saturating_add(paste.len()));
-                    } else {
-                        needs_bump = false;
-                    }
-                }
-                _ => {
-                    consumed = false;
-                    needs_bump = false;
-                }
-            },
+            Key::Character(s) if ctrl => {
+                let (c, n, new_sel) = Self::apply_workspace_rename_ctrl_chord(s.as_str(), buf, sel);
+                consumed = c;
+                needs_bump = n;
+                sel = new_sel;
+            }
             Key::Character(s) => {
                 let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
                 if filtered.is_empty() {
@@ -5449,6 +5416,59 @@ impl ShellOverlayHost {
                     let r = sel.range();
                     buf.replace_range(r.clone(), &filtered);
                     sel = Selection::collapsed(r.start.saturating_add(filtered.len()));
+                }
+            }
+            _ => {
+                consumed = false;
+                needs_bump = false;
+            }
+        }
+        (consumed, needs_bump, sel)
+    }
+
+    /// The `Ctrl`-chord half of [`Self::apply_workspace_rename_key`]:
+    /// select-all, copy, cut, paste. Split out to keep the caller under
+    /// `too_many_lines`.
+    fn apply_workspace_rename_ctrl_chord(
+        s: &str,
+        buf: &mut String,
+        mut sel: ui::text_selection::Selection,
+    ) -> (bool, bool, ui::text_selection::Selection) {
+        use ui::text_selection::{Selection, clipboard_copy, clipboard_paste};
+        let mut consumed = true;
+        let mut needs_bump = true;
+        match s {
+            "a" | "A" => {
+                sel.anchor = 0;
+                sel.cursor = buf.len();
+                needs_bump = false;
+            }
+            "c" | "C" => {
+                let r = sel.range();
+                if let Some(selected) = buf.get(r) {
+                    clipboard_copy(selected);
+                }
+                needs_bump = false;
+            }
+            "x" | "X" => {
+                let r = sel.range();
+                if r.is_empty() {
+                    needs_bump = false;
+                } else if let Some(selected) = buf.get(r.clone()) {
+                    clipboard_copy(selected);
+                    buf.replace_range(r.clone(), "");
+                    sel = Selection::collapsed(r.start);
+                } else {
+                    needs_bump = false;
+                }
+            }
+            "v" | "V" => {
+                if let Some(paste) = clipboard_paste() {
+                    let r = sel.range();
+                    buf.replace_range(r.clone(), &paste);
+                    sel = Selection::collapsed(r.start.saturating_add(paste.len()));
+                } else {
+                    needs_bump = false;
                 }
             }
             _ => {
@@ -9611,7 +9631,7 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
         let body = self.ws_settings_body_rect(rect);
         let sharing_card =
-            self.draw_ws_settings_invite_link_card(scene, transform, theme, text_renderer, body);
+            Self::draw_ws_settings_invite_link_card(scene, transform, theme, text_renderer, body);
         let invite_y = body.y0 + 202.0;
         let url_pill = Rect::new(
             sharing_card.x0 + 16.0,
@@ -9691,7 +9711,6 @@ impl ShellOverlayHost {
     /// `too_many_lines`. Returns the card's rect, since the caller's URL
     /// pill and copy button are placed relative to it.
     fn draw_ws_settings_invite_link_card(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -12617,21 +12636,20 @@ mod two_workspace_host_tests {
             let c = chrome.borrow();
             let tree = c.tree();
             let active = tree.active;
-            let here = tree
-                .workspaces
-                .iter()
-                .find(|w| w.id == active)
-                .expect("an active workspace")
-                .room
-                .to_string();
-            let elsewhere = tree
-                .workspaces
-                .iter()
-                .find(|w| w.id != active)
-                .expect("a second workspace")
-                .room
-                .to_string();
-            (here, elsewhere)
+            (
+                tree.workspaces
+                    .iter()
+                    .find(|w| w.id == active)
+                    .expect("an active workspace")
+                    .room
+                    .to_string(),
+                tree.workspaces
+                    .iter()
+                    .find(|w| w.id != active)
+                    .expect("a second workspace")
+                    .room
+                    .to_string(),
+            )
         };
         assert_ne!(here, elsewhere, "two workspaces must be two rooms");
 
@@ -13885,14 +13903,14 @@ mod tests {
 
         let rows = h.host.room_activity().timeline().rect();
         assert!(rows.area() > 0.0);
-        let row0 = h
+        let first_row = h
             .host
             .room_activity()
             .timeline()
             .row_rect(0)
             .expect("the room has at least one row laid out");
         let mods = Modifiers::default();
-        let handled = pump(&mut h, &cursor_moved_at(row0.center()), mods);
+        let handled = pump(&mut h, &cursor_moved_at(first_row.center()), mods);
         assert!(handled, "the sheet claims pointer events over itself");
         assert_eq!(
             h.host.room_activity().timeline().hover_row(),
@@ -14805,8 +14823,9 @@ mod maximize_harvest_tests {
     use super::*;
     use crate::shell::build_nirios_overlay_host_with_chrome;
     use crate::shell::state::{
-        AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
-        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+        AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent,
+        WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
+        WorkspaceTree,
     };
     use std::collections::HashMap as StdHashMap;
 
@@ -14842,7 +14861,7 @@ mod maximize_harvest_tests {
             name: "Test".into(),
             strips: vec![strip],
             collaborators: vec![],
-            shared_surfaces: Default::default(),
+            shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = StdHashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -14987,8 +15006,9 @@ mod resync_strips_tests {
     use super::*;
     use crate::shell::build_nirios_overlay_host_with_chrome;
     use crate::shell::state::{
-        AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
-        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+        AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent,
+        WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
+        WorkspaceTree,
     };
     use std::collections::HashMap as StdHashMap;
 
@@ -15024,7 +15044,7 @@ mod resync_strips_tests {
             name: "Test".into(),
             strips: vec![strip],
             collaborators: vec![],
-            shared_surfaces: Default::default(),
+            shared_surfaces: SharedSurfaces::default(),
         };
         let mut active_strip = StdHashMap::new();
         active_strip.insert(ws_id, strip_id);
