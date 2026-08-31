@@ -46,7 +46,7 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{TextInput, Widget};
 
 use crate::customize::CustomizePanel;
 use crate::doc::ImagerDoc;
@@ -98,7 +98,7 @@ struct Layout {
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "the bools split across unrelated concerns (internal-disk visibility, the system-disk destructive-write ack, confirm-field focus, and seed/repaint bookkeeping), so grouping them would need a real design pass rather than a mechanical lint fix"
+    reason = "the bools split across unrelated concerns (internal-disk visibility, the system-disk destructive-write ack, and seed/repaint bookkeeping), so grouping them would need a real design pass rather than a mechanical lint fix"
 )]
 pub struct ImagerApp {
     // ---- CRDT-backed (cached each `sync`) ----
@@ -114,7 +114,9 @@ pub struct ImagerApp {
     action: Action,
     profile: InstallProfile,
     progress: Progress,
-    confirm: String,
+    /// Peer-local destructive-write arming field. This must never replicate:
+    /// a collaborator may review the plan, but cannot type consent for us.
+    confirm_input: TextInput,
     status: String,
     step: Step,
     // ---- transient job / portal plumbing (not in the doc) ----
@@ -127,8 +129,6 @@ pub struct ImagerApp {
     /// accident. Reset whenever the drive inventory changes.
     system_ack: bool,
     export_text: Option<String>,
-    /// Whether the Confirm step's typed device-name field is capturing keys.
-    confirm_focused: bool,
     // ---- render caches ----
     seeded: bool,
     rect: Rect,
@@ -166,7 +166,11 @@ impl ImagerApp {
             action: Action::Flash,
             profile: InstallProfile::default(),
             progress: Progress::default(),
-            confirm: String::new(),
+            confirm_input: TextInput::local()
+                .with_id("imager_device_confirmation")
+                .with_font_size(14.0)
+                .with_plain_chrome()
+                .with_enter_submits(true),
             status: String::new(),
             step: Step::Source,
             job_rx: None,
@@ -174,7 +178,6 @@ impl ImagerApp {
             show_internal: false,
             system_ack: false,
             export_text: None,
-            confirm_focused: false,
             seeded: false,
             rect: Rect::ZERO,
             dirty: true,
@@ -288,9 +291,16 @@ impl ImagerApp {
         self.actions.last_dispatched()
     }
 
+    /// Stage the peer-local confirmation for a deterministic offscreen frame.
+    #[doc(hidden)]
+    pub fn seed_confirmation_for_shot(&mut self, value: &str) {
+        self.confirm_input.set_text(value);
+    }
+
     fn confirm_matches(&self) -> bool {
         let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
-        !self.confirm.is_empty() && (self.confirm == want || self.confirm == format!("/dev/{want}"))
+        let confirm = self.confirm_input.value();
+        !confirm.is_empty() && (confirm == want || confirm == format!("/dev/{want}"))
     }
 
     fn image_fits(&self) -> bool {
@@ -1864,7 +1874,7 @@ impl ImagerApp {
     }
 
     fn draw_confirm_step(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -2114,7 +2124,7 @@ impl ImagerApp {
 
     /// The typed confirmation field and the write-gate note below it.
     fn draw_confirm_field(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -2128,7 +2138,7 @@ impl ImagerApp {
             content.x1,
             content.y1 - 96.0 + 46.0,
         );
-        let focused = self.confirm_focused;
+        let focused = self.confirm_input.is_focused();
         let matches = self.confirm_matches();
         let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
         Self::txt(
@@ -2157,29 +2167,21 @@ impl ImagerApp {
             },
             if focused || matches { 1.6 } else { 1.2 },
         );
-        let (shown, col) = if self.confirm.is_empty() {
-            (format!("type “{want}” here"), c.neutral[6])
+        self.confirm_input
+            .set_placeholder(&format!("type “{want}” here"));
+        let text_right = if matches {
+            field.x1 - 94.0
         } else {
-            (
-                self.confirm.clone(),
-                if matches {
-                    c.semantic.success
-                } else {
-                    c.text_primary
-                },
-            )
+            field.x1 - 12.0
         };
-        Self::txt(
-            scene,
-            tr,
-            &shown,
-            14.0,
-            col,
-            field.x0 + 14.0,
-            field.y0 + 13.0,
-            Some((field.width() - 28.0) as f32),
-            TextWeight::Medium,
-        );
+        self.confirm_input.apply_layout_external(Rect::new(
+            field.x0 + 12.0,
+            field.y0 + 6.0,
+            text_right,
+            field.y1 - 6.0,
+        ));
+        self.confirm_input
+            .draw(scene, t, tr, theme, &PresenceCtx::empty());
         if matches {
             Self::txt_right(
                 scene,
@@ -2715,8 +2717,7 @@ impl ImagerApp {
         }
         self.selected = Some(idx);
         ImagerDoc::set_selected(state, Some(idx));
-        self.confirm.clear();
-        ImagerDoc::set_confirm(state, "");
+        self.confirm_input.set_text("");
         self.dirty = true;
     }
 
@@ -2728,7 +2729,7 @@ impl ImagerApp {
     fn goto(&mut self, state: &mut AutoCommit, s: Step) {
         self.step = s;
         ImagerDoc::set_step(state, s);
-        self.confirm_focused = false;
+        self.confirm_input.set_focus(false);
         self.customize.clear_focus();
         self.dirty = true;
     }
@@ -2784,7 +2785,7 @@ impl ImagerApp {
             action: self.action,
             profile: self.profile.clone(),
         };
-        let (start, rx) = spawn_job(req, &self.confirm);
+        let (start, rx) = spawn_job(req, self.confirm_input.value());
         match start {
             crate::write::JobStart::Started => {
                 self.job_rx = rx;
@@ -2876,8 +2877,7 @@ impl ImagerApp {
     fn write_another(&mut self, state: &mut AutoCommit) {
         self.progress = Progress::default();
         ImagerDoc::set_progress(state, &self.progress);
-        self.confirm.clear();
-        ImagerDoc::set_confirm(state, "");
+        self.confirm_input.set_text("");
         self.goto(state, Step::Source);
         self.set_status(state, "");
     }
@@ -2887,23 +2887,6 @@ impl ImagerApp {
             self.profile
                 .to_headless_config(self.source.as_ref(), self.target()),
         );
-        self.dirty = true;
-    }
-
-    /// Edit the Confirm step's typed device-name field. This is a *transient*
-    /// arming gesture for the (external) write — presentation, not a document
-    /// action — so it writes only the `confirm` scalar. (The profile fields, by
-    /// contrast, are real actions handled by [`CustomizePanel`].)
-    fn type_into_confirm(&mut self, state: &mut AutoCommit, ch: Option<char>, backspace: bool) {
-        if backspace {
-            self.confirm.pop();
-        } else if let Some(c) = ch
-            && !c.is_control()
-        {
-            self.confirm.push(c);
-        }
-        let conf = self.confirm.clone();
-        ImagerDoc::set_confirm(state, &conf);
         self.dirty = true;
     }
 
@@ -2980,7 +2963,7 @@ impl ImagerApp {
             }
             Hit::Rescan => self.do_rescan(state),
             Hit::ConfirmField => {
-                self.confirm_focused = true;
+                self.confirm_input.set_focus(true);
                 self.customize.clear_focus();
                 self.dirty = true;
             }
@@ -3031,7 +3014,6 @@ impl Widget for ImagerApp {
         self.profile = ImagerDoc::profile(state);
         self.progress = ImagerDoc::progress(state);
         self.action = ImagerDoc::action(state);
-        self.confirm = ImagerDoc::confirm(state);
         self.status = ImagerDoc::status(state);
         self.step = ImagerDoc::step(state);
         self.show_internal = ImagerDoc::show_internal(state);
@@ -3141,6 +3123,44 @@ impl Widget for ImagerApp {
         use winit::event::{ElementState, KeyEvent, MouseButton};
 
         let lay = self.compute_layout();
+
+        // Destructive consent is peer-local and goes through the toolkit's
+        // real editor before any wizard shortcut sees the event.
+        if self.step == Step::Confirm && self.export_text.is_none() {
+            let mut input_handled = false;
+            let mut focus_target = None;
+            self.confirm_input.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                &mut input_handled,
+                &mut focus_target,
+                node_id,
+                taffy,
+            );
+            if focus_target.is_some() {
+                self.confirm_input.set_focus(true);
+            }
+            if self.confirm_input.take_dirty().is_some() {
+                self.dirty = true;
+            }
+            if self.confirm_input.take_submit() {
+                if self.can_advance(Step::Confirm) {
+                    self.start_write(state);
+                }
+                self.confirm_input.set_focus(false);
+                *handled = true;
+                self.dirty = true;
+                return;
+            }
+            if input_handled {
+                *handled = true;
+                self.dirty = true;
+                return;
+            }
+        }
 
         // The Customize step is delegated in full to the shared customization
         // panel, which owns its fields, toggles and export affordance. Only
@@ -3312,7 +3332,7 @@ impl ImagerApp {
             self.dirty = true;
             return;
         }
-        self.confirm_focused = false;
+        self.confirm_input.set_focus(false);
     }
 
     /// Keyboard handling: export-dialog dismissal, the Confirm step's typed
@@ -3335,51 +3355,15 @@ impl ImagerApp {
         }
         // The Confirm step's typed device-name field (a transient arming
         // gesture, not a profile edit).
-        if self.confirm_focused && self.step == Step::Confirm {
-            self.handle_confirm_field_key(logical_key, state, handled);
+        if self.confirm_input.is_focused() && self.step == Step::Confirm {
+            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                self.confirm_input.set_focus(false);
+                *handled = true;
+                self.dirty = true;
+            }
             return;
         }
         self.handle_global_shortcut_key(logical_key, state, handled);
-    }
-
-    fn handle_confirm_field_key(
-        &mut self,
-        logical_key: &winit::keyboard::Key,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-    ) {
-        use winit::keyboard::{Key, NamedKey};
-
-        match logical_key {
-            Key::Named(NamedKey::Backspace) => {
-                self.type_into_confirm(state, None, true);
-                *handled = true;
-            }
-            Key::Named(NamedKey::Enter) => {
-                if self.can_advance(Step::Confirm) {
-                    self.start_write(state);
-                }
-                self.confirm_focused = false;
-                *handled = true;
-                self.dirty = true;
-            }
-            Key::Named(NamedKey::Escape) => {
-                self.confirm_focused = false;
-                *handled = true;
-                self.dirty = true;
-            }
-            Key::Named(NamedKey::Space) => {
-                self.type_into_confirm(state, Some(' '), false);
-                *handled = true;
-            }
-            Key::Character(s) => {
-                if let Some(ch) = s.chars().next() {
-                    self.type_into_confirm(state, Some(ch), false);
-                    *handled = true;
-                }
-            }
-            _ => {}
-        }
     }
 
     fn handle_global_shortcut_key(
@@ -3707,11 +3691,22 @@ mod tests {
         // Arm the write: click the typed-name field, then type the device name.
         let field = hit_rect(&app, |h| matches!(h, Hit::ConfirmField));
         click_at(&mut app, &mut doc, center(field));
-        assert!(app.confirm_focused);
+        assert!(app.confirm_input.is_focused());
+        app.confirm_input.set_text("wrong target");
+        app.confirm_input.select_all();
         for s in ["s", "d", "b"] {
             feed(&mut app, &mut doc, &char_ev(s));
         }
-        assert!(app.confirm_matches(), "typed name armed the write");
+        assert!(
+            app.confirm_matches(),
+            "selection replacement through TextInput armed the write"
+        );
+        assert!(
+            automerge::ReadDoc::get(&doc, &automerge::ROOT, "confirm")
+                .unwrap()
+                .is_none(),
+            "destructive consent is never written to the shared document"
+        );
 
         // Confirm → Write: click the (now-enabled) primary button.
         let primary = app.compute_layout().primary.unwrap();
@@ -3762,7 +3757,7 @@ mod tests {
         let (mut app, mut doc) = seeded_app();
         app.select_target(&mut doc, 0); // sdb
         app.goto(&mut doc, Step::Confirm);
-        app.confirm = "wrong".into();
+        app.confirm_input.set_text("wrong");
         app.start_write(&mut doc);
         assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
         assert!(app.job_rx.is_none());
@@ -3780,7 +3775,7 @@ mod tests {
         let (mut app, mut doc) = seeded_app();
         app.select_target(&mut doc, 0); // sdb
         app.goto(&mut doc, Step::Confirm);
-        app.confirm = "sdb".into();
+        app.confirm_input.set_text("sdb");
         app.start_write(&mut doc);
         assert_eq!(app.progress.phase, JobPhase::Writing);
         assert_eq!(app.step, Step::Write, "the write station is now showing");
