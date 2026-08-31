@@ -73,3 +73,11 @@ pub fn app_root_demo_confirm() -> Box<dyn Widget> {
     app.seed_shot_confirm();
     Box::new(app)
 }
+
+/// Sample-seeded app with the Add form open, for deterministic shared-field
+/// visual coverage.
+pub fn app_root_demo_add() -> Box<dyn Widget> {
+    let mut app = VpnApp::new_demo();
+    app.seed_shot_add();
+    Box::new(app)
+}
