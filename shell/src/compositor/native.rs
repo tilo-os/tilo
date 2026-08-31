@@ -48,7 +48,8 @@ fn with_action_gate<R>(
     let workspace = tree
         .active_workspace()
         .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?;
-    let actor = workspace.actor_for_person(&chrome.local_user_id);
+    let actor_id = chrome.local_user_for_room(&workspace.room);
+    let actor = workspace.actor_for_person(&actor_id);
     let gate = CapabilityVisibility::new(workspace, actor);
     Ok(f(&chrome, &gate))
 }
@@ -594,6 +595,7 @@ impl ControlState for FrameBuilderControlState<'_> {
     fn chrome_state_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         let overlays = &chrome.overlays;
+        let peer_sync = self.fb.host().peer_sync_snapshot();
         serde_json::json!({
             "overlays": {
                 "overview": overlays.overview,
@@ -622,20 +624,20 @@ impl ControlState for FrameBuilderControlState<'_> {
             "session_locked": chrome.session_locked(),
             // Who this session is, and whether they may administer the room they're
             // in — read straight off the production helpers, not guessed from `owner`.
-            "local_user_id": chrome.local_user_id,
+            "local_user_id": chrome.active_local_user(),
             "may_administer_active": chrome
                 .tree()
                 .active_workspace()
-                .is_some_and(|ws| ws.may_administer(&chrome.local_user_id)),
+                .is_some_and(|ws| ws.may_administer(&chrome.local_user_for_room(&ws.room))),
             // The peer-sync card's contents — the invite token, exposed for scripts as it is on screen.
             "peer_sync": {
-                "invite_token": chrome.peer_sync_invite_token,
-                "connect_input": chrome.peer_sync_connect_input,
-                "status": chrome.peer_sync_status,
+                "invite_token": peer_sync.invite_token,
+                "connect_input": peer_sync.connect_input,
+                "status": peer_sync.status,
                 // The invite composer: what's typed into "who are you inviting?", and who
                 // the on-screen token was minted for — the same two facts the card shows.
-                "invite_name": chrome.peer_sync_invite_name,
-                "invite_for": chrome.peer_sync_invite_for,
+                "invite_name": peer_sync.invite_name,
+                "invite_for": peer_sync.invite_for,
             },
             // Whether apps can share edits at all, and why not when they can't — else
             // a harness can't tell "off" from "on and idle".
@@ -1647,11 +1649,10 @@ fn load_session_tree(
             roomless.len()
         );
     }
-    let local_user = crate::shell::state::local_user_id();
-    let adopted = tree.adopt_ownerless_workspaces(&local_user);
+    let adopted = tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
     if !adopted.is_empty() {
         tracing::info!(
-            "capabilities: {} workspace(s) adopted by {local_user}",
+            "capabilities: {} workspace(s) adopted by their selected identities",
             adopted.len()
         );
     }
@@ -1719,6 +1720,31 @@ fn spawn_session_collab_broker(
             chrome
                 .borrow_mut()
                 .set_collab_unavailable(format!("The broker could not start: {e}"));
+            None
+        }
+    }
+}
+
+fn spawn_session_identity_broker(
+    chrome: &crate::shell::chrome_state::Chrome,
+) -> Option<crate::identity_broker::IdentityBrokerHandle> {
+    if let Err(error) = launcher::services::ensure_services_root() {
+        tracing::error!(%error, "identity: cannot create service directory");
+        return None;
+    }
+    let path = launcher::services::identity_socket();
+    if collab_socket_is_live(&path) {
+        tracing::error!(path = %path.display(), "identity: another session owns the socket");
+        return None;
+    }
+    let tree = chrome.borrow().tree_handle();
+    match crate::identity_broker::spawn(path.clone(), tree) {
+        Ok(handle) => {
+            tracing::info!(path = %path.display(), "identity: broker ready");
+            Some(handle)
+        }
+        Err(error) => {
+            tracing::error!(%error, path = %path.display(), "identity: broker failed to start");
             None
         }
     }
@@ -2084,6 +2110,7 @@ pub fn run() -> ! {
     // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
     let collab_broker =
         spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
+    let _identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
     // failure only removes the advanced handoff, never core Settings controls.
@@ -2452,6 +2479,12 @@ pub fn run() -> ! {
     while !close_requested {
         let iter_t0 = Instant::now();
         metrics.begin_tick(iter_t0);
+        // Contextual routes from Personal Settings cross a worker-thread
+        // service, then land here because ChromeState intentionally remains
+        // compositor-thread owned.
+        if let Some(service) = tool_service.as_ref() {
+            service.pump_workspace_settings(&frame_builder.chrome_handle());
+        }
         backend.poll_events(&mut |event| pending_events.push(event));
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;

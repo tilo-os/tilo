@@ -385,6 +385,9 @@ type EntryFilter = Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>;
 pub struct CommandPalette {
     entries: Vec<CommandEntry>,
     query: String,
+    /// Hint shown while the main query is empty. Hosts use this to name the
+    /// resource being searched (files, commands, applications, ...).
+    query_placeholder: String,
     query_selection: crate::text_selection::Selection,
     query_composition: QueryComposition,
     filter: Option<EntryFilter>,
@@ -398,6 +401,9 @@ pub struct CommandPalette {
     /// Default `false`; [`PaletteMode::Commands`] turns it on.
     modal: bool,
     arg_state: Option<ArgState>,
+    /// Whether argument entry was opened without a backing list row. Escape
+    /// closes such a dedicated prompt instead of revealing an unrelated list.
+    direct_argument: bool,
     outcome: Option<CommandOutcome>,
     /// Skip the built-in fuzzy filter when `true`, for provider hosts whose
     /// pre-matched result set should show verbatim.
@@ -439,6 +445,7 @@ impl CommandPalette {
         Self {
             entries: Vec::new(),
             query: String::new(),
+            query_placeholder: "Search\u{2026}".to_string(),
             query_selection: crate::text_selection::Selection::collapsed(0),
             query_composition: QueryComposition::new(),
             filter: None,
@@ -450,6 +457,7 @@ impl CommandPalette {
             mode: PaletteMode::Search,
             modal: false,
             arg_state: None,
+            direct_argument: false,
             outcome: None,
             bypass_fuzzy: false,
             hide_filter_strip: false,
@@ -497,9 +505,38 @@ impl CommandPalette {
         self.query_selection = crate::text_selection::Selection::collapsed(0);
         self.query_composition.clear();
         self.arg_state = None;
+        self.direct_argument = false;
         self.outcome = None;
         self.cursor = 0;
         self.rebuild();
+    }
+
+    /// Open directly in the argument-entry step without first presenting a
+    /// selectable row. This is useful for dedicated shortcuts such as
+    /// "Go to line", while retaining the palette's shared text selection,
+    /// clipboard and IME behavior.
+    pub fn open_argument(
+        &mut self,
+        id: impl Into<String>,
+        prompt: impl Into<String>,
+        placeholder: impl Into<String>,
+        prefill: Option<String>,
+    ) {
+        let buffer = prefill.unwrap_or_default();
+        self.is_focused = true;
+        self.outcome = None;
+        self.direct_argument = true;
+        self.arg_state = Some(ArgState {
+            entry_id: id.into(),
+            prompt: prompt.into(),
+            placeholder: placeholder.into(),
+            selection: crate::text_selection::Selection {
+                anchor: 0,
+                cursor: buffer.len(),
+            },
+            buffer,
+            composition: QueryComposition::new(),
+        });
     }
 
     /// Discards any in-progress argument entry but keeps registered entries,
@@ -507,6 +544,7 @@ impl CommandPalette {
     pub fn close(&mut self) {
         self.is_focused = false;
         self.arg_state = None;
+        self.direct_argument = false;
         self.query_composition.clear();
     }
 
@@ -671,6 +709,7 @@ impl CommandPalette {
                 selection,
                 composition: QueryComposition::new(),
             });
+            self.direct_argument = false;
         } else {
             self.run_entry(state, path, id, None);
         }
@@ -734,6 +773,10 @@ impl CommandPalette {
             }
             Key::Named(NamedKey::Escape) => {
                 self.arg_state = None;
+                if self.direct_argument {
+                    self.is_focused = false;
+                    self.direct_argument = false;
+                }
                 return;
             }
             // No list navigation while typing an argument.
@@ -818,6 +861,10 @@ impl CommandPalette {
 
     pub fn query(&self) -> &str {
         &self.query
+    }
+
+    pub fn set_query_placeholder(&mut self, placeholder: impl Into<String>) {
+        self.query_placeholder = placeholder.into();
     }
 
     pub fn set_filter(&mut self, f: Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>) {
@@ -1057,7 +1104,7 @@ impl CommandPalette {
                 text_renderer,
                 &self.query,
                 &self.query_selection,
-                "Search\u{2026}",
+                &self.query_placeholder,
                 layout.input_rect,
                 &style,
                 colors.text_primary,
@@ -2628,6 +2675,52 @@ mod tests {
         assert_eq!(outcome.id, "goto");
         assert_eq!(outcome.argument.as_deref(), Some("B12"));
         assert!(!p.is_open());
+    }
+
+    #[test]
+    fn direct_argument_mode_skips_the_artificial_command_row() {
+        let mut p = CommandPalette::commands();
+        p.open_argument(
+            "goto-line",
+            "Go to line",
+            "Line number\u{2026}",
+            Some("42".into()),
+        );
+        assert!(p.is_open());
+        assert!(p.in_argument_mode());
+        assert_eq!(p.argument_buffer(), Some("42"));
+        let mut handled = false;
+        dispatch_h(
+            &mut p,
+            &key_press(Key::Named(NamedKey::Enter)),
+            Modifiers::default(),
+            &mut handled,
+        );
+        assert!(handled);
+        assert_eq!(
+            p.take_outcome(),
+            Some(CommandOutcome {
+                id: "goto-line".into(),
+                argument: Some("42".into()),
+            })
+        );
+        assert!(!p.is_open());
+    }
+
+    #[test]
+    fn escape_closes_a_direct_argument_prompt() {
+        let mut p = CommandPalette::commands();
+        p.open_argument("goto-line", "Go to line", "Line number…", None);
+        let mut handled = false;
+        dispatch_h(
+            &mut p,
+            &key_press(Key::Named(NamedKey::Escape)),
+            Modifiers::default(),
+            &mut handled,
+        );
+        assert!(handled);
+        assert!(!p.is_open());
+        assert!(!p.in_argument_mode());
     }
 
     #[test]

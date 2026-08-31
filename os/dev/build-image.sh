@@ -214,13 +214,17 @@ msg "2/2 disk image -> qcow2"
 rm -rf "$QOS_OUTPUT/qcow2" "$QOS_OUTPUT"/manifest* 2>/dev/null || true
 OUTDIR="$(dirname "$QOS_DISK")"
 INSTALL_LOG="$OUTDIR/.install.log"
+disk_args=(--user "$QOS_ACCOUNT")
+if [ -n "${QOS_TARGET_IMGREF:-}" ]; then
+  disk_args+=(--target-imgref "$QOS_TARGET_IMGREF")
+fi
 
 # Pass 1. A sealed image is expected to be refused here: `bootc container ukify`
 # and `bootc install` compute different composefs digests for the same image
 # (bootc#2334), and install will not accept a UKI sealing anything but its own
 # value. disk-image.sh recognises that failure and prints the digest to seal, so
 # the recovery is to rebuild the UKI with it and install again.
-if ! "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" --user "$QOS_ACCOUNT"; then
+if ! "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
   want="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
   [ -n "$want" ] || die "the disk-image step failed for a reason other than the composefs digest
   seal; see the message above and $INSTALL_LOG"
@@ -238,7 +242,7 @@ if ! "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" --user "$QOS_ACCOUNT
   # Both digests are 128 hex characters, so the edit is length-preserving and the PE
   # layout is untouched; uki-cmdline.py refuses anything else.
   reseal_uki "$want" || die "could not rewrite the sealed composefs digest"
-  if ! "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" --user "$QOS_ACCOUNT"; then
+  if ! "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
     want2="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
     if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
       die "the digest install expects MOVED between passes (${want:0:16}… -> ${want2:0:16}…),

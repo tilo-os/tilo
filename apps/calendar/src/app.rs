@@ -38,13 +38,16 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, DatePicker, Scrollable, TextInput, TimePicker};
+use ui::widget::{BlockEditor, Scrollable, TextInput};
 
 use crate::account::AccountStore;
 use crate::agenda::{AgendaAction, AgendaView};
 use crate::caldav::{self, SyncOutcome};
 use crate::date;
 use crate::doc::CalDoc;
+use crate::event_popovers::{
+    EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover,
+};
 use crate::ics;
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
 
@@ -190,14 +193,9 @@ enum Action {
     /// Open one of the form's transient popovers (date grid / time spinners /
     /// calendar list) over the currently-edited event.
     OpenPopover(FormPopover),
-    /// Assign the selected event to a target calendar (local or a remote
-    /// `CalDAV` collection), and close the calendar popover.
-    PickCalendar(CalTarget),
     /// Focus one of the form's text fields (used by the title/location field
     /// click targets so a press lands the caret).
     FocusField(FormField),
-    /// Dismiss any open form popover (scrim / outside click).
-    ClosePopover,
     /// Delete an event from the model + CRDT (and queue a `CalDAV` delete for a
     /// synced event). Fired by the editor's trash button and the Delete key.
     DeleteEvent(Id),
@@ -206,18 +204,6 @@ enum Action {
     /// Absorb a click without acting on it — the modal card's own backing, so a
     /// press on the card padding doesn't fall through to the dismiss scrim.
     Noop,
-}
-
-/// Which transient popover is floating over the event form, if any. Only one is
-/// ever open at a time; opening one closes the others.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum FormPopover {
-    None,
-    StartDate,
-    EndDate,
-    StartTime,
-    EndTime,
-    Calendar,
 }
 
 /// The two keyboard-focusable text fields in the form. Tab cycles between them
@@ -372,16 +358,12 @@ pub struct CalendarApp {
     title_input: TextInput,
     /// Editable location field.
     location_input: TextInput,
-    /// Start/end clock spinners, shown in the time popovers.
-    start_time_picker: TimePicker,
-    end_time_picker: TimePicker,
-    /// The month grid shown in the date popovers; retargeted per open.
-    date_picker: DatePicker,
     /// Which event the form widgets are currently seeded from — so a new
     /// selection reseeds the inputs and edits land on the right event.
     form_event: Option<Id>,
-    /// Which transient popover is floating over the form.
-    popover: FormPopover,
+    /// Self-contained date/time/calendar picker controller: exclusive open
+    /// state, embedded widgets, drawing, hit-testing and event routing.
+    event_popovers: EventPopovers,
     /// Cached form field geometry (see [`FormRects`]).
     form: FormRects,
     /// Shots-only: spawn a fresh event on the first sync so the offscreen
@@ -555,11 +537,8 @@ impl CalendarApp {
             location_input: TextInput::local()
                 .with_placeholder("Add location")
                 .with_id("event_location"),
-            start_time_picker: TimePicker::new(12, 0),
-            end_time_picker: TimePicker::new(13, 0),
-            date_picker: DatePicker::new(today),
             form_event: None,
-            popover: FormPopover::None,
+            event_popovers: EventPopovers::new(today),
             form: FormRects::default(),
             shots_pending_new_event: false,
             shots_pending_popover: None,
@@ -975,15 +954,11 @@ impl CalendarApp {
             return;
         }
         self.form_event = ev_id;
-        self.popover = FormPopover::None;
+        self.event_popovers.close();
         if let Some(id) = ev_id {
             if let Some(e) = self.model.event(id) {
                 self.title_input.set_text(&e.title);
                 self.location_input.set_text(&e.location);
-                self.start_time_picker.set_hours(e.start.hour() as u8);
-                self.start_time_picker.set_minutes(e.start.minute() as u8);
-                self.end_time_picker.set_hours(e.end.hour() as u8);
-                self.end_time_picker.set_minutes(e.end.minute() as u8);
             }
         } else {
             self.title_input.set_focus(false);
@@ -1254,7 +1229,7 @@ impl CalendarApp {
         self.notes_editor.set_focus(false);
         self.title_input.set_focus(false);
         self.location_input.set_focus(false);
-        self.popover = FormPopover::None;
+        self.event_popovers.close();
     }
 
     /// Shared teardown after deleting the on-screen item: drop the selection,
@@ -1914,7 +1889,7 @@ impl CalendarApp {
                 &crate::actions::set_event_calendar_action(&snap, enqueue),
             );
         }
-        self.popover = FormPopover::None;
+        self.event_popovers.close();
         self.force_persist = true;
         self.dirty = true;
     }
@@ -1930,37 +1905,13 @@ impl CalendarApp {
         let Some(e) = ev else { return };
         self.title_input.set_focus(false);
         self.location_input.set_focus(false);
-        self.date_picker.set_focus(false);
-        self.start_time_picker.set_focus(false);
-        self.end_time_picker.set_focus(false);
-        match which {
-            FormPopover::StartDate => {
-                self.date_picker.set_selected(e.start.date());
-                self.date_picker.set_focus(true);
-            }
-            FormPopover::EndDate => {
-                self.date_picker.set_selected(e.end.date());
-                self.date_picker.set_focus(true);
-            }
-            FormPopover::StartTime => {
-                self.start_time_picker.set_hours(e.start.hour() as u8);
-                self.start_time_picker.set_minutes(e.start.minute() as u8);
-                self.start_time_picker.set_focus(true);
-            }
-            FormPopover::EndTime => {
-                self.end_time_picker.set_hours(e.end.hour() as u8);
-                self.end_time_picker.set_minutes(e.end.minute() as u8);
-                self.end_time_picker.set_focus(true);
-            }
-            FormPopover::Calendar | FormPopover::None => {}
-        }
-        self.popover = which;
+        self.event_popovers.open(which, &e);
         self.dirty = true;
     }
 
     /// Move keyboard focus to a form text field (click / Tab target).
     fn focus_field(&mut self, field: FormField) {
-        self.popover = FormPopover::None;
+        self.event_popovers.close();
         self.notes_editor.set_focus(false);
         match field {
             FormField::Title => {
@@ -2004,7 +1955,7 @@ impl CalendarApp {
         } else {
             (cur + if backwards { n - 1 } else { 1 }) % n
         };
-        self.popover = FormPopover::None;
+        self.event_popovers.close();
         self.title_input.set_focus(false);
         self.location_input.set_focus(false);
         self.notes_editor.set_focus(false);
@@ -2016,11 +1967,8 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Route an event to the open date/time popover's embedded picker, mirror
-    /// the resulting value into the event, and close the popover when the user
-    /// commits (a day click, or Enter). The calendar list popover carries no
-    /// embedded widget — it is resolved by the hit map — so this leaves
-    /// `handled` false for it.
+    /// Route input through the self-contained popover controller, then apply
+    /// any semantic edit it emits through the calendar action model.
     #[allow(clippy::too_many_arguments)]
     fn handle_popover_event(
         &mut self,
@@ -2034,112 +1982,32 @@ impl CalendarApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        // Escape closes any popover.
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Named(NamedKey::Escape),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            self.apply_action(Action::ClosePopover, state);
-            *handled = true;
-            return;
-        }
-        let is_enter = matches!(
+        let (consumed, edit) = self.event_popovers.handle_event(
             event,
-            WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
-                    state: ElementState::Pressed,
-                    ..
-                },
-                ..
-            }
+            self.last_mouse,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            focus_target,
+            node_id,
+            taffy,
         );
-        let is_click = matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
+        *handled |= consumed;
+        match edit {
+            Some(PopoverEdit::Date(which, date)) => self.set_event_date(which, date, state),
+            Some(PopoverEdit::Time(which, hour, minute)) => {
+                self.set_event_time(which, hour, minute, state);
             }
-        );
-
-        match self.popover {
-            FormPopover::StartDate | FormPopover::EndDate => {
-                let which = self.popover;
-                let before = self.date_picker.selected();
-                self.date_picker.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
-                let after = self.date_picker.selected();
-                if after != before {
-                    self.set_event_date(which, after, state);
-                }
-                // A committed day (click that changed the selection) or Enter
-                // closes the grid; a chevron month-step keeps it open.
-                if (is_click && *handled && after != before) || is_enter {
-                    self.popover = FormPopover::None;
-                    self.date_picker.set_focus(false);
-                    *handled = true;
-                }
-            }
-            FormPopover::StartTime | FormPopover::EndTime => {
-                let which = self.popover;
-                let mut changed = None;
-                {
-                    let picker = if which == FormPopover::StartTime {
-                        &mut self.start_time_picker
-                    } else {
-                        &mut self.end_time_picker
-                    };
-                    let before = (picker.hours(), picker.minutes());
-                    picker.handle_event(
-                        event,
-                        scale_factor,
-                        &modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    );
-                    let after = (picker.hours(), picker.minutes());
-                    if after != before {
-                        changed = Some(after);
-                    }
-                }
-                if let Some((h, m)) = changed {
-                    self.set_event_time(which, h, m, state);
-                }
-                if is_enter {
-                    self.popover = FormPopover::None;
-                    self.start_time_picker.set_focus(false);
-                    self.end_time_picker.set_focus(false);
-                    *handled = true;
-                }
-            }
-            FormPopover::Calendar | FormPopover::None => {}
+            Some(PopoverEdit::Calendar(target)) => self.set_event_calendar(&target, state),
+            None => {}
         }
     }
 
     /// Flip the selected event's all-day flag.
     fn toggle_all_day(&mut self, doc: &mut AutoCommit) {
         self.cycle_event(doc, |e| e.all_day = !e.all_day);
-        self.popover = FormPopover::None;
+        self.event_popovers.close();
     }
 
     /// Apply the date grid's current selection to the start or end of the
@@ -2712,14 +2580,7 @@ impl CalendarApp {
             }
             Action::ToggleAllDay => self.toggle_all_day(doc),
             Action::OpenPopover(which) => self.open_popover(which),
-            Action::PickCalendar(target) => self.set_event_calendar(&target, doc),
             Action::FocusField(field) => self.focus_field(field),
-            Action::ClosePopover => {
-                self.popover = FormPopover::None;
-                self.date_picker.set_focus(false);
-                self.start_time_picker.set_focus(false);
-                self.end_time_picker.set_focus(false);
-            }
             Action::DeleteEvent(id) => self.delete_event(id, doc),
             Action::DeleteTask(id) => self.delete_task(id, doc),
             Action::Noop => {}
@@ -4530,7 +4391,7 @@ impl CalendarApp {
             &date::fmt_time(&e.start),
             FormPopover::StartDate,
             FormPopover::StartTime,
-            self.popover,
+            self.event_popovers.active(),
         );
         row(
             scene,
@@ -4543,7 +4404,7 @@ impl CalendarApp {
             &date::fmt_time(&e.end),
             FormPopover::EndDate,
             FormPopover::EndTime,
-            self.popover,
+            self.event_popovers.active(),
         );
 
         // --- Location (real text input) ---------------------------------
@@ -4551,7 +4412,8 @@ impl CalendarApp {
         hits.push((f.location, Action::FocusField(FormField::Location)));
 
         // --- Calendar selector: colour dot + value + disclosure caret ----
-        let cal_active = f.calendar.contains(mouse) || self.popover == FormPopover::Calendar;
+        let cal_active =
+            f.calendar.contains(mouse) || self.event_popovers.active() == FormPopover::Calendar;
         {
             let r = f.calendar;
             let bg = if cal_active {
@@ -4659,115 +4521,28 @@ impl CalendarApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Vec<(Rect, Action)> {
-        let mut hits = Vec::new();
-        if self.popover == FormPopover::None {
-            return hits;
-        }
-        let c = &theme.tokens.colors;
-        // Dismiss scrim across the whole detail panel (below the popover).
-        hits.push((self.detail_rect, Action::ClosePopover));
-
-        let anchor = match self.popover {
-            FormPopover::StartDate | FormPopover::StartTime => self.form.start_date,
-            FormPopover::EndDate | FormPopover::EndTime => self.form.end_date,
-            FormPopover::Calendar => self.form.calendar,
-            FormPopover::None => return hits,
+        let options = self.calendar_options();
+        let current = match self.selection {
+            Some(Sel::Event(id)) => self.model.event(id).and_then(|e| e.calendar_id.as_deref()),
+            _ => None,
         };
-
-        match self.popover {
-            FormPopover::StartDate | FormPopover::EndDate => {
-                // Size the month grid, clamp it inside the detail panel, place
-                // it just under the anchor field.
-                let pw = 7.0 * 32.0;
-                let ph = 32.0 + 20.0 + 6.0 * 32.0;
-                let px = (anchor.x0)
-                    .min(self.detail_rect.x1 - pw - 8.0)
-                    .max(self.detail_rect.x0 + 8.0);
-                let py = (anchor.y1 + 6.0).min(self.detail_rect.y1 - ph - 8.0);
-                let pr = Rect::new(px, py, px + pw, py + ph);
-                // Shadow-ish backing panel with a border.
-                fill_round(scene, t, c.surfaces.raised, pr.inflate(6.0, 6.0), 10.0);
-                stroke_round(scene, t, c.border_standard, pr.inflate(6.0, 6.0), 10.0, 1.0);
-                self.date_picker.apply_layout_external(pr);
-                self.date_picker.draw(scene, t, tr, theme, presence);
-                // The picker handles its own clicks (routed while open); a hit
-                // over its rect must NOT fall through to the dismiss scrim.
-                hits.push((pr.inflate(6.0, 6.0), Action::OpenPopover(self.popover)));
-            }
-            FormPopover::StartTime | FormPopover::EndTime => {
-                let picker = if self.popover == FormPopover::StartTime {
-                    &mut self.start_time_picker
-                } else {
-                    &mut self.end_time_picker
-                };
-                let (pw, ph) = picker.intrinsic_size();
-                let px = (anchor.x0).max(self.detail_rect.x0 + 8.0);
-                let py = (anchor.y1 + 6.0).min(self.detail_rect.y1 - ph - 8.0);
-                let pr = Rect::new(px, py, px + pw, py + ph);
-                fill_round(scene, t, c.surfaces.raised, pr.inflate(8.0, 8.0), 10.0);
-                stroke_round(scene, t, c.border_standard, pr.inflate(8.0, 8.0), 10.0, 1.0);
-                picker.apply_layout_external(pr);
-                picker.draw(scene, t, tr, theme, presence);
-                let guard = pr.inflate(8.0, 8.0);
-                hits.push((guard, Action::OpenPopover(self.popover)));
-            }
-            FormPopover::Calendar => {
-                let options = self.calendar_options();
-                let current = match self.selection {
-                    Some(Sel::Event(id)) => {
-                        self.model.event(id).and_then(|e| e.calendar_id.clone())
-                    }
-                    _ => None,
-                };
-                let row_h = 34.0;
-                let pw = anchor.width();
-                let ph = row_h * options.len() as f64 + 8.0;
-                let px = anchor.x0;
-                let py = (anchor.y1 + 6.0).min(self.detail_rect.y1 - ph - 8.0);
-                let pr = Rect::new(px, py, px + pw, py + ph);
-                fill_round(scene, t, c.surfaces.raised, pr, 10.0);
-                stroke_round(scene, t, c.border_standard, pr, 10.0, 1.0);
-                // Backing guard FIRST so a click on padding doesn't dismiss;
-                // the per-row targets are pushed after it and (last-wins hit
-                // resolution) take precedence over the guard.
-                hits.push((pr, Action::OpenPopover(FormPopover::Calendar)));
-                for (i, (target, label)) in options.iter().enumerate() {
-                    let ry = pr.y0 + 4.0 + i as f64 * row_h;
-                    let rr = Rect::new(pr.x0 + 4.0, ry, pr.x1 - 4.0, ry + row_h);
-                    let is_current = match target {
-                        CalTarget::Local => current.is_none(),
-                        CalTarget::Remote(cid) => current.as_deref() == Some(cid.as_str()),
-                    };
-                    if rr.contains(self.last_mouse) || is_current {
-                        fill_round(scene, t, c.surface_white_10, rr, 6.0);
-                    }
-                    tr.draw_text(
-                        scene,
-                        label,
-                        13.0,
-                        c.text_primary,
-                        t * Affine::translate((rr.x0 + 12.0, rr.center().y - 7.0)),
-                        Some((rr.width() - 40.0) as f32),
-                    );
-                    if is_current {
-                        draw_check(
-                            scene,
-                            t,
-                            c.accent[5],
-                            Rect::new(
-                                rr.x1 - 24.0,
-                                rr.center().y - 7.0,
-                                rr.x1 - 10.0,
-                                rr.center().y + 7.0,
-                            ),
-                        );
-                    }
-                    hits.push((rr, Action::PickCalendar(target.clone())));
-                }
-            }
-            FormPopover::None => {}
-        }
-        hits
+        self.event_popovers.draw(
+            scene,
+            t,
+            tr,
+            theme,
+            presence,
+            self.detail_rect,
+            PopoverAnchors {
+                start_date: self.form.start_date,
+                end_date: self.form.end_date,
+                calendar: self.form.calendar,
+            },
+            self.last_mouse,
+            &options,
+            current,
+        );
+        Vec::new()
     }
 
     fn draw_status(
@@ -5160,7 +4935,7 @@ impl Widget for CalendarApp {
         // shows).
         let editor_active = self.detail_open && self.detail_rect.area() > 0.0;
         let form_active = editor_active && matches!(self.selection, Some(Sel::Event(_)));
-        let popover_open = form_active && self.popover != FormPopover::None;
+        let popover_open = form_active && self.event_popovers.is_open();
         // Bounded to the notes column of the detail card/page so a click below
         // or beside a floating modal isn't swallowed by the editor.
         let in_notes = editor_active && self.notes_region().contains(self.last_mouse);
@@ -5577,7 +5352,14 @@ pub(crate) fn fill_round(scene: &mut Scene, t: Affine, color: Color, r: Rect, ra
     );
 }
 
-fn stroke_round(scene: &mut Scene, t: Affine, color: Color, r: Rect, radius: f64, w: f64) {
+pub(crate) fn stroke_round(
+    scene: &mut Scene,
+    t: Affine,
+    color: Color,
+    r: Rect,
+    radius: f64,
+    w: f64,
+) {
     scene.stroke(
         &Stroke::new(w),
         t,
@@ -5797,7 +5579,7 @@ fn draw_trash(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     );
 }
 
-fn draw_check(scene: &mut Scene, t: Affine, color: Color, r: Rect) {
+pub(crate) fn draw_check(scene: &mut Scene, t: Affine, color: Color, r: Rect) {
     let mut p = BezPath::new();
     p.move_to(Point::new(r.x0 + r.width() * 0.22, r.center().y));
     p.line_to(Point::new(
@@ -8182,7 +7964,7 @@ mod tests {
             .expect("the start-date field opens a popover");
         h.click(p);
         assert_eq!(
-            h.app.popover,
+            h.app.event_popovers.active(),
             FormPopover::StartDate,
             "the date grid is open"
         );
@@ -8208,7 +7990,7 @@ mod tests {
             .hit_center(|a| matches!(a, Action::OpenPopover(FormPopover::StartTime)))
             .expect("the start-time field opens a popover");
         h.click(p);
-        assert_eq!(h.app.popover, FormPopover::StartTime);
+        assert_eq!(h.app.event_popovers.active(), FormPopover::StartTime);
         h.press_named(winit::keyboard::NamedKey::ArrowUp);
         let after_h = h.app.model.event(id).unwrap().start.hour();
         assert_eq!(
@@ -8244,11 +8026,12 @@ mod tests {
             .hit_center(|a| matches!(a, Action::OpenPopover(FormPopover::Calendar)))
             .expect("the calendar field opens a selector");
         h.click(p);
-        assert_eq!(h.app.popover, FormPopover::Calendar);
+        assert_eq!(h.app.event_popovers.active(), FormPopover::Calendar);
         h.relayout(); // draw the list so its row targets populate
-        let p2 = h
-            .hit_center(|a| matches!(a, Action::PickCalendar(CalTarget::Remote(cid)) if cid == "work/default"))
-            .expect("a configured remote calendar appears in the list");
+        // Local is row 0; the first configured remote calendar is row 1.
+        let options_h = 34.0 * h.app.calendar_options().len() as f64 + 8.0;
+        let list_y = (h.app.form.calendar.y1 + 6.0).min(h.app.detail_rect.y1 - options_h - 8.0);
+        let p2 = Point::new(h.app.form.calendar.center().x, list_y + 4.0 + 34.0 + 17.0);
         h.click(p2);
         assert_eq!(
             h.app.model.event(id).unwrap().calendar_id.as_deref(),
@@ -8260,7 +8043,7 @@ mod tests {
             "creating on a CalDAV calendar queues the event for upload"
         );
         assert_eq!(
-            h.app.popover,
+            h.app.event_popovers.active(),
             FormPopover::None,
             "picking a calendar closes the selector"
         );

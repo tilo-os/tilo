@@ -157,6 +157,8 @@ pub(crate) fn connect_from_env() -> Result<SigningIdentity, NotAvailable> {
         display_name: metadata.display_name,
         avatar_color: metadata.avatar_color,
         group_public_key: metadata.group_public_key,
+        signing_public_key: metadata.group_public_key,
+        device_certificate: None,
         threshold: metadata.threshold,
         total_shares: metadata.total_shares,
         share_index: metadata.share_index,
