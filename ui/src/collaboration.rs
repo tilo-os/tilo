@@ -990,22 +990,22 @@ fn config_identity_path() -> Option<std::path::PathBuf> {
 /// A public key rendered as a person, in the one canonical form — so this
 /// string and the compositor's string for the same key are the same string.
 fn person_id_from_key(key: [u8; 32]) -> String {
-    match crate::permissions::Principal::person_from_key(
-        collab_types::crypto::Ed25519PublicKey::from_bytes(key),
-    ) {
-        crate::permissions::Principal::Person(id) => id,
-        // `person_from_key` constructs `Person` unconditionally; this arm
-        // exists only because the return type is the whole enum. Recompute
-        // the same canonical lowercase-hex form directly rather than panic
-        // on a branch that should never run.
-        _ => {
-            let mut s = String::with_capacity(64);
-            for b in &key {
-                use std::fmt::Write as _;
-                let _ = write!(s, "{b:02x}");
-            }
-            s
+    // `person_from_key` constructs `Person` unconditionally, so the else
+    // branch cannot run. It recomputes the same canonical lowercase-hex form
+    // directly rather than panic on a branch that should never be reached.
+    if let crate::permissions::Principal::Person(id) =
+        crate::permissions::Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(key),
+        )
+    {
+        id
+    } else {
+        use std::fmt::Write as _;
+        let mut s = String::with_capacity(64);
+        for b in &key {
+            let _ = write!(s, "{b:02x}");
         }
+        s
     }
 }
 
