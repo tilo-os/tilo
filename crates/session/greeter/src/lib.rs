@@ -11,6 +11,19 @@
 //! * [`auth`] — background auth worker + the UI-facing update protocol.
 //! * [`greeter_app`] — the root [`GreeterApp`] `Widget` (the login card).
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod auth;
 pub mod greetd_client;
 pub mod greeter_app;

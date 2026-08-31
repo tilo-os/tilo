@@ -42,16 +42,19 @@ impl CheckboxFace {
         }
     }
 
+    #[must_use]
     pub fn hovered(mut self, hovered: bool) -> Self {
         self.interact.hovered = hovered;
         self
     }
 
+    #[must_use]
     pub fn focused(mut self, focused: bool) -> Self {
         self.interact.focused = focused;
         self
     }
 
+    #[must_use]
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.interact.disabled = disabled;
         self
@@ -59,12 +62,19 @@ impl CheckboxFace {
 
     /// Let the surrounding canvas provide the unchecked background. Useful
     /// for checkboxes embedded in rows and cards rather than standalone forms.
+    #[must_use]
     pub fn transparent_unchecked(mut self) -> Self {
         self.fill_unchecked = false;
         self
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag (is_hovered, is_checked, is_focused, enabled) is an independent piece of \
+              widget state — pointer hover, CRDT-synced checked value, keyboard focus, and \
+              build-time disabled config — not a combinatorial options API"
+)]
 pub struct Checkbox {
     _id: String,
     rect: Rect,
@@ -102,12 +112,14 @@ impl Checkbox {
     }
 
     /// Opt this widget into presence tracking by binding it to a CRDT-style path.
+    #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
     /// Gate this widget behind a permission scope.
+    #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -117,6 +129,7 @@ impl Checkbox {
     /// custom id the checkbox reports `"checkbox"`; callers with multiple
     /// checkboxes in the same surface can disambiguate them, e.g.
     /// `with_id("remember_me")`.
+    #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id_override = Some(id.to_string());
         self
@@ -124,6 +137,7 @@ impl Checkbox {
 
     /// Set the enabled state at build time. A disabled checkbox is skipped
     /// by focus, rejects input and renders dimmed. Default `true`.
+    #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -131,6 +145,7 @@ impl Checkbox {
 
     /// Give a label-less checkbox a spoken name so a screen reader
     /// announces what it controls rather than just "checkbox, checked".
+    #[must_use]
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         self.accessible_name = Some(name.to_string());
         self

@@ -69,14 +69,14 @@ mod tests {
 
     /// Pump one event through the production `Widget::handle_event`, returning
     /// whether it was consumed.
-    fn send(app: &mut TypstApp, doc: &mut AutoCommit, ev: &WindowEvent, mods: &Modifiers) -> bool {
+    fn send(app: &mut TypstApp, doc: &mut AutoCommit, ev: &WindowEvent, mods: Modifiers) -> bool {
         let taffy = TaffyTree::<()>::new();
         let mut handled = false;
         let mut focus = None;
         app.handle_event(
             ev,
             1.0,
-            mods,
+            &mods,
             doc,
             &ROOT,
             &mut handled,
@@ -144,7 +144,7 @@ mod tests {
         // No modifiers → the keystroke falls through to the focused editor, which
         // splices it into the bound source object on the CRDT-native text path.
         assert!(
-            send(&mut app, &mut doc, &char_event("Z"), &Modifiers::default()),
+            send(&mut app, &mut doc, &char_event("Z"), Modifiers::default()),
             "keystroke consumed by the editor"
         );
         doc.commit();
@@ -180,7 +180,7 @@ mod tests {
 
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
         assert!(
-            send(&mut app, &mut doc, &char_event("]"), &ctrl),
+            send(&mut app, &mut doc, &char_event("]"), ctrl),
             "Ctrl+] consumed"
         );
 

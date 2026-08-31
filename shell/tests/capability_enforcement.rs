@@ -7,6 +7,16 @@
 //! deliberately toward **denial**: "does deny work?", not just "does
 //! allow work?".
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use shell::shell::persist;
 use shell::shell::state::{
     CapOverride, Capability, Effect, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,
@@ -543,7 +553,7 @@ fn the_portal_denies_an_app_a_path_it_was_never_granted() {
 
     assert!(store.insert(
         &caller,
-        Capability::Filesystem {
+        &Capability::Filesystem {
             path: "/var/workspace/books".into(),
             mode: FsMode::Read,
             scope: GRANT_ALWAYS,

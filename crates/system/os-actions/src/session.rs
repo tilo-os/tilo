@@ -13,6 +13,12 @@ pub enum SessionAction {
     ShutDown,
 }
 
+/// Run the shell-out backing `action`.
+///
+/// # Errors
+///
+/// Returns an error message if `loginctl`/`systemctl` is not installed, is not authorised, or
+/// the command otherwise fails.
 pub fn perform_session_action(action: SessionAction) -> Result<(), String> {
     match action {
         SessionAction::Lock => run("loginctl", &["lock-session"]),

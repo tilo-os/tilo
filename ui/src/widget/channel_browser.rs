@@ -177,20 +177,24 @@ impl ChannelBrowser {
         if self.visible.is_empty() {
             self.cursor = 0;
         } else {
-            self.cursor = idx.min(self.visible.len() - 1);
+            self.cursor = idx.min(self.visible.len().saturating_sub(1));
         }
         self.dirty = true;
     }
 
     pub fn selected_entry(&self) -> Option<&ChannelEntry> {
-        self.visible.get(self.cursor).map(|&i| &self.entries[i])
+        self.visible
+            .get(self.cursor)
+            .and_then(|&i| self.entries.get(i))
     }
 
+    #[must_use]
     pub fn on_select<F: FnMut(&ChannelEntry) + 'static>(mut self, f: F) -> Self {
         self.on_select = Some(Box::new(f));
         self
     }
 
+    #[must_use]
     pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_dismiss = Some(Box::new(f));
         self
@@ -212,7 +216,7 @@ impl ChannelBrowser {
     }
 
     pub fn visible_entry(&self, i: usize) -> Option<&ChannelEntry> {
-        self.visible.get(i).map(|&j| &self.entries[j])
+        self.visible.get(i).and_then(|&j| self.entries.get(j))
     }
 
     /// Same alphabetical ordering as [`Self::space_pills`], filtered
@@ -221,7 +225,8 @@ impl ChannelBrowser {
         let mut names: Vec<String> = self
             .visible
             .iter()
-            .map(|&i| self.entries[i].space_name.clone())
+            .filter_map(|&i| self.entries.get(i))
+            .map(|e| e.space_name.clone())
             .collect();
         // `rebuild` sorts entries so identical space_names land
         // contiguously, so a stable dedup is enough here.
@@ -252,8 +257,13 @@ impl ChannelBrowser {
             self.visible.push(i);
         }
         self.visible.sort_by(|a, b| {
-            let ea = &self.entries[*a];
-            let eb = &self.entries[*b];
+            // `visible` only ever holds indices this same rebuild pushed
+            // from `entries.iter().enumerate()`, so both lookups always
+            // hit; the `else` arm exists only so a future change can't
+            // turn a stale index into a panic.
+            let (Some(ea), Some(eb)) = (self.entries.get(*a), self.entries.get(*b)) else {
+                return std::cmp::Ordering::Equal;
+            };
             ea.space_name
                 .cmp(&eb.space_name)
                 .then_with(|| eb.is_pinned.cmp(&ea.is_pinned))
@@ -303,7 +313,10 @@ impl ChannelBrowser {
         let max_y = self.footer_rect().y0 - PADDING;
         let mut last_space: Option<&str> = None;
         for (vi, &ei) in self.visible.iter().enumerate() {
-            let space = self.entries[ei].space_name.as_str();
+            let Some(entry) = self.entries.get(ei) else {
+                continue;
+            };
+            let space = entry.space_name.as_str();
             let header = if Some(space) == last_space {
                 None
             } else {
@@ -426,11 +439,11 @@ impl ChannelBrowser {
                 label,
                 pill_text_size,
                 color,
-                transform
-                    * Affine::translate((
-                        rect.x0 + (rect.width() - f64::from(lw2)) / 2.0,
-                        rect.y0 + (rect.height() - f64::from(lh2)) / 2.0,
-                    )),
+                translated(
+                    transform,
+                    rect.x0 + (rect.width() - f64::from(lw2)) / 2.0,
+                    rect.y0 + (rect.height() - f64::from(lh2)) / 2.0,
+                ),
                 None,
             );
             rects.push((label.to_string(), rect));
@@ -459,9 +472,12 @@ impl ChannelBrowser {
         }
     }
 
+    /// Selection highlight, space-colour band, pin glyph and name — the
+    /// row's identity. Role chip and time/badge are split into their own
+    /// helpers below to keep this under clippy's line budget; neither
+    /// reads `self`, so both are associated functions.
     #[allow(clippy::too_many_arguments)]
     fn draw_row(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -517,7 +533,7 @@ impl ChannelBrowser {
                 PIN_GLYPH,
                 text_size,
                 theme.tokens.colors.accent[5],
-                transform * Affine::translate((x_cursor, cy - f64::from(text_size) / 2.0)),
+                translated(transform, x_cursor, cy - f64::from(text_size) / 2.0),
                 None,
             );
             x_cursor += f64::from(gw) + 4.0;
@@ -528,52 +544,86 @@ impl ChannelBrowser {
             entry.name.as_str(),
             text_size,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((x_cursor, cy - f64::from(text_size) / 2.0)),
+            translated(transform, x_cursor, cy - f64::from(text_size) / 2.0),
             None,
         );
         let (nw, _) = text_renderer.measure(entry.name.as_str(), text_size, None);
         x_cursor += f64::from(nw) + 8.0;
 
         if let Some(role) = &entry.role_label {
-            let chip_text_size = (text_size - 2.0).max(10.0);
-            let (lw, _) = text_renderer.measure(role, chip_text_size, None);
-            let chip_w = (f64::from(lw) + 12.0).min(ROLE_CHIP_W);
-            let chip_h = (row.height() - 16.0).max(16.0);
-            let chip = Rect::new(
-                x_cursor,
-                cy - chip_h / 2.0,
-                x_cursor + chip_w,
-                cy + chip_h / 2.0,
-            );
-            let shape = RoundedRect::from_rect(chip, chip_h / 2.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.surface_white_5,
-                None,
-                &shape,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.border_white_10,
-                None,
-                &shape,
-            );
-            let (lw2, lh2) = text_renderer.measure(role, chip_text_size, None);
-            text_renderer.draw_text(
-                scene,
-                role,
-                chip_text_size,
-                theme.tokens.colors.text_dim,
-                transform
-                    * Affine::translate((
-                        chip.x0 + (chip.width() - f64::from(lw2)) / 2.0,
-                        chip.y0 + (chip.height() - f64::from(lh2)) / 2.0,
-                    )),
-                None,
-            );
+            Self::draw_role_chip(scene, transform, text_renderer, theme, row, role, x_cursor);
         }
+
+        Self::draw_time_and_unread(scene, transform, text_renderer, theme, row, entry, now);
+    }
+
+    /// The role chip painted after the channel name; split out of
+    /// [`Self::draw_row`] to keep it under clippy's line budget.
+    fn draw_role_chip(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        role: &str,
+        x_cursor: f64,
+    ) {
+        let text_size = theme.tokens.typography.scale.sm;
+        let cy = f64::midpoint(row.y0, row.y1);
+        let chip_text_size = (text_size - 2.0).max(10.0);
+        let (lw, _) = text_renderer.measure(role, chip_text_size, None);
+        let chip_w = (f64::from(lw) + 12.0).min(ROLE_CHIP_W);
+        let chip_h = (row.height() - 16.0).max(16.0);
+        let chip = Rect::new(
+            x_cursor,
+            cy - chip_h / 2.0,
+            x_cursor + chip_w,
+            cy + chip_h / 2.0,
+        );
+        let shape = RoundedRect::from_rect(chip, chip_h / 2.0);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surface_white_5,
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_white_10,
+            None,
+            &shape,
+        );
+        let (lw2, lh2) = text_renderer.measure(role, chip_text_size, None);
+        text_renderer.draw_text(
+            scene,
+            role,
+            chip_text_size,
+            theme.tokens.colors.text_dim,
+            translated(
+                transform,
+                chip.x0 + (chip.width() - f64::from(lw2)) / 2.0,
+                chip.y0 + (chip.height() - f64::from(lh2)) / 2.0,
+            ),
+            None,
+        );
+    }
+
+    /// Relative-time label and unread badge at the row's trailing edge;
+    /// split out of [`Self::draw_row`] to keep it under clippy's line
+    /// budget.
+    fn draw_time_and_unread(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        entry: &ChannelEntry,
+        now: SystemTime,
+    ) {
+        let text_size = theme.tokens.typography.scale.sm;
+        let cy = f64::midpoint(row.y0, row.y1);
 
         // Right-aligned before the unread badge slot.
         let rel = crate::widget::history::format_relative_time(entry.last_activity, now);
@@ -584,7 +634,7 @@ impl ChannelBrowser {
             &rel,
             text_size,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((time_x, cy - f64::from(text_size) / 2.0)),
+            translated(transform, time_x, cy - f64::from(text_size) / 2.0),
             None,
         );
 
@@ -618,11 +668,11 @@ impl ChannelBrowser {
                 &badge_text,
                 badge_text_size,
                 theme.tokens.colors.text_primary,
-                transform
-                    * Affine::translate((
-                        badge.x0 + (badge.width() - f64::from(lw)) / 2.0,
-                        badge.y0 + (badge.height() - f64::from(lh)) / 2.0,
-                    )),
+                translated(
+                    transform,
+                    badge.x0 + (badge.width() - f64::from(lw)) / 2.0,
+                    badge.y0 + (badge.height() - f64::from(lh)) / 2.0,
+                ),
                 None,
             );
             // Silences an unused-constant warning; TIME_SLOT_W is
@@ -631,9 +681,9 @@ impl ChannelBrowser {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Doesn't read `self`: an associated function, not a method (clippy
+    /// `unused_self`).
     fn draw_space_header(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -663,7 +713,7 @@ impl ChannelBrowser {
             space_name,
             text_size,
             theme.tokens.colors.text_dim,
-            transform * Affine::translate((band.x1 + 6.0, cy - f64::from(text_size) / 2.0)),
+            translated(transform, band.x1 + 6.0, cy - f64::from(text_size) / 2.0),
             None,
         );
     }
@@ -723,11 +773,11 @@ impl ChannelBrowser {
                 key,
                 chip_text_size,
                 dim,
-                transform
-                    * Affine::translate((
-                        chip_rect.x0 + (chip_rect.width() - f64::from(kw)) / 2.0,
-                        chip_rect.y0 + (chip_rect.height() - f64::from(kh)) / 2.0,
-                    )),
+                translated(
+                    transform,
+                    chip_rect.x0 + (chip_rect.width() - f64::from(kw)) / 2.0,
+                    chip_rect.y0 + (chip_rect.height() - f64::from(kh)) / 2.0,
+                ),
                 None,
             );
             x = chip_rect.x1 + 4.0;
@@ -737,7 +787,7 @@ impl ChannelBrowser {
                 label,
                 chip_text_size,
                 dim,
-                transform * Affine::translate((x, cy - f64::from(lh) / 2.0)),
+                translated(transform, x, cy - f64::from(lh) / 2.0),
                 None,
             );
             x += f64::from(lw) + 12.0;
@@ -752,20 +802,174 @@ impl ChannelBrowser {
                 .space_pills()
                 .iter()
                 .position(|n| n == name)
-                .map_or(0, |i| i + 1),
+                .map_or(0, |i| i.saturating_add(1)),
         }
     }
 
     fn set_active_pill_index(&mut self, idx: usize) {
         let pills = self.space_pills();
-        let total = pills.len() + 1;
-        let clamped = idx.min(total - 1);
+        let total = pills.len().saturating_add(1);
+        let clamped = idx.min(total.saturating_sub(1));
         let new_filter = if clamped == 0 {
             None
         } else {
-            Some(pills[clamped - 1].clone())
+            clamped.checked_sub(1).and_then(|i| pills.get(i)).cloned()
         };
         self.set_space_filter(new_filter);
+    }
+
+    /// Cursor-move and click branches of `handle_event`; split out to
+    /// keep the dispatcher under clippy's line budget. Runs regardless of
+    /// focus so click-to-select on pills/rows works even when the search
+    /// input doesn't have it.
+    fn handle_pointer_event(&mut self, event: &WindowEvent, scale_factor: f64, handled: &mut bool) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // Pill strip steals clicks before the row list.
+                let p = self.last_cursor;
+                let pill_hit = self
+                    .pill_rects
+                    .iter()
+                    .find(|(_, r)| r.contains(p))
+                    .map(|(l, _)| l.clone());
+                if let Some(label) = pill_hit {
+                    if label == "All" {
+                        self.set_space_filter(None);
+                    } else {
+                        self.set_space_filter(Some(label));
+                    }
+                    *handled = true;
+                    return;
+                }
+                if let Some(i) = self.row_at(p) {
+                    self.cursor = i;
+                    self.dirty = true;
+                    if let Some(entry) = self.selected_entry() {
+                        // Clone to drop the immutable borrow before
+                        // the FnMut callback needs `&mut self.on_select`.
+                        let entry = entry.clone();
+                        if let Some(cb) = self.on_select.as_mut() {
+                            cb(&entry);
+                        }
+                    }
+                    *handled = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Keyboard branch of `handle_event`, reached only once focused, not
+    /// mid-IME-composition, and the key is a fresh press. Split out to
+    /// keep the dispatcher under clippy's line budget.
+    fn handle_key_press(
+        &mut self,
+        event: &WindowEvent,
+        logical_key: &Key,
+        shift: bool,
+        ctrl: bool,
+        handled: &mut bool,
+    ) {
+        match logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                if !self.visible.is_empty() {
+                    self.cursor = self
+                        .cursor
+                        .saturating_add(1)
+                        .min(self.visible.len().saturating_sub(1));
+                    self.dirty = true;
+                    *handled = true;
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                if self.cursor > 0 {
+                    self.cursor = self.cursor.saturating_sub(1);
+                    self.dirty = true;
+                    *handled = true;
+                }
+            }
+            Key::Named(NamedKey::Enter) => {
+                if let Some(entry) = self.selected_entry() {
+                    let entry = entry.clone();
+                    if let Some(cb) = self.on_select.as_mut() {
+                        cb(&entry);
+                    }
+                    *handled = true;
+                }
+            }
+            Key::Named(NamedKey::Escape) => {
+                if let Some(cb) = self.on_dismiss.as_mut() {
+                    cb();
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                // Caret moves first; at position 0 with no shift
+                // selection, cycle the active pill instead.
+                let pos = self.query_selection.cursor;
+                if pos == 0 && self.query_selection.is_collapsed() && !shift {
+                    let idx = self.active_pill_index();
+                    let total = self.space_pills().len().saturating_add(1);
+                    let new_idx = if idx == 0 {
+                        total.saturating_sub(1)
+                    } else {
+                        idx.saturating_sub(1)
+                    };
+                    self.set_active_pill_index(new_idx);
+                } else {
+                    self.query_composition.handle_event(
+                        event,
+                        &mut self.query,
+                        &mut self.query_selection,
+                        shift,
+                        ctrl,
+                    );
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                let pos = self.query_selection.cursor;
+                if pos == self.query.len() && self.query_selection.is_collapsed() && !shift {
+                    let idx = self.active_pill_index();
+                    let total = self.space_pills().len().saturating_add(1);
+                    let new_idx = idx.saturating_add(1).checked_rem(total).unwrap_or(0);
+                    self.set_active_pill_index(new_idx);
+                } else {
+                    self.query_composition.handle_event(
+                        event,
+                        &mut self.query,
+                        &mut self.query_selection,
+                        shift,
+                        ctrl,
+                    );
+                }
+                *handled = true;
+            }
+            _ => {
+                let change = self.query_composition.handle_event(
+                    event,
+                    &mut self.query,
+                    &mut self.query_selection,
+                    shift,
+                    ctrl,
+                );
+                if change == QueryEventChange::Edited {
+                    self.rebuild();
+                } else if change == QueryEventChange::Display {
+                    self.dirty = true;
+                }
+                if change != QueryEventChange::Ignored {
+                    *handled = true;
+                }
+            }
+        }
     }
 }
 
@@ -781,13 +985,14 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     let mut gaps = 0i32;
     let mut prev_match: Option<usize> = None;
     for (ti, ch) in t.iter().enumerate() {
-        if qi < q.len() && *ch == q[qi] {
+        if q.get(qi) == Some(ch) {
             if let Some(pm) = prev_match {
-                gaps += (ti - pm - 1) as i32;
+                let gap = ti.saturating_sub(pm).saturating_sub(1);
+                gaps = gaps.saturating_add(i32::try_from(gap).unwrap_or(i32::MAX));
             }
             prev_match = Some(ti);
-            qi += 1;
-            matches += 1;
+            qi = qi.saturating_add(1);
+            matches = matches.saturating_add(1);
             if qi == q.len() {
                 break;
             }
@@ -796,8 +1001,39 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     if qi < q.len() {
         None
     } else {
-        Some(matches - gaps)
+        Some(matches.saturating_sub(gaps))
     }
+}
+
+/// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
+/// pure `f64` matrix multiply-add with no overflow trap, so it cannot
+/// panic regardless of operand magnitude — centralised here rather than
+/// repeating the exemption at every text transform in this widget.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is float matrix math and cannot panic"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
+/// Widens a row/entry count to `f64` for layout math. Goes through `u32`
+/// (exactly representable in `f64`) with a saturating fallback rather than
+/// an `as` cast, so it's lossless for any realistic list length.
+fn rows_to_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// Narrows a layout dimension to `f32` for taffy. The only call site is
+/// this sheet's overall height, always many orders of magnitude below
+/// `f32::MAX`, so the truncation the lint warns about can't actually
+/// occur.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "sheet layout height in this widget never approaches f32::MAX"
+)]
+fn px(v: f64) -> f32 {
+    v as f32
 }
 
 impl Widget for ChannelBrowser {
@@ -812,17 +1048,17 @@ impl Widget for ChannelBrowser {
         // The host typically positions the sheet inside an overlay
         // container that hands it a final rect via apply_layout; this
         // returns a sensible standalone default.
-        let rows = self.visible.len().max(1) as f32;
-        let height = (PADDING as f32) * 4.0
-            + INPUT_HEIGHT as f32
-            + FILTER_STRIP_HEIGHT as f32
-            + (rows * ROW_HEIGHT as f32).min(10.0 * ROW_HEIGHT as f32)
-            + FOOTER_HEIGHT as f32
-            + SPACE_HEADER_HEIGHT as f32;
+        let rows = rows_to_f64(self.visible.len().max(1));
+        let height = PADDING * 4.0
+            + INPUT_HEIGHT
+            + FILTER_STRIP_HEIGHT
+            + (rows * ROW_HEIGHT).min(10.0 * ROW_HEIGHT)
+            + FOOTER_HEIGHT
+            + SPACE_HEADER_HEIGHT;
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(640.0),
-                height: Dimension::length(height),
+                height: Dimension::length(px(height)),
             },
             ..Default::default()
         });
@@ -883,7 +1119,7 @@ impl Widget for ChannelBrowser {
                 label,
                 size,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((cx - f64::from(w) / 2.0, cy - f64::from(h) / 2.0)),
+                translated(transform, cx - f64::from(w) / 2.0, cy - f64::from(h) / 2.0),
                 None,
             );
             self.draw_footer(scene, transform, text_renderer, theme);
@@ -894,9 +1130,19 @@ impl Widget for ChannelBrowser {
         let now = self.now();
         let layout = self.iter_row_layout();
         for (vi, row, header) in layout {
+            // `iter_row_layout` only yields `vi` values it read out of
+            // `self.visible` itself, and `visible` only ever holds
+            // indices into `self.entries` — both lookups always hit;
+            // the `continue` exists only so a future change can't turn
+            // a stale index into a panic.
+            let Some(&ei) = self.visible.get(vi) else {
+                continue;
+            };
+            let Some(entry) = self.entries.get(ei) else {
+                continue;
+            };
             if let Some(hr) = header {
-                let entry = &self.entries[self.visible[vi]];
-                self.draw_space_header(
+                Self::draw_space_header(
                     scene,
                     transform,
                     text_renderer,
@@ -906,9 +1152,8 @@ impl Widget for ChannelBrowser {
                     entry.space_color_hue,
                 );
             }
-            let entry = &self.entries[self.visible[vi]];
             let is_selected = vi == self.cursor;
-            self.draw_row(
+            Self::draw_row(
                 scene,
                 transform,
                 text_renderer,
@@ -938,47 +1183,7 @@ impl Widget for ChannelBrowser {
     ) {
         // Mouse branches go first so click-to-select on pills/rows
         // works even when the input has focus.
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                // Pill strip steals clicks before the row list.
-                let p = self.last_cursor;
-                let pill_hit = self
-                    .pill_rects
-                    .iter()
-                    .find(|(_, r)| r.contains(p))
-                    .map(|(l, _)| l.clone());
-                if let Some(label) = pill_hit {
-                    if label == "All" {
-                        self.set_space_filter(None);
-                    } else {
-                        self.set_space_filter(Some(label));
-                    }
-                    *handled = true;
-                    return;
-                }
-                if let Some(i) = self.row_at(p) {
-                    self.cursor = i;
-                    self.dirty = true;
-                    if let Some(entry) = self.selected_entry() {
-                        // Clone to drop the immutable borrow before
-                        // the FnMut callback needs `&mut self.on_select`.
-                        let entry = entry.clone();
-                        if let Some(cb) = self.on_select.as_mut() {
-                            cb(&entry);
-                        }
-                    }
-                    *handled = true;
-                }
-            }
-            _ => {}
-        }
+        self.handle_pointer_event(event, scale_factor, handled);
 
         if !self.is_focused {
             return;
@@ -1017,92 +1222,7 @@ impl Widget for ChannelBrowser {
         let mods = modifiers.state();
         let shift = mods.shift_key();
         let ctrl = mods.control_key() || mods.super_key();
-        match logical_key {
-            Key::Named(NamedKey::ArrowDown) => {
-                if !self.visible.is_empty() {
-                    self.cursor = (self.cursor + 1).min(self.visible.len() - 1);
-                    self.dirty = true;
-                    *handled = true;
-                }
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                if self.cursor > 0 {
-                    self.cursor -= 1;
-                    self.dirty = true;
-                    *handled = true;
-                }
-            }
-            Key::Named(NamedKey::Enter) => {
-                if let Some(entry) = self.selected_entry() {
-                    let entry = entry.clone();
-                    if let Some(cb) = self.on_select.as_mut() {
-                        cb(&entry);
-                    }
-                    *handled = true;
-                }
-            }
-            Key::Named(NamedKey::Escape) => {
-                if let Some(cb) = self.on_dismiss.as_mut() {
-                    cb();
-                }
-                *handled = true;
-            }
-            Key::Named(NamedKey::ArrowLeft) => {
-                // Caret moves first; at position 0 with no shift
-                // selection, cycle the active pill instead.
-                let pos = self.query_selection.cursor;
-                if pos == 0 && self.query_selection.is_collapsed() && !shift {
-                    let idx = self.active_pill_index();
-                    let total = self.space_pills().len() + 1;
-                    let new_idx = if idx == 0 { total - 1 } else { idx - 1 };
-                    self.set_active_pill_index(new_idx);
-                } else {
-                    self.query_composition.handle_event(
-                        event,
-                        &mut self.query,
-                        &mut self.query_selection,
-                        shift,
-                        ctrl,
-                    );
-                }
-                *handled = true;
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                let pos = self.query_selection.cursor;
-                if pos == self.query.len() && self.query_selection.is_collapsed() && !shift {
-                    let idx = self.active_pill_index();
-                    let total = self.space_pills().len() + 1;
-                    let new_idx = (idx + 1) % total;
-                    self.set_active_pill_index(new_idx);
-                } else {
-                    self.query_composition.handle_event(
-                        event,
-                        &mut self.query,
-                        &mut self.query_selection,
-                        shift,
-                        ctrl,
-                    );
-                }
-                *handled = true;
-            }
-            _ => {
-                let change = self.query_composition.handle_event(
-                    event,
-                    &mut self.query,
-                    &mut self.query_selection,
-                    shift,
-                    ctrl,
-                );
-                if change == QueryEventChange::Edited {
-                    self.rebuild();
-                } else if change == QueryEventChange::Display {
-                    self.dirty = true;
-                }
-                if change != QueryEventChange::Ignored {
-                    *handled = true;
-                }
-            }
-        }
+        self.handle_key_press(event, logical_key, shift, ctrl, handled);
     }
 
     fn name(&self) -> &'static str {
@@ -1183,7 +1303,9 @@ mod tests {
             space_name: space.into(),
             space_color_hue: hue,
             name: name.into(),
-            last_activity: SystemTime::UNIX_EPOCH + Duration::from_secs(ts),
+            last_activity: SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(ts))
+                .expect("test timestamp fits in SystemTime"),
             unread_count: unread,
             is_pinned: pinned,
             role_label: role.map(str::to_string),
@@ -1193,7 +1315,11 @@ mod tests {
     fn browser_at(rect: Rect, entries: Vec<ChannelEntry>) -> ChannelBrowser {
         let mut b = ChannelBrowser::with_entries(entries);
         b.rect = rect;
-        b.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(10_000_000));
+        b.set_now_for_test(
+            SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(10_000_000))
+                .expect("test timestamp fits in SystemTime"),
+        );
         b
     }
 

@@ -1,3 +1,13 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -66,7 +76,7 @@ async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture 
     let store = Arc::new(ContentStore::memory());
     let body = b"contents";
     let hash = store.write_content(body).await.unwrap().unwrap();
-    let namespace = Arc::new(Mutex::new(Namespace::new("cap-peer")));
+    let namespace = Arc::new(Mutex::new(Namespace::new("cap-peer").unwrap()));
 
     let (docs, docs_child, other_child, look_alike_child) = {
         let mut ns = namespace.lock().unwrap();
@@ -84,6 +94,7 @@ async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture 
         let look_alike_child = ns
             .create_file(look_alike, "leak.md", Some(&hash), body.len() as u64, 1)
             .unwrap();
+        drop(ns);
         (docs, docs_child, other_child, look_alike_child)
     };
 
@@ -264,29 +275,6 @@ async fn a_role_wide_grant_does_not_authorise_a_path() {
 // the production path directly, so it runs everywhere.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn identity_acl_gates_the_real_fs_access_path() {
-    let store = Arc::new(ContentStore::memory());
-    let body = b"top secret";
-    let hash = store.write_content(body).await.unwrap().unwrap();
-
-    // A shared file, a secret subdir, and a file inside it.
-    let namespace = Arc::new(Mutex::new(Namespace::new("acl-peer")));
-    let (shared_ino, secret_dir_ino, secret_child_ino) = {
-        let mut ns = namespace.lock().unwrap();
-        let shared = ns
-            .create_file(ROOT_INO, "shared.txt", Some(&hash), body.len() as u64, 1)
-            .unwrap();
-        let secret_dir = ns.create_dir(ROOT_INO, "secret", 1).unwrap();
-        let secret_child = ns
-            .create_file(secret_dir, "leak.txt", Some(&hash), body.len() as u64, 1)
-            .unwrap();
-        (shared, secret_dir, secret_child)
-    };
-
-    // The ACL: Alice may read /shared.txt only. Bob may read+write /secret/**.
-    let mut acl = WorkspaceAcl::new();
-    acl.grant_read(ALICE, "/shared.txt");
-    acl.grant_read_write(BOB, "/secret");
-
     // Helper: build a fresh QuickFS over the shared namespace bound to an
     // identity (each needs its own endpoint/hydrator).
     async fn mount_as(
@@ -303,6 +291,30 @@ async fn identity_acl_gates_the_real_fs_access_path() {
             None => fs,
         }
     }
+
+    let store = Arc::new(ContentStore::memory());
+    let body = b"top secret";
+    let hash = store.write_content(body).await.unwrap().unwrap();
+
+    // A shared file, a secret subdir, and a file inside it.
+    let namespace = Arc::new(Mutex::new(Namespace::new("acl-peer").unwrap()));
+    let (shared_ino, secret_dir_ino, secret_child_ino) = {
+        let mut ns = namespace.lock().unwrap();
+        let shared = ns
+            .create_file(ROOT_INO, "shared.txt", Some(&hash), body.len() as u64, 1)
+            .unwrap();
+        let secret_dir = ns.create_dir(ROOT_INO, "secret", 1).unwrap();
+        let secret_child = ns
+            .create_file(secret_dir, "leak.txt", Some(&hash), body.len() as u64, 1)
+            .unwrap();
+        drop(ns);
+        (shared, secret_dir, secret_child)
+    };
+
+    // The ACL: Alice may read /shared.txt only. Bob may read+write /secret/**.
+    let mut acl = WorkspaceAcl::new();
+    acl.grant_read(ALICE, "/shared.txt");
+    acl.grant_read_write(BOB, "/secret");
 
     // Mount view A — bound to Alice's identity.
     let alice_fs = mount_as(namespace.clone(), Some((acl.clone(), ALICE))).await;
@@ -371,11 +383,12 @@ async fn fuse_mount_enforces_identity_acl_end_to_end() {
         let body = b"members only";
         let hash = store.write_content(body).await.unwrap().unwrap();
 
-        let namespace = Arc::new(Mutex::new(Namespace::new("acl-mount-peer")));
+        let namespace = Arc::new(Mutex::new(Namespace::new("acl-mount-peer").unwrap()));
         {
             let mut ns = namespace.lock().unwrap();
             ns.create_file(ROOT_INO, "secret.txt", Some(&hash), body.len() as u64, 1)
                 .unwrap();
+            drop(ns);
         }
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
@@ -445,7 +458,7 @@ async fn fuse_projects_tree_and_reads_real_content() {
             .expect("write_content")
             .expect("non-empty");
 
-        let namespace = Arc::new(Mutex::new(Namespace::new("test-peer")));
+        let namespace = Arc::new(Mutex::new(Namespace::new("test-peer").unwrap()));
         {
             let mut ns = namespace.lock().unwrap();
             ns.create_file(ROOT_INO, "test_file.txt", Some(&hash), body.len() as u64, 1)
@@ -453,6 +466,7 @@ async fn fuse_projects_tree_and_reads_real_content() {
             let subdir = ns.create_dir(ROOT_INO, "subdir", 1).unwrap();
             ns.create_file(subdir, "nested.txt", Some(&hash), body.len() as u64, 1)
                 .unwrap();
+            drop(ns);
         }
 
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
@@ -501,7 +515,7 @@ async fn fuse_write_create_overwrite_rename_unlink() {
 
         let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
-        let namespace = Arc::new(Mutex::new(Namespace::new("rw-peer")));
+        let namespace = Arc::new(Mutex::new(Namespace::new("rw-peer").unwrap()));
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
@@ -557,10 +571,10 @@ fn read_sync_xattr(path: &std::path::Path) -> Option<String> {
             buf.len(),
         )
     };
-    if n < 0 {
+    let Ok(n) = usize::try_from(n) else {
         return None;
-    }
-    Some(String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+    };
+    Some(String::from_utf8_lossy(&buf[..n]).into_owned())
 }
 
 // The sync-state interface end-to-end: a projected file reports
@@ -584,7 +598,7 @@ async fn getxattr_reports_projected_vs_local_sync_state() {
         // does NOT have — exactly what a freshly-joined peer projects before hydration.
         let projected_hash = iroh_blobs::Hash::from([3u8; 32]);
 
-        let namespace = Arc::new(Mutex::new(Namespace::new("xattr-peer")));
+        let namespace = Arc::new(Mutex::new(Namespace::new("xattr-peer").unwrap()));
         {
             let mut ns = namespace.lock().unwrap();
             ns.create_file(
@@ -598,6 +612,7 @@ async fn getxattr_reports_projected_vs_local_sync_state() {
             ns.create_file(ROOT_INO, "remote.txt", Some(&projected_hash), 4096, 1)
                 .unwrap();
             ns.create_dir(ROOT_INO, "folder", 1).unwrap();
+            drop(ns);
         }
 
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
@@ -639,7 +654,7 @@ async fn fuse_document_roundtrip_and_opaque_still_works() {
 
         let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
-        let namespace = Arc::new(Mutex::new(Namespace::new("doc-peer")));
+        let namespace = Arc::new(Mutex::new(Namespace::new("doc-peer").unwrap()));
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
@@ -678,7 +693,7 @@ async fn rmdir_rejects_nonempty_and_unlink_rejects_dir() {
 
         let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
-        let namespace = Arc::new(Mutex::new(Namespace::new("rm-peer")));
+        let namespace = Arc::new(Mutex::new(Namespace::new("rm-peer").unwrap()));
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics);
@@ -846,7 +861,7 @@ async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> View
     let store = Arc::new(ContentStore::memory());
     let body = b"contents";
     let hash = store.write_content(body).await.unwrap().unwrap();
-    let namespace = Arc::new(Mutex::new(Namespace::new("view-peer")));
+    let namespace = Arc::new(Mutex::new(Namespace::new("view-peer").unwrap()));
     {
         let mut ns = namespace.lock().unwrap();
         let w = ns.create_dir(ROOT_INO, "w", 1).unwrap();
@@ -868,6 +883,7 @@ async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> View
         let archive = ns.create_dir(ROOT_INO, "archive", 1).unwrap();
         ns.create_file(archive, "old.txt", Some(&hash), body.len() as u64, 1)
             .unwrap();
+        drop(ns);
     }
     let hydrator = Arc::new(Hydrator::new(endpoint, store));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
@@ -1060,8 +1076,9 @@ async fn a_hidden_path_answers_exactly_as_an_absent_one() {
 // announce how many subdirectories are hidden.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn directory_link_counts_match_the_filtered_listing() {
-    require_fuse!();
     use std::os::unix::fs::MetadataExt;
+
+    require_fuse!();
 
     let f = view_fixture(Some(docs_read_only()), "quickfs_view_nlink").await;
     let open = view_fixture(None, "quickfs_view_nlink_open").await;
@@ -1218,7 +1235,7 @@ async fn document_fixture(
 ) {
     let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
     let store = Arc::new(ContentStore::memory());
-    let namespace = Arc::new(Mutex::new(Namespace::new("doc-view-peer")));
+    let namespace = Arc::new(Mutex::new(Namespace::new("doc-view-peer").unwrap()));
     {
         let mut ns = namespace.lock().unwrap();
         let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
@@ -1227,6 +1244,7 @@ async fn document_fixture(
             .document_insert_block(ino, None, "paragraph")
             .expect("insert a block");
         assert!(ns.document_splice(ino, &block, 0, 0, "Shared paragraph"));
+        drop(ns);
     }
     let hydrator = Arc::new(Hydrator::new(endpoint, store));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));

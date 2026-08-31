@@ -23,9 +23,23 @@
 //!
 //! [OCF]: https://www.w3.org/publishing/epub3/epub-ocf.html
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use qdoc::snapshot::AttrVal;
 use qdoc::{BlockView, DocSnapshot};
 use std::fmt;
+use std::fmt::Write as _;
 use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
@@ -57,7 +71,13 @@ const MIMETYPE: &str = "application/epub+zip";
 /// `mimetype` first/stored, a container pointing at the OPF, an OPF
 /// carrying metadata plus manifest and spine, a nav document with a TOC
 /// entry per heading, the body chapters, and any embedded images.
-/// Always succeeds — degenerate inputs still produce a valid book.
+///
+/// # Errors
+///
+/// Returns [`DocEpubError::Zip`] if opening a ZIP entry fails, or
+/// [`DocEpubError::Io`] if writing an entry's bytes fails. Snapshot
+/// content itself never causes an error — degenerate inputs still
+/// produce a valid book.
 pub fn render_epub(snap: &DocSnapshot) -> Result<Vec<u8>, DocEpubError> {
     // 1. Collect image blobs into packaged resources, mapping blob-hash → item.
     let images = collect_images(snap);
@@ -173,7 +193,7 @@ fn image_item_for(b: &BlockView, snap: &DocSnapshot, existing_count: usize) -> O
     };
     let bytes = snap.blobs.get(hash)?;
     let (media_type, ext) = image_media_type(bytes);
-    let n = existing_count + 1;
+    let n = existing_count.saturating_add(1);
     Some(ImageItem {
         id: format!("img-{n}"),
         href: format!("images/img-{n}.{ext}"),
@@ -248,7 +268,7 @@ fn build_chapters(snap: &DocSnapshot, images: &[ImageItem]) -> Vec<Chapter> {
 
     let mut chapters = Vec::with_capacity(groups.len());
     for (gi, blocks) in groups.into_iter().enumerate() {
-        let n = gi + 1;
+        let n = gi.saturating_add(1);
         let id = format!("chapter-{n}");
         let href = format!("{id}.xhtml");
 
@@ -258,7 +278,7 @@ fn build_chapters(snap: &DocSnapshot, images: &[ImageItem]) -> Vec<Chapter> {
         let mut hcount = 0usize;
         for b in &blocks {
             if b.kind == "heading" {
-                hcount += 1;
+                hcount = hcount.saturating_add(1);
                 let frag = format!("h{hcount}");
                 headings.push(Heading {
                     level: heading_level(b),
@@ -302,7 +322,9 @@ fn is_h1(b: &BlockView) -> bool {
 
 fn heading_level(b: &BlockView) -> u8 {
     match b.attrs.get("level") {
-        Some(AttrVal::Int(n)) => (*n).clamp(1, 6) as u8,
+        // Clamped to 1..=6 first, so the conversion to `u8` always succeeds;
+        // `unwrap_or(1)` is unreachable defensive code, not a real fallback.
+        Some(AttrVal::Int(n)) => u8::try_from((*n).clamp(1, 6)).unwrap_or(1),
         _ => 1,
     }
 }
@@ -373,19 +395,28 @@ fn repoint_images(frag: &str, block: &BlockView, images: &[ImageItem]) -> String
         return frag.to_string();
     };
     // qdoc-html emits `src="data:<mime>;base64,<...>"`; locate `src="`
-    // and replace up to the closing quote.
-    if let Some(start) = frag.find("src=\"") {
-        let val_start = start + 5;
-        if let Some(rel_end) = frag[val_start..].find('"') {
-            let end = val_start + rel_end;
-            let mut out = String::with_capacity(frag.len());
-            out.push_str(&frag[..val_start]);
-            out.push_str(&item.href);
-            out.push_str(&frag[end..]);
-            return out;
-        }
-    }
-    frag.to_string()
+    // and replace up to the closing quote. `"src=\""` is pure ASCII, so
+    // `val_start` always lands on a UTF-8 char boundary — `.get()` still
+    // guards it rather than trusting that.
+    let Some(start) = frag.find("src=\"") else {
+        return frag.to_string();
+    };
+    let val_start = start.saturating_add(5);
+    let Some(tail) = frag.get(val_start..) else {
+        return frag.to_string();
+    };
+    let Some(rel_end) = tail.find('"') else {
+        return frag.to_string();
+    };
+    let end = val_start.saturating_add(rel_end);
+    let (Some(head), Some(tail_after)) = (frag.get(..val_start), frag.get(end..)) else {
+        return frag.to_string();
+    };
+    let mut out = String::with_capacity(frag.len());
+    out.push_str(head);
+    out.push_str(&item.href);
+    out.push_str(tail_after);
+    out
 }
 
 /// Inject an `id="<frag>"` attribute into a fragment's first start-tag,
@@ -393,14 +424,22 @@ fn repoint_images(frag: &str, block: &BlockView, images: &[ImageItem]) -> String
 fn inject_id(frag: &str, id: &str) -> String {
     if let Some(lt) = frag.find('<') {
         // Find the end of the tag name (first space or `>` or `/`).
-        let after = &frag[lt + 1..];
+        // `lt` is the byte offset of an ASCII `<`, so `name_start` always
+        // lands on a UTF-8 char boundary — `.get()` still guards it.
+        let name_start = lt.saturating_add(1);
+        let Some(after) = frag.get(name_start..) else {
+            return frag.to_string();
+        };
         let name_end = after
             .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
-            .map_or(frag.len(), |p| lt + 1 + p);
-        let mut out = String::with_capacity(frag.len() + id.len() + 8);
-        out.push_str(&frag[..name_end]);
-        out.push_str(&format!(" id=\"{}\"", escape_xml_attr(id)));
-        out.push_str(&frag[name_end..]);
+            .map_or(frag.len(), |p| name_start.saturating_add(p));
+        let (Some(head), Some(tail)) = (frag.get(..name_end), frag.get(name_end..)) else {
+            return frag.to_string();
+        };
+        let mut out = String::with_capacity(frag.len().saturating_add(id.len()).saturating_add(8));
+        out.push_str(head);
+        let _ = write!(out, " id=\"{}\"", escape_xml_attr(id));
+        out.push_str(tail);
         return out;
     }
     frag.to_string()
@@ -410,23 +449,30 @@ fn inject_id(frag: &str, id: &str) -> String {
 /// well-formed XHTML — `<br>`, `<img …>`, `<hr>`. Already-self-closed
 /// tags are left alone.
 fn xhtmlify(html: &str) -> String {
-    let mut out = String::with_capacity(html.len() + 16);
-    let bytes = html.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'<' {
+    let mut out = String::with_capacity(html.len().saturating_add(16));
+    // Walk by char, not by byte: `i` is always kept on a UTF-8 char
+    // boundary (advanced by a matched tag's byte length, or by one
+    // char's `len_utf8`), so `.get()` below never actually misses —
+    // it's a belt-and-braces guard, not the mechanism keeping this safe.
+    let mut i = 0usize;
+    while let Some(rest) = html.get(i..) {
+        let Some(c) = rest.chars().next() else {
+            break;
+        };
+        if c == '<' {
             // Find the matching '>'.
-            if let Some(rel) = html[i..].find('>') {
-                let end = i + rel; // index of '>'
-                let tag = &html[i..=end]; // includes '<' and '>'
-                let rewritten = self_close_void(tag);
-                out.push_str(&rewritten);
-                i = end + 1;
-                continue;
+            if let Some(rel) = rest.find('>') {
+                let end = i.saturating_add(rel); // index of '>'
+                if let Some(tag) = html.get(i..=end) {
+                    // includes '<' and '>'
+                    out.push_str(&self_close_void(tag));
+                    i = end.saturating_add(1);
+                    continue;
+                }
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        out.push(c);
+        i = i.saturating_add(c.len_utf8());
     }
     out
 }
@@ -434,20 +480,27 @@ fn xhtmlify(html: &str) -> String {
 /// If `tag` is a non-self-closed HTML5 void element, return its
 /// self-closing form; otherwise unchanged.
 fn self_close_void(tag: &str) -> String {
+    const VOID: &[&str] = &[
+        "br", "img", "hr", "area", "base", "col", "embed", "input", "link", "meta", "param",
+        "source", "track", "wbr",
+    ];
+
     // tag looks like "<name ...>" or "</name>" or "<name/>".
     if tag.starts_with("</") || tag.ends_with("/>") {
         return tag.to_string();
     }
-    let inner = &tag[1..tag.len() - 1]; // strip '<' and '>'
+    // strip '<' and '>'
+    let Some(inner_end) = tag.len().checked_sub(1) else {
+        return tag.to_string();
+    };
+    let Some(inner) = tag.get(1..inner_end) else {
+        return tag.to_string();
+    };
     let name: String = inner
         .chars()
         .take_while(|c| !c.is_whitespace() && *c != '/')
         .collect::<String>()
         .to_ascii_lowercase();
-    const VOID: &[&str] = &[
-        "br", "img", "hr", "area", "base", "col", "embed", "input", "link", "meta", "param",
-        "source", "track", "wbr",
-    ];
     if VOID.contains(&name.as_str()) {
         let trimmed = inner.trim_end();
         format!("<{trimmed}/>")
@@ -498,11 +551,12 @@ fn build_nav(snap: &DocSnapshot, chapters: &[Chapter]) -> String {
             .first()
             .map_or("chapter-1.xhtml", |c| c.href.as_str());
         list.push_str("  <ol>\n");
-        list.push_str(&format!(
-            "    <li><a href=\"{}\">{}</a></li>\n",
+        let _ = writeln!(
+            list,
+            "    <li><a href=\"{}\">{}</a></li>",
             escape_xml_attr(href),
             escape_xml_text(&title)
-        ));
+        );
         list.push_str("  </ol>\n");
     } else {
         list = render_nav_list(&entries);
@@ -578,7 +632,21 @@ fn build_nav_forest(entries: &[(u8, String, String)]) -> Vec<NavNode> {
 fn walk_children<'a>(roots: &'a mut Vec<NavNode>, path: &[(u8, usize)]) -> &'a mut Vec<NavNode> {
     let mut cur = roots;
     for (_, idx) in path {
-        cur = &mut cur[*idx].children;
+        // Bounds are checked here rather than by `get_mut` because the walk
+        // reborrows `cur` from itself each step: an `Option` that can bail
+        // mid-loop leaves a borrow chain the checker cannot shorten, and the
+        // return then demands the whole chain live for `'a`. A shared borrow
+        // for the length ends before the mutable reborrow begins.
+        if *idx >= cur.len() {
+            break;
+        }
+        #[allow(
+            clippy::indexing_slicing,
+            reason = "bounds checked on the line above; `get_mut` here does not \
+                      borrow-check against the reborrow chain this walk needs"
+        )]
+        let next = &mut cur[*idx].children;
+        cur = next;
     }
     cur
 }
@@ -592,18 +660,19 @@ fn render_nav_forest(nodes: &[NavNode], depth: usize, out: &mut String) {
     out.push_str(&pad);
     out.push_str("<ol>\n");
     for node in nodes {
-        let ipad = "  ".repeat(depth + 1);
+        let ipad = "  ".repeat(depth.saturating_add(1));
         out.push_str(&ipad);
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "<li><a href=\"{}\">{}</a>",
             escape_xml_attr(&node.link),
             escape_xml_text(&node.label)
-        ));
+        );
         if node.children.is_empty() {
             out.push_str("</li>\n");
         } else {
             out.push('\n');
-            render_nav_forest(&node.children, depth + 2, out);
+            render_nav_forest(&node.children, depth.saturating_add(2), out);
             out.push_str(&ipad);
             out.push_str("</li>\n");
         }
@@ -635,35 +704,41 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
         .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string());
 
     let mut metadata = String::new();
-    metadata.push_str(&format!(
-        "    <dc:identifier id=\"book-id\">{}</dc:identifier>\n",
+    let _ = writeln!(
+        metadata,
+        "    <dc:identifier id=\"book-id\">{}</dc:identifier>",
         escape_xml_text(&identifier)
-    ));
-    metadata.push_str(&format!(
-        "    <dc:title>{}</dc:title>\n",
+    );
+    let _ = writeln!(
+        metadata,
+        "    <dc:title>{}</dc:title>",
         escape_xml_text(&title)
-    ));
-    metadata.push_str(&format!(
-        "    <dc:language>{}</dc:language>\n",
+    );
+    let _ = writeln!(
+        metadata,
+        "    <dc:language>{}</dc:language>",
         escape_xml_text(&language)
-    ));
+    );
     if let Some(a) = &author {
-        metadata.push_str(&format!(
-            "    <dc:creator>{}</dc:creator>\n",
+        let _ = writeln!(
+            metadata,
+            "    <dc:creator>{}</dc:creator>",
             escape_xml_text(a)
-        ));
+        );
     }
     if let Some(subject) = snap.properties.get("subject") {
-        metadata.push_str(&format!(
-            "    <dc:subject>{}</dc:subject>\n",
+        let _ = writeln!(
+            metadata,
+            "    <dc:subject>{}</dc:subject>",
             escape_xml_text(subject)
-        ));
+        );
     }
     // EPUB 3 requires a dcterms:modified meta.
-    metadata.push_str(&format!(
-        "    <meta property=\"dcterms:modified\">{}</meta>\n",
+    let _ = writeln!(
+        metadata,
+        "    <meta property=\"dcterms:modified\">{}</meta>",
         escape_xml_text(&normalize_modified(&modified))
-    ));
+    );
 
     // Manifest: nav + chapters + images.
     let mut manifest = String::new();
@@ -671,28 +746,31 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
         "    <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n",
     );
     for ch in chapters {
-        manifest.push_str(&format!(
-            "    <item id=\"{}\" href=\"{}\" media-type=\"application/xhtml+xml\"/>\n",
+        let _ = writeln!(
+            manifest,
+            "    <item id=\"{}\" href=\"{}\" media-type=\"application/xhtml+xml\"/>",
             escape_xml_attr(&ch.id),
             escape_xml_attr(&ch.href)
-        ));
+        );
     }
     for img in images {
-        manifest.push_str(&format!(
-            "    <item id=\"{}\" href=\"{}\" media-type=\"{}\"/>\n",
+        let _ = writeln!(
+            manifest,
+            "    <item id=\"{}\" href=\"{}\" media-type=\"{}\"/>",
             escape_xml_attr(&img.id),
             escape_xml_attr(&img.href),
             img.media_type
-        ));
+        );
     }
 
     // Spine: chapters in order.
     let mut spine = String::new();
     for ch in chapters {
-        spine.push_str(&format!(
-            "    <itemref idref=\"{}\"/>\n",
+        let _ = writeln!(
+            spine,
+            "    <itemref idref=\"{}\"/>",
             escape_xml_attr(&ch.id)
-        ));
+        );
     }
 
     format!(
@@ -737,10 +815,10 @@ fn normalize_modified(s: &str) -> String {
 /// renders share a `dc:identifier` without a uuid/random dep.
 fn stable_id(snap: &DocSnapshot, title: &str) -> String {
     // FNV-1a 64-bit over title + block count — cheap, dependency-free, stable.
-    let mut hash: u64 = 0xcbf29ce484222325;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     let feed = |hash: &mut u64, byte: u8| {
         *hash ^= u64::from(byte);
-        *hash = hash.wrapping_mul(0x100000001b3);
+        *hash = hash.wrapping_mul(0x100_0000_01b3);
     };
     for b in title.as_bytes() {
         feed(&mut hash, *b);

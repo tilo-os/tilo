@@ -12,11 +12,12 @@ shift
 timing="$(mktemp -t ci-measure-XXXXXX)"
 trap 'rm -f "$timing"' EXIT
 
+status=0
 if command -v /usr/bin/time >/dev/null 2>&1; then
-  /usr/bin/time -f 'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kib=%M' -o "$timing" "$@"
+  /usr/bin/time -f 'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kib=%M' -o "$timing" "$@" || status=$?
 else
   start="$(date +%s)"
-  "$@"
+  "$@" || status=$?
   printf 'wall_seconds=%s\nuser_seconds=unavailable\nsystem_seconds=unavailable\nmax_rss_kib=unavailable\n' \
     "$(( $(date +%s) - start ))" > "$timing"
 fi
@@ -31,3 +32,5 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo '```'
   } >> "$GITHUB_STEP_SUMMARY"
 fi
+
+exit "$status"

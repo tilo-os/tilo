@@ -14,15 +14,21 @@ use ui::text_render::{TextRenderer, TextWeight};
 
 /// FNV-1a hash of a string — small, fast, deterministic.
 pub fn hash_str(s: &str) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in s.bytes() {
         h ^= u64::from(b);
-        h = h.wrapping_mul(0x100000001b3);
+        h = h.wrapping_mul(0x100_0000_01b3);
     }
     h
 }
 
 /// Convert HSL (`h` in degrees, `s`/`l` in `0..=1`) to an sRGB color.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "h/s/l/c/x/m are the standard variable names for the CSS/Wikipedia HSL-to-RGB \
+              conversion algorithm; renaming them would only make the code harder to \
+              cross-check against the reference formula"
+)]
 fn hsl(h: f32, s: f32, l: f32) -> Color {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let hp = (h.rem_euclid(360.0)) / 60.0;

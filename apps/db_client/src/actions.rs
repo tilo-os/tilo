@@ -177,6 +177,14 @@ pub fn register(registry: &mut ActionRegistry) {
 
 /// Encode a [`DbAction`] into the replayable envelope both the on-screen
 /// affordances and any future Ctrl+K entry would dispatch.
+///
+/// # Panics
+/// Never in practice: every `DbAction` field is a plain `String` or `u32`,
+/// so encoding only fails for a value that can't be serialized at all.
+#[allow(
+    clippy::expect_used,
+    reason = "every DbAction field is a plain String or u32, so encoding cannot fail short of a value that isn't serializable at all — there is no meaningful EncodedAction to fall back to"
+)]
 pub fn encode(action: &DbAction) -> EncodedAction {
     EncodedAction::encode(DB_ACTION_TYPE, action).expect("DbAction is always serializable")
 }

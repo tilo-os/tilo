@@ -138,11 +138,13 @@ impl HistoryFilter {
         true
     }
 
+    #[must_use]
     pub fn with_author(mut self, author: impl Into<String>) -> Self {
         self.authors.push(author.into());
         self
     }
 
+    #[must_use]
     pub fn with_op_class(mut self, op: OpClass) -> Self {
         self.op_classes.push(op);
         self
@@ -203,28 +205,46 @@ pub fn format_relative_time(ts: SystemTime, now: SystemTime) -> String {
     format!("{days} d ago")
 }
 
+/// Rounds a normalized `[0, 1]` colour channel to a `u8` byte. The `clamp`
+/// makes the truncation and sign-loss the lint warns about impossible —
+/// clippy just can't see through it.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to [0.0, 255.0] immediately above, so this can only \
+              produce a value in u8's range"
+)]
+fn channel_u8(unit: f32) -> u8 {
+    (unit * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
 /// `HSV(h, 0.65, 0.95)` → RGB. Saturation and value held constant so
 /// generated author colours stay visually coherent (no neon outliers,
 /// no muddy ones).
 pub fn hue_to_rgb(hue_deg: f32) -> (u8, u8, u8) {
-    let h = hue_deg.rem_euclid(360.0) / 60.0;
-    let s = 0.65_f32;
-    let v = 0.95_f32;
-    let c = v * s;
-    let x = c * (1.0 - (h.rem_euclid(2.0) - 1.0).abs());
-    let m = v - c;
-    let (r, g, b) = match h as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
+    let sector = hue_deg.rem_euclid(360.0) / 60.0;
+    let sat = 0.65_f32;
+    let val = 0.95_f32;
+    let chroma = val * sat;
+    let x2 = chroma * (1.0 - (sector.rem_euclid(2.0) - 1.0).abs());
+    let min_add = val - chroma;
+    let (red, green, blue) = if sector < 1.0 {
+        (chroma, x2, 0.0)
+    } else if sector < 2.0 {
+        (x2, chroma, 0.0)
+    } else if sector < 3.0 {
+        (0.0, chroma, x2)
+    } else if sector < 4.0 {
+        (0.0, x2, chroma)
+    } else if sector < 5.0 {
+        (x2, 0.0, chroma)
+    } else {
+        (chroma, 0.0, x2)
     };
     (
-        ((r + m) * 255.0).round() as u8,
-        ((g + m) * 255.0).round() as u8,
-        ((b + m) * 255.0).round() as u8,
+        channel_u8(red + min_add),
+        channel_u8(green + min_add),
+        channel_u8(blue + min_add),
     )
 }
 
@@ -239,7 +259,9 @@ mod tests {
             author: HistoryAuthor::new(author, 120.0, "deadbeef"),
             op_class: op,
             artifact_kind: ArtifactKind::Note,
-            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(ts_offset_secs),
+            timestamp: SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(ts_offset_secs))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
             summary: "test entry".into(),
             text_delta: None,
             diff_payload: None,
@@ -338,15 +360,12 @@ mod tests {
             OpClass::Redact,
         ] {
             let g = op_class_glyph(op);
-            assert!(!g.is_empty(), "glyph for {:?} must not be empty", op);
+            assert!(!g.is_empty(), "glyph for {op:?} must not be empty");
             for ch in g.chars() {
                 let cp = ch as u32;
                 assert!(
                     cp < 0x1f300,
-                    "glyph for {:?} ({:?} U+{:04X}) must not be a pictographic emoji",
-                    op,
-                    g,
-                    cp,
+                    "glyph for {op:?} ({g:?} U+{cp:04X}) must not be a pictographic emoji",
                 );
             }
         }
@@ -370,7 +389,7 @@ mod tests {
             "2 h ago"
         );
         assert_eq!(
-            format_relative_time(base, base + Duration::from_secs(3 * 86400)),
+            format_relative_time(base, base + Duration::from_secs(259_200)),
             "3 d ago"
         );
     }
@@ -384,12 +403,12 @@ mod tests {
         let mut seen: Vec<(u8, u8, u8)> = Vec::new();
         for h in hues {
             let rgb = hue_to_rgb(h);
-            assert_ne!(rgb, (0, 0, 0), "hue {} produced black", h);
+            assert_ne!(rgb, (0, 0, 0), "hue {h} produced black");
             seen.push(rgb);
         }
         // Allow a couple of near-duplicates at the wrap-around, but
         // require at least 5 unique values out of 7 samples.
-        seen.sort();
+        seen.sort_unstable();
         seen.dedup();
         assert!(
             seen.len() >= 5,

@@ -4,6 +4,8 @@ autotests = false
 name = "notes"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "notes"
@@ -24,7 +26,6 @@ serde_json.workspace = true
 uuid.workspace = true
 dirs.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

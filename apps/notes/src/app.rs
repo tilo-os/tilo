@@ -18,7 +18,8 @@ use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::collaboration::PresencePayload;
@@ -68,6 +69,10 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 /// duplicate. A lone instance simply seeds after the window elapses.
 const SEED_GRACE: Duration = Duration::from_millis(1500);
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independently-toggled flag from a distinct concern (shots override, collab sync-state tracking, responsive layout mode, dirty tracking) with no shared sub-concept; grouping them would only relocate the count, not reduce it"
+)]
 pub struct NotesApp {
     workspace: Workspace,
     sidebar: NoteTreeView,
@@ -180,6 +185,12 @@ impl NotesApp {
     /// sidebar's "+" (and its empty-area "New note" menu) is the affordance to
     /// create the first page. Tests and headless captures that need a starting
     /// page use [`Self::spawn_with_starter_page`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the workspace directory can't be created, its saved
+    /// state fails to load or decode, or the background saver threads fail
+    /// to spawn.
     pub fn spawn(root: PathBuf) -> Result<Self, String> {
         Self::spawn_inner(root, false)
     }
@@ -188,6 +199,10 @@ impl NotesApp {
     /// workspace. Used by tests and dev fixtures that need content to exercise;
     /// the live binary always uses [`Self::spawn`] / [`Self::spawn_default`],
     /// which start empty.
+    ///
+    /// # Errors
+    ///
+    /// Same failure modes as [`Self::spawn`].
     pub fn spawn_with_starter_page(root: PathBuf) -> Result<Self, String> {
         Self::spawn_inner(root, true)
     }
@@ -213,7 +228,7 @@ impl NotesApp {
         if let Some(sel) = workspace.selected() {
             if let Some(meta) = workspace.get(sel) {
                 let body = storage::read_page_body(&root, sel).unwrap_or_default();
-                main.load_page_with_link_resolver(sel, meta.title.clone(), body, |t| {
+                main.load_page_with_link_resolver(sel, &meta.title, body, |t| {
                     by_title.get(t).copied()
                 });
             }
@@ -225,13 +240,14 @@ impl NotesApp {
             if let Some((id, title)) = first {
                 workspace.set_selected(Some(id));
                 let body = storage::read_page_body(&root, id).unwrap_or_default();
-                main.load_page_with_link_resolver(id, title, body, |t| by_title.get(t).copied());
+                main.load_page_with_link_resolver(id, &title, body, |t| by_title.get(t).copied());
                 sidebar.sync_from_workspace(&workspace);
             }
         }
 
-        let saver = Saver::spawn(root.clone(), SAVE_DEBOUNCE);
-        let page_saver = PageSaver::spawn(root.clone(), SAVE_DEBOUNCE);
+        let saver = Saver::spawn(root.clone(), SAVE_DEBOUNCE).map_err(|e| e.to_string())?;
+        let page_saver =
+            PageSaver::spawn(root.clone(), SAVE_DEBOUNCE).map_err(|e| e.to_string())?;
 
         let mut app = Self {
             workspace,
@@ -560,6 +576,10 @@ impl NotesApp {
 
     /// Default constructor — resolves the workspace root via `dirs`,
     /// falls back to `./notes` if the home dir is unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Same failure modes as [`Self::spawn`].
     pub fn spawn_default() -> Result<Self, String> {
         let root = storage::default_root().unwrap_or_else(|| PathBuf::from("./notes"));
         Self::spawn(root)
@@ -722,7 +742,7 @@ impl NotesApp {
             .map(|m| m.title.clone())
             .unwrap_or_default();
         let body = storage::read_page_body(&self.root, sel).unwrap_or_default();
-        self.main.bind_page(state, sel, title, list, &body);
+        self.main.bind_page(state, sel, &title, list, &body);
         self.bound_page = Some(sel);
     }
 
@@ -767,9 +787,9 @@ impl NotesApp {
     /// ([`Widget::take_committed_action`]). The in-memory workspace is updated by
     /// the caller for immediate UI feedback and reconciled from the document on
     /// the next `sync`. This app supplies only its domain: the action and its type.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: NotesAction) {
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: &NotesAction) {
         self.actions
-            .dispatch(doc, actions::NOTES_ACTION_TYPE, &action);
+            .dispatch(doc, actions::NOTES_ACTION_TYPE, action);
     }
 
     /// The context Ctrl+K needs to build the notebook's resource tree: the page
@@ -825,7 +845,7 @@ impl NotesApp {
                 .parent
                 .is_some_and(|p| before.contains_key(&p) && !after.contains_key(&p));
             if !parent_also_removed {
-                self.perform_action(doc, actions::delete_page_action(*id));
+                self.perform_action(doc, &actions::delete_page_action(*id));
             }
         }
         // Creates + edits: a page new in `after`, or one whose metadata changed
@@ -833,7 +853,7 @@ impl NotesApp {
         for (id, meta) in after {
             match before.get(id) {
                 Some(old) if old == meta => {}
-                _ => self.perform_action(doc, actions::upsert_page_action(meta)),
+                _ => self.perform_action(doc, &actions::upsert_page_action(meta)),
             }
         }
     }
@@ -851,7 +871,7 @@ impl NotesApp {
                 if let Some(meta) = self.workspace.get(id) {
                     let title = meta.title.clone();
                     let body = storage::read_page_body(&self.root, id).unwrap_or_default();
-                    self.load_page_with_resolver(id, title, body);
+                    self.load_page_with_resolver(id, &title, body);
                 }
             }
             OutEvent::Rename { id, new_title } => {
@@ -880,7 +900,7 @@ impl NotesApp {
                     if let Some((id, title)) = first {
                         self.workspace.set_selected(Some(id));
                         let body = storage::read_page_body(&self.root, id).unwrap_or_default();
-                        self.main.load_page(id, title, body);
+                        self.main.load_page(id, &title, body);
                     } else {
                         self.main.clear();
                     }
@@ -893,8 +913,7 @@ impl NotesApp {
                 if let Err(e) = storage::write_page_body(&self.root, id, "") {
                     tracing::error!(error = %e, page = %id, "notes: write empty page failed");
                 }
-                self.main
-                    .load_page(id, "Untitled".to_string(), String::new());
+                self.main.load_page(id, "Untitled", String::new());
             }
             OutEvent::Move { id, delta } => {
                 // Reorder among siblings. The new `order` propagates to
@@ -928,7 +947,7 @@ impl NotesApp {
                         let title = meta.title.clone();
                         let body =
                             storage::read_page_body(&self.root, new_root).unwrap_or_default();
-                        self.load_page_with_resolver(new_root, title, body);
+                        self.load_page_with_resolver(new_root, &title, body);
                     }
                 }
             }
@@ -943,7 +962,7 @@ impl NotesApp {
     /// Load a page through `MainPanel::load_page_with_link_resolver`,
     /// resolving `[[Title]]` link marks against the current
     /// workspace's page list.
-    fn load_page_with_resolver(&mut self, id: PageId, title: String, body: String) {
+    fn load_page_with_resolver(&mut self, id: PageId, title: &str, body: String) {
         // Snapshot the title→id map ahead of borrowing main mutably.
         let by_title: std::collections::HashMap<String, PageId> = self
             .workspace
@@ -963,7 +982,7 @@ impl NotesApp {
             let title = meta.title.clone();
             let body = storage::read_page_body(&self.root, id).unwrap_or_default();
             self.workspace.set_selected(Some(id));
-            self.load_page_with_resolver(id, title, body);
+            self.load_page_with_resolver(id, &title, body);
             self.sidebar.sync_from_workspace(&self.workspace);
             self.persist();
         }
@@ -1425,47 +1444,7 @@ impl Widget for NotesApp {
         let narrow = self.built_narrow;
 
         let sidebar_node = self.sidebar.build_layout(taffy, theme, node_map);
-        if narrow {
-            // Overlay drawer: pinned to the left edge of the content row,
-            // full height, taken out of flow so the editor keeps the
-            // whole width underneath it.
-            let _ = taffy.set_style(
-                sidebar_node,
-                Style {
-                    position: taffy::Position::Absolute,
-                    inset: taffy::Rect {
-                        left: length(0.0_f32),
-                        right: taffy::LengthPercentageAuto::auto(),
-                        top: length(0.0_f32),
-                        bottom: length(0.0_f32),
-                    },
-                    size: Size {
-                        width: Dimension::length(num::f32_of_f64(DRAWER_WIDTH)),
-                        height: Dimension::percent(1.0),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-            );
-        } else {
-            // Fixed-width column so the split is deterministic (no
-            // flexbox squeezing).
-            let _ = taffy.set_style(
-                sidebar_node,
-                Style {
-                    size: Size {
-                        width: Dimension::length(num::f32_of_f64(SIDEBAR_WIDTH)),
-                        height: Dimension::percent(1.0),
-                    },
-                    min_size: Size {
-                        width: Dimension::length(160.0),
-                        height: Dimension::auto(),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-            );
-        }
+        let _ = taffy.set_style(sidebar_node, Self::sidebar_style(narrow));
         self.sidebar_node = Some(sidebar_node);
 
         let main_node = self.main.build_layout(taffy, theme, node_map);
@@ -1498,6 +1477,15 @@ impl Widget for NotesApp {
         } else {
             vec![sidebar_node, main_node]
         };
+        // `new_with_children`/`new_leaf` only error for a corrupted tree;
+        // `Widget::build_layout` returns a bare `NodeId` across every
+        // implementor, so surfacing a theoretical error here would mean
+        // threading a `Result` through the whole toolkit for a branch that
+        // can't be taken (see `ui::widget::TaffyTreeExt`).
+        #[allow(
+            clippy::unwrap_used,
+            reason = "new_with_children on freshly-built children cannot fail"
+        )]
         let content_node = taffy
             .new_with_children(
                 Style {
@@ -1520,53 +1508,17 @@ impl Widget for NotesApp {
             .unwrap();
         self.content_node = Some(content_node);
 
-        // Outer column children: an optional top bar (narrow only), the
-        // content row, then the status bar.
-        let mut column_children: Vec<NodeId> = Vec::with_capacity(3);
-        if narrow {
-            let topbar_node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(num::f32_of_f64(TOPBAR_HEIGHT)),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                })
-                .unwrap();
-            self.topbar_node = Some(topbar_node);
-            column_children.push(topbar_node);
-        } else {
-            self.topbar_node = None;
-        }
-        column_children.push(content_node);
-
-        // No status-bar row: the note's status floats as a transient bubble
-        // (see `draw_status_bubble`), so the content column spans to the
-        // window bottom and reclaims the strip's height.
-
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    gap: taffy::Size {
-                        width: length(0.0_f32),
-                        height: length(0.0_f32),
-                    },
-                    ..Default::default()
-                },
-                &column_children,
-            )
-            .unwrap();
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        self.assemble_root(taffy, node_map, narrow, content_node)
     }
 
+    // `taffy.layout(...)` only errors for a `NodeId` from a different tree,
+    // which never happens here — every id it's called with is one this
+    // widget (or a child it just laid out) received from its own
+    // `build_layout`. `Widget::apply_layout` returns `()` across every
+    // implementor, so surfacing a theoretical error here would mean
+    // threading a `Result` through the whole toolkit for a branch that
+    // can't be taken (see `ui::widget::TaffyTreeExt`).
+    #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
@@ -1728,294 +1680,46 @@ impl Widget for NotesApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        use winit::event::{ElementState, KeyEvent, MouseButton};
-        use winit::keyboard::{Key, NamedKey};
-
-        // The shortcuts overlay is fully blocking when visible.
-        if self.shortcuts.is_visible() {
-            if self.shortcuts.handle_key(event, scale_factor) {
-                *handled = true;
-                self.refresh_status();
-                return;
-            }
-            // Even unconsumed events (e.g. mouse move when the overlay
-            // is up) shouldn't reach the editor underneath.
-            *handled = true;
+        if self.handle_shortcuts_overlay(event, scale_factor, handled) {
             return;
         }
-
-        // `?` opens the shortcuts overlay — but ONLY when a note isn't
-        // being typed into. A notes app is a text editor; if `?` were a
-        // global shortcut the character could never be typed into a
-        // note. So we gate it on the editor NOT holding focus (and the
-        // palette being closed, so `?` still filters there). When the
-        // editor is focused the key falls through to the block editor
-        // and types a literal `?`; when the page tree / nothing is
-        // focused, `?` opens help. This is the standard "help key only
-        // outside inputs" behaviour.
-        if !self.palette.is_visible()
-            && !self.main.editor().is_focused()
-            && let WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Character(c),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-            && c.as_str() == "?"
-        {
-            self.shortcuts.set_visible(true);
-            *handled = true;
-            self.refresh_status();
+        if self.handle_help_key(event, handled) {
             return;
         }
-
-        // Cmd-K / Ctrl-K opens the page jump palette.
-        // Intercepted BEFORE child widgets so a focused input
-        // doesn't swallow the keystroke.
-        if !self.palette.is_visible()
-            && let WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Character(c),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let mods = modifiers.state();
-            if (mods.control_key() || mods.super_key()) && c.to_lowercase().as_str() == "k" {
-                let anchor_x =
-                    f64::midpoint(self.rect.x0, self.rect.x1) - self.palette.width() / 2.0;
-                let anchor_y = self.rect.y0 + 80.0;
-                self.palette
-                    .set_anchor(vello::kurbo::Point::new(anchor_x, anchor_y));
-                self.palette.set_visible(true);
-                *focus_target = Some(node_id);
-                *handled = true;
-                return;
-            }
-        }
-
-        // Cmd-N / Ctrl-N creates a child of the selected page. Handled
-        // at the app level — not just in the sidebar — so it works no
-        // matter which pane holds focus. The editor takes focus on load,
-        // so a sidebar-only handler (gated on the tree being focused)
-        // would silently no-op, making the welcome copy "Cmd-N adds a
-        // page under the selection" a lie. `N` is modifier-qualified, so
-        // it never conflicts with typing into a note.
-        if !self.palette.is_visible()
-            && let WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Character(c),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let mods = modifiers.state();
-            if (mods.control_key() || mods.super_key()) && c.to_lowercase().as_str() == "n" {
-                let parent = self.workspace.selected();
-                self.apply_and_dispatch(state, OutEvent::CreateChild { parent });
-                self.sidebar.sync_from_workspace(&self.workspace);
-                *handled = true;
-                return;
-            }
-        }
-
-        // While the palette is visible it owns ALL keystrokes.
-        if self.palette.is_visible()
-            && matches!(
-                event,
-                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-            )
-        {
-            let consumed = self.palette.handle_key(event);
-            if let Some(entry) = self.palette.take_selection() {
-                self.navigate_to(entry.id);
-            }
-            if consumed {
-                if !self.palette.is_visible() {
-                    *focus_target = self.main_node;
-                }
-                *handled = true;
-                return;
-            }
-        }
-
-        // Narrow-mode overlay drawer. The top-bar button toggles it;
-        // while open it captures pointer/keys so the page tree behaves
-        // like a modal flyout over the editor.
-        if self.built_narrow {
-            // Toggle button — hit-test the hamburger in the top bar.
-            if let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } = event
-                && self.menu_btn_rect.contains(self.last_mouse)
-            {
-                self.set_drawer_open(!self.drawer.is_open());
-                *handled = true;
-                return;
-            }
-            if self.drawer.is_open() {
-                // Escape closes the drawer.
-                if let WindowEvent::KeyboardInput {
-                    event:
-                        KeyEvent {
-                            logical_key: Key::Named(NamedKey::Escape),
-                            state: ElementState::Pressed,
-                            ..
-                        },
-                    ..
-                } = event
-                {
-                    self.set_drawer_open(false);
-                    *handled = true;
-                    return;
-                }
-                // A press on the scrim (outside the drawer) closes it.
-                if let WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } = event
-                    && !self.sidebar.get_rect().contains(self.last_mouse)
-                {
-                    self.set_drawer_open(false);
-                    *handled = true;
-                    return;
-                }
-                // Route to the page tree; auto-close once a page is picked.
-                let sel_before = self.workspace.selected();
-                if let Some(n) = self.sidebar_node {
-                    self.sidebar.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        n,
-                        taffy,
-                    );
-                }
-                self.drain_sidebar_events(state);
-                if self.workspace.selected() != sel_before {
-                    self.set_drawer_open(false);
-                }
-                if let WindowEvent::CursorMoved { position, .. } = event {
-                    self.last_mouse =
-                        Point::new(position.x / scale_factor, position.y / scale_factor);
-                }
-                self.refresh_status();
-                return;
-            }
-        }
-
-        // Click on a link mark navigates.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-            && let Some(id) = self.link_under_last_mouse()
-        {
-            self.navigate_to(id);
-            *handled = true;
+        if self.handle_palette_shortcut(event, *modifiers, focus_target, node_id, handled) {
             return;
         }
-
-        // Modal focus capture: while the editor's `/` block menu (or the
-        // `[[` link popover) is open, keyboard nav belongs to it — not the
-        // page list behind it; symmetrically, while the sidebar's
-        // right-click menu is open, keyboard nav belongs to the menu, not
-        // the editor. Mouse events still reach both panes (a click only
-        // ever hits one pane's rect), so we only gate keyboard routing.
-        let is_keyboard = matches!(event, WindowEvent::KeyboardInput { .. });
-        let editor_menu_open = self.main.editor().slash_menu_visible()
-            || self.main.editor().link_popover().is_visible();
-        let sidebar_menu_open = self.sidebar.menu_is_open();
-
-        // Route to the inline sidebar only when it's actually on screen
-        // (wide mode). In narrow mode the drawer block above owns it.
-        if !self.built_narrow && !(editor_menu_open && is_keyboard) {
-            if let Some(n) = self.sidebar_node {
-                self.sidebar.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
-            }
-            // Drain any commands the sidebar produced.
-            self.drain_sidebar_events(state);
+        if self.handle_new_child_shortcut(event, *modifiers, state, handled) {
+            return;
         }
-        // The editor never sees keystrokes the sidebar is capturing — its
-        // right-click menu OR an in-progress inline rename — so a rename
-        // keystroke doesn't also type into the note behind the field.
-        let sidebar_capturing_kbd = sidebar_menu_open || self.sidebar.is_renaming();
-        if !(sidebar_capturing_kbd && is_keyboard)
-            && let Some(n) = self.main_node
-        {
-            self.main.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+        if self.handle_palette_capture(event, focus_target, handled) {
+            return;
         }
-        // A committed edit of the note's in-page title renames the current
-        // page on the same replayable action path the sidebar's inline rename
-        // uses, then re-syncs the sidebar so the new name shows in the tree.
-        if let Some(new_title) = self.main.take_title_rename()
-            && let Some(id) = self.workspace.selected()
-        {
-            let trimmed = new_title.trim();
-            let changed = self.workspace.get(id).is_some_and(|m| m.title != trimmed);
-            if !trimmed.is_empty() && changed {
-                self.apply_and_dispatch(
-                    state,
-                    OutEvent::Rename {
-                        id,
-                        new_title: trimmed.to_string(),
-                    },
-                );
-                self.sidebar.sync_from_workspace(&self.workspace);
-            }
+        if self.handle_narrow_drawer(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            taffy,
+        ) {
+            return;
         }
-        // After every event, observe the editor's dirty flag and
-        // request a debounced save if the user just edited.
-        self.drain_editor_edits();
-
-        // Update the last-mouse cache so the next MouseInput knows
-        // where to hit-test for link clicks.
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            let logical =
-                vello::kurbo::Point::new(position.x / scale_factor, position.y / scale_factor);
-            self.last_mouse = logical;
+        if self.handle_link_click(event, handled) {
+            return;
         }
-        // Status bar refresh runs at the tail of every event so word
-        // count + save indicator stay current. Cheap — the StatusBar
-        // diffs internally.
-        self.refresh_status();
+        self.route_to_children(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            taffy,
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -2062,6 +1766,478 @@ impl Widget for NotesApp {
     ) {
         // The root rect is the whole window — always paint, never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl NotesApp {
+    /// Style for the sidebar node depending on the narrow/wide layout mode.
+    /// Narrow: an absolutely-positioned overlay drawer pinned to the left
+    /// edge of the content row, full height, taken out of flow so the
+    /// editor keeps the whole width underneath it. Wide: a fixed-width
+    /// column so the split is deterministic (no flexbox squeezing).
+    fn sidebar_style(narrow: bool) -> Style {
+        if narrow {
+            Style {
+                position: taffy::Position::Absolute,
+                inset: taffy::Rect {
+                    left: length(0.0_f32),
+                    right: taffy::LengthPercentageAuto::auto(),
+                    top: length(0.0_f32),
+                    bottom: length(0.0_f32),
+                },
+                size: Size {
+                    width: Dimension::length(num::f32_of_f64(DRAWER_WIDTH)),
+                    height: Dimension::percent(1.0),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            }
+        } else {
+            Style {
+                size: Size {
+                    width: Dimension::length(num::f32_of_f64(SIDEBAR_WIDTH)),
+                    height: Dimension::percent(1.0),
+                },
+                min_size: Size {
+                    width: Dimension::length(160.0),
+                    height: Dimension::auto(),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            }
+        }
+    }
+
+    /// Assemble the outer flex column: an optional top bar (narrow only)
+    /// above the content row. No status-bar row — the note's status floats
+    /// as a transient bubble (see `draw_status_bubble`), so the content
+    /// column spans to the window bottom and reclaims the strip's height.
+    fn assemble_root(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        narrow: bool,
+        content_node: NodeId,
+    ) -> NodeId {
+        let mut column_children: Vec<NodeId> = Vec::with_capacity(3);
+        if narrow {
+            #[allow(
+                clippy::unwrap_used,
+                reason = "new_leaf on a fresh style cannot fail — see ui::widget::TaffyTreeExt"
+            )]
+            let topbar_node = taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::length(num::f32_of_f64(TOPBAR_HEIGHT)),
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                })
+                .unwrap();
+            self.topbar_node = Some(topbar_node);
+            column_children.push(topbar_node);
+        } else {
+            self.topbar_node = None;
+        }
+        column_children.push(content_node);
+
+        #[allow(
+            clippy::unwrap_used,
+            reason = "new_with_children on freshly-built children cannot fail — see ui::widget::TaffyTreeExt"
+        )]
+        let root = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    gap: taffy::Size {
+                        width: length(0.0_f32),
+                        height: length(0.0_f32),
+                    },
+                    ..Default::default()
+                },
+                &column_children,
+            )
+            .unwrap();
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
+        root
+    }
+
+    /// The shortcuts overlay is fully blocking when visible: it either
+    /// consumes the key itself, or every other event is swallowed so
+    /// nothing reaches the editor underneath.
+    fn handle_shortcuts_overlay(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.shortcuts.is_visible() {
+            return false;
+        }
+        if self.shortcuts.handle_key(event, scale_factor) {
+            *handled = true;
+            self.refresh_status();
+            return true;
+        }
+        *handled = true;
+        true
+    }
+
+    /// `?` opens the shortcuts overlay — but ONLY when a note isn't being
+    /// typed into. A notes app is a text editor; if `?` were a global
+    /// shortcut the character could never be typed into a note. So it's
+    /// gated on the editor NOT holding focus (and the palette being
+    /// closed, so `?` still filters there). When the editor is focused the
+    /// key falls through to the block editor and types a literal `?`; when
+    /// the page tree / nothing is focused, `?` opens help. This is the
+    /// standard "help key only outside inputs" behaviour.
+    fn handle_help_key(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+        if self.palette.is_visible() || self.main.editor().is_focused() {
+            return false;
+        }
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Character(c),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        if c.as_str() != "?" {
+            return false;
+        }
+        self.shortcuts.set_visible(true);
+        *handled = true;
+        self.refresh_status();
+        true
+    }
+
+    /// Cmd-K / Ctrl-K opens the page jump palette. Intercepted BEFORE
+    /// child widgets so a focused input doesn't swallow the keystroke.
+    fn handle_palette_shortcut(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        handled: &mut bool,
+    ) -> bool {
+        if self.palette.is_visible() {
+            return false;
+        }
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Character(c),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let mods = modifiers.state();
+        if !(mods.control_key() || mods.super_key()) || c.to_lowercase().as_str() != "k" {
+            return false;
+        }
+        let anchor_x = f64::midpoint(self.rect.x0, self.rect.x1) - self.palette.width() / 2.0;
+        let anchor_y = self.rect.y0 + 80.0;
+        self.palette
+            .set_anchor(vello::kurbo::Point::new(anchor_x, anchor_y));
+        self.palette.set_visible(true);
+        *focus_target = Some(node_id);
+        *handled = true;
+        true
+    }
+
+    /// Cmd-N / Ctrl-N creates a child of the selected page. Handled at the
+    /// app level — not just in the sidebar — so it works no matter which
+    /// pane holds focus. The editor takes focus on load, so a
+    /// sidebar-only handler (gated on the tree being focused) would
+    /// silently no-op, making the welcome copy "Cmd-N adds a page under
+    /// the selection" a lie. `N` is modifier-qualified, so it never
+    /// conflicts with typing into a note.
+    fn handle_new_child_shortcut(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        if self.palette.is_visible() {
+            return false;
+        }
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Character(c),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let mods = modifiers.state();
+        if !(mods.control_key() || mods.super_key()) || c.to_lowercase().as_str() != "n" {
+            return false;
+        }
+        let parent = self.workspace.selected();
+        self.apply_and_dispatch(state, OutEvent::CreateChild { parent });
+        self.sidebar.sync_from_workspace(&self.workspace);
+        *handled = true;
+        true
+    }
+
+    /// While the palette is visible it owns ALL keystrokes.
+    fn handle_palette_capture(
+        &mut self,
+        event: &WindowEvent,
+        focus_target: &mut Option<NodeId>,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.palette.is_visible()
+            || !matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            )
+        {
+            return false;
+        }
+        let consumed = self.palette.handle_key(event);
+        if let Some(entry) = self.palette.take_selection() {
+            self.navigate_to(entry.id);
+        }
+        if !consumed {
+            return false;
+        }
+        if !self.palette.is_visible() {
+            *focus_target = self.main_node;
+        }
+        *handled = true;
+        true
+    }
+
+    /// Narrow-mode overlay drawer. The top-bar button toggles it; while
+    /// open it captures pointer/keys so the page tree behaves like a
+    /// modal flyout over the editor.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the exact Widget::handle_event context bundle"
+    )]
+    fn handle_narrow_drawer(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !self.built_narrow {
+            return false;
+        }
+        // Toggle button — hit-test the hamburger in the top bar.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+            && self.menu_btn_rect.contains(self.last_mouse)
+        {
+            self.set_drawer_open(!self.drawer.is_open());
+            *handled = true;
+            return true;
+        }
+        if !self.drawer.is_open() {
+            return false;
+        }
+        // Escape closes the drawer.
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(NamedKey::Escape),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            self.set_drawer_open(false);
+            *handled = true;
+            return true;
+        }
+        // A press on the scrim (outside the drawer) closes it.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+            && !self.sidebar.get_rect().contains(self.last_mouse)
+        {
+            self.set_drawer_open(false);
+            *handled = true;
+            return true;
+        }
+        // Route to the page tree; auto-close once a page is picked.
+        let sel_before = self.workspace.selected();
+        if let Some(n) = self.sidebar_node {
+            self.sidebar.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
+        self.drain_sidebar_events(state);
+        if self.workspace.selected() != sel_before {
+            self.set_drawer_open(false);
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+        self.refresh_status();
+        true
+    }
+
+    /// Click on a link mark navigates.
+    fn handle_link_click(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let Some(id) = self.link_under_last_mouse() else {
+            return false;
+        };
+        self.navigate_to(id);
+        *handled = true;
+        true
+    }
+
+    /// The default routing once none of the modal overlays above claimed
+    /// the event: sidebar + editor, then the title-rename / dirty-save /
+    /// last-mouse / status bookkeeping every event needs.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the exact Widget::handle_event context bundle"
+    )]
+    fn route_to_children(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+    ) {
+        // Modal focus capture: while the editor's `/` block menu (or the
+        // `[[` link popover) is open, keyboard nav belongs to it — not the
+        // page list behind it; symmetrically, while the sidebar's
+        // right-click menu is open, keyboard nav belongs to the menu, not
+        // the editor. Mouse events still reach both panes (a click only
+        // ever hits one pane's rect), so we only gate keyboard routing.
+        let is_keyboard = matches!(event, WindowEvent::KeyboardInput { .. });
+        let editor_menu_open = self.main.editor().slash_menu_visible()
+            || self.main.editor().link_popover().is_visible();
+        let sidebar_menu_open = self.sidebar.menu_is_open();
+
+        // Route to the inline sidebar only when it's actually on screen
+        // (wide mode). In narrow mode the drawer block above owns it.
+        if !self.built_narrow && (!editor_menu_open || !is_keyboard) {
+            if let Some(n) = self.sidebar_node {
+                self.sidebar.handle_event(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    n,
+                    taffy,
+                );
+            }
+            // Drain any commands the sidebar produced.
+            self.drain_sidebar_events(state);
+        }
+        // The editor never sees keystrokes the sidebar is capturing — its
+        // right-click menu OR an in-progress inline rename — so a rename
+        // keystroke doesn't also type into the note behind the field.
+        let sidebar_capturing_kbd = sidebar_menu_open || self.sidebar.is_renaming();
+        if !(sidebar_capturing_kbd && is_keyboard)
+            && let Some(n) = self.main_node
+        {
+            self.main.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
+        // A committed edit of the note's in-page title renames the current
+        // page on the same replayable action path the sidebar's inline rename
+        // uses, then re-syncs the sidebar so the new name shows in the tree.
+        if let Some(new_title) = self.main.take_title_rename()
+            && let Some(id) = self.workspace.selected()
+        {
+            let trimmed = new_title.trim();
+            let changed = self.workspace.get(id).is_some_and(|m| m.title != trimmed);
+            if !trimmed.is_empty() && changed {
+                self.apply_and_dispatch(
+                    state,
+                    OutEvent::Rename {
+                        id,
+                        new_title: trimmed.to_string(),
+                    },
+                );
+                self.sidebar.sync_from_workspace(&self.workspace);
+            }
+        }
+        // After every event, observe the editor's dirty flag and
+        // request a debounced save if the user just edited.
+        self.drain_editor_edits();
+
+        // Update the last-mouse cache so the next MouseInput knows
+        // where to hit-test for link clicks.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            let logical =
+                vello::kurbo::Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_mouse = logical;
+        }
+        // Status bar refresh runs at the tail of every event so word
+        // count + save indicator stay current. Cheap — the StatusBar
+        // diffs internally.
+        self.refresh_status();
     }
 }
 
@@ -2186,7 +2362,7 @@ mod tests {
         let delete_spec = page.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_palette = match &delete_spec.input {
             qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("delete is an immediate action"),
+            qos_actions::ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
         };
 
         // Affordance side: the sidebar's Delete event through the app path.

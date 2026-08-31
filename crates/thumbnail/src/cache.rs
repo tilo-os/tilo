@@ -71,12 +71,20 @@ pub struct ThumbCache {
 
 impl ThumbCache {
     /// Open (creating if needed) a cache rooted at `dir` with default bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `dir` can't be created.
     pub fn open(dir: impl AsRef<Path>) -> std::io::Result<Self> {
         Self::with_limits(dir, 512, 4096)
     }
 
     /// Open with explicit memory (`mem_capacity` entries) and disk
     /// (`max_disk_entries` files) bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `dir` can't be created.
     pub fn with_limits(
         dir: impl AsRef<Path>,
         mem_capacity: u64,
@@ -154,7 +162,7 @@ impl ThumbCache {
         }
         // Oldest first, remove down to 90% of the cap.
         entries.sort_by_key(|(t, _)| *t);
-        let target = (self.max_disk_entries * 9) / 10;
+        let target = self.max_disk_entries.saturating_mul(9) / 10;
         let to_remove = entries.len().saturating_sub(target);
         for (_, path) in entries.into_iter().take(to_remove) {
             let _ = std::fs::remove_file(path);
@@ -222,7 +230,7 @@ mod tests {
         for i in 0..40u32 {
             cache.put(
                 &ThumbKey::of_bytes(format!("f{i}").as_bytes(), 256),
-                vec![i as u8; 8],
+                vec![u8::try_from(i).unwrap_or(u8::MAX); 8],
             );
         }
         let count = std::fs::read_dir(dir.path())

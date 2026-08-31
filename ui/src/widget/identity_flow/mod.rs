@@ -24,8 +24,9 @@ use ed25519_dalek::SigningKey as DalekSigningKey;
 use hmac::{Hmac, Mac};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use serde_bytes as serde_bytes_codec;
 use sha2::{Digest, Sha512};
-use taffy::{NodeId, TaffyTree};
+use taffy::{NodeId, Style, TaffyTree};
 use threshold_identity::{EnrolmentRound1, EnrolmentRound2, ThresholdError, ThresholdIdentity};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -92,7 +93,7 @@ pub struct SerializableIdentity {
     pub share_index: u16,
     /// The 32-byte Ed25519 seed `SigningKey::from_bytes` expands from;
     /// anything else here signs for the wrong key.
-    #[serde(default, with = "serde_bytes")]
+    #[serde(default, with = "serde_bytes_codec")]
     pub secret_bytes: Vec<u8>,
 }
 
@@ -101,6 +102,11 @@ impl SerializableIdentity {
     /// share is not a signing key. Threshold identities return
     /// [`IdentityFlowError::ThresholdSerialiseUnimplemented`] and stay
     /// live in-process instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::ThresholdSerialiseUnimplemented`] if
+    /// `id` has no single-device secret seed to extract.
     pub fn from_identity(id: &ThresholdIdentity) -> Result<Self, IdentityFlowError> {
         let seed = id
             .single_device_seed()
@@ -117,6 +123,10 @@ impl SerializableIdentity {
 }
 
 impl IdentityRecord {
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::ThresholdSerialiseUnimplemented`] if
+    /// `identity` is not single-device.
     pub fn from_threshold_identity(
         identity: &ThresholdIdentity,
         display_name: impl Into<String>,
@@ -136,12 +146,22 @@ impl IdentityRecord {
     }
 
     /// Persisted under `~/.config/qos/identity/primary.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::EncodeFailed`] if serialisation fails.
     pub fn to_json_bytes(&self) -> Result<Vec<u8>, IdentityFlowError> {
         serde_json::to_vec_pretty(self).map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))
     }
 
     /// Accepts legacy schema 1 and secured metadata schema 2; rejects future
     /// layouts so a ceremony cannot reinterpret key material.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::DecodeFailed`] if `bytes` isn't valid
+    /// JSON for this type, or [`IdentityFlowError::UnknownSchemaVersion`]
+    /// if the record's `schema_version` is neither `1` nor `2`.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, IdentityFlowError> {
         let rec: Self = serde_json::from_slice(bytes)
             .map_err(|e| IdentityFlowError::DecodeFailed(e.to_string()))?;
@@ -158,6 +178,14 @@ impl IdentityRecord {
     /// Checks the derived public key against the record's stored one —
     /// a mismatch is refused rather than silently loaded. Threshold-mode
     /// records can't be revived (a single share isn't a signing key).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::ThresholdSerialiseUnimplemented`] for
+    /// a threshold-mode record, [`IdentityFlowError::DecodeFailed`] if
+    /// the stored secret isn't 32 bytes, or
+    /// [`IdentityFlowError::PublicKeyMismatch`] if the derived public key
+    /// doesn't match the recorded one.
     pub fn into_threshold_identity(self) -> Result<ThresholdIdentity, IdentityFlowError> {
         let ti = self.threshold_identity;
         if !ti.single_device {
@@ -180,7 +208,14 @@ impl IdentityRecord {
 /// The shell wires the real disk-backed impl; tests use
 /// [`MemoryIdentityStore`] to avoid touching `~/.config`.
 pub trait IdentityStore: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns an error if the backing store exists but can't be read or
+    /// decoded.
     fn load(&self) -> Result<Option<IdentityRecord>, IdentityFlowError>;
+    /// # Errors
+    ///
+    /// Returns an error if `record` can't be encoded or written.
     fn save(&self, record: &IdentityRecord) -> Result<(), IdentityFlowError>;
 }
 
@@ -198,10 +233,19 @@ impl MemoryIdentityStore {
 
 impl IdentityStore for MemoryIdentityStore {
     fn load(&self) -> Result<Option<IdentityRecord>, IdentityFlowError> {
-        Ok(self.inner.lock().unwrap().clone())
+        // Recover rather than panic on a poisoned lock: a panic here
+        // would abort the whole process in a release build.
+        Ok(self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone())
     }
     fn save(&self, record: &IdentityRecord) -> Result<(), IdentityFlowError> {
-        *self.inner.lock().unwrap() = Some(record.clone());
+        *self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(record.clone());
         Ok(())
     }
 }
@@ -219,6 +263,10 @@ pub struct PairingPayload {
 }
 
 impl PairingPayload {
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::EncodeFailed`] if `round1` can't be
+    /// postcard-encoded.
     pub fn new(
         nonce: [u8; 16],
         initiator_pk: &Ed25519PublicKey,
@@ -234,10 +282,18 @@ impl PairingPayload {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::EncodeFailed`] if serialisation fails.
     pub fn to_json_bytes(&self) -> Result<Vec<u8>, IdentityFlowError> {
         serde_json::to_vec(self).map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::DecodeFailed`] if `bytes` isn't valid
+    /// JSON for this type, or if the decoded payload's type tag isn't
+    /// `"qos-pairing"`.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, IdentityFlowError> {
         let p: Self = serde_json::from_slice(bytes)
             .map_err(|e| IdentityFlowError::DecodeFailed(e.to_string()))?;
@@ -250,6 +306,10 @@ impl PairingPayload {
         Ok(p)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::DecodeFailed`] if `channel` isn't
+    /// valid 16-byte hex.
     pub fn nonce(&self) -> Result<[u8; 16], IdentityFlowError> {
         let bytes = hex::decode(&self.channel)
             .map_err(|e| IdentityFlowError::DecodeFailed(format!("nonce hex: {e}")))?;
@@ -259,6 +319,10 @@ impl PairingPayload {
             .map_err(|_| IdentityFlowError::DecodeFailed("nonce must be 16 bytes".to_string()))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::DecodeFailed`] if `initiator_pk` isn't
+    /// valid 32-byte hex.
     pub fn initiator_public_key(&self) -> Result<Ed25519PublicKey, IdentityFlowError> {
         let bytes = hex::decode(&self.initiator_pk)
             .map_err(|e| IdentityFlowError::DecodeFailed(format!("pk hex: {e}")))?;
@@ -268,6 +332,11 @@ impl PairingPayload {
         Ok(Ed25519PublicKey::from_bytes(arr))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::DecodeFailed`] if
+    /// `initiator_dkg_round1` isn't valid hex, or isn't a valid postcard
+    /// encoding of an [`EnrolmentRound1`].
     pub fn initiator_round1(&self) -> Result<EnrolmentRound1, IdentityFlowError> {
         let bytes = hex::decode(&self.initiator_dkg_round1)
             .map_err(|e| IdentityFlowError::DecodeFailed(format!("round1 hex: {e}")))?;
@@ -285,7 +354,11 @@ pub fn derive_pairing_code(nonce: &[u8; 16]) -> u32 {
     hasher.update(b"qos-pair-code-v1");
     hasher.update(nonce);
     let digest = hasher.finalize();
-    let truncated = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]);
+    // `digest` is a 64-byte SHA-512 output, so the first 4 bytes always
+    // exist; the fallback is unreachable in practice.
+    let truncated = digest
+        .first_chunk::<4>()
+        .map_or(0, |b| u32::from_be_bytes(*b));
     truncated % 1_000_000
 }
 
@@ -300,15 +373,25 @@ pub fn derive_pairing_mac_key(nonce: &[u8; 16]) -> [u8; 32] {
     hasher.update(b"qos-pair-mac-v1");
     hasher.update(nonce);
     let digest = hasher.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest[..32]);
-    out
+    // `digest` is a 64-byte SHA-512 output, so the first 32 bytes always
+    // exist; the fallback is unreachable in practice.
+    digest.first_chunk::<32>().copied().unwrap_or([0u8; 32])
 }
 
 type HmacSha512 = Hmac<Sha512>;
 
 /// Host and pairer each derive this key from the same nonce
 /// independently, so matching codes imply matching keys.
+///
+/// # Panics
+///
+/// Never panics in practice: HMAC is defined for a key of any length
+/// (RFC 2104), and `Hmac::<Sha512>::new_from_slice` can only fail for a
+/// hash with a zero block size, which SHA-512 never is.
+#[allow(
+    clippy::expect_used,
+    reason = "HMAC accepts any key length; new_from_slice cannot fail for SHA-512"
+)]
 pub fn compute_pairing_mac(key: &[u8; 32], payload: &[u8]) -> [u8; 64] {
     let mut mac = HmacSha512::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(payload);
@@ -319,6 +402,16 @@ pub fn compute_pairing_mac(key: &[u8; 32], payload: &[u8]) -> [u8; 64] {
 }
 
 /// Verify a MAC; constant-time comparison via `Hmac::verify_slice`.
+///
+/// # Panics
+///
+/// Never panics in practice: HMAC is defined for a key of any length
+/// (RFC 2104), and `Hmac::<Sha512>::new_from_slice` can only fail for a
+/// hash with a zero block size, which SHA-512 never is.
+#[allow(
+    clippy::expect_used,
+    reason = "HMAC accepts any key length; new_from_slice cannot fail for SHA-512"
+)]
 pub fn verify_pairing_mac(key: &[u8; 32], payload: &[u8], tag: &[u8; 64]) -> bool {
     let mut mac = HmacSha512::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(payload);
@@ -349,24 +442,42 @@ impl PairingHandshake {
 
     pub fn publish_pairer_reply(&self, nonce: &[u8; 16], reply: EnrolmentRound2, mac: [u8; 64]) {
         let key = hex::encode(nonce);
-        let mut guard = self.inner.lock().unwrap();
+        // Recover rather than panic on a poisoned lock: a panic here
+        // would abort the whole process in a release build.
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.entry(key).or_default().reply = Some((reply, mac));
     }
 
     pub fn take_pairer_reply(&self, nonce: &[u8; 16]) -> Option<(EnrolmentRound2, [u8; 64])> {
         let key = hex::encode(nonce);
-        self.inner.lock().unwrap().get_mut(&key)?.reply.take()
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&key)?
+            .reply
+            .take()
     }
 
     pub fn publish_host_round2(&self, nonce: &[u8; 16], reply: EnrolmentRound2, mac: [u8; 64]) {
         let key = hex::encode(nonce);
-        let mut guard = self.inner.lock().unwrap();
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.entry(key).or_default().host_round2 = Some((reply, mac));
     }
 
     pub fn take_host_round2(&self, nonce: &[u8; 16]) -> Option<(EnrolmentRound2, [u8; 64])> {
         let key = hex::encode(nonce);
-        self.inner.lock().unwrap().get_mut(&key)?.host_round2.take()
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(&key)?
+            .host_round2
+            .take()
     }
 }
 
@@ -381,14 +492,19 @@ pub enum InviteExpiry {
 
 impl InviteExpiry {
     pub fn resolve(self, now: SystemTime) -> SystemTime {
-        match self {
-            InviteExpiry::OneHour => now + Duration::from_hours(1),
-            InviteExpiry::OneDay => now + Duration::from_hours(24),
-            InviteExpiry::OneWeek => now + Duration::from_hours(168),
+        let duration = match self {
+            InviteExpiry::OneHour => Duration::from_secs(3600),
+            InviteExpiry::OneDay => Duration::from_secs(86400),
+            InviteExpiry::OneWeek => Duration::from_secs(604_800),
             // `Never` is encoded as +100 years; downstream verifiers
             // treat that as "no practical expiry".
-            InviteExpiry::Never => now + Duration::from_hours(876000),
-        }
+            InviteExpiry::Never => Duration::from_secs(3_153_600_000),
+        };
+        // `now` is a real wall-clock time, nowhere near the range limit
+        // `SystemTime` can represent, so this can't realistically
+        // overflow; `checked_add` with a same-value fallback keeps the
+        // function panic-free without changing observable behaviour.
+        now.checked_add(duration).unwrap_or(now)
     }
 
     pub fn label(&self) -> &'static str {
@@ -419,7 +535,7 @@ pub struct InviteEnvelope {
     pub expires_unix: u64,
     pub delegation_pubkey: Ed25519PublicKey,
     /// Secret — must not be displayed (see struct doc).
-    #[serde(with = "serde_bytes")]
+    #[serde(with = "serde_bytes_codec")]
     pub delegation_secret: Vec<u8>,
     /// Excludes `delegation_secret`; signing `delegation_pubkey` alone
     /// is enough to bind the delegation.
@@ -427,6 +543,10 @@ pub struct InviteEnvelope {
 }
 
 impl InviteEnvelope {
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::EncodeFailed`] if the canonical view
+    /// can't be postcard-encoded.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, IdentityFlowError> {
         #[derive(Serialize)]
         struct View<'a> {
@@ -450,6 +570,10 @@ impl InviteEnvelope {
         postcard::to_allocvec(&view).map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::SignatureInvalid`] if `owner_signature`
+    /// doesn't verify against `owner_pubkey`.
     pub fn verify_signature(&self) -> Result<(), IdentityFlowError> {
         let bytes = self.signing_bytes()?;
         verify_event(&bytes, &self.owner_signature, &self.owner_pubkey)
@@ -464,6 +588,10 @@ impl InviteEnvelope {
         now_unix >= self.expires_unix
     }
 
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::EncodeFailed`] if postcard encoding
+    /// fails.
     pub fn to_url(&self) -> Result<String, IdentityFlowError> {
         let bytes = postcard::to_allocvec(self)
             .map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))?;
@@ -471,6 +599,11 @@ impl InviteEnvelope {
         Ok(format!("qos://invite/{encoded}"))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::DecodeFailed`] if `url` is missing
+    /// the `qos://invite/` prefix, isn't valid base32, or doesn't decode
+    /// to a valid envelope.
     pub fn from_url(url: &str) -> Result<Self, IdentityFlowError> {
         let prefix = "qos://invite/";
         let suffix = url.strip_prefix(prefix).ok_or_else(|| {
@@ -485,6 +618,12 @@ impl InviteEnvelope {
 
 /// Generates the one-time delegation keypair internally; signs the
 /// canonical envelope view with the owner's key.
+///
+/// # Errors
+///
+/// Returns [`IdentityFlowError::EncodeFailed`] if the envelope can't be
+/// encoded, or [`IdentityFlowError::SigningFailed`] if `owner_signing_key`
+/// fails to sign it.
 pub fn mint_invite(
     channel: ChannelId,
     channel_name: impl Into<String>,
@@ -518,6 +657,15 @@ pub fn mint_invite(
 
 /// Builds an `AttestationIssued` event signed by the embedded
 /// delegation key (which the owner has pre-signed an authorisation for).
+///
+/// # Errors
+///
+/// Returns [`IdentityFlowError::SignatureInvalid`] if the envelope's
+/// owner signature doesn't verify, [`IdentityFlowError::InviteExpired`]
+/// if it has expired, [`IdentityFlowError::DecodeFailed`] if the embedded
+/// delegation secret isn't 32 bytes, or
+/// [`IdentityFlowError::SigningFailed`] if the delegation key fails to
+/// sign the attestation.
 pub fn build_attestation_from_invite(
     envelope: &InviteEnvelope,
     invitee_pubkey: Ed25519PublicKey,
@@ -535,13 +683,20 @@ pub fn build_attestation_from_invite(
             IdentityFlowError::DecodeFailed("delegation secret must be 32 bytes".into())
         })?;
     let delegation_sk = DalekSigningKey::from_bytes(&secret);
+    // `now` is a real wall-clock time, nowhere near the range limit
+    // `SystemTime` can represent, so this can't realistically overflow;
+    // `checked_add` with a same-value fallback keeps the function
+    // panic-free without changing observable behaviour.
+    let valid_until = now
+        .checked_add(Duration::from_secs(31_536_000))
+        .unwrap_or(now);
     let mut attestation = Attestation {
         id: AttestationId::new(),
         issued_by: envelope.delegation_pubkey,
         subject: invitee_pubkey,
         claims: vec![Claim::ClearedAt(Clearance::PUBLIC)],
         valid_from: now,
-        valid_until: now + Duration::from_hours(8760),
+        valid_until,
         signature: Signature::from_bytes([0; 64]),
     };
     let bytes = attestation
@@ -567,8 +722,25 @@ pub struct RecoveryChallenge {
     expected: [String; 3],
 }
 
+/// Looks up the (1-indexed) mnemonic word at `position`, without a raw
+/// index expression: guards the underflow on `position - 1` and the
+/// out-of-range lookup as two explicit `Result` paths instead.
+fn word_at(words: &[&str], position: usize) -> Result<String, IdentityFlowError> {
+    let idx = position.checked_sub(1).ok_or_else(|| {
+        IdentityFlowError::DecodeFailed(format!("recovery position must be >= 1, got {position}"))
+    })?;
+    words.get(idx).map(|w| (*w).to_string()).ok_or_else(|| {
+        IdentityFlowError::DecodeFailed(format!("recovery position {position} out of range"))
+    })
+}
+
 impl RecoveryChallenge {
     /// Picks three distinct positions in 1..=24.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::DecodeFailed`] if `mnemonic` isn't
+    /// exactly 24 words.
     pub fn from_mnemonic(mnemonic: &str) -> Result<Self, IdentityFlowError> {
         let words: Vec<&str> = mnemonic.split_whitespace().collect();
         if words.len() != 24 {
@@ -581,14 +753,23 @@ impl RecoveryChallenge {
         let mut positions: Vec<usize> = (1..=24).collect();
         let mut rng = OsRng;
         for i in (1..positions.len()).rev() {
-            let j = (rng.next_u32() as usize) % (i + 1);
+            let j = (rng.next_u32() as usize)
+                .checked_rem(i.saturating_add(1))
+                .unwrap_or(0);
             positions.swap(i, j);
         }
-        let picked = [positions[0], positions[1], positions[2]];
+        let picked: [usize; 3] = match positions.get(0..3) {
+            Some([a, b, c]) => [*a, *b, *c],
+            _ => {
+                return Err(IdentityFlowError::DecodeFailed(
+                    "failed to select recovery positions".to_string(),
+                ));
+            }
+        };
         let expected = [
-            words[picked[0] - 1].to_string(),
-            words[picked[1] - 1].to_string(),
-            words[picked[2] - 1].to_string(),
+            word_at(&words, picked[0])?,
+            word_at(&words, picked[1])?,
+            word_at(&words, picked[2])?,
         ];
         Ok(Self {
             positions: picked,
@@ -597,6 +778,11 @@ impl RecoveryChallenge {
     }
 
     /// Deterministic constructor for tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::DecodeFailed`] if `mnemonic` isn't
+    /// exactly 24 words, or if any of `positions` is out of range.
     pub fn at_positions(mnemonic: &str, positions: [usize; 3]) -> Result<Self, IdentityFlowError> {
         let words: Vec<&str> = mnemonic.split_whitespace().collect();
         if words.len() != 24 {
@@ -606,9 +792,9 @@ impl RecoveryChallenge {
             )));
         }
         let expected = [
-            words[positions[0] - 1].to_string(),
-            words[positions[1] - 1].to_string(),
-            words[positions[2] - 1].to_string(),
+            word_at(&words, positions[0])?,
+            word_at(&words, positions[1])?,
+            word_at(&words, positions[2])?,
         ];
         Ok(Self {
             positions,
@@ -622,12 +808,10 @@ impl RecoveryChallenge {
     }
 
     pub fn check(&self, answers: &[&str; 3]) -> bool {
-        for (i, expected) in self.expected.iter().enumerate() {
-            if !answers[i].trim().eq_ignore_ascii_case(expected) {
-                return false;
-            }
-        }
-        true
+        self.expected
+            .iter()
+            .zip(answers.iter())
+            .all(|(expected, answer)| answer.trim().eq_ignore_ascii_case(expected))
     }
 }
 
@@ -661,18 +845,19 @@ impl LineEditState {
     /// `(lo, hi)` byte-index pair, both on char boundaries.
     pub fn selection_range(&self) -> Option<(usize, usize)> {
         let anchor = self.selection_anchor?;
-        if anchor == self.cursor {
-            None
-        } else if anchor < self.cursor {
-            Some((anchor, self.cursor))
-        } else {
-            Some((self.cursor, anchor))
+        match anchor.cmp(&self.cursor) {
+            std::cmp::Ordering::Equal => None,
+            std::cmp::Ordering::Less => Some((anchor, self.cursor)),
+            std::cmp::Ordering::Greater => Some((self.cursor, anchor)),
         }
     }
 
     pub fn selected_text(&self) -> &str {
         match self.selection_range() {
-            Some((lo, hi)) => &self.text[lo..hi],
+            // `selection_range` always returns char-boundary offsets, so
+            // `get` succeeds; the fallback only guards against that
+            // invariant somehow not holding.
+            Some((lo, hi)) => self.text.get(lo..hi).unwrap_or(""),
             None => "",
         }
     }
@@ -682,7 +867,7 @@ impl LineEditState {
     pub fn move_cursor(&mut self, pos: usize, extend: bool) {
         let mut pos = pos.min(self.text.len());
         while pos > 0 && !self.text.is_char_boundary(pos) {
-            pos -= 1;
+            pos = pos.saturating_sub(1);
         }
         if extend {
             self.selection_anchor.get_or_insert(self.cursor);
@@ -706,7 +891,7 @@ impl LineEditState {
     pub fn insert_str(&mut self, s: &str) {
         let _ = self.delete_selection();
         self.text.insert_str(self.cursor, s);
-        self.cursor += s.len();
+        self.cursor = self.cursor.saturating_add(s.len());
         self.selection_anchor = None;
     }
 
@@ -714,9 +899,9 @@ impl LineEditState {
         if self.cursor == 0 {
             return 0;
         }
-        let mut p = self.cursor - 1;
+        let mut p = self.cursor.saturating_sub(1);
         while p > 0 && !self.text.is_char_boundary(p) {
-            p -= 1;
+            p = p.saturating_sub(1);
         }
         p
     }
@@ -725,9 +910,9 @@ impl LineEditState {
         if self.cursor >= self.text.len() {
             return self.text.len();
         }
-        let mut p = self.cursor + 1;
+        let mut p = self.cursor.saturating_add(1);
         while p < self.text.len() && !self.text.is_char_boundary(p) {
-            p += 1;
+            p = p.saturating_add(1);
         }
         p
     }
@@ -736,12 +921,17 @@ impl LineEditState {
     /// meets alphanumeric.
     fn prev_word_boundary(&self) -> usize {
         let bytes = self.text.as_bytes();
+        let is_alnum_before = |p: usize| {
+            bytes
+                .get(p.saturating_sub(1))
+                .is_some_and(u8::is_ascii_alphanumeric)
+        };
         let mut p = self.cursor;
-        while p > 0 && !bytes[p - 1].is_ascii_alphanumeric() {
-            p -= 1;
+        while p > 0 && !is_alnum_before(p) {
+            p = p.saturating_sub(1);
         }
-        while p > 0 && bytes[p - 1].is_ascii_alphanumeric() {
-            p -= 1;
+        while p > 0 && is_alnum_before(p) {
+            p = p.saturating_sub(1);
         }
         p
     }
@@ -749,12 +939,13 @@ impl LineEditState {
     fn next_word_boundary(&self) -> usize {
         let bytes = self.text.as_bytes();
         let len = bytes.len();
+        let is_alnum_at = |p: usize| bytes.get(p).is_some_and(u8::is_ascii_alphanumeric);
         let mut p = self.cursor;
-        while p < len && bytes[p].is_ascii_alphanumeric() {
-            p += 1;
+        while p < len && is_alnum_at(p) {
+            p = p.saturating_add(1);
         }
-        while p < len && !bytes[p].is_ascii_alphanumeric() {
-            p += 1;
+        while p < len && !is_alnum_at(p) {
+            p = p.saturating_add(1);
         }
         p
     }
@@ -831,43 +1022,7 @@ impl LineEditState {
                 self.text.replace_range(self.cursor..target, "");
                 true
             }
-            Key::Character(s) if ctrl => match s.to_lowercase().as_str() {
-                "a" => {
-                    self.selection_anchor = Some(0);
-                    self.cursor = self.text.len();
-                    true
-                }
-                "c" => {
-                    let sel = self.selected_text();
-                    let bytes = if sel.is_empty() {
-                        self.text.clone()
-                    } else {
-                        sel.to_string()
-                    };
-                    crate::text_selection::clipboard_copy(&bytes);
-                    true
-                }
-                "x" => {
-                    if self.selection_range().is_some() {
-                        let sel = self.selected_text().to_string();
-                        crate::text_selection::clipboard_copy(&sel);
-                        self.delete_selection();
-                        true
-                    } else {
-                        false
-                    }
-                }
-                "v" => {
-                    if let Some(pasted) = crate::text_selection::clipboard_paste() {
-                        let cleaned: String = pasted.chars().filter(|c| !c.is_control()).collect();
-                        self.insert_str(&cleaned);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                _ => false,
-            },
+            Key::Character(s) if ctrl => self.apply_ctrl_shortcut(s),
             _ => {
                 // Skip control codes: they arrive as zero-width chars on some platforms.
                 if let Some(t) = text_input {
@@ -881,10 +1036,60 @@ impl LineEditState {
             }
         }
     }
+
+    /// Handles Ctrl+A/C/X/V; `s` is the character text from the key
+    /// event. Returns `true` if the shortcut was recognised and applied.
+    fn apply_ctrl_shortcut(&mut self, s: &str) -> bool {
+        match s.to_lowercase().as_str() {
+            "a" => {
+                self.selection_anchor = Some(0);
+                self.cursor = self.text.len();
+                true
+            }
+            "c" => {
+                let sel = self.selected_text();
+                let bytes = if sel.is_empty() {
+                    self.text.clone()
+                } else {
+                    sel.to_string()
+                };
+                crate::text_selection::clipboard_copy(&bytes);
+                true
+            }
+            "x" => {
+                if self.selection_range().is_some() {
+                    let sel = self.selected_text().to_string();
+                    crate::text_selection::clipboard_copy(&sel);
+                    self.delete_selection();
+                    true
+                } else {
+                    false
+                }
+            }
+            "v" => {
+                if let Some(pasted) = crate::text_selection::clipboard_paste() {
+                    let cleaned: String = pasted.chars().filter(|c| !c.is_control()).collect();
+                    self.insert_str(&cleaned);
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Terminal "Done" success card; falls back to a generic message if
 /// the store has no record.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "the `transform * Affine::translate(..)` calls below compose 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
+)]
+#[allow(
+    clippy::similar_names,
+    reason = "cx/cy is the standard center-x/center-y coordinate naming convention; distinguishing them further would reduce clarity"
+)]
 fn draw_done_card(
     store: &dyn IdentityStore,
     scene: &mut Scene,
@@ -1090,7 +1295,8 @@ impl IdentityFlow {
         let next = match (self.current, outcome) {
             (_, ScreenOutcome::Stay) => self.current,
             (_, ScreenOutcome::JumpTo(s)) => s,
-            (IdentityFlowScreen::CreateIdentity, ScreenOutcome::Advance) => {
+            (IdentityFlowScreen::CreateIdentity, ScreenOutcome::Advance)
+            | (IdentityFlowScreen::RecoveryVerify, ScreenOutcome::Back) => {
                 IdentityFlowScreen::RecoveryShare
             }
             (IdentityFlowScreen::RecoveryShare, ScreenOutcome::Advance) => {
@@ -1099,21 +1305,15 @@ impl IdentityFlow {
             (IdentityFlowScreen::RecoveryShare, ScreenOutcome::Back) => {
                 IdentityFlowScreen::CreateIdentity
             }
-            (IdentityFlowScreen::RecoveryVerify, ScreenOutcome::Advance) => {
-                IdentityFlowScreen::Done
-            }
-            (IdentityFlowScreen::RecoveryVerify, ScreenOutcome::Back) => {
-                IdentityFlowScreen::RecoveryShare
-            }
-            (IdentityFlowScreen::AddDeviceHost, ScreenOutcome::Advance) => IdentityFlowScreen::Done,
-            (IdentityFlowScreen::AddDeviceHost, ScreenOutcome::Back) => IdentityFlowScreen::Done,
-            (IdentityFlowScreen::PairDevice, ScreenOutcome::Advance) => IdentityFlowScreen::Done,
-            (IdentityFlowScreen::PairDevice, ScreenOutcome::Back) => IdentityFlowScreen::Done,
-            (IdentityFlowScreen::InviteMint, ScreenOutcome::Advance) => IdentityFlowScreen::Done,
-            (IdentityFlowScreen::InviteMint, ScreenOutcome::Back) => IdentityFlowScreen::Done,
-            (IdentityFlowScreen::InviteAccept, ScreenOutcome::Advance) => IdentityFlowScreen::Done,
-            (IdentityFlowScreen::InviteAccept, ScreenOutcome::Back) => IdentityFlowScreen::Done,
-            (IdentityFlowScreen::Done, _) => IdentityFlowScreen::Done,
+            (IdentityFlowScreen::RecoveryVerify, ScreenOutcome::Advance)
+            | (
+                IdentityFlowScreen::AddDeviceHost
+                | IdentityFlowScreen::PairDevice
+                | IdentityFlowScreen::InviteMint
+                | IdentityFlowScreen::InviteAccept,
+                ScreenOutcome::Advance | ScreenOutcome::Back,
+            )
+            | (IdentityFlowScreen::Done, _) => IdentityFlowScreen::Done,
             (other, _) => other,
         };
         self.current = next;
@@ -1167,7 +1367,7 @@ impl Widget for IdentityFlow {
             IdentityFlowScreen::InviteAccept => {
                 self.invite_accept.build_layout(taffy, theme, node_map)
             }
-            IdentityFlowScreen::Done => taffy.leaf_node(Default::default()),
+            IdentityFlowScreen::Done => taffy.leaf_node(Style::default()),
         }
     }
 
@@ -1515,6 +1715,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::similar_names,
+        reason = "owner_sk/owner_pk and invitee_sk/invitee_pk are the clearest names for a test exercising both sides of an invite; the sk/pk suffixes are a standard convention, not a typo risk"
+    )]
     fn invite_accept_produces_valid_attestation() {
         let (owner_sk, owner_pk) = generate_keypair();
         let env = mint_invite(

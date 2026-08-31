@@ -138,12 +138,22 @@ impl AccessibilityPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        // --- Vision: high contrast, reduce motion, text size.
+        crate::widgets::cards(vec![
+            self.build_vision_card(),
+            self.build_pointer_card(),
+            self.build_typing_card(),
+            self.build_advanced_card(),
+            Self::build_explainer_card(),
+        ])
+    }
+
+    // --- Vision: high contrast, reduce motion, text size.
+    fn build_vision_card(&self) -> Box<dyn Widget> {
         let size_opts: Vec<String> = TEXT_SIZES.iter().map(|(l, _)| l.to_string()).collect();
         let size = Dropdown::new(size_opts, TEXT_SIZE_KEY)
             .with_id("a11y.text_size")
             .with_placeholder(text_size_label(self.appearance.text_scale));
-        let vision_card = card(
+        card(
             "Vision",
             rows(vec![
                 setting_row_described(
@@ -184,9 +194,11 @@ impl AccessibilityPane {
                     ),
                 ),
             ]),
-        );
+        )
+    }
 
-        // --- Pointer: large cursor + size.
+    // --- Pointer: large cursor + size.
+    fn build_pointer_card(&self) -> Box<dyn Widget> {
         let cursor_opts: Vec<String> = AccessibilityPrefs::CURSOR_SIZES
             .iter()
             .map(|(l, _)| l.to_string())
@@ -196,7 +208,7 @@ impl AccessibilityPane {
             .with_placeholder(AccessibilityPrefs::cursor_size_label(
                 self.access.cursor_size,
             ));
-        let pointer_card = card(
+        card(
             "Pointer",
             rows(vec![
                 setting_row_described(
@@ -216,9 +228,11 @@ impl AccessibilityPane {
                     Self::toggle("a11y.thick_text_caret", THICK_CARET_KEY),
                 ),
             ]),
-        );
+        )
+    }
 
-        // --- Typing.
+    // --- Typing.
+    fn build_typing_card(&self) -> Box<dyn Widget> {
         let osk_row = if osk_service_installed() {
             setting_row_described(
                 "On-screen keyboard",
@@ -231,7 +245,7 @@ impl AccessibilityPane {
                 "Not installed — add the signed dev.qos.osk system package",
             )
         };
-        let typing_card = card(
+        card(
             "Typing",
             rows(vec![
                 setting_row_described(
@@ -288,11 +302,13 @@ impl AccessibilityPane {
                     ),
                 ),
             ]),
-        );
+        )
+    }
 
-        // Working cross-application assists stay writable here. Capabilities
-        // without an apply path remain status rows below so Settings never
-        // promises an inert preference.
+    // Working cross-application assists stay writable here. Capabilities
+    // without an apply path remain status rows below so Settings never
+    // promises an inert preference.
+    fn build_advanced_card(&self) -> Box<dyn Widget> {
         let reader_rows = if let Some(backend) = tts_capability() {
             vec![
                 setting_row_described(
@@ -345,7 +361,7 @@ impl AccessibilityPane {
                 "Unavailable — install Speech Dispatcher or eSpeak NG",
             )]
         };
-        let advanced_card = card(
+        card(
             "More assistive technology",
             rows(
                 reader_rows
@@ -367,9 +383,11 @@ impl AccessibilityPane {
                     ])
                     .collect(),
             ),
-        );
+        )
+    }
 
-        let explainer = card(
+    fn build_explainer_card() -> Box<dyn Widget> {
+        card(
             "Shared with your apps",
             rows(vec![caption(
                 "Vision comforts are the same settings the Appearance pane \
@@ -385,15 +403,7 @@ impl AccessibilityPane {
                  Unsupported capabilities are identified explicitly instead \
                  of being stored as inert toggles.",
             )]),
-        );
-
-        crate::widgets::cards(vec![
-            vision_card,
-            pointer_card,
-            typing_card,
-            advanced_card,
-            explainer,
-        ])
+        )
     }
 
     /// Persist both edited sections into the shared store, reading fresh so a
@@ -427,81 +437,77 @@ impl AccessibilityPane {
             _ => None,
         }
     }
-}
 
-pub fn build() -> Box<dyn Widget> {
-    Box::new(AccessibilityPane::new())
-}
-
-impl Widget for AccessibilityPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.needs_seed {
-            let seed_bool = |state: &mut AutoCommit, key: &str, v: bool| {
-                let _ = state.put(root, key, automerge::ScalarValue::Boolean(v));
-            };
-            seed_bool(state, HIGH_CONTRAST_KEY, self.appearance.high_contrast);
-            seed_bool(state, REDUCE_MOTION_KEY, self.appearance.reduce_motion);
-            let _ = state.put(
-                root,
-                TEXT_SIZE_KEY,
-                text_size_label(self.appearance.text_scale),
-            );
-            seed_bool(state, LARGE_CURSOR_KEY, self.access.large_cursor);
-            let _ = state.put(
-                root,
-                CURSOR_SIZE_KEY,
-                AccessibilityPrefs::cursor_size_label(self.access.cursor_size),
-            );
-            seed_bool(state, STICKY_KEYS_KEY, self.access.sticky_keys);
-            seed_bool(state, SLOW_KEYS_KEY, self.access.slow_keys);
-            seed_bool(state, OSK_KEY, self.access.on_screen_keyboard);
-            seed_bool(state, VISUAL_ALERTS_KEY, self.access.visual_alerts);
-            seed_bool(state, SCREEN_READER_KEY, self.access.screen_reader);
-            let _ = state.put(root, COLOR_FILTER_KEY, self.access.color_filter.label());
-            let _ = state.put(
-                root,
-                MAGNIFIER_KEY,
-                match self.access.magnifier_zoom {
-                    2 => "2×",
-                    3 => "3×",
-                    _ => "Off",
-                },
-            );
-            seed_bool(state, CURSOR_CROSSHAIR_KEY, self.access.cursor_crosshair);
-            seed_bool(state, THICK_CARET_KEY, self.access.thick_text_caret);
-            seed_bool(state, SWITCH_CONTROL_KEY, self.access.switch_control);
-            let _ = state.put(root, SWITCH_KEYS_KEY, self.access.switch_key_pair.label());
-            let _ = state.put(
-                root,
-                SWITCH_SCAN_KEY,
-                match self.access.switch_scan_ms {
-                    1000 => "1 second",
-                    2000 => "2 seconds",
-                    3000 => "3 seconds",
-                    _ => "Manual",
-                },
-            );
-            let _ = state.put(
-                root,
-                READER_RATE_KEY,
-                match self.access.screen_reader_rate {
-                    0..=75 => "Slow",
-                    76..=115 => "Default",
-                    116..=160 => "Fast",
-                    _ => "Very fast",
-                },
-            );
-            let _ = state.put(
-                root,
-                READER_VOICE_KEY,
-                self.access.screen_reader_voice.label(),
-            );
-            self.needs_seed = false;
+    fn seed_if_needed(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !self.needs_seed {
+            return;
         }
+        let seed_bool = |state: &mut AutoCommit, key: &str, v: bool| {
+            let _ = state.put(root, key, automerge::ScalarValue::Boolean(v));
+        };
+        seed_bool(state, HIGH_CONTRAST_KEY, self.appearance.high_contrast);
+        seed_bool(state, REDUCE_MOTION_KEY, self.appearance.reduce_motion);
+        let _ = state.put(
+            root,
+            TEXT_SIZE_KEY,
+            text_size_label(self.appearance.text_scale),
+        );
+        seed_bool(state, LARGE_CURSOR_KEY, self.access.large_cursor);
+        let _ = state.put(
+            root,
+            CURSOR_SIZE_KEY,
+            AccessibilityPrefs::cursor_size_label(self.access.cursor_size),
+        );
+        seed_bool(state, STICKY_KEYS_KEY, self.access.sticky_keys);
+        seed_bool(state, SLOW_KEYS_KEY, self.access.slow_keys);
+        seed_bool(state, OSK_KEY, self.access.on_screen_keyboard);
+        seed_bool(state, VISUAL_ALERTS_KEY, self.access.visual_alerts);
+        seed_bool(state, SCREEN_READER_KEY, self.access.screen_reader);
+        let _ = state.put(root, COLOR_FILTER_KEY, self.access.color_filter.label());
+        let _ = state.put(
+            root,
+            MAGNIFIER_KEY,
+            match self.access.magnifier_zoom {
+                2 => "2×",
+                3 => "3×",
+                _ => "Off",
+            },
+        );
+        seed_bool(state, CURSOR_CROSSHAIR_KEY, self.access.cursor_crosshair);
+        seed_bool(state, THICK_CARET_KEY, self.access.thick_text_caret);
+        seed_bool(state, SWITCH_CONTROL_KEY, self.access.switch_control);
+        let _ = state.put(root, SWITCH_KEYS_KEY, self.access.switch_key_pair.label());
+        let _ = state.put(
+            root,
+            SWITCH_SCAN_KEY,
+            match self.access.switch_scan_ms {
+                1000 => "1 second",
+                2000 => "2 seconds",
+                3000 => "3 seconds",
+                _ => "Manual",
+            },
+        );
+        let _ = state.put(
+            root,
+            READER_RATE_KEY,
+            match self.access.screen_reader_rate {
+                0..=75 => "Slow",
+                76..=115 => "Default",
+                116..=160 => "Fast",
+                _ => "Very fast",
+            },
+        );
+        let _ = state.put(
+            root,
+            READER_VOICE_KEY,
+            self.access.screen_reader_voice.label(),
+        );
+        self.needs_seed = false;
+    }
 
+    // Vision comforts fold into the shared appearance section.
+    fn fold_vision(&mut self, state: &AutoCommit, root: &ObjId) -> bool {
         let mut changed = false;
-
-        // Vision comforts fold into the shared appearance section.
         if let Some(b) = Self::read_bool(state, root, HIGH_CONTRAST_KEY)
             && b != self.appearance.high_contrast
         {
@@ -521,8 +527,12 @@ impl Widget for AccessibilityPane {
             self.appearance.text_scale = scale;
             changed = true;
         }
+        changed
+    }
 
-        // Pointer / typing / hearing fold into the accessibility section.
+    // Pointer / typing / hearing fold into the accessibility section.
+    fn fold_pointer_typing_hearing(&mut self, state: &AutoCommit, root: &ObjId) -> bool {
+        let mut changed = false;
         let mut adopt = |cur: &mut bool, v: Option<bool>| {
             if let Some(b) = v
                 && b != *cur
@@ -586,7 +596,11 @@ impl Widget for AccessibilityPane {
                 changed = true;
             }
         }
+        changed
+    }
 
+    fn fold_choice_settings(&mut self, state: &AutoCommit, root: &ObjId) -> bool {
+        let mut changed = false;
         if let Some(label) = Self::read_str(state, root, COLOR_FILTER_KEY)
             && let Some(filter) = ColorFilter::from_label(&label)
             && filter != self.access.color_filter
@@ -632,6 +646,21 @@ impl Widget for AccessibilityPane {
             self.access.cursor_size = px;
             changed = true;
         }
+        changed
+    }
+}
+
+pub fn build() -> Box<dyn Widget> {
+    Box::new(AccessibilityPane::new())
+}
+
+impl Widget for AccessibilityPane {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.seed_if_needed(state, root);
+
+        let mut changed = self.fold_vision(state, root);
+        changed |= self.fold_pointer_typing_hearing(state, root);
+        changed |= self.fold_choice_settings(state, root);
 
         if changed {
             self.persist();
@@ -660,13 +689,15 @@ impl Widget for AccessibilityPane {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap();
+        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),

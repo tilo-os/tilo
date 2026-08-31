@@ -106,11 +106,8 @@ fn ipv4_key(uuid: &str, field: &str) -> String {
     format!("network.ipv4.{field}.{uuid}")
 }
 fn profile_label(profile: &SavedNetworkProfile) -> String {
-    format!(
-        "{} · {}",
-        profile.name,
-        &profile.uuid[..8.min(profile.uuid.len())]
-    )
+    let short_uuid: String = profile.uuid.chars().take(8).collect();
+    format!("{} · {}", profile.name, short_uuid)
 }
 
 fn load_profile_settings(
@@ -240,6 +237,10 @@ pub fn parse_vpn_connections(all: &str, active: &str) -> Vec<VpnInfo> {
     out
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent UI/lifecycle flag (advanced-open, seed-pending, QR-visible, structure-dirty), not a combinatorial state machine"
+)]
 pub struct NetworkPane {
     dispatcher: Arc<dyn Dispatcher + Send + Sync>,
     lister: NetworkLister,
@@ -466,6 +467,7 @@ impl NetworkPane {
 
     /// Test/`--shots` helper: pin the wired snapshot so the Wired card
     /// renders deterministic content.
+    #[must_use]
     pub fn with_wired(mut self, wired: WiredInfo) -> Self {
         self.wired = wired;
         self
@@ -473,6 +475,7 @@ impl NetworkPane {
 
     /// Test/`--shots` helper: pin the VPN list so the VPN card renders
     /// deterministic content. Also pins the refresh lister to the same set.
+    #[must_use]
     pub fn with_vpns(mut self, vpns: Vec<VpnInfo>) -> Self {
         let snapshot = vpns.clone();
         self.vpn_lister = Arc::new(move || snapshot.clone());
@@ -500,7 +503,7 @@ impl NetworkPane {
 
     const VPN_STUDIO_OVERVIEW_KEY: &'static str = "network.vpn.studio.open";
 
-    /// Rows for the VPN card use the same NetworkManager profiles and
+    /// Rows for the VPN card use the same `NetworkManager` profiles and
     /// action boundary as quick settings.
     fn vpn_rows(&self) -> Vec<El> {
         if self.vpns.is_empty() {
@@ -544,6 +547,7 @@ impl NetworkPane {
     /// Test/`--shots` helper: pre-expand a network's inline password prompt
     /// so the deterministic render shows it. Also forces the radio "on" so
     /// the network list renders.
+    #[must_use]
     pub fn with_expanded(mut self, ssid: &str) -> Self {
         self.expanded_ssid = Some(ssid.to_string());
         self.secret_buffers
@@ -570,8 +574,55 @@ impl NetworkPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        // --- Wi-Fi card: header carries the toggle; body is status +
-        //     scanned-network rows + a Refresh action.
+        let mut cards = vec![
+            self.internet_access_card(),
+            self.wifi_card(),
+            card("Enterprise Wi-Fi", rows(self.enterprise_rows())),
+            self.wired_card(),
+            self.profile_card(),
+            card("Connection diagnostics", rows(self.diagnostic_rows())),
+            card("VPN", rows(self.vpn_rows())),
+            Self::airplane_card(),
+            self.hotspot_card(),
+        ];
+        if self.radios.wwan_available {
+            cards.push(card_with_action(
+                "Mobile broadband",
+                Box::new(Toggle::new("settings.network.mobile", MOBILE_KEY)),
+                rows(self.mobile_rows()),
+            ));
+        }
+        crate::widgets::cards(cards)
+    }
+
+    /// Connectivity summary card: `NetworkManager`'s captive-portal-aware
+    /// state, plus a sign-in shortcut when a portal is blocking the route.
+    fn internet_access_card(&self) -> El {
+        let mut content = vec![
+            value_row("Connectivity", self.connectivity.label()),
+            caption(if self.connectivity == ConnectivityState::Portal {
+                "This network requires browser sign-in. NetworkManager will keep it below a fully connected route until sign-in succeeds."
+            } else {
+                "Connectivity comes from NetworkManager's captive-portal check, not merely from having an IP address."
+            }),
+        ];
+        if self.connectivity == ConnectivityState::Portal {
+            content.push(Box::new(
+                Row::new()
+                    .push(Box::new(Button::new(
+                        "settings.network.captive-portal",
+                        "Open sign-in page",
+                        Some(CAPTIVE_PORTAL_KEY),
+                    )))
+                    .push(Box::new(Spacer::new())),
+            ));
+        }
+        card("Internet access", rows(content))
+    }
+
+    /// Wi-Fi card: header carries the toggle; body is status + scanned-network
+    /// rows + a Refresh action.
+    fn wifi_card(&self) -> El {
         let wifi_toggle: El = Box::new(
             Toggle::new("settings.network.wifi", WIFI_ENABLED_KEY).with_id("network.wifi"),
         );
@@ -604,11 +655,13 @@ impl NetworkPane {
              secure networks prompt for a password before joining.",
         ));
 
-        let wifi_card = card_with_action("Wi-Fi", wifi_toggle, rows(wifi_rows));
+        card_with_action("Wi-Fi", wifi_toggle, rows(wifi_rows))
+    }
 
-        // --- Wired card (real nmcli snapshot). NetworkManager applies the
-        // switch to this interface only; Wi-Fi and VPN stay untouched.
-        let wired_card = if self.wired.device.is_some() {
+    /// Wired card (real nmcli snapshot). `NetworkManager` applies the switch
+    /// to this interface only; Wi-Fi and VPN stay untouched.
+    fn wired_card(&self) -> El {
+        if self.wired.device.is_some() {
             card_with_action(
                 "Wired",
                 Box::new(
@@ -619,18 +672,23 @@ impl NetworkPane {
             )
         } else {
             card("Wired", rows(self.wired_rows()))
-        };
+        }
+    }
 
-        // --- VPN card (real read-only status of configured profiles).
-        let vpn_card = card("VPN", rows(self.vpn_rows()));
-
-        let airplane = card_with_action(
+    fn airplane_card() -> El {
+        card_with_action(
             "Airplane mode",
             Box::new(Toggle::new("settings.network.airplane", AIRPLANE_KEY)),
             rows(vec![caption(
                 "Disables Wi-Fi and mobile broadband together.",
             )]),
-        );
+        )
+    }
+
+    /// Rows for the hotspot card: SSID/password/band configuration, the
+    /// apply/QR actions, and (when active) the QR payload and connected
+    /// device list.
+    fn hotspot_rows(&self) -> Vec<El> {
         let hotspot_secret = self
             .hotspot_password
             .lock()
@@ -716,12 +774,19 @@ impl NetworkPane {
                 "Client names are not guessed from traffic. Turn the hotspot off to disconnect every client immediately.",
             ));
         }
-        let hotspot = card_with_action(
+        hotspot_rows
+    }
+
+    fn hotspot_card(&self) -> El {
+        card_with_action(
             "Wi-Fi hotspot",
             Box::new(Toggle::new("settings.network.hotspot", HOTSPOT_KEY)),
-            rows(hotspot_rows),
-        );
-        let profile_card = card_with_action(
+            rows(self.hotspot_rows()),
+        )
+    }
+
+    fn profile_card(&self) -> El {
+        card_with_action(
             "Connection profiles",
             Box::new(Button::new(
                 "settings.network.advanced",
@@ -733,50 +798,7 @@ impl NetworkPane {
                 Some(ADVANCED_KEY),
             )),
             rows(self.profile_rows()),
-        );
-        let mut cards = vec![
-            card(
-                "Internet access",
-                rows({
-                    let mut content = vec![
-                        value_row("Connectivity", self.connectivity.label()),
-                        caption(if self.connectivity == ConnectivityState::Portal {
-                            "This network requires browser sign-in. NetworkManager will keep it below a fully connected route until sign-in succeeds."
-                        } else {
-                            "Connectivity comes from NetworkManager's captive-portal check, not merely from having an IP address."
-                        }),
-                    ];
-                    if self.connectivity == ConnectivityState::Portal {
-                        content.push(Box::new(
-                            Row::new()
-                                .push(Box::new(Button::new(
-                                    "settings.network.captive-portal",
-                                    "Open sign-in page",
-                                    Some(CAPTIVE_PORTAL_KEY),
-                                )))
-                                .push(Box::new(Spacer::new())),
-                        ));
-                    }
-                    content
-                }),
-            ),
-            wifi_card,
-            card("Enterprise Wi-Fi", rows(self.enterprise_rows())),
-            wired_card,
-            profile_card,
-            card("Connection diagnostics", rows(self.diagnostic_rows())),
-            vpn_card,
-            airplane,
-            hotspot,
-        ];
-        if self.radios.wwan_available {
-            cards.push(card_with_action(
-                "Mobile broadband",
-                Box::new(Toggle::new("settings.network.mobile", MOBILE_KEY)),
-                rows(self.mobile_rows()),
-            ));
-        }
-        crate::widgets::cards(cards)
+        )
     }
 
     fn profile_rows(&self) -> Vec<El> {
@@ -811,6 +833,17 @@ impl NetworkPane {
         rows_out.push(caption(
             "Auto-connect and Forget modify the NetworkManager profile itself; Settings keeps no duplicate profile database.",
         ));
+        self.push_advanced_profile_rows(&wifi_profiles, &mut rows_out);
+        rows_out
+    }
+
+    /// Appends the "Advanced" Wi-Fi profile editor rows (metered/MAC/proxy
+    /// policy) when the Advanced panel is open and a profile is selected.
+    fn push_advanced_profile_rows(
+        &self,
+        wifi_profiles: &[&SavedNetworkProfile],
+        rows_out: &mut Vec<El>,
+    ) {
         if self.advanced_open
             && let Some(profile) = self
                 .selected_wifi_profile
@@ -836,7 +869,7 @@ impl NetworkPane {
             )));
             let Some(_settings) = self.profile_settings.get(&profile.uuid) else {
                 rows_out.push(caption("Advanced values could not be read from NetworkManager, so Settings will not offer a destructive default editor."));
-                return rows_out;
+                return;
             };
             rows_out.push(choice_row(
                 "Metered",
@@ -880,7 +913,6 @@ impl NetworkPane {
                     .push(Box::new(Spacer::new())),
             ));
         }
-        rows_out
     }
 
     fn diagnostic_rows(&self) -> Vec<El> {
@@ -1302,14 +1334,10 @@ impl NetworkPane {
             let _ = tx.send((NetworkJob::Wifi(ssid), result));
         });
     }
-}
 
-pub fn build() -> Box<dyn Widget> {
-    Box::new(NetworkPane::new())
-}
-
-impl Widget for NetworkPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    /// Consume the CA-certificate file-picker result, if the background
+    /// chooser thread has replied.
+    fn sync_ca_picker_result(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Some(receiver) = &self.ca_picker_rx
             && let Ok(result) = receiver.try_recv()
         {
@@ -1329,6 +1357,11 @@ impl Widget for NetworkPane {
             self.ca_picker_rx = None;
             self.structure_dirty = true;
         }
+    }
+
+    /// Drain completed background connection/profile jobs and report their
+    /// outcome via `connection_notice`.
+    fn sync_connection_jobs(&mut self) {
         while let Ok((job, result)) = self.connection_rx.try_recv() {
             let (subject, success) = match &job {
                 NetworkJob::Wifi(ssid) => (ssid.as_str(), format!("Connected to {ssid}.")),
@@ -1359,175 +1392,197 @@ impl Widget for NetworkPane {
             }
             self.structure_dirty = true;
         }
-        if self.needs_seed {
-            // Seed only keys the document doesn't already carry, so a
-            // structure rebuild (which reconstructs this pane and re-runs
-            // the seed) never clobbers a value the user already changed —
-            // e.g. toggling Wi-Fi off and then expanding a password prompt.
-            if state.get(root, WIFI_ENABLED_KEY).ok().flatten().is_none() {
-                let _ = state.put(
-                    root,
-                    WIFI_ENABLED_KEY,
-                    automerge::ScalarValue::Boolean(self.initial_wifi_enabled),
-                );
-            } else if let Ok(Some((Value::Scalar(s), _))) = state.get(root, WIFI_ENABLED_KEY)
-                && let automerge::ScalarValue::Boolean(b) = s.as_ref()
-            {
-                // Adopt the existing value so the dispatcher-change guard
-                // doesn't re-fire `set_wifi` on the first post-rebuild sync.
-                self.last_wifi_enabled = *b;
-            }
-            if state.get(root, WIRED_ENABLED_KEY).ok().flatten().is_none() {
-                let _ = state.put(
-                    root,
-                    WIRED_ENABLED_KEY,
-                    automerge::ScalarValue::Boolean(self.wired.connected),
-                );
-            }
-            for (key, value) in [
-                (AIRPLANE_KEY, self.radios.airplane_mode),
-                (HOTSPOT_KEY, self.radios.hotspot_active),
-                (MOBILE_KEY, self.radios.wwan_enabled),
-            ] {
-                if state.get(root, key).ok().flatten().is_none() {
-                    let _ = state.put(root, key, value);
-                }
-            }
-            for vpn in &self.vpns {
-                if state
-                    .get(root, Self::vpn_key(&vpn.name))
-                    .ok()
-                    .flatten()
-                    .is_none()
-                {
-                    let _ = state.put(root, Self::vpn_key(&vpn.name), vpn.active);
-                }
-                let _ = state.put(root, Self::vpn_studio_key(&vpn.name), false);
-            }
-            let _ = state.put(root, Self::VPN_STUDIO_OVERVIEW_KEY, false);
-            let _ = state.put(root, HOTSPOT_APPLY_KEY, false);
-            let _ = state.put(root, HOTSPOT_QR_KEY, false);
-            let _ = state.put(root, HOTSPOT_SSID_KEY, self.hotspot_ssid.as_str());
-            let _ = crate::ensure_text_object(state, root, HOTSPOT_SSID_KEY);
-            let _ = state.put(root, HOTSPOT_BAND_KEY, self.hotspot_band.as_str());
-            if let Some(uuid) = &self.selected_wifi_profile
-                && let Some(profile) = self.profiles.iter().find(|p| &p.uuid == uuid)
-                && state
-                    .get(root, ADVANCED_PROFILE_KEY)
-                    .ok()
-                    .flatten()
-                    .is_none()
-            {
-                let _ = state.put(root, ADVANCED_PROFILE_KEY, profile_label(profile));
-            }
-            if let Some(uuid) = &self.selected_wired_profile
-                && let Some(profile) = self.profiles.iter().find(|p| &p.uuid == uuid)
-                && state.get(root, WIRED_PROFILE_KEY).ok().flatten().is_none()
-            {
-                let _ = state.put(root, WIRED_PROFILE_KEY, profile_label(profile));
-            }
-            for key in [
-                MOBILE_PROFILE_KEY,
-                MOBILE_APN_KEY,
-                ENTERPRISE_PROFILE_KEY,
-                ENTERPRISE_SSID_KEY,
-                ENTERPRISE_IDENTITY_KEY,
-                ENTERPRISE_ANONYMOUS_KEY,
-                ENTERPRISE_CA_KEY,
-                ENTERPRISE_CLIENT_CERT_KEY,
-                ENTERPRISE_PRIVATE_KEY,
-            ] {
-                let _ = crate::ensure_text_object(state, root, key);
-            }
-            for key in [
-                MOBILE_CREATE_KEY,
-                MOBILE_UNLOCK_KEY,
-                ENTERPRISE_CONNECT_KEY,
-                ENTERPRISE_CA_CHOOSE_KEY,
-                CAPTIVE_PORTAL_KEY,
-                DIAGNOSTICS_KEY,
-                ADVANCED_KEY,
-            ] {
-                let _ = state.put(root, key, false);
-            }
-            let _ = state.put(root, ENTERPRISE_METHOD_KEY, "PEAP");
-            let _ = state.put(root, ENTERPRISE_PHASE2_KEY, "MSCHAPv2");
-            if let Some(sim) = self.sims.first() {
-                let _ = state.put(root, MOBILE_SIM_KEY, sim.label.as_str());
-            }
-            for profile in &self.profiles {
-                let _ = state.put(
-                    root,
-                    profile_autoconnect_key(&profile.uuid),
-                    profile.autoconnect,
-                );
-                let _ = state.put(root, profile_forget_key(&profile.uuid), false);
-                if let Some(settings) = self.profile_settings.get(&profile.uuid) {
-                    if let Some(value) = settings.metered {
-                        let label = match value {
-                            os_actions::MeteredPolicy::Automatic => "Automatic",
-                            os_actions::MeteredPolicy::Metered => "Metered",
-                            os_actions::MeteredPolicy::Unmetered => "Unmetered",
-                        };
-                        let key = format!("network.profile.metered.{}", profile.uuid);
-                        if state.get(root, &key).ok().flatten().is_none() {
-                            let _ = state.put(root, &key, label);
-                        }
-                    }
-                    if let Some(value) = settings.mac {
-                        let label = match value {
-                            os_actions::MacPolicy::Stable => "Stable per network",
-                            os_actions::MacPolicy::Random => "Random each connection",
-                            os_actions::MacPolicy::Permanent => "Permanent hardware address",
-                        };
-                        let key = format!("network.profile.mac.{}", profile.uuid);
-                        if state.get(root, &key).ok().flatten().is_none() {
-                            let _ = state.put(root, &key, label);
-                        }
-                    }
-                    if let Some(proxy) = &settings.proxy {
-                        let key = format!("network.profile.proxy.{}", profile.uuid);
-                        if state.get(root, &key).ok().flatten().is_none() {
-                            let _ =
-                                state.put(root, &key, proxy.automatic_url.as_deref().unwrap_or(""));
-                        }
-                        let _ = crate::ensure_text_object(state, root, &key);
-                    }
-                    if let Some(ipv4) = &settings.ipv4 {
-                        let automatic_key = ipv4_key(&profile.uuid, "automatic");
-                        if state.get(root, &automatic_key).ok().flatten().is_none() {
-                            let _ = state.put(root, &automatic_key, ipv4.automatic);
-                        }
-                        for (field, value) in [
-                            ("address", ipv4.addresses.join(", ")),
-                            ("gateway", ipv4.gateway.clone().unwrap_or_default()),
-                            ("dns", ipv4.dns.join(", ")),
-                        ] {
-                            let key = ipv4_key(&profile.uuid, field);
-                            if state.get(root, &key).ok().flatten().is_none() {
-                                let _ = state.put(root, &key, value);
-                            }
-                            let _ = crate::ensure_text_object(state, root, &key);
-                        }
-                        let _ = state.put(root, ipv4_key(&profile.uuid, "apply"), false);
-                    }
-                }
-            }
-            let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
-            // Seed the expansion mirror from the field so a pre-expanded
-            // pane (tests / `--shots`) keeps its prompt open through the
-            // first sync (which would otherwise read the empty doc as "no
-            // prompt" and collapse it). Only when nothing's there yet.
-            if state.get(root, EXPANDED_KEY).ok().flatten().is_none() {
-                let _ = state.put(
-                    root,
-                    EXPANDED_KEY,
-                    self.expanded_ssid.clone().unwrap_or_default(),
-                );
-            }
-            self.needs_seed = false;
-        }
+    }
 
+    /// One-time seed of every CRDT key this pane owns, run on first `sync`
+    /// (and again after a structure rebuild reconstructs the pane). Only
+    /// fills keys the document doesn't already carry, so a rebuild never
+    /// clobbers a value the user already changed.
+    fn seed_if_needed(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !self.needs_seed {
+            return;
+        }
+        self.seed_radio_and_vpn_keys(state, root);
+        self.seed_hotspot_and_profile_selection(state, root);
+        self.seed_text_and_command_keys(state, root);
+        self.seed_profile_settings(state, root);
+        let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
+        // Seed the expansion mirror from the field so a pre-expanded
+        // pane (tests / `--shots`) keeps its prompt open through the
+        // first sync (which would otherwise read the empty doc as "no
+        // prompt" and collapse it). Only when nothing's there yet.
+        if state.get(root, EXPANDED_KEY).ok().flatten().is_none() {
+            let _ = state.put(
+                root,
+                EXPANDED_KEY,
+                self.expanded_ssid.clone().unwrap_or_default(),
+            );
+        }
+        self.needs_seed = false;
+    }
+
+    fn seed_radio_and_vpn_keys(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if state.get(root, WIFI_ENABLED_KEY).ok().flatten().is_none() {
+            let _ = state.put(
+                root,
+                WIFI_ENABLED_KEY,
+                automerge::ScalarValue::Boolean(self.initial_wifi_enabled),
+            );
+        } else if let Ok(Some((Value::Scalar(s), _))) = state.get(root, WIFI_ENABLED_KEY)
+            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
+        {
+            // Adopt the existing value so the dispatcher-change guard
+            // doesn't re-fire `set_wifi` on the first post-rebuild sync.
+            self.last_wifi_enabled = *b;
+        }
+        if state.get(root, WIRED_ENABLED_KEY).ok().flatten().is_none() {
+            let _ = state.put(
+                root,
+                WIRED_ENABLED_KEY,
+                automerge::ScalarValue::Boolean(self.wired.connected),
+            );
+        }
+        for (key, value) in [
+            (AIRPLANE_KEY, self.radios.airplane_mode),
+            (HOTSPOT_KEY, self.radios.hotspot_active),
+            (MOBILE_KEY, self.radios.wwan_enabled),
+        ] {
+            if state.get(root, key).ok().flatten().is_none() {
+                let _ = state.put(root, key, value);
+            }
+        }
+        for vpn in &self.vpns {
+            if state
+                .get(root, Self::vpn_key(&vpn.name))
+                .ok()
+                .flatten()
+                .is_none()
+            {
+                let _ = state.put(root, Self::vpn_key(&vpn.name), vpn.active);
+            }
+            let _ = state.put(root, Self::vpn_studio_key(&vpn.name), false);
+        }
+    }
+
+    fn seed_hotspot_and_profile_selection(&self, state: &mut AutoCommit, root: &ObjId) {
+        let _ = state.put(root, Self::VPN_STUDIO_OVERVIEW_KEY, false);
+        let _ = state.put(root, HOTSPOT_APPLY_KEY, false);
+        let _ = state.put(root, HOTSPOT_QR_KEY, false);
+        let _ = state.put(root, HOTSPOT_SSID_KEY, self.hotspot_ssid.as_str());
+        let _ = crate::ensure_text_object(state, root, HOTSPOT_SSID_KEY);
+        let _ = state.put(root, HOTSPOT_BAND_KEY, self.hotspot_band.as_str());
+        if let Some(uuid) = &self.selected_wifi_profile
+            && let Some(profile) = self.profiles.iter().find(|p| &p.uuid == uuid)
+            && state
+                .get(root, ADVANCED_PROFILE_KEY)
+                .ok()
+                .flatten()
+                .is_none()
+        {
+            let _ = state.put(root, ADVANCED_PROFILE_KEY, profile_label(profile));
+        }
+        if let Some(uuid) = &self.selected_wired_profile
+            && let Some(profile) = self.profiles.iter().find(|p| &p.uuid == uuid)
+            && state.get(root, WIRED_PROFILE_KEY).ok().flatten().is_none()
+        {
+            let _ = state.put(root, WIRED_PROFILE_KEY, profile_label(profile));
+        }
+    }
+
+    fn seed_text_and_command_keys(&self, state: &mut AutoCommit, root: &ObjId) {
+        for key in [
+            MOBILE_PROFILE_KEY,
+            MOBILE_APN_KEY,
+            ENTERPRISE_PROFILE_KEY,
+            ENTERPRISE_SSID_KEY,
+            ENTERPRISE_IDENTITY_KEY,
+            ENTERPRISE_ANONYMOUS_KEY,
+            ENTERPRISE_CA_KEY,
+            ENTERPRISE_CLIENT_CERT_KEY,
+            ENTERPRISE_PRIVATE_KEY,
+        ] {
+            let _ = crate::ensure_text_object(state, root, key);
+        }
+        for key in [
+            MOBILE_CREATE_KEY,
+            MOBILE_UNLOCK_KEY,
+            ENTERPRISE_CONNECT_KEY,
+            ENTERPRISE_CA_CHOOSE_KEY,
+            CAPTIVE_PORTAL_KEY,
+            DIAGNOSTICS_KEY,
+            ADVANCED_KEY,
+        ] {
+            let _ = state.put(root, key, false);
+        }
+        let _ = state.put(root, ENTERPRISE_METHOD_KEY, "PEAP");
+        let _ = state.put(root, ENTERPRISE_PHASE2_KEY, "MSCHAPv2");
+        if let Some(sim) = self.sims.first() {
+            let _ = state.put(root, MOBILE_SIM_KEY, sim.label.as_str());
+        }
+    }
+
+    fn seed_profile_settings(&self, state: &mut AutoCommit, root: &ObjId) {
+        for profile in &self.profiles {
+            let _ = state.put(
+                root,
+                profile_autoconnect_key(&profile.uuid),
+                profile.autoconnect,
+            );
+            let _ = state.put(root, profile_forget_key(&profile.uuid), false);
+            let Some(settings) = self.profile_settings.get(&profile.uuid) else {
+                continue;
+            };
+            if let Some(value) = settings.metered {
+                let label = match value {
+                    os_actions::MeteredPolicy::Automatic => "Automatic",
+                    os_actions::MeteredPolicy::Metered => "Metered",
+                    os_actions::MeteredPolicy::Unmetered => "Unmetered",
+                };
+                let key = format!("network.profile.metered.{}", profile.uuid);
+                if state.get(root, &key).ok().flatten().is_none() {
+                    let _ = state.put(root, &key, label);
+                }
+            }
+            if let Some(value) = settings.mac {
+                let label = match value {
+                    os_actions::MacPolicy::Stable => "Stable per network",
+                    os_actions::MacPolicy::Random => "Random each connection",
+                    os_actions::MacPolicy::Permanent => "Permanent hardware address",
+                };
+                let key = format!("network.profile.mac.{}", profile.uuid);
+                if state.get(root, &key).ok().flatten().is_none() {
+                    let _ = state.put(root, &key, label);
+                }
+            }
+            if let Some(proxy) = &settings.proxy {
+                let key = format!("network.profile.proxy.{}", profile.uuid);
+                if state.get(root, &key).ok().flatten().is_none() {
+                    let _ = state.put(root, &key, proxy.automatic_url.as_deref().unwrap_or(""));
+                }
+                let _ = crate::ensure_text_object(state, root, &key);
+            }
+            if let Some(ipv4) = &settings.ipv4 {
+                let automatic_key = ipv4_key(&profile.uuid, "automatic");
+                if state.get(root, &automatic_key).ok().flatten().is_none() {
+                    let _ = state.put(root, &automatic_key, ipv4.automatic);
+                }
+                for (field, value) in [
+                    ("address", ipv4.addresses.join(", ")),
+                    ("gateway", ipv4.gateway.clone().unwrap_or_default()),
+                    ("dns", ipv4.dns.join(", ")),
+                ] {
+                    let key = ipv4_key(&profile.uuid, field);
+                    if state.get(root, &key).ok().flatten().is_none() {
+                        let _ = state.put(root, &key, value);
+                    }
+                    let _ = crate::ensure_text_object(state, root, &key);
+                }
+                let _ = state.put(root, ipv4_key(&profile.uuid, "apply"), false);
+            }
+        }
+    }
+
+    fn sync_wifi_and_wired_toggles(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // Wi-Fi toggle.
         if let Ok(Some((val, _))) = state.get(root, WIFI_ENABLED_KEY)
             && let Value::Scalar(s) = val
@@ -1559,7 +1614,9 @@ impl Widget for NetworkPane {
                 }
             }
         }
+    }
 
+    fn sync_radio_toggles(&mut self, state: &mut AutoCommit, root: &ObjId) {
         for (key, old, op) in [
             (AIRPLANE_KEY, self.radios.airplane_mode, "airplane"),
             (HOTSPOT_KEY, self.radios.hotspot_active, "hotspot"),
@@ -1575,7 +1632,7 @@ impl Widget for NetworkPane {
                             automerge::ScalarValue::Boolean(b) => Some(*b),
                             _ => None,
                         },
-                        _ => None,
+                        Value::Object(_) => None,
                     })
             }) else {
                 continue;
@@ -1600,6 +1657,9 @@ impl Widget for NetworkPane {
                 }
             }
         }
+    }
+
+    fn sync_vpn_toggles(&mut self, state: &mut AutoCommit, root: &ObjId) {
         for vpn in &mut self.vpns {
             let key = Self::vpn_key(&vpn.name);
             let enabled = read_bool(state, root, &key);
@@ -1613,7 +1673,9 @@ impl Widget for NetworkPane {
                 }
             }
         }
+    }
 
+    fn sync_profile_autoconnect_and_forget(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let profile_snapshot = self.profiles.clone();
         for profile in profile_snapshot {
             let auto_key = profile_autoconnect_key(&profile.uuid);
@@ -1627,7 +1689,7 @@ impl Widget for NetworkPane {
                             automerge::ScalarValue::Boolean(value) => Some(*value),
                             _ => None,
                         },
-                        _ => None,
+                        Value::Object(_) => None,
                     })
                 && enabled != profile.autoconnect
             {
@@ -1662,42 +1724,51 @@ impl Widget for NetworkPane {
                 self.structure_dirty = true;
             }
         }
+    }
 
-        if read_bool(state, root, HOTSPOT_APPLY_KEY) {
-            let _ = state.put(root, HOTSPOT_APPLY_KEY, false);
-            self.hotspot_ssid = read_str(state, root, HOTSPOT_SSID_KEY)
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "qOS Hotspot".into());
-            self.hotspot_band =
-                read_str(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
-            match self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band) {
-                Ok(config) => match os_actions::configure_hotspot(&config) {
-                    Ok(()) => {
-                        self.radios.hotspot_active = true;
-                        self.hotspot_clients =
-                            os_actions::list_hotspot_clients().unwrap_or_default();
-                        let _ = state.put(root, HOTSPOT_KEY, true);
-                        self.connection_notice = Some("Hotspot is active.".into());
-                    }
-                    Err(error) => self.connection_notice = Some(format!("Hotspot failed: {error}")),
-                },
-                Err(error) => self.connection_notice = Some(error),
-            }
-            self.structure_dirty = true;
+    fn sync_hotspot_apply(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, HOTSPOT_APPLY_KEY) {
+            return;
         }
-        if read_bool(state, root, HOTSPOT_QR_KEY) {
-            let _ = state.put(root, HOTSPOT_QR_KEY, false);
-            self.hotspot_ssid = read_str(state, root, HOTSPOT_SSID_KEY)
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "qOS Hotspot".into());
-            self.hotspot_band =
-                read_str(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
-            match self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band) {
-                Ok(_) => self.hotspot_qr_visible = !self.hotspot_qr_visible,
-                Err(error) => self.connection_notice = Some(error),
-            }
-            self.structure_dirty = true;
+        let _ = state.put(root, HOTSPOT_APPLY_KEY, false);
+        self.hotspot_ssid = read_str(state, root, HOTSPOT_SSID_KEY)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "qOS Hotspot".into());
+        self.hotspot_band =
+            read_str(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
+        match self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band) {
+            Ok(config) => match os_actions::configure_hotspot(&config) {
+                Ok(()) => {
+                    self.radios.hotspot_active = true;
+                    self.hotspot_clients = os_actions::list_hotspot_clients().unwrap_or_default();
+                    let _ = state.put(root, HOTSPOT_KEY, true);
+                    self.connection_notice = Some("Hotspot is active.".into());
+                }
+                Err(error) => self.connection_notice = Some(format!("Hotspot failed: {error}")),
+            },
+            Err(error) => self.connection_notice = Some(error),
         }
+        self.structure_dirty = true;
+    }
+
+    fn sync_hotspot_qr(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, HOTSPOT_QR_KEY) {
+            return;
+        }
+        let _ = state.put(root, HOTSPOT_QR_KEY, false);
+        self.hotspot_ssid = read_str(state, root, HOTSPOT_SSID_KEY)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "qOS Hotspot".into());
+        self.hotspot_band =
+            read_str(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
+        match self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band) {
+            Ok(_) => self.hotspot_qr_visible = !self.hotspot_qr_visible,
+            Err(error) => self.connection_notice = Some(error),
+        }
+        self.structure_dirty = true;
+    }
+
+    fn sync_profile_selectors(&mut self, state: &AutoCommit, root: &ObjId) {
         for selector in [ADVANCED_PROFILE_KEY, WIRED_PROFILE_KEY] {
             if let Some(label) = read_str(state, root, selector)
                 && let Some(profile) = self.profiles.iter().find(|p| profile_label(p) == label)
@@ -1713,6 +1784,9 @@ impl Widget for NetworkPane {
                 }
             }
         }
+    }
+
+    fn sync_ipv4_apply(&mut self, state: &mut AutoCommit, root: &ObjId) {
         for profile in self
             .profiles
             .clone()
@@ -1720,270 +1794,307 @@ impl Widget for NetworkPane {
             .filter(|p| p.kind == "802-3-ethernet")
         {
             let apply_key = ipv4_key(&profile.uuid, "apply");
-            if read_bool(state, root, &apply_key) {
-                let _ = state.put(root, &apply_key, false);
-                if !self
-                    .profile_settings
-                    .get(&profile.uuid)
-                    .is_some_and(|s| s.ipv4.is_some())
-                {
-                    self.connection_notice = Some("IP settings were not applied because the profile could not be read safely.".into());
-                    continue;
-                }
-                let config = IpConfiguration {
-                    automatic: read_bool(state, root, &ipv4_key(&profile.uuid, "automatic")),
-                    addresses: read_str(state, root, &ipv4_key(&profile.uuid, "address"))
-                        .into_iter()
-                        .flat_map(|value| {
-                            value
-                                .split(',')
-                                .map(str::trim)
-                                .filter(|v| !v.is_empty())
-                                .take(17)
-                                .map(str::to_string)
-                                .collect::<Vec<_>>()
-                        })
-                        .collect(),
-                    gateway: read_str(state, root, &ipv4_key(&profile.uuid, "gateway"))
-                        .filter(|v| !v.trim().is_empty()),
-                    dns: read_str(state, root, &ipv4_key(&profile.uuid, "dns"))
-                        .into_iter()
-                        .flat_map(|value| {
-                            value
-                                .split(',')
-                                .map(str::trim)
-                                .filter(|v| !v.is_empty())
-                                .take(17)
-                                .map(str::to_string)
-                                .collect::<Vec<_>>()
-                        })
-                        .collect(),
-                };
-                match os_actions::configure_ipv4(&profile.uuid, &config) {
-                    Ok(()) => {
-                        self.connection_notice =
-                            Some(format!("Applied IP settings to {}.", profile.name))
-                    }
-                    Err(error) => {
-                        self.connection_notice =
-                            Some(format!("IP settings were not applied: {error}"))
-                    }
-                }
-                self.structure_dirty = true;
+            if !read_bool(state, root, &apply_key) {
+                continue;
             }
-        }
-        if read_bool(state, root, MOBILE_CREATE_KEY) {
-            let _ = state.put(root, MOBILE_CREATE_KEY, false);
-            let name = read_str(state, root, MOBILE_PROFILE_KEY).unwrap_or_default();
-            let apn = read_str(state, root, MOBILE_APN_KEY).unwrap_or_default();
-            let tx = self.connection_tx.clone();
-            self.connection_notice = Some("Creating mobile profile…".into());
-            std::thread::spawn(move || {
-                let result = os_actions::create_mobile_profile(&name, &apn);
-                let _ = tx.send((NetworkJob::MobileProfile, result));
-            });
-        }
-        if read_bool(state, root, ADVANCED_KEY) {
-            let _ = state.put(root, ADVANCED_KEY, false);
-            self.advanced_open = !self.advanced_open;
-            if self.advanced_open {
-                for profile in &self.profiles {
-                    if profile.kind == "802-11-wireless" {
-                        let _ = crate::ensure_text_object(
-                            state,
-                            root,
-                            &format!("network.profile.proxy.{}", profile.uuid),
-                        );
-                    }
+            let _ = state.put(root, &apply_key, false);
+            if self
+                .profile_settings
+                .get(&profile.uuid)
+                .is_none_or(|s| s.ipv4.is_none())
+            {
+                self.connection_notice = Some(
+                    "IP settings were not applied because the profile could not be read safely."
+                        .into(),
+                );
+                continue;
+            }
+            let config = IpConfiguration {
+                automatic: read_bool(state, root, &ipv4_key(&profile.uuid, "automatic")),
+                addresses: read_str(state, root, &ipv4_key(&profile.uuid, "address"))
+                    .into_iter()
+                    .flat_map(|value| {
+                        value
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|v| !v.is_empty())
+                            .take(17)
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .collect(),
+                gateway: read_str(state, root, &ipv4_key(&profile.uuid, "gateway"))
+                    .filter(|v| !v.trim().is_empty()),
+                dns: read_str(state, root, &ipv4_key(&profile.uuid, "dns"))
+                    .into_iter()
+                    .flat_map(|value| {
+                        value
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|v| !v.is_empty())
+                            .take(17)
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .collect(),
+            };
+            match os_actions::configure_ipv4(&profile.uuid, &config) {
+                Ok(()) => {
+                    self.connection_notice =
+                        Some(format!("Applied IP settings to {}.", profile.name));
+                }
+                Err(error) => {
+                    self.connection_notice = Some(format!("IP settings were not applied: {error}"));
                 }
             }
             self.structure_dirty = true;
         }
-        if read_bool(state, root, DIAGNOSTICS_KEY) {
-            let _ = state.put(root, DIAGNOSTICS_KEY, false);
-            match os_actions::connection_diagnostics() {
-                Ok(d) => self.diagnostics = Some(d),
-                Err(e) => self.connection_notice = Some(format!("Diagnostics unavailable: {e}")),
-            }
-            self.structure_dirty = true;
+    }
+
+    fn sync_mobile_create(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, MOBILE_CREATE_KEY) {
+            return;
         }
+        let _ = state.put(root, MOBILE_CREATE_KEY, false);
+        let name = read_str(state, root, MOBILE_PROFILE_KEY).unwrap_or_default();
+        let apn = read_str(state, root, MOBILE_APN_KEY).unwrap_or_default();
+        let tx = self.connection_tx.clone();
+        self.connection_notice = Some("Creating mobile profile…".into());
+        std::thread::spawn(move || {
+            let result = os_actions::create_mobile_profile(&name, &apn);
+            let _ = tx.send((NetworkJob::MobileProfile, result));
+        });
+    }
+
+    fn sync_advanced_toggle(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, ADVANCED_KEY) {
+            return;
+        }
+        let _ = state.put(root, ADVANCED_KEY, false);
+        self.advanced_open = !self.advanced_open;
+        if self.advanced_open {
+            for profile in &self.profiles {
+                if profile.kind == "802-11-wireless" {
+                    let _ = crate::ensure_text_object(
+                        state,
+                        root,
+                        &format!("network.profile.proxy.{}", profile.uuid),
+                    );
+                }
+            }
+        }
+        self.structure_dirty = true;
+    }
+
+    fn sync_diagnostics(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, DIAGNOSTICS_KEY) {
+            return;
+        }
+        let _ = state.put(root, DIAGNOSTICS_KEY, false);
+        match os_actions::connection_diagnostics() {
+            Ok(d) => self.diagnostics = Some(d),
+            Err(e) => self.connection_notice = Some(format!("Diagnostics unavailable: {e}")),
+        }
+        self.structure_dirty = true;
+    }
+
+    fn sync_profile_policy(&mut self, state: &mut AutoCommit, root: &ObjId) {
         for profile in self.profiles.clone() {
             let apply = format!("network.profile.policy.{}", profile.uuid);
-            if read_bool(state, root, &apply) {
-                let _ = state.put(root, &apply, false);
-                let Some(original) = self.profile_settings.get(&profile.uuid).cloned() else {
-                    self.connection_notice = Some("Policy was not applied because NetworkManager's current values could not be read.".into());
-                    continue;
-                };
-                let requested_metered = match read_str(
-                    state,
-                    root,
-                    &format!("network.profile.metered.{}", profile.uuid),
-                )
-                .as_deref()
-                {
-                    Some("Metered") => os_actions::MeteredPolicy::Metered,
-                    Some("Unmetered") => os_actions::MeteredPolicy::Unmetered,
-                    Some("Automatic") => os_actions::MeteredPolicy::Automatic,
-                    _ => original.metered.unwrap_or_default(),
-                };
-                let requested_mac = match read_str(
-                    state,
-                    root,
-                    &format!("network.profile.mac.{}", profile.uuid),
-                )
-                .as_deref()
-                {
-                    Some("Random each connection") => Some(os_actions::MacPolicy::Random),
-                    Some("Permanent hardware address") => Some(os_actions::MacPolicy::Permanent),
-                    Some("Stable per network") => Some(os_actions::MacPolicy::Stable),
-                    _ => original.mac,
-                };
-                let requested_proxy_url = read_str(
-                    state,
-                    root,
-                    &format!("network.profile.proxy.{}", profile.uuid),
-                )
-                .filter(|s| !s.trim().is_empty());
-                let requested_proxy =
-                    original
-                        .proxy
-                        .as_ref()
-                        .map(|old| os_actions::ProxyConfiguration {
-                            automatic_url: requested_proxy_url,
-                            browser_only: old.browser_only,
-                        });
-                let patch = os_actions::ConnectionPolicyPatch {
-                    metered: original
-                        .metered
-                        .filter(|old| *old != requested_metered)
-                        .map(|_| requested_metered),
-                    mac: match (original.mac, requested_mac) {
-                        (Some(old), Some(new)) if old != new => Some(new),
-                        _ => None,
-                    },
-                    proxy: match (&original.proxy, requested_proxy) {
-                        (Some(old), Some(new)) if old != &new => Some(new),
-                        _ => None,
-                    },
-                };
-                match os_actions::configure_connection_policy_patch(&profile.uuid, &patch) {
-                    Ok(()) => {
-                        self.connection_notice =
-                            Some(format!("Applied advanced policy to {}.", profile.name))
-                    }
-                    Err(e) => self.connection_notice = Some(format!("Policy was not applied: {e}")),
-                }
-                self.structure_dirty = true;
+            if !read_bool(state, root, &apply) {
+                continue;
             }
-        }
-        if read_bool(state, root, MOBILE_UNLOCK_KEY) {
-            let _ = state.put(root, MOBILE_UNLOCK_KEY, false);
-            let mut pin = self
-                .secret_buffers
-                .get(MOBILE_PIN_BUFFER)
-                .and_then(|buffer| buffer.lock().ok().map(|value| value.clone()))
-                .unwrap_or_default();
-            if let Some(buffer) = self.secret_buffers.get(MOBILE_PIN_BUFFER)
-                && let Ok(mut value) = buffer.lock()
-            {
-                value.zeroize();
-            }
-            let pin = Zeroizing::new(std::mem::take(&mut pin));
-            let tx = self.connection_tx.clone();
-            let selected = read_str(state, root, MOBILE_SIM_KEY)
-                .and_then(|label| {
-                    self.sims
-                        .iter()
-                        .find(|s| s.label == label)
-                        .map(|s| s.path.clone())
-                })
-                .or_else(|| self.sims.first().map(|s| s.path.clone()));
-            self.connection_notice = Some("Unlocking SIM…".into());
-            std::thread::spawn(move || {
-                let result = selected
-                    .ok_or_else(|| "No SIM is available".to_string())
-                    .and_then(|sim| os_actions::unlock_mobile_sim_on(&sim, &pin));
-                let _ = tx.send((NetworkJob::SimUnlock, result));
-            });
-            self.structure_dirty = true;
-        }
-        if read_bool(state, root, ENTERPRISE_CONNECT_KEY) {
-            let _ = state.put(root, ENTERPRISE_CONNECT_KEY, false);
-            let config = EnterpriseWifiConfiguration {
-                profile_name: read_str(state, root, ENTERPRISE_PROFILE_KEY).unwrap_or_default(),
-                ssid: read_str(state, root, ENTERPRISE_SSID_KEY).unwrap_or_default(),
-                identity: read_str(state, root, ENTERPRISE_IDENTITY_KEY).unwrap_or_default(),
-                anonymous_identity: read_str(state, root, ENTERPRISE_ANONYMOUS_KEY)
-                    .filter(|value| !value.trim().is_empty()),
-                ca_certificate: read_str(state, root, ENTERPRISE_CA_KEY).unwrap_or_default(),
-                method: match read_str(state, root, ENTERPRISE_METHOD_KEY).as_deref() {
-                    Some("TTLS") => os_actions::EnterpriseEapMethod::Ttls,
-                    Some("TLS") => os_actions::EnterpriseEapMethod::Tls,
-                    _ => os_actions::EnterpriseEapMethod::Peap,
-                },
-                phase2_auth: read_str(state, root, ENTERPRISE_PHASE2_KEY)
-                    .map(|v| v.to_ascii_lowercase()),
-                client_certificate: read_str(state, root, ENTERPRISE_CLIENT_CERT_KEY)
-                    .filter(|v| !v.trim().is_empty()),
-                private_key: read_str(state, root, ENTERPRISE_PRIVATE_KEY)
-                    .filter(|v| !v.trim().is_empty()),
+            let _ = state.put(root, &apply, false);
+            let Some(original) = self.profile_settings.get(&profile.uuid).cloned() else {
+                self.connection_notice = Some("Policy was not applied because NetworkManager's current values could not be read.".into());
+                continue;
             };
-            let mut password = self
-                .secret_buffers
-                .get(ENTERPRISE_PASSWORD_BUFFER)
-                .and_then(|buffer| buffer.lock().ok().map(|value| value.clone()))
-                .unwrap_or_default();
-            if let Some(buffer) = self.secret_buffers.get(ENTERPRISE_PASSWORD_BUFFER)
-                && let Ok(mut value) = buffer.lock()
+            let requested_metered = match read_str(
+                state,
+                root,
+                &format!("network.profile.metered.{}", profile.uuid),
+            )
+            .as_deref()
             {
-                value.zeroize();
+                Some("Metered") => os_actions::MeteredPolicy::Metered,
+                Some("Unmetered") => os_actions::MeteredPolicy::Unmetered,
+                Some("Automatic") => os_actions::MeteredPolicy::Automatic,
+                _ => original.metered.unwrap_or_default(),
+            };
+            let requested_mac = match read_str(
+                state,
+                root,
+                &format!("network.profile.mac.{}", profile.uuid),
+            )
+            .as_deref()
+            {
+                Some("Random each connection") => Some(os_actions::MacPolicy::Random),
+                Some("Permanent hardware address") => Some(os_actions::MacPolicy::Permanent),
+                Some("Stable per network") => Some(os_actions::MacPolicy::Stable),
+                _ => original.mac,
+            };
+            let requested_proxy_url = read_str(
+                state,
+                root,
+                &format!("network.profile.proxy.{}", profile.uuid),
+            )
+            .filter(|s| !s.trim().is_empty());
+            let requested_proxy =
+                original
+                    .proxy
+                    .as_ref()
+                    .map(|old| os_actions::ProxyConfiguration {
+                        automatic_url: requested_proxy_url,
+                        browser_only: old.browser_only,
+                    });
+            let patch = os_actions::ConnectionPolicyPatch {
+                metered: original
+                    .metered
+                    .filter(|old| *old != requested_metered)
+                    .map(|_| requested_metered),
+                mac: match (original.mac, requested_mac) {
+                    (Some(old), Some(new)) if old != new => Some(new),
+                    _ => None,
+                },
+                proxy: match (&original.proxy, requested_proxy) {
+                    (Some(old), Some(new)) if old != &new => Some(new),
+                    _ => None,
+                },
+            };
+            match os_actions::configure_connection_policy_patch(&profile.uuid, &patch) {
+                Ok(()) => {
+                    self.connection_notice =
+                        Some(format!("Applied advanced policy to {}.", profile.name));
+                }
+                Err(e) => self.connection_notice = Some(format!("Policy was not applied: {e}")),
             }
-            let password = Zeroizing::new(std::mem::take(&mut password));
-            let tx = self.connection_tx.clone();
-            self.connection_notice = Some("Connecting to enterprise Wi-Fi…".into());
-            std::thread::spawn(move || {
-                let result = os_actions::connect_enterprise_wifi(&config, &password);
-                let _ = tx.send((NetworkJob::EnterpriseWifi, result));
-            });
             self.structure_dirty = true;
         }
-        if read_bool(state, root, ENTERPRISE_CA_CHOOSE_KEY) {
-            let _ = state.put(root, ENTERPRISE_CA_CHOOSE_KEY, false);
-            if self.ca_picker_rx.is_none() {
-                let (tx, rx) = std::sync::mpsc::channel();
-                self.ca_picker_rx = Some(rx);
-                std::thread::spawn(move || {
-                    let result =
-                        runtime_portal_xdg::FileChooser::open("Choose organization CA certificate")
-                            .map(|files| {
-                                files
-                                    .into_iter()
-                                    .next()
-                                    .and_then(|file| file.path)
-                                    .map(|path| path.display().to_string())
-                            })
-                            .map_err(|error| error.to_string());
-                    let _ = tx.send(result);
-                });
-            }
-        }
-        if read_bool(state, root, CAPTIVE_PORTAL_KEY) {
-            let _ = state.put(root, CAPTIVE_PORTAL_KEY, false);
-            let result = os_actions::captive_portal_uri().and_then(|uri| {
-                runtime_portal_xdg::OpenUri::open(&uri).map_err(|error| {
-                    format!("could not open browser through the desktop portal: {error}")
-                })
-            });
-            if let Err(error) = result {
-                self.connection_notice = Some(format!("Could not open network sign-in: {error}"));
-                self.structure_dirty = true;
-            }
-        }
+    }
 
-        // Contextual handoff: Settings owns daily status/toggles; VPN Studio
-        // owns profile editing. Reset each command bit before requesting the
-        // shell so a failed launch cannot loop every frame.
+    fn sync_mobile_unlock(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, MOBILE_UNLOCK_KEY) {
+            return;
+        }
+        let _ = state.put(root, MOBILE_UNLOCK_KEY, false);
+        let mut pin = self
+            .secret_buffers
+            .get(MOBILE_PIN_BUFFER)
+            .and_then(|buffer| buffer.lock().ok().map(|value| value.clone()))
+            .unwrap_or_default();
+        if let Some(buffer) = self.secret_buffers.get(MOBILE_PIN_BUFFER)
+            && let Ok(mut value) = buffer.lock()
+        {
+            value.zeroize();
+        }
+        let pin = Zeroizing::new(std::mem::take(&mut pin));
+        let tx = self.connection_tx.clone();
+        let selected = read_str(state, root, MOBILE_SIM_KEY)
+            .and_then(|label| {
+                self.sims
+                    .iter()
+                    .find(|s| s.label == label)
+                    .map(|s| s.path.clone())
+            })
+            .or_else(|| self.sims.first().map(|s| s.path.clone()));
+        self.connection_notice = Some("Unlocking SIM…".into());
+        std::thread::spawn(move || {
+            let result = selected
+                .ok_or_else(|| "No SIM is available".to_string())
+                .and_then(|sim| os_actions::unlock_mobile_sim_on(&sim, &pin));
+            let _ = tx.send((NetworkJob::SimUnlock, result));
+        });
+        self.structure_dirty = true;
+    }
+
+    fn sync_enterprise_connect(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, ENTERPRISE_CONNECT_KEY) {
+            return;
+        }
+        let _ = state.put(root, ENTERPRISE_CONNECT_KEY, false);
+        let config = EnterpriseWifiConfiguration {
+            profile_name: read_str(state, root, ENTERPRISE_PROFILE_KEY).unwrap_or_default(),
+            ssid: read_str(state, root, ENTERPRISE_SSID_KEY).unwrap_or_default(),
+            identity: read_str(state, root, ENTERPRISE_IDENTITY_KEY).unwrap_or_default(),
+            anonymous_identity: read_str(state, root, ENTERPRISE_ANONYMOUS_KEY)
+                .filter(|value| !value.trim().is_empty()),
+            ca_certificate: read_str(state, root, ENTERPRISE_CA_KEY).unwrap_or_default(),
+            method: match read_str(state, root, ENTERPRISE_METHOD_KEY).as_deref() {
+                Some("TTLS") => os_actions::EnterpriseEapMethod::Ttls,
+                Some("TLS") => os_actions::EnterpriseEapMethod::Tls,
+                _ => os_actions::EnterpriseEapMethod::Peap,
+            },
+            phase2_auth: read_str(state, root, ENTERPRISE_PHASE2_KEY)
+                .map(|v| v.to_ascii_lowercase()),
+            client_certificate: read_str(state, root, ENTERPRISE_CLIENT_CERT_KEY)
+                .filter(|v| !v.trim().is_empty()),
+            private_key: read_str(state, root, ENTERPRISE_PRIVATE_KEY)
+                .filter(|v| !v.trim().is_empty()),
+        };
+        let mut password = self
+            .secret_buffers
+            .get(ENTERPRISE_PASSWORD_BUFFER)
+            .and_then(|buffer| buffer.lock().ok().map(|value| value.clone()))
+            .unwrap_or_default();
+        if let Some(buffer) = self.secret_buffers.get(ENTERPRISE_PASSWORD_BUFFER)
+            && let Ok(mut value) = buffer.lock()
+        {
+            value.zeroize();
+        }
+        let password = Zeroizing::new(std::mem::take(&mut password));
+        let tx = self.connection_tx.clone();
+        self.connection_notice = Some("Connecting to enterprise Wi-Fi…".into());
+        std::thread::spawn(move || {
+            let result = os_actions::connect_enterprise_wifi(&config, &password);
+            let _ = tx.send((NetworkJob::EnterpriseWifi, result));
+        });
+        self.structure_dirty = true;
+    }
+
+    fn sync_enterprise_ca_choose(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, ENTERPRISE_CA_CHOOSE_KEY) {
+            return;
+        }
+        let _ = state.put(root, ENTERPRISE_CA_CHOOSE_KEY, false);
+        if self.ca_picker_rx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.ca_picker_rx = Some(rx);
+            std::thread::spawn(move || {
+                let result =
+                    runtime_portal_xdg::FileChooser::open("Choose organization CA certificate")
+                        .map(|files| {
+                            files
+                                .into_iter()
+                                .next()
+                                .and_then(|file| file.path)
+                                .map(|path| path.display().to_string())
+                        })
+                        .map_err(|error| error.to_string());
+                let _ = tx.send(result);
+            });
+        }
+    }
+
+    fn sync_captive_portal(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, CAPTIVE_PORTAL_KEY) {
+            return;
+        }
+        let _ = state.put(root, CAPTIVE_PORTAL_KEY, false);
+        let result = os_actions::captive_portal_uri().and_then(|uri| {
+            runtime_portal_xdg::OpenUri::open(&uri).map_err(|error| {
+                format!("could not open browser through the desktop portal: {error}")
+            })
+        });
+        if let Err(error) = result {
+            self.connection_notice = Some(format!("Could not open network sign-in: {error}"));
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Contextual handoff: Settings owns daily status/toggles; VPN Studio
+    /// owns profile editing. Reset each command bit before requesting the
+    /// shell so a failed launch cannot loop every frame.
+    fn sync_vpn_studio_handoff(&self, state: &mut AutoCommit, root: &ObjId) {
         let requested_profiles: Vec<String> = self
             .vpns
             .iter()
@@ -2008,64 +2119,69 @@ impl Widget for NetworkPane {
                 warn!(target: "qos::settings", error = %e, "could not open VPN Studio");
             }
         }
+    }
 
-        // Refresh button — when the button writes `true`, rescan and
-        // clear the bit so subsequent frames don't loop.
+    /// Refresh button — when the button writes `true`, rescan and clear the
+    /// bit so subsequent frames don't loop.
+    fn sync_refresh(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let refresh_pressed = matches!(
             state.get(root, REFRESH_KEY),
             Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
         );
-        if refresh_pressed {
-            let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
-            match (self.lister)() {
-                Ok(nets) => self.networks = nets,
-                Err(e) => {
-                    warn!(target: "qos::settings", op = "list_wifi_networks", error = %e, "rescan failed");
-                }
-            }
-            if let Ok(wired) = os_actions::get_wired() {
-                self.wired = wired;
-                let _ = state.put(
-                    root,
-                    WIRED_ENABLED_KEY,
-                    automerge::ScalarValue::Boolean(self.wired.connected),
-                );
-            }
-            if let Ok(radios) = os_actions::get_radio_state() {
-                self.radios = radios;
-            }
-            self.hotspot_clients = os_actions::list_hotspot_clients().unwrap_or_default();
-            self.connectivity = os_actions::get_connectivity().unwrap_or_default();
-            self.profiles = os_actions::list_saved_network_profiles().unwrap_or_default();
-            self.profile_settings = load_profile_settings(&self.profiles);
-            if !self
-                .profiles
-                .iter()
-                .any(|p| Some(&p.uuid) == self.selected_wifi_profile.as_ref())
-            {
-                self.selected_wifi_profile = self
-                    .profiles
-                    .iter()
-                    .find(|p| p.kind == "802-11-wireless")
-                    .map(|p| p.uuid.clone());
-            }
-            if !self
-                .profiles
-                .iter()
-                .any(|p| Some(&p.uuid) == self.selected_wired_profile.as_ref())
-            {
-                self.selected_wired_profile = self
-                    .profiles
-                    .iter()
-                    .find(|p| p.kind == "802-3-ethernet")
-                    .map(|p| p.uuid.clone());
-            }
-            self.vpns = (self.vpn_lister)();
+        if !refresh_pressed {
+            return;
         }
+        let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
+        match (self.lister)() {
+            Ok(nets) => self.networks = nets,
+            Err(e) => {
+                warn!(target: "qos::settings", op = "list_wifi_networks", error = %e, "rescan failed");
+            }
+        }
+        if let Ok(wired) = os_actions::get_wired() {
+            self.wired = wired;
+            let _ = state.put(
+                root,
+                WIRED_ENABLED_KEY,
+                automerge::ScalarValue::Boolean(self.wired.connected),
+            );
+        }
+        if let Ok(radios) = os_actions::get_radio_state() {
+            self.radios = radios;
+        }
+        self.hotspot_clients = os_actions::list_hotspot_clients().unwrap_or_default();
+        self.connectivity = os_actions::get_connectivity().unwrap_or_default();
+        self.profiles = os_actions::list_saved_network_profiles().unwrap_or_default();
+        self.profile_settings = load_profile_settings(&self.profiles);
+        if !self
+            .profiles
+            .iter()
+            .any(|p| Some(&p.uuid) == self.selected_wifi_profile.as_ref())
+        {
+            self.selected_wifi_profile = self
+                .profiles
+                .iter()
+                .find(|p| p.kind == "802-11-wireless")
+                .map(|p| p.uuid.clone());
+        }
+        if !self
+            .profiles
+            .iter()
+            .any(|p| Some(&p.uuid) == self.selected_wired_profile.as_ref())
+        {
+            self.selected_wired_profile = self
+                .profiles
+                .iter()
+                .find(|p| p.kind == "802-3-ethernet")
+                .map(|p| p.uuid.clone());
+        }
+        self.vpns = (self.vpn_lister)();
+    }
 
-        // Restore the expanded-prompt SSID from the document so it
-        // survives the host's structure rebuilds (which reconstruct this
-        // pane). An empty string means "no prompt open".
+    /// Restore the expanded-prompt SSID from the document (so it survives
+    /// structure rebuilds), then drive the per-network "Connect" and "Join"
+    /// buttons.
+    fn sync_network_connect_actions(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let doc_expanded = read_str(state, root, EXPANDED_KEY).filter(|s| !s.is_empty());
         if doc_expanded != self.expanded_ssid {
             self.expanded_ssid = doc_expanded;
@@ -2127,6 +2243,37 @@ impl Widget for NetworkPane {
             }
             self.set_expanded(state, root, None);
         }
+    }
+}
+
+pub fn build() -> Box<dyn Widget> {
+    Box::new(NetworkPane::new())
+}
+
+impl Widget for NetworkPane {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.sync_ca_picker_result(state, root);
+        self.sync_connection_jobs();
+        self.seed_if_needed(state, root);
+        self.sync_wifi_and_wired_toggles(state, root);
+        self.sync_radio_toggles(state, root);
+        self.sync_vpn_toggles(state, root);
+        self.sync_profile_autoconnect_and_forget(state, root);
+        self.sync_hotspot_apply(state, root);
+        self.sync_hotspot_qr(state, root);
+        self.sync_profile_selectors(state, root);
+        self.sync_ipv4_apply(state, root);
+        self.sync_mobile_create(state, root);
+        self.sync_advanced_toggle(state, root);
+        self.sync_diagnostics(state, root);
+        self.sync_profile_policy(state, root);
+        self.sync_mobile_unlock(state, root);
+        self.sync_enterprise_connect(state, root);
+        self.sync_enterprise_ca_choose(state, root);
+        self.sync_captive_portal(state, root);
+        self.sync_vpn_studio_handoff(state, root);
+        self.sync_refresh(state, root);
+        self.sync_network_connect_actions(state, root);
 
         if let Some(c) = &mut self.composed {
             c.sync(state, root);

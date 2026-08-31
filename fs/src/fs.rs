@@ -50,6 +50,9 @@ use crate::sync::SyncHandle;
 
 const TTL: Duration = Duration::from_secs(10);
 
+/// A document inode's cached export, keyed by the heads it was exported at.
+type DocExports = HashMap<u64, (Vec<automerge::ChangeHash>, Vec<u8>)>;
+
 pub struct QuickFS {
     pub namespace: Arc<Mutex<Namespace>>,
     pub hydrator: Arc<Hydrator>,
@@ -62,7 +65,7 @@ pub struct QuickFS {
     write_buffers: Arc<Mutex<HashMap<u64, Vec<u8>>>>,
     /// Cached serialized form of each document inode, keyed by the doc's heads,
     /// so a multi-chunk read exports once (and getattr's size stays current).
-    doc_exports: Mutex<HashMap<u64, (Vec<automerge::ChangeHash>, Vec<u8>)>>,
+    doc_exports: Mutex<DocExports>,
     /// The workspace ACL and the identity it is evaluated as — the real
     /// access-control check. `None` keeps Unix-veneer-only behaviour;
     /// `Some` checks every open/read/write against the ACL as that identity.
@@ -115,6 +118,29 @@ impl QuickFS {
         self.write_buffers.clone()
     }
 
+    /// Lock the namespace, recovering from poisoning rather than propagating
+    /// a panic through the FUSE dispatch loop — a panicked op must not take
+    /// the whole mount down for every other in-flight request.
+    fn ns(&self) -> std::sync::MutexGuard<'_, Namespace> {
+        self.namespace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Lock the in-flight write buffers, recovering from poisoning (see [`Self::ns`]).
+    fn buffers(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Vec<u8>>> {
+        self.write_buffers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Lock the document export cache, recovering from poisoning (see [`Self::ns`]).
+    fn doc_export_cache(&self) -> std::sync::MutexGuard<'_, DocExports> {
+        self.doc_exports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// The codec key for `name`'s extension if it's a recognized document.
     fn document_codec_for(&self, name: &str) -> Option<String> {
         let ext = name.rsplit('.').next().filter(|e| *e != name)?;
@@ -125,7 +151,7 @@ impl QuickFS {
 
     /// Whether `ino` is a CRDT-backed document (vs. opaque content).
     fn is_document(&self, ino: u64) -> bool {
-        self.namespace.lock().unwrap().document_codec(ino).is_some()
+        self.ns().document_codec(ino).is_some()
     }
 
     /// The hydration state of `ino`, served for the `user.qos.sync` xattr.
@@ -135,19 +161,20 @@ impl QuickFS {
     fn sync_state_for(&self, ino: u64) -> Option<crate::syncstate::SyncState> {
         use crate::syncstate::SyncState;
         let (exists, is_dir, is_doc, hash) = {
-            let ns = self.namespace.lock().unwrap();
+            let ns = self.ns();
             let attr = ns.getattr(ino);
             let exists = attr.is_some();
             let is_dir = matches!(attr, Some(a) if a.kind == FileType::Directory);
             let is_doc = ns.document_codec(ino).is_some();
             let hash = ns.hash_for(ino);
+            drop(ns);
             (exists, is_dir, is_doc, hash)
         };
         if !exists {
             return None;
         }
         // A file open for writing has its bytes staged locally in the buffer.
-        if self.write_buffers.lock().unwrap().contains_key(&ino) {
+        if self.buffers().contains_key(&ino) {
             return Some(SyncState::Local);
         }
         if is_dir || is_doc {
@@ -168,7 +195,7 @@ impl QuickFS {
     /// Attribute/entry TTL: zero for documents (size is computed live from
     /// the CRDT and changes as peers edit, so the kernel must not cache a
     /// stale `i_size`), the normal TTL otherwise.
-    fn ttl_for(&self, is_doc: bool) -> Duration {
+    fn ttl_for(is_doc: bool) -> Duration {
         if is_doc { Duration::ZERO } else { TTL }
     }
 
@@ -180,14 +207,14 @@ impl QuickFS {
             // import_document validates before replacing; an invalid input
             // leaves the previous content intact and returns false.
             let delta = {
-                let mut ns = self.namespace.lock().unwrap();
+                let mut ns = self.ns();
                 if ns.import_document(ino, &self.registry, data, now_ms()) {
                     ns.save_incremental()
                 } else {
                     Vec::new()
                 }
             };
-            self.doc_exports.lock().unwrap().remove(&ino);
+            self.doc_export_cache().remove(&ino);
             if delta.is_empty() {
                 eprintln!("document import rejected (invalid format); previous content kept");
             } else {
@@ -201,25 +228,23 @@ impl QuickFS {
     /// The serialized (on-wire) bytes of a document inode, exported once per
     /// change and cached so multi-chunk reads and `getattr` are cheap + consistent.
     fn document_export(&self, ino: u64) -> Option<Vec<u8>> {
-        let heads = self.namespace.lock().unwrap().heads();
-        if let Some((h, bytes)) = self.doc_exports.lock().unwrap().get(&ino)
+        let heads = self.ns().heads();
+        if let Some((h, bytes)) = self.doc_export_cache().get(&ino)
             && *h == heads
         {
             return Some(bytes.clone());
         }
         let (heads, bytes) = {
-            let mut ns = self.namespace.lock().unwrap();
+            let mut ns = self.ns();
             let bytes = ns.export_document(ino, &self.registry)?;
             (ns.heads(), bytes)
         };
-        self.doc_exports
-            .lock()
-            .unwrap()
-            .insert(ino, (heads, bytes.clone()));
+        self.doc_export_cache().insert(ino, (heads, bytes.clone()));
         Some(bytes)
     }
 
     /// Attach a sync handle so write ops propagate to peers.
+    #[must_use]
     pub fn with_sync(mut self, sync: Arc<SyncHandle>) -> Self {
         self.sync = Some(sync);
         self
@@ -228,6 +253,7 @@ impl QuickFS {
     /// Attach a host-side thumbnail provider (cache under `dir`). The mount then
     /// answers the `user.qos.thumb` xattr with a generated preview and records
     /// each thumbnail's hash on the namespace node so it projects to peers.
+    #[must_use]
     pub fn with_thumbs(mut self, provider: crate::thumbs::ThumbProvider) -> Self {
         self.thumbs = Some(provider);
         self
@@ -244,11 +270,13 @@ impl QuickFS {
     pub fn thumbnail_for(&self, ino: u64) -> Option<Vec<u8>> {
         let provider = self.thumbs.as_ref()?;
         let (name, content_hash, thumb_hash) = {
-            let ns = self.namespace.lock().unwrap();
+            let ns = self.ns();
             let name = ns
                 .path_for(ino)
                 .and_then(|p| p.rsplit('/').next().map(std::string::ToString::to_string))?;
-            (name, ns.hash_for(ino), ns.thumb_hash(ino))
+            let result = (name, ns.hash_for(ino), ns.thumb_hash(ino));
+            drop(ns);
+            result
         };
         let category = thumbnail::category_for_path(std::path::Path::new(&name));
         if !category.has_preview() {
@@ -278,7 +306,7 @@ impl QuickFS {
         // then hydrate the blob (not the whole file) to show a preview.
         if let Some(tbh) = self.ingest_blob_blocking(&png) {
             let delta = {
-                let mut ns = self.namespace.lock().unwrap();
+                let mut ns = self.ns();
                 ns.set_thumb(ino, &tbh);
                 ns.save_incremental()
             };
@@ -330,6 +358,7 @@ impl QuickFS {
     /// behaviour. Takes anything that becomes an [`AclHandle`]: a
     /// [`WorkspaceAcl`] for a policy that won't change, or a handle held by
     /// a [`crate::CapabilityFile`] for one that reloads under the live mount.
+    #[must_use]
     pub fn with_acl(
         mut self,
         acl: impl Into<AclHandle>,
@@ -343,11 +372,16 @@ impl QuickFS {
     /// when the mount has no ACL, or the bound identity holds `access`.
     /// Never `EACCES`: outside the view is `ENOENT`; inside but not
     /// writable is `EROFS`. The single production decision point.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(ENOENT)` when `ino` doesn't resolve to a path or the identity can't see it,
+    /// or `Err(EROFS)` when the identity can see it but lacks `access`.
     pub fn check_access(&self, ino: u64, access: Access) -> Result<(), i32> {
         if self.enforcement.is_none() {
             return Ok(());
         }
-        let path = self.namespace.lock().unwrap().path_for(ino).ok_or(ENOENT)?;
+        let path = self.ns().path_for(ino).ok_or(ENOENT)?;
         self.check_path(&path, access)
     }
 
@@ -386,7 +420,8 @@ impl QuickFS {
         if self.enforcement.is_none() {
             return true;
         }
-        match self.namespace.lock().unwrap().path_for(ino) {
+        let path = self.ns().path_for(ino);
+        match path {
             Some(path) => self.in_view(&path),
             None => false,
         }
@@ -397,7 +432,7 @@ impl QuickFS {
     /// and `..` always survive — both are reached through this directory.
     fn visible_entries(&self, ino: u64) -> Option<Vec<(u64, FileType, String)>> {
         let (entries, dir_path) = {
-            let mut ns = self.namespace.lock().unwrap();
+            let mut ns = self.ns();
             (ns.readdir(ino), ns.path_for(ino))
         };
         let entries = entries?;
@@ -433,7 +468,7 @@ impl QuickFS {
                 })
                 .count()
         });
-        2u32.saturating_add(subdirs as u32)
+        2u32.saturating_add(u32::try_from(subdirs).unwrap_or(u32::MAX))
     }
 
     /// The check every "make a new name in this directory" operation runs
@@ -448,23 +483,13 @@ impl QuickFS {
         let Some((acl, identity)) = &self.enforcement else {
             return Ok(());
         };
-        let parent_path = self
-            .namespace
-            .lock()
-            .unwrap()
-            .path_for(parent)
-            .ok_or(ENOENT)?;
+        let parent_path = self.ns().path_for(parent).ok_or(ENOENT)?;
         if !acl.visible(identity, &parent_path) {
             return Err(ENOENT);
         }
         let child = child_path(&parent_path, name);
         self.check_path(&child, Access::Write)?;
-        let taken = self
-            .namespace
-            .lock()
-            .unwrap()
-            .lookup(parent, name)
-            .is_some();
+        let taken = self.ns().lookup(parent, name).is_some();
         if taken && !acl.visible(identity, &child) {
             return Err(EROFS);
         }
@@ -478,12 +503,7 @@ impl QuickFS {
         if self.enforcement.is_none() {
             return Ok(());
         }
-        let parent_path = self
-            .namespace
-            .lock()
-            .unwrap()
-            .path_for(parent)
-            .ok_or(ENOENT)?;
+        let parent_path = self.ns().path_for(parent).ok_or(ENOENT)?;
         if !self.in_view(&parent_path) {
             return Err(ENOENT);
         }
@@ -512,7 +532,7 @@ impl QuickFS {
     /// file; a hydration failure is `Err` so a write never seeds from empty
     /// and silently truncates a not-yet-local file.
     fn read_full_blocking(&self, ino: u64) -> io::Result<Vec<u8>> {
-        if let Some(buf) = self.write_buffers.lock().unwrap().get(&ino) {
+        if let Some(buf) = self.buffers().get(&ino) {
             return Ok(buf.clone());
         }
         // Documents seed from their current serialized form (so a partial /
@@ -522,7 +542,7 @@ impl QuickFS {
                 .document_export(ino)
                 .ok_or_else(|| io::Error::other("document export failed"));
         }
-        let hash = self.namespace.lock().unwrap().hash_for(ino);
+        let hash = self.ns().hash_for(ino);
         let Some(hash) = hash else {
             return Ok(Vec::new());
         };
@@ -540,7 +560,7 @@ impl QuickFS {
     fn commit_content(&self, ino: u64, data: &[u8]) -> io::Result<()> {
         let hash = self.write_content_blocking(data)?;
         let delta = {
-            let mut ns = self.namespace.lock().unwrap();
+            let mut ns = self.ns();
             ns.set_content(ino, hash.as_ref(), data.len() as u64, now_ms());
             ns.save_incremental()
         };
@@ -558,7 +578,7 @@ impl QuickFS {
             return;
         }
         let delta = {
-            let mut ns = self.namespace.lock().unwrap();
+            let mut ns = self.ns();
             let Some(attr) = ns.lookup(parent.0, name) else {
                 reply.error(to_errno(ENOENT));
                 return;
@@ -606,7 +626,7 @@ fn to_errno(e: i32) -> Errno {
 /// the length; a non-zero size must be big enough for the value, else `ERANGE`.
 fn reply_xattr_bytes(reply: ReplyXattr, bytes: &[u8], size: u32) {
     if size == 0 {
-        reply.size(bytes.len() as u32);
+        reply.size(u32::try_from(bytes.len()).unwrap_or(u32::MAX));
     } else if (size as usize) < bytes.len() {
         reply.error(to_errno(libc::ERANGE));
     } else {
@@ -627,13 +647,20 @@ fn child_path(dir: &str, name: &str) -> String {
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// `offset`/`size` cross the FUSE boundary as untrusted request values,
+/// so clamp rather than trust them to fit `usize` before bounding against `bytes.len()`.
 fn slice(bytes: &[u8], offset: u64, size: u32) -> Vec<u8> {
-    let start = (offset as usize).min(bytes.len());
+    let start = usize::try_from(offset)
+        .unwrap_or(usize::MAX)
+        .min(bytes.len());
     let end = start.saturating_add(size as usize).min(bytes.len());
-    bytes[start..end].to_vec()
+    bytes
+        .get(start..end)
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default()
 }
 
 /// The ACL accesses an open of the given mode requires: read for
@@ -661,25 +688,21 @@ impl Filesystem for QuickFS {
             return;
         };
         let (found, child) = {
-            let mut ns = self.namespace.lock().unwrap();
+            let mut ns = self.ns();
             let found = ns.lookup(parent.0, name);
             let child = ns.path_for(parent.0).map(|p| child_path(&p, name));
+            drop(ns);
             (found, child)
         };
         let in_view = child.is_some_and(|c| self.in_view(&c));
         match found {
             Some(attr) if in_view => {
-                let is_doc = self
-                    .namespace
-                    .lock()
-                    .unwrap()
-                    .document_codec(attr.ino.0)
-                    .is_some();
+                let is_doc = self.ns().document_codec(attr.ino.0).is_some();
                 let mut attr = attr;
                 if attr.kind == FileType::Directory {
                     attr.nlink = self.visible_dir_nlink(attr.ino.0);
                 }
-                reply.entry(&self.ttl_for(is_doc), &attr, Generation(0));
+                reply.entry(&Self::ttl_for(is_doc), &attr, Generation(0));
             }
             _ => reply.error(to_errno(ENOENT)),
         }
@@ -687,12 +710,7 @@ impl Filesystem for QuickFS {
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
         // Reflect an in-flight write buffer so stat() sees read-your-writes size.
-        let buf_len = self
-            .write_buffers
-            .lock()
-            .unwrap()
-            .get(&ino.0)
-            .map(|b| b.len() as u64);
+        let buf_len = self.buffers().get(&ino.0).map(|b| b.len() as u64);
         // Documents have no stored byte length — report the current export size
         // (so a collaboratively-edited document isn't read truncated).
         let is_doc = self.is_document(ino.0);
@@ -706,7 +724,7 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOENT));
             return;
         }
-        let found = self.namespace.lock().unwrap().getattr(ino.0);
+        let found = self.ns().getattr(ino.0);
         match found {
             Some(mut attr) => {
                 if let Some(len) = buf_len.or(doc_len) {
@@ -718,7 +736,7 @@ impl Filesystem for QuickFS {
                     // nothing sees an ordinary empty directory (nlink == 2).
                     attr.nlink = self.visible_dir_nlink(ino.0);
                 }
-                reply.attr(&self.ttl_for(is_doc), &attr);
+                reply.attr(&Self::ttl_for(is_doc), &attr);
             }
             None => reply.error(to_errno(ENOENT)),
         }
@@ -742,8 +760,11 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOTDIR));
             return;
         };
-        for (i, (e_ino, kind, name)) in entries.into_iter().enumerate().skip(offset as usize) {
-            if reply.add(INodeNo(e_ino), (i + 1) as u64, kind, &name) {
+        // `offset` crosses the FUSE boundary as an untrusted request value.
+        let skip = usize::try_from(offset).unwrap_or(usize::MAX);
+        for (i, (e_ino, kind, name)) in entries.into_iter().enumerate().skip(skip) {
+            let next_offset = i.saturating_add(1) as u64;
+            if reply.add(INodeNo(e_ino), next_offset, kind, &name) {
                 break;
             }
         }
@@ -753,7 +774,7 @@ impl Filesystem for QuickFS {
 
     fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let exists = {
-            let ns = self.namespace.lock().unwrap();
+            let ns = self.ns();
             ns.getattr(ino.0).is_some()
         };
         if !exists {
@@ -790,7 +811,7 @@ impl Filesystem for QuickFS {
             return;
         }
         // Read-your-writes: serve from the in-flight buffer if present.
-        if let Some(buf) = self.write_buffers.lock().unwrap().get(&ino.0) {
+        if let Some(buf) = self.buffers().get(&ino.0) {
             reply.data(&slice(buf, offset, size));
             return;
         }
@@ -805,7 +826,7 @@ impl Filesystem for QuickFS {
         }
 
         let hash = {
-            let ns = self.namespace.lock().unwrap();
+            let ns = self.ns();
             match ns.getattr(ino.0) {
                 Some(attr) if attr.kind == FileType::RegularFile => ns.hash_for(ino.0),
                 Some(_) => {
@@ -854,7 +875,7 @@ impl Filesystem for QuickFS {
         }
         let codec = self.document_codec_for(name);
         let (attr, delta) = {
-            let mut ns = self.namespace.lock().unwrap();
+            let mut ns = self.ns();
             let ino = match &codec {
                 Some(c) => ns.create_document(parent.0, name, c, now_ms()),
                 None => ns.create_file(parent.0, name, None, 0, now_ms()),
@@ -870,13 +891,10 @@ impl Filesystem for QuickFS {
             return;
         };
         // Start a fresh empty buffer so subsequent writes accumulate.
-        self.write_buffers
-            .lock()
-            .unwrap()
-            .insert(attr.ino.0, Vec::new());
+        self.buffers().insert(attr.ino.0, Vec::new());
         self.publish(delta);
         reply.created(
-            &self.ttl_for(codec.is_some()),
+            &Self::ttl_for(codec.is_some()),
             &attr,
             Generation(0),
             FileHandle(0),
@@ -884,6 +902,12 @@ impl Filesystem for QuickFS {
         );
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the lock is already scoped to its own block, after the blocking hydration \
+                  read and offset validation happen outside it; what remains inside is the \
+                  buffer lookup/resize/write itself, which needs the lock held throughout"
+    )]
     fn write(
         &self,
         _req: &Request,
@@ -904,7 +928,7 @@ impl Filesystem for QuickFS {
         // Seed the buffer with current content if this is the first write,
         // outside the buffer lock (may do blocking I/O) — a hydration
         // failure must fail the write, never seed-from-empty and truncate.
-        let absent = self.write_buffers.lock().unwrap().get(&ino.0).is_none();
+        let absent = self.buffers().get(&ino.0).is_none();
         let seed = if absent {
             // Seed from current content (export for documents, hydrated bytes
             // for opaque files) so a partial/append write modifies it correctly.
@@ -918,13 +942,17 @@ impl Filesystem for QuickFS {
             None
         };
 
-        let start = offset as usize;
+        // `offset` crosses the FUSE boundary as an untrusted request value.
+        let Ok(start) = usize::try_from(offset) else {
+            reply.error(to_errno(EINVAL));
+            return;
+        };
         let Some(end) = start.checked_add(data.len()) else {
             reply.error(to_errno(EINVAL));
             return;
         };
         {
-            let mut bufs = self.write_buffers.lock().unwrap();
+            let mut bufs = self.buffers();
             // or_insert keeps any buffer a racing op already created.
             let buf = match seed {
                 Some(d) => bufs.entry(ino.0).or_insert(d),
@@ -933,9 +961,13 @@ impl Filesystem for QuickFS {
             if end > buf.len() {
                 buf.resize(end, 0);
             }
-            buf[start..end].copy_from_slice(data);
+            let Some(dest) = buf.get_mut(start..end) else {
+                reply.error(to_errno(EINVAL));
+                return;
+            };
+            dest.copy_from_slice(data);
         }
-        reply.written(data.len() as u32);
+        reply.written(u32::try_from(data.len()).unwrap_or(u32::MAX));
     }
 
     fn flush(
@@ -946,7 +978,7 @@ impl Filesystem for QuickFS {
         _lock_owner: LockOwner,
         reply: ReplyEmpty,
     ) {
-        let buffered = self.write_buffers.lock().unwrap().get(&ino.0).cloned();
+        let buffered = self.buffers().get(&ino.0).cloned();
         if let Some(data) = buffered {
             self.commit_buffer(ino.0, &data);
         }
@@ -961,7 +993,7 @@ impl Filesystem for QuickFS {
         _datasync: bool,
         reply: ReplyEmpty,
     ) {
-        let buffered = self.write_buffers.lock().unwrap().get(&ino.0).cloned();
+        let buffered = self.buffers().get(&ino.0).cloned();
         if let Some(data) = buffered {
             self.commit_buffer(ino.0, &data);
         }
@@ -978,7 +1010,7 @@ impl Filesystem for QuickFS {
         _flush: bool,
         reply: ReplyEmpty,
     ) {
-        let buffered = self.write_buffers.lock().unwrap().remove(&ino.0);
+        let buffered = self.buffers().remove(&ino.0);
         if let Some(data) = buffered {
             self.commit_buffer(ino.0, &data);
         }
@@ -1019,31 +1051,25 @@ impl Filesystem for QuickFS {
         // Handle truncation/extension; ignore perm/owner/time changes.
         if let Some(new_size) = size {
             let is_doc = self.is_document(ino.0);
-            let mut data = if let Ok(d) = self.read_full_blocking(ino.0) {
-                d
-            } else {
+            let Ok(mut data) = self.read_full_blocking(ino.0) else {
                 reply.error(to_errno(EIO));
                 return;
             };
-            data.resize(new_size as usize, 0);
-            let open = self.write_buffers.lock().unwrap().contains_key(&ino.0);
+            // `new_size` crosses the FUSE boundary as an untrusted request value.
+            data.resize(usize::try_from(new_size).unwrap_or(usize::MAX), 0);
+            let open = self.buffers().contains_key(&ino.0);
             // Documents always stage in the buffer (imported as a whole on
             // release); opaque files commit immediately when not open.
             if open || is_doc {
-                self.write_buffers.lock().unwrap().insert(ino.0, data);
+                self.buffers().insert(ino.0, data);
             } else if let Err(_e) = self.commit_content(ino.0, &data) {
                 reply.error(to_errno(EIO));
                 return;
             }
         }
 
-        let buf_len = self
-            .write_buffers
-            .lock()
-            .unwrap()
-            .get(&ino.0)
-            .map(|b| b.len() as u64);
-        let found = self.namespace.lock().unwrap().getattr(ino.0);
+        let buf_len = self.buffers().get(&ino.0).map(|b| b.len() as u64);
+        let found = self.ns().getattr(ino.0);
         match found {
             Some(mut attr) => {
                 if let Some(len) = buf_len {
@@ -1077,7 +1103,7 @@ impl Filesystem for QuickFS {
             return;
         }
         let (attr, delta) = {
-            let mut ns = self.namespace.lock().unwrap();
+            let mut ns = self.ns();
             let Some(ino) = ns.create_dir(parent.0, name, now_ms()) else {
                 reply.error(to_errno(ENOENT));
                 return;
@@ -1125,7 +1151,7 @@ impl Filesystem for QuickFS {
             return;
         }
         let delta = {
-            let mut ns = self.namespace.lock().unwrap();
+            let mut ns = self.ns();
             if !ns.rename(parent.0, name, newparent.0, newname, now_ms()) {
                 reply.error(to_errno(ENOENT));
                 return;
@@ -1177,18 +1203,19 @@ impl Filesystem for QuickFS {
             return;
         }
         let (exists, name) = {
-            let ns = self.namespace.lock().unwrap();
+            let ns = self.ns();
             let exists = ns.getattr(ino.0).is_some();
             let name = ns
                 .path_for(ino.0)
                 .and_then(|p| p.rsplit('/').next().map(std::string::ToString::to_string));
+            drop(ns);
             (exists, name)
         };
         if !exists {
             reply.error(to_errno(ENOENT));
             return;
         }
-        let mut buf = Vec::with_capacity(crate::syncstate::SYNC_XATTR.len() + 1);
+        let mut buf = Vec::with_capacity(crate::syncstate::SYNC_XATTR.len().saturating_add(1));
         buf.extend_from_slice(crate::syncstate::SYNC_XATTR.as_bytes());
         buf.push(0);
         // Cheap extension check, no generation — a `getxattr` of it may
@@ -1202,7 +1229,7 @@ impl Filesystem for QuickFS {
             buf.push(0);
         }
         if size == 0 {
-            reply.size(buf.len() as u32);
+            reply.size(u32::try_from(buf.len()).unwrap_or(u32::MAX));
         } else if (size as usize) < buf.len() {
             reply.error(to_errno(libc::ERANGE));
         } else {
@@ -1242,7 +1269,7 @@ mod thumb_tests {
         let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host")));
+        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let provider = ThumbProvider::open(&thumb_dir).unwrap();
         let fs = QuickFS::new(namespace.clone(), hydrator, heuristics).with_thumbs(provider);
@@ -1279,7 +1306,7 @@ mod thumb_tests {
             "downscaled to the host preview size"
         );
         assert!(
-            decoded.max_edge() < png.len() as u32,
+            decoded.max_edge() < u32::try_from(png.len()).unwrap_or(u32::MAX),
             "the preview is far smaller than the source"
         );
 

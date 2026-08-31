@@ -27,6 +27,13 @@
 //! to share the old bottom legend now lives in the header, appearing
 //! only while a filter is active.
 
+#![allow(
+    clippy::many_single_char_names,
+    reason = "t (Affine), c (Colors), r/d (Rect), x/y/w/h (geometry) and their \
+              close relatives are the standard vocabulary shared by every \
+              draw helper in this file"
+)]
+
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -42,7 +49,7 @@ use ui::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{TextInput, Widget};
 
 use crate::doc::LogsDoc;
 use crate::model::{Filter, LogEntry, Priority};
@@ -57,6 +64,16 @@ const LIST_HEADER_H: f64 = 26.0;
 const CONTROL_H: f64 = 34.0;
 const DROPDOWN_ITEM_H: f64 = 30.0;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// An `Instant` at least `POLL_INTERVAL` in the past, so writing it into
+/// `last_poll` makes the next poll-due check fire immediately. Falls back to
+/// `now` itself in the vanishingly rare case the process's monotonic clock
+/// has less than `POLL_INTERVAL` of history — that only delays the forced
+/// poll by at most `POLL_INTERVAL`, never panics.
+fn force_immediate_poll_at() -> Instant {
+    let now = Instant::now();
+    now.checked_sub(POLL_INTERVAL).unwrap_or(now)
+}
 
 /// Which transient popup is open, if any.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -91,6 +108,22 @@ struct Regions {
     dropdown: Vec<(Rect, String, String)>, // (rect, value, label)
 }
 
+/// Running layout cursor threaded through the detail pane's draw helpers.
+struct DetailLayout {
+    inner_x: f64,
+    inner_w: f64,
+    y: f64,
+    /// The lowest y the field table may draw into before it stops.
+    bottom: f64,
+}
+
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, unrelated flag (live-tail state, \
+              focus, repaint gate, live-binary vs. --shots mode); grouping \
+              them into enums would not express any real invariant between \
+              them and would touch every read/write site across this file"
+)]
 pub struct LogsApp {
     /// Full journal — external read-only data, not CRDT state.
     entries: Vec<LogEntry>,
@@ -115,6 +148,9 @@ pub struct LogsApp {
     hover_row: Option<usize>,
     popup: Option<Popup>,
     focused: bool,
+    /// Shared CRDT-bound field for the collaborative search query. The filter
+    /// bar keeps its app-specific layout; text editing is toolkit-owned.
+    search_input: TextInput,
     dirty: bool,
 
     // ---- responsiveness (master-detail push on narrow windows) ----
@@ -147,6 +183,11 @@ impl LogsApp {
             hover_row: None,
             popup: None,
             focused: true,
+            search_input: TextInput::new(Vec::new())
+                .with_id("logs.search")
+                .with_on_change_path(crate::doc::K_SEARCH)
+                .with_placeholder("Search messages, units…")
+                .with_plain_chrome(),
             dirty: true,
             push: PushNav::default(),
             allow_live,
@@ -237,7 +278,11 @@ impl LogsApp {
         self.filtered
             .iter()
             .copied()
-            .find(|&i| self.entries[i].priority.level() <= Priority::Err.level())
+            .find(|&i| {
+                self.entries
+                    .get(i)
+                    .is_some_and(|e| e.priority.level() <= Priority::Err.level())
+            })
             .or_else(|| self.filtered.first().copied())
     }
 
@@ -282,7 +327,7 @@ impl LogsApp {
             .and_then(|abs| self.filtered_pos(abs))
             .unwrap_or(0) as isize;
         let new_pos = (cur_pos + delta).clamp(0, self.filtered.len() as isize - 1) as usize;
-        let abs = self.filtered[new_pos];
+        let abs = self.filtered.get(new_pos).copied().unwrap_or(0);
         self.sel_raw = abs as i64;
         LogsDoc::set_selected(doc, root, abs as i64);
         self.scroll_into_view(new_pos);
@@ -313,7 +358,41 @@ impl LogsApp {
         // there is no standing legend strip to reserve room for.
         let content_bottom = y0 + h;
 
-        // Filter bar controls.
+        let (search, unit_trigger, boot_trigger, chips) = Self::filter_bar_regions(x0, w, filter);
+        let (live_pill, clear_btn) = self.header_controls(x0, w, header);
+
+        // Content area between the filter bar and the window bottom.
+        let cx0 = x0 + PAD;
+        let cy0 = content_top + PAD;
+        let cx1 = x0 + w - PAD;
+        let cy1 = content_bottom - PAD;
+        let gap = 14.0;
+
+        let (list_header, list_body, detail, back_btn, narrow) =
+            self.content_split(w, cx0, cy0, cx1, cy1, gap);
+        let dropdown = self.dropdown_regions(unit_trigger, boot_trigger);
+
+        Regions {
+            header,
+            filter,
+            search,
+            unit_trigger,
+            boot_trigger,
+            live_pill,
+            clear_btn,
+            chips,
+            list_header,
+            list_body,
+            detail,
+            narrow,
+            back_btn,
+            dropdown,
+        }
+    }
+
+    /// `regions()`'s filter-bar controls: search box, unit/boot dropdown
+    /// triggers, and the right-aligned severity chips.
+    fn filter_bar_regions(x0: f64, w: f64, filter: Rect) -> (Rect, Rect, Rect, Vec<Rect>) {
         let fy = filter.y0 + (FILTER_H - CONTROL_H) / 2.0;
         let mut fx = x0 + PAD;
         let search = Rect::new(fx, fy, fx + 320.0, fy + CONTROL_H);
@@ -333,10 +412,14 @@ impl LogsApp {
                 Rect::new(cx, fy, cx + chip_w, fy + CONTROL_H)
             })
             .collect();
+        (search, unit_trigger, boot_trigger, chips)
+    }
 
-        // Header: live pill + clear filters, right-aligned. The live pill is
-        // the rightmost control; the "Clear filters" button sits just left of
-        // it and is only laid out (non-zero) while a filter is active.
+    /// `regions()`'s header: live pill + clear filters, right-aligned. The
+    /// live pill is the rightmost control; the "Clear filters" button sits
+    /// just left of it and is only laid out (non-zero) while a filter is
+    /// active.
+    fn header_controls(&self, x0: f64, w: f64, header: Rect) -> (Rect, Rect) {
         let hy = header.y0 + (HEADER_H - 30.0) / 2.0;
         let live_pill = Rect::new(x0 + w - PAD - 124.0, hy, x0 + w - PAD, hy + 30.0);
         let clear_btn = if self.filter.is_clear() {
@@ -346,16 +429,27 @@ impl LogsApp {
             let x1 = live_pill.x0 - 12.0;
             Rect::new(x1 - 104.0, cy, x1, cy + 26.0)
         };
+        (live_pill, clear_btn)
+    }
 
-        // Content area between the filter bar and the window bottom.
-        let cx0 = x0 + PAD;
-        let cy0 = content_top + PAD;
-        let cx1 = x0 + w - PAD;
-        let cy1 = content_bottom - PAD;
-        let gap = 14.0;
-
-        // Responsive split: side-by-side when wide, single-pane push when
-        // narrow. The choice is driven purely from the allocated width.
+    /// `regions()`'s responsive split: side-by-side when wide, single-pane
+    /// push when narrow. The choice is driven purely from the allocated
+    /// width. Returns `(list_header, list_body, detail, back_btn, narrow)`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one regions() section threading the shared content-area \
+                  geometry (width + the four content corners + pane gap) \
+                  through the list/detail split"
+    )]
+    fn content_split(
+        &self,
+        w: f64,
+        cx0: f64,
+        cy0: f64,
+        cx1: f64,
+        cy1: f64,
+        gap: f64,
+    ) -> (Rect, Rect, Rect, Rect, bool) {
         let narrow = PushNav::is_narrow(w);
         let (list_header, list_body, detail, back_btn) = if narrow {
             // Single-pane push: the list and detail each fill the whole
@@ -384,8 +478,15 @@ impl LogsApp {
             let detail_rect = Rect::new(cx0 + list_w + gap, cy0, cx1, cy1);
             (lh, lb, detail_rect, Rect::ZERO)
         };
+        (list_header, list_body, detail, back_btn, narrow)
+    }
 
-        // Open dropdown rows.
+    /// `regions()`'s open dropdown rows (empty when no popup is open).
+    fn dropdown_regions(
+        &self,
+        unit_trigger: Rect,
+        boot_trigger: Rect,
+    ) -> Vec<(Rect, String, String)> {
         let mut dropdown = Vec::new();
         if let Some(p) = self.popup {
             let (trigger, mut items) = match p {
@@ -414,23 +515,7 @@ impl LogsApp {
                 dropdown.push((irect, val, label));
             }
         }
-
-        Regions {
-            header,
-            filter,
-            search,
-            unit_trigger,
-            boot_trigger,
-            live_pill,
-            clear_btn,
-            chips,
-            list_header,
-            list_body,
-            detail,
-            narrow,
-            back_btn,
-            dropdown,
-        }
+        dropdown
     }
 }
 
@@ -463,15 +548,26 @@ fn fill_circle(scene: &mut Scene, t: Affine, center: Point, radius: f64, c: Colo
     scene.fill(Fill::NonZero, t, c, None, &Circle::new(center, radius));
 }
 
+/// Build a single-leaf taffy node. `new_leaf` only fails when the tree
+/// itself is corrupted, which cannot happen for a tree we just built in this
+/// same function.
+#[allow(
+    clippy::unwrap_used,
+    reason = "new_leaf cannot fail for a freshly-built tree; see doc comment"
+)]
+fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
+    taffy.new_leaf(style).unwrap()
+}
+
 /// Baseline-free top-left text at `(x,y)`, no wrapping.
 #[allow(clippy::too_many_arguments)]
 fn text_at(
     tr: &mut TextRenderer,
     scene: &mut Scene,
-    t: Affine,
-    s: &str,
+    transform: Affine,
+    text: &str,
     size: f32,
-    c: Color,
+    color: Color,
     x: f64,
     y: f64,
     weight: TextWeight,
@@ -479,10 +575,10 @@ fn text_at(
 ) {
     tr.draw_text_styled(
         scene,
-        s,
+        text,
         size,
-        c,
-        t * Affine::translate((x, y)),
+        color,
+        transform * Affine::translate((x, y)),
         None,
         weight,
         false,
@@ -518,7 +614,7 @@ fn elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64, mono: bool) -> S
         if keep == 0 {
             return "…".to_string();
         }
-        let cand: String = chars[..keep].iter().collect::<String>() + "…";
+        let cand: String = chars.get(..keep).unwrap_or(&[]).iter().collect::<String>() + "…";
         if f64::from(measure(tr, &cand)) <= max_w {
             return cand;
         }
@@ -552,9 +648,22 @@ impl LogsApp {
         // The OS owns the window title/app-name — the header draws only its
         // functional controls (the entry counts, an optional Clear-filters
         // button, and the live-tail pill).
+        self.draw_header_clear_button(scene, t, tr, theme, reg);
+        self.draw_header_counts(scene, t, tr, theme, reg);
+        self.draw_header_live_pill(scene, t, tr, theme, reg);
+    }
 
-        // Clear-filters button — right-aligned, just left of the live pill,
-        // shown only while a filter is active (its rect is zero otherwise).
+    /// `draw_header`'s Clear-filters button — right-aligned, just left of the
+    /// live pill, shown only while a filter is active (its rect is zero
+    /// otherwise).
+    fn draw_header_clear_button(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
         if !self.filter.is_clear() && reg.clear_btn.width() > 0.0 {
             fill_round(
                 scene,
@@ -587,8 +696,18 @@ impl LogsApp {
                 false,
             );
         }
+    }
 
-        // Counts, just left of whichever right-aligned control is present.
+    /// `draw_header`'s entry counts, just left of whichever right-aligned
+    /// control is present.
+    fn draw_header_counts(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
         let counts = format!(
             "{} shown · {} total",
             self.filtered.len(),
@@ -612,8 +731,18 @@ impl LogsApp {
             TextWeight::Medium,
             false,
         );
+    }
 
-        // Live-tail pill.
+    /// `draw_header`'s live-tail pill.
+    fn draw_header_live_pill(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
+        let c = &theme.tokens.colors;
         let on = self.live_tail;
         let pill_bg = if on {
             theme.accent_primary
@@ -639,7 +768,7 @@ impl LogsApp {
             4.0,
             dot_c,
         );
-        let label = if on { "Live tail" } else { "Live tail" };
+        let label = "Live tail";
         let lc = if on { Color::WHITE } else { theme.text_dim };
         text_at(
             tr,
@@ -656,7 +785,7 @@ impl LogsApp {
     }
 
     fn draw_filter_bar(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -664,7 +793,6 @@ impl LogsApp {
         reg: &Regions,
     ) {
         let c = &theme.tokens.colors;
-        let tc = Self::theme_colors(theme);
         fill_rect(scene, t, reg.filter, c.surfaces.base);
         line(
             scene,
@@ -676,9 +804,23 @@ impl LogsApp {
             c.border_standard,
             1.0,
         );
+        self.draw_filter_search_box(scene, t, tr, theme, reg);
+        self.draw_filter_dropdown_triggers(scene, t, tr, theme, reg);
+        self.draw_filter_severity_chips(scene, t, tr, theme, reg);
+    }
 
-        // --- Search box ---
-        let focused = self.focused;
+    /// `draw_filter_bar`'s search box: field background, focus ring, search
+    /// glyph, and the shared [`TextInput`] itself.
+    fn draw_filter_search_box(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
+        let c = &theme.tokens.colors;
+        let focused = self.search_input.is_focused();
         fill_round(
             scene,
             t,
@@ -726,65 +868,31 @@ impl LogsApp {
             theme.text_dim,
             1.4,
         );
-        let text_x = reg.search.x0 + 30.0;
-        let sz = theme.tokens.typography.scale.base;
-        if self.filter.search.is_empty() {
-            text_at(
-                tr,
-                scene,
-                t,
-                "Search messages, units…",
-                sz,
-                theme.text_dim,
-                text_x,
-                vcenter(reg.search, sz),
-                TextWeight::Regular,
-                false,
-            );
-        } else {
-            let shown = elide(
-                tr,
-                &self.filter.search,
-                sz,
-                reg.search.x1 - text_x - 22.0,
-                false,
-            );
-            text_at(
-                tr,
-                scene,
-                t,
-                &shown,
-                sz,
-                theme.text_primary,
-                text_x,
-                vcenter(reg.search, sz),
-                TextWeight::Regular,
-                false,
-            );
-            // caret
-            if focused {
-                let (sw, _) = tr.measure(&shown, sz, None);
-                let cx = text_x + f64::from(sw) + 1.0;
-                line(
-                    scene,
-                    t,
-                    cx,
-                    reg.search.y0 + 8.0,
-                    cx,
-                    reg.search.y1 - 8.0,
-                    c.border_focus,
-                    1.5,
-                );
-            }
-        }
+        self.search_input.apply_layout_external(Rect::new(
+            reg.search.x0 + 28.0,
+            reg.search.y0,
+            reg.search.x1 - 8.0,
+            reg.search.y1,
+        ));
+        let presence = PresenceCtx::empty();
+        self.search_input.draw(scene, t, tr, theme, &presence);
+    }
 
-        // --- Unit + boot dropdown triggers ---
+    /// `draw_filter_bar`'s unit + boot dropdown triggers.
+    fn draw_filter_dropdown_triggers(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
         let unit_label = if self.filter.unit.is_empty() {
             "All units".to_string()
         } else {
             self.filter.unit.clone()
         };
-        self.draw_dropdown_trigger(
+        Self::draw_dropdown_trigger(
             scene,
             t,
             tr,
@@ -807,7 +915,7 @@ impl LogsApp {
                     |(_, l)| l.clone(),
                 )
         };
-        self.draw_dropdown_trigger(
+        Self::draw_dropdown_trigger(
             scene,
             t,
             tr,
@@ -818,10 +926,23 @@ impl LogsApp {
             self.popup == Some(Popup::Boot),
             !self.filter.boot.is_empty(),
         );
+    }
 
-        // --- Severity threshold chips ---
+    /// `draw_filter_bar`'s severity threshold chips.
+    fn draw_filter_severity_chips(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
+        let c = &theme.tokens.colors;
+        let tc = Self::theme_colors(theme);
         for (i, chip) in reg.chips.iter().enumerate() {
-            let p = Priority::ALL[i];
+            let Some(p) = Priority::ALL.get(i).copied() else {
+                continue;
+            };
             let active = p.level() <= self.filter.min_priority;
             let col = p.color(&tc);
             if active {
@@ -855,7 +976,6 @@ impl LogsApp {
 
     #[allow(clippy::too_many_arguments)]
     fn draw_dropdown_trigger(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -943,9 +1063,24 @@ impl LogsApp {
         theme: &Theme,
         reg: &Regions,
     ) {
+        Self::draw_list_frame_and_header(scene, t, tr, theme, reg);
+        if self.draw_list_empty(scene, t, tr, theme, reg) {
+            return;
+        }
+        self.draw_list_rows(scene, t, tr, theme, reg);
+        self.draw_list_scrollbar(scene, t, reg);
+    }
+
+    /// The list card background plus the TIME/LEVEL/UNIT/MESSAGE column
+    /// header row.
+    fn draw_list_frame_and_header(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
         let c = &theme.tokens.colors;
-        let tc = Self::theme_colors(theme);
-        let sel = self.effective_selected();
 
         // List frame (header + body) as one card.
         let card = Rect::new(
@@ -1038,75 +1173,105 @@ impl LogsApp {
             c.border_standard,
             1.0,
         );
+    }
 
-        // Empty state.
-        if self.filtered.is_empty() {
-            let cx = reg.list_body.center().x;
-            let cy = reg.list_body.center().y;
-            if self.entries.is_empty() {
-                // Honest zero-state: no readable journal (never the sample).
-                let title = "No journal entries";
-                let subtitle = if self.allow_live {
-                    "The systemd journal is empty or not readable from this session."
-                } else {
-                    "Run where journald is available to view live system logs."
-                };
-                let tsz = theme.tokens.typography.scale.lg;
-                let (tw, _) = tr.measure(title, tsz, None);
-                text_at(
-                    tr,
-                    scene,
-                    t,
-                    title,
-                    tsz,
-                    c.text_primary,
-                    cx - f64::from(tw) / 2.0,
-                    cy - 24.0,
-                    TextWeight::Semibold,
-                    false,
-                );
-                let ssz = theme.tokens.typography.scale.sm;
-                let (sw, _) = tr.measure(subtitle, ssz, None);
-                text_at(
-                    tr,
-                    scene,
-                    t,
-                    subtitle,
-                    ssz,
-                    theme.text_dim,
-                    cx - f64::from(sw) / 2.0,
-                    cy + 2.0,
-                    TextWeight::Regular,
-                    false,
-                );
-            } else {
-                let msg = "No entries match the current filters.";
-                let sz = theme.tokens.typography.scale.base;
-                let (mw, _) = tr.measure(msg, sz, None);
-                text_at(
-                    tr,
-                    scene,
-                    t,
-                    msg,
-                    sz,
-                    theme.text_dim,
-                    cx - f64::from(mw) / 2.0,
-                    cy - 10.0,
-                    TextWeight::Regular,
-                    false,
-                );
-            }
-            return;
+    /// Draws the "no journal entries" / "no entries match" placeholder when
+    /// there is nothing to list. Returns `true` when it drew one (the caller
+    /// must skip the row list + scrollbar in that case).
+    fn draw_list_empty(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) -> bool {
+        let c = &theme.tokens.colors;
+        if !self.filtered.is_empty() {
+            return false;
         }
+        let cx = reg.list_body.center().x;
+        let cy = reg.list_body.center().y;
+        if self.entries.is_empty() {
+            // Honest zero-state: no readable journal (never the sample).
+            let title = "No journal entries";
+            let subtitle = if self.allow_live {
+                "The systemd journal is empty or not readable from this session."
+            } else {
+                "Run where journald is available to view live system logs."
+            };
+            let tsz = theme.tokens.typography.scale.lg;
+            let (tw, _) = tr.measure(title, tsz, None);
+            text_at(
+                tr,
+                scene,
+                t,
+                title,
+                tsz,
+                c.text_primary,
+                cx - f64::from(tw) / 2.0,
+                cy - 24.0,
+                TextWeight::Semibold,
+                false,
+            );
+            let ssz = theme.tokens.typography.scale.sm;
+            let (sw, _) = tr.measure(subtitle, ssz, None);
+            text_at(
+                tr,
+                scene,
+                t,
+                subtitle,
+                ssz,
+                theme.text_dim,
+                cx - f64::from(sw) / 2.0,
+                cy + 2.0,
+                TextWeight::Regular,
+                false,
+            );
+        } else {
+            let msg = "No entries match the current filters.";
+            let sz = theme.tokens.typography.scale.base;
+            let (mw, _) = tr.measure(msg, sz, None);
+            text_at(
+                tr,
+                scene,
+                t,
+                msg,
+                sz,
+                theme.text_dim,
+                cx - f64::from(mw) / 2.0,
+                cy - 10.0,
+                TextWeight::Regular,
+                false,
+            );
+        }
+        true
+    }
 
-        // Clip + draw rows.
+    /// Clips to the list body and draws the scrolled window of visible rows.
+    fn draw_list_rows(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
+        let c = &theme.tokens.colors;
+        let tc = Self::theme_colors(theme);
+        let sel = self.effective_selected();
+
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &reg.list_body);
         let body = reg.list_body;
         let first = (f64::from(self.scroll) / ROW_H).floor().max(0.0) as usize;
         let visible = (body.height() / ROW_H).ceil() as usize + 2;
         for pos in first..(first + visible).min(self.filtered.len()) {
-            let abs = self.filtered[pos];
-            let e = &self.entries[abs];
+            let Some(&abs) = self.filtered.get(pos) else {
+                continue;
+            };
+            let Some(e) = self.entries.get(abs) else {
+                continue;
+            };
             let row_y0 = body.y0 + pos as f64 * ROW_H - f64::from(self.scroll);
             let row = Rect::new(body.x0, row_y0, body.x1, row_y0 + ROW_H);
             if row.y1 < body.y0 || row.y0 > body.y1 {
@@ -1194,8 +1359,11 @@ impl LogsApp {
             );
         }
         scene.pop_layer();
+    }
 
-        // Scrollbar.
+    /// The list body's vertical scrollbar thumb, when the content overflows.
+    fn draw_list_scrollbar(&self, scene: &mut Scene, t: Affine, reg: &Regions) {
+        let body = reg.list_body;
         let content = self.content_h();
         if content > body.height() {
             let track_x = body.x1 - 5.0;
@@ -1222,21 +1390,23 @@ impl LogsApp {
         reg: &Regions,
     ) {
         let c = &theme.tokens.colors;
-        let tc = Self::theme_colors(theme);
         let d = reg.detail;
         fill_round(scene, t, d, theme.tokens.radii.lg, c.surfaces.raised);
         stroke_round(scene, t, d, theme.tokens.radii.lg, c.border_standard, 1.0);
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &d);
-        let inner_x = d.x0 + 18.0;
-        let inner_w = d.width() - 36.0;
-        let mut y = d.y0 + 18.0;
+        let mut layout = DetailLayout {
+            inner_x: d.x0 + 18.0,
+            inner_w: d.width() - 36.0,
+            y: d.y0 + 18.0,
+            bottom: d.y1,
+        };
 
         // On narrow windows the detail is a pushed pane; draw a Back
         // affordance at the top and inset the field content beneath it.
         if reg.narrow && reg.back_btn.width() > 0.0 {
             self.draw_back_button(scene, t, tr, theme, reg.back_btn);
-            y = reg.back_btn.y1 + 14.0;
+            layout.y = reg.back_btn.y1 + 14.0;
         }
 
         let Some(abs) = self.effective_selected() else {
@@ -1249,22 +1419,51 @@ impl LogsApp {
                 msg,
                 sz,
                 theme.text_dim,
-                inner_x,
-                y.max(d.center().y),
+                layout.inner_x,
+                layout.y.max(d.center().y),
                 TextWeight::Regular,
                 false,
             );
             scene.pop_layer();
             return;
         };
-        let e = &self.entries[abs];
+        let Some(e) = self.entries.get(abs) else {
+            scene.pop_layer();
+            return;
+        };
+
+        Self::draw_detail_header(scene, t, tr, theme, &mut layout, e);
+        Self::draw_detail_fields(scene, t, tr, theme, &mut layout, e);
+
+        scene.pop_layer();
+    }
+
+    /// Badge, transport tag, title, timestamp, message and the divider that
+    /// follows it. Advances `layout.y` past everything it draws.
+    fn draw_detail_header(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        layout: &mut DetailLayout,
+        e: &LogEntry,
+    ) {
+        let c = &theme.tokens.colors;
+        let tc = Self::theme_colors(theme);
+        let inner_x = layout.inner_x;
+        let inner_w = layout.inner_w;
         let col = e.priority.color(&tc);
 
         // Priority badge pill.
         let badge_label = e.priority.long().to_uppercase();
         let bsz = theme.tokens.typography.scale.xs;
         let (blw, _) = tr.measure_weighted(&badge_label, bsz, None, TextWeight::Bold);
-        let badge = Rect::new(inner_x, y, inner_x + f64::from(blw) + 24.0, y + 22.0);
+        let badge = Rect::new(
+            inner_x,
+            layout.y,
+            inner_x + f64::from(blw) + 24.0,
+            layout.y + 22.0,
+        );
         fill_round(scene, t, badge, theme.tokens.radii.full, tint(col, 235));
         text_at(
             tr,
@@ -1293,7 +1492,7 @@ impl LogsApp {
                 true,
             );
         }
-        y = badge.y1 + 14.0;
+        layout.y = badge.y1 + 14.0;
 
         // Unit title.
         let title_sz = theme.tokens.typography.scale.lg;
@@ -1306,11 +1505,11 @@ impl LogsApp {
             title_sz,
             theme.text_primary,
             inner_x,
-            y,
+            layout.y,
             TextWeight::Semibold,
             false,
         );
-        y += f64::from(title_sz) * 1.5;
+        layout.y += f64::from(title_sz) * 1.5;
 
         // Timestamp.
         let tssz = theme.tokens.typography.scale.sm;
@@ -1322,11 +1521,11 @@ impl LogsApp {
             tssz,
             theme.text_dim,
             inner_x,
-            y,
+            layout.y,
             TextWeight::Regular,
             true,
         );
-        y += f64::from(tssz) * 1.6 + 6.0;
+        layout.y += f64::from(tssz) * 1.6 + 6.0;
 
         // Message (wrapped).
         let msz = theme.tokens.typography.scale.base;
@@ -1336,25 +1535,38 @@ impl LogsApp {
             &e.message,
             msz,
             theme.text_primary,
-            t * Affine::translate((inner_x, y)),
+            t * Affine::translate((inner_x, layout.y)),
             Some(inner_w as f32),
         );
-        y += f64::from(mh) + 14.0;
+        layout.y += f64::from(mh) + 14.0;
 
         // Divider.
         line(
             scene,
             t,
             inner_x,
-            y,
+            layout.y,
             inner_x + inner_w,
-            y,
+            layout.y,
             c.border_standard,
             1.0,
         );
-        y += 12.0;
+        layout.y += 12.0;
+    }
 
-        // Field table.
+    /// The key/value field table beneath the header, stopping once it would
+    /// run past `layout.bottom`.
+    fn draw_detail_fields(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        layout: &mut DetailLayout,
+        e: &LogEntry,
+    ) {
+        let inner_x = layout.inner_x;
+        let inner_w = layout.inner_w;
+
         let mut fields: Vec<(String, String)> = vec![
             (
                 "PRIORITY".into(),
@@ -1378,7 +1590,7 @@ impl LogsApp {
         let ksz = theme.tokens.typography.scale.xs;
         let vsz = theme.tokens.typography.scale.sm;
         for (k, v) in fields {
-            if y > d.y1 - 14.0 {
+            if layout.y > layout.bottom - 14.0 {
                 break;
             }
             if v.trim().is_empty() {
@@ -1392,7 +1604,7 @@ impl LogsApp {
                 ksz,
                 theme.text_dim,
                 inner_x,
-                y + 1.0,
+                layout.y + 1.0,
                 TextWeight::Semibold,
                 true,
             );
@@ -1405,14 +1617,12 @@ impl LogsApp {
                 vsz,
                 theme.text_primary,
                 inner_x + key_w,
-                y,
+                layout.y,
                 TextWeight::Regular,
                 false,
             );
-            y += 22.0;
+            layout.y += 22.0;
         }
-
-        scene.pop_layer();
     }
 
     /// The Back affordance at the top of the pushed detail pane (narrow
@@ -1516,6 +1726,7 @@ fn column_x(row: Rect) -> Cols {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, c: Color, w: f64) {
     scene.stroke(
         &Stroke::new(w),
@@ -1544,6 +1755,7 @@ fn contrast_on(bg: Color) -> Color {
 impl Widget for LogsApp {
     fn sync(&mut self, doc: &mut AutoCommit, root: &ObjId) {
         LogsDoc::ensure_defaults(doc, root);
+        self.search_input.sync(doc, root);
 
         // Optional live tail: throttled re-poll, never under --shots.
         if self.allow_live
@@ -1584,23 +1796,26 @@ impl Widget for LogsApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
+        let node = leaf_node(
+            taffy,
+            Style {
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),
                 },
                 flex_grow: 1.0,
                 ..Default::default()
-            })
-            .unwrap();
+            },
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -1686,13 +1901,263 @@ impl Widget for LogsApp {
             return;
         }
         let reg = self.regions();
-        let c = &theme.tokens.colors;
-        if reg.dropdown.is_empty() {
+        let Some(first) = reg.dropdown.first().map(|d| d.0) else {
+            return;
+        };
+        let Some(last) = reg.dropdown.last().map(|d| d.0) else {
+            return;
+        };
+        let panel = Rect::new(first.x0, first.y0 - 4.0, first.x1, last.y1 + 4.0);
+        Self::draw_overlay_panel_bg(scene, transform, theme, panel);
+        self.draw_overlay_rows(scene, transform, tr, theme, &reg);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if self.route_search_field(
+            event,
+            scale_factor,
+            *modifiers,
+            doc,
+            root,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
             return;
         }
-        let first = reg.dropdown.first().unwrap().0;
-        let last = reg.dropdown.last().unwrap().0;
-        let panel = Rect::new(first.x0, first.y0 - 4.0, first.x1, last.y1 + 4.0);
+
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = Point::new(position.x, position.y);
+                // Hover row tracking.
+                let reg = self.regions();
+                let prev = self.hover_row;
+                self.hover_row = self.row_at(&reg, self.cursor);
+                if self.hover_row != prev {
+                    self.dirty = true;
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let reg = self.regions();
+                if reg.list_body.contains(self.cursor) || reg.list_header.contains(self.cursor) {
+                    let dy = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => -*y * 60.0,
+                        MouseScrollDelta::PixelDelta(p) => -p.y as f32,
+                    };
+                    self.scroll += dy;
+                    self.clamp_scroll();
+                    self.dirty = true;
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.focused = true;
+                self.on_click(self.cursor, doc, root, handled);
+            }
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if key_event.state == ElementState::Pressed => {
+                self.on_key(key_event, *modifiers, doc, root, handled);
+            }
+            _ => {}
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "LogsApp"
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some("logs_app")
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn set_focus(&mut self, f: bool) {
+        if self.focused != f {
+            self.dirty = true;
+        }
+        self.focused = f;
+        if !f {
+            self.search_input.set_focus(false);
+        }
+    }
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.search_input.ime_cursor_rect()
+    }
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.search_input.ime_purpose()
+    }
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.search_input.cursor_shape(point)
+    }
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.search_input
+            .is_focused()
+            .then(|| self.search_input.accessibility())
+            .flatten()
+    }
+    fn needs_commit(&self) -> bool {
+        self.search_input.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.search_input.on_commit();
+    }
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+    fn is_layout_dirty(&self) -> bool {
+        self.dirty
+    }
+    fn needs_idle_sync(&self) -> bool {
+        self.allow_live && self.live_tail
+    }
+    fn needs_animation_frame(&self) -> bool {
+        // Keep pumping frames while the push slide eases into place, or
+        // while live tail is on.
+        self.push.is_animating() || (self.allow_live && self.live_tail)
+    }
+}
+
+impl LogsApp {
+    /// Search-field layout, focus transfer, Escape-to-clear, and routing
+    /// into the shared field (part of [`Widget::handle_event`]). Returns
+    /// whether the caller should return immediately — either because
+    /// Escape cleared the search here, or because the field consumed the
+    /// event.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event's own signature, which it routes"
+    )]
+    fn route_search_field(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let search_rect = self.regions().search;
+        self.search_input.apply_layout_external(Rect::new(
+            search_rect.x0 + 28.0,
+            search_rect.y0,
+            search_rect.x1 - 8.0,
+            search_rect.y1,
+        ));
+
+        // This field is embedded in a canvas-style parent rather than mounted
+        // as a child node, so the parent explicitly owns focus transfer while
+        // still routing every editing event through the shared text core.
+        let left_press = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        );
+        if left_press {
+            if search_rect.contains(self.cursor) {
+                self.search_input.set_focus(true);
+            } else {
+                self.search_input.set_focus(false);
+            }
+        }
+
+        // Preserve Logs' convenient type-to-filter behaviour: a printable key
+        // (or Backspace) transfers focus into the real field before routing,
+        // instead of maintaining a second append/pop editor in the app.
+        let starts_search = matches!(
+            event,
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == ElementState::Pressed
+                    && !modifiers.state().control_key()
+                    && !modifiers.state().super_key()
+                    && (matches!(key.logical_key, Key::Character(_))
+                        || matches!(key.logical_key, Key::Named(NamedKey::Backspace)))
+        );
+        if starts_search && !self.search_input.is_focused() {
+            self.search_input.set_focus(true);
+            self.search_input
+                .set_cursor_pos(self.search_input.value().len());
+        }
+
+        if self.search_input.is_focused()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { event: key, .. }
+                    if key.state == ElementState::Pressed
+                        && matches!(key.logical_key, Key::Named(NamedKey::Escape))
+            )
+        {
+            LogsDoc::search_set(doc, root, "");
+            self.search_input.set_text("");
+            self.scroll = 0.0;
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+
+        let route_to_search = self.search_input.is_focused()
+            || matches!(event, WindowEvent::CursorMoved { .. })
+            || (left_press && search_rect.contains(self.cursor));
+        if route_to_search {
+            let mut input_handled = false;
+            self.search_input.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                doc,
+                root,
+                &mut input_handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if self.search_input.take_dirty().is_some() {
+                self.scroll = 0.0;
+                self.dirty = true;
+                input_handled = true;
+            }
+            if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
+                *handled = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The dropdown panel's shadow, fill and border.
+    fn draw_overlay_panel_bg(scene: &mut Scene, transform: Affine, theme: &Theme, panel: Rect) {
+        let c = &theme.tokens.colors;
         // soft shadow
         fill_round(
             scene,
@@ -1716,7 +2181,19 @@ impl Widget for LogsApp {
             c.border_standard,
             1.0,
         );
+    }
 
+    /// Each dropdown row: hover/active tint, label and (for the active row) a
+    /// check mark.
+    fn draw_overlay_rows(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
+        let c = &theme.tokens.colors;
         let active_val = match self.popup {
             Some(Popup::Unit) => self.filter.unit.clone(),
             Some(Popup::Boot) => self.filter.boot.clone(),
@@ -1778,98 +2255,6 @@ impl Widget for LogsApp {
                 );
             }
         }
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x, position.y);
-                // Hover row tracking.
-                let reg = self.regions();
-                let prev = self.hover_row;
-                self.hover_row = self.row_at(&reg, self.cursor);
-                if self.hover_row != prev {
-                    self.dirty = true;
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let reg = self.regions();
-                if reg.list_body.contains(self.cursor) || reg.list_header.contains(self.cursor) {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => -*y * 60.0,
-                        MouseScrollDelta::PixelDelta(p) => -p.y as f32,
-                    };
-                    self.scroll += dy;
-                    self.clamp_scroll();
-                    self.dirty = true;
-                    *handled = true;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.focused = true;
-                self.on_click(self.cursor, doc, root, handled);
-            }
-            WindowEvent::KeyboardInput {
-                event: key_event, ..
-            } if key_event.state == ElementState::Pressed => {
-                self.on_key(key_event, modifiers, doc, root, handled);
-            }
-            _ => {}
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "LogsApp"
-    }
-    fn test_id(&self) -> Option<&str> {
-        Some("logs_app")
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-    fn is_focusable(&self) -> bool {
-        true
-    }
-    fn set_focus(&mut self, f: bool) {
-        if self.focused != f {
-            self.dirty = true;
-        }
-        self.focused = f;
-    }
-    fn is_focused(&self) -> bool {
-        self.focused
-    }
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.dirty
-    }
-    fn needs_idle_sync(&self) -> bool {
-        self.allow_live && self.live_tail
-    }
-    fn needs_animation_frame(&self) -> bool {
-        // Keep pumping frames while the push slide eases into place, or
-        // while live tail is on.
-        self.push.is_animating() || (self.allow_live && self.live_tail)
     }
 }
 
@@ -1933,13 +2318,14 @@ impl LogsApp {
         if reg.live_pill.contains(pt) {
             let v = !self.live_tail;
             LogsDoc::set_live_tail(doc, root, v);
-            self.last_poll = Instant::now().checked_sub(POLL_INTERVAL).unwrap(); // force an immediate poll
+            self.last_poll = force_immediate_poll_at();
             self.dirty = true;
             *handled = true;
             return;
         }
 
-        // 3. Search box → just take focus (typing handled in on_key).
+        // 3. Search box → focus is transferred to the embedded TextInput by
+        // handle_event; this keeps the region consumed by the filter bar.
         if reg.search.contains(pt) {
             self.focused = true;
             *handled = true;
@@ -1971,8 +2357,10 @@ impl LogsApp {
         // 5. Severity chips → set threshold.
         for (i, chip) in reg.chips.iter().enumerate() {
             if chip.contains(pt) {
-                let level = Priority::ALL[i].level();
-                LogsDoc::set_min_priority(doc, root, level);
+                let Some(priority) = Priority::ALL.get(i) else {
+                    continue;
+                };
+                LogsDoc::set_min_priority(doc, root, priority.level());
                 self.scroll = 0.0;
                 self.dirty = true;
                 *handled = true;
@@ -2003,7 +2391,7 @@ impl LogsApp {
     fn on_key(
         &mut self,
         key_event: &winit::event::KeyEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         doc: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
@@ -2049,24 +2437,13 @@ impl LogsApp {
                 self.dirty = true;
                 *handled = true;
             }
-            Key::Named(NamedKey::Backspace) => {
-                LogsDoc::search_backspace(doc, root);
-                self.scroll = 0.0;
-                self.dirty = true;
-                *handled = true;
-            }
-            Key::Named(NamedKey::Space) => {
-                LogsDoc::search_push(doc, root, " ");
-                self.dirty = true;
-                *handled = true;
-            }
             Key::Character(s) => {
                 if ctrl {
                     match s.as_str() {
                         "l" | "L" => {
                             let v = !self.live_tail;
                             LogsDoc::set_live_tail(doc, root, v);
-                            self.last_poll = Instant::now().checked_sub(POLL_INTERVAL).unwrap();
+                            self.last_poll = force_immediate_poll_at();
                             *handled = true;
                         }
                         "r" | "R" => {
@@ -2076,16 +2453,6 @@ impl LogsApp {
                         }
                         _ => {}
                     }
-                } else {
-                    // Append printable characters to the search query.
-                    for ch in s.chars() {
-                        if !ch.is_control() {
-                            let mut buf = [0u8; 4];
-                            LogsDoc::search_push(doc, root, ch.encode_utf8(&mut buf));
-                        }
-                    }
-                    self.scroll = 0.0;
-                    *handled = true;
                 }
                 self.dirty = true;
             }
@@ -2142,6 +2509,7 @@ mod tests {
         let (mut app, mut doc) = synced_app();
         LogsDoc::search_set(&mut doc, &ROOT, "iroh");
         app.sync(&mut doc, &ROOT);
+        assert_eq!(app.search_input.value(), "iroh");
         assert!(!app.filtered.is_empty());
         for &i in &app.filtered {
             let e = &app.entries[i];

@@ -121,7 +121,7 @@ pub fn compass(deg: f64) -> &'static str {
         "NW", "NNW",
     ];
     let idx = (((deg % 360.0) + 360.0) % 360.0 / 22.5).round() as usize % 16;
-    DIRS[idx]
+    DIRS.get(idx).copied().unwrap_or("N")
 }
 
 #[cfg(test)]

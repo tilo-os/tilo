@@ -11,6 +11,15 @@
 //! `#[ignore]`d to keep CI quiet; enable with `--include-ignored`.
 
 #![cfg(feature = "vaapi")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 
 use shell::collab::encoder::{Codec, EncoderInit, EncoderKind, FrameInput, build, probe, vaapi};
 use shell::collab::flatpak_share::SharedFlatpakSession;
@@ -136,7 +145,7 @@ fn shared_flatpak_session_rolls_up_vaapi() {
         hdr: None,
     };
     let session =
-        SharedFlatpakSession::start(0xBBBB, "org.gimp.GIMP", 42, 640, 480, cfg).expect("session");
+        SharedFlatpakSession::start(0xBBBB, "org.gimp.GIMP", 42, 640, 480, &cfg).expect("session");
     let (chosen_probe, _) = probe(Codec::H264, Some(EncoderChoice::Vaapi));
     assert_eq!(chosen_probe, EncoderKind::VaApi);
     assert_eq!(session.chosen_encoder(), EncoderKind::VaApi);

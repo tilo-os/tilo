@@ -6,6 +6,15 @@
 //! `LD_LIBRARY_PATH` pointed at the ffmpeg libs.
 
 #![cfg(feature = "nvenc")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 
 use shell::collab::encoder::{Codec, EncoderInit, EncoderKind, FrameInput, build, nvenc, probe};
 use shell::collab::flatpak_share::SharedFlatpakSession;
@@ -187,7 +196,7 @@ fn shared_flatpak_session_rolls_up_nvenc() {
     };
     // 1280x720 for the same driver-config reason as above.
     let session =
-        SharedFlatpakSession::start(0xCCCC, "org.gimp.GIMP", 42, 1280, 720, cfg).expect("session");
+        SharedFlatpakSession::start(0xCCCC, "org.gimp.GIMP", 42, 1280, 720, &cfg).expect("session");
     let (chosen_probe, _) = probe(Codec::H264, Some(EncoderChoice::Nvenc));
     assert_eq!(chosen_probe, EncoderKind::NvEnc);
     assert_eq!(session.chosen_encoder(), EncoderKind::NvEnc);

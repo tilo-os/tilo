@@ -74,6 +74,10 @@ impl From<BufferAccessError> for ReadbackError {
 /// without a live `Display`. Wayland byte order is little-endian with the format name reading
 /// high-order byte first: `Argb8888` on the wire is `[B, G, R, A]`, `Xrgb8888` is `[B, G, R, X]`
 /// with `X` forced to `0xFF` so the H.264 alpha-compare assertion stays well-defined.
+///
+/// # Errors
+/// - [`ReadbackError::InvalidDimensions`] — `src.len() != width * 4`.
+/// - [`ReadbackError::UnsupportedFormat`] — `format` isn't `Argb8888` or `Xrgb8888`.
 pub fn swizzle_row_to_rgba(
     format: wl_shm::Format,
     src: &[u8],
@@ -90,10 +94,10 @@ pub fn swizzle_row_to_rgba(
              refusing to process the row"
         );
         return Err(ReadbackError::InvalidDimensions {
-            width: width as i32,
+            width: i32::try_from(width).unwrap_or(i32::MAX),
             // height/stride aren't known here — surface the mismatched row length via `stride` so logs are useful.
             height: 1,
-            stride: src.len() as i32,
+            stride: i32::try_from(src.len()).unwrap_or(i32::MAX),
         });
     }
     // Keep the debug-loud-failure mode for callers passing the precondition correctly: an internal bug that violates the contract should still panic in dev builds.
@@ -102,19 +106,25 @@ pub fn swizzle_row_to_rgba(
         wl_shm::Format::Argb8888 => {
             // [B, G, R, A] -> [R, G, B, A]
             for px in src.chunks_exact(4) {
-                out.push(px[2]);
-                out.push(px[1]);
-                out.push(px[0]);
-                out.push(px[3]);
+                let &[b, g, r, a] = px else {
+                    continue; // chunks_exact(4) guarantees len == 4
+                };
+                out.push(r);
+                out.push(g);
+                out.push(b);
+                out.push(a);
             }
             Ok(())
         }
         wl_shm::Format::Xrgb8888 => {
             // [B, G, R, X] -> [R, G, B, 0xFF]
             for px in src.chunks_exact(4) {
-                out.push(px[2]);
-                out.push(px[1]);
-                out.push(px[0]);
+                let &[b, g, r, _x] = px else {
+                    continue; // chunks_exact(4) guarantees len == 4
+                };
+                out.push(r);
+                out.push(g);
+                out.push(b);
                 out.push(0xFF);
             }
             Ok(())
@@ -149,9 +159,13 @@ pub fn buffer_to_rgba(buffer: &WlBuffer, out: &mut Vec<u8>) -> Result<(u32, u32)
                 });
             }
             // Also reject a declared (offset + stride*height) exceeding the pool's length — how a hostile client could read past the mmap.
-            let offset = data.offset as usize;
-            let stride_u = stride as usize;
-            let height_u = height as usize;
+            // A negative offset/stride/height can't happen here (all rejected above as <= 0),
+            // so try_from only ever falls back on paper; the fallback still routes into the
+            // same bounds-check-then-error path rather than assuming success.
+            let offset = usize::try_from(data.offset).unwrap_or(usize::MAX);
+            let stride_u = usize::try_from(stride).unwrap_or(usize::MAX);
+            let height_u = usize::try_from(height).unwrap_or(usize::MAX);
+            let width_u = usize::try_from(width).unwrap_or(usize::MAX);
             let needed = offset
                 .checked_add(stride_u.saturating_mul(height_u))
                 .ok_or(ReadbackError::InvalidDimensions {
@@ -173,18 +187,34 @@ pub fn buffer_to_rgba(buffer: &WlBuffer, out: &mut Vec<u8>) -> Result<(u32, u32)
             // `from_raw_parts` does not retain the slice past the
             // closure's lifetime.
             let pool: &[u8] = unsafe { std::slice::from_raw_parts(ptr, len) };
-            let buf_bytes = &pool[offset..needed];
+            let buf_bytes = pool
+                .get(offset..needed)
+                .ok_or(ReadbackError::InvalidDimensions {
+                    width,
+                    height,
+                    stride,
+                })?;
 
             out.clear();
-            out.reserve((width as usize) * (height as usize) * 4);
-            let width_u = width as usize;
-            let row_bytes = width_u * 4;
+            out.reserve(width_u.saturating_mul(height_u).saturating_mul(4));
+            let row_bytes = width_u.saturating_mul(4);
             for row in 0..height_u {
-                let row_start = row * stride_u;
-                let src_row = &buf_bytes[row_start..row_start + row_bytes];
+                let row_start = row.saturating_mul(stride_u);
+                let row_end = row_start.saturating_add(row_bytes);
+                let src_row =
+                    buf_bytes
+                        .get(row_start..row_end)
+                        .ok_or(ReadbackError::InvalidDimensions {
+                            width,
+                            height,
+                            stride,
+                        })?;
                 swizzle_row_to_rgba(data.format, src_row, width_u, out)?;
             }
-            Ok((width as u32, height as u32))
+            Ok((
+                u32::try_from(width).unwrap_or(u32::MAX),
+                u32::try_from(height).unwrap_or(u32::MAX),
+            ))
         },
     )?;
     result
@@ -250,6 +280,9 @@ impl SurfaceTracker {
     }
 
     /// Pull the latest `wl_buffer` for `surface_id` and stage its RGBA bytes; idempotent across re-commits with the same dimensions. On error the slot is left empty — the caller decides whether to log+drop or retry.
+    ///
+    /// # Errors
+    /// Propagates [`buffer_to_rgba`]'s errors — see its `# Errors` section.
     #[tracing::instrument(level = "trace", skip(self, buffer), fields(surface_id))]
     pub fn on_commit(
         &mut self,
@@ -448,12 +481,13 @@ mod tests {
 
     /// Test fixture: deterministic single-row Argb8888 buffer exercising the byte swizzle without client-server plumbing.
     fn argb_row(width: usize) -> Vec<u8> {
-        let mut out = Vec::with_capacity(width * 4);
+        let mut out = Vec::with_capacity(width.saturating_mul(4));
         for x in 0..width {
             // Wire bytes [B, G, R, A]: distinguishable per-channel values so a missed swizzle (e.g. R/B swap) shows up immediately.
-            out.push((x as u8).wrapping_mul(3)); // B
-            out.push((x as u8).wrapping_mul(5)); // G
-            out.push((x as u8).wrapping_mul(7)); // R
+            let byte = u8::try_from(x % 256).unwrap_or(0);
+            out.push(byte.wrapping_mul(3)); // B
+            out.push(byte.wrapping_mul(5)); // G
+            out.push(byte.wrapping_mul(7)); // R
             out.push(0xC0); // A
         }
         out

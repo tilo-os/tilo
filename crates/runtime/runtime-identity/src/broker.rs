@@ -40,14 +40,27 @@ fn write_frame(stream: &mut UnixStream, status: u8, payload: &[u8]) -> io::Resul
         ));
     }
     stream.write_all(&[status])?;
-    stream.write_all(&(payload.len() as u32).to_be_bytes())?;
+    // Bounded by the MAX_MESSAGE check just above.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "payload.len() is checked <= MAX_MESSAGE just above"
+    )]
+    let len = payload.len() as u32;
+    stream.write_all(&len.to_be_bytes())?;
     stream.write_all(payload)
 }
 
 fn read_frame(stream: &mut UnixStream) -> io::Result<(u8, Vec<u8>)> {
     let mut header = [0u8; 5];
     stream.read_exact(&mut header)?;
-    let len = u32::from_be_bytes(header[1..5].try_into().expect("fixed header")) as usize;
+    // `header` is a fixed 5-byte array, so this 4-byte slice always converts.
+    let Ok(len_bytes) = header[1..5].try_into() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "broker frame header malformed",
+        ));
+    };
+    let len = u32::from_be_bytes(len_bytes) as usize;
     if len > MAX_MESSAGE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -60,6 +73,15 @@ fn read_frame(stream: &mut UnixStream) -> io::Result<(u8, Vec<u8>)> {
 }
 
 /// Serve one application's inherited connection until it exits or closes it.
+///
+/// # Errors
+///
+/// Returns an error if a frame can't be read or written, other than the
+/// peer closing the connection (which ends the loop with `Ok(())`).
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "public API also called with an owned SigningIdentity from crates/packaging/launcher, outside this pass's scope to update"
+)]
 pub fn serve(mut stream: UnixStream, identity: SigningIdentity) -> io::Result<()> {
     loop {
         let (op, payload) = match read_frame(&mut stream) {
@@ -120,9 +142,8 @@ pub(crate) fn connect_from_env() -> Result<SigningIdentity, NotAvailable> {
     // SAFETY: qOS launcher transfers sole ownership of this inherited fd to
     // the app. load() consumes it once, matching runtime-portal's contract.
     let mut stream = unsafe { UnixStream::from_raw_fd(raw) };
-    write_frame(&mut stream, OP_METADATA, &[]).map_err(|e| NotAvailable::ConnectionFailed(e))?;
-    let (status, payload) =
-        read_frame(&mut stream).map_err(|e| NotAvailable::ConnectionFailed(e))?;
+    write_frame(&mut stream, OP_METADATA, &[]).map_err(NotAvailable::ConnectionFailed)?;
+    let (status, payload) = read_frame(&mut stream).map_err(NotAvailable::ConnectionFailed)?;
     if status != 0 {
         return Err(NotAvailable::ConnectionFailed(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -136,6 +157,8 @@ pub(crate) fn connect_from_env() -> Result<SigningIdentity, NotAvailable> {
         display_name: metadata.display_name,
         avatar_color: metadata.avatar_color,
         group_public_key: metadata.group_public_key,
+        signing_public_key: metadata.group_public_key,
+        device_certificate: None,
         threshold: metadata.threshold,
         total_shares: metadata.total_shares,
         share_index: metadata.share_index,
@@ -209,8 +232,10 @@ mod tests {
     fn oversized_request_is_rejected_before_allocation() {
         let (mut left, mut right) = UnixStream::pair().unwrap();
         left.write_all(&[OP_SIGN]).unwrap();
-        left.write_all(&((MAX_MESSAGE as u32) + 1).to_be_bytes())
-            .unwrap();
+        left.write_all(
+            &(u32::try_from(MAX_MESSAGE).expect("MAX_MESSAGE fits in u32") + 1).to_be_bytes(),
+        )
+        .unwrap();
         assert_eq!(
             read_frame(&mut right).unwrap_err().kind(),
             io::ErrorKind::InvalidData
@@ -238,7 +263,7 @@ mod tests {
         let connected = connect_from_env().unwrap();
         match connect_from_env() {
             Err(NotAvailable::ConnectionFailed(error)) => {
-                assert_eq!(error.kind(), io::ErrorKind::AlreadyExists)
+                assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
             }
             other => panic!("second claim did not fail safely: {other:?}"),
         }

@@ -30,6 +30,10 @@ impl TextEdit {
 
 /// Prefer [`put_text_diffed`] when you have a parent object + key and want the
 /// `Text` created on first use.
+///
+/// # Panics
+///
+/// Panics if `text_id` does not resolve to a `Text` object in the document.
 pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> TextEdit {
     let cur = doc.text(text_id).unwrap_or_default();
     if cur == new {
@@ -42,25 +46,46 @@ pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> T
     let cur_chars: Vec<char> = cur.chars().collect();
     let new_chars: Vec<char> = new.chars().collect();
 
-    let mut p = 0;
-    while p < cur_chars.len() && p < new_chars.len() && cur_chars[p] == new_chars[p] {
-        p += 1;
-    }
-    // Suffix search bounds exclude the prefix so the two spans can't overlap.
-    let mut s = 0;
-    while s < cur_chars.len() - p
-        && s < new_chars.len() - p
-        && cur_chars[cur_chars.len() - 1 - s] == new_chars[new_chars.len() - 1 - s]
-    {
-        s += 1;
-    }
+    let prefix_len = cur_chars
+        .iter()
+        .zip(new_chars.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    // Suffix search bounds exclude the prefix so the two spans can't
+    // overlap. `prefix_len` is at most `min(cur_chars.len(),
+    // new_chars.len())` by construction above, so both tails are `Some`.
+    let cur_tail = cur_chars.get(prefix_len..).unwrap_or(&[]);
+    let new_tail = new_chars.get(prefix_len..).unwrap_or(&[]);
+    let suffix_len = cur_tail
+        .iter()
+        .rev()
+        .zip(new_tail.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
 
-    let del = cur_chars.len() - p - s;
-    let ins: String = new_chars[p..new_chars.len() - s].iter().collect();
-    let ins_len = new_chars.len() - s - p;
-    let _ = doc.splice_text(text_id, p, del as isize, &ins);
+    // `suffix_len` never exceeds either tail's length, so none of these underflow.
+    let del = cur_chars
+        .len()
+        .saturating_sub(prefix_len)
+        .saturating_sub(suffix_len);
+    let ins_end = new_chars.len().saturating_sub(suffix_len);
+    let ins: String = new_chars
+        .get(prefix_len..ins_end)
+        .unwrap_or(&[])
+        .iter()
+        .collect();
+    let ins_len = ins_end.saturating_sub(prefix_len);
+    // `del` is bounded by `Vec<char>::len()`, which the global allocator
+    // already caps at `isize::MAX` bytes (4 bytes per `char`), so it always
+    // fits `isize` on every real target.
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "del is bounded by Vec<char>::len(), which the allocator already caps under isize::MAX"
+    )]
+    let del_isize = del as isize;
+    let _ = doc.splice_text(text_id, prefix_len, del_isize, &ins);
     TextEdit {
-        pos: p,
+        pos: prefix_len,
         del,
         ins: ins_len,
     }
@@ -68,6 +93,11 @@ pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> T
 
 /// Creates the `Text` object on first use (inserting the whole value);
 /// subsequent calls splice only the diff.
+///
+/// `put_object` only fails here if `obj` was concurrently deleted (or
+/// retyped) by another collaborator between the read and the write; there is
+/// no longer a place to put the text, so this reports the no-op edit rather
+/// than panicking.
 pub fn put_text_diffed<P: Into<Prop>>(
     doc: &mut AutoCommit,
     obj: &ObjId,
@@ -77,9 +107,16 @@ pub fn put_text_diffed<P: Into<Prop>>(
     let prop = key.into();
     let tid = match doc.get(obj, prop.clone()) {
         Ok(Some((Value::Object(ObjType::Text), id))) => id,
-        _ => doc
-            .put_object(obj, prop, ObjType::Text)
-            .expect("put_object text"),
+        _ => match doc.put_object(obj, prop, ObjType::Text) {
+            Ok(id) => id,
+            Err(_) => {
+                return TextEdit {
+                    pos: 0,
+                    del: 0,
+                    ins: 0,
+                };
+            }
+        },
     };
     splice_text_diffed(doc, &tid, new)
 }
@@ -267,7 +304,7 @@ mod tests {
         );
         let got = match doc.get(&ROOT, "n").unwrap().unwrap().0 {
             Value::Scalar(v) => v.to_i64(),
-            _ => None,
+            Value::Object(_) => None,
         };
         assert_eq!(got, Some(2));
     }

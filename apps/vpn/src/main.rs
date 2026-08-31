@@ -15,25 +15,40 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "must match ui::launch::ShotFactory's fn(&LaunchArgs) -> Result<..> signature"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(if args.scenario.as_deref() == Some("confirm") {
-        vpn::app_root_demo_confirm()
-    } else if std::env::var("QOS_VPN_SAMPLE").as_deref() == Ok("1") {
-        vpn::app_root_demo()
-    } else {
-        vpn::app_root()
+    Ok(match args.scenario.as_deref() {
+        Some("confirm") => vpn::app_root_demo_confirm(),
+        Some("add") => vpn::app_root_demo_add(),
+        _ if std::env::var("QOS_VPN_SAMPLE").as_deref() == Ok("1") => vpn::app_root_demo(),
+        _ => vpn::app_root(),
     })
 }
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.vpn", vpn::app_root)
+        &LaunchSpec::new("dev.qos.vpn", vpn::app_root)
             .shot_root(shot_root)
-            .scenarios(&["confirm"])
+            .scenarios(&["confirm", "add"])
             .configure_app(|app| vpn::actions::register(app.action_registry_mut())),
-    )
+    );
 }

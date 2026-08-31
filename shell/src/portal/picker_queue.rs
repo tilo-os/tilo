@@ -114,6 +114,7 @@ impl PickerScope {
     ///
     /// Directories are added as roots; a grant on a single *file* adds its
     /// parent so the file is visible in a listing, but the grant itself still only covers the file.
+    #[must_use]
     pub fn with_granted_paths<I: IntoIterator<Item = PathBuf>>(mut self, granted: I) -> Self {
         for path in granted {
             let root = if path.is_dir() {

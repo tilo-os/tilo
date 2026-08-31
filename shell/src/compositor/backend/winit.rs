@@ -104,6 +104,11 @@ struct RenderState {
 impl WinitBackend {
     /// Build the event loop + initial state; the window is created lazily
     /// on the first `resumed` callback.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if winit fails to create the platform event loop
+    /// (e.g. no display connection available).
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let event_loop = EventLoop::new()?;
         let outputs = vec![Output::new(OutputId(0), initial_size(), 1.0)];
@@ -132,7 +137,12 @@ impl WinitBackend {
     /// and falls back to lazy init on the first `poll_events`, rather than
     /// hanging the compositor at startup.
     fn pump_until_resumed(&mut self) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        // `checked_add` sidesteps a theoretical `Instant` overflow (would
+        // need centuries of uptime); falling back to "now" just makes the
+        // bounded wait below a no-op instead of panicking.
+        let deadline = std::time::Instant::now()
+            .checked_add(Duration::from_secs(2))
+            .unwrap_or_else(std::time::Instant::now);
         while self.inner.window.is_none() && std::time::Instant::now() < deadline {
             let status = self
                 .event_loop
@@ -177,7 +187,16 @@ impl WinitPresenter {
         let render = &mut self.render;
         let width = render.surface.config.width;
         let height = render.surface.config.height;
-        let device_handle = &render.render_cx.devices[render.surface.dev_id];
+        // `dev_id` is minted by `RenderContext::create_surface` alongside
+        // this very surface, so a miss here would mean device state was
+        // dropped out from under us — skip the frame rather than panic.
+        let Some(device_handle) = render.render_cx.devices.get(render.surface.dev_id) else {
+            eprintln!(
+                "nirios compositor: render_and_present: no device handle for dev_id {}",
+                render.surface.dev_id
+            );
+            return;
+        };
 
         // vello 0.5 removed `render_to_surface`; render into the surface's
         // target_view, blit via `TextureBlitter`, then present.
@@ -364,6 +383,12 @@ impl ApplicationHandler for Inner {
             }
         };
         let size = window.inner_size();
+        // A UI scale factor needs nowhere near f64's precision; the lossy
+        // cast is intentional, not a truncation bug.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "monitor scale factor; f32 precision is ample for a UI scale value"
+        )]
         let scale = window.scale_factor() as f32;
 
         let mut render_cx = RenderContext::new();
@@ -388,7 +413,16 @@ impl ApplicationHandler for Inner {
                 return;
             }
         };
-        let device_handle = &render_cx.devices[surface.dev_id];
+        // `dev_id` is minted by `create_surface` just above, alongside this
+        // very surface — a miss here means device state vanished under us.
+        let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
+            eprintln!(
+                "nirios compositor: resumed: no device handle for dev_id {}",
+                surface.dev_id
+            );
+            event_loop.exit();
+            return;
+        };
         let renderer = match Renderer::new(
             &device_handle.device,
             RendererOptions {
@@ -442,10 +476,23 @@ impl ApplicationHandler for Inner {
                 // if a frame is in flight, so bail out on no-op resizes.
                 // Scale is compared too — same pixel size at a new scale
                 // factor is a real change.
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "monitor scale factor; f32 precision is ample for a UI scale value"
+                )]
                 let incoming_scale = self
                     .window
                     .as_ref()
                     .map_or(1.0, |w| w.scale_factor() as f32);
+                // Exact equality is intentional: both `o.scale` and
+                // `incoming_scale` come from the identical
+                // `scale_factor() as f32` conversion, so an unchanged
+                // scale compares bit-for-bit equal. An epsilon here would
+                // risk treating a real (if tiny) scale change as a no-op.
+                #[allow(
+                    clippy::float_cmp,
+                    reason = "both sides are `scale_factor() as f32`; exact equality is the correct no-op check"
+                )]
                 if self.outputs.first().is_some_and(|o| {
                     o.size == (size.width, size.height) && o.scale == incoming_scale
                 }) {

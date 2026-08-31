@@ -3,6 +3,16 @@
 //! yesterday to still verify after any client re-encodes the
 //! entry.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use registry_types::{

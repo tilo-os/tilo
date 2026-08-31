@@ -4,8 +4,19 @@
 //! model, serialized back, and reopened — proving the model is the source of truth
 //! and that **formulas are preserved, not flattened to their cached value**.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use qdoc::sheet::snapshot::CellType;
 use qdoc::{CellInput, OdsCodec, SheetProvider, Workbook, WorkbookSnapshot, XlsxCodec};
+use std::fmt::Write as _;
 use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
@@ -13,6 +24,10 @@ use zip::{CompressionMethod, ZipWriter};
 // ---- ZIP helpers -----------------------------------------------------------
 
 /// Build a ZIP (deflated) from `(name, bytes)` entries — a genuine OPC/ODF package.
+#[allow(
+    clippy::unwrap_used,
+    reason = "test fixture builder: a failure here means the test infra itself is broken, not the code under test"
+)]
 fn zip_of(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
     let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
     let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -23,6 +38,10 @@ fn zip_of(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
     zw.finish().unwrap().into_inner()
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "test fixture helper: a failure here is a broken fixture, and the message says so"
+)]
 fn imp(codec: &dyn SheetProvider, bytes: &[u8]) -> Workbook {
     let mut wb = Workbook::new();
     codec
@@ -85,7 +104,12 @@ fn sample_ods() -> Vec<u8> {
 
 /// The invariant both fixtures encode: two sheets (Budget, Data), a number, an
 /// inline/plain string, and TWO formulas whose sources survive verbatim.
-fn assert_sample(snap: &WorkbookSnapshot, fmt: &str, formula_a2: &str, formula_c1: &str) {
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "test assertion helper: a panic here means a fixture bug, and the message is the fixture's context"
+)]
+fn assert_sample(snap: &WorkbookSnapshot, fmt: &str, a2_formula: &str, formula_c1: &str) {
     let names: Vec<&str> = snap.sheets.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(
         names,
@@ -111,7 +135,7 @@ fn assert_sample(snap: &WorkbookSnapshot, fmt: &str, formula_a2: &str, formula_c
     let a2 = budget.cell("A2").unwrap();
     assert_eq!(
         a2.formula.as_deref(),
-        Some(formula_a2),
+        Some(a2_formula),
         "{fmt}: A2 formula preserved (not flattened)"
     );
     assert_eq!(a2.value, "20", "{fmt}: A2 cached result");
@@ -294,7 +318,6 @@ fn large_workbook_parse_and_serialize_is_fast() {
     const SHEETS: usize = 4;
     const ROWS: u32 = 50;
     let mut wb = Workbook::new();
-    let mut ids = Vec::new();
     for s in 0..SHEETS {
         let id = wb.add_sheet(&format!("Sheet{s}"));
         for r in 1..=ROWS {
@@ -306,9 +329,8 @@ fn large_workbook_parse_and_serialize_is_fast() {
                 CellInput::formula(format!("B{r}+{r}"), format!("{}", r + 1), CellType::Number),
             );
         }
-        ids.push(id);
     }
-    let total = (SHEETS as u32 * ROWS) as usize;
+    let total = SHEETS.saturating_mul(usize::try_from(ROWS).unwrap_or(usize::MAX));
     assert_eq!(
         wb.materialize()
             .sheets
@@ -352,10 +374,13 @@ fn large_workbook_parse_and_serialize_is_fast() {
             "{name}: formula preserved end-to-end"
         );
 
-        report.push_str(&format!(
-            "  {name:>4}: export {export_ms:8.1} ms, reimport {import_ms:8.1} ms, {:8.1} KiB\n",
-            bytes.len() as f64 / 1024.0
-        ));
+        // Display-only byte count; a test workbook is nowhere near f64's exact-integer range.
+        #[allow(clippy::cast_precision_loss)]
+        let kib = bytes.len() as f64 / 1024.0;
+        let _ = writeln!(
+            report,
+            "  {name:>4}: export {export_ms:8.1} ms, reimport {import_ms:8.1} ms, {kib:8.1} KiB"
+        );
         // Wall-clock is release-gated: a cell is an automerge sub-map, so building the
         // grid is bounded by automerge-0.8's inherent O(n^2) object creation in a debug
         // build, not by the codec. Cell/type/formula preservation above is asserted in

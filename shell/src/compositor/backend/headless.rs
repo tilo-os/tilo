@@ -55,6 +55,12 @@ impl HeadlessBackend {
     /// returns `Err` (rather than panics) on machines without llvmpipe
     /// or another suitable adapter so the binary entry point can
     /// surface a friendly error instead of dying at the panic site.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `width` or `height` is `0`, or if
+    /// [`OffscreenRenderer::try_new`] fails to acquire a wgpu adapter
+    /// (no llvmpipe or other suitable software/hardware adapter available).
     pub fn new(width: u32, height: u32) -> Result<Self, Box<dyn std::error::Error>> {
         if width == 0 || height == 0 {
             return Err(format!(

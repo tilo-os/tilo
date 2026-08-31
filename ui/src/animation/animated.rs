@@ -5,6 +5,7 @@ use crate::color_compat::ColorCompat;
 use std::time::{Duration, Instant};
 
 pub trait Lerp {
+    #[must_use]
     fn lerp(self, other: Self, t: f32) -> Self;
 }
 
@@ -25,7 +26,15 @@ impl Lerp for vello::peniko::Color {
         let lerp_u8 = |a: u8, b: u8, t: f32| -> u8 {
             let a = f32::from(a);
             let b = f32::from(b);
-            (a + (b - a) * t).round().clamp(0.0, 255.0) as u8
+            let v = (a + (b - a) * t).round().clamp(0.0, 255.0);
+            // Clamped to `0.0..=255.0` just above, so this always fits `u8` exactly.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "v is clamped to 0.0..=255.0 just above, so it always fits u8 exactly"
+            )]
+            let result = v as u8;
+            result
         };
         vello::peniko::Color::from_rgba8(
             lerp_u8(self.r(), other.r(), t),
@@ -79,6 +88,12 @@ impl Curve {
 /// Solves `m * x'' + c * x' + k * x = k` with `x(0) = 0`, `x'(0) = 0`, so
 /// the position approaches `1.0` as `t -> infinity`. `t` is the `0..1`
 /// duration ratio.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "m/c/k/t/s mirror the differential equation spelled out in the doc \
+              comment above; naming them mass/damping/stiffness/time/aux would \
+              just make the formula below harder to check against a textbook"
+)]
 fn spring_unit_step(stiffness: f32, damping: f32, mass: f32, t: f32) -> f32 {
     let m = mass.max(1e-4);
     let k = stiffness.max(0.0);
@@ -125,7 +140,14 @@ fn spring_unit_step(stiffness: f32, damping: f32, mass: f32, t: f32) -> f32 {
 /// Delegates to [`Curve::EaseOut`] so there is exactly one home for the
 /// formula — retune it there and every fade/slide/spawn/snap follows.
 pub fn ease_out(t: f64) -> f64 {
-    f64::from(Curve::EaseOut.apply(t as f32))
+    // `Curve` does all its arithmetic at f32 precision; a normalized 0..1
+    // duration ratio loses nothing meaningful narrowing to that precision.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "Curve operates at f32 precision throughout; a 0..1 ratio has nothing to lose narrowing to it"
+    )]
+    let t32 = t as f32;
+    f64::from(Curve::EaseOut.apply(t32))
 }
 
 /// A driver that interpolates `from -> to` over `duration` using `curve`,
@@ -370,7 +392,10 @@ mod tests {
             Duration::from_millis(100),
             Curve::Linear,
         );
-        assert_eq!(a.current(now - Duration::from_millis(10)), 0.0);
+        assert_eq!(
+            a.current(now.checked_sub(Duration::from_millis(10)).unwrap()),
+            0.0
+        );
         assert_eq!(a.current(now + Duration::from_millis(200)), 100.0);
     }
 
@@ -396,7 +421,7 @@ mod tests {
         assert!((a.raw_t(now + Duration::from_millis(50)) - 0.5).abs() < 0.01);
         let over = a.raw_t(now + Duration::from_millis(300));
         assert!(over > 2.5 && over < 3.5, "raw_t should overshoot: {over}");
-        let under = a.raw_t(now - Duration::from_millis(50));
+        let under = a.raw_t(now.checked_sub(Duration::from_millis(50)).unwrap());
         assert!(
             under < -0.4 && under > -0.6,
             "raw_t should be negative: {under}"
@@ -409,7 +434,10 @@ mod tests {
         let a = Animated::starting_at(0.0_f32, 1.0, now, Duration::ZERO, Curve::Linear);
         assert!(a.done(now));
         assert_eq!(a.current(now), 1.0);
-        assert_eq!(a.current(now - Duration::from_millis(1)), 0.0);
+        assert_eq!(
+            a.current(now.checked_sub(Duration::from_millis(1)).unwrap()),
+            0.0
+        );
     }
 
     #[test]
@@ -494,11 +522,11 @@ mod tests {
     #[test]
     fn transition_reversal_retargets_from_current_value() {
         let mut t = Transition::closed();
-        t.set_open(true, Duration::from_millis(1000), Curve::Linear);
+        t.set_open(true, Duration::from_secs(1), Curve::Linear);
         // Can't advance wall-clock precisely without sleeping, so assert the
         // structural contract: after a reversal it's still visible
         // (mid-flight, not popped to 0).
-        t.set_open(false, Duration::from_millis(1000), Curve::Linear);
+        t.set_open(false, Duration::from_secs(1), Curve::Linear);
         assert!(!t.is_open());
         assert!(t.is_visible(Instant::now()));
     }

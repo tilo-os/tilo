@@ -17,6 +17,16 @@
 //! cargo test -p shell --test session_lock_e2e -- --ignored --test-threads 1
 //! ```
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -38,7 +48,8 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         .join("shell");
     assert!(
         binary.exists(),
-        "expected the compositor binary at {binary:?}; run `cargo build -p shell` first"
+        "expected the compositor binary at {}; run `cargo build -p shell` first",
+        binary.display()
     );
 
     let mut child = Command::new(&binary)
@@ -64,14 +75,14 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
-                Ok(0) => return,
+                // EOF (child exited) or a read error both end the drain.
+                Ok(0) | Err(_) => return,
                 Ok(_) => {
                     if !signalled && line.contains("test_control listening on") {
                         let _ = tx.send(());
                         signalled = true;
                     }
                 }
-                Err(_) => return,
             }
         }
     });
@@ -82,9 +93,8 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
-                Ok(0) => return,
+                Ok(0) | Err(_) => return,
                 Ok(_) => {}
-                Err(_) => return,
             }
         }
     });
@@ -93,6 +103,7 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         (child, socket_path)
     } else {
         let _ = child.kill();
+        let _ = child.wait();
         panic!("timed out waiting for the control socket to listen");
     }
 }
@@ -119,7 +130,9 @@ fn is_locked(stream: &mut UnixStream) -> bool {
 }
 
 fn poll_until_locked(stream: &mut UnixStream, want: bool, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
     loop {
         if is_locked(stream) == want {
             return true;

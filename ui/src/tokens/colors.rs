@@ -21,6 +21,11 @@ pub const PERMISSION_DENIED_SCRIM: Color = Color::from_rgba8(0, 0, 0, 77);
 /// and most widget draw paths blend in.
 pub(crate) fn mix8(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a weighted average of two u8 (0..=255) channel values with non-negative weights summing to 1.0 always rounds to a value already within 0..=255"
+    )]
     let l = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t).round() as u8;
     Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
@@ -34,6 +39,11 @@ fn with_a(c: Color, a: u8) -> Color {
 /// every derivation below measures the composite, never the token.
 fn composite(over: Color, ground: Color) -> Color {
     let a = f32::from(over.a()) / 255.0;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a weighted average of two u8 (0..=255) channel values with non-negative weights summing to 1.0 always rounds to a value already within 0..=255"
+    )]
     let ch = |o: u8, g: u8| (f32::from(o) * a + f32::from(g) * (1.0 - a)).round() as u8;
     Color::from_rgb8(
         ch(over.r(), ground.r()),
@@ -76,6 +86,11 @@ impl ColorRamp {
     pub fn eased(a: Color, b: Color) -> Self {
         let mut stops = [a; 11];
         for (i, stop) in stops.iter_mut().enumerate() {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "i is a 0..11 index into a fixed 11-element array, far below \
+                          where f32 loses integer precision"
+            )]
             let t = (i as f32 / 10.0).powf(1.5);
             *stop = mix8(a, b, t);
         }
@@ -85,6 +100,11 @@ impl ColorRamp {
 
 impl std::ops::Index<usize> for ColorRamp {
     type Output = Color;
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "Index is documented to panic on out-of-bounds, matching std's own \
+                  slice/Vec Index impl -- that is this trait's contract"
+    )]
     fn index(&self, i: usize) -> &Color {
         &self.stops[i]
     }
@@ -269,6 +289,11 @@ impl Colors {
     /// saturation/lightness, so a restrained theme gets a restrained series.
     /// Hue carries the separation because it survives every ground; walking
     /// lightness instead collapses into "several similar greys".
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "h/s/l/i/k are the standard HSL-rotation variable names used \
+                  throughout this file's colour math"
+    )]
     pub fn categorical(&self, idx: usize) -> Color {
         let base = self.accent[ACCENT_PRIMARY_IDX];
         let (h, s, l) = rgb_to_hsl(base);
@@ -277,6 +302,11 @@ impl Colors {
         // 360/N rotation, which reaches hues with nothing to do with theme.
         let k = i.div_ceil(2);
         let sign = if i % 2 == 1 { 1.0 } else { -1.0 };
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "k is at most CATEGORICAL_LEN.div_ceil(2), a tiny constant, far \
+                      below where f32 loses integer precision"
+        )]
         let step = sign * k as f32 / (CATEGORICAL_LEN / 2) as f32; // -1 … +1
         let hue = (h + step * CATEGORICAL_HUE_ARC_DEG / 2.0).rem_euclid(360.0);
         let light = (l + step * CATEGORICAL_LIGHT_SPREAD).clamp(0.22, 0.78);
@@ -286,6 +316,11 @@ impl Colors {
 
 /// sRGB → HSL, hue in degrees. Straight sRGB rather than a perceptual space
 /// — the point here is *separation*, which the cheap conversion does fine.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "r/g/b/h/s/l/max/min/d are the standard RGB<->HSL conversion \
+              variable names used throughout this file's colour math"
+)]
 fn rgb_to_hsl(c: Color) -> (f32, f32, f32) {
     let (r, g, b) = (
         f32::from(c.r()) / 255.0,
@@ -300,6 +335,12 @@ fn rgb_to_hsl(c: Color) -> (f32, f32, f32) {
         return (0.0, 0.0, l);
     }
     let s = d / (1.0 - (2.0 * l - 1.0).abs()).max(f32::EPSILON);
+    #[allow(
+        clippy::float_cmp,
+        reason = "max is exactly one of r/g/b by construction (f32::max picks one \
+                  of its inputs verbatim), so this selects a branch by identity, \
+                  not by comparing independently-computed floats"
+    )]
     let h = if max == r {
         60.0 * (((g - b) / d) % 6.0)
     } else if max == g {
@@ -310,10 +351,21 @@ fn rgb_to_hsl(c: Color) -> (f32, f32, f32) {
     (h.rem_euclid(360.0), s.clamp(0.0, 1.0), l)
 }
 
+#[allow(
+    clippy::many_single_char_names,
+    reason = "h/s/l/c/x/m are the standard HSL<->RGB conversion variable names \
+              used throughout this file's colour math"
+)]
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Color {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let hp = h.rem_euclid(360.0) / 60.0;
     let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "hp is h.rem_euclid(360.0) / 60.0, always within 0.0..6.0, so the \
+                  truncating cast always lands in 0..=5"
+    )]
     let (r1, g1, b1) = match hp as u32 {
         0 => (c, x, 0.0),
         1 => (x, c, 0.0),
@@ -323,6 +375,11 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Color {
         _ => (c, 0.0, x),
     };
     let m = l - c / 2.0;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "explicitly clamped to 0.0..=255.0 immediately above the cast"
+    )]
     let q = |v: f32| (((v + m) * 255.0).round().clamp(0.0, 255.0)) as u8;
     Color::from_rgb8(q(r1), q(g1), q(b1))
 }
@@ -359,7 +416,7 @@ impl Colors {
     /// accent and semantic colours pass through verbatim; the neutral ramp,
     /// accent ramp, scrim, glass and translucent-white veneers are derived
     /// so a preset needn't hand-author 40 values.
-    pub fn themed(p: PaletteSpec) -> Self {
+    pub fn themed(p: &PaletteSpec) -> Self {
         let black = Color::from_rgb8(0, 0, 0);
 
         // Dark themes run a deep shade → text; light themes run base → text.
@@ -510,8 +567,8 @@ impl Colors {
         // The ramp's inner steps aren't guaranteed to clear against an
         // arbitrary surface — a mid-grey placeholder under a shallow ramp
         // leaves `neutral[4]` short.
-        let ink = self.step_out_until_legible(ink, surface, min_ratio);
-        let ink_dim = self.step_out_until_legible(ink_dim, surface, min_ratio);
+        let ink = Self::step_out_until_legible(ink, surface, min_ratio);
+        let ink_dim = Self::step_out_until_legible(ink_dim, surface, min_ratio);
 
         OnCard {
             ink,
@@ -524,7 +581,7 @@ impl Colors {
     /// An authored `tone` made legible on `ground`: untouched if it already
     /// clears `min_ratio`, otherwise stepped toward the contrasting extreme.
     pub fn ink_on(&self, ground: Color, tone: Color, min_ratio: f64) -> Color {
-        self.step_out_until_legible(tone, ground, min_ratio)
+        Self::step_out_until_legible(tone, ground, min_ratio)
     }
 
     /// One `tone`, made legible on *every* ground in `grounds` at once.
@@ -553,9 +610,16 @@ impl Colors {
                     .partial_cmp(&contrast_ratio(tone, *b))
                     .unwrap_or(core::cmp::Ordering::Equal)
             })
-            .expect("non-empty");
+            // `grounds` is non-empty here — the early return above already
+            // handled that case — but fall back to `tone` unchanged rather
+            // than panic if that invariant is ever violated.
+            .unwrap_or(tone);
         let target = Self::contrasting_extreme(hardest);
         for step in 1..=16 {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "step ranges 1..=16, far below where f32 loses integer precision"
+            )]
             let candidate = mix8(tone, target, step as f32 / 16.0);
             if worst(candidate) >= min_ratio {
                 return candidate;
@@ -608,7 +672,7 @@ impl Colors {
 
     /// Returns `ink` untouched if it already clears `min_ratio`, otherwise
     /// steps it toward whichever extreme contrasts with `surface`.
-    fn step_out_until_legible(&self, ink: Color, surface: Color, min_ratio: f64) -> Color {
+    fn step_out_until_legible(ink: Color, surface: Color, min_ratio: f64) -> Color {
         use crate::a11y::contrast_ratio;
         if contrast_ratio(ink, surface) >= min_ratio {
             return ink;
@@ -616,6 +680,10 @@ impl Colors {
         let target = Self::contrasting_extreme(surface);
         // Sixteenths: close to the authored tone, few enough comparisons.
         for step in 1..=16 {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "step ranges 1..=16, far below where f32 loses integer precision"
+            )]
             let candidate = mix8(ink, target, step as f32 / 16.0);
             if contrast_ratio(candidate, surface) >= min_ratio {
                 return candidate;
@@ -803,7 +871,7 @@ impl Colors {
     /// The default dark palette: neutral graphite (deliberately *not* a
     /// blue-drenched slate) with a single restrained blue accent.
     pub fn dark() -> Self {
-        Self::themed(PaletteSpec {
+        Self::themed(&PaletteSpec {
             dark: true,
             base: Color::from_rgb8(0x16, 0x17, 0x1B),
             raised: Color::from_rgb8(0x1F, 0x20, 0x25),
@@ -826,7 +894,7 @@ impl Colors {
     /// Paper-white light theme with the same restrained blue accent as the
     /// dark default.
     pub fn light() -> Self {
-        Self::themed(PaletteSpec {
+        Self::themed(&PaletteSpec {
             dark: false,
             base: Color::from_rgb8(0xF3, 0xF3, 0xF1),
             raised: Color::from_rgb8(0xFF, 0xFF, 0xFF),
@@ -943,7 +1011,7 @@ mod tests {
         // 2.8x blue lead.
         let b = c.surfaces.base;
         assert!(
-            (b.b() as i32 - b.r() as i32) <= 6,
+            (i32::from(b.b()) - i32::from(b.r())) <= 6,
             "the default ground must be a near-neutral graphite, not blue-drenched",
         );
     }
@@ -1007,7 +1075,9 @@ mod tests {
         let c = Colors::dark();
         let base = c.surfaces.base;
         let over = c.surfaces.overlay;
-        let lum = |x: Color| 0.2126 * x.r() as f32 + 0.7152 * x.g() as f32 + 0.0722 * x.b() as f32;
+        let lum = |x: Color| {
+            0.2126 * f32::from(x.r()) + 0.7152 * f32::from(x.g()) + 0.0722 * f32::from(x.b())
+        };
         assert!(
             lum(over) < lum(base),
             "popover surface is deeper than the ground"
@@ -1118,7 +1188,7 @@ mod tests {
         let hue = |c: Color| super::rgb_to_hsl(c).0;
         let rel_luma = |c: Color| {
             let f = |v: u8| {
-                let v = v as f32 / 255.0;
+                let v = f32::from(v) / 255.0;
                 if v <= 0.03928 {
                     v / 12.92
                 } else {
@@ -1153,9 +1223,9 @@ mod tests {
                 // colours foreign to the theme.
                 let d = |x: Color, y: Color| {
                     let (dr, dg, db) = (
-                        x.r() as f32 - y.r() as f32,
-                        x.g() as f32 - y.g() as f32,
-                        x.b() as f32 - y.b() as f32,
+                        f32::from(x.r()) - f32::from(y.r()),
+                        f32::from(x.g()) - f32::from(y.g()),
+                        f32::from(x.b()) - f32::from(y.b()),
                     );
                     (2.0 * dr * dr + 4.0 * dg * dg + 3.0 * db * db).sqrt()
                 };
@@ -1203,7 +1273,7 @@ mod tests {
             let back = super::hsl_to_rgb(h, s, l);
             for (a, b) in [(c.r(), back.r()), (c.g(), back.g()), (c.b(), back.b())] {
                 assert!(
-                    (a as i32 - b as i32).abs() <= 1,
+                    (i32::from(a) - i32::from(b)).abs() <= 1,
                     "round-trip drifted: {c:?} -> {back:?}"
                 );
             }

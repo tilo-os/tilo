@@ -150,13 +150,13 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
             width: WindowWidth::Normal,
             maximized: false,
         };
+        let group_id = group.id;
         let strip = Strip {
             id: StripId::from(next_id()),
             name: String::new(),
             window_groups: vec![group],
         };
         let strip_id = strip.id;
-        let group_id = strip.window_groups[0].id;
         ws.strips.push(strip);
         tree.active_strip.insert(ws_id, strip_id);
         tree.set_active_group(strip_id, group_id);
@@ -167,7 +167,12 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     let strip_idx = active_strip
         .and_then(|id| ws.strips.iter().position(|s| s.id == id))
         .unwrap_or(0);
-    let strip = &mut ws.strips[strip_idx];
+    // `strip_idx` is either a position found in `ws.strips` or the fallback `0`, and the
+    // empty-strips case already returned above, so this is always in bounds — `get_mut` keeps
+    // that an assertion the type system checks rather than a trusted invariant.
+    let Some(strip) = ws.strips.get_mut(strip_idx) else {
+        return tab_id;
+    };
     let strip_id = strip.id;
 
     // A `TabIn` whose group is gone degrades to a new group rather than silently landing somewhere arbitrary.
@@ -178,13 +183,16 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     };
 
     if let Some(idx) = tab_target {
-        let group = &mut strip.window_groups[idx];
+        // `idx` came from `.position()` on this same `strip.window_groups` just above.
+        let Some(group) = strip.window_groups.get_mut(idx) else {
+            return tab_id;
+        };
         // Right of the tab the user was on, not at the end of the bar.
         let after = group
             .tabs
             .iter()
             .position(|t| t.id == group.active_tab)
-            .map_or(group.tabs.len(), |i| i + 1);
+            .map_or(group.tabs.len(), |i| i.saturating_add(1));
         group.tabs.insert(after, new_tab);
         group.active_tab = tab_id;
         let group_id = group.id;
@@ -209,7 +217,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     .or(active_group);
     let insert_at = anchor
         .and_then(|g| strip.window_groups.iter().position(|w| w.id == g))
-        .map_or(strip.window_groups.len(), |i| i + 1);
+        .map_or(strip.window_groups.len(), |i| i.saturating_add(1));
     strip.window_groups.insert(insert_at, group);
     tree.active_strip.insert(ws_id, strip_id);
     tree.set_active_group(strip_id, group_id);
@@ -949,6 +957,7 @@ mod tests {
 
     /// Minimal installed package: a manifest declaring a name, and a registry entry pointing at it. Same shape `qos-install` writes.
     fn install_named(dir: &std::path::Path, package_id: &str, name: &str) {
+        use std::fmt::Write as _;
         let payload = dir.join("payloads").join(package_id);
         std::fs::create_dir_all(payload.join("bin")).unwrap();
         let manifest_path = payload.join("manifest.toml");
@@ -963,11 +972,12 @@ mod tests {
         .unwrap();
         let registry = dir.join("registry.toml");
         let mut existing = std::fs::read_to_string(&registry).unwrap_or_default();
-        existing.push_str(&format!(
+        let _ = write!(
+            existing,
             "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
             payload.display().to_string(),
             manifest_path.display().to_string()
-        ));
+        );
         std::fs::write(&registry, existing).unwrap();
     }
 

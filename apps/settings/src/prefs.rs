@@ -63,6 +63,11 @@ use crate::region::RegionSettings;
 /// `#[serde(default)]` keeps configs written before these fields existed
 /// loadable.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
+              independently meaningful serialized setting, not a related toggle group"
+)]
 pub struct AudioPrefs {
     pub event_sounds: bool,
     pub chat_join: bool,
@@ -143,6 +148,11 @@ impl Default for DisplayPrefs {
 /// reads at session start.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
+              independently meaningful serialized setting, not a related toggle group"
+)]
 pub struct InputPrefs {
     pub natural_scroll: bool,
     pub tap_to_click: bool,
@@ -458,6 +468,11 @@ pub fn theme_by_name(name: &str) -> ui::Theme {
 /// or mirror it to the lock screen. Every field carries `#[serde(default)]`
 /// so a config written before this section existed still loads.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
+              independently meaningful serialized setting, not a related toggle group"
+)]
 pub struct NotificationPrefs {
     /// Master "Do Not Disturb": suppress banners and sounds while set.
     #[serde(default)]
@@ -519,6 +534,11 @@ impl Default for NotificationPrefs {
 /// not belong to the theme. Every field is `#[serde(default)]` so older
 /// configs load.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
+              independently meaningful serialized setting, not a related toggle group"
+)]
 pub struct AccessibilityPrefs {
     /// Enlarge the mouse pointer to [`Self::cursor_size`].
     #[serde(default)]
@@ -678,19 +698,18 @@ impl ScreenReaderVoice {
     }
 
     pub fn from_label(label: &str) -> Option<Self> {
+        const VARIANTS: [ScreenReaderVoice; 6] = [
+            ScreenReaderVoice::System,
+            ScreenReaderVoice::EnglishUs,
+            ScreenReaderVoice::EnglishGb,
+            ScreenReaderVoice::German,
+            ScreenReaderVoice::French,
+            ScreenReaderVoice::Spanish,
+        ];
         Self::OPTIONS
             .iter()
             .position(|item| *item == label)
-            .map(|i| {
-                [
-                    Self::System,
-                    Self::EnglishUs,
-                    Self::EnglishGb,
-                    Self::German,
-                    Self::French,
-                    Self::Spanish,
-                ][i]
-            })
+            .and_then(|i| VARIANTS.get(i).copied())
     }
 }
 
@@ -825,12 +844,10 @@ impl SystemPrefs {
     /// merged one level deeper so Theme Studio's nested editable artifact is
     /// not destroyed when Settings changes text scale or the active preset.
     pub fn to_json_merged(&self, existing: &str) -> String {
-        let mut root: serde_json::Value =
-            serde_json::from_str(existing).unwrap_or(serde_json::Value::Null);
-        if !root.is_object() {
-            root = serde_json::json!({});
-        }
-        let obj = root.as_object_mut().expect("just ensured object");
+        let mut obj = serde_json::from_str::<serde_json::Value>(existing)
+            .ok()
+            .and_then(|root| root.as_object().cloned())
+            .unwrap_or_default();
         obj.insert("version".into(), serde_json::json!(1));
         obj.insert(
             "audio".into(),
@@ -872,7 +889,8 @@ impl SystemPrefs {
             "accessibility".into(),
             serde_json::to_value(self.accessibility).unwrap_or_default(),
         );
-        serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".into())
+        serde_json::to_string_pretty(&serde_json::Value::Object(obj))
+            .unwrap_or_else(|_| "{}".into())
     }
 
     /// Load from the shared settings path. Returns section defaults when the
@@ -889,6 +907,12 @@ impl SystemPrefs {
 
     /// Persist to the shared settings path, preserving foreign keys. Creates
     /// the `qos` config directory if needed. Returns the path written.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no config directory can be resolved (no `HOME` or
+    /// `XDG_CONFIG_HOME`), if the `qos` config directory cannot be created,
+    /// or if the settings file cannot be written.
     pub fn save(&self) -> std::io::Result<std::path::PathBuf> {
         let path =
             RegionSettings::store_path().ok_or_else(|| std::io::Error::other("no config dir"))?;

@@ -31,13 +31,21 @@ impl DiffLayout {
             DiffLayout::SideBySide => "split",
         }
     }
+}
+
+impl std::str::FromStr for DiffLayout {
+    /// Parsing never fails: any unrecognised form defaults to
+    /// [`DiffLayout::Unified`] rather than erroring, so a bad replay can't
+    /// wedge a peer.
+    type Err = std::convert::Infallible;
+
     /// Parse the document's string form back into the enum, defaulting to
     /// [`DiffLayout::Unified`] for any unknown value.
-    pub fn from_str(s: &str) -> Self {
-        match s {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "split" => DiffLayout::SideBySide,
             _ => DiffLayout::Unified,
-        }
+        })
     }
 }
 
@@ -74,6 +82,14 @@ pub mod keys {
 
 /// Resolve (creating if absent) the `root.settings` map. Crate-visible so the
 /// preference [`crate::actions`] mutate the same object the app seeds here.
+///
+/// `put_object` on the document's own root can only fail if the root itself
+/// no longer exists, which never happens for a live `AutoCommit` — see
+/// `ui::widget::mod::TaffyTreeExt` for the equivalent taffy-side argument.
+#[allow(
+    clippy::expect_used,
+    reason = "put_object on the document root cannot fail; see doc comment"
+)]
 pub(crate) fn settings_obj(doc: &mut AutoCommit) -> ObjId {
     match doc.get(&automerge::ROOT, keys::SETTINGS) {
         Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -136,7 +152,7 @@ impl Settings {
     fn from_obj(doc: &AutoCommit, obj: &ObjId) -> Self {
         let def = Settings::default();
         let layout = get_str(doc, obj, keys::DIFF_LAYOUT)
-            .map_or(def.diff_layout, |s| DiffLayout::from_str(&s));
+            .map_or(def.diff_layout, |s| s.parse().unwrap_or(def.diff_layout));
         Self {
             diff_layout: layout,
             show_whitespace: get_bool(doc, obj, keys::SHOW_WHITESPACE, def.show_whitespace),
@@ -169,10 +185,12 @@ mod tests {
     #[test]
     fn round_trips_through_doc() {
         let mut doc = AutoCommit::new();
-        let mut s = Settings::default();
-        s.diff_layout = DiffLayout::SideBySide;
-        s.show_whitespace = true;
-        s.syntax_highlight = false;
+        let s = Settings {
+            diff_layout: DiffLayout::SideBySide,
+            show_whitespace: true,
+            syntax_highlight: false,
+            ..Settings::default()
+        };
         s.write(&mut doc);
 
         let back = Settings::read(&mut doc);

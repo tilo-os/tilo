@@ -2,6 +2,16 @@
 //! any widget or shell source file. Every literal must flow through
 //! `theme.*` so the OS can enforce one design language.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::{
@@ -82,7 +92,7 @@ fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
             // Find the opening brace of the module body.
             let mut j = i;
             while j < lines.len() && !lines[j].contains('{') {
-                j += 1;
+                j = j.saturating_add(1);
             }
             if j == lines.len() {
                 break;
@@ -93,9 +103,9 @@ fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
             'outer: while k < lines.len() {
                 for c in lines[k].chars() {
                     match c {
-                        '{' => depth += 1,
+                        '{' => depth = depth.saturating_add(1),
                         '}' => {
-                            depth -= 1;
+                            depth = depth.saturating_sub(1);
                             if depth == 0 {
                                 break 'outer;
                             }
@@ -103,13 +113,13 @@ fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
                         _ => {}
                     }
                 }
-                k += 1;
+                k = k.saturating_add(1);
             }
-            spans.push((start, (k + 1).min(lines.len())));
-            i = k + 1;
+            spans.push((start, k.saturating_add(1).min(lines.len())));
+            i = k.saturating_add(1);
             continue;
         }
-        i += 1;
+        i = i.saturating_add(1);
     }
     spans
 }
@@ -218,7 +228,8 @@ fn ratcheted_counts(files: &[PathBuf], root: &Path) -> BTreeMap<(String, String)
             }
             for (key, re, _) in &patterns {
                 if re.is_match(line) {
-                    *counts.entry((rel.clone(), (*key).to_string())).or_insert(0) += 1;
+                    let hit = counts.entry((rel.clone(), (*key).to_string())).or_insert(0);
+                    *hit = hit.saturating_add(1);
                 }
             }
         }
@@ -236,16 +247,17 @@ fn read_baseline(path: &Path) -> BTreeMap<(String, String), usize> {
             continue;
         }
         let parts: Vec<&str> = line.split_whitespace().collect();
+        let line_no = n.saturating_add(1);
         assert_eq!(
             parts.len(),
             3,
             "{}:{}: expected `<path> <pattern> <count>`, got: {line}",
             path.display(),
-            n + 1
+            line_no
         );
         let count: usize = parts[2]
             .parse()
-            .unwrap_or_else(|_| panic!("{}:{}: count must be a number", path.display(), n + 1));
+            .unwrap_or_else(|_| panic!("{}:{}: count must be a number", path.display(), line_no));
         out.insert((parts[0].to_string(), parts[1].to_string()), count);
     }
     out

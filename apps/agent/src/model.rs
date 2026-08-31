@@ -27,6 +27,7 @@
 //! ran is recorded on the [`Decision`] and logged, so a recording made on the
 //! fallback is never silently indistinguishable from a live call.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -408,12 +409,11 @@ impl Retries {
 fn again_after(status: u16, retry_after: Option<&str>) -> Again {
     let soon = || Again::Soon(retry_after.and_then(after_seconds));
     match status {
-        // Busy, not offended: the rate limiter, and the service itself
-        // saying it has no room just now.
-        429 | 529 => soon(),
-        // The far side rather than the request: a gateway, a restart, a
-        // timeout somewhere upstream of the model.
-        408 | 500 | 502 | 503 | 504 => soon(),
+        // Busy, not offended: the rate limiter and the service itself
+        // saying it has no room just now (429, 529); or the far side rather
+        // than the request — a gateway, a restart, a timeout somewhere
+        // upstream of the model (408, 500, 502, 503, 504).
+        429 | 529 | 408 | 500 | 502 | 503 | 504 => soon(),
         _ => Again::Never,
     }
 }
@@ -629,41 +629,42 @@ fn user_turn(rest: &str, blocks: &[Block]) -> String {
     let mut s = String::new();
     s.push_str("The actions this application exports, and what each one does:\n\n");
     for c in plan::CATALOGUE {
-        s.push_str(&format!(
-            "- {} — {} (dispatches {})\n",
+        let _ = writeln!(
+            s,
+            "- {} — {} (dispatches {})",
             c.id,
             c.summary,
             c.actions.join(", ")
-        ));
+        );
     }
-    s.push_str(&format!(
-        "- {} — nothing above does what was asked.\n",
+    let _ = writeln!(
+        s,
+        "- {} — nothing above does what was asked.",
         plan::NOTHING_FITS
-    ));
+    );
 
     s.push_str("\nThe document as it stands:\n\n");
     if blocks.is_empty() {
         s.push_str("(empty)\n");
     }
     for (i, b) in blocks.iter().take(MAX_BLOCKS).enumerate() {
-        s.push_str(&format!(
-            "{}. {}: {}\n",
+        let _ = writeln!(
+            s,
+            "{}. {}: {}",
             i + 1,
             b.kind,
             first_chars(b.text.trim(), MAX_BLOCK_CHARS)
-        ));
+        );
     }
     if blocks.len() > MAX_BLOCKS {
-        s.push_str(&format!(
-            "… and {} more blocks\n",
-            blocks.len() - MAX_BLOCKS
-        ));
+        let _ = writeln!(s, "… and {} more blocks", blocks.len() - MAX_BLOCKS);
     }
 
-    s.push_str(&format!(
+    let _ = write!(
+        s,
         "\nThe instruction, addressed to you, asks for:\n\n{}\n",
         rest.trim()
-    ));
+    );
     s
 }
 
@@ -671,6 +672,13 @@ fn user_turn(rest: &str, blocks: &[Block]) -> String {
 ///
 /// Checks `stop_reason` before reading content — a refusal carries no usable
 /// answer — then parses the schema-shaped JSON out of the first text block.
+///
+/// # Errors
+///
+/// Returns an error when `body` is not valid JSON, when the model refused
+/// (`stop_reason == "refusal"`), when no text content block is present, or
+/// when the text block itself is not the expected `{action, why}` JSON
+/// shape.
 pub fn parse_answer(body: &str) -> Result<Answer, String> {
     let v: serde_json::Value =
         serde_json::from_str(body).map_err(|e| format!("unreadable response: {e}"))?;

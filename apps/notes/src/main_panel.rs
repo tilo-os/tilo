@@ -157,9 +157,9 @@ impl MainPanel {
     /// Phase 4: the parse path goes through `notes::markdown` so the
     /// inline-mark grammar is the canonical one (the widget's own
     /// `BlockEditor::from_markdown` doesn't see inline marks).
-    pub fn load_page(&mut self, id: PageId, title: String, body: String) {
+    pub fn load_page(&mut self, id: PageId, title: &str, body: String) {
         self.page_id = Some(id);
-        self.set_title_value(&title);
+        self.set_title_value(title);
         let specs = crate::markdown::parse(&body);
         let blocks = crate::markdown::specs_to_blocks(&specs);
         self.editor = BlockEditor::new();
@@ -183,14 +183,14 @@ impl MainPanel {
     pub fn load_page_with_link_resolver<F>(
         &mut self,
         id: PageId,
-        title: String,
+        title: &str,
         body: String,
         resolver: F,
     ) where
         F: FnMut(&str) -> Option<PageId>,
     {
         self.page_id = Some(id);
-        self.set_title_value(&title);
+        self.set_title_value(title);
         let mut specs = crate::markdown::parse(&body);
         crate::markdown::resolve_link_ids(&mut specs, resolver);
         let blocks = crate::markdown::specs_to_blocks(&specs);
@@ -212,12 +212,12 @@ impl MainPanel {
         &mut self,
         state: &mut AutoCommit,
         id: PageId,
-        title: String,
+        title: &str,
         blocks_list: ObjId,
         body: &str,
     ) {
         self.page_id = Some(id);
-        self.set_title_value(&title);
+        self.set_title_value(title);
         let specs = crate::markdown::parse(body);
         let blocks = crate::markdown::specs_to_blocks(&specs);
         self.editor = BlockEditor::new();
@@ -234,7 +234,7 @@ impl MainPanel {
     /// Set the local user's id for authorship attribution. Re-applied to
     /// the editor on every `bind_page`.
     pub fn set_local_author(&mut self, author: Option<String>) {
-        self.local_author = author.clone();
+        self.local_author.clone_from(&author);
         self.editor.set_local_author(author);
     }
 
@@ -282,7 +282,7 @@ impl MainPanel {
     pub fn take_body_snapshot(&mut self) -> String {
         let specs = crate::markdown::blocks_to_specs(self.editor.blocks());
         let md = crate::markdown::serialize(&specs);
-        self.body = md.clone();
+        self.body.clone_from(&md);
         md
     }
 
@@ -345,7 +345,7 @@ impl Widget for MainPanel {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The panel is a **leaf** in the parent's flex tree — we do
@@ -364,7 +364,7 @@ impl Widget for MainPanel {
         // node, but we hide that by giving the editor `position:
         // Absolute` — so taffy doesn't push the panel's size from the
         // editor's content extent.
-        let editor_node = self.editor.build_layout(taffy, _theme, node_map);
+        let editor_node = self.editor.build_layout(taffy, theme, node_map);
         if let Ok(existing) = taffy.style(editor_node).cloned() {
             let _ = taffy.set_style(
                 editor_node,
@@ -394,6 +394,15 @@ impl Widget for MainPanel {
         // Title is drawn directly in `draw`; no taffy node needed.
         self.title_node = None;
 
+        // `new_with_children` only errors for a corrupted tree; `Widget::
+        // build_layout` returns a bare `NodeId` across every implementor, so
+        // surfacing a theoretical error here would mean threading a `Result`
+        // through the whole toolkit for a branch that can't be taken (see
+        // `ui::widget::TaffyTreeExt`).
+        #[allow(
+            clippy::unwrap_used,
+            reason = "new_with_children on a freshly-built child cannot fail"
+        )]
         let node = taffy
             .new_with_children(
                 Style {
@@ -416,6 +425,10 @@ impl Widget for MainPanel {
         node
     }
 
+    // `layout` only errors for a `NodeId` from a different tree, which never
+    // happens here since `node` is always the id this same widget received
+    // from its own `build_layout`.
+    #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         let new_rect = Rect::new(
@@ -424,7 +437,9 @@ impl Widget for MainPanel {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        if new_rect.width() != self.rect.width() || new_rect.height() != self.rect.height() {
+        if (new_rect.width() - self.rect.width()).abs() > f64::EPSILON
+            || (new_rect.height() - self.rect.height()).abs() > f64::EPSILON
+        {
             self.dirty = true;
         }
         self.rect = new_rect;
@@ -471,7 +486,7 @@ impl Widget for MainPanel {
                     .any(|b| b.line.get_rect().height() > 0.0);
             if measured {
                 let clamped = self.scroll_y.clamp(0.0, max_scroll);
-                if clamped != self.scroll_y {
+                if (clamped - self.scroll_y).abs() > f64::EPSILON {
                     self.scroll_y = clamped;
                     self.dirty = true;
                 }
@@ -632,12 +647,12 @@ impl Widget for MainPanel {
                 winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 40.0,
                 winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
             };
-            if dy != 0.0 {
+            if dy.abs() > f64::EPSILON {
                 let prev = self.scroll_y;
                 self.scroll_y = (self.scroll_y + dy).max(0.0);
                 // Clamp against max_scroll happens in apply_layout
                 // since that's where we know the content extent.
-                if self.scroll_y != prev {
+                if (self.scroll_y - prev).abs() > f64::EPSILON {
                     self.dirty = true;
                     *handled = true;
                 }
@@ -717,7 +732,7 @@ mod tests {
     fn load_page_seeds_editor_from_markdown() {
         let mut p = MainPanel::new();
         let id = fresh_page_id();
-        p.load_page(id, "Hello".into(), "# H\n\nbody\n".into());
+        p.load_page(id, "Hello", "# H\n\nbody\n".into());
         assert_eq!(p.page_id(), Some(id));
         assert_eq!(p.editor().blocks().len(), 2);
         assert!(matches!(p.editor().blocks()[0].kind, BlockKind::Heading(1)));
@@ -726,7 +741,7 @@ mod tests {
     #[test]
     fn take_body_snapshot_round_trips() {
         let mut p = MainPanel::new();
-        p.load_page(fresh_page_id(), "T".into(), "# H\n\nbody\n".into());
+        p.load_page(fresh_page_id(), "T", "# H\n\nbody\n".into());
         let snap = p.take_body_snapshot();
         assert_eq!(snap, "# H\n\nbody\n");
     }
@@ -734,7 +749,7 @@ mod tests {
     #[test]
     fn clear_resets_state() {
         let mut p = MainPanel::new();
-        p.load_page(fresh_page_id(), "T".into(), "# H\n".into());
+        p.load_page(fresh_page_id(), "T", "# H\n".into());
         p.clear();
         assert!(p.page_id().is_none());
         assert!(p.title().is_none());

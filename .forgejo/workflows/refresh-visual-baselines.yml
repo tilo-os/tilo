@@ -1,0 +1,85 @@
+name: Refresh visual baselines
+
+# Goldens must be produced by the same font stack and software Vulkan renderer
+# used by required checks. Keeping this manual avoids ever accepting visual
+# changes as a side effect of an ordinary push.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: refresh-visual-baselines-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_HOME: /cargo-home
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_TERM_COLOR: never
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  WGPU_BACKEND: vulkan
+  # Match required checks exactly. Without an adapter selector wgpu chooses
+  # from whatever the particular runner exposes, so a successful refresh can
+  # write baselines that every other runner correctly rejects.
+  VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+  WGPU_ADAPTER_NAME: llvmpipe
+
+jobs:
+  refresh:
+    runs-on: runner
+    container:
+      image: code.podesta.ai/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 0
+
+      - name: Prepare headless runtime and compiler cache
+        run: |
+          test -r "$VK_DRIVER_FILES"
+          mkdir -p /tmp/qos-xdg-runtime
+          chmod 700 /tmp/qos-xdg-runtime
+          bash tools/ci-sccache.sh prepare
+
+      - name: Render canonical visual baselines
+        env:
+          XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+          UPDATE_EBOOK_MATH_BASELINE: "1"
+          UPDATE_EBOOK_TYPOGRAPHY_BASELINE: "1"
+          UPDATE_SNAPSHOTS: "1"
+          UPDATE_TYPOGRAPHY_BASELINES: "1"
+        run: |
+          cargo test --locked -p ui --test it \
+            typography_visual_regression::multilingual_gallery_matches_scale_matrix -- --exact
+          cargo test --locked -p ebook reader_matches
+          cargo test --locked -p shell --test it e2e_shell_flows::
+          # Each wheel case creates a headless Vulkan renderer. Running six of
+          # those in one process concurrently can crash Mesa's software driver
+          # before Rust can report a test failure, so serialize this tiny set.
+          cargo test --locked -p shell --test it sidebar_wheel_disc_snapshot:: \
+            -- --test-threads=1
+
+      - name: Commit reviewed baseline paths
+        run: |
+          git add \
+            ui/tests/fixtures/typography \
+            apps/ebook/tests/fixtures/typography \
+            shell/tests/snapshots/e2e \
+            shell/tests/snapshots/wheel_disc
+          if git diff --cached --quiet; then
+            echo "Visual baselines are already current"
+            exit 0
+          fi
+          git config user.name "qOS CI"
+          git config user.email "ci@qos.invalid"
+          git commit -m "test: refresh canonical visual baselines"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Report compiler-cache effectiveness
+        if: always()
+        run: bash tools/ci-sccache.sh report

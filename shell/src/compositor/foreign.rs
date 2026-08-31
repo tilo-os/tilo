@@ -150,22 +150,26 @@ impl PixelOrder {
 /// Convert one row of `width` pixels laid out per `order` into RGBA,
 /// appending to `out` — a free function so unit tests can pin the channel mapping without a GPU or wayland connection.
 fn swizzle_row(order: PixelOrder, src: &[u8], width: usize, out: &mut Vec<u8>) {
-    debug_assert_eq!(src.len(), width * 4);
+    debug_assert_eq!(src.len(), width.saturating_mul(4));
     match order {
         PixelOrder::Bgra { opaque } => {
             for px in src.chunks_exact(4) {
-                out.push(px[2]);
-                out.push(px[1]);
-                out.push(px[0]);
-                out.push(if opaque { 0xFF } else { px[3] });
+                // `chunks_exact(4)` guarantees this length; the pattern
+                // can't miss, but this stays panic-free even if that ever changes.
+                let [b, g, r, a] = px else { continue };
+                out.push(*r);
+                out.push(*g);
+                out.push(*b);
+                out.push(if opaque { 0xFF } else { *a });
             }
         }
         PixelOrder::Rgba { opaque } => {
             for px in src.chunks_exact(4) {
-                out.push(px[0]);
-                out.push(px[1]);
-                out.push(px[2]);
-                out.push(if opaque { 0xFF } else { px[3] });
+                let [r, g, b, a] = px else { continue };
+                out.push(*r);
+                out.push(*g);
+                out.push(*b);
+                out.push(if opaque { 0xFF } else { *a });
             }
         }
     }
@@ -182,6 +186,12 @@ fn swizzle_row(order: PixelOrder, src: &[u8], width: usize, out: &mut Vec<u8>) {
 ///
 /// Split out from [`import_dmabuf_rgba`] so the `zwp_linux_dmabuf_v1`
 /// import gate can answer *at negotiation time* — rejecting makes `create` fail (renegotiate/fall back to `wl_shm`) instead of failing at commit forever.
+///
+/// # Errors
+///
+/// Returns [`DmabufImportError`] when `dmabuf`'s modifier isn't CPU-readable
+/// (`NonLinearModifier`), it has more than one plane (`MultiPlanar`), or its
+/// `FourCC` isn't one of the RGBA-family formats this compositor swizzles (`UnsupportedFormat`).
 pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
     let format = dmabuf.format();
     if !modifier_is_cpu_readable(format.modifier) {
@@ -197,6 +207,13 @@ pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
     Ok(())
 }
 
+/// CPU-import `dmabuf` into `out` as row-major RGBA, returning its `(width, height)`.
+///
+/// # Errors
+///
+/// Returns [`DmabufImportError`] for the same reasons as
+/// [`validate_importable`], plus degenerate width/height/stride
+/// (`InvalidDimensions`) or a failed `mmap` (`MapFailed`).
 pub fn import_dmabuf_rgba(
     dmabuf: &Dmabuf,
     out: &mut Vec<u8>,
@@ -254,20 +271,26 @@ pub fn import_dmabuf_rgba(
     sync_dmabuf(raw_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
 
     out.clear();
-    out.reserve((width as usize) * (height as usize) * 4);
-    let row_bytes = (width as usize) * 4;
+    out.reserve(
+        (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4),
+    );
+    let row_bytes = (width as usize).saturating_mul(4);
     // SAFETY: the mapping covers `[0, map_len)`; every row slice below is
     // inside `[offset, offset + stride*height) ⊆ [0, map_len)`, checked
     // above. The slice is dropped before `munmap`.
     let mapped: &[u8] = unsafe { std::slice::from_raw_parts(ptr as *const u8, map_len) };
     for row in 0..height as usize {
-        let start = offset as usize + row * stride as usize;
-        swizzle_row(
-            order,
-            &mapped[start..start + row_bytes],
-            width as usize,
-            out,
-        );
+        let start = (offset as usize).saturating_add(row.saturating_mul(stride as usize));
+        let end = start.saturating_add(row_bytes);
+        // Proven in range by the `stride >= width*4` and `offset +
+        // stride*height == map_len` checks above; `.get()` and a skip
+        // keep this panic-free if that invariant is ever broken instead.
+        let Some(row_slice) = mapped.get(start..end) else {
+            continue;
+        };
+        swizzle_row(order, row_slice, width as usize, out);
     }
 
     sync_dmabuf(raw_fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
@@ -482,10 +505,8 @@ impl ForeignFrameStore {
                             route: DmabufRoute::Gpu,
                         };
                     }
-                    // The import itself failed for this buffer…
-                    Ok(Err(e)) => Some(e.to_string()),
-                    // …or there is no GPU import context at all.
-                    Err(e) => Some(e.to_string()),
+                    // Either the import itself failed for this buffer, or there is no GPU import context at all.
+                    Ok(Err(e)) | Err(e) => Some(e.to_string()),
                 }
             }
             None => Some("no dmabuf main device was advertised".to_string()),
@@ -584,15 +605,18 @@ impl ForeignFrameStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let e = guard.get(&id)?;
-        if e.rgba.is_empty() || e.width == 0 || e.height == 0 {
-            return None;
-        }
-        Some(FrameSnapshot {
-            rgba: e.rgba.clone(),
-            width: e.width,
-            height: e.height,
-            seq: e.seq,
-        })
+        let snapshot = if e.rgba.is_empty() || e.width == 0 || e.height == 0 {
+            None
+        } else {
+            Some(FrameSnapshot {
+                rgba: e.rgba.clone(),
+                width: e.width,
+                height: e.height,
+                seq: e.seq,
+            })
+        };
+        drop(guard);
+        snapshot
     }
 
     /// Dimensions of the frame currently staged for `id`, without copying
@@ -604,7 +628,9 @@ impl ForeignFrameStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let e = guard.get(&id)?;
-        (e.width > 0 && e.height > 0).then_some((e.width, e.height))
+        let size = (e.width > 0 && e.height > 0).then_some((e.width, e.height));
+        drop(guard);
+        size
     }
 
     /// Whether `id`'s window has been shown — the latched answer from [`Self::mark_presented`], read without changing it.
@@ -631,6 +657,11 @@ impl ForeignFrameStore {
     }
 
     /// Test-only: pretend this surface was first heard of `age` ago, reaching past a delay without sleeping; creates the entry if absent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `age` is larger than the time elapsed since the process's
+    /// monotonic clock started — never true for the small, fixed durations tests pass.
     #[cfg(test)]
     pub fn backdate_first_seen(&self, id: SurfaceId, age: Duration) {
         self.with_entry(id, |e| {
@@ -689,17 +720,30 @@ impl ForeignFrameStore {
     }
 
     /// Size of the tab rectangle in physical pixels.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [0.0, u32::MAX] and .round()-ed first, so the casts to u32 below \
+                  neither truncate a fraction nor lose a sign"
+    )]
     pub fn viewport(&self, id: SurfaceId) -> Option<(u32, u32)> {
         self.placement(id).map(|r| {
             (
-                r.width().max(0.0).round() as u32,
-                r.height().max(0.0).round() as u32,
+                r.width().round().clamp(0.0, f64::from(u32::MAX)) as u32,
+                r.height().round().clamp(0.0, f64::from(u32::MAX)) as u32,
             )
         })
     }
 
     /// The size the client should be configured to, in surface-local (logical)
     /// pixels, **iff** it differs from the last sent — records the value as sent so an unchanged layout returns `None`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "every cast to u32/i32 below is preceded by a .clamp(..) into that type's \
+                  range and a .round(), so none truncates a fraction, loses a sign, or wraps \
+                  out of range"
+    )]
     pub fn take_pending_configure(&self, id: SurfaceId, scale: f64) -> Option<(i32, i32)> {
         let scale = if scale.is_finite() && scale > 0.0 {
             scale
@@ -708,14 +752,18 @@ impl ForeignFrameStore {
         };
         self.with_entry(id, |e| {
             let rect = e.placement?;
-            let w_px = rect.width().max(0.0).round() as u32;
-            let h_px = rect.height().max(0.0).round() as u32;
+            let w_px = rect.width().round().clamp(0.0, f64::from(u32::MAX)) as u32;
+            let h_px = rect.height().round().clamp(0.0, f64::from(u32::MAX)) as u32;
             if w_px == 0 || h_px == 0 {
                 return None;
             }
             let logical = (
-                (f64::from(w_px) / scale).round().max(1.0) as i32,
-                (f64::from(h_px) / scale).round().max(1.0) as i32,
+                (f64::from(w_px) / scale)
+                    .round()
+                    .clamp(1.0, f64::from(i32::MAX)) as i32,
+                (f64::from(h_px) / scale)
+                    .round()
+                    .clamp(1.0, f64::from(i32::MAX)) as i32,
             );
             if e.configured == Some(logical) {
                 return None;
@@ -733,6 +781,14 @@ impl ForeignFrameStore {
     /// invisible); a **frame answers the tab** per [`fills`] (else the
     /// unasked-for buffer size scales via `fit_rect`, snapping to 1:1
     /// later); or **[`PRESENT_GRACE`] passes** (backstop against an unclosable window). `tile` degenerate means not laid out, unjudgeable.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "on the enclosing function because #[allow] on the tracing::warn! invocation \
+                  itself is silently ignored by rustc: the tab_w/tab_h fields it logs are each \
+                  clamped to [0.0, u32::MAX] and .round()-ed first, so neither truncates a \
+                  fraction nor loses a sign"
+    )]
     pub fn mark_presented(&self, id: SurfaceId, tile: Rect) -> bool {
         self.with_entry(id, |e| {
             if e.presented {
@@ -749,11 +805,11 @@ impl ForeignFrameStore {
                 tracing::warn!(
                     target: "shell::compositor::foreign",
                     surface_id = id,
-                    waited_ms = waited.as_millis() as u64,
+                    waited_ms = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
                     buffer_w = e.width,
                     buffer_h = e.height,
-                    tab_w = tile.width().round() as u32,
-                    tab_h = tile.height().round() as u32,
+                    tab_w = tile.width().round().clamp(0.0, f64::from(u32::MAX)) as u32,
+                    tab_h = tile.height().round().clamp(0.0, f64::from(u32::MAX)) as u32,
                     "no frame answered this tab; showing the window anyway",
                 );
             }
@@ -948,6 +1004,28 @@ impl ForeignSurfaceWidget {
     }
 }
 
+/// `base` composed with a translation to `(dx, dy)`. Wrapped so the one
+/// `arithmetic_side_effects` allow lives in a single place: `Affine`'s
+/// `Mul` is pure floating-point matrix composition and cannot panic or
+/// overflow.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
+)]
+fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
+    base * Affine::translate((dx, dy))
+}
+
+/// `base` composed with a translation to `(dx, dy)` and then a non-uniform
+/// scale by `(sx, sy)`. See [`translated`] for why the allow is warranted.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine multiplication is floating-point matrix composition; it cannot panic or overflow"
+)]
+fn translated_and_scaled(base: Affine, dx: f64, dy: f64, sx: f64, sy: f64) -> Affine {
+    base * Affine::translate((dx, dy)) * Affine::scale_non_uniform(sx, sy)
+}
+
 impl Widget for ForeignSurfaceWidget {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
@@ -1016,8 +1094,7 @@ impl Widget for ForeignSurfaceWidget {
             );
             let sx = dst.width() / f64::from(image.width);
             let sy = dst.height() / f64::from(image.height);
-            let brush_transform =
-                transform * Affine::translate((dst.x0, dst.y0)) * Affine::scale_non_uniform(sx, sy);
+            let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
             let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
             scene.push_layer(
                 Fill::NonZero,
@@ -1053,7 +1130,7 @@ impl Widget for ForeignSurfaceWidget {
             &headline,
             size,
             on_card,
-            transform * Affine::translate((cx - f64::from(tw) / 2.0, y)),
+            translated(transform, cx - f64::from(tw) / 2.0, y),
             None,
         );
         let sm = theme.tokens.typography.scale.sm;
@@ -1063,7 +1140,11 @@ impl Widget for ForeignSurfaceWidget {
             &detail,
             sm,
             on_card_dim,
-            transform * Affine::translate((cx - f64::from(dw) / 2.0, y + f64::from(size) + 8.0)),
+            translated(
+                transform,
+                cx - f64::from(dw) / 2.0,
+                y + f64::from(size) + 8.0,
+            ),
             None,
         );
     }
@@ -1266,8 +1347,8 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
                             && *surface_id == want.surface_id
                             && *app_id != want.app_id
                         {
-                            *app_id = want.app_id.clone();
-                            tab.title = want.title.clone();
+                            want.app_id.clone_into(app_id);
+                            want.title.clone_into(&mut tab.title);
                             changed = true;
                         }
                     }
@@ -1333,12 +1414,12 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let fallback = opening_fallback_size(state);
     // `toplevel_surfaces` borrows the shell state; a cheap clone releases the borrow before the configure calls below, which don't touch `State`.
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
-    let mut sent = 0;
+    let mut sent: usize = 0;
     for toplevel in toplevels {
         let id = crate::compositor::state::surface_id(toplevel.wl_surface());
         if let Some((w, h)) = store().take_pending_configure(id, scale) {
             configure_to(&toplevel, w, h);
-            sent += 1;
+            sent = sent.saturating_add(1);
             tracing::debug!(
                 target: "shell::compositor::foreign",
                 surface_id = id,
@@ -1356,13 +1437,13 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
         }
         let (w, h) = fallback;
         configure_to(&toplevel, w, h);
-        sent += 1;
+        sent = sent.saturating_add(1);
         tracing::warn!(
             target: "shell::compositor::foreign",
             surface_id = id,
             width = w,
             height = h,
-            grace_ms = OPENING_CONFIGURE_GRACE.as_millis() as u64,
+            grace_ms = u64::try_from(OPENING_CONFIGURE_GRACE.as_millis()).unwrap_or(u64::MAX),
             "no tab rect for an opening toplevel; configuring it to the \
              strip's full tile so it can map at all",
         );
@@ -1392,7 +1473,12 @@ fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) 
         1.0
     };
     let (out_w, out_h) = state.output_size;
-    let logical = |px: f64| ((px / scale).round() as i32).max(1);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "clamped to [1.0, i32::MAX] and .round()-ed first, so the cast to i32 never \
+                  truncates a fraction or wraps out of range"
+    )]
+    let logical = |px: f64| (px / scale).round().clamp(1.0, f64::from(i32::MAX)) as i32;
     let chrome_w = f64::from(crate::shell::sidebar_wheel_chrome::SIDEBAR_WIDTH_PX);
     let chrome_h =
         f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX) + ui::widget::tabs::TAB_BAR_HEIGHT;
@@ -1410,9 +1496,9 @@ fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) 
 ///
 /// Returns the number of surfaces signalled.
 pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> usize {
-    let time_ms = state.start_time.elapsed().as_millis() as u32;
+    let time_ms = u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
-    let mut signalled = 0;
+    let mut signalled: usize = 0;
     for toplevel in toplevels {
         let surface = toplevel.wl_surface();
         let id = crate::compositor::state::surface_id(surface);
@@ -1430,7 +1516,7 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
             }
         });
         if fired {
-            signalled += 1;
+            signalled = signalled.saturating_add(1);
         }
     }
     signalled
@@ -1443,7 +1529,7 @@ mod tests {
 
     /// Distinct ids per test so the process-wide store can't leak state between parallel test threads.
     fn sid(n: u64) -> SurfaceId {
-        900_000 + n
+        900_000u64.saturating_add(n)
     }
 
     #[test]

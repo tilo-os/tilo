@@ -67,6 +67,7 @@ impl ChannelAvatar {
 
     /// Test/`--shots` hook: inject an already-decoded image directly (bypassing
     /// the store), so a deterministic test can prove the image path paints.
+    #[must_use]
     pub fn with_image(mut self, image: Option<PenikoImage>) -> Self {
         self.image = image;
         self

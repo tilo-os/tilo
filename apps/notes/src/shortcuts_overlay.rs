@@ -1,47 +1,30 @@
-//! `ShortcutsOverlay` — fullscreen modal listing every keyboard
-//! shortcut, grouped by role. Opened by `?` (Shift+/), closed by
-//! `Escape` or a click outside the card.
-//!
-//! Layout: dim full-viewport backdrop, a centered card (max
-//! 640 × 480 px) on the raised surface, four labelled groups arranged
-//! in a 2 × 2 grid. Each group lists `(label, shortcut)` rows; the
-//! label is left-aligned in `text_primary`, the shortcut is
-//! right-aligned in a monospace look (via `font_mono`) on a faint
-//! surface chip so it reads as a key cap.
-//!
-//! State lives entirely outside the CRDT — the overlay's visibility
-//! is host-controlled. The widget exposes [`is_visible`] /
-//! [`set_visible`] for host wiring and accepts `Escape` /
-//! click-outside for self-dismissal (toggles the flag off; the host
-//! reads it back via [`is_visible`] on the next tick).
+//! Host-controlled keyboard-shortcut help: shared [`ModalFrame`] chrome around
+//! a Notes-specific two-column grid. `?` opens it; Escape, the close control,
+//! or a scrim click dismisses it.
 
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
-use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::modal_frame::{ModalFrame, ModalLayout, ModalSpec};
 
-/// Title size for the modal heading. Mirrors `ModalDialog` (it uses
-/// `typography.scale.lg`).
-const TITLE_SIZE_TOKEN: fn(&Theme) -> f32 = |t| t.tokens.typography.scale.lg;
 /// Body row size — matches `typography.scale.sm` for compact density.
 const ROW_SIZE_TOKEN: fn(&Theme) -> f32 = |t| t.tokens.typography.scale.sm;
 /// Group heading size — one notch above the rows.
 const GROUP_SIZE_TOKEN: fn(&Theme) -> f32 = |t| t.tokens.typography.scale.base;
-/// Card max size. Sized so all four groups fit at default sm row size
-/// (~14 rows total) with comfortable padding.
-const CARD_MAX_W: f64 = 640.0;
-const CARD_MAX_H: f64 = 480.0;
+/// The shortcut grid is wider and taller than a conventional prompt body.
+const MODAL_WIDTH: f64 = 640.0;
+const BODY_HEIGHT: f64 = 388.0;
 /// Row height per shortcut entry — base size × 1.6 for vertical breath.
 const ROW_HEIGHT: f64 = 22.0;
 /// Vertical gap between a group heading and its rows.
@@ -103,8 +86,9 @@ pub struct ShortcutsOverlay {
     /// Full window rect — set by `apply_layout`. Used for the dim
     /// backdrop + to centre the card.
     viewport: Rect,
-    /// Card rect (centred sub-region of the viewport).
-    card: Rect,
+    /// Shared modal geometry from the most recent draw. Events use the exact
+    /// same close/card/scrim hit targets that were painted.
+    layout: Option<ModalLayout>,
     /// Cached last-cursor position so `MouseInput` (no coords) can
     /// hit-test against the card.
     last_cursor: Point,
@@ -116,7 +100,7 @@ impl ShortcutsOverlay {
         Self {
             visible: false,
             viewport: Rect::ZERO,
-            card: Rect::ZERO,
+            layout: None,
             last_cursor: Point::ZERO,
             dirty: true,
         }
@@ -137,26 +121,23 @@ impl ShortcutsOverlay {
         self.set_visible(!self.visible);
     }
 
-    /// Host-driven layout — the overlay is painted on top of the
-    /// existing tree, so we don't get a taffy slot. Call this with
-    /// the window rect on every frame the overlay is visible (or in
-    /// `apply_layout` if we ever wire it into the taffy tree).
+    /// Host-driven because the overlay paints above the ordinary taffy tree.
     pub fn set_viewport(&mut self, viewport: Rect) {
         if self.viewport != viewport {
             self.viewport = viewport;
-            // Recompute the card rect — capped at our max, never
-            // larger than the viewport, centred.
-            let w = CARD_MAX_W.min(viewport.width() - 32.0).max(320.0);
-            let h = CARD_MAX_H.min(viewport.height() - 32.0).max(240.0);
-            let cx = viewport.x0 + (viewport.width() - w) / 2.0;
-            let cy = viewport.y0 + (viewport.height() - h) / 2.0;
-            self.card = Rect::new(cx, cy, cx + w, cy + h);
+            self.layout = None;
             self.dirty = true;
         }
     }
 
-    /// Draw the overlay on top of the host's scene. Call this AFTER
-    /// the main widget tree has been drawn. No-op when not visible.
+    fn is_over_close(&self, point: Point) -> bool {
+        self.layout
+            .as_ref()
+            .and_then(|layout| layout.close)
+            .is_some_and(|rect| rect.contains(point))
+    }
+
+    /// Draw after the main widget tree. No-op when hidden.
     pub fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -168,152 +149,40 @@ impl ShortcutsOverlay {
             return;
         }
         let tokens = &theme.tokens;
-
-        // Dim backdrop. Matches `ModalDialog`'s 70% black so the visual
-        // affordance is consistent across modals in the app.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            Color::BLACK.with_alpha_factor(0.7),
-            None,
-            &self.viewport,
-        );
-
-        // Card.
-        let radius = f64::from(tokens.radii.md);
-        let card = RoundedRect::from_rect(self.card, radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.raised,
-            None,
-            &card,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            tokens.colors.border_standard,
-            None,
-            &card,
-        );
-
-        let pad = f64::from(tokens.spacing.s6);
-        let inner_x0 = self.card.x0 + pad;
-        let inner_y0 = self.card.y0 + pad;
-        let inner_x1 = self.card.x1 - pad;
-        let inner_y1 = self.card.y1 - pad;
-        let inner_w = (inner_x1 - inner_x0).max(0.0);
-
-        // Title row.
-        let title_size = TITLE_SIZE_TOKEN(theme);
-        text_renderer.draw_text(
-            scene,
-            "Keyboard shortcuts",
-            title_size,
-            tokens.colors.text_primary,
-            transform * Affine::translate((inner_x0, inner_y0)),
-            None,
-        );
+        let close_hovered = self.is_over_close(self.last_cursor);
+        let spec = ModalSpec::new("Keyboard shortcuts")
+            .body_height(BODY_HEIGHT)
+            .max_width(MODAL_WIDTH)
+            .close_hovered(close_hovered);
+        let layout = ModalFrame::layout(self.viewport, &spec, text_renderer, theme);
+        ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
 
         // Hint row below the title — small dim line telling the user
         // how to close.
         let hint_size = tokens.typography.scale.xs;
-        let hint_y = inner_y0 + f64::from(title_size) + 2.0;
+        let hint_y = layout.body.y0 + 2.0;
         text_renderer.draw_text(
             scene,
             "Press Esc or click outside to close",
             hint_size,
             tokens.colors.text_dim,
-            transform * Affine::translate((inner_x0, hint_y)),
+            transform * Affine::translate((layout.body.x0, hint_y)),
             None,
         );
 
         // Groups: 2-column grid. Each column gets half the inner width
         // (minus a spacing.s6 gutter).
-        let gutter = f64::from(tokens.spacing.s6);
-        let col_w = ((inner_w - gutter) / 2.0).max(0.0);
         let groups_top = hint_y + f64::from(hint_size) + f64::from(tokens.spacing.s4);
-        let col_left_x = inner_x0;
-        let col_right_x = inner_x0 + col_w + gutter;
-
-        let group_size = GROUP_SIZE_TOKEN(theme);
-        let row_size = ROW_SIZE_TOKEN(theme);
-
-        // Place groups in row-major order: [0, 1] in row 0, [2, 3] in row 1.
-        let _ = inner_y1;
-        let column_top_for = |idx: usize| -> f64 {
-            // Find the tallest group in row 0 to figure where row 1 starts.
-            if idx < 2 {
-                groups_top
-            } else {
-                let h0 = group_block_height(GROUPS[0].rows.len(), group_size, row_size);
-                let h1 = group_block_height(GROUPS[1].rows.len(), group_size, row_size);
-                groups_top + h0.max(h1) + f64::from(tokens.spacing.s6)
-            }
-        };
-
-        for (idx, group) in GROUPS.iter().enumerate() {
-            let x = if idx % 2 == 0 {
-                col_left_x
-            } else {
-                col_right_x
-            };
-            let y = column_top_for(idx);
-
-            // Group heading.
-            text_renderer.draw_text(
-                scene,
-                group.label,
-                group_size,
-                tokens.colors.text_primary,
-                transform * Affine::translate((x, y)),
-                None,
-            );
-
-            let rows_top = y + f64::from(group_size) + GROUP_HEADING_TO_ROWS_GAP;
-            for (i, (label, key)) in group.rows.iter().enumerate() {
-                let row_y = rows_top + (i as f64) * ROW_HEIGHT;
-                text_renderer.draw_text(
-                    scene,
-                    label,
-                    row_size,
-                    tokens.colors.text_dim,
-                    transform * Affine::translate((x, row_y)),
-                    None,
-                );
-                // Shortcut chip: right-aligned in the column.
-                let (kw, _) = text_renderer.measure(key, row_size, None);
-                let kx = x + col_w - f64::from(kw);
-                // Soft chip background — translucent white for a "kbd"
-                // affordance without needing per-theme tinting.
-                let chip_pad_x = 6.0;
-                let chip_pad_y = 2.0;
-                let chip = RoundedRect::from_rect(
-                    Rect::new(
-                        kx - chip_pad_x,
-                        row_y - chip_pad_y,
-                        kx + f64::from(kw) + chip_pad_x,
-                        row_y + f64::from(row_size) + chip_pad_y,
-                    ),
-                    f64::from(tokens.radii.sm),
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    tokens.colors.surface_white_10,
-                    None,
-                    &chip,
-                );
-                text_renderer.draw_text(
-                    scene,
-                    key,
-                    row_size,
-                    tokens.colors.text_primary,
-                    transform * Affine::translate((kx, row_y)),
-                    None,
-                );
-            }
-        }
+        draw_groups(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            layout.body.x0,
+            layout.body.width(),
+            groups_top,
+        );
+        self.layout = Some(layout);
     }
 
     /// Handle a key/mouse event when visible. Returns true if the
@@ -324,7 +193,10 @@ impl ShortcutsOverlay {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
+                let was_over_close = self.is_over_close(self.last_cursor);
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let is_over_close = self.is_over_close(self.last_cursor);
+                self.dirty |= was_over_close != is_over_close;
                 false
             }
             WindowEvent::KeyboardInput {
@@ -344,8 +216,11 @@ impl ShortcutsOverlay {
                 button: MouseButton::Left,
                 ..
             } => {
-                if !self.card.contains(self.last_cursor) {
-                    // Click outside the card dismisses.
+                if self
+                    .layout
+                    .as_ref()
+                    .is_some_and(|layout| layout.dismisses(self.last_cursor))
+                {
                     self.set_visible(false);
                 }
                 // Always consume — overlay is blocking.
@@ -369,6 +244,110 @@ fn group_block_height(row_count: usize, group_size: f32, _row_size: f32) -> f64 
     f64::from(group_size) + GROUP_HEADING_TO_ROWS_GAP + (row_count as f64) * ROW_HEIGHT
 }
 
+/// Draw every [`GROUPS`] entry in a 2-column grid starting at
+/// `(inner_x0, groups_top)`, row-major: `[0, 1]` in row 0, `[2, 3]` in
+/// row 1.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "draw-context bundle, not real parameter coupling"
+)]
+fn draw_groups(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    inner_x0: f64,
+    inner_w: f64,
+    groups_top: f64,
+) {
+    let tokens = &theme.tokens;
+    let gutter = f64::from(tokens.spacing.s6);
+    let col_w = ((inner_w - gutter) / 2.0).max(0.0);
+    let col_left_x = inner_x0;
+    let col_right_x = inner_x0 + col_w + gutter;
+
+    let group_size = GROUP_SIZE_TOKEN(theme);
+    let row_size = ROW_SIZE_TOKEN(theme);
+
+    // Find the tallest group in row 0 to figure where row 1 starts.
+    let column_top_for = |idx: usize| -> f64 {
+        if idx < 2 {
+            groups_top
+        } else {
+            let h0 = GROUPS.first().map_or(0.0, |g| {
+                group_block_height(g.rows.len(), group_size, row_size)
+            });
+            let h1 = GROUPS.get(1).map_or(0.0, |g| {
+                group_block_height(g.rows.len(), group_size, row_size)
+            });
+            groups_top + h0.max(h1) + f64::from(tokens.spacing.s6)
+        }
+    };
+
+    for (idx, group) in GROUPS.iter().enumerate() {
+        let x = if idx % 2 == 0 {
+            col_left_x
+        } else {
+            col_right_x
+        };
+        let y = column_top_for(idx);
+
+        // Group heading.
+        text_renderer.draw_text(
+            scene,
+            group.label,
+            group_size,
+            tokens.colors.text_primary,
+            transform * Affine::translate((x, y)),
+            None,
+        );
+
+        let rows_top = y + f64::from(group_size) + GROUP_HEADING_TO_ROWS_GAP;
+        for (i, (label, key)) in group.rows.iter().enumerate() {
+            let row_y = rows_top + (i as f64) * ROW_HEIGHT;
+            text_renderer.draw_text(
+                scene,
+                label,
+                row_size,
+                tokens.colors.text_dim,
+                transform * Affine::translate((x, row_y)),
+                None,
+            );
+            // Shortcut chip: right-aligned in the column.
+            let (kw, _) = text_renderer.measure(key, row_size, None);
+            let kx = x + col_w - f64::from(kw);
+            // Soft chip background — translucent white for a "kbd"
+            // affordance without needing per-theme tinting.
+            let chip_pad_x = 6.0;
+            let chip_pad_y = 2.0;
+            let chip = RoundedRect::from_rect(
+                Rect::new(
+                    kx - chip_pad_x,
+                    row_y - chip_pad_y,
+                    kx + f64::from(kw) + chip_pad_x,
+                    row_y + f64::from(row_size) + chip_pad_y,
+                ),
+                f64::from(tokens.radii.sm),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                tokens.colors.surface_white_10,
+                None,
+                &chip,
+            );
+            text_renderer.draw_text(
+                scene,
+                key,
+                row_size,
+                tokens.colors.text_primary,
+                transform * Affine::translate((kx, row_y)),
+                None,
+            );
+        }
+    }
+}
+
 impl Widget for ShortcutsOverlay {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
@@ -381,6 +360,10 @@ impl Widget for ShortcutsOverlay {
         // Reserve a zero-height leaf — the overlay never participates
         // in the layout pass, it just needs to be addressable from the
         // host's draw chain. (Same pattern `link_popover` follows.)
+        #[allow(
+            clippy::unwrap_used,
+            reason = "new_leaf on a fresh style cannot fail — see ui::widget::TaffyTreeExt"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -430,7 +413,26 @@ impl Widget for ShortcutsOverlay {
     }
 
     fn get_rect(&self) -> Rect {
-        self.card
+        self.layout
+            .as_ref()
+            .map_or(Rect::ZERO, |layout| layout.card)
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.visible
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Dialog)
+                .with_name("Keyboard shortcuts")
+                .with_state(AccessState {
+                    modal: true,
+                    hidden: !self.visible,
+                    ..Default::default()
+                }),
+        )
     }
 
     fn needs_redraw(&self) -> bool {
@@ -484,6 +486,17 @@ mod tests {
         }
     }
 
+    fn paint(o: &mut ShortcutsOverlay) {
+        let mut scene = Scene::new();
+        let mut text_renderer = TextRenderer::new();
+        o.draw_overlay(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text_renderer,
+            &Theme::dark(),
+        );
+    }
+
     #[test]
     fn set_visible_flips_and_marks_dirty() {
         let mut o = ShortcutsOverlay::new();
@@ -505,26 +518,47 @@ mod tests {
     }
 
     #[test]
-    fn click_outside_card_dismisses() {
+    fn shared_modal_hit_testing_preserves_inside_and_dismiss_paths() {
         let mut o = ShortcutsOverlay::new();
         o.set_viewport(Rect::new(0.0, 0.0, 1024.0, 768.0));
         o.set_visible(true);
-        // (10, 10) is outside the centered card (~ 192..832 × 144..624).
+        paint(&mut o);
+
+        let centre = o.get_rect().center();
+        o.handle_key(&cursor_at(centre), 1.0);
+        o.handle_key(&left_press(), 1.0);
+        assert!(o.is_visible(), "click inside the card must not dismiss");
+
+        let close = o
+            .layout
+            .as_ref()
+            .and_then(|layout| layout.close)
+            .expect("shared modal frame supplies a close control");
+        o.mark_drawn();
+        o.handle_key(&cursor_at(close.center()), 1.0);
+        assert!(
+            o.needs_redraw(),
+            "close hover must schedule its shared face"
+        );
+        assert!(o.handle_key(&left_press(), 1.0));
+        assert!(!o.is_visible());
+
+        o.set_visible(true);
+        paint(&mut o);
         o.handle_key(&cursor_at(Point::new(10.0, 10.0)), 1.0);
-        let consumed = o.handle_key(&left_press(), 1.0);
-        assert!(consumed);
+        assert!(o.handle_key(&left_press(), 1.0));
         assert!(!o.is_visible());
     }
 
     #[test]
-    fn click_inside_card_does_not_dismiss() {
+    fn visible_overlay_is_an_accessible_focus_trapping_dialog() {
         let mut o = ShortcutsOverlay::new();
-        o.set_viewport(Rect::new(0.0, 0.0, 1024.0, 768.0));
         o.set_visible(true);
-        let centre = o.card.center();
-        o.handle_key(&cursor_at(centre), 1.0);
-        o.handle_key(&left_press(), 1.0);
-        assert!(o.is_visible(), "click inside the card must not dismiss");
+        assert!(o.traps_focus());
+        let node = o.accessibility().expect("dialog semantics");
+        assert_eq!(node.role, ui::a11y::Role::Dialog);
+        assert!(node.state.modal);
+        assert!(!node.state.hidden);
     }
 
     #[test]

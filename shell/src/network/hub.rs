@@ -48,7 +48,7 @@ impl Hub {
     /// is named to receivers by its own [`TopicSubscriber::origin`] rather
     /// than the raw `from` id, so a subscriber standing in for a real peer
     /// delivers under that peer's identity; an unattached `from` is named by its id, the only thing known about it.
-    pub fn broadcast(&mut self, from: u64, msg: NeighbourMsg) {
+    pub fn broadcast(&mut self, from: u64, msg: &NeighbourMsg) {
         let origin = self
             .subscribers
             .iter()
@@ -56,7 +56,7 @@ impl Hub {
             .map_or_else(|| PeerOrigin::hub(from), |s| s.origin());
         for sub in &mut self.subscribers {
             if sub.id() != from {
-                sub.handle(&origin, &msg);
+                sub.handle(&origin, msg);
             }
         }
     }
@@ -124,7 +124,7 @@ mod tests {
             since: vec![9, 9, 9],
             room: "6b3f9a10-0000-4000-8000-00000000000b".to_string(),
         };
-        hub.broadcast(1, msg.clone());
+        hub.broadcast(1, &msg);
 
         assert!(a.lock().unwrap().recv.is_empty(), "sender must not echo");
         assert_eq!(
@@ -147,7 +147,7 @@ mod tests {
             peer: 10,
             key: "cursor".to_string(),
         };
-        hub.broadcast(10, msg.clone());
+        hub.broadcast(10, &msg);
 
         assert!(
             a.lock().unwrap().recv.is_empty(),

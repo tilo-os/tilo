@@ -1,6 +1,16 @@
 //! pin / unpin flip a package's `Pinning` state and persist across
 //! store re-opens.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use crate::common;
 use app_host::install::install_qpkg;
 use app_host::registry::Pinning;

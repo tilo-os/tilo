@@ -52,17 +52,19 @@ fn drive_text_input(
     ti: &mut TextInput,
     event: &WindowEvent,
     scale: f64,
-    modifiers: &Modifiers,
+    modifiers: Modifiers,
     doc: &mut AutoCommit,
 ) {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let node = taffy.new_leaf(Style::default()).unwrap();
+    let Ok(node) = taffy.new_leaf(Style::default()) else {
+        return;
+    };
     let mut handled = false;
     let mut focus_target: Option<NodeId> = None;
     ti.handle_event(
         event,
         scale,
-        modifiers,
+        &modifiers,
         doc,
         &automerge::ROOT,
         &mut handled,
@@ -77,28 +79,14 @@ impl ChatApp {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale, position.y / scale);
-                // Live-drag the floating call overlay.
-                if let Some(drag) = self.overlay_drag {
-                    let delta = self.last_mouse - drag.origin;
-                    self.call.overlay_offset = drag.start_offset + Vec2::new(delta.x, delta.y);
-                    self.request_relayout();
-                    *handled = true;
-                }
-                // Track an in-progress channel-row swipe.
-                if let Some(sw) = &mut self.swipe {
-                    sw.current = self.last_mouse;
-                    *handled = true;
-                }
-                // Keep both composers' hover state current so a click lands a
-                // caret at the click point and a press-drag extends a selection.
-                self.forward_move_to_composers(event, scale, modifiers, doc);
+                let last_mouse = Point::new(position.x / scale, position.y / scale);
+                self.handle_cursor_moved(last_mouse, event, scale, modifiers, doc, handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -113,67 +101,14 @@ impl ChatApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                match self.hit_at(self.last_mouse) {
-                    Some(Hit::CallDragHandle) => {
-                        // Begin dragging the overlay (only meaningful docked).
-                        self.overlay_drag = Some(OverlayDrag {
-                            origin: self.last_mouse,
-                            start_offset: self.call.overlay_offset,
-                        });
-                        *handled = true;
-                    }
-                    Some(Hit::Channel(id)) => {
-                        // Arm a potential swipe on the row; a plain click still
-                        // resolves on release if it didn't travel.
-                        if let Some(idx) = self.ws_channels().iter().position(|c| c.id == id) {
-                            self.swipe = Some(RowSwipe {
-                                channel_index: idx,
-                                origin: self.last_mouse,
-                                current: self.last_mouse,
-                            });
-                        }
-                        // Defer the open to release so a swipe isn't a click.
-                        *handled = true;
-                    }
-                    Some(hit) => {
-                        let composer_hit = matches!(hit, Hit::FocusMain | Hit::FocusThread);
-                        self.on_hit(hit, doc);
-                        // A click in a composer focuses it (via `on_hit`) and
-                        // then places the caret at the click point — forward the
-                        // real press so the widget resolves the position.
-                        if composer_hit {
-                            self.forward_press_to_focused_composer(event, scale, modifiers, doc);
-                        }
-                        *handled = true;
-                    }
-                    None => {}
-                }
+                self.handle_left_press(event, scale, modifiers, doc, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.overlay_drag = None;
-                // End any composer drag-selection in progress.
-                self.forward_release_to_composers(event, scale, modifiers, doc);
-                if let Some(sw) = self.swipe.take() {
-                    let channel = self
-                        .ws_channels()
-                        .get(sw.channel_index)
-                        .map(|c| c.id.clone());
-                    if let Some(id) = channel {
-                        if sw.dx() >= SWIPE_COMMIT_DX {
-                            // Swipe-left commits the channel's primary action,
-                            // which is exactly the context menu's first item.
-                            self.apply_channel_action(&id, MenuAction::channel_swipe_left(), doc);
-                        } else if sw.dx() < 6.0 {
-                            // Didn't travel — treat as a click on the channel.
-                            self.on_hit(Hit::Channel(id), doc);
-                        }
-                    }
-                    *handled = true;
-                }
+                self.handle_left_release(event, scale, modifiers, doc, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -194,25 +129,154 @@ impl ChatApp {
                     },
                 ..
             } => {
-                // The composer owns the keystroke unless an inline editor /
-                // rename / popover is open, or it's Escape (which unwinds the
-                // top-most layer). Those cases route through `on_key`; the
-                // composer itself is the shared `TextInput`.
-                let composer_owns = self.editing.is_none()
-                    && self.rename.is_none()
-                    && self.menu.is_none()
-                    && !self.emoji_open
-                    && self.history_open.is_none()
-                    && !self.attach_open
-                    && !matches!(logical_key, Key::Named(NamedKey::Escape));
-                if composer_owns {
-                    self.route_composer_key(event, scale, modifiers, doc);
-                    *handled = true;
-                } else if self.on_key(logical_key, modifiers, doc) {
-                    *handled = true;
-                }
+                self.handle_keyboard_input(logical_key, event, scale, modifiers, doc, handled);
             }
             _ => {}
+        }
+    }
+
+    /// A pointer move: live-drags the floating call overlay or an in-progress
+    /// channel-row swipe, then forwards hover state to both composers.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "event-dispatch context bundle, not real parameter coupling"
+    )]
+    fn handle_cursor_moved(
+        &mut self,
+        last_mouse: Point,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        self.last_mouse = last_mouse;
+        // Live-drag the floating call overlay.
+        if let Some(drag) = self.overlay_drag {
+            let delta = self.last_mouse - drag.origin;
+            self.call.overlay_offset = drag.start_offset + Vec2::new(delta.x, delta.y);
+            self.request_relayout();
+            *handled = true;
+        }
+        // Track an in-progress channel-row swipe.
+        if let Some(sw) = &mut self.swipe {
+            sw.current = self.last_mouse;
+            *handled = true;
+        }
+        // Keep both composers' hover state current so a click lands a
+        // caret at the click point and a press-drag extends a selection.
+        self.forward_move_to_composers(event, scale, modifiers, doc);
+    }
+
+    /// A left-button press: begins a call-overlay drag, arms a channel-row
+    /// swipe, or resolves an ordinary hit (forwarding the press into a
+    /// composer that was just focused by it).
+    fn handle_left_press(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        match self.hit_at(self.last_mouse) {
+            Some(Hit::CallDragHandle) => {
+                // Begin dragging the overlay (only meaningful docked).
+                self.overlay_drag = Some(OverlayDrag {
+                    origin: self.last_mouse,
+                    start_offset: self.call.overlay_offset,
+                });
+                *handled = true;
+            }
+            Some(Hit::Channel(id)) => {
+                // Arm a potential swipe on the row; a plain click still
+                // resolves on release if it didn't travel.
+                if let Some(idx) = self.ws_channels().iter().position(|c| c.id == id) {
+                    self.swipe = Some(RowSwipe {
+                        channel_index: idx,
+                        origin: self.last_mouse,
+                        current: self.last_mouse,
+                    });
+                }
+                // Defer the open to release so a swipe isn't a click.
+                *handled = true;
+            }
+            Some(hit) => {
+                let composer_hit = matches!(hit, Hit::FocusMain | Hit::FocusThread);
+                self.on_hit(hit, doc);
+                // A click in a composer focuses it (via `on_hit`) and
+                // then places the caret at the click point — forward the
+                // real press so the widget resolves the position.
+                if composer_hit {
+                    self.forward_press_to_focused_composer(event, scale, modifiers, doc);
+                }
+                *handled = true;
+            }
+            None => {}
+        }
+    }
+
+    /// A left-button release: ends any overlay drag or composer
+    /// drag-selection, and resolves an in-progress channel-row swipe (commit
+    /// on a long swipe, click on a short one).
+    fn handle_left_release(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        self.overlay_drag = None;
+        // End any composer drag-selection in progress.
+        self.forward_release_to_composers(event, scale, modifiers, doc);
+        if let Some(sw) = self.swipe.take() {
+            let channel = self
+                .ws_channels()
+                .get(sw.channel_index)
+                .map(|c| c.id.clone());
+            if let Some(id) = channel {
+                if sw.dx() >= SWIPE_COMMIT_DX {
+                    // Swipe-left commits the channel's primary action,
+                    // which is exactly the context menu's first item.
+                    self.apply_channel_action(&id, MenuAction::channel_swipe_left(), doc);
+                } else if sw.dx() < 6.0 {
+                    // Didn't travel — treat as a click on the channel.
+                    self.on_hit(Hit::Channel(id), doc);
+                }
+            }
+            *handled = true;
+        }
+    }
+
+    /// A pressed key: routed to the focused composer unless an inline
+    /// editor / rename / popover is open (or it's Escape, which unwinds the
+    /// top-most layer instead), in which case `on_key` handles it.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "event-dispatch context bundle, not real parameter coupling"
+    )]
+    fn handle_keyboard_input(
+        &mut self,
+        logical_key: &Key,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        let composer_owns = self.editing.is_none()
+            && self.rename.is_none()
+            && self.menu.is_none()
+            && !self.emoji_open
+            && self.history_open.is_none()
+            && !self.attach_open
+            && !matches!(logical_key, Key::Named(NamedKey::Escape));
+        if composer_owns {
+            self.route_composer_key(event, scale, modifiers, doc);
+            *handled = true;
+        } else if self.on_key(logical_key, modifiers, doc) {
+            *handled = true;
         }
     }
 
@@ -226,7 +290,7 @@ impl ChatApp {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
     ) {
         if let WindowEvent::KeyboardInput {
@@ -262,7 +326,7 @@ impl ChatApp {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
     ) {
         drive_text_input(&mut self.composer_main, event, scale, modifiers, doc);
@@ -274,7 +338,7 @@ impl ChatApp {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
     ) {
         drive_text_input(&mut self.composer_main, event, scale, modifiers, doc);
@@ -287,7 +351,7 @@ impl ChatApp {
         &mut self,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
     ) {
         drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
@@ -297,12 +361,7 @@ impl ChatApp {
     /// under the cursor.
     fn on_right_click(&mut self, hit: Hit) {
         let menu = match hit {
-            Hit::Channel(id) => Some(ContextMenu {
-                target: MenuTarget::Channel(id),
-                anchor: self.last_mouse,
-                items: MenuAction::for_channel().to_vec(),
-            }),
-            Hit::VoiceChannel(id) => Some(ContextMenu {
+            Hit::Channel(id) | Hit::VoiceChannel(id) => Some(ContextMenu {
                 target: MenuTarget::Channel(id),
                 anchor: self.last_mouse,
                 items: MenuAction::for_channel().to_vec(),
@@ -343,39 +402,16 @@ impl ChatApp {
             self.menu = None;
         }
         match hit {
-            Hit::Workspace(id) => {
-                if self.active_ws != id {
-                    self.active_ws = id;
-                    self.thread_open = None;
-                    self.scroll = 0.0;
-                    self.focus = Focus::Main;
-                    self.caret = 0;
-                    self.active_channel.clear(); // force reload to pick first text channel
-                }
-            }
-            Hit::Channel(id) => {
-                let kind = self.channel(&id).map(|c| c.kind);
-                if kind == Some(ChannelKind::Voice) {
-                    self.join_voice(&id, doc);
-                } else {
-                    self.active_channel = id;
-                    self.thread_open = None;
-                    self.scroll = 0.0;
-                    self.focus = Focus::Main;
-                    self.caret = 0;
-                    // Picking a channel in overlay mode closes the left flap.
-                    if self.left_mode == crate::responsive::FlapMode::Overlay {
-                        self.left_flap.close();
-                    }
-                }
-            }
+            Hit::Workspace(id) => self.on_hit_workspace(id),
+            Hit::Channel(id) => self.on_hit_channel(id, doc),
             Hit::VoiceChannel(id) => self.join_voice(&id, doc),
             Hit::CategoryToggle(id) => {
                 ChatDoc::toggle_category_collapsed(doc, &id);
             }
             // Left-click on your own message body is a no-op — the edit menu
-            // is a right-click affordance (see `on_right_click`).
-            Hit::MessageMenu { .. } => {}
+            // is a right-click affordance (see `on_right_click`). The call
+            // drag handle is also a no-op here — it's handled at press time.
+            Hit::MessageMenu { .. } | Hit::CallDragHandle => {}
             Hit::EditSave => self.commit_edit(doc),
             Hit::EditCancel => self.cancel_edit(),
             Hit::MenuAction { target, action } => {
@@ -385,76 +421,25 @@ impl ChatApp {
             Hit::AddChannel {
                 workspace,
                 category,
-            } => {
-                let id = new_channel_id();
-                self.perform_action(
-                    doc,
-                    actions::create_channel_action(
-                        &workspace,
-                        &category,
-                        &id,
-                        "new-channel",
-                        ChannelKind::Text,
-                    ),
-                );
-                self.begin_rename(MenuTarget::Channel(id));
-            }
-            Hit::AddCategory(ws) => {
-                let id = ChatDoc::create_category(doc, &ws, "New Category");
-                self.begin_rename(MenuTarget::Category(id));
-            }
-            Hit::AddWorkspace => {
-                // Create a real, usable workspace (a general text channel + a
-                // voice channel) and switch to it — the rail "+" is a live
-                // create action, not decoration.
-                let id = ChatDoc::create_workspace(doc, "New Workspace");
-                self.active_ws = id;
-                self.thread_open = None;
-                self.scroll = 0.0;
-                self.focus = Focus::Main;
-                self.caret = 0;
-                self.active_channel.clear(); // reload picks the new ws's first text channel
-            }
+            } => self.on_hit_add_channel(&workspace, &category, doc),
+            Hit::AddCategory(ws) => self.on_hit_add_category(&ws, doc),
+            // Create a real, usable workspace (a general text channel + a
+            // voice channel) and switch to it — the rail "+" is a live
+            // create action, not decoration.
+            Hit::AddWorkspace => self.on_hit_add_workspace(doc),
             Hit::RenameConfirm => self.commit_rename(doc),
-            Hit::Reaction { msg, emoji } => {
-                if self.can_participate() {
-                    let action = self.reaction_toggle_action(&msg, &emoji);
-                    self.perform_action(doc, action);
-                    self.reload(doc);
-                }
-            }
+            Hit::Reaction { msg, emoji } => self.on_hit_reaction(&msg, &emoji, doc),
             Hit::AddReaction { msg, anchor } => {
                 self.emoji_open = true;
                 self.emoji_target = Some(msg);
                 self.emoji_anchor = anchor;
             }
-            Hit::OpenThread(id) => {
-                if self.thread_open.as_deref() == Some(id.as_str()) {
-                    self.thread_open = None;
-                    self.focus = Focus::Main;
-                } else {
-                    self.thread_open = Some(id);
-                    self.focus = Focus::Thread;
-                    self.right_flap.open();
-                }
-                self.caret = 0;
-            }
+            Hit::OpenThread(id) => self.on_hit_open_thread(id),
             Hit::EditHistory { msg, anchor } => {
                 self.history_open = Some(msg);
                 self.history_anchor = anchor;
             }
-            Hit::EmojiChoice(e) => {
-                if let Some(target) = self.emoji_target.take() {
-                    if self.can_participate() {
-                        let action = self.reaction_toggle_action(&target, &e);
-                        self.perform_action(doc, action);
-                        self.reload(doc);
-                    }
-                } else {
-                    self.insert_text(doc, &e);
-                }
-                self.emoji_open = false;
-            }
+            Hit::EmojiChoice(e) => self.on_hit_emoji_choice(&e, doc),
             Hit::FocusMain => {
                 self.focus = Focus::Main;
                 self.set_composer_focus();
@@ -474,33 +459,11 @@ impl ChatApp {
                 self.attach_open = false;
                 self.attach_file(doc, std::path::Path::new(&path));
             }
-            Hit::StartCall => {
-                if self.call.active {
-                    self.call.expanded = !self.call.expanded;
-                    self.request_relayout();
-                } else {
-                    // Join this workspace's voice channel; if it has none, make
-                    // one to start the call in so the header "Call" button is
-                    // never a dead end (a text-only workspace can still huddle).
-                    let channel = self
-                        .ws_channels()
-                        .into_iter()
-                        .find(|c| c.kind == ChannelKind::Voice)
-                        .map_or_else(
-                            || {
-                                let ws = self.active_ws.clone();
-                                ChatDoc::create_channel(doc, &ws, "", "Voice", ChannelKind::Voice)
-                            },
-                            |c| c.id.clone(),
-                        );
-                    self.join_voice(&channel, doc);
-                }
-            }
+            Hit::StartCall => self.on_hit_start_call(doc),
             Hit::CloseThread => {
                 self.thread_open = None;
                 self.focus = Focus::Main;
             }
-            Hit::CallDragHandle => {} // handled at press time
             Hit::CallParticipantsToggle => {
                 self.call.participants_expanded = !self.call.participants_expanded;
             }
@@ -528,32 +491,145 @@ impl ChatApp {
             Hit::CallLeave => self.leave_voice(doc),
             Hit::ToggleLeftFlap => self.left_flap.toggle(self.left_mode),
             Hit::ToggleRightFlap => self.right_flap.toggle(self.right_mode),
-            Hit::Dismiss => {
-                if self.attach_open {
-                    self.attach_open = false;
-                } else if self.menu.is_some() {
-                    self.menu = None;
-                } else if self.emoji_open {
-                    self.emoji_open = false;
-                    self.emoji_target = None;
-                } else if self.history_open.is_some() {
-                    self.history_open = None;
-                } else if self.left_mode == crate::responsive::FlapMode::Overlay
-                    && self.left_flap_open()
-                {
-                    self.left_flap.close();
-                } else if self.right_mode == crate::responsive::FlapMode::Overlay
-                    && self.right_flap_open()
-                {
-                    self.right_flap.close();
-                }
-            }
+            Hit::Dismiss => self.on_hit_dismiss(),
         }
         // Whatever the interaction resolved to, the channel now in view is
         // read: advance its watermark so its unread badge stays cleared once
         // the user navigates elsewhere.
         self.mark_active_read(doc);
         self.reload(doc);
+    }
+
+    fn on_hit_workspace(&mut self, id: Id) {
+        if self.active_ws != id {
+            self.active_ws = id;
+            self.thread_open = None;
+            self.scroll = 0.0;
+            self.focus = Focus::Main;
+            self.caret = 0;
+            self.active_channel.clear(); // force reload to pick first text channel
+        }
+    }
+
+    fn on_hit_channel(&mut self, id: Id, doc: &mut AutoCommit) {
+        let kind = self.channel(&id).map(|c| c.kind);
+        if kind == Some(ChannelKind::Voice) {
+            self.join_voice(&id, doc);
+        } else {
+            self.active_channel = id;
+            self.thread_open = None;
+            self.scroll = 0.0;
+            self.focus = Focus::Main;
+            self.caret = 0;
+            // Picking a channel in overlay mode closes the left flap.
+            if self.left_mode == crate::responsive::FlapMode::Overlay {
+                self.left_flap.close();
+            }
+        }
+    }
+
+    fn on_hit_add_channel(&mut self, workspace: &str, category: &str, doc: &mut AutoCommit) {
+        let id = new_channel_id();
+        self.perform_action(
+            doc,
+            &actions::create_channel_action(
+                workspace,
+                category,
+                &id,
+                "new-channel",
+                ChannelKind::Text,
+            ),
+        );
+        self.begin_rename(MenuTarget::Channel(id));
+    }
+
+    fn on_hit_add_category(&mut self, ws: &str, doc: &mut AutoCommit) {
+        let id = ChatDoc::create_category(doc, ws, "New Category");
+        self.begin_rename(MenuTarget::Category(id));
+    }
+
+    fn on_hit_add_workspace(&mut self, doc: &mut AutoCommit) {
+        let id = ChatDoc::create_workspace(doc, "New Workspace");
+        self.active_ws = id;
+        self.thread_open = None;
+        self.scroll = 0.0;
+        self.focus = Focus::Main;
+        self.caret = 0;
+        self.active_channel.clear(); // reload picks the new ws's first text channel
+    }
+
+    fn on_hit_reaction(&mut self, msg: &str, emoji: &str, doc: &mut AutoCommit) {
+        if self.can_participate() {
+            let action = self.reaction_toggle_action(msg, emoji);
+            self.perform_action(doc, &action);
+            self.reload(doc);
+        }
+    }
+
+    fn on_hit_open_thread(&mut self, id: Id) {
+        if self.thread_open.as_deref() == Some(id.as_str()) {
+            self.thread_open = None;
+            self.focus = Focus::Main;
+        } else {
+            self.thread_open = Some(id);
+            self.focus = Focus::Thread;
+            self.right_flap.open();
+        }
+        self.caret = 0;
+    }
+
+    fn on_hit_emoji_choice(&mut self, e: &str, doc: &mut AutoCommit) {
+        if let Some(target) = self.emoji_target.take() {
+            if self.can_participate() {
+                let action = self.reaction_toggle_action(&target, e);
+                self.perform_action(doc, &action);
+                self.reload(doc);
+            }
+        } else {
+            self.insert_text(doc, e);
+        }
+        self.emoji_open = false;
+    }
+
+    /// Join this workspace's voice channel; if it has none, make one to
+    /// start the call in so the header "Call" button is never a dead end (a
+    /// text-only workspace can still huddle).
+    fn on_hit_start_call(&mut self, doc: &mut AutoCommit) {
+        if self.call.active {
+            self.call.expanded = !self.call.expanded;
+            self.request_relayout();
+        } else {
+            let channel = self
+                .ws_channels()
+                .into_iter()
+                .find(|c| c.kind == ChannelKind::Voice)
+                .map_or_else(
+                    || {
+                        let ws = self.active_ws.clone();
+                        ChatDoc::create_channel(doc, &ws, "", "Voice", ChannelKind::Voice)
+                    },
+                    |c| c.id.clone(),
+                );
+            self.join_voice(&channel, doc);
+        }
+    }
+
+    fn on_hit_dismiss(&mut self) {
+        if self.attach_open {
+            self.attach_open = false;
+        } else if self.menu.is_some() {
+            self.menu = None;
+        } else if self.emoji_open {
+            self.emoji_open = false;
+            self.emoji_target = None;
+        } else if self.history_open.is_some() {
+            self.history_open = None;
+        } else if self.left_mode == crate::responsive::FlapMode::Overlay && self.left_flap_open() {
+            self.left_flap.close();
+        } else if self.right_mode == crate::responsive::FlapMode::Overlay && self.right_flap_open()
+        {
+            self.right_flap.close();
+        }
     }
 
     // --- voice / call wiring ---------------------------------------------
@@ -573,7 +649,7 @@ impl ChatApp {
             let prior = self.call.channel.clone();
             self.perform_action(
                 doc,
-                actions::ChatAction::LeaveCall {
+                &actions::ChatAction::LeaveCall {
                     channel: prior,
                     user: me.clone(),
                 },
@@ -582,7 +658,7 @@ impl ChatApp {
         self.call.join(channel.to_string());
         self.perform_action(
             doc,
-            actions::ChatAction::JoinCall {
+            &actions::ChatAction::JoinCall {
                 channel: channel.to_string(),
                 user: me.clone(),
             },
@@ -594,7 +670,7 @@ impl ChatApp {
         if let Some(ticket) = self.media.local_ticket() {
             self.perform_action(
                 doc,
-                actions::ChatAction::SetCallTicket {
+                &actions::ChatAction::SetCallTicket {
                     channel: channel.to_string(),
                     user: me,
                     ticket,
@@ -623,7 +699,7 @@ impl ChatApp {
         let me = self.me.id.clone();
         self.perform_action(
             doc,
-            actions::ChatAction::LeaveCall {
+            &actions::ChatAction::LeaveCall {
                 channel: ch,
                 user: me,
             },
@@ -669,7 +745,7 @@ impl ChatApp {
         let me = self.me.id.clone();
         self.perform_action(
             doc,
-            actions::ChatAction::SetScreenShare {
+            &actions::ChatAction::SetScreenShare {
                 channel: ch,
                 user: me,
                 sharing,
@@ -688,7 +764,7 @@ impl ChatApp {
         let me = self.me.id.clone();
         self.perform_action(
             doc,
-            actions::ChatAction::SetCallState {
+            &actions::ChatAction::SetCallState {
                 channel: ch,
                 user: me,
                 talking: !self.call.muted,
@@ -738,11 +814,11 @@ impl ChatApp {
                 MenuAction::PinMessage => {
                     let channel = self.active_channel.clone();
                     let pinned = self.message(&id).is_some_and(|m| m.pinned);
-                    self.perform_action(doc, actions::pin_message_action(&channel, &id, !pinned));
+                    self.perform_action(doc, &actions::pin_message_action(&channel, &id, !pinned));
                 }
                 MenuAction::DeleteMessage => {
                     let channel = self.active_channel.clone();
-                    self.perform_action(doc, actions::delete_message_action(&channel, &id));
+                    self.perform_action(doc, &actions::delete_message_action(&channel, &id));
                 }
                 _ => {}
             },
@@ -760,14 +836,14 @@ impl ChatApp {
         match action {
             MenuAction::Rename => self.begin_rename(MenuTarget::Channel(id.to_string())),
             MenuAction::Delete => {
-                self.perform_action(doc, actions::delete_channel_action(id));
+                self.perform_action(doc, &actions::delete_channel_action(id));
                 if self.active_channel == id {
                     self.active_channel.clear(); // reload picks a new one
                 }
             }
             MenuAction::Archive => {
                 let archived = self.channel(id).is_some_and(|c| c.archived);
-                self.perform_action(doc, actions::archive_channel_action(id, !archived));
+                self.perform_action(doc, &actions::archive_channel_action(id, !archived));
                 if !archived && self.active_channel == id {
                     self.active_channel.clear(); // an archived channel leaves the view
                 }
@@ -791,7 +867,7 @@ impl ChatApp {
                 let new_id = new_channel_id();
                 self.perform_action(
                     doc,
-                    actions::create_channel_action(
+                    &actions::create_channel_action(
                         &ws,
                         id,
                         &new_id,
@@ -805,7 +881,7 @@ impl ChatApp {
                 let new_id = new_channel_id();
                 self.perform_action(
                     doc,
-                    actions::create_channel_action(
+                    &actions::create_channel_action(
                         &ws,
                         id,
                         &new_id,
@@ -840,7 +916,7 @@ impl ChatApp {
             if !text.is_empty() {
                 match target {
                     MenuTarget::Channel(id) => {
-                        self.perform_action(doc, actions::rename_channel_action(&id, text));
+                        self.perform_action(doc, &actions::rename_channel_action(&id, text));
                     }
                     // Categories are structural view grouping (not part of the
                     // exported channel/message action set) — a direct write.
@@ -853,7 +929,7 @@ impl ChatApp {
         }
     }
 
-    fn on_key(&mut self, key: &Key, modifiers: &Modifiers, doc: &mut AutoCommit) -> bool {
+    fn on_key(&mut self, key: &Key, modifiers: Modifiers, doc: &mut AutoCommit) -> bool {
         // The inline rename editor captures all keys while open.
         if self.rename.is_some() {
             return self.rename_key(key, doc);
@@ -998,8 +1074,10 @@ impl ChatApp {
 
     fn draft_key(&self) -> String {
         match self.focus {
-            Focus::Thread if self.thread_open.is_some() => self.thread_draft_key().unwrap(),
-            _ => self.active_channel.clone(),
+            Focus::Thread => self
+                .thread_draft_key()
+                .unwrap_or_else(|| self.active_channel.clone()),
+            Focus::Main => self.active_channel.clone(),
         }
     }
 
@@ -1101,7 +1179,7 @@ impl ChatApp {
         let channel = self.active_channel.clone();
         self.perform_action(
             doc,
-            actions::edit_message_action(&channel, &id, &text, now_secs()),
+            &actions::edit_message_action(&channel, &id, &text, now_secs()),
         );
         self.reload(doc);
     }
@@ -1119,10 +1197,11 @@ impl ChatApp {
             return;
         }
         let (key, parent) = match self.focus {
-            Focus::Thread if self.thread_open.is_some() => {
-                (self.thread_draft_key().unwrap(), self.thread_open.clone())
-            }
-            _ => (self.active_channel.clone(), None),
+            Focus::Thread => match self.thread_draft_key() {
+                Some(key) => (key, self.thread_open.clone()),
+                None => (self.active_channel.clone(), None),
+            },
+            Focus::Main => (self.active_channel.clone(), None),
         };
         let text = ChatDoc::draft_text(doc, &key);
         if text.trim().is_empty() {
@@ -1142,7 +1221,7 @@ impl ChatApp {
         let mentions = crate::mention::resolve(&text, &self.participants());
         self.perform_action(
             doc,
-            actions::send_message_action(
+            &actions::send_message_action(
                 &channel,
                 &new_message_id(),
                 &author,
@@ -1219,7 +1298,7 @@ impl ChatApp {
         let author = self.me.id.clone();
         self.perform_action(
             doc,
-            actions::send_message_action(
+            &actions::send_message_action(
                 &channel,
                 &new_message_id(),
                 &author,
@@ -1269,7 +1348,9 @@ mod tests {
         let spec = crit.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = match &spec.input {
             qos_actions::ActionInput::Immediate(e) => e.clone(),
-            _ => panic!("delete is an immediate action"),
+            qos_actions::ActionInput::Prompted { .. } => {
+                panic!("delete is an immediate action")
+            }
         };
 
         // Drive the real on-screen affordance (right-click menu → Delete).
@@ -1412,7 +1493,7 @@ mod tests {
             app.draft_main, "hello team",
             "the draft is mirrored into the CRDT"
         );
-        feed(&mut app, &mut doc, key_named(NamedKey::Enter));
+        feed(&mut app, &mut doc, &key_named(NamedKey::Enter));
         let after = ChatDoc::list_messages(&doc, "c_crit");
         assert_eq!(after.len(), before + 1);
         assert_eq!(after.last().unwrap().text, "hello team");
@@ -1654,7 +1735,7 @@ mod tests {
         app.focus = Focus::Main;
         app.set_composer_focus();
         type_str(&mut app, &mut doc, "abc");
-        feed(&mut app, &mut doc, key_named(NamedKey::Backspace));
+        feed(&mut app, &mut doc, &key_named(NamedKey::Backspace));
         assert_eq!(
             app.composer_main.value(),
             "ab",
@@ -1790,7 +1871,7 @@ mod tests {
         let mods = Modifiers::default();
         // Clear the working text, then type a new body — all via the key path.
         while app.editing.as_ref().is_some_and(|(_, t)| !t.is_empty()) {
-            app.on_key(&Key::Named(NamedKey::Backspace), &mods, &mut doc);
+            app.on_key(&Key::Named(NamedKey::Backspace), mods, &mut doc);
         }
         for ch in "Revised: host tile carries the follow control.".chars() {
             let k = if ch == ' ' {
@@ -1798,10 +1879,10 @@ mod tests {
             } else {
                 Key::Character(ch.to_string().into())
             };
-            app.on_key(&k, &mods, &mut doc);
+            app.on_key(&k, mods, &mut doc);
         }
         // Enter commits.
-        app.on_key(&Key::Named(NamedKey::Enter), &mods, &mut doc);
+        app.on_key(&Key::Named(NamedKey::Enter), mods, &mut doc);
 
         assert!(app.editing.is_none(), "saving closes the editor");
         let m = app.message("m_me1").unwrap();
@@ -1830,7 +1911,7 @@ mod tests {
             app.composer_main.value().is_empty(),
             "composer starts empty"
         );
-        feed(&mut app, &mut doc, key_named(NamedKey::ArrowUp));
+        feed(&mut app, &mut doc, &key_named(NamedKey::ArrowUp));
         let (id, text) = app.editing.clone().expect("ArrowUp opened the editor");
         assert_eq!(id, "m_me2", "loaded the last own top-level message");
         assert_eq!(
@@ -1848,7 +1929,7 @@ mod tests {
         app.focus = Focus::Main;
         app.set_composer_focus();
         type_str(&mut app, &mut doc, "half a thought");
-        feed(&mut app, &mut doc, key_named(NamedKey::ArrowUp));
+        feed(&mut app, &mut doc, &key_named(NamedKey::ArrowUp));
         assert!(
             app.editing.is_none(),
             "a non-empty composer suppresses ArrowUp-to-edit"
@@ -1861,10 +1942,10 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         let original = app.message("m_me1").unwrap().text.clone();
         app.begin_edit("m_me1".into());
-        app.on_key(&Key::Character("Z".into()), &Modifiers::default(), &mut doc);
+        app.on_key(&Key::Character("Z".into()), Modifiers::default(), &mut doc);
         app.on_key(
             &Key::Named(NamedKey::Escape),
-            &Modifiers::default(),
+            Modifiers::default(),
             &mut doc,
         );
         assert!(app.editing.is_none(), "Escape closes the editor");
@@ -1944,10 +2025,10 @@ mod tests {
             phase: winit::event::TouchPhase::Moved,
         }
     }
-    fn feed(app: &mut ChatApp, doc: &mut AutoCommit, ev: WindowEvent) {
+    fn feed(app: &mut ChatApp, doc: &mut AutoCommit, ev: &WindowEvent) {
         let mods = Modifiers::default();
         let mut handled = false;
-        app.dispatch_event(&ev, 1.0, &mods, doc, &mut handled);
+        app.dispatch_event(ev, 1.0, mods, doc, &mut handled);
     }
 
     /// A `KeyboardInput` press for a named key (Enter, Backspace, `ArrowUp` …).
@@ -1995,7 +2076,7 @@ mod tests {
             } else {
                 key_char(&ch.to_string())
             };
-            feed(app, doc, ev);
+            feed(app, doc, &ev);
         }
     }
 
@@ -2011,9 +2092,9 @@ mod tests {
         Modifiers::from(s)
     }
 
-    fn feed_mods(app: &mut ChatApp, doc: &mut AutoCommit, ev: WindowEvent, m: Modifiers) {
+    fn feed_mods(app: &mut ChatApp, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) {
         let mut handled = false;
-        app.dispatch_event(&ev, 1.0, &m, doc, &mut handled);
+        app.dispatch_event(ev, 1.0, m, doc, &mut handled);
     }
 
     /// Ctrl+V pastes the system clipboard into the focused composer, proving the
@@ -2035,7 +2116,7 @@ mod tests {
             "clipboard round-trips here (precondition for the paste path)"
         );
 
-        feed_mods(&mut app, &mut doc, key_char("v"), mods(true, false));
+        feed_mods(&mut app, &mut doc, &key_char("v"), mods(true, false));
 
         assert_eq!(
             app.composer_main.value(),
@@ -2062,9 +2143,9 @@ mod tests {
         render_frame(&mut app, 1280.0, 720.0);
 
         // Select the whole value (Ctrl+A) then copy it (Ctrl+C).
-        feed_mods(&mut app, &mut doc, key_char("a"), mods(true, false));
+        feed_mods(&mut app, &mut doc, &key_char("a"), mods(true, false));
         ui::clipboard_copy("stale"); // ensure the copy overwrites something
-        feed_mods(&mut app, &mut doc, key_char("c"), mods(true, false));
+        feed_mods(&mut app, &mut doc, &key_char("c"), mods(true, false));
         assert_eq!(
             ui::clipboard_paste().as_deref(),
             Some("copy me please"),
@@ -2545,22 +2626,22 @@ mod tests {
         let cy = row.center().y;
         // Press on the row (arms the swipe), drag left past the commit
         // threshold, release (commits the primary action = Delete).
-        feed(&mut app, &mut doc, cursor(row.center().x, cy));
+        feed(&mut app, &mut doc, &cursor(row.center().x, cy));
         feed(
             &mut app,
             &mut doc,
-            mouse(ElementState::Pressed, MouseButton::Left),
+            &mouse(ElementState::Pressed, MouseButton::Left),
         );
         assert!(app.swipe.is_some(), "pressing a channel row arms a swipe");
         feed(
             &mut app,
             &mut doc,
-            cursor(row.center().x - (SWIPE_COMMIT_DX + 20.0), cy),
+            &cursor(row.center().x - (SWIPE_COMMIT_DX + 20.0), cy),
         );
         feed(
             &mut app,
             &mut doc,
-            mouse(ElementState::Released, MouseButton::Left),
+            &mouse(ElementState::Released, MouseButton::Left),
         );
         assert!(
             !app.channels.iter().any(|c| c.id == "c_random"),
@@ -2665,14 +2746,14 @@ mod tests {
         app.thread_open = Some("m_concept".into());
         let mods = Modifiers::default();
         // Top layer first: the emoji picker.
-        assert!(app.on_key(&Key::Named(NamedKey::Escape), &mods, &mut doc));
+        assert!(app.on_key(&Key::Named(NamedKey::Escape), mods, &mut doc));
         assert!(!app.emoji_open, "Escape closes the emoji picker first");
         assert!(
             app.thread_open.is_some(),
             "the thread underneath stays open"
         );
         // Next Escape peels the thread.
-        assert!(app.on_key(&Key::Named(NamedKey::Escape), &mods, &mut doc));
+        assert!(app.on_key(&Key::Named(NamedKey::Escape), mods, &mut doc));
         assert!(
             app.thread_open.is_none(),
             "a second Escape closes the thread"
@@ -2683,10 +2764,10 @@ mod tests {
     fn mouse_wheel_scrolls_the_timeline() {
         let (mut app, mut doc) = app_with_doc();
         assert_eq!(app.scroll, 0.0);
-        feed(&mut app, &mut doc, wheel(3.0));
+        feed(&mut app, &mut doc, &wheel(3.0));
         assert!(app.scroll > 0.0, "scrolling moves the timeline");
         let up = app.scroll;
-        feed(&mut app, &mut doc, wheel(-5.0));
+        feed(&mut app, &mut doc, &wheel(-5.0));
         assert!(app.scroll < up, "scrolling the other way moves it back");
     }
 

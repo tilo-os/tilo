@@ -21,7 +21,10 @@ pub use crate::shell::collab_core::{
     AuditEntry, BrokerChannels, RedactionRecord, apply_redaction_from_envelope,
 };
 use crate::shell::collab_outbound::PeerPublisher;
-use crate::shell::network::ShellNetwork;
+use crate::shell::network::{
+    InboundAppCrdt, InboundAppCrdtSigned, InboundAppPresence, InboundScrollbackRequest,
+    InboundScrollbackResponse, ShellNetwork,
+};
 
 /// What a room calls the peers in it, keyed by the handle presence
 /// frames identify their sender by. Same shape as
@@ -179,6 +182,7 @@ impl CrdtRoute {
 
     /// Narrow this route to a record; an empty `record_id` leaves it as
     /// it was (pre-record addressing).
+    #[must_use]
     pub fn on_record(mut self, record_id: impl Into<String>) -> Self {
         self.record_id = record_id.into();
         self
@@ -255,6 +259,13 @@ impl CrdtRoute {
     }
 }
 
+/// Callback an in-process fanout subscriber registers to receive
+/// delivered events. Aliased because the raw `Box<dyn Fn(...)>` shape
+/// recurs across [`RoomSubscription`], [`FanoutState::subscribe_rooms`]
+/// and [`BrokerHandle::subscribe_rooms`], and the last of those is public
+/// API other modules call.
+pub type FanoutSink = Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>;
+
 /// Shared fanout registry for typed RPC subscribers and in-process shell consumers.
 pub struct FanoutState {
     peer_id_counter: AtomicU64,
@@ -272,7 +283,7 @@ pub struct FanoutState {
 /// when an invite is accepted.
 pub struct RoomSubscription {
     rooms: Mutex<Vec<String>>,
-    sink: Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>,
+    sink: FanoutSink,
 }
 
 impl RoomSubscription {
@@ -310,7 +321,7 @@ impl FanoutState {
     pub(crate) fn subscribe_rooms(
         &self,
         rooms: Vec<String>,
-        sink: Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>,
+        sink: FanoutSink,
     ) -> Arc<RoomSubscription> {
         let sub = Arc::new(RoomSubscription {
             rooms: Mutex::new(rooms),
@@ -398,7 +409,10 @@ pub struct BrokerHandle {
 impl BrokerHandle {
     /// Number of typed connections accepted since this broker started.
     pub fn peer_count(&self) -> usize {
-        self.fanout.connections_seen() as usize
+        // Saturates rather than truncates on a 32-bit target — this is a
+        // connection count, not an index, so clamping to `usize::MAX`
+        // loses nothing a real desktop session would ever reach.
+        usize::try_from(self.fanout.connections_seen()).unwrap_or(usize::MAX)
     }
 
     /// Every typed connection joins a channel as part of setup.
@@ -416,11 +430,7 @@ impl BrokerHandle {
 
     /// Subscribe this process to the rooms it hosts. The sink runs on
     /// the reader thread that decoded the frame: keep it short.
-    pub fn subscribe_rooms(
-        &self,
-        rooms: Vec<String>,
-        sink: Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>,
-    ) -> Arc<RoomSubscription> {
+    pub fn subscribe_rooms(&self, rooms: Vec<String>, sink: FanoutSink) -> Arc<RoomSubscription> {
         self.fanout.subscribe_rooms(rooms, sink)
     }
 
@@ -473,39 +483,400 @@ impl Drop for BrokerHandle {
 }
 
 /// Bind the typed Cap'n Proto service.
+///
+/// # Errors
+///
+/// Returns an error if the Cap'n Proto socket at `capnp_socket_path`
+/// cannot be bound (e.g. a stale socket file blocks it, or the parent
+/// directory is not writable).
 pub fn spawn_native(
     capnp_socket_path: PathBuf,
-    peer_sync: Option<Arc<ShellNetwork>>,
+    peer_sync: &Option<Arc<ShellNetwork>>,
 ) -> std::io::Result<BrokerHandle> {
     let identity = LocalIdentity::from_network(peer_sync.clone());
     let publisher = PeerPublisher::from_network(peer_sync.clone());
-    spawn_inner(capnp_socket_path, peer_sync, identity, publisher)
+    spawn_inner(capnp_socket_path, peer_sync.as_ref(), &identity, &publisher)
 }
 
+/// Test-only variant of [`spawn_native`] that takes an explicit
+/// [`LocalIdentity`] instead of deriving one from `peer_sync`.
+///
+/// # Errors
+///
+/// Same failure mode as [`spawn_native`]: the Cap'n Proto socket at
+/// `capnp_socket_path` could not be bound.
 #[cfg(test)]
 pub fn spawn_native_with_identity(
     capnp_socket_path: PathBuf,
-    peer_sync: Option<Arc<ShellNetwork>>,
-    identity: Arc<LocalIdentity>,
+    peer_sync: &Option<Arc<ShellNetwork>>,
+    identity: &Arc<LocalIdentity>,
 ) -> std::io::Result<BrokerHandle> {
     let publisher = PeerPublisher::from_network(peer_sync.clone());
-    spawn_inner(capnp_socket_path, peer_sync, identity, publisher)
+    spawn_inner(capnp_socket_path, peer_sync.as_ref(), identity, &publisher)
 }
 
+/// Test-only variant of [`spawn_native`] that takes an explicit
+/// [`PeerPublisher`] and runs with no peer-sync network at all.
+///
+/// # Errors
+///
+/// Same failure mode as [`spawn_native`]: the Cap'n Proto socket at
+/// `capnp_socket_path` could not be bound.
 #[cfg(test)]
 pub fn spawn_native_with_publisher(
     capnp_socket_path: PathBuf,
-    publisher: Arc<PeerPublisher>,
+    publisher: &Arc<PeerPublisher>,
 ) -> std::io::Result<BrokerHandle> {
     let identity = LocalIdentity::from_network(None);
-    spawn_inner(capnp_socket_path, None, identity, publisher)
+    spawn_inner(capnp_socket_path, None, &identity, publisher)
+}
+
+/// Inbound queues + shared fanout state the drain thread polls each
+/// cycle. Grouped into one struct so the thread closure in
+/// [`spawn_inner`] doesn't have to carry the whole per-iteration match
+/// itself — see the `drain_*` methods below, extracted from what used
+/// to be one large loop body.
+struct DrainQueues {
+    inbound: Arc<Mutex<Vec<InboundAppCrdt>>>,
+    snapshot_inbound: Arc<Mutex<Vec<InboundAppCrdt>>>,
+    presence_inbound: Arc<Mutex<Vec<InboundAppPresence>>>,
+    signed_inbound: Arc<Mutex<Vec<InboundAppCrdtSigned>>>,
+    sb_req_inbound: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
+    sb_resp_inbound: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
+    table: Arc<FanoutState>,
+    channels: Arc<Mutex<BrokerChannels>>,
+    net: Arc<ShellNetwork>,
+    pending: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>>,
+}
+
+impl DrainQueues {
+    /// Run one pass over every inbound queue, in the same order the
+    /// original inline loop drained them. Returns `false` when a
+    /// queue's lock is poisoned — the signal the caller uses to stop
+    /// the thread, matching the original inline `Err(_) => break` on
+    /// each queue; short-circuits the same way that `break` did, so a
+    /// poisoned queue skips whatever would have run after it this
+    /// cycle too.
+    fn drain_once(
+        &self,
+        labels: &mut HashMap<String, (Instant, PeerLabels)>,
+        announced: &mut HashMap<(String, u64), (String, u64)>,
+    ) -> bool {
+        self.drain_incremental()
+            && self.drain_snapshots()
+            && self.drain_presence(labels, announced)
+            && self.drain_signed(labels, announced)
+            && self.drain_scrollback_requests()
+            && self.drain_scrollback_responses()
+    }
+
+    /// Drain inbound unsigned CRDT increments.
+    fn drain_incremental(&self) -> bool {
+        let drained: Vec<_> = {
+            let Ok(mut buf) = self.inbound.lock() else {
+                return false;
+            };
+            std::mem::take(&mut *buf)
+        };
+        for entry in drained {
+            tracing::info!(
+                target: "qos_collab_probe",
+                app = %entry.app_id,
+                cluster = %entry.cluster_id,
+                record = %entry.record_id,
+                bytes = entry.data.len(),
+                "PROBE drain incremental -> local fanout",
+            );
+            let event = CollabEvent::CRDTIncremental { data: entry.data };
+            // Deliver only to apps that announced the same
+            // app+cluster; no local peer skipped by id since
+            // the update originated outside this host.
+            let route = CrdtRoute::record(entry.app_id, entry.cluster_id, entry.record_id);
+            self.table.fanout_to_route(&event, u64::MAX, &route);
+        }
+        true
+    }
+
+    /// Drain inbound whole-document snapshots, sent because this
+    /// host's app announced `Arrived`. Delivered as `CRDTUpdate`, which
+    /// the toolkit merges rather than assigns — a snapshot arriving
+    /// after the local user typed must not discard it. Routed by the
+    /// full record triple: a document merged into the wrong record is
+    /// unrecoverable, not just noisy.
+    fn drain_snapshots(&self) -> bool {
+        let drained_snapshots: Vec<_> = {
+            let Ok(mut buf) = self.snapshot_inbound.lock() else {
+                return false;
+            };
+            std::mem::take(&mut *buf)
+        };
+        for entry in drained_snapshots {
+            tracing::info!(
+                target: "qos_collab_probe",
+                app = %entry.app_id,
+                cluster = %entry.cluster_id,
+                record = %entry.record_id,
+                bytes = entry.data.len(),
+                "PROBE drain snapshot -> local fanout",
+            );
+            let event = CollabEvent::CRDTUpdate { data: entry.data };
+            let route = CrdtRoute::record(entry.app_id, entry.cluster_id, entry.record_id);
+            self.table.fanout_to_route(&event, u64::MAX, &route);
+        }
+        true
+    }
+
+    /// Drain inbound presence, attributed to its sender. Cluster scope,
+    /// matching a local presence frame (`CrdtRoute::to_cluster_scope`)
+    /// — narrowing to a record would make a peer visible locally but
+    /// invisible remotely.
+    fn drain_presence(
+        &self,
+        labels: &mut HashMap<String, (Instant, PeerLabels)>,
+        announced: &mut HashMap<(String, u64), (String, u64)>,
+    ) -> bool {
+        let drained_presence: Vec<_> = {
+            let Ok(mut buf) = self.presence_inbound.lock() else {
+                return false;
+            };
+            std::mem::take(&mut *buf)
+        };
+        for entry in drained_presence {
+            let decoded = crate::shell::collab_presence::from_peer(entry.presence);
+            let Some((key, payload)) = decoded else {
+                continue;
+            };
+            // `Arrived` means the peer has no document
+            // yet; note it so the next snapshot this
+            // host's apps produce gets published.
+            if matches!(&payload, ui::collaboration::PresencePayload::Arrived) {
+                self.net.note_snapshot_request(&entry.cluster_id);
+            }
+            let user_id = remote_participant_id(
+                &entry.cluster_id,
+                entry.peer,
+                &|c| self.net.peer_labels(c),
+                &self.table,
+                labels,
+                announced,
+            );
+            let route = CrdtRoute::cluster(entry.cluster_id.clone());
+            let event = CollabEvent::RemotePresenceUpdate {
+                user_id,
+                key,
+                payload,
+            };
+            self.table.fanout_to_route(&event, u64::MAX, &route);
+        }
+        true
+    }
+
+    /// Validate inbound signed ops against local channel state, record
+    /// on success, fan to local apps.
+    fn drain_signed(
+        &self,
+        labels: &mut HashMap<String, (Instant, PeerLabels)>,
+        announced: &mut HashMap<(String, u64), (String, u64)>,
+    ) -> bool {
+        let drained_signed: Vec<_> = {
+            let Ok(mut buf) = self.signed_inbound.lock() else {
+                return false;
+            };
+            std::mem::take(&mut *buf)
+        };
+        for entry in drained_signed {
+            let envelope = *entry.envelope;
+            let artifact = envelope.artifact;
+            let validation = {
+                let Ok(mut ch) = self.channels.lock() else {
+                    continue;
+                };
+                let state = ch.state_for(artifact);
+                validate_inbound_op(&envelope, state)
+            };
+            match validation {
+                Ok(()) => {
+                    // Built from individual fields, not `&entry` —
+                    // `entry.envelope` was moved out above, and a
+                    // struct with a moved-out field can no longer be
+                    // borrowed as a whole.
+                    let route =
+                        CrdtRoute::record(&entry.app_id, &entry.cluster_id, &entry.record_id);
+                    self.accept_signed_op(
+                        envelope, artifact, entry.peer, &route, labels, announced,
+                    );
+                }
+                Err(ValidationError::OpAlreadyRedacted { target }) => {
+                    self.record_already_redacted(envelope, artifact, target);
+                }
+                Err(reason) => {
+                    tracing::warn!("collab_broker (net): dropping invalid signed op: {reason}",);
+                    if let Ok(mut ch) = self.channels.lock() {
+                        ch.audit.record(
+                            artifact,
+                            AuditEntry {
+                                envelope: Box::new(envelope),
+                                rejection: Some(reason),
+                                at: std::time::SystemTime::now(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Record a signed op that passed validation and fan it to local
+    /// apps — the `Ok(())` arm of [`Self::drain_signed`]'s per-entry
+    /// match, split out to keep that match's arms short.
+    fn accept_signed_op(
+        &self,
+        envelope: collab_types::SignedOp,
+        artifact: ArtifactId,
+        peer: u64,
+        route: &CrdtRoute,
+        labels: &mut HashMap<String, (Instant, PeerLabels)>,
+        announced: &mut HashMap<(String, u64), (String, u64)>,
+    ) {
+        if let Ok(mut ch) = self.channels.lock() {
+            let state = ch.state_for(artifact);
+            state.record_validated_op(envelope.clone());
+            if envelope.op_class == OpClass::Compaction
+                && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
+            {
+                let _ = state.apply_compaction(&cp);
+            }
+        }
+        if envelope.op_class == OpClass::Redact {
+            apply_redaction_from_envelope(&envelope, artifact, &self.channels);
+        }
+        // Same id and room lookup the peer's
+        // presence arrives under, so one
+        // person reads as one participant.
+        let from_user_id = remote_participant_id(
+            &route.cluster_id,
+            peer,
+            &|c| self.net.peer_labels(c),
+            &self.table,
+            labels,
+            announced,
+        );
+        let event = CollabEvent::SignedCRDTIncremental {
+            envelope: Box::new(envelope),
+            from_user_id,
+        };
+        // Same app + cluster stamp as unsigned envelopes; an
+        // unaddressed one (too old to stamp) is dropped, not shown to
+        // every app.
+        self.table.fanout_to_route(&event, u64::MAX, route);
+    }
+
+    /// Late-arriving op via Iroh, already redacted: don't fan, push a
+    /// marker entry so the seq stream stays gapless — the
+    /// `OpAlreadyRedacted` arm of [`Self::drain_signed`]'s per-entry
+    /// match, split out to keep that match's arms short.
+    fn record_already_redacted(
+        &self,
+        envelope: collab_types::SignedOp,
+        artifact: ArtifactId,
+        target: collab_types::OpId,
+    ) {
+        tracing::warn!(
+            artifact = ?artifact,
+            target = ?target,
+            "collab_broker (net): late-arriving op already redacted",
+        );
+        if let Ok(mut ch) = self.channels.lock() {
+            let state = ch.state_for(artifact);
+            let mut marker_envelope = envelope.clone();
+            if let Ok(marker_bytes) = RedactedMarker::v1().canonical() {
+                marker_envelope.payload = marker_bytes;
+            }
+            state.record_validated_op(marker_envelope);
+            ch.audit.record(
+                artifact,
+                AuditEntry {
+                    envelope: Box::new(envelope),
+                    rejection: Some(ValidationError::OpAlreadyRedacted { target }),
+                    at: std::time::SystemTime::now(),
+                },
+            );
+        }
+    }
+
+    /// Drain inbound scrollback requests; publish a response only if
+    /// we have matching ops, so the requester isn't spammed by every
+    /// peer's "I don't have it either".
+    fn drain_scrollback_requests(&self) -> bool {
+        let drained_req: Vec<_> = {
+            let Ok(mut buf) = self.sb_req_inbound.lock() else {
+                return false;
+            };
+            std::mem::take(&mut *buf)
+        };
+        for entry in drained_req {
+            let (ops, _exhausted) = {
+                let Ok(mut ch) = self.channels.lock() else {
+                    continue;
+                };
+                let state = ch.state_for(entry.artifact);
+                state.scrollback_for(entry.artifact, entry.before_seq, entry.max)
+            };
+            if !ops.is_empty() {
+                let boxed: Vec<Box<collab_types::SignedOp>> =
+                    ops.into_iter().map(Box::new).collect();
+                self.net.publish_scrollback_response(entry.artifact, boxed);
+            }
+        }
+        true
+    }
+
+    /// Drain inbound scrollback responses, deliver to the route(s)
+    /// recorded in `pending`; an unrequested response is dropped, not
+    /// broadcast.
+    fn drain_scrollback_responses(&self) -> bool {
+        let drained_resp: Vec<_> = {
+            let Ok(mut buf) = self.sb_resp_inbound.lock() else {
+                return false;
+            };
+            std::mem::take(&mut *buf)
+        };
+        for entry in drained_resp {
+            let waiting = self
+                .pending
+                .lock()
+                .ok()
+                .and_then(|mut p| p.remove(&entry.artifact))
+                .unwrap_or_default();
+            if waiting.is_empty() {
+                tracing::debug!(
+                    artifact = ?entry.artifact,
+                    "collab_broker: dropping cooperative scrollback \
+                     response nobody asked for",
+                );
+                continue;
+            }
+            // Closing half of a cooperative round-trip;
+            // exhausted=true so the app doesn't re-ask.
+            let event = CollabEvent::ScrollbackBatch {
+                artifact: entry.artifact,
+                ops: entry.ops.into_iter().map(Box::new).collect(),
+                exhausted: true,
+            };
+            for route in waiting {
+                self.table.fanout_to_route(&event, u64::MAX, &route);
+            }
+        }
+        true
+    }
 }
 
 fn spawn_inner(
     capnp_socket_path: PathBuf,
-    peer_sync: Option<Arc<ShellNetwork>>,
-    identity: Arc<LocalIdentity>,
-    publisher: Arc<PeerPublisher>,
+    peer_sync: Option<&Arc<ShellNetwork>>,
+    identity: &Arc<LocalIdentity>,
+    publisher: &Arc<PeerPublisher>,
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
@@ -522,318 +893,49 @@ fn spawn_inner(
     // Every remote entry is routed like a local one, by the `(app_id,
     // cluster_id)` the publishing host stamped on the wire.
     let drain_quit = Arc::new(AtomicBool::new(false));
-    let drain_thread = peer_sync
-        .as_ref()
-        .map(|net| {
-            let inbound = net.inbound_app_crdt_handle();
-            let presence_inbound = net.inbound_app_presence_handle();
-            let snapshot_inbound = net.inbound_app_crdt_snapshot_handle();
-            let signed_inbound = net.inbound_app_crdt_signed_handle();
-            let sb_req_inbound = net.inbound_scrollback_request_handle();
-            let sb_resp_inbound = net.inbound_scrollback_response_handle();
-            let drain_table = Arc::clone(&table);
-            let drain_channels = Arc::clone(&channels);
-            let drain_net = Arc::clone(net);
-            let drain_pending = Arc::clone(&pending_scrollback);
-            let quit = Arc::clone(&drain_quit);
-            std::thread::Builder::new()
-                .name("qos-collab-broker-drain".into())
-                .spawn(move || {
-                    // Name already announced per (peer, cluster) — said
-                    // again only when it changes, not on every
-                    // pointer-rate presence frame.
-                    let mut announced: std::collections::HashMap<(String, u64), (String, u64)> =
-                        std::collections::HashMap::new();
-                    // What the room last said, on a re-ask cadence
-                    // rather than every frame — the lookup takes the
-                    // replica's lock and parses every peer id it holds.
-                    let mut labels: std::collections::HashMap<String, (Instant, PeerLabels)> =
-                        std::collections::HashMap::new();
-                    while !quit.load(Ordering::Relaxed) {
-                        // Drain inbound unsigned CRDT increments.
-                        let drained: Vec<_> = {
-                            let mut buf = match inbound.lock() {
-                                Ok(g) => g,
-                                Err(_) => break,
-                            };
-                            std::mem::take(&mut *buf)
-                        };
-                        for entry in drained {
-                            tracing::info!(
-                                target: "qos_collab_probe",
-                                app = %entry.app_id,
-                                cluster = %entry.cluster_id,
-                                record = %entry.record_id,
-                                bytes = entry.data.len(),
-                                "PROBE drain incremental -> local fanout",
-                            );
-                            let event = CollabEvent::CRDTIncremental { data: entry.data };
-                            // Deliver only to apps that announced the same
-                            // app+cluster; no local peer skipped by id since
-                            // the update originated outside this host.
-                            let route =
-                                CrdtRoute::record(entry.app_id, entry.cluster_id, entry.record_id);
-                            drain_table.fanout_to_route(&event, u64::MAX, &route);
-                        }
-
-                        // Drain inbound whole-document snapshots, sent
-                        // because this host's app announced `Arrived`.
-                        // Delivered as `CRDTUpdate`, which the toolkit
-                        // merges rather than assigns — a snapshot
-                        // arriving after the local user typed must not
-                        // discard it. Routed by the full record triple:
-                        // a document merged into the wrong record is
-                        // unrecoverable, not just noisy.
-                        let drained_snapshots: Vec<_> = {
-                            let mut buf = match snapshot_inbound.lock() {
-                                Ok(g) => g,
-                                Err(_) => break,
-                            };
-                            std::mem::take(&mut *buf)
-                        };
-                        for entry in drained_snapshots {
-                            tracing::info!(
-                                target: "qos_collab_probe",
-                                app = %entry.app_id,
-                                cluster = %entry.cluster_id,
-                                record = %entry.record_id,
-                                bytes = entry.data.len(),
-                                "PROBE drain snapshot -> local fanout",
-                            );
-                            let event = CollabEvent::CRDTUpdate { data: entry.data };
-                            let route =
-                                CrdtRoute::record(entry.app_id, entry.cluster_id, entry.record_id);
-                            drain_table.fanout_to_route(&event, u64::MAX, &route);
-                        }
-
-                        // Drain inbound presence, attributed to its
-                        // sender. Cluster scope, matching a local
-                        // presence frame (`CrdtRoute::to_cluster_scope`)
-                        // — narrowing to a record would make a peer
-                        // visible locally but invisible remotely.
-                        let drained_presence: Vec<_> = {
-                            let mut buf = match presence_inbound.lock() {
-                                Ok(g) => g,
-                                Err(_) => break,
-                            };
-                            std::mem::take(&mut *buf)
-                        };
-                        for entry in drained_presence {
-                            let decoded = crate::shell::collab_presence::from_peer(entry.presence);
-                            let Some((key, payload)) = decoded else {
-                                continue;
-                            };
-                            // `Arrived` means the peer has no document
-                            // yet; note it so the next snapshot this
-                            // host's apps produce gets published.
-                            if matches!(&payload, ui::collaboration::PresencePayload::Arrived) {
-                                drain_net.note_snapshot_request(&entry.cluster_id);
-                            }
-                            let user_id = remote_participant_id(
-                                &entry.cluster_id,
-                                entry.peer,
-                                &|c| drain_net.peer_labels(c),
-                                &drain_table,
-                                &mut labels,
-                                &mut announced,
-                            );
-                            let route = CrdtRoute::cluster(entry.cluster_id.clone());
-                            let event = CollabEvent::RemotePresenceUpdate {
-                                user_id,
-                                key,
-                                payload,
-                            };
-                            drain_table.fanout_to_route(&event, u64::MAX, &route);
-                        }
-
-                        // Validate against local channel state, record on success,
-                        // fan to local apps.
-                        let drained_signed: Vec<_> = {
-                            let mut buf = match signed_inbound.lock() {
-                                Ok(g) => g,
-                                Err(_) => break,
-                            };
-                            std::mem::take(&mut *buf)
-                        };
-                        for entry in drained_signed {
-                            let envelope = *entry.envelope;
-                            let artifact = envelope.artifact;
-                            let validation = {
-                                let Ok(mut ch) = drain_channels.lock() else {
-                                    continue;
-                                };
-                                let state = ch.state_for(artifact);
-                                validate_inbound_op(&envelope, state)
-                            };
-                            match validation {
-                                Ok(()) => {
-                                    if let Ok(mut ch) = drain_channels.lock() {
-                                        let state = ch.state_for(artifact);
-                                        state.record_validated_op(envelope.clone());
-                                        if envelope.op_class == OpClass::Compaction
-                                            && let Ok(cp) =
-                                                collab_types::parse_compaction_payload(&envelope)
-                                        {
-                                            let _ = state.apply_compaction(&cp);
-                                        }
-                                    }
-                                    if envelope.op_class == OpClass::Redact {
-                                        apply_redaction_from_envelope(
-                                            &envelope,
-                                            artifact,
-                                            &drain_channels,
-                                        );
-                                    }
-                                    // Same id and room lookup the peer's
-                                    // presence arrives under, so one
-                                    // person reads as one participant.
-                                    let from_user_id = remote_participant_id(
-                                        &entry.cluster_id,
-                                        entry.peer,
-                                        &|c| drain_net.peer_labels(c),
-                                        &drain_table,
-                                        &mut labels,
-                                        &mut announced,
-                                    );
-                                    let event = CollabEvent::SignedCRDTIncremental {
-                                        envelope: Box::new(envelope),
-                                        from_user_id,
-                                    };
-                                    // Same app + cluster stamp as unsigned
-                                    // envelopes; an unaddressed one (too
-                                    // old to stamp) is dropped, not shown
-                                    // to every app.
-                                    let route = CrdtRoute::record(
-                                        entry.app_id.clone(),
-                                        entry.cluster_id.clone(),
-                                        entry.record_id.clone(),
-                                    );
-                                    drain_table.fanout_to_route(&event, u64::MAX, &route);
-                                }
-                                Err(ValidationError::OpAlreadyRedacted { target }) => {
-                                    // Late-arriving op via Iroh, already
-                                    // redacted: don't fan, push a marker
-                                    // entry so the seq stream stays gapless.
-                                    tracing::warn!(
-                                        artifact = ?artifact,
-                                        target = ?target,
-                                        "collab_broker (net): late-arriving op already redacted",
-                                    );
-                                    if let Ok(mut ch) = drain_channels.lock() {
-                                        let state = ch.state_for(artifact);
-                                        let mut marker_envelope = envelope.clone();
-                                        if let Ok(marker_bytes) = RedactedMarker::v1().canonical() {
-                                            marker_envelope.payload = marker_bytes;
-                                        }
-                                        state.record_validated_op(marker_envelope);
-                                        ch.audit.record(
-                                            artifact,
-                                            AuditEntry {
-                                                envelope: Box::new(envelope),
-                                                rejection: Some(
-                                                    ValidationError::OpAlreadyRedacted { target },
-                                                ),
-                                                at: std::time::SystemTime::now(),
-                                            },
-                                        );
-                                    }
-                                }
-                                Err(reason) => {
-                                    tracing::warn!(
-                                        "collab_broker (net): dropping invalid signed op: {reason}",
-                                    );
-                                    if let Ok(mut ch) = drain_channels.lock() {
-                                        ch.audit.record(
-                                            artifact,
-                                            AuditEntry {
-                                                envelope: Box::new(envelope),
-                                                rejection: Some(reason),
-                                                at: std::time::SystemTime::now(),
-                                            },
-                                        );
-                                    }
-                                }
-                            }
-                        }
-
-                        // Drain inbound scrollback requests; publish a
-                        // response only if we have matching ops, so the
-                        // requester isn't spammed by every peer's "I
-                        // don't have it either".
-                        let drained_req: Vec<_> = {
-                            let mut buf = match sb_req_inbound.lock() {
-                                Ok(g) => g,
-                                Err(_) => break,
-                            };
-                            std::mem::take(&mut *buf)
-                        };
-                        for entry in drained_req {
-                            let (ops, _exhausted) = {
-                                let Ok(mut ch) = drain_channels.lock() else {
-                                    continue;
-                                };
-                                let state = ch.state_for(entry.artifact);
-                                state.scrollback_for(entry.artifact, entry.before_seq, entry.max)
-                            };
-                            if !ops.is_empty() {
-                                let boxed: Vec<Box<collab_types::SignedOp>> =
-                                    ops.into_iter().map(Box::new).collect();
-                                drain_net.publish_scrollback_response(entry.artifact, boxed);
-                            }
-                        }
-
-                        // Drain inbound scrollback responses, deliver to
-                        // the route(s) recorded in `pending_scrollback`;
-                        // an unrequested response is dropped, not
-                        // broadcast.
-                        let drained_resp: Vec<_> = {
-                            let mut buf = match sb_resp_inbound.lock() {
-                                Ok(g) => g,
-                                Err(_) => break,
-                            };
-                            std::mem::take(&mut *buf)
-                        };
-                        for entry in drained_resp {
-                            let waiting = drain_pending
-                                .lock()
-                                .ok()
-                                .and_then(|mut p| p.remove(&entry.artifact))
-                                .unwrap_or_default();
-                            if waiting.is_empty() {
-                                tracing::debug!(
-                                    artifact = ?entry.artifact,
-                                    "collab_broker: dropping cooperative scrollback \
-                                     response nobody asked for",
-                                );
-                                continue;
-                            }
-                            // Closing half of a cooperative round-trip;
-                            // exhausted=true so the app doesn't re-ask.
-                            let event = CollabEvent::ScrollbackBatch {
-                                artifact: entry.artifact,
-                                ops: entry.ops,
-                                exhausted: true,
-                            };
-                            for route in waiting {
-                                drain_table.fanout_to_route(&event, u64::MAX, &route);
-                            }
-                        }
-
-                        std::thread::sleep(Duration::from_millis(100));
+    let drain_thread = peer_sync.and_then(|net| {
+        let queues = DrainQueues {
+            inbound: net.inbound_app_crdt_handle(),
+            presence_inbound: net.inbound_app_presence_handle(),
+            snapshot_inbound: net.inbound_app_crdt_snapshot_handle(),
+            signed_inbound: net.inbound_app_crdt_signed_handle(),
+            sb_req_inbound: net.inbound_scrollback_request_handle(),
+            sb_resp_inbound: net.inbound_scrollback_response_handle(),
+            table: Arc::clone(&table),
+            channels: Arc::clone(&channels),
+            net: Arc::clone(net),
+            pending: Arc::clone(&pending_scrollback),
+        };
+        let quit = Arc::clone(&drain_quit);
+        std::thread::Builder::new()
+            .name("qos-collab-broker-drain".into())
+            .spawn(move || {
+                // Name already announced per (peer, cluster) — said
+                // again only when it changes, not on every
+                // pointer-rate presence frame.
+                let mut announced: HashMap<(String, u64), (String, u64)> = HashMap::new();
+                // What the room last said, on a re-ask cadence
+                // rather than every frame — the lookup takes the
+                // replica's lock and parses every peer id it holds.
+                let mut labels: HashMap<String, (Instant, PeerLabels)> = HashMap::new();
+                while !quit.load(Ordering::Relaxed) {
+                    if !queues.drain_once(&mut labels, &mut announced) {
+                        break;
                     }
-                })
-                .ok()
-        })
-        .flatten();
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            })
+            .ok()
+    });
 
     // Typed RPC interface, attached to the shared fanout state.
     let capnp_quit = Arc::new(AtomicBool::new(false));
     let capnp_thread = crate::shell::collab_broker_capnp::spawn(
         capnp_socket_path.clone(),
-        Arc::clone(&table),
+        &table,
         Arc::clone(&channels),
-        Arc::clone(&publisher),
-        Arc::clone(&identity),
+        Arc::clone(publisher),
+        Arc::clone(identity),
         Arc::clone(&capnp_quit),
     )?;
 
@@ -928,9 +1030,8 @@ fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Opt
     let now = known.unwrap_or(id);
     match said {
         Some(before) if before == now => None,
-        Some(_) => Some(now.to_string()),
         None if now == id => None,
-        None => Some(now.to_string()),
+        _ => Some(now.to_string()),
     }
 }
 
@@ -969,6 +1070,8 @@ mod tests {
 
     #[test]
     fn a_remote_peer_is_one_id_across_presence_and_deltas() {
+        const HANDLE: u64 = 721_275_257_761_426_039;
+
         let table = Arc::new(super::FanoutState::new());
         let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
         let sink_seen = Arc::clone(&seen);
@@ -985,7 +1088,6 @@ mod tests {
             }),
         );
 
-        const HANDLE: u64 = 721_275_257_761_426_039;
         let room = |_c: &str| {
             let mut m = PeerLabels::new();
             m.insert(HANDLE, "Xaver".to_string());
@@ -1037,6 +1139,8 @@ mod tests {
     /// "changes" is measured against what was said, not against who heard it.
     #[test]
     fn a_name_already_announced_is_said_again_for_an_app_that_missed_it() {
+        const HANDLE: u64 = 4_242_424_242;
+
         let table = Arc::new(super::FanoutState::new());
         let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&heard);
@@ -1053,7 +1157,6 @@ mod tests {
             }),
         );
 
-        const HANDLE: u64 = 4_242_424_242;
         let room = |_c: &str| {
             let mut m = PeerLabels::new();
             m.insert(HANDLE, "Xaver".to_string());

@@ -9,6 +9,16 @@
 //! renderer `--shots` uses — and assert the surface actually painted content
 //! (it is not blank), so a "shot" is verified, not just produced.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use automerge::AutoCommit;
@@ -53,6 +63,11 @@ impl Driver {
 
     /// Run sync → `build_layout` → `compute_layout` → `apply_layout` → draw, caching
     /// the produced scene for inspection.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "VW/VH are fixed viewport constants (1280/800), both exactly \
+                  representable in f32 (well under its 2^24 exact-integer range)"
+    )]
     fn frame(&mut self) {
         self.app.sync(&mut self.doc, &self.root);
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -108,26 +123,26 @@ impl Driver {
 
     /// Move the cursor and left-click, routing through `handle_event`.
     fn click(&mut self, x: f64, y: f64) {
-        self.dispatch(cursor_at(Point::new(x, y)));
-        self.dispatch(left_press());
+        self.dispatch(&cursor_at(Point::new(x, y)));
+        self.dispatch(&left_press());
     }
 
     /// Type a single character through `handle_event` (`KeyboardInput`).
     fn type_char(&mut self, ch: &str) {
-        self.dispatch(char_press(ch));
+        self.dispatch(&char_press(ch));
     }
 
     fn key(&mut self, named: winit::keyboard::NamedKey) {
-        self.dispatch(named_press(named));
+        self.dispatch(&named_press(named));
     }
 
-    fn dispatch(&mut self, event: winit::event::WindowEvent) {
+    fn dispatch(&mut self, event: &winit::event::WindowEvent) {
         let mut taffy = TaffyTree::<()>::new();
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mut handled = false;
         let mut focus = None;
         self.app.handle_event(
-            &event,
+            event,
             1.0,
             &winit::event::Modifiers::default(),
             &mut self.doc,
@@ -140,7 +155,7 @@ impl Driver {
     }
 
     /// Render the cached scene to RGBA for pixel inspection.
-    fn rgba(&mut self) -> Vec<u8> {
+    fn rgba(&self) -> Vec<u8> {
         let mut r = OffscreenRenderer::new(VW, VH);
         r.render_rgba(&self.last_scene)
     }

@@ -5,6 +5,16 @@
 //! it in the other" — the App layer drives exactly these calls
 //! (`broadcast_doc_delta` -> `SyncIncremental`; poll -> `load_incremental`).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::thread;
 use std::time::Duration;
 

@@ -3,6 +3,16 @@
 //! served by a live iroh node, then resolve → download → verify →
 //! install it on a fresh client — plus the fail-closed negatives.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use app_host::install::install_qpkg;
 use app_host::registry::Pinning;
 use app_host::store::Store;

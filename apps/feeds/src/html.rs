@@ -133,7 +133,7 @@ fn handle_tag(
         "h1" => set_block(blocks, buf, kind, closing, BlockKind::Heading1, *in_pre),
         "h2" => set_block(blocks, buf, kind, closing, BlockKind::Heading2, *in_pre),
         "h3" | "h4" | "h5" | "h6" => {
-            set_block(blocks, buf, kind, closing, BlockKind::Heading3, *in_pre)
+            set_block(blocks, buf, kind, closing, BlockKind::Heading3, *in_pre);
         }
         "li" => set_block(blocks, buf, kind, closing, BlockKind::Bullet, *in_pre),
         "blockquote" => set_block(blocks, buf, kind, closing, BlockKind::Quote, *in_pre),
@@ -252,11 +252,11 @@ mod tests {
     fn list_items_become_bullets() {
         let html = "<ul><li>One</li><li>Two</li></ul>";
         let blocks = to_blocks(html);
-        let bullets: Vec<_> = blocks
+        let bullets = blocks
             .iter()
             .filter(|b| b.kind == BlockKind::Bullet)
-            .collect();
-        assert_eq!(bullets.len(), 2);
+            .count();
+        assert_eq!(bullets, 2);
     }
 
     #[test]

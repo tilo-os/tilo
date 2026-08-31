@@ -132,6 +132,13 @@ pub enum ProxyError {
 /// Returns a [`DBusProxyGuard`] whose `Drop` `SIGTERM`s the child and
 /// unlinks the socket. Callers should keep it alive until the sandbox
 /// exits.
+///
+/// # Errors
+///
+/// Returns [`ProxyError::Mkdir`] if the socket's parent directory can't be
+/// created, [`ProxyError::Spawn`] if `binary` can't be spawned, or
+/// [`ProxyError::NotReady`] if its listener socket doesn't appear within the
+/// timeout.
 pub fn spawn_dbus_proxy(
     binary: &Path,
     bus_addr: &str,
@@ -170,7 +177,9 @@ pub fn spawn_dbus_proxy(
 }
 
 fn wait_for_socket(path: &Path, timeout: Duration) -> io::Result<()> {
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
     while Instant::now() < deadline {
         // `try_exists` catches both regular files (mock proxy) and socket
         // inodes (real proxy); `Path::exists` would too but hides `EACCES`.
@@ -218,12 +227,14 @@ impl DBusProxyGuard {
             // is well-defined. Sending to a reaped pid returns
             // ESRCH which we ignore.
             unsafe {
-                libc::kill(child.id() as i32, libc::SIGTERM);
+                libc::kill(i32::try_from(child.id()).unwrap_or(i32::MAX), libc::SIGTERM);
             }
-            let deadline = Instant::now() + Duration::from_millis(500);
+            let deadline = Instant::now()
+                .checked_add(Duration::from_millis(500))
+                .unwrap_or_else(Instant::now);
             loop {
                 match child.try_wait() {
-                    Ok(Some(_)) => break,
+                    Ok(Some(_)) | Err(_) => break,
                     Ok(None) => {
                         if Instant::now() >= deadline {
                             let _ = child.kill();
@@ -232,7 +243,6 @@ impl DBusProxyGuard {
                         }
                         std::thread::sleep(Duration::from_millis(20));
                     }
-                    Err(_) => break,
                 }
             }
         }
@@ -310,6 +320,7 @@ mod tests {
     /// SIGTERM trap and sleeps. Returns the path to the mock script
     /// (marked executable).
     fn write_mock_proxy(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
         let script = dir.join("mock-xdg-dbus-proxy");
         // Absolute paths for coreutils — bwrap-adjacent test envs sometimes
         // have a minimal PATH lacking /usr/bin. `sleep infinity` blocks until
@@ -331,7 +342,6 @@ wait $!
 "#,
         )
         .unwrap();
-        use std::os::unix::fs::PermissionsExt;
         let mut perms = std::fs::metadata(&script).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&script, perms).unwrap();

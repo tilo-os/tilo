@@ -258,6 +258,11 @@ pub(crate) enum Hit {
     Dismiss, // click on a scrim closes the top-most popover
 }
 
+/// The whole app's mutable state.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the bools split across unrelated concerns (attachment-picker/emoji-popover open flags, layout/render bookkeeping, and --shots-only staging), so grouping them would need a real design pass rather than a mechanical lint fix"
+)]
 pub struct ChatApp {
     // CRDT projection (rebuilt every sync / after a mutation).
     pub(crate) workspaces: Vec<Workspace>,
@@ -526,7 +531,7 @@ impl ChatApp {
             media: MediaEngine::simulated(),
             perms: ChatPermissions::permissive(),
             actions: ui::ActionHost::new(),
-            images: ui::ImageStore::new(crate::images::fetcher()),
+            images: ui::ImageStore::new(&crate::images::fetcher()),
             rect: Rect::ZERO,
             root_node: None,
             video_node: None,
@@ -593,9 +598,9 @@ impl ChatApp {
     /// replays byte-identically on peers), exactly as the palette does. The
     /// in-memory projection is reconciled from the document by the caller's
     /// `reload`. This app supplies only its domain: the action and its type.
-    pub(crate) fn perform_action(&mut self, doc: &mut AutoCommit, action: ChatAction) {
+    pub(crate) fn perform_action(&mut self, doc: &mut AutoCommit, action: &ChatAction) {
         self.actions
-            .dispatch(doc, actions::CHAT_ACTION_TYPE, &action);
+            .dispatch(doc, actions::CHAT_ACTION_TYPE, action);
     }
 
     /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
@@ -822,116 +827,145 @@ impl ChatApp {
     /// the corresponding pipeline is simply `None` and that medium stays silent.
     #[cfg(feature = "live-media")]
     fn pump_media(&mut self) {
+        if !self.call.active {
+            self.pump_media_reset();
+            return;
+        }
+        let me = self.me.id.clone();
+        self.pump_mic(&me);
+        self.pump_camera(&me);
+        self.pump_screen(&me);
+        self.pump_receive(&me);
+    }
+
+    /// Release all devices + remote state between calls.
+    #[cfg(feature = "live-media")]
+    fn pump_media_reset(&mut self) {
+        self.mic = None;
+        self.speaker = None;
+        self.camera = None;
+        self.cam_encoder = None;
+        self.screen = None;
+        self.screen_session = None;
+        self.remote_decoders.clear();
+        self.remote_screen_rx.clear();
+        self.remote_frames.clear();
+        self.remote_screens.clear();
+    }
+
+    /// Microphone → Opus → publish (only while transmitting).
+    #[cfg(feature = "live-media")]
+    fn pump_mic(&mut self, me: &str) {
         use crate::call::CallAction;
         use crate::media::{MediaObject, TrackKind};
         use std::time::Duration;
 
-        if !self.call.active {
-            // Release all devices + remote state between calls.
-            self.mic = None;
-            self.speaker = None;
-            self.camera = None;
-            self.cam_encoder = None;
-            self.screen = None;
-            self.screen_session = None;
-            self.remote_decoders.clear();
-            self.remote_screen_rx.clear();
-            self.remote_frames.clear();
-            self.remote_screens.clear();
-            return;
-        }
-        let me = self.me.id.clone();
-
-        // --- Microphone → Opus → publish (only while transmitting) ---
         let transmit =
             !self.call.muted && !self.call.deafened && self.call_allows(CallAction::Speak);
-        if transmit {
-            if self.mic.is_none() {
-                self.mic = crate::audio::MicCapture::new();
-            }
-            let packets = self
-                .mic
-                .as_mut()
-                .map(super::audio::MicCapture::poll)
-                .unwrap_or_default();
-            for pkt in packets {
-                let seq = self.next_media_seq();
-                self.media.transport_mut().send(MediaObject {
-                    sender: me.clone(),
-                    kind: TrackKind::Audio,
-                    seq,
-                    pts: Duration::from_millis(seq * 20),
-                    payload: pkt,
-                });
-            }
-        } else {
+        if !transmit {
             self.mic = None;
+            return;
         }
+        if self.mic.is_none() {
+            self.mic = crate::audio::MicCapture::new();
+        }
+        let packets = self
+            .mic
+            .as_mut()
+            .map(super::audio::MicCapture::poll)
+            .unwrap_or_default();
+        for pkt in packets {
+            let seq = self.next_media_seq();
+            self.media.transport_mut().send(MediaObject {
+                sender: me.to_string(),
+                kind: TrackKind::Audio,
+                seq,
+                pts: Duration::from_millis(seq * 20),
+                payload: pkt,
+            });
+        }
+    }
 
-        // --- Camera → H.264 → local preview + publish (only with camera on) ---
+    /// Camera → H.264 → local preview + publish (only with camera on).
+    #[cfg(feature = "live-media")]
+    fn pump_camera(&mut self, me: &str) {
+        use crate::call::CallAction;
+        use crate::media::{MediaObject, TrackKind};
+        use std::time::Duration;
+
         let camera_on = !self.call.audio_only && self.call_allows(CallAction::Camera);
-        if camera_on {
-            if self.camera.is_none() {
-                self.camera = crate::video::CameraCapture::new(
-                    crate::video::DEFAULT_W,
-                    crate::video::DEFAULT_H,
-                );
-                // Camera encode reuses the shared stack's H.264 encoder.
-                self.cam_encoder = qos_callstream::H264Encoder::new(
-                    crate::video::DEFAULT_W,
-                    crate::video::DEFAULT_H,
-                    crate::video::DEFAULT_FPS,
-                )
-                .ok();
-            }
-            let nalus = match (self.camera.as_mut(), self.cam_encoder.as_mut()) {
-                (Some(cam), Some(enc)) => {
-                    cam.poll().map(|rgba| enc.encode(&rgba).unwrap_or_default())
-                }
-                _ => None,
-            };
-            if let Some(nalus) = nalus
-                && !nalus.is_empty()
-            {
-                // Feed the host tile's VideoPlayer so this peer sees its own
-                // camera (the surface yields its placeholder to a real frame).
-                self.video.feed_frame(&nalus);
-                let seq = self.next_media_seq();
-                self.media.transport_mut().send(MediaObject {
-                    sender: me.clone(),
-                    kind: TrackKind::Video,
-                    seq,
-                    pts: Duration::from_millis(seq * 33),
-                    payload: nalus,
-                });
-            }
-        } else {
+        if !camera_on {
             self.camera = None;
             self.cam_encoder = None;
+            return;
         }
+        if self.camera.is_none() {
+            self.camera =
+                crate::video::CameraCapture::new(crate::video::DEFAULT_W, crate::video::DEFAULT_H);
+            // Camera encode reuses the shared stack's H.264 encoder.
+            self.cam_encoder = qos_callstream::H264Encoder::new(
+                crate::video::DEFAULT_W,
+                crate::video::DEFAULT_H,
+                crate::video::DEFAULT_FPS,
+            )
+            .ok();
+        }
+        let nalus = match (self.camera.as_mut(), self.cam_encoder.as_mut()) {
+            (Some(cam), Some(enc)) => cam.poll().map(|rgba| enc.encode(&rgba).unwrap_or_default()),
+            _ => None,
+        };
+        let Some(nalus) = nalus else {
+            return;
+        };
+        if nalus.is_empty() {
+            return;
+        }
+        // Feed the host tile's VideoPlayer so this peer sees its own
+        // camera (the surface yields its placeholder to a real frame).
+        self.video.feed_frame(&nalus);
+        let seq = self.next_media_seq();
+        self.media.transport_mut().send(MediaObject {
+            sender: me.to_string(),
+            kind: TrackKind::Video,
+            seq,
+            pts: Duration::from_millis(seq * 33),
+            payload: nalus,
+        });
+    }
 
-        // --- Screen capture → shared stack (throttle + encode → SurfaceFrame)
-        //     → publish (started via share_screen). The `VideoStreamSender`
-        //     seam does the throttling + encode + framing, so a returned
-        //     `Some` is already a wire-ready, rate-capped frame. ---
+    /// Screen capture → shared stack (throttle + encode → `SurfaceFrame`) →
+    /// publish (started via `share_screen`). The `VideoStreamSender` seam
+    /// does the throttling + encode + framing, so a returned `Some` is
+    /// already a wire-ready, rate-capped frame.
+    #[cfg(feature = "live-media")]
+    fn pump_screen(&mut self, me: &str) {
+        use crate::media::{MediaObject, TrackKind};
+        use std::time::Duration;
+
         let screen_wire = match (self.screen.as_mut(), self.screen_session.as_mut()) {
             (Some(scr), Some(session)) => scr
                 .poll()
                 .and_then(|rgba| session.offer_frame(&rgba, std::time::Instant::now())),
             _ => None,
         };
-        if let Some(wire) = screen_wire {
-            let seq = self.next_media_seq();
-            self.media.transport_mut().send(MediaObject {
-                sender: me.clone(),
-                kind: TrackKind::Screen,
-                seq,
-                pts: Duration::from_millis(seq * 33),
-                payload: wire,
-            });
-        }
+        let Some(wire) = screen_wire else {
+            return;
+        };
+        let seq = self.next_media_seq();
+        self.media.transport_mut().send(MediaObject {
+            sender: me.to_string(),
+            kind: TrackKind::Screen,
+            seq,
+            pts: Duration::from_millis(seq * 33),
+            payload: wire,
+        });
+    }
 
-        // --- Receive: decode + play what arrived from peers ---
+    /// Receive: decode + play whatever arrived from peers.
+    #[cfg(feature = "live-media")]
+    fn pump_receive(&mut self, me: &str) {
+        use crate::media::TrackKind;
+
         let objs = self.media.transport_mut().poll();
         for o in objs {
             if o.sender == me {
@@ -1289,8 +1323,7 @@ impl ChatApp {
     pub(crate) fn voice_in(&self, channel: &str) -> &[crate::model::VoiceMember] {
         self.voice_members
             .get(channel)
-            .map(std::vec::Vec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[], std::vec::Vec::as_slice)
     }
 
     /// The media routing for the current call, chosen from the live participant
@@ -1506,7 +1539,7 @@ impl ChatApp {
     // animates the float in/out.
 
     /// Total width occupied by the left navigation pane (rail + sidebar).
-    pub(crate) fn left_pane_w(&self) -> f64 {
+    pub(crate) fn left_pane_w() -> f64 {
         RAIL_W + SIDE_W
     }
 
@@ -1524,7 +1557,9 @@ impl ChatApp {
     pub(crate) fn left_pane_x0(&self) -> f64 {
         match self.left_mode {
             FlapMode::Docked => self.rect.x0,
-            FlapMode::Overlay => self.rect.x0 - self.left_pane_w() * (1.0 - self.left_flap.slide()),
+            FlapMode::Overlay => {
+                self.rect.x0 - Self::left_pane_w() * (1.0 - self.left_flap.slide())
+            }
         }
     }
 
@@ -1558,7 +1593,7 @@ impl ChatApp {
     }
     pub(crate) fn center_left(&self) -> f64 {
         if self.left_mode == FlapMode::Docked && self.left_flap_open() {
-            self.rect.x0 + self.left_pane_w()
+            self.rect.x0 + Self::left_pane_w()
         } else {
             // Overlay (or hidden docked): content reclaims the pane width;
             // leave room for the floating flap toggle button.
@@ -1936,7 +1971,7 @@ impl Widget for ChatApp {
         // stray mark at its stale origin before the placeholder lands.
         let host_has_frame = self.video.latest_frame().is_some();
         if self.call.active && self.call.expanded {
-            self.draw_call_overlay_bg(scene, tf, tr, theme, &mut hits);
+            self.draw_call_overlay_bg(scene, tf, tr, theme);
             if host_has_frame {
                 self.video.draw(scene, tf, tr, theme, presence);
             }
@@ -2003,7 +2038,7 @@ impl Widget for ChatApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        self.dispatch_event(event, scale_factor, modifiers, state, handled);
+        self.dispatch_event(event, scale_factor, *modifiers, state, handled);
     }
 
     /// The resource tree Chat currently has open — the active workspace, its

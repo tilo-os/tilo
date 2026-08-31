@@ -33,8 +33,11 @@ pub struct CompileWorker {
 }
 
 impl CompileWorker {
-    /// Spawn the worker thread. `parts` is shared (cheap `Arc` clone).
-    pub fn spawn(parts: Arc<WorldParts>) -> Self {
+    /// Spawn the worker thread. `parts` is shared (cheap `Arc` clone). Returns
+    /// `None` when the OS refuses to spawn the thread (e.g. resource
+    /// exhaustion); the app then falls back to running without a background
+    /// worker rather than crashing.
+    pub fn spawn(parts: Arc<WorldParts>) -> Option<Self> {
         let (job_tx, job_rx) = channel::<Job>();
         let (result_tx, result_rx) = channel::<CompileResult>();
         thread::Builder::new()
@@ -61,14 +64,14 @@ impl CompileWorker {
                     }
                 }
             })
-            .expect("spawn typst-compile thread");
+            .ok()?;
 
-        Self {
+        Some(Self {
             job_tx,
             result_rx,
             next_seq: 1,
             last_done_seq: 0,
-        }
+        })
     }
 
     /// Queue a compile of `source`. Returns the sequence number assigned.

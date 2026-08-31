@@ -127,6 +127,20 @@ struct SurfaceCache {
     rebuilds: u32,
 }
 
+/// One surface's grid of sampled z-values (row-major, `zs[i][j]` is the
+/// value at grid vertex `(i, j)`), gathered by `ensure_surfaces`'s first
+/// pass before projection and depth-sorting.
+struct SampledSurface {
+    series: usize,
+    zs: Vec<[f64; N + 1]>,
+}
+
+/// One projected quad awaiting the painter's-algorithm depth sort.
+struct RankedCell {
+    depth: f64,
+    cell: SurfaceCell,
+}
+
 fn bits(x: f64) -> u64 {
     x.to_bits()
 }
@@ -240,11 +254,11 @@ impl Graph3dScreen {
     fn measure_cards(&mut self, model: &CalcModel, tr: &mut TextRenderer) {
         self.sync_fields(model);
         self.card_heights.clear();
-        for i in 0..model.surfaces.len() {
-            let content_h = if self.fields[i].is_empty() {
+        for field in &mut self.fields {
+            let content_h = if field.is_empty() {
                 crate::mathfield::CARD_MIN_H
             } else {
-                self.fields[i].content_height(tr)
+                field.content_height(tr)
             };
             let field_h = crate::mathfield::card_view_height(content_h);
             self.card_heights.push(field_h + 2.0 * CARD_PAD_Y);
@@ -386,7 +400,26 @@ impl Graph3dScreen {
             );
         }
 
-        // ---- panel ---------------------------------------------------------
+        self.draw_panel_header(scene, t, tr, theme);
+        self.draw_surface_rows(scene, t, tr, theme, model);
+        self.draw_add_button(scene, t, tr, theme);
+        self.draw_info_readout(scene, t, tr, theme, model);
+
+        // Overlay drawer keeps a "Hide" chip in its header.
+        if self.overlay {
+            self.draw_toggle(scene, t, tr, theme);
+        }
+    }
+
+    /// The surface panel's background + "Surfaces" header.
+    fn draw_panel_header(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
         let panel_bg = if self.overlay {
             c.surfaces.raised
         } else {
@@ -435,11 +468,29 @@ impl Graph3dScreen {
             Align::Left,
             TextWeight::Regular,
         );
+    }
 
-        // Surface rows (already reconciled + measured by `measure_cards`).
+    /// One row per saved surface: background, colour swatch, "z =" prefix,
+    /// the math editor (or its placeholder), and the visibility dot.
+    /// Rows are already reconciled + measured by `measure_cards`.
+    fn draw_surface_rows(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        model: &CalcModel,
+    ) {
+        let c = &theme.tokens.colors;
         for i in 0..model.surfaces.len() {
-            let f = &model.surfaces[i];
-            let r = self.row_rects[i];
+            let (Some(f), Some(&r), Some(&edit), Some(&vr)) = (
+                model.surfaces.get(i),
+                self.row_rects.get(i),
+                self.edit_rects.get(i),
+                self.vis_rects.get(i),
+            ) else {
+                continue;
+            };
             let active = i == model.active_surface;
             if active {
                 draw::fill_rrect(
@@ -490,8 +541,9 @@ impl Graph3dScreen {
                 Align::Left,
                 TextWeight::Medium,
             );
-            let edit = self.edit_rects[i];
-            let empty = self.fields[i].is_empty();
+            let Some(empty) = self.fields.get(i).map(MathField::is_empty) else {
+                continue;
+            };
             if empty && !active {
                 let pr = Rect::new(edit.x0 + 4.0, edit.y0, edit.x1, edit.y1);
                 draw::text_in(
@@ -505,13 +557,12 @@ impl Graph3dScreen {
                     Align::Left,
                     TextWeight::Regular,
                 );
-            } else {
-                self.fields[i].set_rect(edit, tr);
+            } else if let Some(field) = self.fields.get_mut(i) {
+                field.set_rect(edit, tr);
                 let fld_col = if f.visible { txt_col } else { c.text_dim };
-                self.fields[i].draw(scene, t, tr, theme, fld_col, active);
+                field.draw(scene, t, tr, theme, fld_col, active);
             }
             // visibility dot
-            let vr = self.vis_rects[i];
             let vis_col = if f.visible { col } else { c.neutral[3] };
             draw::stroke_rrect(scene, t, vr, vr.height() / 2.0, vis_col, 2.0);
             if f.visible {
@@ -519,8 +570,11 @@ impl Graph3dScreen {
                 draw::fill_rrect(scene, t, inner, inner.height() / 2.0, vis_col);
             }
         }
+    }
 
-        // add button
+    /// The "+ Add surface" button below the row list.
+    fn draw_add_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
         draw::fill_rrect(scene, t, self.add_rect, 8.0, c.surfaces.raised);
         draw::stroke_rrect(scene, t, self.add_rect, 8.0, c.border_standard, 1.0);
         draw::text_in(
@@ -534,8 +588,18 @@ impl Graph3dScreen {
             Align::Center,
             TextWeight::Medium,
         );
+    }
 
-        // controls readout
+    /// The orbit/zoom controls readout below the add button.
+    fn draw_info_readout(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        model: &CalcModel,
+    ) {
+        let c = &theme.tokens.colors;
         let v = &model.view3d;
         let info_y = self.add_rect.y1 + 16.0;
         let info = Rect::new(
@@ -600,11 +664,6 @@ impl Graph3dScreen {
             Align::Left,
             TextWeight::Regular,
         );
-
-        // Overlay drawer keeps a "Hide" chip in its header.
-        if self.overlay {
-            self.draw_toggle(scene, t, tr, theme);
-        }
     }
 
     /// Draw the panel toggle: a "Surfaces" pill over the canvas when the drawer
@@ -719,6 +778,10 @@ impl Graph3dScreen {
     /// All surfaces share one z-normalisation so their relative heights are
     /// preserved (a taller surface really sits above a lower one) and one merged
     /// painter's-algorithm sort so overlapping sheets occlude each other.
+    #[allow(
+        clippy::similar_names,
+        reason = "zmin/zmax/zmid are the standard min/max/midpoint trio for one axis's range"
+    )]
     fn ensure_surfaces(&mut self, model: &CalcModel) {
         let key = SurfaceKey::build(model, self.canvas);
         if self.surface_cache.key.as_ref() == Some(&key) {
@@ -726,38 +789,7 @@ impl Graph3dScreen {
         }
         let rebuilds = self.surface_cache.rebuilds.wrapping_add(1);
 
-        // First pass: sample each visible surface, tracking a shared z-range.
-        struct Sampled {
-            series: usize,
-            zs: Vec<[f64; N + 1]>,
-        }
-        let mut sampled: Vec<Sampled> = Vec::new();
-        let mut zmin = f64::INFINITY;
-        let mut zmax = f64::NEG_INFINITY;
-        for (series, f) in model.surfaces.iter().enumerate() {
-            if !f.visible || f.expr.trim().is_empty() {
-                continue;
-            }
-            let comp = match engine::compile(&f.expr, model.deg, true) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            let mut zs = vec![[0.0f64; N + 1]; N + 1];
-            for i in 0..=N {
-                for j in 0..=N {
-                    let x = -DOM + 2.0 * DOM * i as f64 / N as f64;
-                    let y = -DOM + 2.0 * DOM * j as f64 / N as f64;
-                    let z = comp.eval2(x, y);
-                    zs[i][j] = z;
-                    if z.is_finite() {
-                        zmin = zmin.min(z);
-                        zmax = zmax.max(z);
-                    }
-                }
-            }
-            sampled.push(Sampled { series, zs });
-        }
-
+        let (sampled, mut zmin, mut zmax) = Self::sample_surfaces(model);
         if sampled.is_empty() {
             self.surface_cache = SurfaceCache {
                 key: Some(key),
@@ -774,9 +806,62 @@ impl Graph3dScreen {
         let zmid = 0.5 * (zmin + zmax);
         let zspan = (zmax - zmin).max(1e-6);
 
+        let (cells, axes) = self.project_and_rank_cells(&sampled, (zmid, zspan), model);
+        self.surface_cache = SurfaceCache {
+            key: Some(key),
+            cells,
+            axes: Some(axes),
+            rebuilds,
+        };
+    }
+
+    /// First pass: sample every visible surface on the `(N+1)×(N+1)` grid,
+    /// tracking the shared z-range across all of them (used afterward to
+    /// normalise depth for the painter's algorithm).
+    fn sample_surfaces(model: &CalcModel) -> (Vec<SampledSurface>, f64, f64) {
+        let mut sampled: Vec<SampledSurface> = Vec::new();
+        let mut zmin = f64::INFINITY;
+        let mut zmax = f64::NEG_INFINITY;
+        for (series, f) in model.surfaces.iter().enumerate() {
+            if !f.visible || f.expr.trim().is_empty() {
+                continue;
+            }
+            let Ok(comp) = engine::compile(&f.expr, model.deg, true) else {
+                continue;
+            };
+            let mut zs = vec![[0.0f64; N + 1]; N + 1];
+            for (i, row) in zs.iter_mut().enumerate() {
+                for (j, cell) in row.iter_mut().enumerate() {
+                    let x = -DOM + 2.0 * DOM * i as f64 / N as f64;
+                    let y = -DOM + 2.0 * DOM * j as f64 / N as f64;
+                    let z = comp.eval2(x, y);
+                    *cell = z;
+                    if z.is_finite() {
+                        zmin = zmin.min(z);
+                        zmax = zmax.max(z);
+                    }
+                }
+            }
+            sampled.push(SampledSurface { series, zs });
+        }
+        (sampled, zmin, zmax)
+    }
+
+    /// Second pass: project every sampled surface's grid cells to screen
+    /// space with the shared depth normalisation (`zmid`/`zspan`), shade
+    /// each with a Lambert factor, and depth-sort the merged set far-to-near
+    /// for the painter's algorithm. Returns the ranked cells and the
+    /// (origin, +x tip, +y tip) axis tripod.
+    fn project_and_rank_cells(
+        &self,
+        sampled: &[SampledSurface],
+        z_normalize: (f64, f64),
+        model: &CalcModel,
+    ) -> (Vec<SurfaceCell>, (Point, Point, Point)) {
+        let (zmid, zspan) = z_normalize;
         let v = &model.view3d;
-        let (sa, ca) = v.yaw.sin_cos();
-        let (sb, cb) = v.pitch.sin_cos();
+        let (sin_yaw, cos_yaw) = v.yaw.sin_cos();
+        let (sin_pitch, cos_pitch) = v.pitch.sin_cos();
         let s = self.canvas.height().min(self.canvas.width()) * 0.40 / (DOM * 1.7) * v.zoom;
         let cx = self.canvas.center().x;
         let cy = self.canvas.center().y;
@@ -784,62 +869,18 @@ impl Graph3dScreen {
         // model coords → screen + depth (shared normalisation across surfaces)
         let project = |x: f64, y: f64, z: f64| -> (Point, f64) {
             let zn = (z - zmid) / zspan * (DOM * 0.9);
-            let x1 = x * ca - y * sa;
-            let y1 = x * sa + y * ca;
+            let x1 = x * cos_yaw - y * sin_yaw;
+            let y1 = x * sin_yaw + y * cos_yaw;
             let z1 = zn;
-            let y2 = y1 * cb - z1 * sb;
-            let z2 = y1 * sb + z1 * cb;
+            let y2 = y1 * cos_pitch - z1 * sin_pitch;
+            let z2 = y1 * sin_pitch + z1 * cos_pitch;
             (Point::new(cx + x1 * s, cy - z2 * s), y2)
         };
 
-        struct Depth {
-            depth: f64,
-            cell: SurfaceCell,
-        }
-        let mut cells: Vec<Depth> = Vec::with_capacity(sampled.len() * N * N);
+        let mut cells: Vec<RankedCell> = Vec::with_capacity(sampled.len() * N * N);
         let light = normalize3(-0.4, -0.7, 0.8);
-        for surf in &sampled {
-            let zs = &surf.zs;
-            for i in 0..N {
-                for j in 0..N {
-                    let z00 = zs[i][j];
-                    let z10 = zs[i + 1][j];
-                    let z11 = zs[i + 1][j + 1];
-                    let z01 = zs[i][j + 1];
-                    if !(z00.is_finite() && z10.is_finite() && z11.is_finite() && z01.is_finite()) {
-                        continue;
-                    }
-                    let x0 = -DOM + 2.0 * DOM * i as f64 / N as f64;
-                    let x1 = -DOM + 2.0 * DOM * (i + 1) as f64 / N as f64;
-                    let y0 = -DOM + 2.0 * DOM * j as f64 / N as f64;
-                    let y1 = -DOM + 2.0 * DOM * (j + 1) as f64 / N as f64;
-                    let (p00, d00) = project(x0, y0, z00);
-                    let (p10, d10) = project(x1, y0, z10);
-                    let (p11, d11) = project(x1, y1, z11);
-                    let (p01, d01) = project(x0, y1, z01);
-
-                    let mut path = BezPath::new();
-                    path.move_to(p00);
-                    path.line_to(p10);
-                    path.line_to(p11);
-                    path.line_to(p01);
-                    path.close_path();
-
-                    let nx = (x1 - x0).max(1e-6);
-                    let ny = (y1 - y0).max(1e-6);
-                    let normal = normalize3(-(z10 - z00) * ny, -(z01 - z00) * nx, nx * ny);
-                    let lambert = dot3(normal, light).abs().clamp(0.0, 1.0);
-                    let shade = 0.55 + 0.45 * lambert;
-                    cells.push(Depth {
-                        depth: 0.25 * (d00 + d10 + d11 + d01),
-                        cell: SurfaceCell {
-                            path,
-                            series: surf.series,
-                            shade,
-                        },
-                    });
-                }
-            }
+        for surf in sampled {
+            Self::rank_surface_cells(&mut cells, surf, &project, light);
         }
         // painter's algorithm across ALL surfaces: far (large depth) first.
         cells.sort_by(|a, b| {
@@ -852,12 +893,63 @@ impl Graph3dScreen {
         let (xa, _) = project(DOM * 1.05, 0.0, 0.0);
         let (ya, _) = project(0.0, DOM * 1.05, 0.0);
 
-        self.surface_cache = SurfaceCache {
-            key: Some(key),
-            cells: cells.into_iter().map(|c| c.cell).collect(),
-            axes: Some((o, xa, ya)),
-            rebuilds,
-        };
+        (cells.into_iter().map(|c| c.cell).collect(), (o, xa, ya))
+    }
+
+    /// Project one surface's grid into ranked quads, appending them to
+    /// `cells`. Skips any quad with a non-finite corner (asymptote/undefined
+    /// region).
+    fn rank_surface_cells(
+        cells: &mut Vec<RankedCell>,
+        surf: &SampledSurface,
+        project: &impl Fn(f64, f64, f64) -> (Point, f64),
+        light: (f64, f64, f64),
+    ) {
+        let zs = &surf.zs;
+        for i in 0..N {
+            for j in 0..N {
+                let (Some(&z00), Some(&z10), Some(&z11), Some(&z01)) = (
+                    zs.get(i).and_then(|row| row.get(j)),
+                    zs.get(i + 1).and_then(|row| row.get(j)),
+                    zs.get(i + 1).and_then(|row| row.get(j + 1)),
+                    zs.get(i).and_then(|row| row.get(j + 1)),
+                ) else {
+                    continue;
+                };
+                if !(z00.is_finite() && z10.is_finite() && z11.is_finite() && z01.is_finite()) {
+                    continue;
+                }
+                let x0 = -DOM + 2.0 * DOM * i as f64 / N as f64;
+                let x1 = -DOM + 2.0 * DOM * (i + 1) as f64 / N as f64;
+                let y0 = -DOM + 2.0 * DOM * j as f64 / N as f64;
+                let y1 = -DOM + 2.0 * DOM * (j + 1) as f64 / N as f64;
+                let (p00, d00) = project(x0, y0, z00);
+                let (p10, d10) = project(x1, y0, z10);
+                let (p11, d11) = project(x1, y1, z11);
+                let (p01, d01) = project(x0, y1, z01);
+
+                let mut path = BezPath::new();
+                path.move_to(p00);
+                path.line_to(p10);
+                path.line_to(p11);
+                path.line_to(p01);
+                path.close_path();
+
+                let nx = (x1 - x0).max(1e-6);
+                let ny = (y1 - y0).max(1e-6);
+                let normal = normalize3(-(z10 - z00) * ny, -(z01 - z00) * nx, nx * ny);
+                let lambert = dot3(normal, light).abs().clamp(0.0, 1.0);
+                let shade = 0.55 + 0.45 * lambert;
+                cells.push(RankedCell {
+                    depth: 0.25 * (d00 + d10 + d11 + d01),
+                    cell: SurfaceCell {
+                        path,
+                        series: surf.series,
+                        shade,
+                    },
+                });
+            }
+        }
     }
 
     pub fn canvas_contains(&self, p: Point) -> bool {
@@ -894,9 +986,10 @@ mod tests {
     use crate::model::{CalcModel, Mode, PlotFn};
 
     fn screen() -> Graph3dScreen {
-        let mut s = Graph3dScreen::default();
-        s.canvas = Rect::new(360.0, 60.0, 1280.0, 800.0);
-        s
+        Graph3dScreen {
+            canvas: Rect::new(360.0, 60.0, 1280.0, 800.0),
+            ..Graph3dScreen::default()
+        }
     }
 
     #[test]
@@ -1009,12 +1102,14 @@ mod tests {
     fn fraction_surface_card_grows_to_fit() {
         let mut tr = TextRenderer::new();
         let mut s = Graph3dScreen::default();
-        let mut m = CalcModel::default();
-        m.surfaces = vec![PlotFn {
-            expr: "(x^2+1)/(y-3)".into(),
-            visible: true,
-        }];
-        m.active_surface = 0;
+        let m = CalcModel {
+            surfaces: vec![PlotFn {
+                expr: "(x^2+1)/(y-3)".into(),
+                visible: true,
+            }],
+            active_surface: 0,
+            ..CalcModel::default()
+        };
         s.measure_cards(&m, &mut tr);
         s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
         assert!(
@@ -1034,12 +1129,14 @@ mod tests {
     fn oversized_surface_card_grows_to_max_then_scrolls() {
         let mut tr = TextRenderer::new();
         let mut s = Graph3dScreen::default();
-        let mut m = CalcModel::default();
-        m.surfaces = vec![PlotFn {
-            expr: "(1/x)/(1/y)".into(),
-            visible: true,
-        }];
-        m.active_surface = 0;
+        let m = CalcModel {
+            surfaces: vec![PlotFn {
+                expr: "(1/x)/(1/y)".into(),
+                visible: true,
+            }],
+            active_surface: 0,
+            ..CalcModel::default()
+        };
         s.measure_cards(&m, &mut tr);
         s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
         let expected = crate::mathfield::CARD_MAX_H + 2.0 * CARD_PAD_Y;

@@ -6,6 +6,16 @@
 //! encrypt → decrypt — without touching the openmls 3+-member surface.
 //! A failure here means the crate is fundamentally broken.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::ChannelId;
 

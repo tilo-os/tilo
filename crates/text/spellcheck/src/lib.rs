@@ -24,6 +24,19 @@
 //! assert!(misspellings[0].suggestions.iter().any(|s| s == "the"));
 //! ```
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 mod dictionary;
 mod distance;
 mod suggest;
@@ -132,7 +145,7 @@ fn is_spellable(word: &str) -> bool {
         if c.is_alphabetic() {
             has_alpha = true;
             if c.is_uppercase() {
-                upper_count += 1;
+                upper_count = upper_count.saturating_add(1);
             } else {
                 all_upper = false;
             }
@@ -163,16 +176,14 @@ fn is_spellable(word: &str) -> bool {
 
 /// Heuristic: does the token look like a bare domain name (`name.tld`)?
 fn looks_like_domain(word: &str) -> bool {
-    let Some(dot) = word.find('.') else {
+    let Some((before, after)) = word.split_once('.') else {
         return false;
     };
     // Internal dot only — leading/trailing dots are punctuation the tokenizer
     // would normally have stripped.
-    if dot == 0 || dot + 1 >= word.len() {
+    if before.is_empty() || after.is_empty() {
         return false;
     }
-    let before = &word[..dot];
-    let after = &word[dot + 1..];
     let alnum = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '.');
     // Require the trailing label to be alphabetic (a TLD-ish), so that decimals
     // like `3.14` (handled by the no-alpha path anyway) and ordinary sentence

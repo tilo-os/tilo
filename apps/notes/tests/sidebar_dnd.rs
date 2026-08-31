@@ -3,6 +3,16 @@
 //! same five-pass cycle `ui::App` runs. These exercise the real pointer
 //! hit-tests + the toolkit `DragController`, not internal helpers.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use notes::NotesApp;
@@ -50,9 +60,9 @@ fn named_key(key: NamedKey) -> WindowEvent {
 fn settle_layout(
     app: &mut NotesApp,
     state: &mut ui::State,
-    w: u32,
-    h: u32,
-) -> (TaffyTree<()>, NodeId) {
+    w: u16,
+    h: u16,
+) -> Result<(TaffyTree<()>, NodeId), String> {
     let theme = Theme::dark();
     let mut text_renderer = TextRenderer::new();
     app.sync(&mut state.doc, &state.root);
@@ -65,14 +75,14 @@ fn settle_layout(
             .new_with_children(
                 Style {
                     size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
+                        width: Dimension::length(f32::from(w)),
+                        height: Dimension::length(f32::from(h)),
                     },
                     ..Default::default()
                 },
                 &[child],
             )
-            .unwrap();
+            .map_err(|e| e.to_string())?;
         {
             let measure_map = node_map.clone();
             let tr = &mut text_renderer;
@@ -80,8 +90,8 @@ fn settle_layout(
                 .compute_layout_with_measure(
                     root,
                     taffy::Size {
-                        width: AvailableSpace::Definite(w as f32),
-                        height: AvailableSpace::Definite(h as f32),
+                        width: AvailableSpace::Definite(f32::from(w)),
+                        height: AvailableSpace::Definite(f32::from(h)),
                     },
                     |known, avail, node_id, _, _| {
                         if let Some(&ptr) = measure_map.get(&node_id) {
@@ -91,7 +101,7 @@ fn settle_layout(
                         }
                     },
                 )
-                .unwrap();
+                .map_err(|e| e.to_string())?;
         }
         app.apply_layout(&taffy, child, Point::ORIGIN);
         let settled = !app.take_structure_dirty();
@@ -100,7 +110,7 @@ fn settle_layout(
             break;
         }
     }
-    result.unwrap()
+    result.ok_or_else(|| "layout never settled".to_string())
 }
 
 fn dispatch(
@@ -128,19 +138,27 @@ fn dispatch(
 }
 
 /// Build a 3-root-page workspace: [Welcome, One, Two].
-fn three_page_app() -> (NotesApp, uuid::Uuid, uuid::Uuid, uuid::Uuid) {
-    let tmp = TempDir::new().unwrap();
+fn three_page_app() -> Result<(NotesApp, uuid::Uuid, uuid::Uuid, uuid::Uuid), String> {
+    let tmp = TempDir::new().map_err(|e| e.to_string())?;
     // Keep the temp dir alive for the whole process by leaking it — the
     // app's background savers hold the path; a hermetic per-test dir.
     let path = tmp.keep();
-    let mut app = NotesApp::spawn_with_starter_page(path).unwrap();
-    let welcome = app.workspace_pages_for_test()[0].id;
+    let mut app = NotesApp::spawn_with_starter_page(path)?;
+    let welcome = app
+        .workspace_pages_for_test()
+        .first()
+        .ok_or_else(|| "no welcome page".to_string())?
+        .id;
     app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-    let one = app.selected_for_test().unwrap();
+    let one = app
+        .selected_for_test()
+        .ok_or_else(|| "no selection after create".to_string())?;
     app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-    let two = app.selected_for_test().unwrap();
+    let two = app
+        .selected_for_test()
+        .ok_or_else(|| "no selection after create".to_string())?;
     app.sync_sidebar_for_test();
-    (app, welcome, one, two)
+    Ok((app, welcome, one, two))
 }
 
 fn root_order(app: &NotesApp) -> Vec<uuid::Uuid> {
@@ -152,9 +170,9 @@ fn root_order(app: &NotesApp) -> Vec<uuid::Uuid> {
 
 #[test]
 fn drag_reflows_live_commits_only_on_drop() {
-    let (mut app, welcome, one, two) = three_page_app();
+    let (mut app, welcome, one, two) = three_page_app().unwrap();
     let mut state = ui::State::new();
-    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
     assert_eq!(root_order(&app), vec![welcome, one, two]);
 
     let r0 = app.sidebar_row_center_for_test(0).unwrap();
@@ -220,9 +238,9 @@ fn drag_reflows_live_commits_only_on_drop() {
 
 #[test]
 fn drag_cancel_with_escape_restores_order() {
-    let (mut app, welcome, one, two) = three_page_app();
+    let (mut app, welcome, one, two) = three_page_app().unwrap();
     let mut state = ui::State::new();
-    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
 
     let r0 = app.sidebar_row_center_for_test(0).unwrap();
     let r2 = app.sidebar_row_center_for_test(2).unwrap();
@@ -268,9 +286,9 @@ fn drag_cancel_with_escape_restores_order() {
 
 #[test]
 fn drag_onto_a_row_reparents_it_as_a_child() {
-    let (mut app, welcome, one, _two) = three_page_app();
+    let (mut app, welcome, one, _two) = three_page_app().unwrap();
     let mut state = ui::State::new();
-    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
 
     // Drag row 1 (One) up onto the middle of row 0 (Welcome) → nest it.
     let r1 = app.sidebar_row_center_for_test(1).unwrap();
@@ -317,9 +335,9 @@ fn drag_onto_a_row_reparents_it_as_a_child() {
 
 #[test]
 fn context_menu_delete_removes_the_page() {
-    let (mut app, welcome, one, _two) = three_page_app();
+    let (mut app, welcome, one, _two) = three_page_app().unwrap();
     let mut state = ui::State::new();
-    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
     let before = app.workspace_pages_for_test().len();
 
     // Right-click row 1 (One) → the context menu opens.
@@ -377,7 +395,7 @@ fn context_menu_delete_removes_the_page() {
 
 #[test]
 fn context_menu_duplicate_deep_copies_the_page() {
-    let (mut app, _welcome, one, _two) = three_page_app();
+    let (mut app, _welcome, one, _two) = three_page_app().unwrap();
     // Rename One so the copy is identifiable, and give it a child so the
     // duplicate must deep-copy the subtree.
     app.apply_event_for_test(OutEvent::Rename {
@@ -389,7 +407,7 @@ fn context_menu_duplicate_deep_copies_the_page() {
     let before = app.workspace_pages_for_test().len();
 
     let mut state = ui::State::new();
-    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
 
     // Right-click row 1 (Report) → menu; ArrowDown ×3 lands on Duplicate.
     let r1 = app.sidebar_row_center_for_test(1).unwrap();

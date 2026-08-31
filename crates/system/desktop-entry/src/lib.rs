@@ -23,6 +23,19 @@
 //! - [`cache`]  — memoising a scan for a UI that queries per keystroke.
 //! - [`launch`] — spawning a host application, and what that costs.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod cache;
 pub mod entry;
 pub mod exec;

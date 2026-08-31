@@ -181,9 +181,8 @@ pub fn name_from_uri_list(body: &[u8]) -> Option<String> {
     let path = first.strip_prefix("file://").unwrap_or(first);
     // Drop a `file://host/path` authority, then take the last segment.
     let path = match path.find('/') {
-        Some(0) => path,
-        Some(i) => &path[i..],
-        None => path,
+        Some(0) | None => path,
+        Some(i) => path.get(i..).unwrap_or(path),
     };
     let last = path.rsplit('/').find(|s| !s.is_empty())?;
     let name = percent_decode(last);
@@ -193,18 +192,19 @@ pub fn name_from_uri_list(body: &[u8]) -> Option<String> {
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+    let mut rest = bytes;
+    while let Some((&first, tail)) = rest.split_first() {
+        if first == b'%'
+            && let Some(hex) = tail.get(..2)
+            && let Ok(hex_str) = std::str::from_utf8(hex)
+            && let Ok(v) = u8::from_str_radix(hex_str, 16)
         {
             out.push(v);
-            i += 3;
+            rest = tail.get(2..).unwrap_or(&[]);
             continue;
         }
-        out.push(bytes[i]);
-        i += 1;
+        out.push(first);
+        rest = tail;
     }
     String::from_utf8_lossy(&out).into_owned()
 }

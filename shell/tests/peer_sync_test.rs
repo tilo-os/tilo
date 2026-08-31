@@ -1,5 +1,15 @@
 //! End-to-end collaboration tests over two real Iroh endpoints.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::Duration;
 
 use iroh::address_lookup::memory::MemoryLookup;

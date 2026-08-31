@@ -15,6 +15,16 @@
 //! round-trip, `BlockEditor` mutations, the saver pipeline, the
 //! `NotesApp::spawn` reload path — this test catches it.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::path::Path;
 
 use notes::sidebar::OutEvent;
@@ -22,8 +32,30 @@ use notes::{NotesApp, storage};
 use tempfile::TempDir;
 use ui::widget::BlockKind;
 
-fn read_body(root: &Path, id: uuid::Uuid) -> String {
-    storage::read_page_body(root, id).expect("body file exists")
+fn read_body(root: &Path, id: uuid::Uuid) -> std::io::Result<String> {
+    storage::read_page_body(root, id)
+}
+
+/// Spot-check the structural markers in the saved body — exact byte
+/// equality would be fragile against future markdown serializer tweaks,
+/// but these four pin every block kind the test exercised.
+fn assert_body_has_every_block_kind(body: &str) {
+    assert!(
+        body.contains("Hello world."),
+        "saved body must contain the paragraph; got {body:?}"
+    );
+    assert!(
+        body.contains("## Section title"),
+        "saved body must contain the H2 heading; got {body:?}"
+    );
+    assert!(
+        body.contains("- bullet"),
+        "saved body must contain the bullet line; got {body:?}"
+    );
+    assert!(
+        body.contains("- [x] buy coffee"),
+        "saved body must contain the checked checklist line; got {body:?}"
+    );
 }
 
 #[test]
@@ -53,14 +85,9 @@ fn full_lifecycle_round_trips_through_disk() {
     // ---- Phase B: drive the editor through the test hooks ----
     {
         let panel = app.main_panel_mut();
-        // Switch the panel to the new page if it's not already there
-        // (apply_event_for_test creates + selects, so MainPanel is
-        // already on it — but be defensive).
-        if panel.page_id() == Some(target_id) {
-            panel.load_page(target_id, "Test Page".into(), String::new());
-        } else {
-            panel.load_page(target_id, "Test Page".into(), String::new());
-        }
+        // apply_event_for_test creates + selects, so MainPanel is already
+        // on the new page; load_page here is a defensive re-load either way.
+        panel.load_page(target_id, "Test Page", String::new());
         let editor = panel.editor_mut();
         // Block 0: paragraph
         editor.blocks_mut()[0].line.set_text("Hello world.");
@@ -122,26 +149,8 @@ fn full_lifecycle_round_trips_through_disk() {
     drop(app);
 
     // ---- Phase D: read the body off disk + assert content ----
-    let body = read_body(&root, target_id);
-    // Spot-check the structural markers — exact byte equality
-    // would be fragile against future markdown serializer tweaks,
-    // but the four block markers below pin every kind we exercised.
-    assert!(
-        body.contains("Hello world."),
-        "saved body must contain the paragraph; got {body:?}"
-    );
-    assert!(
-        body.contains("## Section title"),
-        "saved body must contain the H2 heading; got {body:?}"
-    );
-    assert!(
-        body.contains("- bullet"),
-        "saved body must contain the bullet line; got {body:?}"
-    );
-    assert!(
-        body.contains("- [x] buy coffee"),
-        "saved body must contain the checked checklist line; got {body:?}"
-    );
+    let body = read_body(&root, target_id).expect("body file exists");
+    assert_body_has_every_block_kind(&body);
 
     // ---- Phase E: re-spawn from the same root + verify reload ----
     let mut app2 = NotesApp::spawn_with_starter_page(root).expect("reload spawn ok");

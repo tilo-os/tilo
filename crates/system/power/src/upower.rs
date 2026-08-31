@@ -41,12 +41,21 @@ pub struct UPowerMonitor {
 impl UPowerMonitor {
     /// Connect to the system bus and build the manager + display-device
     /// proxies.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the system bus is unreachable or the `UPower` proxies cannot be
+    /// built.
     pub async fn connect() -> zbus::Result<Self> {
         let conn = Connection::system().await?;
         Self::with_connection(&conn).await
     }
 
     /// Build proxies on an existing connection (shared with logind).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `UPower` manager or display-device proxy cannot be built.
     pub async fn with_connection(conn: &Connection) -> zbus::Result<Self> {
         let manager = zbus::Proxy::new(conn, DEST, MGR_PATH, MGR_IFACE).await?;
         let display = zbus::Proxy::new(conn, DEST, DISPLAY_DEVICE_PATH, DEVICE_IFACE).await?;
@@ -59,16 +68,28 @@ impl UPowerMonitor {
 
     /// Whether the lid is currently closed. Machines without a lid report
     /// `false`; pair with [`Self::lid_is_present`] to distinguish.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `LidIsClosed` property cannot be read.
     pub async fn lid_is_closed(&self) -> zbus::Result<bool> {
         self.manager.get_property("LidIsClosed").await
     }
 
     /// Whether the machine has a lid at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `LidIsPresent` property cannot be read.
     pub async fn lid_is_present(&self) -> zbus::Result<bool> {
         self.manager.get_property("LidIsPresent").await
     }
 
     /// Whether the machine is currently running from battery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `OnBattery` property cannot be read.
     pub async fn on_battery(&self) -> zbus::Result<bool> {
         self.manager.get_property("OnBattery").await
     }
@@ -78,6 +99,18 @@ impl UPowerMonitor {
     /// A machine with no battery reports the display device as
     /// `Type != Battery` (or `IsPresent == false`); we surface that as
     /// [`BatterySnapshot::absent`] so the threshold monitor stays quiet.
+    ///
+    /// # Errors
+    ///
+    /// Never actually returns an error today — every property read falls back to a default
+    /// (`0`/`false`) rather than propagating a D-Bus failure, so a flaky bus read degrades to
+    /// a stale reading instead of an error. `Result` is kept for symmetry with the rest of
+    /// this type's methods.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0.0..=100.0 immediately before the cast, so it always fits a u8"
+    )]
     pub async fn battery_snapshot(&self) -> zbus::Result<BatterySnapshot> {
         let dev_type: u32 = self.display.get_property("Type").await.unwrap_or(0);
         let present: bool = self
@@ -97,9 +130,20 @@ impl UPowerMonitor {
         })
     }
 
-    /// Read the aggregate power source using UPower's display-device
+    /// Read the aggregate power source using `UPower`'s display-device
     /// contract. No model, serial, process, or application metadata crosses
     /// into the durable history record.
+    ///
+    /// # Errors
+    ///
+    /// Never actually returns an error today — every property read falls back to a default
+    /// rather than propagating a D-Bus failure. `Result` is kept for symmetry with the rest
+    /// of this type's methods.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0.0..=100.0 immediately before the cast, so it always fits a u32"
+    )]
     pub async fn history_sample(&self) -> zbus::Result<Option<PowerHistorySample>> {
         let dev_type: u32 = self.display.get_property("Type").await.unwrap_or(0);
         let kind = match dev_type {
@@ -125,9 +169,22 @@ impl UPowerMonitor {
         }))
     }
 
-    /// Return one anonymous aggregate for each power-source class. UPower's
+    /// Return one anonymous aggregate for each power-source class. `UPower`'s
     /// display device is the canonical aggregate battery; UPS devices are
     /// averaged without persisting their object paths or vendor metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if enumerating devices or building a per-device proxy fails; a
+    /// per-property read on a successfully-proxied device falls back to a default instead.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "capacity/health are clamped to 0.0..=100.0 before rounding, and the device \
+                  count averaged over is at most a handful of UPS units, never near f64's \
+                  precision limit"
+    )]
     pub async fn history_samples(&self) -> zbus::Result<Vec<PowerHistorySample>> {
         let mut samples = Vec::new();
         if let Some(display) = self.history_sample().await? {

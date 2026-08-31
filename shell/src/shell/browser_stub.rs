@@ -41,6 +41,23 @@ pub struct BrowserStubWidget {
     cache_rect: Rect,
 }
 
+/// Bundles the render/theme handles [`BrowserStubWidget::draw`]'s
+/// per-section paint helpers need, so each helper takes one context
+/// argument instead of four positional ones.
+struct PaintCtx<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text_renderer: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+/// Bit-exact float inequality, for cache-invalidation checks that need
+/// to catch any change — including one too small for a tolerance-based
+/// comparison to notice — rather than clippy's `float_cmp`-flagged `!=`.
+fn f64_ne(a: f64, b: f64) -> bool {
+    a.to_bits() != b.to_bits()
+}
+
 impl BrowserStubWidget {
     pub fn new() -> Self {
         Self::with_runner(Box::new(default_xdg_open))
@@ -65,6 +82,199 @@ impl BrowserStubWidget {
     pub fn last_url(&self) -> Option<&str> {
         self.last_url.as_deref()
     }
+
+    /// The outer rounded card, clipped against `rect` so the chrome
+    /// paints inside the host's tile boundary. Matches
+    /// `nirios-concept/src/components/apps/BrowserApp.tsx`. Split out
+    /// of [`Widget::draw`].
+    fn paint_card_background(ctx: &mut PaintCtx, rect: Rect) {
+        let tokens = &ctx.theme.tokens;
+        let radius = f64::from(tokens.radii.lg);
+        let card = vello::kurbo::RoundedRect::from_rect(rect, radius);
+        ctx.scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            tokens.colors.surfaces.window_card,
+            None,
+            &card,
+        );
+    }
+
+    /// The chrome strip: its background, the divider under it, and the
+    /// three (uncoloured) traffic-light dots. Split out of
+    /// [`Widget::draw`].
+    fn paint_chrome_bar(ctx: &mut PaintCtx, rect: Rect, chrome_h: f64) {
+        let tokens = &ctx.theme.tokens;
+        let chrome_rect = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + chrome_h);
+        ctx.scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            tokens.colors.surfaces.raised,
+            None,
+            &chrome_rect,
+        );
+        let divider = Rect::new(
+            rect.x0,
+            rect.y0 + chrome_h - 1.0,
+            rect.x1,
+            rect.y0 + chrome_h,
+        );
+        ctx.scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            tokens.colors.border_standard,
+            None,
+            &divider,
+        );
+
+        // Concept doesn't colour the traffic lights red/yellow/green.
+        let light_y = rect.y0 + chrome_h / 2.0;
+        for i in 0..3 {
+            let cx = rect.x0 + 22.0 + f64::from(i) * 18.0;
+            let circ = vello::kurbo::Circle::new(Point::new(cx, light_y), 6.0);
+            ctx.scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                tokens.colors.text_dim,
+                None,
+                &circ,
+            );
+        }
+    }
+
+    /// The pill-shaped address bar with its globe glyph and placeholder
+    /// URL — skipped when `rect` is too narrow for it to read cleanly.
+    /// Split out of [`Widget::draw`].
+    fn paint_address_bar(ctx: &mut PaintCtx, rect: Rect, chrome_h: f64) {
+        let light_y = rect.y0 + chrome_h / 2.0;
+        // Concept clamps the address bar to `max-w-2xl` (≈ 672 px); here
+        // it's the card width minus the gutter and padding instead.
+        let bar_left = rect.x0 + 78.0;
+        let bar_right = (rect.x1 - 24.0).min(rect.x0 + 78.0 + 560.0);
+        if bar_right <= bar_left + 80.0 {
+            return;
+        }
+        let tokens = &ctx.theme.tokens;
+        let bar_rect = Rect::new(bar_left, light_y - 14.0, bar_right, light_y + 14.0);
+        let pill = vello::kurbo::RoundedRect::from_rect(bar_rect, 14.0);
+        ctx.scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            tokens.colors.surfaces.window_card,
+            None,
+            &pill,
+        );
+        ctx.scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            ctx.transform,
+            tokens.colors.border_standard,
+            None,
+            &pill,
+        );
+
+        let globe = "󰖟";
+        let glyph_size = tokens.typography.scale.base;
+        let (ggw, ggh) = ctx.text_renderer.measure(globe, glyph_size, None);
+        let gx = bar_rect.x0 + 14.0;
+        let gy = bar_rect.center().y - f64::from(ggh) / 2.0;
+        ctx.text_renderer.draw_text(
+            ctx.scene,
+            globe,
+            glyph_size,
+            tokens.colors.text_dim,
+            ctx.transform.pre_translate((gx, gy).into()),
+            None,
+        );
+        let url = "localhost:3000";
+        let (_uw, uh) = ctx.text_renderer.measure(url, glyph_size, None);
+        let ux = gx + f64::from(ggw) + 10.0;
+        let uy = bar_rect.center().y - f64::from(uh) / 2.0;
+        ctx.text_renderer.draw_text(
+            ctx.scene,
+            url,
+            glyph_size,
+            tokens.colors.text_dim,
+            ctx.transform.pre_translate((ux, uy).into()),
+            None,
+        );
+    }
+
+    /// The "App Preview" tile + headline + subtitle beneath the address
+    /// bar — painted only if there's enough vertical room for the whole
+    /// composition. Split out of [`Widget::draw`].
+    fn paint_preview_tile(ctx: &mut PaintCtx, rect: Rect, chrome_h: f64) {
+        let body_top = rect.y0 + chrome_h + 16.0;
+        if rect.y1 - body_top <= 200.0 {
+            return;
+        }
+        let tokens = &ctx.theme.tokens;
+        let tile_size = 96.0_f64;
+        // A `Point` rather than two `tile_c{x,y}` locals — same value,
+        // but doesn't read as two near-identical bindings in one scope.
+        let tile_center = Point::new(rect.center().x, body_top + 96.0);
+        let tile_rect = Rect::new(
+            tile_center.x - tile_size / 2.0,
+            tile_center.y - tile_size / 2.0,
+            tile_center.x + tile_size / 2.0,
+            tile_center.y + tile_size / 2.0,
+        );
+        let tile = vello::kurbo::RoundedRect::from_rect(tile_rect, 20.0);
+        ctx.scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            tokens.colors.accent[2].with_alpha_factor(0.18),
+            None,
+            &tile,
+        );
+        let inner_size = 48.0_f64;
+        let inner_rect = Rect::new(
+            tile_center.x - inner_size / 2.0,
+            tile_center.y - inner_size / 2.0,
+            tile_center.x + inner_size / 2.0,
+            tile_center.y + inner_size / 2.0,
+        );
+        let inner = vello::kurbo::RoundedRect::from_rect(inner_rect, 10.0);
+        ctx.scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            tokens.colors.accent[5],
+            None,
+            &inner,
+        );
+
+        // `text_primary` (pure white) would be invisible on this white
+        // card, so use dark-on-white instead.
+        let on_card_headline = tokens.colors.neutral[1];
+        let on_card_subtle = tokens.colors.neutral[4];
+
+        let headline = "App Preview";
+        let headline_size = tokens.typography.scale.xl;
+        let (hw, _hh) = ctx.text_renderer.measure(headline, headline_size, None);
+        let hx = rect.center().x - f64::from(hw) / 2.0;
+        let hy = tile_center.y + tile_size / 2.0 + 24.0;
+        ctx.text_renderer.draw_text(
+            ctx.scene,
+            headline,
+            headline_size,
+            on_card_headline,
+            ctx.transform.pre_translate((hx, hy).into()),
+            None,
+        );
+
+        let sub = "Running locally on port 3000";
+        let sub_size = tokens.typography.scale.sm;
+        let (sw, _) = ctx.text_renderer.measure(sub, sub_size, None);
+        let sx = rect.center().x - f64::from(sw) / 2.0;
+        let sy = hy + f64::from(headline_size) + 8.0;
+        ctx.text_renderer.draw_text(
+            ctx.scene,
+            sub,
+            sub_size,
+            on_card_subtle,
+            ctx.transform.pre_translate((sx, sy).into()),
+            None,
+        );
+    }
 }
 
 impl Default for BrowserStubWidget {
@@ -86,21 +296,31 @@ impl Widget for BrowserStubWidget {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = match taffy.new_leaf(taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        }) {
+            Ok(node) => node,
+            Err(err) => {
+                // `TaffyTree::new_leaf` only ever returns `Ok` for a
+                // fresh, unattached leaf; this arm exists so a future
+                // upstream change degrades the browser stub instead of
+                // aborting the whole session.
+                tracing::error!("browser_stub: leaf allocation failed: {err}");
+                NodeId::from(0u64)
+            }
+        };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -118,16 +338,21 @@ impl Widget for BrowserStubWidget {
         _presence: &PresenceCtx,
     ) {
         // Purely a function of rect size; replay via translation when
-        // only the position moved.
-        let size_changed = self.rect.width() != self.cache_rect.width()
-            || self.rect.height() != self.cache_rect.height();
+        // only the position moved. Bit-exact comparison, not "close
+        // enough": any change (even one ULP) must invalidate the cache,
+        // so a tolerant comparison would let a real resize slip through
+        // unnoticed.
+        let size_changed = f64_ne(self.rect.width(), self.cache_rect.width())
+            || f64_ne(self.rect.height(), self.cache_rect.height());
         let needs_rebuild = self.cache_rect == Rect::ZERO || size_changed;
         if !needs_rebuild {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
+            // `pre_translate` is kurbo's non-operator equivalent of
+            // `out_transform * Affine::translate((dx, dy))`.
             out_scene.append(
                 &self.cached,
-                Some(out_transform * Affine::translate((dx, dy))),
+                Some(out_transform.pre_translate((dx, dy).into())),
             );
             return;
         }
@@ -136,185 +361,18 @@ impl Widget for BrowserStubWidget {
         // `&self.rect` read below (no closure over `&mut self`).
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
-        let scene = &mut local;
-        let transform = Affine::IDENTITY;
-        // Matches `nirios-concept/src/components/apps/BrowserApp.tsx`;
-        // the outer rounded card is clipped against `self.rect` so the
-        // chrome paints inside the host's tile boundary.
-        let tokens = &theme.tokens;
-        let radius = f64::from(tokens.radii.lg);
-        let card = vello::kurbo::RoundedRect::from_rect(self.rect, radius);
-
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.window_card,
-            None,
-            &card,
-        );
-
+        let rect = self.rect;
+        let mut ctx = PaintCtx {
+            scene: &mut local,
+            transform: Affine::IDENTITY,
+            text_renderer,
+            theme,
+        };
         let chrome_h = 48.0_f64;
-        let chrome_rect = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y0 + chrome_h,
-        );
-
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.raised,
-            None,
-            &chrome_rect,
-        );
-        let divider = Rect::new(
-            self.rect.x0,
-            self.rect.y0 + chrome_h - 1.0,
-            self.rect.x1,
-            self.rect.y0 + chrome_h,
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.border_standard,
-            None,
-            &divider,
-        );
-
-        // Concept doesn't colour the traffic lights red/yellow/green.
-        let light_y = self.rect.y0 + chrome_h / 2.0;
-        for i in 0..3 {
-            let cx = self.rect.x0 + 22.0 + f64::from(i) * 18.0;
-            let circ = vello::kurbo::Circle::new(Point::new(cx, light_y), 6.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                tokens.colors.text_dim,
-                None,
-                &circ,
-            );
-        }
-
-        // Concept clamps the address bar to `max-w-2xl` (≈ 672 px); here
-        // it's the card width minus the gutter and padding instead.
-        let bar_left = self.rect.x0 + 78.0;
-        let bar_right = (self.rect.x1 - 24.0).min(self.rect.x0 + 78.0 + 560.0);
-        if bar_right > bar_left + 80.0 {
-            let bar_rect = Rect::new(bar_left, light_y - 14.0, bar_right, light_y + 14.0);
-            let pill = vello::kurbo::RoundedRect::from_rect(bar_rect, 14.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                tokens.colors.surfaces.window_card,
-                None,
-                &pill,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                tokens.colors.border_standard,
-                None,
-                &pill,
-            );
-
-            let globe = "󰖟";
-            let glyph_size = tokens.typography.scale.base;
-            let (ggw, ggh) = text_renderer.measure(globe, glyph_size, None);
-            let gx = bar_rect.x0 + 14.0;
-            let gy = bar_rect.center().y - f64::from(ggh) / 2.0;
-            text_renderer.draw_text(
-                scene,
-                globe,
-                glyph_size,
-                tokens.colors.text_dim,
-                transform * Affine::translate((gx, gy)),
-                None,
-            );
-            let url = "localhost:3000";
-            let (_uw, uh) = text_renderer.measure(url, glyph_size, None);
-            let ux = gx + f64::from(ggw) + 10.0;
-            let uy = bar_rect.center().y - f64::from(uh) / 2.0;
-            text_renderer.draw_text(
-                scene,
-                url,
-                glyph_size,
-                tokens.colors.text_dim,
-                transform * Affine::translate((ux, uy)),
-                None,
-            );
-        }
-
-        // Painted only if there's enough vertical room for the whole
-        // composition.
-        let body_top = self.rect.y0 + chrome_h + 16.0;
-        if self.rect.y1 - body_top > 200.0 {
-            let tile_size = 96.0_f64;
-            let tile_cx = self.rect.center().x;
-            let tile_cy = body_top + 96.0;
-            let tile_rect = Rect::new(
-                tile_cx - tile_size / 2.0,
-                tile_cy - tile_size / 2.0,
-                tile_cx + tile_size / 2.0,
-                tile_cy + tile_size / 2.0,
-            );
-            let tile = vello::kurbo::RoundedRect::from_rect(tile_rect, 20.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                tokens.colors.accent[2].with_alpha_factor(0.18),
-                None,
-                &tile,
-            );
-            let inner_size = 48.0_f64;
-            let inner_rect = Rect::new(
-                tile_cx - inner_size / 2.0,
-                tile_cy - inner_size / 2.0,
-                tile_cx + inner_size / 2.0,
-                tile_cy + inner_size / 2.0,
-            );
-            let inner = vello::kurbo::RoundedRect::from_rect(inner_rect, 10.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                tokens.colors.accent[5],
-                None,
-                &inner,
-            );
-
-            // `text_primary` (pure white) would be invisible on this
-            // white card, so use dark-on-white instead.
-            let on_card_headline = tokens.colors.neutral[1];
-            let on_card_subtle = tokens.colors.neutral[4];
-
-            let headline = "App Preview";
-            let headline_size = tokens.typography.scale.xl;
-            let (hw, _hh) = text_renderer.measure(headline, headline_size, None);
-            let hx = self.rect.center().x - f64::from(hw) / 2.0;
-            let hy = tile_cy + tile_size / 2.0 + 24.0;
-            text_renderer.draw_text(
-                scene,
-                headline,
-                headline_size,
-                on_card_headline,
-                transform * Affine::translate((hx, hy)),
-                None,
-            );
-
-            let sub = "Running locally on port 3000";
-            let sub_size = tokens.typography.scale.sm;
-            let (sw, _) = text_renderer.measure(sub, sub_size, None);
-            let sx = self.rect.center().x - f64::from(sw) / 2.0;
-            let sy = hy + f64::from(headline_size) + 8.0;
-            text_renderer.draw_text(
-                scene,
-                sub,
-                sub_size,
-                on_card_subtle,
-                transform * Affine::translate((sx, sy)),
-                None,
-            );
-        }
+        Self::paint_card_background(&mut ctx, rect);
+        Self::paint_chrome_bar(&mut ctx, rect, chrome_h);
+        Self::paint_address_bar(&mut ctx, rect, chrome_h);
+        Self::paint_preview_tile(&mut ctx, rect, chrome_h);
 
         out_scene.append(&local, Some(out_transform));
         self.cached = local;

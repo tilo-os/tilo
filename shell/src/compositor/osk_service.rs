@@ -213,7 +213,9 @@ fn peer_credentials(stream: &UnixStream) -> Option<libc::ucred> {
         uid: 0,
         gid: 0,
     };
-    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // `size_of::<ucred>()` is a small compile-time-fixed struct size; it can never actually
+    // exceed `u32::MAX`, but a checked conversion still beats trusting that by construction.
+    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
     // SAFETY: both pointers refer to initialized storage with the advertised
     // length; `stream` remains alive throughout the call.
     let result = unsafe {
@@ -221,8 +223,8 @@ fn peer_credentials(stream: &UnixStream) -> Option<libc::ucred> {
             stream.as_raw_fd(),
             libc::SOL_SOCKET,
             libc::SO_PEERCRED,
-            (&mut credentials as *mut libc::ucred).cast(),
-            &mut length,
+            std::ptr::from_mut(&mut credentials).cast(),
+            std::ptr::from_mut(&mut length),
         )
     };
     (result == 0 && length as usize >= std::mem::size_of::<libc::ucred>()).then_some(credentials)
@@ -286,28 +288,40 @@ fn service_launch_command(socket: &Path) -> Result<crate::shell::launcher::Launc
         socket,
         RoomId::nil(),
         None,
+        None,
         crate::compositor::render_node::resolved(),
         None,
     ))
 }
 
 fn terminate_group(child: &mut std::process::Child, pgid: libc::pid_t) {
-    // SAFETY: `pgid` is the positive pid returned for the child we created
-    // with `process_group(0)`. A negative argument targets exactly that group.
-    unsafe {
-        libc::kill(-pgid, libc::SIGTERM);
+    // `pgid` is always the positive pid returned for the child we created with
+    // `process_group(0)`, so this never overflows; `checked_neg` still keeps the kill from
+    // firing on a garbage value instead of trusting the invariant blindly.
+    if let Some(target) = pgid.checked_neg() {
+        // SAFETY: `target` is the negation of the positive pid returned for the child we
+        // created with `process_group(0)`. A negative argument targets exactly that group.
+        unsafe {
+            libc::kill(target, libc::SIGTERM);
+        }
     }
-    let deadline = Instant::now() + Duration::from_secs(1);
+    // A one-second deadline this close to `Instant`'s representable range is not a real
+    // possibility, but falling back to "now" (skip straight to SIGKILL) beats hanging.
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
     while Instant::now() < deadline {
         if child.try_wait().ok().flatten().is_some() {
             return;
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    // SAFETY: same process group as above; bounded escalation prevents a
-    // wedged sandbox from retaining input authority indefinitely.
-    unsafe {
-        libc::kill(-pgid, libc::SIGKILL);
+    if let Some(target) = pgid.checked_neg() {
+        // SAFETY: same process group as above; bounded escalation prevents a
+        // wedged sandbox from retaining input authority indefinitely.
+        unsafe {
+            libc::kill(target, libc::SIGKILL);
+        }
     }
     let _ = child.wait();
 }

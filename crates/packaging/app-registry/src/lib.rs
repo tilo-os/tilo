@@ -39,6 +39,19 @@
 //! AND the publisher signature embedded in the qpkg must validate
 //! against the entry's publisher. Any mismatch aborts the fetch.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod config;
 pub mod index;
 pub mod publish;

@@ -139,6 +139,13 @@ impl Widget for Spinner {
 
         // Evenly spaced offsets so the chain covers a quarter of the orbit.
         for (i, &alpha) in DOT_ALPHAS.iter().enumerate() {
+            // `i` and `DOT_COUNT` are both < 8 (a hard-coded 4-entry alpha
+            // ramp), far below f64's exact-integer range (2^53) — this
+            // conversion can never actually lose precision.
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "i and DOT_COUNT are both small, hard-coded constants (DOT_COUNT = 4), far below f64's 2^53 exact-integer range"
+            )]
             let angle_frac = phase - (i as f64) / (DOT_COUNT as f64);
             // -π/2 so the leading dot crosses the top at phase = 0; negative
             // direction is clockwise, matching a "loading" spinner convention.
@@ -309,7 +316,12 @@ mod tests {
     fn reduce_motion_freezes_the_orbit_at_phase_zero() {
         use std::time::Duration;
         let half_period = Duration::from_secs_f64(ROTATION_PERIOD_MS / 1000.0 / 2.0);
-        let backdate = Instant::now() - half_period;
+        // `half_period` is ~750ms, so this can only underflow on a machine
+        // whose monotonic clock started under a second ago; fall back to
+        // "now" (untested edge case) instead of panicking the test.
+        let backdate = Instant::now()
+            .checked_sub(half_period)
+            .unwrap_or_else(Instant::now);
 
         let mut fresh = Spinner::new();
         let fresh_geo = draw_path_data(&mut fresh, true);

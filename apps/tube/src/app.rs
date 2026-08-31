@@ -55,6 +55,11 @@ pub const SCROLL_GUTTER: f32 = 14.0;
 /// A view's persisted `(x, y)` scroll offset, shared with its `Scrollable`.
 type ScrollCell = Rc<Cell<(f32, f32)>>;
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent render/interaction cache (rebuild-dirty flags, \
+              --shots staging, sidebar bookkeeping), not a state machine"
+)]
 pub struct TubeApp {
     model: TubeModel,
     bus: ActionBus,
@@ -228,6 +233,7 @@ impl TubeApp {
     /// spawns the fetch worker and requests the home/trending feed; if the
     /// network is unreachable (or the `live` feature is off) the worker reports
     /// "offline — sample data" and the bundled catalogue stays on screen.
+    #[must_use]
     pub fn online(mut self) -> Self {
         self.online = true;
         // No fabricated content: the real app starts with an EMPTY catalogue and
@@ -248,6 +254,7 @@ impl TubeApp {
     /// render can paint fetched thumbnails/avatar/banner (the creator-page
     /// proof). The live app gets its store via [`Self::online`]; the default
     /// offscreen path leaves it `None` and stays hermetic.
+    #[must_use]
     pub fn with_image_store(mut self, store: ui::ImageStore) -> Self {
         self.images = Some(store);
         self
@@ -255,6 +262,7 @@ impl TubeApp {
 
     /// Test/shots hook: replace the model wholesale (e.g. a channel page built
     /// from real yt-dlp data) so an offscreen render shows real content.
+    #[must_use]
     pub fn with_model_for_test(mut self, model: TubeModel) -> Self {
         self.model = model;
         self
@@ -264,6 +272,7 @@ impl TubeApp {
     /// captures the skeleton the real (online) app shows on a cold start before
     /// live results land — proving the no-fake-content default reads as
     /// "loading", not a blank page.
+    #[must_use]
     pub fn with_loading_home_shot(mut self) -> Self {
         self.model = TubeModel::default();
         self.model.feed_loading = true;
@@ -274,6 +283,7 @@ impl TubeApp {
     /// `--shots` builder: render at the narrow breakpoint with the navigation
     /// rail summoned as an open overlay flap, so the offscreen still shows the
     /// collapsed-sidebar state. The live app never calls this.
+    #[must_use]
     pub fn with_open_sidebar_shot(mut self) -> Self {
         self.force_sidebar_open_shot = true;
         self
@@ -285,6 +295,7 @@ impl TubeApp {
     /// from the true width instead of the unknown-width fallback. Without this
     /// the one-and-only build would seed the split from a ZERO width. The live
     /// app never calls it; it learns its width from `apply_layout` each frame.
+    #[must_use]
     pub fn with_viewport(mut self, w: f64, h: f64) -> Self {
         self.rect = Rect::new(0.0, 0.0, w.max(0.0), h.max(0.0));
         self.last_nav_overlay = Some(self.nav_is_overlay());
@@ -296,9 +307,10 @@ impl TubeApp {
     /// contrast). Pure presentation override — the live app starts from the
     /// sample/persisted route instead. If the route is a search, the query is
     /// mirrored so the search header + active chip resolve.
+    #[must_use]
     pub fn with_route_shot(mut self, route: Route) -> Self {
         if let Route::Search(q) = &route {
-            self.model.search_query = q.clone();
+            q.clone_into(&mut self.model.search_query);
         }
         self.model.route = route;
         self
@@ -308,6 +320,7 @@ impl TubeApp {
     /// optionally pre-seed its query. Used by headless click-tests (which can't
     /// synthesise the Ctrl+K key event — winit's `KeyEvent` is not constructible
     /// outside the crate) and by the palette `--shots`.
+    #[must_use]
     pub fn with_palette_open_for_test(mut self, query: &str) -> Self {
         self.model.palette_open = true;
         self.model.palette_query = query.to_string();
@@ -319,6 +332,7 @@ impl TubeApp {
     /// player surface (a frame + the transport controls) without a network or a
     /// live decoder. Uses the media engine's synthesized-frame backend, which
     /// seeds a frame on `open` — the exact surface the live decode path paints.
+    #[must_use]
     pub fn with_playing_demo_for_test(mut self) -> Self {
         let id = self
             .model
@@ -362,6 +376,7 @@ impl TubeApp {
     /// same `VideoPlayer` + `media::MediaEngine` the live app streams through.
     /// Needs the `media` decode backend to produce a real frame; if none arrives
     /// within the budget the surface stays as-is (the poster/backdrop shows).
+    #[must_use]
     pub fn with_live_frame_for_shot(mut self, video_id: &str, url: String) -> Self {
         use std::time::{Duration, Instant};
         self.model.route = Route::Watch(video_id.to_string());
@@ -421,6 +436,7 @@ impl TubeApp {
     /// paused. This reproduces the scroll-perf scenario (`--bench-scroll --watch
     /// --loaded`): the scroll loop re-syncs each frame, pumping the engine, so the
     /// bench measures the true per-frame cost of a loaded-but-paused watch page.
+    #[must_use]
     pub fn with_bench_loaded_watch(mut self, video_id: &str) -> Self {
         self.model.route = Route::Watch(video_id.to_string());
         self.player = Rc::new(RefCell::new(
@@ -447,6 +463,7 @@ impl TubeApp {
     /// leave the app — the route, the query, the ordered video hits, and the nav
     /// stack pushed to `[Home, Search]` so opening a result and pressing Back
     /// returns here. Used to drive the search → video → Back round trip.
+    #[must_use]
     pub fn with_search_for_test(mut self, query: &str, video_ids: Vec<String>) -> Self {
         self.model.search_query = query.to_string();
         self.model.search_hits_query = query.to_string();
@@ -669,7 +686,7 @@ impl TubeApp {
     /// Resolve whether the rail is currently shown, given the session
     /// preference and the layout default (overlay ⇒ closed, docked ⇒ open).
     fn sidebar_currently_open(&self) -> bool {
-        self.sidebar_open.unwrap_or(!self.nav_is_overlay())
+        self.sidebar_open.unwrap_or_else(|| !self.nav_is_overlay())
     }
 
     /// Close the rail when it is an overlay flap (narrow window) — selecting a
@@ -794,7 +811,7 @@ impl TubeApp {
         video: String,
         url: String,
         has_audio: bool,
-        quality: String,
+        quality: &str,
     ) -> bool {
         if !matches!(&self.model.route, Route::Watch(id) if *id == video) {
             return false;
@@ -982,7 +999,12 @@ impl TubeApp {
 
     /// Apply one drained action. Returns true if the model changed enough
     /// to warrant a structural rebuild + persist.
-    fn apply(&mut self, action: Action, state: &mut AutoCommit, root: &ObjId) -> bool {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per Action variant; the length is the number of actions the \
+                  app dispatches, not accidental complexity in any one arm"
+    )]
+    fn apply(&mut self, action: Action, state: &AutoCommit, root: &ObjId) -> bool {
         match action {
             Action::ToggleSidebar => {
                 // Flip the rail relative to its current resolved openness, so
@@ -993,7 +1015,7 @@ impl TubeApp {
             }
             Action::Navigate(route) => {
                 if let Route::Search(q) = &route {
-                    self.model.search_query = q.clone();
+                    q.clone_into(&mut self.model.search_query);
                 }
                 self.navigate_to(route);
                 self.dismiss_overlay_rail();
@@ -1069,12 +1091,13 @@ impl TubeApp {
             Action::SetQuality(_) => {
                 let cur = self.model.settings.preferred_quality.clone();
                 let idx = QUALITIES.iter().position(|q| *q == cur).unwrap_or(0);
-                self.model.settings.preferred_quality =
-                    QUALITIES[(idx + 1) % QUALITIES.len()].to_string();
+                if let Some(next) = QUALITIES.get((idx + 1) % QUALITIES.len()) {
+                    self.model.settings.preferred_quality = (*next).to_string();
+                }
             }
             Action::SubmitSearch => {
                 let q = self.read_search(state, root);
-                self.model.search_query = q.clone();
+                q.clone_into(&mut self.model.search_query);
                 self.navigate_to(Route::Search(q.clone()));
                 if !q.is_empty() {
                     // Show the results skeleton while the live fetch is in flight
@@ -1155,6 +1178,11 @@ impl TubeApp {
 
     /// Fold any worker results into the model. Returns true if anything
     /// changed (→ rebuild).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match arm per worker Update variant; the length is the number of \
+                  update kinds, not accidental complexity in any one arm"
+    )]
     fn pump(&mut self) -> bool {
         let Some(worker) = &self.worker else {
             return false;
@@ -1263,7 +1291,7 @@ impl TubeApp {
                     // Bridge any two records describing the same creator so every
                     // card resolves an avatar one of them carries.
                     self.model.reconcile_channel_avatars();
-                    self.model.search_hits_query = query.clone();
+                    query.clone_into(&mut self.model.search_hits_query);
                     self.model.search_hits = ids;
                     self.model.search_playlist_hits = playlist_ids;
                     self.model.search_channel_hits = channel_ids;
@@ -1401,7 +1429,7 @@ impl TubeApp {
                     has_audio,
                     quality,
                 } => {
-                    if self.load_resolved_stream(video, url, has_audio, quality) {
+                    if self.load_resolved_stream(video, url, has_audio, &quality) {
                         changed = true;
                     }
                 }
@@ -1552,6 +1580,11 @@ impl Widget for TubeApp {
         self.built_overlay = Some(self.nav_is_overlay());
         let shell = self.build_shell_themed(theme);
         self.root_child = Some(shell);
+        #[allow(
+            clippy::unwrap_used,
+            reason = "root_child was just set to Some(shell) on the line above; \
+                      Widget::build_layout returns NodeId directly with no fallible path"
+        )]
         let node = self
             .root_child
             .as_mut()
@@ -1644,6 +1677,11 @@ impl Widget for TubeApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the Widget::handle_event trait method fans out on WindowEvent kind; each \
+                  branch is a short, independent dispatch to an already-extracted helper"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -1997,9 +2035,9 @@ mod tests {
 
     #[test]
     fn open_video_navigates_and_records_history() {
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
-        app.apply(Action::OpenVideo("vid_donut".into()), &mut doc, &r);
+        app.apply(Action::OpenVideo("vid_donut".into()), &doc, &r);
         assert_eq!(app.model.route, Route::Watch("vid_donut".into()));
         assert_eq!(
             app.model.history.first().map(std::string::String::as_str),
@@ -2010,10 +2048,10 @@ mod tests {
 
     #[test]
     fn subscribe_toggles_via_action() {
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
         assert!(!app.model.is_subscribed("ch_synth"));
-        app.apply(Action::ToggleSubscribe("ch_synth".into()), &mut doc, &r);
+        app.apply(Action::ToggleSubscribe("ch_synth".into()), &doc, &r);
         assert!(app.model.is_subscribed("ch_synth"));
     }
 
@@ -2030,7 +2068,7 @@ mod tests {
             "vid_donut".into(),
             "https://inv.example/latest_version?id=vid_donut&itag=18&local=true".into(),
             true,
-            "360p".into(),
+            "360p",
         );
         assert!(ok, "the resolved stream loaded for the open watch video");
         assert!(
@@ -2062,7 +2100,7 @@ mod tests {
             "some_other_id".into(),
             "https://inv.example/x?local=true".into(),
             true,
-            "360p".into(),
+            "360p",
         );
         assert!(!ok, "a stream for a non-open video is dropped");
         assert!(
@@ -2076,23 +2114,23 @@ mod tests {
 
     #[test]
     fn toggle_play_drives_the_engine() {
-        let (mut app, mut doc) = fresh_synth();
+        let (mut app, doc) = fresh_synth();
         let r = automerge::ROOT;
         app.model.route = Route::Watch("vid_donut".into());
         app.load_resolved_stream(
             "vid_donut".into(),
             "https://inv.example/x?local=true".into(),
             true,
-            "360p".into(),
+            "360p",
         );
         assert!(app.player.borrow().is_playing());
-        app.apply(Action::TogglePlay, &mut doc, &r);
+        app.apply(Action::TogglePlay, &doc, &r);
         assert!(
             !app.player.borrow().is_playing(),
             "TogglePlay paused the engine"
         );
         assert!(!app.model.playing, "the model mirrors the paused engine");
-        app.apply(Action::TogglePlay, &mut doc, &r);
+        app.apply(Action::TogglePlay, &doc, &r);
         assert!(
             app.player.borrow().is_playing(),
             "TogglePlay resumed the engine"
@@ -2110,7 +2148,7 @@ mod tests {
             "vid_rust_async".into(),
             "https://inv.example/x?local=true".into(),
             true,
-            "360p".into(),
+            "360p",
         );
         // Playhead inside the sponsor band.
         app.model.playhead = 1500.0;
@@ -2137,13 +2175,13 @@ mod tests {
 
     #[test]
     fn seek_into_sponsor_auto_skips_to_segment_end() {
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
         // vid_rust_async has a Sponsor segment 1440..1570.
-        app.apply(Action::OpenVideo("vid_rust_async".into()), &mut doc, &r);
+        app.apply(Action::OpenVideo("vid_rust_async".into()), &doc, &r);
         let dur = f64::from(app.model.video("vid_rust_async").unwrap().duration);
         // Seek to ~1500s (inside the sponsor segment).
-        app.apply(Action::Seek(1500.0 / dur), &mut doc, &r);
+        app.apply(Action::Seek(1500.0 / dur), &doc, &r);
         // Auto-skip should jump the playhead to the segment end (1570).
         assert!(
             app.model.playhead >= 1570.0,
@@ -2158,11 +2196,11 @@ mod tests {
         // Autoplay is on by default; seeking to the very end must advance to
         // the first "up next" recommendation — the real code path that
         // consumes the autoplay flag.
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
         assert!(app.model.settings.autoplay, "autoplay defaults on");
-        app.apply(Action::OpenVideo("vid_rust_async".into()), &mut doc, &r);
-        app.apply(Action::Seek(1.0), &mut doc, &r);
+        app.apply(Action::OpenVideo("vid_rust_async".into()), &doc, &r);
+        app.apply(Action::Seek(1.0), &doc, &r);
         match app.route_for_test() {
             Route::Watch(id) => assert_ne!(
                 id, "vid_rust_async",
@@ -2174,12 +2212,12 @@ mod tests {
 
     #[test]
     fn autoplay_off_parks_at_the_end_without_advancing() {
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
-        app.apply(Action::ToggleSetting(SettingFlag::Autoplay), &mut doc, &r);
+        app.apply(Action::ToggleSetting(SettingFlag::Autoplay), &doc, &r);
         assert!(!app.model.settings.autoplay);
-        app.apply(Action::OpenVideo("vid_rust_async".into()), &mut doc, &r);
-        app.apply(Action::Seek(1.0), &mut doc, &r);
+        app.apply(Action::OpenVideo("vid_rust_async".into()), &doc, &r);
+        app.apply(Action::Seek(1.0), &doc, &r);
         assert_eq!(
             app.route_for_test(),
             &Route::Watch("vid_rust_async".into()),
@@ -2189,21 +2227,21 @@ mod tests {
 
     #[test]
     fn like_toggles_and_share_copies_a_link() {
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
         assert!(!app.model.is_liked("vid_donut"));
-        app.apply(Action::ToggleLike("vid_donut".into()), &mut doc, &r);
+        app.apply(Action::ToggleLike("vid_donut".into()), &doc, &r);
         assert!(
             app.model.is_liked("vid_donut"),
             "ToggleLike likes the video"
         );
-        app.apply(Action::ToggleLike("vid_donut".into()), &mut doc, &r);
+        app.apply(Action::ToggleLike("vid_donut".into()), &doc, &r);
         assert!(
             !app.model.is_liked("vid_donut"),
             "ToggleLike again unlikes it"
         );
 
-        app.apply(Action::Share("vid_donut".into()), &mut doc, &r);
+        app.apply(Action::Share("vid_donut".into()), &doc, &r);
         assert!(
             !app.model.is_liked("vid_donut"),
             "Share must not like the video"
@@ -2217,17 +2255,17 @@ mod tests {
     #[test]
     fn cycling_category_walks_the_three_modes() {
         use crate::model::SkipMode;
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
         assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Skip);
-        app.apply(Action::ToggleCategory(Category::Intro), &mut doc, &r);
+        app.apply(Action::ToggleCategory(Category::Intro), &doc, &r);
         assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Show);
-        app.apply(Action::ToggleCategory(Category::Intro), &mut doc, &r);
+        app.apply(Action::ToggleCategory(Category::Intro), &doc, &r);
         assert_eq!(
             app.model.settings.mode_of(Category::Intro),
             SkipMode::Disabled
         );
-        app.apply(Action::ToggleCategory(Category::Intro), &mut doc, &r);
+        app.apply(Action::ToggleCategory(Category::Intro), &doc, &r);
         assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Skip);
     }
 
@@ -2240,7 +2278,7 @@ mod tests {
             "vid_rust_async".into(),
             "https://inv.example/x?local=true".into(),
             true,
-            "360p".into(),
+            "360p",
         );
         // Put the Sponsor category into Show mode, then park inside its segment.
         app.model
@@ -2254,9 +2292,9 @@ mod tests {
             "playhead untouched by auto-skip"
         );
         // The manual skip button jumps to the segment end.
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let r = automerge::ROOT;
-        app.apply(Action::SkipSegment(1570.0), &mut doc, &r);
+        app.apply(Action::SkipSegment(1570.0), &doc, &r);
         assert!(
             app.model.playhead >= 1570.0,
             "manual skip advanced the playhead"
@@ -2267,7 +2305,7 @@ mod tests {
     fn settings_persist_round_trips_through_crdt() {
         let (mut app, mut doc) = fresh();
         let r = automerge::ROOT;
-        app.apply(Action::ToggleSetting(SettingFlag::DeArrow), &mut doc, &r);
+        app.apply(Action::ToggleSetting(SettingFlag::DeArrow), &doc, &r);
         let dearrow_after = app.model.settings.dearrow_enabled;
         app.persist(&mut doc, &r);
 
@@ -2279,10 +2317,10 @@ mod tests {
 
     #[test]
     fn quality_cycles() {
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
         let q0 = app.model.settings.preferred_quality.clone();
-        app.apply(Action::SetQuality(q0.clone()), &mut doc, &r);
+        app.apply(Action::SetQuality(q0.clone()), &doc, &r);
         assert_ne!(q0, app.model.settings.preferred_quality);
     }
 
@@ -2366,15 +2404,15 @@ mod tests {
 
     #[test]
     fn toggle_summons_overlay_rail() {
-        let (mut app, mut doc) = (at_width(560.0), AutoCommit::new());
+        let (mut app, doc) = (at_width(560.0), AutoCommit::new());
         let r = automerge::ROOT;
         assert!(!app.sidebar_currently_open(), "narrow rail starts closed");
-        app.apply(Action::ToggleSidebar, &mut doc, &r);
+        app.apply(Action::ToggleSidebar, &doc, &r);
         assert!(
             app.sidebar_currently_open(),
             "hamburger summons the overlay rail"
         );
-        app.apply(Action::ToggleSidebar, &mut doc, &r);
+        app.apply(Action::ToggleSidebar, &doc, &r);
         assert!(
             !app.sidebar_currently_open(),
             "a second toggle dismisses it"
@@ -2383,11 +2421,11 @@ mod tests {
 
     #[test]
     fn selecting_a_destination_dismisses_overlay_rail() {
-        let (mut app, mut doc) = (at_width(560.0), AutoCommit::new());
+        let (mut app, doc) = (at_width(560.0), AutoCommit::new());
         let r = automerge::ROOT;
-        app.apply(Action::ToggleSidebar, &mut doc, &r); // open it
+        app.apply(Action::ToggleSidebar, &doc, &r); // open it
         assert!(app.sidebar_currently_open());
-        app.apply(Action::Navigate(Route::Trending), &mut doc, &r);
+        app.apply(Action::Navigate(Route::Trending), &doc, &r);
         assert!(
             !app.sidebar_currently_open(),
             "navigating closes the overlay flap"
@@ -2396,9 +2434,9 @@ mod tests {
 
     #[test]
     fn docked_rail_is_not_dismissed_on_navigation() {
-        let (mut app, mut doc) = (at_width(1280.0), AutoCommit::new());
+        let (mut app, doc) = (at_width(1280.0), AutoCommit::new());
         let r = automerge::ROOT;
-        app.apply(Action::Navigate(Route::History), &mut doc, &r);
+        app.apply(Action::Navigate(Route::History), &doc, &r);
         assert!(
             app.sidebar_currently_open(),
             "the docked rail stays put when navigating"
@@ -2438,7 +2476,7 @@ mod tests {
         let r = automerge::ROOT;
         doc.put(&r, "search_query", "rust").unwrap();
         assert!(!app.model.search_loading);
-        app.apply(Action::SubmitSearch, &mut doc, &r);
+        app.apply(Action::SubmitSearch, &doc, &r);
         assert!(
             app.model.search_loading,
             "an in-flight search must show the skeleton"
@@ -2516,10 +2554,11 @@ mod tests {
         use std::time::Duration;
         // A fetcher that blocks briefly so a load is deterministically in
         // flight (pending ≥ 1) when we poll.
-        let store = ui::ImageStore::new(Arc::new(|_: &str| {
+        let fetcher: ui::image_store::Fetcher = Arc::new(|_: &str| {
             std::thread::sleep(Duration::from_millis(200));
             None
-        }));
+        });
+        let store = ui::ImageStore::new(&fetcher);
         let _ = store.get("http://x/a.png");
         assert!(store.pending() >= 1, "a load is in flight");
 
@@ -2541,11 +2580,11 @@ mod tests {
         // drains, and on the boot-into-watch sync) arms it; `playing_id`
         // latching to the opened video proves the `PlayVideo` resolve request
         // went out, so playback is loading before any Play is pressed.
-        let (mut app, mut doc) = fresh_synth();
+        let (mut app, doc) = fresh_synth();
         app.online = true; // online so `ensure_playback` actually resolves
         let r = automerge::ROOT;
         assert!(app.playing_id.is_none(), "nothing armed before opening");
-        app.apply(Action::OpenVideo("vid_donut".into()), &mut doc, &r);
+        app.apply(Action::OpenVideo("vid_donut".into()), &doc, &r);
         app.ensure_playback();
         assert_eq!(
             app.playing_id.as_deref(),
@@ -2578,7 +2617,7 @@ mod tests {
             "vid_donut".into(),
             "https://inv.example/x?local=true".into(),
             true,
-            "360p".into(),
+            "360p",
         );
         assert!(
             ok && app.player_video.as_deref() == Some("vid_donut"),

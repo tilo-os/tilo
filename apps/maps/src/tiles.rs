@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use vello::Scene;
@@ -52,7 +52,7 @@ const MEM_CACHE_CAP: usize = 512;
 const FAIL_BACKOFF_MIN: Duration = Duration::from_secs(2);
 /// Ceiling for the failed-tile backoff. A tile server that is persistently
 /// unreachable is retried at most this often, never per-frame.
-const FAIL_BACKOFF_MAX: Duration = Duration::from_mins(5);
+const FAIL_BACKOFF_MAX: Duration = Duration::from_secs(300);
 /// Cap on the negative-cache size so a long pan across an unreachable region
 /// can't grow it without bound.
 const FAIL_CACHE_CAP: usize = 4096;
@@ -274,17 +274,20 @@ impl TileLayer {
         let (job_tx, job_rx) = channel::<Job>();
         let (done_tx, done_rx) = channel::<Done>();
         let dir = cache_dir.clone();
-        std::thread::Builder::new()
+        // A spawn failure (OS resource exhaustion) degrades to no background
+        // worker rather than crashing the app — the layer then behaves like an
+        // offline one, serving whatever is already cached.
+        let spawned = std::thread::Builder::new()
             .name("maps-tiles".into())
-            .spawn(move || worker(job_rx, done_tx, dir, base_url))
-            .expect("spawn maps tile worker");
+            .spawn(move || worker(&job_rx, &done_tx, &dir, &base_url))
+            .is_ok();
         Self {
             mem: HashMap::new(),
             lru: VecDeque::new(),
             inflight: std::collections::HashSet::new(),
             failed: HashMap::new(),
-            job_tx: Some(job_tx),
-            done_rx: Some(done_rx),
+            job_tx: spawned.then_some(job_tx),
+            done_rx: spawned.then_some(done_rx),
             style: TileStyle::Light,
             cache_root: None,
             cache_dir,
@@ -318,12 +321,14 @@ impl TileLayer {
             let (done_tx, done_rx) = channel::<Done>();
             let dir = self.cache_dir.clone();
             let base_url = style.base_url().to_string();
-            std::thread::Builder::new()
+            // As in `spawn_worker`: a failed spawn degrades to no worker rather
+            // than panicking.
+            let spawned = std::thread::Builder::new()
                 .name("maps-tiles".into())
-                .spawn(move || worker(job_rx, done_tx, dir, base_url))
-                .expect("spawn maps tile worker");
-            self.job_tx = Some(job_tx);
-            self.done_rx = Some(done_rx);
+                .spawn(move || worker(&job_rx, &done_tx, &dir, &base_url))
+                .is_ok();
+            self.job_tx = spawned.then_some(job_tx);
+            self.done_rx = spawned.then_some(done_rx);
         }
     }
 
@@ -428,11 +433,8 @@ impl TileLayer {
         // while mutating `self` via `insert`.
         let mut finished: Vec<Done> = Vec::new();
         if let Some(rx) = &self.done_rx {
-            loop {
-                match rx.try_recv() {
-                    Ok(msg) => finished.push(msg),
-                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-                }
+            while let Ok(msg) = rx.try_recv() {
+                finished.push(msg);
             }
         }
         for msg in finished {
@@ -769,7 +771,7 @@ impl GeoBounds {
 fn lonlat_to_tile(lat: f64, lon: f64, z: u8) -> (u32, u32) {
     let n = f64::from(TileId::n(z));
     let x = ((lon + 180.0) / 360.0 * n).floor();
-    let lat_rad = lat.clamp(-85.05112878, 85.05112878).to_radians();
+    let lat_rad = lat.clamp(-85.051_128_78, 85.051_128_78).to_radians();
     let y = ((1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * n)
         .floor();
     let nm = TileId::n(z).saturating_sub(1);
@@ -781,7 +783,7 @@ fn lonlat_to_tile(lat: f64, lon: f64, z: u8) -> (u32, u32) {
 
 /// Background worker: services fetch + download jobs entirely off the UI
 /// thread. Disk cache first, then network; decode happens here too.
-fn worker(rx: Receiver<Job>, tx: Sender<Done>, cache_dir: PathBuf, base_url: String) {
+fn worker(rx: &Receiver<Job>, tx: &Sender<Done>, cache_dir: &std::path::Path, base_url: &str) {
     // Make sure the rustls provider is installed before the first handshake —
     // otherwise every tile fetch fails silently (see `net::ensure_crypto_provider`).
     crate::net::ensure_crypto_provider();
@@ -799,7 +801,7 @@ fn worker(rx: Receiver<Job>, tx: Sender<Done>, cache_dir: PathBuf, base_url: Str
     while let Ok(job) = rx.recv() {
         match job {
             Job::Fetch(id) => {
-                let rgba = load_tile(&client, &cache_dir, &base_url, id);
+                let rgba = load_tile(client.as_ref(), cache_dir, base_url, id);
                 if tx.send(Done::Tile { id, rgba }).is_err() {
                     break;
                 }
@@ -811,7 +813,7 @@ fn worker(rx: Receiver<Job>, tx: Sender<Done>, cache_dir: PathBuf, base_url: Str
                 let ok = if path.exists() {
                     true
                 } else {
-                    fetch_to_disk(&client, &cache_dir, &base_url, id)
+                    fetch_to_disk(client.as_ref(), cache_dir, base_url, id)
                 };
                 if tx.send(Done::Download { ok }).is_err() {
                     break;
@@ -824,7 +826,7 @@ fn worker(rx: Receiver<Job>, tx: Sender<Done>, cache_dir: PathBuf, base_url: Str
 /// Load a tile's RGBA pixels: disk cache → network. Writes fetched bytes to
 /// disk so re-views and zoom are instant. Returns `None` on any failure.
 fn load_tile(
-    client: &Option<reqwest::blocking::Client>,
+    client: Option<&reqwest::blocking::Client>,
     cache_dir: &std::path::Path,
     base_url: &str,
     id: TileId,
@@ -835,7 +837,7 @@ fn load_tile(
     {
         return Some(t);
     }
-    let client = client.as_ref()?;
+    let client = client?;
     let resp = client.get(id.url(base_url)).send().ok()?;
     if !resp.status().is_success() {
         return None;
@@ -848,12 +850,12 @@ fn load_tile(
 
 /// Fetch a tile to the on-disk cache only (no decode) — for bulk downloads.
 fn fetch_to_disk(
-    client: &Option<reqwest::blocking::Client>,
+    client: Option<&reqwest::blocking::Client>,
     cache_dir: &std::path::Path,
     base_url: &str,
     id: TileId,
 ) -> bool {
-    let Some(client) = client.as_ref() else {
+    let Some(client) = client else {
         return false;
     };
     let path = cache_dir.join(id.cache_rel());
@@ -909,34 +911,36 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
         .ok_or_else(|| "png output buffer size unavailable".to_string())?;
     let mut buf = vec![0u8; buf_size];
     let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
-    let (w, h) = (info.width, info.height);
+    let (width, height) = (info.width, info.height);
     buf.truncate(info.buffer_size());
     let rgba = match info.color_type {
         png::ColorType::Rgba => buf,
         png::ColorType::Rgb => {
-            let mut out = Vec::with_capacity((w * h * 4) as usize);
+            let mut out = Vec::with_capacity((width * height * 4) as usize);
             for px in buf.chunks_exact(3) {
-                out.extend_from_slice(&[px[0], px[1], px[2], 255]);
+                let [r, g, b] = px else { continue };
+                out.extend_from_slice(&[*r, *g, *b, 255]);
             }
             out
         }
         png::ColorType::Grayscale => {
-            let mut out = Vec::with_capacity((w * h * 4) as usize);
+            let mut out = Vec::with_capacity((width * height * 4) as usize);
             for &g in &buf {
                 out.extend_from_slice(&[g, g, g, 255]);
             }
             out
         }
         png::ColorType::GrayscaleAlpha => {
-            let mut out = Vec::with_capacity((w * h * 4) as usize);
+            let mut out = Vec::with_capacity((width * height * 4) as usize);
             for px in buf.chunks_exact(2) {
-                out.extend_from_slice(&[px[0], px[0], px[0], px[1]]);
+                let [luma, alpha] = px else { continue };
+                out.extend_from_slice(&[*luma, *luma, *luma, *alpha]);
             }
             out
         }
         png::ColorType::Indexed => return Err("indexed PNG unsupported".into()),
     };
-    Ok((rgba, w, h))
+    Ok((rgba, width, height))
 }
 
 /// Default on-disk cache root. Honours `XDG_CACHE_HOME`, falling back to the
@@ -1501,7 +1505,7 @@ mod tests {
         // Now the full production helper: it must return pixels AND persist the
         // tile to the on-disk cache so re-views/zoom are instant.
         let cache = temp_cache();
-        let got = load_tile(&Some(client), &cache, base, id)
+        let got = load_tile(Some(&client), &cache, base, id)
             .expect("load_tile returns decoded pixels over the real network");
         assert_eq!(got.0.len(), 256 * 256 * 4);
         assert!(

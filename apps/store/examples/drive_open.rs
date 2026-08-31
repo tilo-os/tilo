@@ -78,10 +78,10 @@ fn main() {
             std::process::exit(2);
         }
     };
-    state
-        .doc
-        .put(&state.root, key.as_str(), true)
-        .expect("set click edge");
+    if let Err(e) = state.doc.put(&state.root, key.as_str(), true) {
+        eprintln!("failed to set click edge: {e}");
+        std::process::exit(4);
+    }
 
     app.sync(&mut state.doc, &state.root);
     let pending = app.take_pending_actions();

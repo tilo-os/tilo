@@ -10,6 +10,17 @@
 //! These tests use libgit2 directly to BUILD fixtures and to VERIFY the
 //! after-state — they never shell out to the `git` CLI.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -19,6 +30,15 @@ use git_client::app::GitClientApp;
 use git_client::model::ChangeArea;
 use git_client::panels::BranchAction;
 use git_client::repo;
+
+/// 40 lines of `"line N\n"`, used as fixture content across several
+/// hunk-boundary tests.
+fn numbered_lines() -> String {
+    (1..=40).fold(String::new(), |mut s, n| {
+        let _ = writeln!(s, "line {n}");
+        s
+    })
+}
 
 /// Create a fresh repo in a tempdir with a configured identity and an
 /// initial commit containing `file.txt`. Returns the tempdir (kept alive)
@@ -116,9 +136,9 @@ fn stage_untracked_then_commit_creates_object_with_file() {
     // And HEAD's summary must be our message.
     let repo = open(&path);
     let head = repo.head().unwrap().peel_to_commit().unwrap();
-    assert_eq!(head.summary(), Some("add new.rs"));
-    assert_eq!(head.author().name(), Some("Test User"));
-    assert_eq!(head.author().email(), Some("test@example.com"));
+    assert_eq!(head.summary(), Ok(Some("add new.rs")));
+    assert_eq!(head.author().name(), Ok("Test User"));
+    assert_eq!(head.author().email(), Ok("test@example.com"));
 }
 
 #[test]
@@ -161,7 +181,7 @@ fn create_branch_and_checkout_moves_head() {
     assert!(head.is_branch());
     assert_eq!(
         head.shorthand(),
-        Some("feature"),
+        Ok("feature"),
         "HEAD must move to the new branch"
     );
 }
@@ -175,12 +195,12 @@ fn checkout_existing_branch_switches_head() {
     assert_ne!(original, "feature");
 
     repo::checkout_branch(&path, "feature").expect("checkout");
-    assert_eq!(open(&path).head().unwrap().shorthand(), Some("feature"));
+    assert_eq!(open(&path).head().unwrap().shorthand(), Ok("feature"));
 
     repo::checkout_branch(&path, &original).expect("checkout back");
     assert_eq!(
         open(&path).head().unwrap().shorthand(),
-        Some(original.as_str())
+        Ok(original.as_str())
     );
 }
 
@@ -214,11 +234,7 @@ fn delete_branch_removes_ref_and_refuses_head() {
 fn stage_hunk_stages_only_the_selected_hunk() {
     let (_d, path) = init_repo();
     // A file with two well-separated change regions so the diff has 2 hunks.
-    fs::write(
-        path.join("multi.txt"),
-        (1..=40).map(|n| format!("line {n}\n")).collect::<String>(),
-    )
-    .unwrap();
+    fs::write(path.join("multi.txt"), numbered_lines()).unwrap();
     repo::stage_file(&path, "multi.txt").unwrap();
     repo::commit(&path, "add multi").unwrap();
 
@@ -277,11 +293,7 @@ fn stage_hunk_stages_only_the_selected_hunk() {
 #[test]
 fn unstage_hunk_reverses_a_staged_hunk() {
     let (_d, path) = init_repo();
-    fs::write(
-        path.join("multi.txt"),
-        (1..=40).map(|n| format!("line {n}\n")).collect::<String>(),
-    )
-    .unwrap();
+    fs::write(path.join("multi.txt"), numbered_lines()).unwrap();
     repo::stage_file(&path, "multi.txt").unwrap();
     repo::commit(&path, "add multi").unwrap();
 
@@ -419,7 +431,7 @@ fn fetch_and_pull_against_a_local_remote() {
     let head = local_repo.head().unwrap().peel_to_commit().unwrap();
     assert_eq!(
         head.summary(),
-        Some("commit two"),
+        Ok(Some("commit two")),
         "pull must fast-forward HEAD"
     );
     assert!(
@@ -464,7 +476,7 @@ fn app_stage_and_commit_through_production_actions() {
     // Verify a real commit landed at HEAD with both files in its tree.
     let repo = open(&path);
     let head = repo.head().unwrap().peel_to_commit().unwrap();
-    assert_eq!(head.summary(), Some("wire real git"));
+    assert_eq!(head.summary(), Ok(Some("wire real git")));
     assert!(repo::tree_has_path(&path, "HEAD", "added.rs").unwrap());
     // The model now reports a clean tree and shows the new commit first.
     let (s, u, n) = app.test_change_counts();
@@ -510,7 +522,7 @@ fn app_checkout_branch_through_production_action() {
     app.test_branch_action(BranchAction::Checkout("feature".into()));
     assert_eq!(app.test_last_error(), None);
     // The REAL repo HEAD moved.
-    assert_eq!(open(&path).head().unwrap().shorthand(), Some("feature"));
+    assert_eq!(open(&path).head().unwrap().shorthand(), Ok("feature"));
     // And the reloaded model agrees.
     assert_eq!(app.test_head(), "feature");
 }
@@ -528,21 +540,14 @@ fn app_create_branch_through_production_action() {
             .find_branch("topic/awesome", git2::BranchType::Local)
             .is_ok()
     );
-    assert_eq!(
-        open(&path).head().unwrap().shorthand(),
-        Some("topic/awesome")
-    );
+    assert_eq!(open(&path).head().unwrap().shorthand(), Ok("topic/awesome"));
     assert!(app.test_branch_names().iter().any(|n| n == "topic/awesome"));
 }
 
 #[test]
 fn app_stage_hunk_through_production_action() {
     let (_d, path) = init_repo();
-    fs::write(
-        path.join("multi.txt"),
-        (1..=40).map(|n| format!("line {n}\n")).collect::<String>(),
-    )
-    .unwrap();
+    fs::write(path.join("multi.txt"), numbered_lines()).unwrap();
     repo::stage_file(&path, "multi.txt").unwrap();
     repo::commit(&path, "add multi").unwrap();
     let mut lines: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
@@ -637,11 +642,7 @@ fn discard_file_deletes_untracked_file() {
 #[test]
 fn discard_hunk_reverts_only_the_selected_worktree_hunk() {
     let (_d, path) = init_repo();
-    fs::write(
-        path.join("multi.txt"),
-        (1..=40).map(|n| format!("line {n}\n")).collect::<String>(),
-    )
-    .unwrap();
+    fs::write(path.join("multi.txt"), numbered_lines()).unwrap();
     repo::stage_file(&path, "multi.txt").unwrap();
     repo::commit(&path, "add multi").unwrap();
     // Two well-separated edits → two worktree hunks.
@@ -666,11 +667,7 @@ fn discard_hunk_reverts_only_the_selected_worktree_hunk() {
 fn partially_staged_file_keeps_distinct_staged_and_worktree_diffs() {
     use git_client::model::DiffKey;
     let (_d, path) = init_repo();
-    fs::write(
-        path.join("multi.txt"),
-        (1..=40).map(|n| format!("line {n}\n")).collect::<String>(),
-    )
-    .unwrap();
+    fs::write(path.join("multi.txt"), numbered_lines()).unwrap();
     repo::stage_file(&path, "multi.txt").unwrap();
     repo::commit(&path, "add multi").unwrap();
     // Edit + stage line 2, then edit line 38 without staging: the file is now

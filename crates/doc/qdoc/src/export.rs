@@ -93,7 +93,7 @@ impl<'a> InlinePlan<'a> {
     pub fn new(text: &'a str, marks: &'a [MarkSpan]) -> Self {
         let mut byte_offsets: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
         byte_offsets.push(text.len());
-        let len = byte_offsets.len() - 1;
+        let len = byte_offsets.len().saturating_sub(1);
 
         let mut offsets = BTreeSet::from([0, len]);
         for mark in marks {
@@ -113,7 +113,7 @@ impl<'a> InlinePlan<'a> {
                 bookmarks: range_boundary(marks, crate::schema::MARK_BOOKMARK, offset),
                 changes: change_boundary(marks, offset),
             };
-            let run = offsets.get(index + 1).map(|&end| {
+            let run = offsets.get(index.saturating_add(1)).map(|&end| {
                 let mut active: Vec<&MarkSpan> = marks
                     .iter()
                     .filter(|mark| offset >= mark.start && offset < mark.end)
@@ -133,8 +133,12 @@ impl<'a> InlinePlan<'a> {
                 };
                 let change = find_change(crate::schema::MARK_INS, ChangeKind::Ins)
                     .or_else(|| find_change(crate::schema::MARK_DEL, ChangeKind::Del));
-                let run_text = &text[byte_offsets[offset]..byte_offsets[end]];
-                let note_reference = if end == offset + 1
+                let run_text = byte_offsets
+                    .get(offset)
+                    .zip(byte_offsets.get(end))
+                    .and_then(|(&start_b, &end_b)| text.get(start_b..end_b))
+                    .unwrap_or_default();
+                let note_reference = if end == offset.saturating_add(1)
                     && run_text.starts_with(crate::schema::FIELD_PLACEHOLDER)
                 {
                     marks
@@ -185,7 +189,7 @@ fn range_boundary<'a>(marks: &'a [MarkSpan], name: &str, offset: usize) -> Range
             })
             .filter_map(|mark| mark.value.as_str())
             .collect();
-        values.sort();
+        values.sort_unstable();
         values
     };
     RangeBoundary {
@@ -208,7 +212,7 @@ fn change_boundary(marks: &[MarkSpan], offset: usize) -> RangeBoundary<'_> {
             })
             .filter_map(|mark| mark.value.as_str())
             .collect();
-        values.sort();
+        values.sort_unstable();
         values
     };
     RangeBoundary {
@@ -244,7 +248,10 @@ mod tests {
         assert_eq!((runs[0].char_range.clone(), runs[0].text), (0..1, "a"));
         assert_eq!((runs[1].char_range.clone(), runs[1].text), (1..3, "é🦀"));
         assert_eq!((runs[2].char_range.clone(), runs[2].text), (3..4, "z"));
-        assert!(std::ptr::eq(runs[1].marks[0], &marks[0]));
+        assert!(std::ptr::eq(
+            runs[1].marks[0],
+            std::ptr::from_ref(&marks[0])
+        ));
     }
 
     #[test]

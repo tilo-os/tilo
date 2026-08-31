@@ -2,6 +2,8 @@
 name = "qdoc-rtf"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "RTF (Rich Text Format) export for qdoc DocSnapshot documents (qOS)"
 
 [dependencies]

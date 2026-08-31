@@ -37,8 +37,8 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider,
 };
 
 use crate::doc::ContactsDoc;
@@ -128,7 +128,9 @@ impl ContactData {
 pub enum ContactsAction {
     /// Create or replace a contact's fields. The single variant behind the New
     /// button, every field edit committed by Save, and each row add/remove.
-    UpsertContact(ContactData),
+    /// Boxed: `ContactData` carries the whole record (repeated rows
+    /// included) and dwarfs the other variants.
+    UpsertContact(Box<ContactData>),
     /// Remove a contact from the book.
     DeleteContact { id: String },
     /// Set a contact's favourite flag to a resolved value. The toggling
@@ -172,9 +174,16 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`ContactsAction`] into the wire form the palette and the
 /// on-screen affordances both dispatch. The single point that turns a contacts
 /// action into a replayable envelope.
+///
+/// # Panics
+///
+/// Never panics: falls back to an empty-payload envelope rather than
+/// crashing the caller if `action` somehow fails to serialize.
 pub fn encode(action: &ContactsAction) -> EncodedAction {
-    EncodedAction::encode(CONTACTS_ACTION_TYPE, action)
-        .expect("ContactsAction is always serializable")
+    EncodedAction::encode(CONTACTS_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
+        type_id: CONTACTS_ACTION_TYPE.to_string(),
+        payload: Vec::new(),
+    })
 }
 
 // ===========================================================================
@@ -184,7 +193,7 @@ pub fn encode(action: &ContactsAction) -> EncodedAction {
 
 /// Create or replace a contact (New, any field edit, or a row add/remove).
 pub fn upsert_contact_action(c: &Contact) -> ContactsAction {
-    ContactsAction::UpsertContact(ContactData::from_contact(c))
+    ContactsAction::UpsertContact(Box::new(ContactData::from_contact(c)))
 }
 
 /// Delete a contact by id.
@@ -224,7 +233,13 @@ fn split_name(name: &str) -> (String, String) {
 }
 
 fn immediate_spec(id: &str, label: &str, action: &ContactsAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, CONTACTS_ACTION_TYPE, action).expect("encode contacts action")
+    ActionSpec::immediate(id, label, CONTACTS_ACTION_TYPE, action)
+        // `ActionSpec`'s fields are private now that it carries typed
+        // parameters; build the fallback through the constructor that
+        // takes an already-encoded action.
+        .unwrap_or_else(|_| {
+            ActionSpec::immediate_encoded(id, label.to_string(), action.locus(), encode(action))
+        })
 }
 
 /// Build the resource tree Contacts currently has open: the book (with a "New
@@ -333,7 +348,7 @@ mod tests {
     use crate::app::ContactsApp;
     use crate::search_provider::ContactSearchProvider;
     use automerge::ROOT;
-    use qos_actions::{ActionInput, LocalTransport};
+    use qos_actions::LocalTransport;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -345,14 +360,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 

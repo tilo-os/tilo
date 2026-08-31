@@ -24,6 +24,19 @@
 //! implementation, reached the same way from the button and the command line, so the two
 //! cannot drift.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use std::process::{Command, ExitCode, Stdio};
 
 use anyhow::{Context, Result, bail};

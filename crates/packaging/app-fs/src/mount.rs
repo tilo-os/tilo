@@ -49,13 +49,19 @@ pub struct Mount {
 impl Mount {
     /// Build a filesystem from `collection` + `store` and mount it at
     /// `mountpoint`; returns once the FUSE session is running on its worker thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MountError::Build`] if the inode table can't be built
+    /// from `collection`, or [`MountError::Fuse`] if the kernel mount
+    /// itself fails.
     pub fn spawn<S: BlobStore + Send + Sync + 'static>(
         collection: &Collection,
         store: S,
-        mountpoint: impl AsRef<Path>,
-        options: MountOptions,
+        mountpoint: &Path,
+        options: &MountOptions,
     ) -> Result<Self, MountError> {
-        let mountpoint = mountpoint.as_ref().to_path_buf();
+        let mountpoint = mountpoint.to_path_buf();
         let mut fs = if let Some(pages) = options.cache_pages {
             QosAppFs::with_cache_pages(collection, store, pages)?
         } else {
@@ -107,6 +113,10 @@ impl Mount {
     /// Explicitly unmount + join the FUSE worker. Idempotent —
     /// subsequent calls are no-ops. Drop also triggers this, but a test
     /// asserting on post-unmount state should call it directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MountError::Fuse`] if the kernel unmount fails.
     pub fn unmount(mut self) -> Result<(), MountError> {
         match self.session.take() {
             Some(session) => session

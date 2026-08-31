@@ -9,6 +9,16 @@
 //! Set `QUICK_UI_SCREENSHOT_DIR=<path>` to write one PNG per state for
 //! by-eye inspection.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use crate::support::offscreen::OffscreenRenderer;
 use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
@@ -67,6 +77,11 @@ fn make_window_group() -> WindowGroup {
     WindowGroup::new(42, tabs, 1, WindowWidth::Normal)
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "renderer.width/height are small fixed test-canvas dimensions, exactly \
+              representable in f32"
+)]
 fn render_group(renderer: &mut OffscreenRenderer, group: &mut WindowGroup) -> Vec<u8> {
     let (w, h) = (renderer.width, renderer.height);
     let theme = Theme::dark();
@@ -107,10 +122,10 @@ fn render_group(renderer: &mut OffscreenRenderer, group: &mut WindowGroup) -> Ve
 /// comparison, just a fingerprint good enough to detect any pixel-level
 /// divergence between two renders.
 fn pixel_hash(buf: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in buf {
         h ^= u64::from(*b);
-        h = h.wrapping_mul(0x100000001b3);
+        h = h.wrapping_mul(0x100_0000_01b3);
     }
     h
 }
@@ -137,9 +152,7 @@ fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
 #[test]
 fn window_group_visual_journey_distinguishes_all_states() {
     let (w, h) = (620u32, 200u32);
-    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
-        r
-    } else {
+    let Some(mut renderer) = try_new_renderer(w, h) else {
         eprintln!("offscreen: no wgpu adapter available — skipping window-group journey");
         return;
     };
@@ -197,9 +210,7 @@ fn window_group_visual_journey_distinguishes_all_states() {
 #[test]
 fn window_group_fresh_render_is_deterministic() {
     let (w, h) = (400u32, 120u32);
-    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
-        r
-    } else {
+    let Some(mut renderer) = try_new_renderer(w, h) else {
         eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
         return;
     };

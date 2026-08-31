@@ -81,6 +81,10 @@ pub enum CompactionError {
 
 /// Encode a `CompactionCheckpoint` to canonical bytes — the format an
 /// op's payload field should carry when `op_class == Compaction`.
+///
+/// # Errors
+///
+/// Returns [`CanonicalError`] if canonical serialisation fails.
 pub fn encode_compaction_payload(cp: &CompactionCheckpoint) -> Result<Vec<u8>, CanonicalError> {
     canonical_bytes(cp)
 }
@@ -89,6 +93,12 @@ pub fn encode_compaction_payload(cp: &CompactionCheckpoint) -> Result<Vec<u8>, C
 /// `op.op_class == Compaction` so a caller gets a precise error rather
 /// than a silently-decoded random struct. The returned struct is owned,
 /// so callers can drop the original envelope.
+///
+/// # Errors
+///
+/// Returns [`CompactionError::WrongOpClass`] if `op.op_class != Compaction`,
+/// or [`CompactionError::Malformed`] if the payload doesn't decode as a
+/// `CompactionCheckpoint`.
 pub fn parse_compaction_payload(op: &SignedOp) -> Result<CompactionCheckpoint, CompactionError> {
     if op.op_class != OpClass::Compaction {
         return Err(CompactionError::WrongOpClass {
@@ -104,6 +114,10 @@ pub fn parse_compaction_payload(op: &SignedOp) -> Result<CompactionCheckpoint, C
 ///
 /// Exposed so a host can mint a checkpoint with the same hashing rule
 /// receivers use, avoiding drift.
+///
+/// # Errors
+///
+/// Returns [`CanonicalError`] if canonicalising any op in `ops` fails.
 pub fn hash_op_prefix(ops: &[SignedOp]) -> Result<[u8; 32], CanonicalError> {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -127,7 +141,7 @@ mod tests {
     fn dummy_op(seq: u64) -> SignedOp {
         let (_, pk) = generate_keypair();
         SignedOp::new_unsigned(
-            vec![seq as u8],
+            vec![seq.to_le_bytes()[0]],
             ArtifactId::new(),
             pk,
             AttestationId::new(),

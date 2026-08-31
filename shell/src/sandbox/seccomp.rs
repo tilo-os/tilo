@@ -58,7 +58,7 @@ impl std::error::Error for SeccompError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             SeccompError::Compile(e) => Some(e),
-            _ => None,
+            SeccompError::UnsupportedArch(_) => None,
         }
     }
 }
@@ -164,7 +164,7 @@ fn build_workspace_filter() -> Result<SeccompFilter, SeccompError> {
 /// explicitly in little-endian keeps this safe Rust and survives any
 /// future struct-shape change in seccompiler without UB.
 fn bpf_program_to_bytes(prog: &BpfProgram) -> Vec<u8> {
-    let mut out = Vec::with_capacity(prog.len() * 8);
+    let mut out = Vec::with_capacity(prog.len().saturating_mul(8));
     for stmt in prog {
         out.extend_from_slice(&stmt.code.to_ne_bytes());
         out.push(stmt.jt);
@@ -180,6 +180,12 @@ fn bpf_program_to_bytes(prog: &BpfProgram) -> Vec<u8> {
 /// `struct sock_filter` records (8 bytes each: u16 code, u8 jt, u8
 /// jf, u32 k, native endian). Callers can either feed this to the
 /// kernel via `bwrap --seccomp <fd>` or persist with [`cache_blob`].
+///
+/// # Errors
+///
+/// Returns `Err` when the binary was built for a host architecture
+/// seccompiler does not support, or when the seccompiler backend
+/// rejects the filter (bad rule, filter too large, invalid arg index).
 pub fn compile_workspace_seccomp() -> Result<Vec<u8>, SeccompError> {
     let filter = build_workspace_filter()?;
     let program: BpfProgram = filter.try_into()?;
@@ -193,6 +199,11 @@ pub fn compile_workspace_seccomp() -> Result<Vec<u8>, SeccompError> {
 ///
 /// Split from [`cache_blob`] so tests can point at a tempdir without
 /// needing root access to `/var/cache/qos-fs`.
+///
+/// # Errors
+///
+/// Returns `Err` when `<cache_root>/<ws_id>` cannot be created or the
+/// blob cannot be written (permissions, missing parent, disk full).
 pub fn cache_blob_at(cache_root: &Path, ws_id: u64, bytes: &[u8]) -> io::Result<PathBuf> {
     let dir = cache_root.join(ws_id.to_string());
     std::fs::create_dir_all(&dir)?;
@@ -205,6 +216,10 @@ pub fn cache_blob_at(cache_root: &Path, ws_id: u64, bytes: &[u8]) -> io::Result<
 ///
 /// Production wrapper around [`cache_blob_at`]. Use the `_at` variant
 /// in tests so we don't need write access to `/var`.
+///
+/// # Errors
+///
+/// Returns `Err` under the same conditions as [`cache_blob_at`].
 pub fn cache_blob(ws_id: u64, bytes: &[u8]) -> io::Result<PathBuf> {
     cache_blob_at(Path::new(DEFAULT_CACHE_ROOT), ws_id, bytes)
 }

@@ -39,10 +39,23 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -55,6 +68,10 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+/// # Errors
+///
+/// Returns `Err` if a `--shots`/`--probe*` mode fails to construct its
+/// backend, fetch data, or write its output file.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -127,60 +144,39 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_bench_scroll(frames, watch, loaded);
     }
 
-    if let Some(out) = parse_shots_arg(&args) {
-        let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        let (vw, vh) = viewport;
-        let narrow = args.iter().any(|a| a == "--narrow");
-        let palette = args.iter().any(|a| a == "--palette");
-        // `--play-demo`: open a watch page with the shared `VideoPlayer` already
-        // playing (a synthesized frame + revealed controls), so the still
-        // captures the real player surface + transport — a visual companion to
-        // `--probe-engine` (which proves the *decode*) for eyeballing the on-screen
-        // player without a network or a live decoder.
-        let play_demo = args.iter().any(|a| a == "--play-demo");
-        // `--empty`: the cold-start loading skeleton (no fabricated sample).
-        let empty_loading = args.iter().any(|a| a == "--empty");
-        // Seed the app with the render viewport so the single offscreen frame
-        // resolves the responsive layout (rail default, grid columns, watch
-        // player size) from the true width instead of the unknown-width
-        // fallback. Shots-only — the live event loop below is untouched.
-        let mut app = tube::TubeApp::new().with_viewport(f64::from(vw), f64::from(vh));
-        if empty_loading {
-            app = app.with_loading_home_shot();
-        } else if palette {
-            // Open the command palette pre-seeded so the still captures the
-            // Ctrl+K overlay with live results.
-            let q = parse_palette_query_arg(&args).unwrap_or_else(|| "rust".to_string());
-            app = app.with_palette_open_for_test(&q);
-        } else if play_demo {
-            app = app.with_playing_demo_for_test();
-        } else if narrow {
-            app = app.with_open_sidebar_shot();
-        } else if let Some(route) = parse_route_arg(&args) {
-            app = app.with_route_shot(route);
-        }
-        render_shot_to_png(Box::new(app) as Box<dyn Widget>, viewport, &out)?;
-        return Ok(());
-    }
-
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(
-            spec,
-            Box::new(tube::TubeApp::new().online()),
-            "dev.qos.tube",
-        ));
-    }
-
-    let (state, autosave) = ui::persist::open("dev.qos.tube");
-    // The live binary is `online()`: it reaches out to the real backend and
-    // auto-falls-back to the sample if the network is down. (`app_root()`, used
-    // by `--shots`, stays offline for hermetic screenshots.)
-    let app = ui::App::new(state, Box::new(tube::TubeApp::new().online())).with_autosave(autosave);
-    app.run();
+    ui::launch::run(
+        &LaunchSpec::new("dev.qos.tube", live_root)
+            .shot_root(shot_root)
+            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+            .allowed_flags(&["--narrow", "--palette", "--play-demo", "--empty"])
+            .allowed_options(&["--route", "--palette-query"]),
+    )?;
     Ok(())
+}
+
+fn live_root() -> Box<dyn Widget> {
+    Box::new(tube::TubeApp::new().online())
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::ShotFactory"
+)]
+fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    let (vw, vh) = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+    let mut app = tube::TubeApp::new().with_viewport(f64::from(vw), f64::from(vh));
+    if args.has("--empty") {
+        app = app.with_loading_home_shot();
+    } else if args.has("--palette") {
+        app = app.with_palette_open_for_test(args.value("--palette-query").unwrap_or("rust"));
+    } else if args.has("--play-demo") {
+        app = app.with_playing_demo_for_test();
+    } else if args.has("--narrow") {
+        app = app.with_open_sidebar_shot();
+    } else if let Some(route) = args.value("--route") {
+        app = app.with_route_shot(route_from_spec(route));
+    }
+    Ok(Box::new(app))
 }
 
 /// Parse `--probe` / `--probe=<query>` / `--probe <query>`. Returns the query
@@ -234,6 +230,12 @@ fn parse_flag_id(args: &[String], flag: &str, default: &str) -> Option<String> {
 /// engine, plays, and decodes a sequence of frames; prints engine events + a
 /// per-frame checksum proving motion. Exits non-zero if no frame decodes.
 #[cfg(all(feature = "live", feature = "media"))]
+#[allow(
+    clippy::exit,
+    reason = "a diagnostic CLI probe: an empty/malformed live result is reported \
+              with a distinct machine-readable exit code, not folded into the generic \
+              error path main() already uses for construction/network failures"
+)]
 fn run_probe_engine(id: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::collections::HashSet;
     use std::time::{Duration, Instant};
@@ -371,8 +373,16 @@ fn parse_opt_query(args: &[String], flag: &str, default: &str) -> Option<String>
 /// dedicated trending endpoint failing for real, then the composed popular feed
 /// (view-count-sorted search) that replaces it — with real titles.
 #[cfg(feature = "live")]
+#[allow(
+    clippy::exit,
+    reason = "a diagnostic CLI probe: an empty/malformed live result is reported \
+              with a distinct machine-readable exit code, not folded into the generic \
+              error path main() already uses for construction/network failures"
+)]
 fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
     use tube::backend::{BackendResult, YtBackend};
+
+    const SEEDS: [&str; 6] = ["news", "music", "gaming", "technology", "sports", "science"];
 
     eprintln!("probe-trending: constructing the live rustypipe backend…");
     let backend = tube::backend::live::RustyPipeBackend::new()
@@ -401,19 +411,20 @@ fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
         "\nprobe-trending: composing a REAL popular feed via view-count-sorted, \
          last-week search…"
     );
-    const SEEDS: [&str; 6] = ["news", "music", "gaming", "technology", "sports", "science"];
     let mut total = 0usize;
     for seed in SEEDS {
         match backend.popular_search(seed) {
             Ok(BackendResult::Videos(vs)) if !vs.is_empty() => {
                 total += vs.len();
-                println!(
-                    "  {seed:>10}: {} popular videos; top: [{}] {} ({} views)",
-                    vs.len(),
-                    vs[0].id,
-                    vs[0].title,
-                    vs[0].views
-                );
+                if let Some(top) = vs.first() {
+                    println!(
+                        "  {seed:>10}: {} popular videos; top: [{}] {} ({} views)",
+                        vs.len(),
+                        top.id,
+                        top.title,
+                        top.views
+                    );
+                }
             }
             Ok(_) => println!("  {seed:>10}: empty"),
             Err(e) => eprintln!("  {seed:>10}: FAILED: {e}"),
@@ -443,6 +454,12 @@ fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
 /// with real `YouTube` results + fetched thumbnails, and a watch page with a real
 /// frame decoded through the shared media engine from a rangeable proxy stream.
 #[cfg(all(feature = "live", feature = "media"))]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one diagnostic step per pipeline stage (backend construction, fetch, \
+              decode, report); the length is the number of steps probed, not \
+              accidental complexity in any one of them"
+)]
 fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
     use tube::backend::{BackendResult, YtBackend, proxy, yt_thumb_url, ytdlp::YtDlpBackend};
@@ -758,7 +775,7 @@ fn short_url(url: &str) -> String {
     }
     let head = url.split('?').next().unwrap_or(url);
     if head.len() > 72 {
-        format!("{}…", &head[..72])
+        format!("{}…", head.get(..72).unwrap_or(head))
     } else {
         head.to_string()
     }
@@ -767,6 +784,12 @@ fn short_url(url: &str) -> String {
 /// `--probe-ytdlp [query]`: prove the yt-dlp extractor end-to-end — search,
 /// video metadata, and a channel page with its real avatar + banner URLs.
 #[cfg(feature = "live")]
+#[allow(
+    clippy::exit,
+    reason = "a diagnostic CLI probe: an empty/malformed live result is reported \
+              with a distinct machine-readable exit code, not folded into the generic \
+              error path main() already uses for construction/network failures"
+)]
 fn run_probe_ytdlp(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     use tube::backend::{BackendResult, YtBackend};
 
@@ -777,10 +800,6 @@ fn run_probe_ytdlp(query: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("probe-ytdlp: searching YouTube for {query:?} …");
     let (first_id, first_channel) = if let BackendResult::Videos(vs) = backend.search(query)? {
-        if vs.is_empty() {
-            eprintln!("probe-ytdlp: EMPTY result set — reached yt-dlp but nothing parsed.");
-            std::process::exit(2);
-        }
         println!("  {} REAL results from YouTube:", vs.len());
         for (i, v) in vs.iter().take(10).enumerate() {
             println!(
@@ -793,7 +812,11 @@ fn run_probe_ytdlp(query: &str) -> Result<(), Box<dyn std::error::Error>> {
                 short_url(&v.thumbnail_url)
             );
         }
-        (vs[0].id.clone(), vs[0].channel_id.clone())
+        let Some(top) = vs.first() else {
+            eprintln!("probe-ytdlp: EMPTY result set — reached yt-dlp but nothing parsed.");
+            std::process::exit(2);
+        };
+        (top.id.clone(), top.channel_id.clone())
     } else {
         println!("probe-ytdlp: unexpected result variant");
         return Ok(());
@@ -846,6 +869,12 @@ fn run_probe_ytdlp(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 /// `--probe-avatars [query]`: diagnose the creator-avatar pipeline end to end.
 #[cfg(feature = "live")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one diagnostic step per pipeline stage (backend construction, fetch, \
+              decode, report); the length is the number of steps probed, not \
+              accidental complexity in any one of them"
+)]
 fn run_probe_avatars(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::collections::HashMap;
     use tube::backend::{BackendResult, YtBackend, ytdlp::YtDlpBackend};
@@ -877,7 +906,7 @@ fn run_probe_avatars(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     for v in &yt_videos {
         let e = yt_channel_freq
             .entry(v.channel_id.clone())
-            .or_insert((v.channel_name.clone(), 0));
+            .or_insert_with(|| (v.channel_name.clone(), 0));
         e.1 += 1;
     }
 
@@ -906,7 +935,7 @@ fn run_probe_avatars(query: &str) -> Result<(), Box<dyn std::error::Error>> {
         if !v.channel_id.is_empty() && !v.channel_avatar_url.is_empty() {
             rp_avatars
                 .entry(v.channel_id.clone())
-                .or_insert(v.channel_avatar_url.clone());
+                .or_insert_with(|| v.channel_avatar_url.clone());
         }
     }
     for c in &items.channels {
@@ -923,7 +952,7 @@ fn run_probe_avatars(query: &str) -> Result<(), Box<dyn std::error::Error>> {
         if !c.id.is_empty() && !c.avatar_url.is_empty() {
             rp_avatars
                 .entry(c.id.clone())
-                .or_insert(c.avatar_url.clone());
+                .or_insert_with(|| c.avatar_url.clone());
         }
     }
 
@@ -1025,13 +1054,15 @@ fn run_probe_avatars(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     let fetch = tube::images::image_fetcher();
     let store = tube::images::image_store();
     let magic = |b: &[u8]| -> &'static str {
-        if b.len() >= 3 && &b[0..3] == b"\xFF\xD8\xFF" {
+        if b.get(0..3) == Some(b"\xFF\xD8\xFF".as_slice()) {
             "JPEG"
-        } else if b.len() >= 4 && &b[0..4] == b"\x89PNG" {
+        } else if b.get(0..4) == Some(b"\x89PNG".as_slice()) {
             "PNG"
-        } else if b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP" {
+        } else if b.get(0..4) == Some(b"RIFF".as_slice())
+            && b.get(8..12) == Some(b"WEBP".as_slice())
+        {
             "WEBP"
-        } else if b.len() >= 4 && &b[0..4] == b"GIF8" {
+        } else if b.get(0..4) == Some(b"GIF8".as_slice()) {
             "GIF"
         } else {
             "OTHER"
@@ -1092,6 +1123,12 @@ fn run_probe_avatars(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
 /// The real proof: construct the live backend, hit `YouTube`, print what came
 /// back. Compiled to do real work only under `--features live`.
 #[cfg(feature = "live")]
+#[allow(
+    clippy::exit,
+    reason = "a diagnostic CLI probe: an empty/malformed live result is reported \
+              with a distinct machine-readable exit code, not folded into the generic \
+              error path main() already uses for construction/network failures"
+)]
 fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     use tube::backend::{BackendResult, YtBackend};
 
@@ -1103,12 +1140,6 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("probe: searching YouTube for {query:?} …");
     let (first_id, first_channel) = match backend.search(query) {
         Ok(BackendResult::Videos(vs)) => {
-            if vs.is_empty() {
-                eprintln!(
-                    "probe: EMPTY result set — network reached YouTube but no videos parsed."
-                );
-                std::process::exit(2);
-            }
             println!("probe: {} REAL results from YouTube:", vs.len());
             for (i, v) in vs.iter().take(15).enumerate() {
                 println!(
@@ -1120,7 +1151,12 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
                     v.views
                 );
             }
-            let f = &vs[0];
+            let Some(f) = vs.first() else {
+                eprintln!(
+                    "probe: EMPTY result set — network reached YouTube but no videos parsed."
+                );
+                std::process::exit(2);
+            };
             (f.id.clone(), f.channel_id.clone())
         }
         Ok(other) => {
@@ -1223,7 +1259,7 @@ fn median_us(samples: &[u128]) -> u128 {
     }
     let mut s = samples.to_vec();
     s.sort_unstable();
-    s[s.len() / 2]
+    s.get(s.len() / 2).copied().unwrap_or(0)
 }
 
 fn max_us(samples: &[u128]) -> u128 {
@@ -1238,9 +1274,26 @@ fn avg_us(samples: &[u128]) -> u128 {
     }
 }
 
+/// One measured pass of [`run_bench_scroll`]'s inner `run_pass` closure: the
+/// per-frame sync/compute/apply/draw timing series (µs) and whether the pass
+/// used the scroll fast path.
+type ScrollBenchPass =
+    Result<(Vec<u128>, Vec<u128>, Vec<u128>, Vec<u128>, bool), Box<dyn std::error::Error>>;
+
 /// `--bench-scroll [frames] [--watch]`: measure the per-frame main-thread cost
 /// of scrolling either a large Home grid or the watch page (full-bleed player +
 /// a long comment list), in two modes, and report the numbers.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one timed pipeline stage per widget-cycle phase (sync, compute, apply, draw), \
+              measured twice (baseline + fast path); the length is the number of phases \
+              instrumented, not accidental complexity in any one of them"
+)]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "w/h are the viewport size and s/c/a/d the per-phase (sync/compute/apply/draw) \
+              timing series threaded through the report() closure"
+)]
 fn run_bench_scroll(
     frames: usize,
     watch: bool,
@@ -1261,9 +1314,11 @@ fn run_bench_scroll(
         let base = m.videos.clone();
         let mut i = 0usize;
         while m.videos.len() < CARDS && !base.is_empty() {
-            let mut v = base[i % base.len()].clone();
+            let Some(mut v) = base.get(i % base.len()).cloned() else {
+                break;
+            };
             v.id = format!("{}_{i}", v.id);
-            v.seed = v.id.clone();
+            v.id.clone_into(&mut v.seed);
             m.videos.push(v);
             i += 1;
         }
@@ -1280,12 +1335,18 @@ fn run_bench_scroll(
             .videos
             .iter()
             .find(|v| !v.comments.is_empty())
-            .map_or_else(|| m.videos[0].id.clone(), |v| v.id.clone());
+            .map_or_else(
+                || m.videos.first().map(|v| v.id.clone()).unwrap_or_default(),
+                |v| v.id.clone(),
+            );
         if let Some(v) = m.videos.iter_mut().find(|v| v.id == id) {
             let base = v.comments.clone();
             let mut i = 0usize;
             while v.comments.len() < 60 && !base.is_empty() {
-                v.comments.push(base[i % base.len()].clone());
+                let Some(next) = base.get(i % base.len()).cloned() else {
+                    break;
+                };
+                v.comments.push(next);
                 i += 1;
             }
         }
@@ -1297,7 +1358,7 @@ fn run_bench_scroll(
     // One measured pass. `force_compute` = the pre-fix baseline (always re-solve
     // taffy every frame). `false` = the scroll fast path (apply_layout only when
     // nothing needs re-measuring). Returns (compute[], apply[], draw[]) in µs.
-    let run_pass = |force_compute: bool| -> (Vec<u128>, Vec<u128>, Vec<u128>, Vec<u128>, bool) {
+    let run_pass = |force_compute: bool| -> ScrollBenchPass {
         let theme = Theme::dark();
         let presence = PresenceCtx::empty();
         let permission = PermissionContext::permissive();
@@ -1321,43 +1382,41 @@ fn run_bench_scroll(
         let mut state = ui::State::new();
         widget.sync(&mut state.doc, &state.root);
         let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: length(w as f32),
-                        height: length(h as f32),
-                    },
-                    ..Default::default()
+        let root = taffy.new_with_children(
+            Style {
+                size: Size {
+                    width: length(w as f32),
+                    height: length(h as f32),
                 },
-                &[child],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[child],
+        )?;
 
         let solve = |taffy: &mut TaffyTree<()>,
                      node_map: &HashMap<NodeId, *mut dyn Widget>,
-                     tr: &mut TextRenderer| {
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(w as f32),
-                        height: AvailableSpace::Definite(h as f32),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = node_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, tr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
+                     tr: &mut TextRenderer|
+         -> Result<(), Box<dyn std::error::Error>> {
+            taffy.compute_layout_with_measure(
+                root,
+                taffy::Size {
+                    width: AvailableSpace::Definite(w as f32),
+                    height: AvailableSpace::Definite(h as f32),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = node_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )?;
+            Ok(())
         };
 
         // Initial full solve + layout + a warm draw (fills the Text/scene caches
         // so the timed frames measure steady-state scroll, not first-paint).
-        solve(&mut taffy, &node_map, &mut tr);
+        solve(&mut taffy, &node_map, &mut tr)?;
         widget.apply_layout(&taffy, child, Point::ORIGIN);
         {
             let mut scene = Scene::new();
@@ -1415,7 +1474,7 @@ fn run_bench_scroll(
             }
             if force_compute || needs_measure {
                 let t = Instant::now();
-                solve(&mut taffy, &node_map, &mut tr);
+                solve(&mut taffy, &node_map, &mut tr)?;
                 compute.push(t.elapsed().as_micros());
             } else {
                 compute.push(0);
@@ -1444,11 +1503,17 @@ fn run_bench_scroll(
             widget.mark_drawn();
             draw.push(t.elapsed().as_micros());
         }
-        (sync, compute, apply, draw, ever_reposition_only)
+        Ok((sync, compute, apply, draw, ever_reposition_only))
     };
 
     let report = |label: &str, s: &[u128], c: &[u128], a: &[u128], d: &[u128]| {
-        let total: Vec<u128> = (0..c.len()).map(|i| s[i] + c[i] + a[i] + d[i]).collect();
+        let total: Vec<u128> = s
+            .iter()
+            .zip(c)
+            .zip(a)
+            .zip(d)
+            .map(|(((s, c), a), d)| s + c + a + d)
+            .collect();
         println!(
             "  {label:<20} frame(total)  median {:>5.2}ms  avg {:>5.2}ms  max {:>5.2}ms",
             median_us(&total) as f64 / 1000.0,
@@ -1480,9 +1545,9 @@ fn run_bench_scroll(
         format!("{CARDS} Home cards")
     };
     println!("tube scroll bench: {scene_label}, {w}x{h}, {frames} scroll frames\n");
-    let (bs, bc, ba, bd, _) = run_pass(true);
+    let (bs, bc, ba, bd, _) = run_pass(true)?;
     report("BASELINE (re-solve)", &bs, &bc, &ba, &bd);
-    let (fs, fc, fa, fd, repos) = run_pass(false);
+    let (fs, fc, fa, fd, repos) = run_pass(false)?;
     report("FAST (reposition)", &fs, &fc, &fa, &fd);
     println!(
         "\n  scroll frames took the reposition-only fast path: {}",
@@ -1492,8 +1557,12 @@ fn run_bench_scroll(
             "NO — investigate"
         }
     );
-    let fast_total: Vec<u128> = (0..fc.len())
-        .map(|i| fs[i] + fc[i] + fa[i] + fd[i])
+    let fast_total: Vec<u128> = fs
+        .iter()
+        .zip(&fc)
+        .zip(&fa)
+        .zip(&fd)
+        .map(|(((s, c), a), d)| s + c + a + d)
         .collect();
     println!(
         "  FAST-path median frame (incl. sync): {:.2}ms  (sync med {:.2}ms)",
@@ -1503,37 +1572,14 @@ fn run_bench_scroll(
     Ok(())
 }
 
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
-}
-
-/// Parse `--route NAME` (or `--route=NAME`) into a starting [`tube::model::Route`]
-/// for a screen-specific shot. Recognises `home`, `trending`, `subs`/
+/// Parse a route specification into a starting [`tube::model::Route`] for a
+/// screen-specific shot. Recognises `home`, `trending`, `subs`/
 /// `subscriptions`, `history`, `settings`, `watch:<video_id>`, and
 /// `search:<query>`.
-fn parse_route_arg(args: &[String]) -> Option<tube::model::Route> {
+fn route_from_spec(spec: &str) -> tube::model::Route {
     use tube::model::Route;
-    let mut iter = args.iter().skip(1);
-    let spec = loop {
-        let arg = iter.next()?;
-        if arg == "--route" {
-            break iter.next()?.clone();
-        }
-        if let Some(rest) = arg.strip_prefix("--route=") {
-            break rest.to_string();
-        }
-    };
     let lower = spec.to_ascii_lowercase();
-    Some(match lower.as_str() {
+    match lower.as_str() {
         "home" => Route::Home,
         "trending" => Route::Trending,
         "subs" | "subscriptions" => Route::Subscriptions,
@@ -1545,42 +1591,10 @@ fn parse_route_arg(args: &[String]) -> Option<tube::model::Route> {
             } else if let Some(q) = spec.strip_prefix("search:") {
                 Route::Search(q.to_string())
             } else {
-                Route::Search(spec)
+                Route::Search(spec.to_string())
             }
         }
-    })
-}
-
-/// Parse `--palette-query <q>` (or `--palette-query=<q>`) — the query to seed
-/// the command-palette shot with.
-fn parse_palette_query_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--palette-query" {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix("--palette-query=") {
-            return Some(rest.to_string());
-        }
     }
-    None
-}
-
-/// Parse `--viewport WxH` (or `--viewport=WxH`) into a (width, height) pair.
-fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        let spec = if arg == "--viewport" {
-            iter.next().map(String::as_str)
-        } else {
-            arg.strip_prefix("--viewport=")
-        };
-        if let Some(spec) = spec {
-            let (w, h) = spec.split_once(['x', 'X'])?;
-            return Some((w.trim().parse().ok()?, h.trim().parse().ok()?));
-        }
-    }
-    None
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.

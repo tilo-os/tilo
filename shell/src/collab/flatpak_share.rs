@@ -37,32 +37,31 @@ const SOFTWARE_FPS_CEILING: u32 = 30;
 /// Annex-B start codes. Returns `false` on no start-code / empty input —
 /// treating "unknown" as non-keyframe is the safe direction for a
 /// late-joining viewer.
+///
+/// Every lookup goes through `.get()` rather than direct indexing: a start
+/// code landing as the very last bytes of `nalus` (with no NAL header byte
+/// following it) must read as "not a keyframe", not panic the compositor.
 fn is_h264_keyframe(nalus: &[u8]) -> bool {
     let mut i = 0usize;
-    while i + 4 <= nalus.len() {
-        let three = &nalus[i..i + 3];
-        let four_ok = i + 4 <= nalus.len()
-            && nalus[i] == 0
-            && nalus[i + 1] == 0
-            && nalus[i + 2] == 0
-            && nalus[i + 3] == 1;
-        if four_ok {
-            let header = nalus[i + 4];
-            if header & 0x1f == 5 {
+    while i.saturating_add(4) <= nalus.len() {
+        let Some(window) = nalus.get(i..) else {
+            break;
+        };
+        if window.starts_with(&[0, 0, 0, 1]) {
+            if window.get(4).is_some_and(|&h| h & 0x1f == 5) {
                 return true;
             }
-            i += 4;
+            i = i.saturating_add(4);
             continue;
         }
-        if three == [0u8, 0, 1] {
-            let header = nalus[i + 3];
-            if header & 0x1f == 5 {
+        if window.starts_with(&[0, 0, 1]) {
+            if window.get(3).is_some_and(|&h| h & 0x1f == 5) {
                 return true;
             }
-            i += 3;
+            i = i.saturating_add(3);
             continue;
         }
-        i += 1;
+        i = i.saturating_add(1);
     }
     false
 }
@@ -84,6 +83,45 @@ enum StagedKind {
     /// DMABUF handle handed to the encoder; Arc-backed inside smithay, so
     /// staging it keeps every plane fd alive without a dup.
     Dmabuf(Dmabuf),
+}
+
+/// Build the encoder's `FrameInput::DmabufFd` from `dmabuf`'s planes.
+/// `.take(4)` bounds the plane count, but writes go through `.get_mut()`
+/// anyway rather than trust that invariant to hold forever. Split out of
+/// `SharedFlatpakSession::encode_next_frame` to keep it short.
+fn dmabuf_frame_input(dmabuf: &Dmabuf) -> FrameInput<'_> {
+    let mut plane_fds = [-1i32; 4];
+    let mut plane_offsets = [0u64; 4];
+    let mut plane_strides = [0u32; 4];
+    let mut num_planes: u8 = 0;
+    for (i, (fd, (offset, stride))) in dmabuf
+        .handles()
+        .zip(dmabuf.offsets().zip(dmabuf.strides()))
+        .take(4)
+        .enumerate()
+    {
+        if let Some(slot) = plane_fds.get_mut(i) {
+            *slot = fd.as_raw_fd();
+        }
+        if let Some(slot) = plane_offsets.get_mut(i) {
+            *slot = u64::from(offset);
+        }
+        if let Some(slot) = plane_strides.get_mut(i) {
+            *slot = stride;
+        }
+        num_planes = num_planes.saturating_add(1);
+    }
+    let fmt = dmabuf.format();
+    FrameInput::DmabufFd {
+        plane_fds,
+        plane_offsets,
+        plane_strides,
+        num_planes,
+        drm_fourcc: fmt.code as u32,
+        drm_modifier: u64::from(fmt.modifier),
+        width: dmabuf.width(),
+        height: dmabuf.height(),
+    }
 }
 
 /// One encoded frame, ready to wrap in `NeighbourMsg::SurfaceFrame`.
@@ -123,6 +161,10 @@ pub enum ShareError {
     #[error("dimensions {width}×{height} exceed the 4096×4096 ceiling")]
     DimensionsExceeded { width: u32, height: u32 },
 }
+
+/// Client-declared colorimetry override plus optional HDR static metadata,
+/// as attached by [`SharedFlatpakSession::set_color_override`].
+type ColorOverride = Option<(Colorimetry, Option<Hdr10Metadata>)>;
 
 /// A live share session on the owner side. Drop it — or call [`Self::stop`]
 /// for an explicit tear-down — to release the encoder and registry entries.
@@ -180,7 +222,7 @@ pub struct SharedFlatpakSession {
     /// `wp_color_management_surface_v1.set_image_description`.
     /// [`Self::stream_start_msg`] prefers this over the config default.
     /// `None` means no override.
-    color_override: Arc<Mutex<Option<(Colorimetry, Option<Hdr10Metadata>)>>>,
+    color_override: Arc<Mutex<ColorOverride>>,
     /// True when HDR was configured but no HEVC hardware was available at
     /// start, so the session fell back to SDR H.264 and `stream_start_msg`
     /// tags SDR colorimetry to match the actual bytes. A client override can
@@ -193,13 +235,21 @@ impl SharedFlatpakSession {
     /// Construct + activate a new share session. `width`/`height` must match
     /// the captured surface's `wl_shm` buffer or the encoder rejects the
     /// first frame with [`EncodeError::BufferSizeMismatch`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShareError::DimensionsExceeded`] if `width`/`height` are
+    /// zero or exceed the 4096×4096 ceiling, [`ShareError::EncoderUnavailable`]
+    /// if the configured encoder isn't available in this build, or
+    /// [`ShareError::EncoderConstruction`] if building the chosen encoder
+    /// backend fails.
     pub fn start(
         host_user_id: PeerId,
         app_id: impl Into<String>,
         surface_id: SurfaceId,
         width: u32,
         height: u32,
-        config: FlatpakShareConfig,
+        config: &FlatpakShareConfig,
     ) -> Result<Self, ShareError> {
         Self::start_with_metrics(
             host_user_id,
@@ -215,13 +265,17 @@ impl SharedFlatpakSession {
     /// Same as [`Self::start`] but attaches a shared [`PeerSurfaceMetrics`]
     /// handle so the OSD sees encode-side counters alongside receiver-side
     /// ones.
+    ///
+    /// # Errors
+    ///
+    /// Same failure modes as [`Self::start`].
     pub fn start_with_metrics(
         host_user_id: PeerId,
         app_id: impl Into<String>,
         surface_id: SurfaceId,
         width: u32,
         height: u32,
-        config: FlatpakShareConfig,
+        config: &FlatpakShareConfig,
         metrics: Option<PeerSurfaceMetrics>,
     ) -> Result<Self, ShareError> {
         if width == 0 || height == 0 || width > 4096 || height > 4096 {
@@ -240,7 +294,7 @@ impl SharedFlatpakSession {
         // Only clamp fps under openh264 — hardware HEVC (e.g. NVENC) easily
         // sustains 60 fps.
         let effective_fps = if chosen == EncoderKind::Openh264 {
-            config.target_fps.min(SOFTWARE_FPS_CEILING).max(1)
+            config.target_fps.clamp(1, SOFTWARE_FPS_CEILING)
         } else {
             config.target_fps.max(1)
         };
@@ -276,10 +330,8 @@ impl SharedFlatpakSession {
             EncoderError::Unavailable { .. } => ShareError::EncoderUnavailable {
                 choice: config.encoder,
             },
-            EncoderError::ConfigFailed { detail, .. } => {
-                ShareError::EncoderConstruction(EncodeError::Backend(detail))
-            }
-            EncoderError::EncodeFailed { detail, .. } => {
+            EncoderError::ConfigFailed { detail, .. }
+            | EncoderError::EncodeFailed { detail, .. } => {
                 ShareError::EncoderConstruction(EncodeError::Backend(detail))
             }
         })?;
@@ -288,8 +340,15 @@ impl SharedFlatpakSession {
             m.set_chosen_encoder(chosen);
         }
 
-        let interval =
-            std::time::Duration::from_micros((1_000_000 / u64::from(effective_fps)).max(1));
+        // `effective_fps` is clamped/maxed to at least 1 above, so this
+        // division never actually hits zero; `checked_div` plus a 1-second
+        // fallback keeps that provable rather than merely assumed.
+        let interval = std::time::Duration::from_micros(
+            1_000_000u64
+                .checked_div(u64::from(effective_fps))
+                .unwrap_or(1_000_000)
+                .max(1),
+        );
 
         Ok(Self {
             host_user_id,
@@ -298,8 +357,10 @@ impl SharedFlatpakSession {
             width,
             height,
             config: FlatpakShareConfig {
+                max_bitrate_kbps: config.max_bitrate_kbps,
                 target_fps: effective_fps,
-                ..config
+                encoder: config.encoder,
+                hdr: config.hdr,
             },
             encoder: Arc::new(Mutex::new(encoder)),
             chosen_encoder: chosen,
@@ -334,7 +395,7 @@ impl SharedFlatpakSession {
     }
 
     /// Currently-active colorimetry override.
-    pub fn current_color_override(&self) -> Option<(Colorimetry, Option<Hdr10Metadata>)> {
+    pub fn current_color_override(&self) -> ColorOverride {
         self.color_override.lock().ok().and_then(|g| *g)
     }
 
@@ -349,21 +410,32 @@ impl SharedFlatpakSession {
     /// Main10 depending on the HDR config.
     pub fn chosen_codec(&self) -> super::encoder::Codec {
         // Lock held only for a cheap Copy read; no contention with encode_next_frame.
-        self.encoder.lock().expect("encoder").codec()
+        self.encoder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .codec()
     }
 
     /// Update the capture path (SHM ↔ DMABUF); propagates into the shared
     /// metrics handle so the OSD sees the switch immediately.
     pub fn set_capture_path(&self, path: CapturePath) {
-        let mut slot = self.capture_path.lock().expect("capture path");
+        // Dropped before the metrics call below, which doesn't need it.
+        let mut slot = self
+            .capture_path
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *slot = path;
+        drop(slot);
         if let Some(m) = &self.metrics {
             m.set_capture_path(path);
         }
     }
 
     pub fn capture_path(&self) -> CapturePath {
-        *self.capture_path.lock().expect("capture path")
+        *self
+            .capture_path
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Dimensions the encoder is configured for; constant for the session
@@ -398,7 +470,7 @@ impl SharedFlatpakSession {
                 (
                     codec.wire_label().to_string(),
                     Some(client_color),
-                    client_hdr.or(self.config.hdr.map(|c| c.metadata)),
+                    client_hdr.or_else(|| self.config.hdr.map(|c| c.metadata)),
                     if is_hdr { 10u8 } else { 8u8 },
                 )
             } else {
@@ -451,7 +523,10 @@ impl SharedFlatpakSession {
     /// [`EncodeError::BufferSizeMismatch`] on the next pump.
     pub fn deposit_captured_rgba(&self, rgba: Vec<u8>) {
         let capture_ts_ns = self.monotonic_ns_now();
-        let mut slot = self.staged_frame.lock().expect("staged frame");
+        let mut slot = self
+            .staged_frame
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *slot = Some(StagedFrame {
             kind: StagedKind::Rgba(rgba),
             capture_ts_ns,
@@ -465,7 +540,10 @@ impl SharedFlatpakSession {
     /// fallback picks up on the next commit.
     pub fn deposit_captured_dmabuf(&self, dmabuf: Dmabuf) {
         let capture_ts_ns = self.monotonic_ns_now();
-        let mut slot = self.staged_frame.lock().expect("staged frame");
+        let mut slot = self
+            .staged_frame
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *slot = Some(StagedFrame {
             kind: StagedKind::Dmabuf(dmabuf),
             capture_ts_ns,
@@ -480,16 +558,31 @@ impl SharedFlatpakSession {
         if !self.active.load(Ordering::Acquire) {
             return None;
         }
-        let mut throttle = self.throttle.lock().expect("throttle");
-        if !throttle.should_encode(now) {
-            return None;
+        // Held only for the throttle check — released immediately rather
+        // than across the (potentially slow) encode below; re-acquired
+        // briefly again on success to record `mark_encoded`.
+        {
+            let throttle = self
+                .throttle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !throttle.should_encode(now) {
+                return None;
+            }
         }
         // Drain staged frame before taking the encoder lock — avoid holding both.
-        let staged = self.staged_frame.lock().expect("staged").take();
+        let staged = self
+            .staged_frame
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         let staged = staged?;
         let carried_ts = staged.capture_ts_ns;
 
-        let mut encoder = self.encoder.lock().expect("encoder");
+        let mut encoder = self
+            .encoder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut nalus = Vec::new();
         // DMABUF paths lift plane fd/offset/stride off the `Dmabuf` handle
         // (Arc keeps the fds alive for the borrow); RGBA paths just hand the
@@ -499,44 +592,25 @@ impl SharedFlatpakSession {
                 encoder.encode(FrameInput::Rgba(rgba), &mut nalus),
                 CapturePath::ShmReadback,
             ),
-            StagedKind::Dmabuf(dmabuf) => {
-                let mut plane_fds = [-1i32; 4];
-                let mut plane_offsets = [0u64; 4];
-                let mut plane_strides = [0u32; 4];
-                let mut num_planes: u8 = 0;
-                for (i, (fd, (offset, stride))) in dmabuf
-                    .handles()
-                    .zip(dmabuf.offsets().zip(dmabuf.strides()))
-                    .take(4)
-                    .enumerate()
-                {
-                    plane_fds[i] = fd.as_raw_fd();
-                    plane_offsets[i] = u64::from(offset);
-                    plane_strides[i] = stride;
-                    num_planes = num_planes.saturating_add(1);
-                }
-                let fmt = dmabuf.format();
-                let input = FrameInput::DmabufFd {
-                    plane_fds,
-                    plane_offsets,
-                    plane_strides,
-                    num_planes,
-                    drm_fourcc: fmt.code as u32,
-                    drm_modifier: u64::from(fmt.modifier),
-                    width: dmabuf.width(),
-                    height: dmabuf.height(),
-                };
-                (encoder.encode(input, &mut nalus), CapturePath::DmabufDirect)
-            }
+            StagedKind::Dmabuf(dmabuf) => (
+                encoder.encode(dmabuf_frame_input(dmabuf), &mut nalus),
+                CapturePath::DmabufDirect,
+            ),
         };
+        drop(encoder);
         match encode_result {
             Ok(stats) => {
-                throttle.mark_encoded(now);
+                self.throttle
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .mark_encoded(now);
                 // Record capture path only after the encoder actually
                 // succeeds, not merely when a DMABUF buffer was detected.
                 self.set_capture_path(path_taken);
                 if let Some(m) = &self.metrics {
-                    m.record_encode_wallclock(stats.encode_wallclock.as_nanos() as u64);
+                    m.record_encode_wallclock(
+                        u64::try_from(stats.encode_wallclock.as_nanos()).unwrap_or(u64::MAX),
+                    );
                     if stats.keyframe {
                         m.record_keyframe();
                     }
@@ -569,7 +643,10 @@ impl SharedFlatpakSession {
     /// later via [`Self::set_read_only`]) and subscribe them to the
     /// [`SurfaceStreamSender`].
     pub fn add_viewer(&self, peer: PeerId, read_only: bool) {
-        let mut reg = self.share_registry.lock().expect("share registry");
+        let mut reg = self
+            .share_registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reg.insert(peer, self.surface_id, StreamingShare { read_only });
         drop(reg);
         self.stream_sender.subscribe(peer);
@@ -578,7 +655,10 @@ impl SharedFlatpakSession {
     /// Drop a viewer — subsequent `RemoteInput` events fall on the floor and
     /// their substream subscription closes.
     pub fn drop_viewer(&self, peer: PeerId) {
-        let mut reg = self.share_registry.lock().expect("share registry");
+        let mut reg = self
+            .share_registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reg.remove(peer, self.surface_id);
         drop(reg);
         self.stream_sender.unsubscribe(peer);
@@ -616,13 +696,19 @@ impl SharedFlatpakSession {
 
     /// Flip the read-only flag on an existing viewer.
     pub fn set_read_only(&self, peer: PeerId, read_only: bool) {
-        let mut reg = self.share_registry.lock().expect("share registry");
+        let mut reg = self
+            .share_registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reg.set_read_only(peer, self.surface_id, read_only);
     }
 
     /// Consult the share registry — same gate `State::apply_remote_input` uses.
     pub fn accept_remote_input(&self, peer: PeerId) -> bool {
-        let reg = self.share_registry.lock().expect("share registry");
+        let reg = self
+            .share_registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reg.accept_remote_input(peer, self.surface_id)
     }
 
@@ -637,7 +723,10 @@ impl SharedFlatpakSession {
         event: InputEvent,
         sink: &mut S,
     ) -> bool {
-        let reg = self.share_registry.lock().expect("share registry");
+        let reg = self
+            .share_registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reg.route_to(peer, self.surface_id, event, sink)
     }
 
@@ -649,6 +738,10 @@ impl SharedFlatpakSession {
 
     /// Monotonic ns counter for outgoing wire messages; wraps at u64
     /// overflow (~584 years), not a practical concern.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the u128 -> u64 wrap is intentional (see doc above); a saturating cast would silently change that behaviour at the multi-century mark"
+    )]
     fn monotonic_ns_now(&self) -> u64 {
         self.origin.elapsed().as_nanos() as u64
     }
@@ -704,11 +797,17 @@ mod tests {
     }
 
     fn gradient_frame(width: u32, height: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        let mut out = Vec::with_capacity(width.saturating_mul(height).saturating_mul(4) as usize);
         for y in 0..height {
             for x in 0..width {
-                let r = ((x * 255) / width.max(1)) as u8;
-                let g = ((y * 255) / height.max(1)) as u8;
+                let r = u8::try_from(x.saturating_mul(255).checked_div(width.max(1)).unwrap_or(0))
+                    .unwrap_or(255);
+                let g = u8::try_from(
+                    y.saturating_mul(255)
+                        .checked_div(height.max(1))
+                        .unwrap_or(0),
+                )
+                .unwrap_or(255);
                 out.push(r);
                 out.push(g);
                 out.push(128);
@@ -727,7 +826,7 @@ mod tests {
                 encoder: choice,
                 ..cfg_openh264()
             };
-            let session = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, cfg)
+            let session = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, &cfg)
                 .expect("session should fall back to openh264");
             #[cfg(not(feature = "vaapi"))]
             #[cfg(not(feature = "nvenc"))]
@@ -741,12 +840,12 @@ mod tests {
 
     #[test]
     fn start_rejects_zero_and_oversized_dimensions() {
-        match SharedFlatpakSession::start(1, "x", 1, 0, 64, cfg_openh264()) {
+        match SharedFlatpakSession::start(1, "x", 1, 0, 64, &cfg_openh264()) {
             Err(ShareError::DimensionsExceeded { .. }) => {}
             Err(other) => panic!("expected DimensionsExceeded for 0 width, got {other:?}"),
             Ok(_) => panic!("zero-width session should not construct"),
         }
-        match SharedFlatpakSession::start(1, "x", 1, 5000, 64, cfg_openh264()) {
+        match SharedFlatpakSession::start(1, "x", 1, 5000, 64, &cfg_openh264()) {
             Err(ShareError::DimensionsExceeded { .. }) => {}
             Err(other) => {
                 panic!("expected DimensionsExceeded for 5000 width, got {other:?}")
@@ -761,7 +860,7 @@ mod tests {
             target_fps: 60,
             ..cfg_openh264()
         };
-        let s = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, cfg).expect("start");
+        let s = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, &cfg).expect("start");
         assert_eq!(
             s.snapshot_config().target_fps,
             SOFTWARE_FPS_CEILING,
@@ -771,7 +870,7 @@ mod tests {
 
     #[test]
     fn stream_start_and_end_messages_carry_the_session_ids() {
-        let s = SharedFlatpakSession::start(0xBEEF, "org.gimp.GIMP", 42, 64, 64, cfg_openh264())
+        let s = SharedFlatpakSession::start(0xBEEF, "org.gimp.GIMP", 42, 64, 64, &cfg_openh264())
             .expect("start");
         match s.stream_start_msg() {
             NeighbourMsg::SurfaceStreamStart {
@@ -819,7 +918,7 @@ mod tests {
     fn encode_next_frame_produces_annex_b_bytes() {
         const W: u32 = 64;
         const H: u32 = 64;
-        let s = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, W, H, cfg_openh264())
+        let s = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, W, H, &cfg_openh264())
             .expect("start");
         s.deposit_captured_rgba(gradient_frame(W, H));
         let frame = s
@@ -844,7 +943,7 @@ mod tests {
 
     #[test]
     fn encode_next_frame_none_when_no_staged_frame() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, cfg_openh264()).expect("start");
+        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_openh264()).expect("start");
         assert!(s.encode_next_frame(Instant::now()).is_none());
     }
 
@@ -852,7 +951,7 @@ mod tests {
     fn stop_short_circuits_encode_next_frame() {
         const W: u32 = 64;
         const H: u32 = 64;
-        let s = SharedFlatpakSession::start(1, "x", 7, W, H, cfg_openh264()).expect("start");
+        let s = SharedFlatpakSession::start(1, "x", 7, W, H, &cfg_openh264()).expect("start");
         s.deposit_captured_rgba(gradient_frame(W, H));
         // Flip `active` directly (bypassing `stop`) to isolate the short-circuit.
         let active = s.active.clone();
@@ -862,7 +961,7 @@ mod tests {
 
     #[test]
     fn viewer_registration_gates_remote_input() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, cfg_openh264()).expect("start");
+        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_openh264()).expect("start");
         let peer: PeerId = 99;
 
         assert!(!s.accept_remote_input(peer));
@@ -882,7 +981,7 @@ mod tests {
 
     #[test]
     fn route_input_delivers_only_when_accepted() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, cfg_openh264()).expect("start");
+        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_openh264()).expect("start");
         let peer: PeerId = 42;
         let mut sink = RecordingSink::default();
 

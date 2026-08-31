@@ -14,6 +14,11 @@ use crate::router::Router;
 
 /// Spawn an inotify watcher on the registry file. Reloads are debounced 100ms
 /// to coalesce editors that write-truncate then write-data.
+///
+/// # Errors
+///
+/// Returns an error if the registry path is invalid, creating the watch directory fails,
+/// or setting up the file watcher fails.
 pub fn spawn_watcher(router: Router, registry_path: PathBuf) -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::channel::<()>(8);
     // Watch the parent dir — notify on directly-named files misses
@@ -31,8 +36,6 @@ pub fn spawn_watcher(router: Router, registry_path: PathBuf) -> anyhow::Result<(
         .to_os_string();
 
     let mut watcher: RecommendedWatcher = {
-        let tx = tx;
-        let registry_name = registry_name;
         notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(ev) = res
                 && ev

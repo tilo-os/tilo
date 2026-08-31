@@ -38,6 +38,10 @@ pub struct ContentStore {
 
 impl ContentStore {
     /// Open the persistent store rooted at `cache_dir` (created if missing).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `cache_dir` cannot be created or the on-disk blob store fails to load.
     pub async fn open(cache_dir: impl AsRef<Path>) -> Result<Self> {
         let dir = cache_dir.as_ref();
         std::fs::create_dir_all(dir)?;
@@ -80,6 +84,10 @@ impl ContentStore {
     }
 
     /// Ingest bytes and return their blake3 content hash. Warms the cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying blob store fails to accept the data.
     pub async fn ingest(&self, data: impl Into<Bytes>) -> Result<Hash> {
         let _mutation = self.mutation.lock().await;
         let data = data.into();
@@ -96,6 +104,10 @@ impl ContentStore {
 
     /// Content-defined-chunk `data`, ingest each chunk (deduped) + a manifest
     /// describing them. Returns the manifest hash (`None` if empty); editing part of a large file only stores the changed chunks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a chunk or the manifest fails to ingest, or the manifest fails to serialize.
     pub async fn write_content(&self, data: &[u8]) -> Result<Option<Hash>> {
         if data.is_empty() {
             return Ok(None);
@@ -105,11 +117,12 @@ impl ContentStore {
             let h = self.ingest(Bytes::copy_from_slice(chunk)).await?;
             chunks.push(crate::content::ChunkRef {
                 hash: *h.as_bytes(),
-                len: chunk.len() as u32,
+                // Chunks are bounded by MAX_CHUNK (64 KiB), far under u32::MAX.
+                len: u32::try_from(chunk.len()).unwrap_or(u32::MAX),
             });
         }
         let manifest = crate::content::Manifest { chunks };
-        let mh = self.ingest(Bytes::from(manifest.encode())).await?;
+        let mh = self.ingest(Bytes::from(manifest.encode()?)).await?;
         Ok(Some(mh))
     }
 
@@ -128,6 +141,10 @@ impl ContentStore {
     }
 
     /// Persist + cache bytes that were fetched and verified from a peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying blob store fails to accept the data.
     pub async fn store_fetched(&self, hash: Hash, data: Bytes) -> Result<()> {
         let _mutation = self.mutation.lock().await;
         // add_bytes re-derives the hash; persisting makes future reads local.
@@ -148,6 +165,10 @@ impl ContentStore {
     /// The mutation gate closes the otherwise subtle race where a concurrent
     /// add loses its temporary tag after the live set has been enumerated but
     /// before GC sweeps.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if listing blobs/tags, or deleting a tag, fails against the underlying store.
     pub async fn evict_blobs(&self, selected: &HashSet<Hash>) -> Result<u64> {
         if selected.is_empty() {
             return Ok(0);
@@ -176,8 +197,13 @@ impl ContentStore {
         for name in selected_tags {
             self.store().tags().delete(name).await?;
         }
-        *self.gc_live.write().unwrap() = Some(live);
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        *self
+            .gc_live
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(live);
+        let deadline = tokio::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(3))
+            .unwrap_or_else(tokio::time::Instant::now);
         loop {
             let mut remaining = false;
             for hash in selected {
@@ -187,12 +213,18 @@ impl ContentStore {
                 }
             }
             if !remaining {
-                *self.gc_live.write().unwrap() = None;
+                *self
+                    .gc_live
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 let after_count = self.store().blobs().list().hashes().await?.len();
                 return Ok(before_count.saturating_sub(after_count) as u64);
             }
             if tokio::time::Instant::now() >= deadline {
-                *self.gc_live.write().unwrap() = None;
+                *self
+                    .gc_live
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 // A large store may still be sweeping. Report only completed
                 // removals; the sweep's immutable live set can still remove
                 // selected blobs, but can never expand its target set.
@@ -215,7 +247,11 @@ fn eviction_gc(live: Arc<RwLock<Option<HashSet<Hash>>>>) -> GcConfig {
     GcConfig {
         interval: std::time::Duration::from_millis(50),
         add_protected: Some(Arc::new(move |protected| {
-            match live.read().unwrap().clone() {
+            let snapshot = live
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            match snapshot {
                 Some(snapshot) => {
                     protected.extend(snapshot);
                     Box::pin(async { ProtectOutcome::Continue })

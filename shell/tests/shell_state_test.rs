@@ -1,3 +1,13 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use shell::shell::state::{
     AppKind, CapRole, Collaborator, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceTree,
@@ -17,7 +27,7 @@ fn workspace_tree_default_has_three_workspaces_each_with_one_strip() {
             ws.name
         );
         assert!(
-            t.active_strip.get(&ws.id).is_some(),
+            t.active_strip.contains_key(&ws.id),
             "missing active_strip for {:?}",
             ws.name
         );

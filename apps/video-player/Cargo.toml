@@ -2,6 +2,8 @@
 name = "video-player"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "video_player"
@@ -30,7 +32,6 @@ ui = { path = "../../ui" }
 media = { path = "../../crates/media" }
 automerge.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

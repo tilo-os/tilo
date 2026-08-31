@@ -11,6 +11,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::WindowEvent;
 
+/// Each bool below is an independent builder toggle (background, height
+/// fill, padding, grow behaviour) set at construction time, not a state
+/// machine with meaningful combinations to enumerate — a bitflags/enum
+/// refactor would ripple across every one of `Container`'s call sites in
+/// the crate for no behavioural gain.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent, orthogonal builder toggles; not encoded state"
+)]
 pub struct Container {
     child: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -59,6 +68,7 @@ impl Container {
     }
 
     /// See the field docs.
+    #[must_use]
     pub fn with_flex_grow(mut self) -> Self {
         self.flex_grow = true;
         self
@@ -66,16 +76,19 @@ impl Container {
 
     /// Used by the shell root so its child Stack reaches y=0 / x=0 without
     /// an uneditable inner gutter.
+    #[must_use]
     pub fn with_no_padding(mut self) -> Self {
         self.no_padding = true;
         self
     }
 
+    #[must_use]
     pub fn with_child(mut self, child: Box<dyn Widget>) -> Self {
         self.child = Some(child);
         self
     }
 
+    #[must_use]
     pub fn with_background(mut self) -> Self {
         self.has_background = true;
         self
@@ -83,17 +96,20 @@ impl Container {
 
     /// Disables the default `percent(1.0)` horizontal fill and stops the
     /// container from shrinking below `px`.
+    #[must_use]
     pub fn with_width(mut self, px: f32) -> Self {
         self.fixed_width = Some(px);
         self
     }
 
     /// Independent of [`Container::filling`].
+    #[must_use]
     pub fn with_height(mut self, px: f32) -> Self {
         self.fixed_height = Some(px);
         self
     }
 
+    #[must_use]
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.fixed_width = Some(width);
         self.fixed_height = Some(height);
@@ -102,6 +118,7 @@ impl Container {
 
     /// Implies a background. Pass a theme token (`theme.bg_app` etc.) so
     /// the surface tint stays OS-controlled.
+    #[must_use]
     pub fn with_fill(mut self, color: vello::peniko::Color) -> Self {
         self.fill_color = Some(color);
         self.has_background = true;
@@ -110,16 +127,19 @@ impl Container {
 
     /// The default (auto height) is correct for card-style containers;
     /// root shells want `filling()`.
+    #[must_use]
     pub fn filling(mut self) -> Self {
         self.fill_height = true;
         self
     }
 
+    #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
+    #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -207,10 +227,10 @@ impl Widget for Container {
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
 
-        if let Some(child) = &mut self.child {
-            if let Some(&child_node) = taffy.children(node).unwrap_or_default().first() {
-                child.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-            }
+        if let Some(child) = &mut self.child
+            && let Some(&child_node) = taffy.children(node).unwrap_or_default().first()
+        {
+            child.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -252,20 +272,20 @@ impl Widget for Container {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if let Some(child) = &mut self.child {
-            if let Some(&child_node) = taffy.children(node_id).unwrap_or_default().first() {
-                child.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    child_node,
-                    taffy,
-                );
-            }
+        if let Some(child) = &mut self.child
+            && let Some(&child_node) = taffy.children(node_id).unwrap_or_default().first()
+        {
+            child.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            );
         }
     }
 

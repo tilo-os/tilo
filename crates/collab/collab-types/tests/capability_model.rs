@@ -6,6 +6,16 @@
 //! Emphasis is deliberately on **denial**: a model only shown to permit
 //! things hasn't been shown to work at all.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use collab_types::caps::{
     Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope, Subject, Verb,
     decide_capability, role_base_applies,

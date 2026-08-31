@@ -1,5 +1,15 @@
 //! pack → unpack → verify integration tests.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use crate::fixtures;
 use ed25519_dalek::SigningKey;
 use pkg::manifest::Manifest;
@@ -61,16 +71,16 @@ fn sign_verify_symmetric() {
     let id = pack(payload_dir.path(), &manifest, &identity_a, &mut store).expect("pack");
 
     // Verify against A's pubkey → Trusted.
-    let pk_a_bytes = sk_a.verifying_key().to_bytes();
-    let v_a = verify(id, &store, &[pk_a_bytes]);
+    let signer_pub_bytes = sk_a.verifying_key().to_bytes();
+    let v_a = verify(id, &store, &[signer_pub_bytes]);
     assert!(matches!(v_a, Verification::Trusted { .. }), "got {v_a:?}");
 
     // Verify against B's pubkey → UntrustedPublisher (signature
     // is still valid; the publisher just isn't in the trust set).
     let mut rng = OsRng;
     let sk_b = SigningKey::generate(&mut rng);
-    let pk_b_bytes = sk_b.verifying_key().to_bytes();
-    let v_b = verify(id, &store, &[pk_b_bytes]);
+    let other_pub_bytes = sk_b.verifying_key().to_bytes();
+    let v_b = verify(id, &store, &[other_pub_bytes]);
     assert!(
         matches!(v_b, Verification::UntrustedPublisher { .. }),
         "got {v_b:?}"
@@ -79,6 +89,9 @@ fn sign_verify_symmetric() {
 
 #[test]
 fn tampered_manifest_fails_verify() {
+    use pkg::blobs::{BlobHash, BlobStore, Collection};
+    use pkg::signed::SignedRoot;
+
     let (sk, pub_hex) = fresh_identity();
     let manifest = manifest_with_key(&pub_hex);
 
@@ -90,8 +103,6 @@ fn tampered_manifest_fails_verify() {
     let id = pack(payload_dir.path(), &manifest, &identity, &mut store).expect("pack");
 
     // Tamper: flip one byte in the manifest blob.
-    use pkg::blobs::{BlobHash, BlobStore};
-    use pkg::signed::SignedRoot;
     let signed_bytes = store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
     let signed = SignedRoot::decode(&signed_bytes).unwrap();
     let manifest_hash = signed.manifest_hash;
@@ -126,7 +137,6 @@ fn tampered_manifest_fails_verify() {
     // We still need the signed-root blob in the tampered store.
     tampered.put(&signed_bytes).unwrap();
     // Walk the original collection too so payload blobs exist.
-    use pkg::blobs::Collection;
     let collection_bytes = store.get(&signed.payload_root_hash).unwrap().unwrap();
     tampered.put(&collection_bytes).unwrap();
     let collection = Collection::decode(&collection_bytes).unwrap();
@@ -151,29 +161,8 @@ fn tampered_manifest_fails_verify() {
 
 #[test]
 fn tampered_payload_byte_fails_verify() {
-    // Like the manifest test but tamper a payload blob's bytes.
-    let (sk, pub_hex) = fresh_identity();
-    let manifest = manifest_with_key(&pub_hex);
-
-    let payload_dir = tempfile::tempdir().unwrap();
-    fixtures::write_app_payload(payload_dir.path()).unwrap();
-
-    let mut store = MemoryBlobStore::new();
-    let identity = SigningIdentity::from_signing_key(sk.clone());
-    let id = pack(payload_dir.path(), &manifest, &identity, &mut store).expect("pack");
-
     use pkg::blobs::{BlobHash, BlobStore, Collection};
     use pkg::signed::SignedRoot;
-
-    let signed_bytes = store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
-    let signed = SignedRoot::decode(&signed_bytes).unwrap();
-    let collection_bytes = store.get(&signed.payload_root_hash).unwrap().unwrap();
-    let collection = Collection::decode(&collection_bytes).unwrap();
-
-    // Rebuild a store where one payload blob is replaced with
-    // tampered bytes under its declared hash.
-    let target_path = collection.entries.keys().next().unwrap().clone();
-    let target_hash = collection.entries[&target_path];
 
     // Build a custom store that holds the *declared* hash but
     // wrong bytes. We can't do this through MemoryBlobStore
@@ -191,8 +180,30 @@ fn tampered_payload_byte_fails_verify() {
             Ok(self.inner.get(h).cloned())
         }
     }
+
+    // Like the manifest test but tamper a payload blob's bytes.
+    let (sk, pub_hex) = fresh_identity();
+    let manifest = manifest_with_key(&pub_hex);
+
+    let payload_dir = tempfile::tempdir().unwrap();
+    fixtures::write_app_payload(payload_dir.path()).unwrap();
+
+    let mut store = MemoryBlobStore::new();
+    let identity = SigningIdentity::from_signing_key(sk.clone());
+    let id = pack(payload_dir.path(), &manifest, &identity, &mut store).expect("pack");
+
+    let signed_bytes = store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
+    let signed = SignedRoot::decode(&signed_bytes).unwrap();
+    let collection_bytes = store.get(&signed.payload_root_hash).unwrap().unwrap();
+    let collection = Collection::decode(&collection_bytes).unwrap();
+
+    // Rebuild a store where one payload blob is replaced with
+    // tampered bytes under its declared hash.
+    let target_path = collection.entries.keys().next().unwrap().clone();
+    let target_hash = collection.entries[&target_path];
+
     let mut tampered = Tampered {
-        inner: Default::default(),
+        inner: std::collections::BTreeMap::default(),
     };
     for (h, b) in store.iter() {
         if h == &target_hash {

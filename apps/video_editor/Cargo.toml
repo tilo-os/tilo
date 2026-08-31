@@ -2,6 +2,8 @@
 name = "video_editor"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "video_editor"
@@ -28,11 +30,11 @@ automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-# `tracing` and `anyhow` are still load-bearing here even though a
-# workspace-wide sweep dropped them as unused: `tracing::` appears in five
-# modules (decode, title rendering, audio and the app itself) and `shot.rs`
-# returns `anyhow::Result`. Dropping them fails the build outright, not
-# merely a lint.
+# Load-bearing here even though a workspace-wide sweep dropped them from the
+# other media apps: `tracing::` appears in five modules (decode, title
+# rendering, the media source, audio and the app itself) and two files return
+# `anyhow::Result`. Dropping them fails the build outright, not merely a lint —
+# so if a future sweep removes these again, the uses have to go first.
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true

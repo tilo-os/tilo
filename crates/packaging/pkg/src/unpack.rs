@@ -40,6 +40,19 @@ pub enum UnpackError {
 }
 
 /// Reconstruct the manifest + write the payload to `dest_dir`.
+///
+/// # Errors
+///
+/// Returns [`UnpackError::MissingRoot`] if `id` is not in `store`,
+/// [`UnpackError::SignedRoot`] if the signed-root blob fails to decode,
+/// [`UnpackError::MissingManifest`] or [`UnpackError::MissingCollection`] if
+/// their blobs are missing, [`UnpackError::Manifest`] or
+/// [`UnpackError::Collection`] if either fails to decode,
+/// [`UnpackError::PathTraversal`] if a payload entry's path is absolute or
+/// contains a `..` segment, [`UnpackError::MissingPayloadBlob`] if a
+/// declared per-file blob is missing from `store`, or [`UnpackError::Io`] or
+/// [`UnpackError::Store`] if creating `dest_dir`, writing a file, or reading
+/// from `store` fails.
 pub fn unpack<S: BlobStore>(
     id: PackageId,
     store: &S,

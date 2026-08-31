@@ -1,13 +1,13 @@
 //! PDF — thin binary entry point. All logic lives in the library.
 //!
 //! Usage:
-//!   * `pdf_viewer [FILE.pdf]`     — run the live winit event loop; opens FILE
-//!                                    if given, otherwise the empty state.
-//!   * `--shots PATH`              — render one offscreen frame to a PNG and
-//!                                    exit (headless screenshot).
-//!   * `--viewport WxH`           — override the shot viewport (default 1280x800).
-//!   * `--sample`                 — use the bundled demonstration document
-//!                                    (shots/testing; seeds example markup).
+//!   * `pdf_viewer [FILE.pdf]` — run the live winit event loop; opens FILE if
+//!     given, otherwise the empty state.
+//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
+//!     (headless screenshot).
+//!   * `--viewport WxH` — override the shot viewport (default 1280x800).
+//!   * `--sample` — use the bundled demonstration document (shots/testing;
+//!     seeds example markup).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -23,6 +23,18 @@
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
 )]
 
 use std::collections::HashMap;
@@ -49,11 +61,17 @@ struct Args {
     file: Option<std::path::PathBuf>,
 }
 
+/// # Errors
+///
+/// Only the `--shots` path can fail: it propagates a `taffy` layout error
+/// (`new_with_children` / `compute_layout_with_measure` in
+/// [`render_shot_to_png`]) if the widget tree it built cannot be laid out at
+/// the requested viewport.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
-    let argv: Vec<String> = std::env::args().collect();
-    let args = parse_args(&argv);
+    let raw_args: Vec<String> = std::env::args().collect();
+    let args = parse_args(&raw_args);
 
     if let Some(out) = &args.shots {
         render_shot_to_png(build_widget(&args), args.viewport, out)?;
@@ -63,9 +81,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&argv) {
+    if let Some(spec) = ui::headless::spec_from_args(&raw_args) {
         std::process::exit(ui::headless::run(
-            spec,
+            &spec,
             build_widget(&args),
             "dev.qos.pdf-viewer",
         ));
@@ -125,7 +143,7 @@ fn parse_args(args: &[String]) -> Args {
     };
     let mut i = 1;
     while i < args.len() {
-        let arg = &args[i];
+        let Some(arg) = args.get(i) else { break };
         if arg == "--shots" {
             out.shots = args.get(i + 1).map(std::path::PathBuf::from);
             i += 2;

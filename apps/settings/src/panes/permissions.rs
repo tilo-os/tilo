@@ -24,7 +24,7 @@ use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject,
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::Command;
-use ui::widget::{Row, Spacer, Text, Widget};
+use ui::widget::{Button, Row, Spacer, Text, Widget};
 use vello::peniko::Color;
 
 /// The compositor's persisted workspace tree, beside `settings.json`.
@@ -320,20 +320,9 @@ pub fn build() -> Box<dyn Widget> {
     build_view(load_text().as_deref())
 }
 
-/// Core builder, split from [`build`] so it can be exercised against an
-/// explicit state document in tests without touching the real config dir.
-fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
-    let colors = ui::Theme::dark().tokens.colors;
-    let c = &colors;
-    let all = state_json.map(project).unwrap_or_default();
-    let total = grant_count(&all);
-
-    let mut panel: Vec<El> = Vec::new();
-
-    let privacy = os_actions::get_privacy_status();
-    let security = device_security();
+fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> El {
     let microphone_present = privacy.microphone_muted.is_some();
-    panel.push(card(
+    card(
         "Privacy hardware",
         rows(vec![
             value_row(
@@ -353,15 +342,17 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
                 },
             ),
         ]),
-    ));
+    )
+}
 
-    let active = privacy.active_media;
-    let usage_rows: Vec<El> = if active.is_empty() {
+fn active_privacy_use_card(privacy: &os_actions::PrivacyStatus) -> El {
+    let usage_rows: Vec<El> = if privacy.active_media.is_empty() {
         vec![caption(
             "No application is using the camera or microphone now.",
         )]
     } else {
-        active
+        privacy
+            .active_media
             .iter()
             .map(|usage| {
                 value_row(
@@ -374,99 +365,156 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
             })
             .collect()
     };
-    panel.push(card("Active privacy use", rows(usage_rows)));
+    card("Active privacy use", rows(usage_rows))
+}
 
-    panel.push(card(
+fn device_security_card() -> El {
+    let security = device_security();
+    card(
         "Device security",
         rows(vec![
             value_row("Disk encryption", security.disk_encryption),
             value_row("Secure Boot", security.secure_boot),
             value_row("Firewall", security.firewall),
             caption(
-                "Detailed firewall policy belongs in Firewall; disk recovery and \n+                 repartitioning belong in Backups and Disks. This page reports \n+                 their effective device state without copying their editors.",
+                "Detailed firewall policy belongs in Firewall; disk recovery and \
+                 repartitioning belong in Backups and Disks. This page reports \
+                 their effective device state without copying their editors.",
             ),
         ]),
-    ));
+    )
+}
 
-    // Intro: what these grants are and where they come from.
-    panel.push(card(
+/// Intro card: what these grants are and where they come from.
+fn workspace_grants_intro_card() -> El {
+    card(
         "Workspace privacy grants",
-        rows(vec![Box::new(
-            Text::new(
-                "Apps run sandboxed to the workspace they launch in. When an app \
+        rows(vec![
+            Box::new(
+                Text::new(
+                    "Apps run sandboxed to the workspace they launch in. When an app \
                  reaches beyond it — a file, the camera or microphone, screen \
                  sharing, or the network — the compositor asks you, and an \
                  approval is recorded as a capability the sandbox enforces. This
                  personal overview is intentionally read-only: change a grant in
                  the named workspace's Settings, where its owner and your role are
                  visible.",
-            )
-            .with_size(12.0),
-        )]),
+                )
+                .with_size(12.0),
+            ),
+            Box::new(
+                Button::new(
+                    "open-workspace-privacy",
+                    "Open current workspace controls",
+                    None,
+                )
+                .with_size(248.0, 40.0)
+                .on_click(|| {
+                    let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
+                        route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
+                    });
+                }),
+            ),
+        ]),
+    )
+}
+
+/// Honest empty state — no app has been granted anything (or the compositor
+/// has not written its state file yet).
+fn no_workspace_grants_card() -> El {
+    card(
+        "No workspace privacy grants",
+        rows(vec![
+            Box::new(
+                Text::new(
+                    "No app currently holds an out-of-sandbox grant. When you \
+                     approve one at the compositor's prompt, it appears here — \
+                     grouped by workspace and app — with the access it covers \
+                     and how long it lasts.",
+                )
+                .with_size(12.0),
+            ),
+            vgap(2.0),
+            caption(
+                "Nothing here means nothing is granted: apps see only their own \
+                 workspace until you say otherwise.",
+            ),
+        ]),
+    )
+}
+
+/// A quiet summary line above the per-workspace cards, followed by one card
+/// per workspace with a grant.
+fn push_workspace_grant_cards(
+    panel: &mut Vec<El>,
+    all: &[WsGrants],
+    total: usize,
+    c: &ui::tokens::colors::Colors,
+) {
+    let ws_n = all.len();
+    let summary = format!(
+        "{total} grant{} across {ws_n} workspace{}",
+        if total == 1 { "" } else { "s" },
+        if ws_n == 1 { "" } else { "s" },
+    );
+    panel.push(Box::new(
+        Text::new(&summary).with_size(11.0).with_color(c.text_dim),
     ));
 
-    if all.is_empty() {
-        // Honest empty state — no app has been granted anything (or the
-        // compositor has not written its state file yet).
-        panel.push(card(
-            "No workspace privacy grants",
-            rows(vec![
-                Box::new(
-                    Text::new(
-                        "No app currently holds an out-of-sandbox grant. When you \
-                         approve one at the compositor's prompt, it appears here — \
-                         grouped by workspace and app — with the access it covers \
-                         and how long it lasts.",
-                    )
-                    .with_size(12.0),
-                ),
-                vgap(2.0),
-                caption(
-                    "Nothing here means nothing is granted: apps see only their own \
-                     workspace until you say otherwise.",
-                ),
-            ]),
-        ));
-    } else {
-        // A quiet summary line above the per-workspace cards.
-        let ws_n = all.len();
-        let summary = format!(
-            "{total} grant{} across {ws_n} workspace{}",
-            if total == 1 { "" } else { "s" },
-            if ws_n == 1 { "" } else { "s" },
-        );
-        panel.push(Box::new(
-            Text::new(&summary).with_size(11.0).with_color(c.text_dim),
-        ));
-
-        for ws in &all {
-            let mut body: Vec<El> = Vec::new();
-            let last = ws.apps.len().saturating_sub(1);
-            for (i, app) in ws.apps.iter().enumerate() {
-                body.push(app_block(app, c));
-                if i != last {
-                    body.push(vgap(12.0));
-                }
+    for ws in all {
+        let mut body: Vec<El> = Vec::new();
+        let last = ws.apps.len().saturating_sub(1);
+        for (i, app) in ws.apps.iter().enumerate() {
+            body.push(app_block(app, c));
+            if i != last {
+                body.push(vgap(12.0));
             }
-            let title = if ws.name.trim().is_empty() {
-                "Workspace".to_string()
-            } else {
-                ws.name.clone()
-            };
-            panel.push(card(&title, rows(body)));
         }
+        let title = if ws.name.trim().is_empty() {
+            "Workspace".to_string()
+        } else {
+            ws.name.clone()
+        };
+        panel.push(card(&title, rows(body)));
     }
+}
 
-    // Where enforcement actually happens — unchanged truth.
-    panel.push(card(
+/// Where enforcement actually happens — unchanged truth.
+fn enforcement_card() -> El {
+    card(
         "Where enforcement happens",
         rows(vec![caption(
             "These grants are enforced by the compositor (file access, \
              collaboration, devices) and by the FUSE mount, not by this panel. \
              This is a read-only view of the list they apply; revoke a grant in \
-                     Workspace Settings for the workspace that owns it.",
+             Workspace Settings for the workspace that owns it.",
         )]),
-    ));
+    )
+}
+
+/// Core builder, split from [`build`] so it can be exercised against an
+/// explicit state document in tests without touching the real config dir.
+fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
+    let colors = ui::Theme::dark().tokens.colors;
+    let c = &colors;
+    let all = state_json.map(project).unwrap_or_default();
+    let total = grant_count(&all);
+
+    let mut panel: Vec<El> = Vec::new();
+
+    let privacy = os_actions::get_privacy_status();
+    panel.push(privacy_hardware_card(&privacy));
+    panel.push(active_privacy_use_card(&privacy));
+    panel.push(device_security_card());
+    panel.push(workspace_grants_intro_card());
+
+    if all.is_empty() {
+        panel.push(no_workspace_grants_card());
+    } else {
+        push_workspace_grant_cards(&mut panel, &all, total, c);
+    }
+
+    panel.push(enforcement_card());
 
     cards(panel)
 }
@@ -514,13 +562,13 @@ mod tests {
     }
 
     #[test]
-    fn is_read_only_with_no_dead_buttons() {
-        // Populated or empty, the pane carries no controls that would look live
-        // but change nothing — it never writes state.json.
+    fn is_read_only_except_for_one_live_context_route() {
+        // The pane still cannot mutate state.json. Its only button asks the
+        // shell to reveal the active workspace's authoritative controls.
         for json in [None, Some(sample_state().as_str())] {
             let mut pane = build_view(json);
             build_layout_of(&mut pane);
-            assert_eq!(count_named(pane.as_ref(), "Button"), 0, "no dead buttons");
+            assert_eq!(count_named(pane.as_ref(), "Button"), 1);
         }
     }
 

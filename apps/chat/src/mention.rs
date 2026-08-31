@@ -116,14 +116,15 @@ pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
     let head = text.get(..caret)?;
     let at = head.rfind('@')?;
     // The `@` must open a word: nothing before it, or whitespace.
-    let opens_word = head[..at]
+    let opens_word = head
+        .get(..at)?
         .chars()
         .next_back()
         .is_none_or(char::is_whitespace);
     if !opens_word {
         return None;
     }
-    let query = &head[at + '@'.len_utf8()..];
+    let query = head.get(at + '@'.len_utf8()..)?;
     if query.len() > MAX_QUERY_LEN || query.contains('\n') || query.contains('@') {
         return None;
     }
@@ -207,12 +208,12 @@ pub fn apply_completion(
     let caret = caret.min(text.len());
     let end = caret.max(q.start);
     let mut out = String::with_capacity(text.len() + who.name.len());
-    out.push_str(&text[..q.start]);
+    out.push_str(text.get(..q.start).unwrap_or(""));
     out.push('@');
     out.push_str(&who.name);
     out.push(' ');
     let new_caret = out.len();
-    out.push_str(&text[end..]);
+    out.push_str(text.get(end..).unwrap_or(""));
     (out, new_caret)
 }
 
@@ -239,12 +240,19 @@ pub fn resolve(text: &str, participants: &[Participant]) -> Vec<Mention> {
 
     let mut out: Vec<Mention> = Vec::new();
     let mut cursor = 0usize;
-    while let Some(rel) = text[cursor..].find('@') {
+    // `cursor` is always a byte offset this loop itself produced from a prior
+    // valid boundary, but a caller-adjacent edit is exactly the kind of thing
+    // this scan must never trust blindly — a miss here just stops resolving
+    // further mentions rather than panicking.
+    while let Some(tail) = text.get(cursor..) {
+        let Some(rel) = tail.find('@') else {
+            break;
+        };
         let at = cursor + rel;
-        let opens_word = text[..at]
-            .chars()
-            .next_back()
-            .is_none_or(char::is_whitespace);
+        let Some(before) = text.get(..at) else {
+            break;
+        };
+        let opens_word = before.chars().next_back().is_none_or(char::is_whitespace);
         if !opens_word {
             cursor = at + '@'.len_utf8();
             continue;
@@ -265,13 +273,23 @@ pub fn resolve(text: &str, participants: &[Participant]) -> Vec<Mention> {
             } else {
                 &p.name
             };
-            if !haystack[after..].starts_with(needle) {
+            // `haystack` may be a lowercased copy: even with a matching total
+            // byte length, its char boundaries at `after` aren't guaranteed to
+            // line up with `text`'s, so a miss here just means no match at
+            // this position for any candidate — stop trying them.
+            let Some(haystack_after) = haystack.get(after..) else {
+                break;
+            };
+            if !haystack_after.starts_with(needle) {
                 continue;
             }
             // A name must not run into the middle of a longer word: `@ada` in
             // "@adamant" is not a mention of Ada.
-            let tail = after + needle.len();
-            let boundary = text[tail..]
+            let tail_pos = after + needle.len();
+            let Some(after_name) = text.get(tail_pos..) else {
+                continue;
+            };
+            let boundary = after_name
                 .chars()
                 .next()
                 .is_none_or(|c| !c.is_alphanumeric());

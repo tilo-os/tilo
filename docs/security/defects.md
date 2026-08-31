@@ -617,6 +617,16 @@ and `::key_reachable_outside_the_trust_group_raises_instead_of_rotating`.
 correct before/after-cutoff semantics (tested at `shell/src/network/identity.rs:364-406`), but
 `PeerIdentityStore::set_revocations` has no non-test caller and there is no distribution mechanism.
 
+**Resolved.** Each workspace heartbeat now starts with an `IdentityHello` carrying the sender's
+root-signed device certificate and additive revocation set. The receiver verifies the endpoint
+key, certificate, every revocation signature, expiry, and revocation status before admitting any
+production collaboration message; a later revocation removes the peer immediately. Revocation
+also withdraws this machine's exported filesystem authority and stops the app identity broker
+from signing locally. Held by
+`shell::network::tests::identity_hello_redeems_invite_as_editor_and_revocation_removes_trust`,
+`shell::state::identity_fs_tests::filesystem_export_maps_selected_person_through_verified_device_chain`,
+and `identity_broker::tests::signing_requires_the_exact_app_action_capability`.
+
 ## P2-4 — Egress documentation describes a weaker mechanism than the code implements
 
 `docs/app-model/sandbox.md:162-172` describes DNS-layer filtering that direct-IP connections bypass.

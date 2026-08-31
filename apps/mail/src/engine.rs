@@ -191,6 +191,17 @@ pub fn spawn() -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
 
 /// Spawn the worker with a specific backend (used by tests and the `live`
 /// feature).
+///
+/// # Panics
+/// Panics if the OS refuses to spawn the engine worker thread (e.g. resource
+/// exhaustion). Returning the channel pair without a live worker would leave
+/// every mail request queued and silently unanswered, and there is no
+/// degraded mode to fall back to, so this is deliberately fatal at
+/// construction time rather than a mail app that looks alive and never syncs.
+#[allow(
+    clippy::expect_used,
+    reason = "without the worker thread every request queues unanswered forever, and there is no degraded mode to fall back to; failing loudly at startup beats a mail app that silently never syncs"
+)]
 pub fn spawn_with(
     mut backend: Box<dyn MailEngine>,
 ) -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
@@ -243,6 +254,10 @@ pub mod live {
     }
 
     impl LiveEngine {
+        /// # Errors
+        ///
+        /// Returns `Err` if the tokio runtime backing the IMAP/SMTP worker
+        /// cannot be built (e.g. the OS refuses the worker threads).
         pub fn new() -> Result<Self, String> {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -399,6 +414,15 @@ pub mod live {
     }
 
     /// Build the shared rustls client config with the bundled Mozilla roots.
+    ///
+    /// # Panics
+    /// Never in practice: the ring provider always advertises the default
+    /// protocol versions, so this only fails against a provider built
+    /// without TLS 1.2/1.3 support.
+    #[allow(
+        clippy::expect_used,
+        reason = "the bundled ring provider always supports the default protocol versions; a TLS config with no usable version is not something the mail engine can degrade to"
+    )]
     fn build_tls_config() -> Arc<rustls::ClientConfig> {
         let mut roots = rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -486,7 +510,7 @@ pub mod live {
             |url| {
                 let _ = std::process::Command::new("xdg-open").arg(url).spawn();
             },
-            std::time::Duration::from_mins(5),
+            std::time::Duration::from_secs(300),
         )?;
         let mut vault = SecretVault::open();
         vault.put(
@@ -931,9 +955,8 @@ pub mod live {
         /// sequence the engine issues.
         async fn serve_imap(tls: Arc<rustls::ServerConfig>, tcp: TcpStream, eml: Vec<u8>) {
             let acceptor = tokio_rustls::TlsAcceptor::from(tls);
-            let stream = match acceptor.accept(tcp).await {
-                Ok(s) => s,
-                Err(_) => return,
+            let Ok(stream) = acceptor.accept(tcp).await else {
+                return;
             };
             let (rd, mut wr) = tokio::io::split(stream);
             let mut reader = BufReader::new(rd);
@@ -1000,26 +1023,25 @@ pub mod live {
         /// non-465 submission port (`Tls::Required`): a plaintext greeting +
         /// EHLO advertising STARTTLS, the in-band TLS upgrade, then EHLO +
         /// AUTH LOGIN + MAIL/RCPT/DATA over TLS, capturing the DATA payload.
-        async fn serve_smtp(
-            tls: Arc<rustls::ServerConfig>,
-            tcp: TcpStream,
-            captured: Arc<Mutex<Vec<u8>>>,
-        ) {
-            // ---- plaintext phase: greeting, EHLO, STARTTLS ----
+        /// The plaintext half of the test SMTP server: greeting, EHLO, and the
+        /// STARTTLS upgrade. Returns the raw socket once the client has been
+        /// told to start TLS, or `None` if the session ended first (QUIT, EOF,
+        /// or a write error).
+        async fn smtp_plaintext_until_starttls(tcp: TcpStream) -> Option<TcpStream> {
             let mut plain = BufReader::new(tcp);
             if plain
                 .write_all(b"220 localhost ESMTP test\r\n")
                 .await
                 .is_err()
             {
-                return;
+                return None;
             }
             let _ = plain.flush().await;
             let mut line = String::new();
             loop {
                 line.clear();
                 match plain.read_line(&mut line).await {
-                    Ok(0) | Err(_) => return,
+                    Ok(0) | Err(_) => return None,
                     Ok(_) => {}
                 }
                 let up = line.trim_end().to_ascii_uppercase();
@@ -1035,7 +1057,7 @@ pub mod live {
                 } else if up.starts_with("QUIT") {
                     let _ = plain.write_all(b"221 2.0.0 Bye\r\n").await;
                     let _ = plain.flush().await;
-                    return;
+                    return None;
                 } else {
                     let _ = plain.write_all(b"250 2.0.0 Ok\r\n").await;
                     let _ = plain.flush().await;
@@ -1045,11 +1067,20 @@ pub mod live {
             // The client waits for the "220 Ready" before its ClientHello, so no
             // application bytes are buffered past STARTTLS: the raw socket can be
             // handed to the TLS acceptor cleanly.
-            let tcp = plain.into_inner();
+            Some(plain.into_inner())
+        }
+
+        async fn serve_smtp(
+            tls: Arc<rustls::ServerConfig>,
+            tcp: TcpStream,
+            captured: Arc<Mutex<Vec<u8>>>,
+        ) {
+            let Some(tcp) = smtp_plaintext_until_starttls(tcp).await else {
+                return;
+            };
             let acceptor = tokio_rustls::TlsAcceptor::from(tls);
-            let stream = match acceptor.accept(tcp).await {
-                Ok(s) => s,
-                Err(_) => return,
+            let Ok(stream) = acceptor.accept(tcp).await else {
+                return;
             };
             let (rd, mut wr) = tokio::io::split(stream);
             let mut reader = BufReader::new(rd);

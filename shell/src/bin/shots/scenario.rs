@@ -326,14 +326,22 @@ pub fn run_with<S: SnapshotSink>(
                 // just punctuated with extra captures.
                 let total = *n;
                 let frames = frames.min(total.max(1));
+                // `frames.max(1)` guarantees a non-zero divisor.
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "frames.max(1) just above guarantees a non-zero divisor"
+                )]
                 let per_slice = total / frames.max(1);
-                let remainder = total - per_slice * frames;
+                // `per_slice` is `total / frames`, so `per_slice * frames` never
+                // exceeds `total` — `saturating_sub` documents that instead of a
+                // bare `-` that clippy can't see is infallible here.
+                let remainder = total.saturating_sub(per_slice.saturating_mul(frames));
                 let prefix = last_snapshot.unwrap_or("frame");
                 for i in 0..frames {
                     // Distribute the remainder over the first `remainder`
                     // slices so the total advance still equals `n`.
                     let extra = u32::from(i < remainder);
-                    let advance = per_slice + extra;
+                    let advance = per_slice.saturating_add(extra);
                     if advance > 0 {
                         driver.step_frames(advance);
                     }
@@ -353,6 +361,26 @@ pub fn run_with<S: SnapshotSink>(
 }
 
 fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut S) {
+    apply_pointer_and_capture(driver, action, sink);
+    apply_open_window(driver, action);
+    apply_add_hosted_tab(driver, action);
+    apply_hosted_window_and_wheel_drag(driver, action);
+    apply_wheel_and_reveal_samples(driver, action, sink);
+    apply_make_space_sample_and_widths(driver, action, sink);
+    apply_seed_status_and_file_picker(driver, action);
+    apply_seed_wifi_and_select_group(driver, action);
+    apply_window_and_workspace_actions(driver, action);
+}
+
+/// Pointer, keyboard and plain-capture actions — split out of [`apply`]
+/// to keep that dispatcher short. One arm per `Action` variant, matching
+/// [`apply`]'s own dispatch; every other variant is a no-op here since
+/// exactly one of the `apply_*` helpers owns it.
+fn apply_pointer_and_capture<S: SnapshotSink>(
+    driver: &mut ShellDriver,
+    action: &Action,
+    sink: &mut S,
+) {
     match action {
         Action::ClickAt(p) => driver.click_at(*p),
         Action::ClickNamed(name) => match driver.resolve_named_centre(name) {
@@ -391,7 +419,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 sink.capture(driver, name);
             }
         }
-        Action::Key(k) => driver.press_key(k.clone()),
+        Action::Key(k) => driver.press_key(k),
         Action::Type(s) => driver.type_str(s),
         Action::Modifiers(m) => driver.set_modifiers(*m),
         Action::Wait(n) => driver.step_frames(*n),
@@ -414,101 +442,116 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             // actions would fall through because the palette ignores
             // characters when `!is_focused`.
             driver.set_modifiers(ModifiersState::CONTROL);
-            driver.press_key(Key::Character(winit::keyboard::SmolStr::new("k")));
+            driver.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
             driver.set_modifiers(ModifiersState::empty());
         }
-        Action::OpenWindow { app_id, surface_id } => {
-            let app_id = *app_id;
-            let surface_id = *surface_id;
-            driver.with_chrome(|st: &mut ChromeState| {
-                {
-                    // Exactly what opening an app does: decide where the
-                    // window goes now, against the layout the user is
-                    // looking at, and leave it as a note for the adoption.
-                    let tree = st.tree();
-                    shell::shell::placement::note_placement_for_launch(
-                        app_id,
-                        &tree,
-                        st.strip_viewport(),
-                    );
-                }
-                {
-                    let mut tree = st.tree_mut();
-                    shell::compositor::tab_binding::adopt_toplevel(
-                        &mut tree,
-                        surface_id,
-                        Some(app_id.to_string()),
-                    );
-                }
-                st.bump();
-            });
-            // Stand in for the client. A window is not painted until it
-            // has drawn something that fits the tab it is in, which is
-            // what stops a launch putting an empty frame on screen — and
-            // an adopted toplevel with no process behind it has drawn
-            // nothing at all, so without this the placement scenarios
-            // would depict where windows land by showing none of them.
-            //
-            // A layout pass first, because the size to draw at is the
-            // tab's, and the tab does not have one until it has been
-            // laid out. Which app each window is still reads off the tab
-            // pill above it.
-            driver.relayout();
-            if let Some((w, h)) = shell::compositor::foreign::store().viewport(surface_id)
-                && w > 0
-                && h > 0
+        _ => {}
+    }
+}
+
+/// `Action::OpenWindow` — split out of [`apply`] to keep that dispatcher short.
+fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
+    if let Action::OpenWindow { app_id, surface_id } = action {
+        let app_id = *app_id;
+        let surface_id = *surface_id;
+        driver.with_chrome(|st: &mut ChromeState| {
             {
-                let px = (w as usize) * (h as usize) * 4;
-                shell::compositor::foreign::store().publish_rgba(surface_id, &vec![0xF4; px], w, h);
+                // Exactly what opening an app does: decide where the
+                // window goes now, against the layout the user is
+                // looking at, and leave it as a note for the adoption.
+                let tree = st.tree();
+                shell::shell::placement::note_placement_for_launch(
+                    app_id,
+                    &tree,
+                    st.strip_viewport(),
+                );
             }
+            {
+                let mut tree = st.tree_mut();
+                shell::compositor::tab_binding::adopt_toplevel(
+                    &mut tree,
+                    surface_id,
+                    Some(app_id.to_string()),
+                );
+            }
+            st.bump();
+        });
+        // Stand in for the client. A window is not painted until it
+        // has drawn something that fits the tab it is in, which is
+        // what stops a launch putting an empty frame on screen — and
+        // an adopted toplevel with no process behind it has drawn
+        // nothing at all, so without this the placement scenarios
+        // would depict where windows land by showing none of them.
+        //
+        // A layout pass first, because the size to draw at is the
+        // tab's, and the tab does not have one until it has been
+        // laid out. Which app each window is still reads off the tab
+        // pill above it.
+        driver.relayout();
+        if let Some((w, h)) = shell::compositor::foreign::store().viewport(surface_id)
+            && w > 0
+            && h > 0
+        {
+            let px = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+            shell::compositor::foreign::store().publish_rgba(surface_id, &vec![0xF4; px], w, h);
         }
-        Action::AddHostedTab { app, title } => {
-            let app = *app;
-            let title = *title;
-            driver.with_chrome(|st: &mut ChromeState| {
-                {
-                    let mut tree = st.tree_mut();
-                    // One past the highest tab id anywhere in the tree.
-                    // The production minter is crate-private, and a
-                    // scenario only needs an id no open tab already uses
-                    // — but it has to be *every* tab, not just this
-                    // group's: a tab id names the record its document
-                    // lives in, so reusing one from another workspace
-                    // would put two tabs on one document, which is the
-                    // thing this scenario exists to show cannot happen.
-                    let id = tree
-                        .workspaces
-                        .iter()
-                        .flat_map(|w| &w.strips)
-                        .flat_map(|s| &s.window_groups)
-                        .flat_map(|g| &g.tabs)
-                        .map(|t| t.id)
-                        .max()
-                        .unwrap_or(0)
-                        + 1;
-                    let Some(ws) = tree.active_workspace_mut() else {
-                        return;
-                    };
-                    let Some(group) = ws
-                        .strips
-                        .first_mut()
-                        .and_then(|s| s.window_groups.first_mut())
-                    else {
-                        return;
-                    };
-                    group.tabs.push(shell::shell::state::Tab {
-                        id,
-                        title: title.to_string(),
-                        tile: shell::shell::state::TileContent::AppPlaceholder {
-                            kind: shell::shell::state::AppKind::Other(app.to_string()),
-                            label: title.to_string(),
-                        },
-                    });
-                    group.active_tab = id;
-                }
-                st.bump();
+    }
+}
+
+/// `Action::AddHostedTab` — split out of [`apply`] to keep that dispatcher short.
+fn apply_add_hosted_tab(driver: &mut ShellDriver, action: &Action) {
+    if let Action::AddHostedTab { app, title } = action {
+        let app = *app;
+        let title = *title;
+        driver.with_chrome(|st: &mut ChromeState| {
+            let mut tree = st.tree_mut();
+            // One past the highest tab id anywhere in the tree.
+            // The production minter is crate-private, and a
+            // scenario only needs an id no open tab already uses
+            // — but it has to be *every* tab, not just this
+            // group's: a tab id names the record its document
+            // lives in, so reusing one from another workspace
+            // would put two tabs on one document, which is the
+            // thing this scenario exists to show cannot happen.
+            let id = tree
+                .workspaces
+                .iter()
+                .flat_map(|w| &w.strips)
+                .flat_map(|s| &s.window_groups)
+                .flat_map(|g| &g.tabs)
+                .map(|t| t.id)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            let Some(ws) = tree.active_workspace_mut() else {
+                return;
+            };
+            let Some(group) = ws
+                .strips
+                .first_mut()
+                .and_then(|s| s.window_groups.first_mut())
+            else {
+                return;
+            };
+            group.tabs.push(shell::shell::state::Tab {
+                id,
+                title: title.to_string(),
+                tile: shell::shell::state::TileContent::AppPlaceholder {
+                    kind: shell::shell::state::AppKind::Other(app.to_string()),
+                    label: title.to_string(),
+                },
             });
-        }
+            group.active_tab = id;
+            drop(tree);
+            st.bump();
+        });
+    }
+}
+
+/// `Action::OpenHostedWindow` and `Action::DragWheelRim` — split out of
+/// [`apply`] to keep that dispatcher short.
+fn apply_hosted_window_and_wheel_drag(driver: &mut ShellDriver, action: &Action) {
+    match action {
         Action::OpenHostedWindow { app, title } => {
             let kind = app_kind_for(app);
             let title = *title;
@@ -582,6 +625,18 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 driver.step_frames(1);
             }
         }
+        _ => {}
+    }
+}
+
+/// `Action::SampleWheelSettle` and `Action::SampleTabReveal` — split out
+/// of [`apply`] to keep that dispatcher short.
+fn apply_wheel_and_reveal_samples<S: SnapshotSink>(
+    driver: &mut ShellDriver,
+    action: &Action,
+    sink: &mut S,
+) {
+    match action {
         Action::SampleWheelSettle { prefix, at_ms } => {
             // Settle the content before sampling anything.
             //
@@ -666,6 +721,18 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 }
             }
         }
+        _ => {}
+    }
+}
+
+/// `Action::SampleMakeSpace` and `Action::SetWindowWidths` — split out of
+/// [`apply`] to keep that dispatcher short.
+fn apply_make_space_sample_and_widths<S: SnapshotSink>(
+    driver: &mut ShellDriver,
+    action: &Action,
+    sink: &mut S,
+) {
+    match action {
         Action::SampleMakeSpace { prefix, at_ms } => {
             // Splice the new window into the widget tree, then lay out —
             // which is the pass that measures how far each pushed group
@@ -728,6 +795,14 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 }
             }
         }
+        _ => {}
+    }
+}
+
+/// `Action::SeedStatus`, `Action::SeedOsd` and `Action::SeedFilePicker` —
+/// split out of [`apply`] to keep that dispatcher short.
+fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) {
+    match action {
         Action::SeedStatus(preset) => {
             let status = status_preset(preset);
             driver.with_chrome(|st: &mut ChromeState| {
@@ -798,6 +873,14 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             });
             driver.host_mut().pump_file_picker();
         }
+        _ => {}
+    }
+}
+
+/// `Action::SeedWifiPrompt` and `Action::SelectGroup` — split out of
+/// [`apply`] to keep that dispatcher short.
+fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
+    match action {
         Action::SeedWifiPrompt(preset) => {
             let preset = *preset;
             driver.with_chrome(|st: &mut ChromeState| {
@@ -851,7 +934,8 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                         Some(i) => {
                             let gid = tree
                                 .active_workspace()
-                                .and_then(|ws| ws.strips[0].window_groups.get(i).map(|g| g.id));
+                                .and_then(|ws| ws.strips.first())
+                                .and_then(|s| s.window_groups.get(i).map(|g| g.id));
                             if let Some(gid) = gid {
                                 let active = tree.active;
                                 tree.active_strip.insert(active, strip_id);
@@ -866,6 +950,15 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 st.bump();
             });
         }
+        _ => {}
+    }
+}
+
+/// `Action::LoneWindow`, `Action::SwitchWorkspace`, `Action::SetWsSettings`
+/// and `Action::PushQsLevel` — split out of [`apply`] to keep that
+/// dispatcher short.
+fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action) {
+    match action {
         Action::LoneWindow(idx) => {
             let idx = *idx;
             driver.with_chrome(|st: &mut ChromeState| {
@@ -911,6 +1004,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 st.quick_settings.push_level(lvl);
             });
         }
+        _ => {}
     }
 }
 
@@ -954,6 +1048,9 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         .position(|w| w.id == tree.active)
         .unwrap_or(0);
     let workspace_names: Vec<String> = tree.workspaces.iter().map(|w| w.name.clone()).collect();
+    // Nothing past this point reads the tree; `st` (a separate guard) is
+    // still needed below.
+    drop(tree);
     let qs_level = match st.quick_settings.current_level() {
         QsLevel::Root => "root",
         QsLevel::Wifi => "wifi",
@@ -1069,7 +1166,14 @@ impl SnapshotSink for JsonDirSink<'_> {
     fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
         let path = self.dir.join(format!("{name}.json"));
         let json = chrome_state_json(driver);
-        std::fs::write(&path, json).expect("write scenario state JSON");
+        // `capture` has no `Result` to propagate through (the `SnapshotSink`
+        // trait's callers are a fixed scenario-replay loop with nothing
+        // useful to do with a per-snapshot error) — report and skip this
+        // one file rather than aborting the whole capture run over it.
+        if let Err(e) = std::fs::write(&path, json) {
+            eprintln!("scenario: failed to write {}: {e}", path.display());
+            return;
+        }
         self.written.borrow_mut().push(path.display().to_string());
         println!("  wrote {}", path.display());
     }
@@ -1122,6 +1226,7 @@ fn push_kv_array(out: &mut String, k: &str, vs: &[String]) {
     out.push(']');
 }
 fn escape_json_str(s: &str) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -1130,7 +1235,11 @@ fn escape_json_str(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            // `String`'s `Write` impl never actually errors; there's
+            // nothing a caller could do with the `Result` anyway.
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
             c => out.push(c),
         }
     }
@@ -2646,6 +2755,12 @@ mod tests {
     /// The strip scenario has to end up with four *windows*, each one a
     /// live app — not four tabs of one window, and not stub cards.
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "strip (borrowed from tree) is read all the way through the assertions \
+                  at the end of this test; there's no earlier point to drop it without \
+                  cloning the strip data out for no real gain"
+    )]
     fn strip_scroll_scenario_opens_four_hosted_windows_side_by_side() {
         let mut d = ShellDriver::new((1600, 900));
         let mut sink = NullSink;

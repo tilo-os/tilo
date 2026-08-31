@@ -23,7 +23,7 @@ pub fn star(
     let mut path = BezPath::new();
     for i in 0..10 {
         let r = if i % 2 == 0 { radius } else { r_inner };
-        let angle = -PI / 2.0 + i as f64 * PI / 5.0;
+        let angle = -PI / 2.0 + f64::from(i) * PI / 5.0;
         let p = Point::new(center.x + r * angle.cos(), center.y + r * angle.sin());
         if i == 0 {
             path.move_to(p);
@@ -70,7 +70,7 @@ pub fn refresh(scene: &mut Scene, transform: Affine, center: Point, radius: f64,
     let mut path = BezPath::new();
     let steps = 32;
     for i in 0..=steps {
-        let a = start + sweep * (i as f64 / steps as f64);
+        let a = start + sweep * (f64::from(i) / f64::from(steps));
         let p = Point::new(center.x + radius * a.cos(), center.y + radius * a.sin());
         if i == 0 {
             path.move_to(p);
@@ -202,7 +202,7 @@ pub fn import_arrow(scene: &mut Scene, transform: Affine, center: Point, half: f
 pub fn hamburger(scene: &mut Scene, transform: Affine, center: Point, half: f64, color: Color) {
     let stroke = Stroke::new(1.8);
     for i in -1..=1 {
-        let y = center.y + i as f64 * (half * 0.62);
+        let y = center.y + f64::from(i) * (half * 0.62);
         scene.stroke(
             &stroke,
             transform,
@@ -249,7 +249,7 @@ pub fn gear(scene: &mut Scene, transform: Affine, center: Point, radius: f64, co
     // Teeth.
     let teeth = 8;
     for i in 0..teeth {
-        let a = i as f64 * (2.0 * PI / teeth as f64);
+        let a = f64::from(i) * (2.0 * PI / f64::from(teeth));
         let (sx, sy) = (a.cos(), a.sin());
         let p0 = Point::new(center.x + sx * radius, center.y + sy * radius);
         let p1 = Point::new(

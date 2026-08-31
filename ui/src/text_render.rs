@@ -316,11 +316,10 @@ impl Hyphenation {
         };
         let parsed = tag.parse::<unic_langid::LanguageIdentifier>().ok()?;
         let code = parsed.language.as_str().as_bytes();
-        (code.len() == 2)
-            .then(|| {
-                hypher::Lang::from_iso([code[0].to_ascii_lowercase(), code[1].to_ascii_lowercase()])
-            })
-            .flatten()
+        let [first, second] = code else {
+            return None;
+        };
+        hypher::Lang::from_iso([first.to_ascii_lowercase(), second.to_ascii_lowercase()])
     }
 
     fn cache_hash(&self) -> u64 {
@@ -382,56 +381,67 @@ impl TextStyle {
         }
     }
 
+    #[must_use]
     pub fn with_line_height(mut self, multiplier: f32) -> Self {
         self.line_height = multiplier.max(0.1);
         self
     }
 
+    #[must_use]
     pub fn with_weight(mut self, weight: TextWeight) -> Self {
         self.weight = weight;
         self
     }
 
+    #[must_use]
     pub fn with_italic(mut self, italic: bool) -> Self {
         self.italic = italic;
         self
     }
 
+    #[must_use]
     pub fn with_family(mut self, family: FontChoice) -> Self {
         self.family = family;
         self
     }
 
     /// Set CSS-like letter spacing in logical pixels.
+    #[must_use]
     pub fn with_letter_spacing(mut self, px: f32) -> Self {
         self.letter_spacing = if px.is_finite() { px } else { 0.0 };
         self
     }
 
     /// Set tracking in em units, converted using this style's font size.
+    #[must_use]
     pub fn with_tracking(self, em: f32) -> Self {
         let size = self.size;
         self.with_letter_spacing(em * size)
     }
 
+    #[must_use]
     pub fn with_font_feature(mut self, tag: OpenTypeTag, value: u32) -> Self {
         self.font_features.retain(|feature| feature.tag != tag);
         self.font_features.push(OpenTypeFeature { tag, value });
         self
     }
 
+    #[must_use]
     pub fn with_kerning(self, enabled: bool) -> Self {
         self.with_font_feature(OpenTypeTag::KERNING, u32::from(enabled))
     }
 
+    #[must_use]
     pub fn with_discretionary_ligatures(self, enabled: bool) -> Self {
         self.with_font_feature(OpenTypeTag::DISCRETIONARY_LIGATURES, u32::from(enabled))
     }
 
+    #[must_use]
     pub fn with_small_caps(self, enabled: bool) -> Self {
         self.with_font_feature(OpenTypeTag::SMALL_CAPS, u32::from(enabled))
     }
 
+    #[must_use]
     pub fn with_numeric_style(mut self, style: NumericStyle) -> Self {
         for tag in [
             OpenTypeTag::TABULAR_NUMERALS,
@@ -469,6 +479,7 @@ impl TextStyle {
         self
     }
 
+    #[must_use]
     pub fn with_font_variation(mut self, tag: OpenTypeTag, value: f32) -> Self {
         self.font_variations.retain(|axis| axis.tag != tag);
         if value.is_finite() {
@@ -477,26 +488,31 @@ impl TextStyle {
         self
     }
 
+    #[must_use]
     pub fn with_optical_sizing(mut self, optical_sizing: OpticalSizing) -> Self {
         self.optical_sizing = optical_sizing;
         self
     }
 
+    #[must_use]
     pub fn with_align(mut self, align: ParagraphAlign) -> Self {
         self.align = align;
         self
     }
 
+    #[must_use]
     pub fn with_wrap_mode(mut self, wrap_mode: TextWrapMode) -> Self {
         self.wrap_mode = wrap_mode;
         self
     }
 
+    #[must_use]
     pub fn with_hanging_punctuation(mut self, hanging: HangingPunctuation) -> Self {
         self.hanging_punctuation = hanging;
         self
     }
 
+    #[must_use]
     pub fn with_fragmentation(mut self, orphans: u8, widows: u8) -> Self {
         self.fragmentation = Fragmentation {
             orphans: orphans.max(1),
@@ -510,12 +526,14 @@ impl TextStyle {
     /// `language` is a BCP-47 tag such as `"en-US"`, `"de"`, or `"pt-BR"`.
     /// Unknown or malformed tags fall back to normal word wrapping, so content
     /// remains readable when no compiled pattern matches.
+    #[must_use]
     pub fn with_auto_hyphenation(mut self, language: impl Into<String>) -> Self {
         self.hyphenation = Hyphenation::Auto(language.into());
         self
     }
 
     /// Disable discretionary hyphenation while retaining the rest of a style.
+    #[must_use]
     pub fn without_hyphenation(mut self) -> Self {
         self.hyphenation = Hyphenation::None;
         self
@@ -531,9 +549,18 @@ impl TextStyle {
             .iter()
             .rev()
             .find(|axis| axis.tag == OpenTypeTag::WEIGHT)
-            .map_or(f32::from(self.weight.to_u16()), |axis| axis.value)
+            .map_or_else(|| f32::from(self.weight.to_u16()), |axis| axis.value)
             .round()
-            .clamp(1.0, 1000.0) as u16;
+            .clamp(1.0, 1000.0);
+        // Clamped to an integer in 1.0..=1000.0 immediately above, so this
+        // narrowing is exact; converting differently would risk drifting the
+        // resolved font weight against the pixel-diff golden.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "value is clamped to an integer in 1.0..=1000.0 immediately above"
+        )]
+        let value = value as u16;
         Weight(value)
     }
 
@@ -720,6 +747,57 @@ impl Default for TextRenderer {
     }
 }
 
+/// Resolve a per-glyph rich-text colour override, falling back to `default`.
+fn resolve_rich_color(default: Color, color: Option<cosmic_text::Color>) -> Color {
+    color.map_or(default, |c| Color::from_rgb8(c.r(), c.g(), c.b()))
+}
+
+/// Highlight bands paint behind glyphs so the ink reads on top.
+fn draw_rich_backgrounds(
+    scene: &mut Scene,
+    layout: &crate::richtext::RichTextLayout,
+    transform: Affine,
+) {
+    for &(s, e, [br, bg, bb]) in &layout.backgrounds {
+        let band = Color::from_rgb8(br, bg, bb);
+        for (x0, y0, x1, y1) in layout.selection_rects(s, e) {
+            let rect =
+                vello::kurbo::Rect::new(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
+            scene.fill(vello::peniko::Fill::NonZero, transform, band, None, &rect);
+        }
+    }
+}
+
+fn draw_rich_underlines(
+    scene: &mut Scene,
+    layout: &crate::richtext::RichTextLayout,
+    transform: Affine,
+    color: Color,
+) {
+    for &(s, e) in &layout.underlines {
+        for (x0, _y0, x1, y1) in layout.selection_rects(s, e) {
+            let uy = f64::from(y1 - 2.0);
+            let rect = vello::kurbo::Rect::new(f64::from(x0), uy, f64::from(x1), uy + 1.5);
+            scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
+        }
+    }
+}
+
+fn draw_rich_strikes(
+    scene: &mut Scene,
+    layout: &crate::richtext::RichTextLayout,
+    transform: Affine,
+    color: Color,
+) {
+    for &(s, e) in &layout.strikes {
+        for (x0, y0, x1, y1) in layout.selection_rects(s, e) {
+            let my = f64::from(f32::midpoint(y0, y1));
+            let rect = vello::kurbo::Rect::new(f64::from(x0), my, f64::from(x1), my + 1.5);
+            scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
+        }
+    }
+}
+
 impl TextRenderer {
     pub fn new() -> Self {
         Self {
@@ -767,10 +845,10 @@ impl TextRenderer {
 
     fn measure_lookup(&mut self, key: MeasureKey) -> Option<(f32, f32)> {
         if let Some(v) = self.measure_cache.get(&key).copied() {
-            self.hits += 1;
+            self.hits = self.hits.saturating_add(1);
             return Some(v);
         }
-        self.misses += 1;
+        self.misses = self.misses.saturating_add(1);
         None
     }
 
@@ -883,15 +961,21 @@ impl TextRenderer {
         }
 
         let mut width = 0.0f32;
-        let mut lines = 0;
+        let mut lines: usize = 0;
         for run in buffer.layout_runs() {
             let exercised_hyphen = run
                 .glyphs
                 .last()
                 .is_some_and(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"));
             width = width.max(run.line_w + if exercised_hyphen { hyphen_width } else { 0.0 });
-            lines += 1;
+            lines = lines.saturating_add(1);
         }
+        // Line counts stay in the low hundreds; this cast is exact in that
+        // range, and any other conversion path risks the pixel golden.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "line counts stay well within f32's exact integer range"
+        )]
         let height = lines as f32 * line_height;
         let result = (width, height);
         self.measure_insert(key, result);
@@ -915,6 +999,7 @@ impl TextRenderer {
         max_width: f32,
         weight: TextWeight,
     ) -> String {
+        const ELLIPSIS: char = '\u{2026}';
         if text.is_empty() || max_width <= 0.0 {
             return String::new();
         }
@@ -922,7 +1007,6 @@ impl TextRenderer {
         if full_w <= max_width {
             return text.to_string();
         }
-        const ELLIPSIS: char = '\u{2026}';
         // A single glyph reads better than an empty slot when even the
         // ellipsis doesn't fit.
         let (ell_w, _) = self.measure_weighted("\u{2026}", size, None, weight);
@@ -973,8 +1057,11 @@ impl TextRenderer {
         }
         // Keep the first `max_lines - 1` whole lines, then merge the rest
         // onto the final line and elide it as the truncation marker.
-        let mut kept: Vec<String> = wrapped[..max_lines - 1].to_vec();
-        let remainder: String = wrapped[max_lines - 1..].join(" ");
+        let (head, tail) = wrapped
+            .split_at_checked(max_lines.saturating_sub(1))
+            .unwrap_or((&wrapped, &[]));
+        let mut kept: Vec<String> = head.to_vec();
+        let remainder: String = tail.join(" ");
         kept.push(self.elide_to_width(&remainder, size, max_width));
         kept
     }
@@ -992,8 +1079,11 @@ impl TextRenderer {
         let mut lines = Vec::new();
         let mut start = 0usize;
         while start < text.len() {
-            while start < text.len() && text[start..].chars().next().is_some_and(collapsible_edge) {
-                start += text[start..].chars().next().unwrap().len_utf8();
+            while let Some(character) = text.get(start..).and_then(|rest| rest.chars().next()) {
+                if !collapsible_edge(character) {
+                    break;
+                }
+                start = start.saturating_add(character.len_utf8());
             }
             if start == text.len() {
                 break;
@@ -1003,7 +1093,10 @@ impl TextRenderer {
             let mut best = None;
             for &(end, kind) in opportunities.iter().filter(|(end, _)| *end > start) {
                 first.get_or_insert(end);
-                let candidate = text[start..end].trim_end_matches(collapsible_edge);
+                let candidate = text
+                    .get(start..end)
+                    .unwrap_or_default()
+                    .trim_end_matches(collapsible_edge);
                 let fits = self.measure(candidate, size, None).0 <= max_width;
                 if fits {
                     best = Some(end);
@@ -1015,7 +1108,10 @@ impl TextRenderer {
                 }
             }
             let end = best.or(first).unwrap_or(text.len());
-            let line = text[start..end].trim_end_matches(collapsible_edge);
+            let line = text
+                .get(start..end)
+                .unwrap_or_default()
+                .trim_end_matches(collapsible_edge);
             if !line.is_empty() {
                 lines.push(line.to_string());
             }
@@ -1190,19 +1286,12 @@ impl TextRenderer {
         self.paint_runs(scene, &runs, style.size, color, transform);
     }
 
-    /// Shape `text` into positioned [`GlyphRun`]s, caching the result. On a
-    /// hit this is an `Arc` clone; on a miss it runs cosmic-text once.
-    fn shaped_runs(
-        &mut self,
-        text: &str,
-        max_width: Option<f32>,
-        style: &TextStyle,
-    ) -> Arc<Vec<GlyphRun>> {
+    fn make_shape_key(&self, text: &str, max_width: Option<f32>, style: &TextStyle) -> ShapeKey {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         text.hash(&mut hasher);
-        let key = ShapeKey {
+        ShapeKey {
             text_hash: hasher.finish(),
             size_bits: style.size.to_bits(),
             max_width_bits: max_width.map_or(u32::MAX, f32::to_bits),
@@ -1213,14 +1302,12 @@ impl TextRenderer {
             hyphenation: style.hyphenation.cache_hash(),
             advanced: style.advanced_hash(),
             generation: self.generation,
-        };
-        if let Some(runs) = self.shape_cache.get(&key) {
-            self.shape_hits += 1;
-            return runs.clone();
         }
-        self.shape_misses += 1;
+    }
 
-        let t0 = Instant::now();
+    /// Shapes `text` into a laid-out cosmic-text [`Buffer`], applying the
+    /// same hyphenation/balance handling `measure_style` uses.
+    fn shape_buffer(&mut self, text: &str, max_width: Option<f32>, style: &TextStyle) -> Buffer {
         let line_height = style.line_height_px();
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(style.size, line_height));
         let attrs = style.cosmic_attrs();
@@ -1254,11 +1341,14 @@ impl TextRenderer {
                 layout_width.unwrap_or(0.0),
             );
         }
+        buffer
+    }
 
+    /// Flatten a shaped [`Buffer`] into per-face contiguous runs, baking the
+    /// baseline into each glyph so paint is a pure transform + colour, no
+    /// arithmetic.
+    fn flatten_glyph_runs(&mut self, buffer: &Buffer, style: &TextStyle) -> Vec<GlyphRun> {
         let variations = style.resolved_variations();
-
-        // Flatten into per-face contiguous runs, baking the baseline into
-        // each glyph so paint is a pure transform + colour, no arithmetic.
         let mut runs: Vec<GlyphRun> = Vec::new();
         for run in buffer.layout_runs() {
             let exercised_hyphen = run
@@ -1271,12 +1361,14 @@ impl TextRenderer {
                 if run.text.get(g.start..g.end) == Some("\u{ad}") {
                     continue;
                 }
-                if current_face != Some(g.font_id) && !glyphs.is_empty() {
+                if let Some(face_id) = current_face
+                    && face_id != g.font_id
+                    && !glyphs.is_empty()
+                {
                     runs.push(GlyphRun {
-                        face_id: current_face.unwrap(),
+                        face_id,
                         glyphs: std::mem::take(&mut glyphs),
-                        normalized_coords: self
-                            .normalized_coords(current_face.unwrap(), &variations),
+                        normalized_coords: self.normalized_coords(face_id, &variations),
                     });
                 }
                 current_face = Some(g.font_id);
@@ -1310,7 +1402,28 @@ impl TextRenderer {
                 });
             }
         }
-        self.shape_ns += t0.elapsed().as_nanos();
+        runs
+    }
+
+    /// Shape `text` into positioned [`GlyphRun`]s, caching the result. On a
+    /// hit this is an `Arc` clone; on a miss it runs cosmic-text once.
+    fn shaped_runs(
+        &mut self,
+        text: &str,
+        max_width: Option<f32>,
+        style: &TextStyle,
+    ) -> Arc<Vec<GlyphRun>> {
+        let key = self.make_shape_key(text, max_width, style);
+        if let Some(runs) = self.shape_cache.get(&key) {
+            self.shape_hits = self.shape_hits.saturating_add(1);
+            return runs.clone();
+        }
+        self.shape_misses = self.shape_misses.saturating_add(1);
+
+        let t0 = Instant::now();
+        let buffer = self.shape_buffer(text, max_width, style);
+        let runs = self.flatten_glyph_runs(&buffer, style);
+        self.shape_ns = self.shape_ns.saturating_add(t0.elapsed().as_nanos());
 
         let arc = Arc::new(runs);
         if self.shape_cache.len() >= SHAPE_CACHE_LIMIT
@@ -1358,13 +1471,11 @@ impl TextRenderer {
                     .db()
                     .face(face_id)
                     .and_then(|f| match &f.source {
-                        cosmic_text::fontdb::Source::Binary(data) => {
+                        cosmic_text::fontdb::Source::Binary(data)
+                        | cosmic_text::fontdb::Source::SharedFile(_, data) => {
                             Some(data.as_ref().as_ref().to_vec())
                         }
                         cosmic_text::fontdb::Source::File(path) => fs::read(path).ok(),
-                        cosmic_text::fontdb::Source::SharedFile(_, data) => {
-                            Some(data.as_ref().as_ref().to_vec())
-                        }
                     });
                 if let Some(data) = font_data {
                     Font::new(data.into(), 0)
@@ -1415,117 +1526,106 @@ impl TextRenderer {
         transform: Affine,
         color: Color,
     ) {
-        use crate::richtext::BaselineShift;
-        let resolve = |c: Option<cosmic_text::Color>| {
-            c.map_or(color, |c| Color::from_rgb8(c.r(), c.g(), c.b()))
-        };
-
-        // Highlight bands paint behind glyphs so the ink reads on top.
-        for &(s, e, [br, bg, bb]) in &layout.backgrounds {
-            let band = Color::from_rgb8(br, bg, bb);
-            for (x0, y0, x1, y1) in layout.selection_rects(s, e) {
-                let rect = vello::kurbo::Rect::new(
-                    f64::from(x0),
-                    f64::from(y0),
-                    f64::from(x1),
-                    f64::from(y1),
-                );
-                scene.fill(vello::peniko::Fill::NonZero, transform, band, None, &rect);
-            }
-        }
+        draw_rich_backgrounds(scene, layout, transform);
 
         // Glyphs batch by (face, colour, size, baseline-shift) so a
         // super/subscript run flushes as its own batch with the right size & y.
         for run in layout.buffer.layout_runs() {
-            let exercised_hyphen = run
-                .glyphs
-                .last()
-                .filter(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"));
-            let mut face: Option<cosmic_text::fontdb::ID> = None;
-            let mut cur_color: Option<cosmic_text::Color> = None;
-            let mut cur_shift = BaselineShift::None;
-            let mut batch: Vec<cosmic_text::LayoutGlyph> = Vec::new();
-            let mut size = 16.0f32;
-            let mut batch_size = 16.0f32;
-            for g in run.glyphs {
-                if run.text.get(g.start..g.end) == Some("\u{ad}") {
-                    continue;
-                }
-                let global_byte = layout.glyph_global_byte(run.line_i, g.start);
-                let g_shift = layout.baseline_at(global_byte);
-                // Flush when face, colour, glyph size, or baseline-shift change.
-                let changed = face != Some(g.font_id)
-                    || cur_color != g.color_opt
-                    || (g.font_size - batch_size).abs() > f32::EPSILON
-                    || cur_shift != g_shift;
-                if changed && !batch.is_empty() {
-                    let dy = cur_shift.offset(batch_size);
-                    self.flush_glyphs(
-                        scene,
-                        face.unwrap(),
-                        &batch,
-                        batch_size,
-                        resolve(cur_color),
-                        transform,
-                        run.line_y + dy,
-                        &layout.font_variations,
-                    );
-                    batch.clear();
-                }
-                face = Some(g.font_id);
-                cur_color = g.color_opt;
-                cur_shift = g_shift;
-                size = g.font_size;
-                batch_size = g.font_size;
-                let mut positioned = g.clone();
-                positioned.x = hanging_glyph_x(&run, g, layout.hanging_punctuation);
-                batch.push(positioned);
+            self.draw_rich_run(scene, &run, layout, transform, color);
+        }
+
+        draw_rich_underlines(scene, layout, transform, color);
+        draw_rich_strikes(scene, layout, transform, color);
+    }
+
+    /// Batch and flush one shaped [`cosmic_text::LayoutRun`] of `layout` for
+    /// [`Self::draw_rich`].
+    fn draw_rich_run(
+        &mut self,
+        scene: &mut Scene,
+        run: &cosmic_text::LayoutRun<'_>,
+        layout: &crate::richtext::RichTextLayout,
+        transform: Affine,
+        color: Color,
+    ) {
+        use crate::richtext::BaselineShift;
+        let exercised_hyphen = run
+            .glyphs
+            .last()
+            .filter(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"));
+        let mut face: Option<cosmic_text::fontdb::ID> = None;
+        let mut cur_color: Option<cosmic_text::Color> = None;
+        let mut cur_shift = BaselineShift::None;
+        let mut batch: Vec<cosmic_text::LayoutGlyph> = Vec::new();
+        let mut size = 16.0f32;
+        let mut batch_size = 16.0f32;
+        for g in run.glyphs {
+            if run.text.get(g.start..g.end) == Some("\u{ad}") {
+                continue;
             }
-            if let Some(f) = face
+            let global_byte = layout.glyph_global_byte(run.line_i, g.start);
+            let g_shift = layout.baseline_at(global_byte);
+            // Flush when face, colour, glyph size, or baseline-shift change.
+            let changed = face != Some(g.font_id)
+                || cur_color != g.color_opt
+                || (g.font_size - batch_size).abs() > f32::EPSILON
+                || cur_shift != g_shift;
+            if let Some(face_id) = face
+                && changed
                 && !batch.is_empty()
             {
                 let dy = cur_shift.offset(batch_size);
                 self.flush_glyphs(
                     scene,
-                    f,
+                    face_id,
                     &batch,
-                    size,
-                    resolve(cur_color),
+                    batch_size,
+                    resolve_rich_color(color, cur_color),
                     transform,
                     run.line_y + dy,
                     &layout.font_variations,
                 );
+                batch.clear();
             }
-            if let Some(marker) = exercised_hyphen
-                && let Some(hyphen) = self.visible_discretionary_hyphen(marker)
-            {
-                let global_byte = layout.glyph_global_byte(run.line_i, marker.start);
-                let shift = layout.baseline_at(global_byte);
-                self.flush_glyphs(
-                    scene,
-                    hyphen.font_id,
-                    std::slice::from_ref(&hyphen),
-                    hyphen.font_size,
-                    resolve(hyphen.color_opt),
-                    transform,
-                    run.line_y + shift.offset(hyphen.font_size),
-                    &layout.font_variations,
-                );
-            }
+            face = Some(g.font_id);
+            cur_color = g.color_opt;
+            cur_shift = g_shift;
+            size = g.font_size;
+            batch_size = g.font_size;
+            let mut positioned = g.clone();
+            positioned.x = hanging_glyph_x(run, g, layout.hanging_punctuation);
+            batch.push(positioned);
         }
-        for &(s, e) in &layout.underlines {
-            for (x0, _y0, x1, y1) in layout.selection_rects(s, e) {
-                let uy = f64::from(y1 - 2.0);
-                let rect = vello::kurbo::Rect::new(f64::from(x0), uy, f64::from(x1), uy + 1.5);
-                scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
-            }
+        if let Some(f) = face
+            && !batch.is_empty()
+        {
+            let dy = cur_shift.offset(batch_size);
+            self.flush_glyphs(
+                scene,
+                f,
+                &batch,
+                size,
+                resolve_rich_color(color, cur_color),
+                transform,
+                run.line_y + dy,
+                &layout.font_variations,
+            );
         }
-        for &(s, e) in &layout.strikes {
-            for (x0, y0, x1, y1) in layout.selection_rects(s, e) {
-                let my = f64::from(f32::midpoint(y0, y1));
-                let rect = vello::kurbo::Rect::new(f64::from(x0), my, f64::from(x1), my + 1.5);
-                scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
-            }
+        if let Some(marker) = exercised_hyphen
+            && let Some(hyphen) = self.visible_discretionary_hyphen(marker)
+        {
+            let global_byte = layout.glyph_global_byte(run.line_i, marker.start);
+            let shift = layout.baseline_at(global_byte);
+            self.flush_glyphs(
+                scene,
+                hyphen.font_id,
+                std::slice::from_ref(&hyphen),
+                hyphen.font_size,
+                resolve_rich_color(color, hyphen.color_opt),
+                transform,
+                run.line_y + shift.offset(hyphen.font_size),
+                &layout.font_variations,
+            );
         }
     }
 
@@ -1546,14 +1646,11 @@ impl TextRenderer {
     ) {
         let vello_font = self.vello_font(face_id);
 
-        let vello_glyphs: Vec<vello::Glyph> = glyphs
-            .iter()
-            .map(|g| vello::Glyph {
-                id: u32::from(g.glyph_id),
-                x: g.x,
-                y: line_y + g.y,
-            })
-            .collect();
+        let vello_glyphs = glyphs.iter().map(|g| vello::Glyph {
+            id: u32::from(g.glyph_id),
+            x: g.x,
+            y: line_y + g.y,
+        });
 
         let normalized_coords = self.normalized_coords(face_id, variations);
         scene
@@ -1562,10 +1659,7 @@ impl TextRenderer {
             .normalized_coords(&normalized_coords)
             .brush(color)
             .transform(transform)
-            .draw(
-                StyleRef::Fill(vello::peniko::Fill::NonZero),
-                vello_glyphs.into_iter(),
-            );
+            .draw(StyleRef::Fill(vello::peniko::Fill::NonZero), vello_glyphs);
     }
 
     fn visible_discretionary_hyphen(
@@ -1890,6 +1984,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "buckets glyph y-positions into small row indices for a three-line test layout; round() already yields an integer-valued f32 far below i32::MAX"
+    )]
     fn measure_and_draw_use_dictionary_breaks_for_thai() {
         let mut tr = TextRenderer::new();
         let style = TextStyle::new(18.0);

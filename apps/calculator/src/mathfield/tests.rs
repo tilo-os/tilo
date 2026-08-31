@@ -464,7 +464,7 @@ fn click_at_measured_glyph_boundary_places_caret_there() {
     let origin = f.content_origin();
     let py = origin.y + 10.0; // anywhere inside the single row's band
     let mut cum = 0.0f64;
-    for k in 0..chars.len() {
+    for (k, &ch) in chars.iter().enumerate() {
         let px = origin.x + cum + 0.5; // just right of boundary k
         f.on_press_cached(Point::new(px, py), false);
         assert!(
@@ -475,7 +475,7 @@ fn click_at_measured_glyph_boundary_places_caret_there() {
             f.editor.caret.offset, k,
             "click at measured boundary {k} (x={px:.1}) must land at offset {k}",
         );
-        cum += ui::math::measure_atom(&mut tr, chars[k], size);
+        cum += ui::math::measure_atom(&mut tr, ch, size);
     }
     // Clicking past the last glyph lands at the row end.
     f.on_press_cached(Point::new(origin.x + cum + 0.5, py), false);

@@ -16,6 +16,16 @@
 //!   `MySQL`:    `QOS_DB_TEST_MYSQL` (gate), `QOS_DB_TEST_MYSQL_HOST` (127.0.0.1),
 //!             `_PORT` (3306), `_USER` (root), `_PASS` (""), `_DB` (mysql)
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use db_client::model::{ConnectionProfile, Engine};
 use db_client::session::Session;
 

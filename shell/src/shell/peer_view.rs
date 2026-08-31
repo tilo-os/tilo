@@ -38,6 +38,22 @@ use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
 /// useful ceiling — one paint-in-flight, one staged for the next frame.
 pub(crate) const PENDING_CEILING: u32 = 2;
 
+/// Convert a mastering-luminance value (`1/10000 cd/m²`, per the HDR10
+/// stream metadata encoding) to nits. Stream values top out around
+/// `40_000_000` (4000 cd/m²), far inside `f32`'s 24-bit exact-integer
+/// range, so the precision loss this cast could otherwise cause cannot
+/// happen for real content, and the tone-mapper only needs an
+/// approximate peak anyway. Same derivation as
+/// `hdr_tonemap::mastering_luminance_to_nits`, kept local rather than
+/// shared since that one is private to its own module.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "mastering luminance stays well under 2^24 for real streams; exact precision isn't needed for a tone-map peak"
+)]
+fn mastering_luminance_to_nits(raw: u32) -> f32 {
+    raw as f32 / 10_000.0
+}
+
 /// Outcome of a `push_encoded_with_latency` call, for structured logging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushOutcome {
@@ -147,7 +163,7 @@ impl PeerView {
         let output_state = OutputColorState::from_display(display_caps);
         // Same derivation as `HdrTonemapConfig::from_metadata`.
         let source_peak = hdr_static_metadata
-            .map(|m| m.mastering.max_display_mastering_luminance as f32 / 10_000.0)
+            .map(|m| mastering_luminance_to_nits(m.mastering.max_display_mastering_luminance))
             .filter(|nits| nits.is_finite() && *nits > 0.0);
         let hdr_tonemap = match plan_surface_op(stream_colorimetry, &output_state, source_peak) {
             SurfaceColorOp::TonemapHdrToSdr { config } => Some(config),
@@ -213,9 +229,8 @@ impl PeerView {
         nalus: &[u8],
         latency_ns: Option<u64>,
     ) -> PushOutcome {
-        let frame = match self.decoder.decode(nalus) {
-            Some(f) => f,
-            None => return PushOutcome::DecodeFailed,
+        let Some(frame) = self.decoder.decode(nalus) else {
+            return PushOutcome::DecodeFailed;
         };
 
         let dropped = self.frames_pending >= PENDING_CEILING && self.latest.is_some();
@@ -326,21 +341,31 @@ impl Widget for PeerView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .expect("peer-view leaf");
+        let node = match taffy.new_leaf(taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        }) {
+            Ok(node) => node,
+            Err(err) => {
+                // `TaffyTree::new_leaf` only ever returns `Ok` for a
+                // fresh, unattached leaf; this arm exists so a future
+                // upstream change degrades the peer surface instead of
+                // aborting the whole session.
+                tracing::error!("peer_view: leaf allocation failed: {err}");
+                NodeId::from(0u64)
+            }
+        };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).expect("layout");
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         let new_rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -383,9 +408,15 @@ impl Widget for PeerView {
             if img_w > 0.0 && img_h > 0.0 {
                 let sx = rect.width() / img_w;
                 let sy = rect.height() / img_h;
-                let placement =
-                    Affine::translate((rect.x0, rect.y0)) * Affine::scale_non_uniform(sx, sy);
-                scene.draw_image(image, transform * placement);
+                // `transform.pre_translate(t).pre_scale_non_uniform(sx, sy)`
+                // is kurbo's non-operator equivalent of
+                // `transform * Affine::translate(t) * Affine::scale_non_uniform(sx, sy)`
+                // (composition is associative, so chaining the two `pre_*`
+                // combinators onto `transform` gives the same matrix).
+                let placement = transform
+                    .pre_translate((rect.x0, rect.y0).into())
+                    .pre_scale_non_uniform(sx, sy);
+                scene.draw_image(image, placement);
             }
         } else {
             let label = "Awaiting peer surface…";
@@ -398,7 +429,7 @@ impl Widget for PeerView {
                 label,
                 size,
                 tokens.colors.text_dim,
-                transform * Affine::translate((cx, cy)),
+                transform.pre_translate((cx, cy).into()),
                 None,
             );
         }
@@ -470,15 +501,31 @@ mod tests {
     use super::*;
     use crate::network::encoder::H264Encoder;
 
+    /// `coord * 255 / span.max(1)`, computed via saturating/checked ops
+    /// rather than raw operators: saturating multiply can't wrap for a
+    /// huge `coord`, and `span.max(1)` makes the divisor provably
+    /// nonzero so `checked_div` never needs its fallback.
+    fn u8_from_gradient(coord: u32, span: u32) -> u8 {
+        let scaled = coord
+            .saturating_mul(255)
+            .checked_div(span.max(1))
+            .unwrap_or(0);
+        // Safe: `scaled <= 255` whenever `coord < span`, which every
+        // caller's `0..span` loop below guarantees.
+        u8::try_from(scaled).unwrap_or(u8::MAX)
+    }
+
     /// A deterministic RGBA gradient, so the round-trip needs no binary fixture.
     fn gradient_frame(width: u32, height: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        let mut out = Vec::with_capacity(
+            (width as usize)
+                .saturating_mul(height as usize)
+                .saturating_mul(4),
+        );
         for y in 0..height {
             for x in 0..width {
-                let r = ((x * 255) / width.max(1)) as u8;
-                let g = ((y * 255) / height.max(1)) as u8;
-                out.push(r);
-                out.push(g);
+                out.push(u8_from_gradient(x, width));
+                out.push(u8_from_gradient(y, height));
                 out.push(128);
                 out.push(255);
             }

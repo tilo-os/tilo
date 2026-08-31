@@ -66,6 +66,14 @@ const MODAL_W: f64 = 460.0;
 const INPUT_H: f64 = 42.0;
 const PAD: f64 = 28.0;
 
+// `open`, `reveal_advanced`, `uri_expanded` and `advanced_open` are four
+// independent UI-disclosure flags that toggle separately, not a
+// combinatorial state machine — consolidating them into an enum would lose
+// that independence rather than gain clarity.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent disclosure flags, not a combinatorial state machine"
+)]
 pub struct AddAccountPanel {
     open: bool,
     window: Rect,
@@ -261,7 +269,12 @@ impl AddAccountPanel {
         } else {
             (cur + 1) % n
         };
-        self.set_focus(Some(order[next]));
+        // `next` is always `< n == order.len()` by construction (both
+        // branches above compute a value mod `n`), so this is unreachable in
+        // practice — `.get()` documents that instead of indexing directly.
+        if let Some(&field) = order.get(next) {
+            self.set_focus(Some(field));
+        }
     }
 
     /// Reveal the paste-a-link row and focus its field.
@@ -391,20 +404,34 @@ impl AddAccountPanel {
         self.advanced_header_rect = Rect::new(left, y, right, y + adv_header_h);
         y += adv_header_h;
 
+        self.layout_advanced_fields(left, right, content_w, y);
+
+        // Push rects into the text inputs.
+        self.uri.apply_layout_external(self.uri_rect);
+        self.issuer.apply_layout_external(self.issuer_rect);
+        self.label.apply_layout_external(self.label_rect);
+        self.secret.apply_layout_external(self.secret_rect);
+        self.period.apply_layout_external(self.period_rect);
+    }
+
+    /// Lay out the Algorithm/Digits/Period rects starting at `y`, or zero
+    /// them when Advanced is collapsed. Split out of [`Self::layout`] to
+    /// keep that function's line count in check.
+    fn layout_advanced_fields(&mut self, left: f64, right: f64, content_w: f64, y: f64) {
         if self.advanced_open {
-            y += 14.0;
+            let y = y + 14.0;
             let chip_y = y + 18.0;
             let alg_w = (content_w - 12.0) / 3.0;
-            for i in 0..3 {
+            for (i, r) in self.alg_rects.iter_mut().enumerate() {
                 let cx = left + i as f64 * (alg_w + 6.0);
-                self.alg_rects[i] = Rect::new(cx, chip_y, cx + alg_w, chip_y + INPUT_H);
+                *r = Rect::new(cx, chip_y, cx + alg_w, chip_y + INPUT_H);
             }
-            y = chip_y + INPUT_H + 8.0;
+            let y = chip_y + INPUT_H + 8.0;
             let row_y = y + 18.0;
             let dig_w = 56.0;
-            for i in 0..2 {
+            for (i, r) in self.digit_rects.iter_mut().enumerate() {
                 let cx = left + i as f64 * (dig_w + 6.0);
-                self.digit_rects[i] = Rect::new(cx, row_y, cx + dig_w, row_y + INPUT_H);
+                *r = Rect::new(cx, row_y, cx + dig_w, row_y + INPUT_H);
             }
             let period_w = 88.0;
             let period_x = right - period_w;
@@ -414,13 +441,6 @@ impl AddAccountPanel {
             self.digit_rects = [Rect::ZERO; 2];
             self.period_rect = Rect::ZERO;
         }
-
-        // Push rects into the text inputs.
-        self.uri.apply_layout_external(self.uri_rect);
-        self.issuer.apply_layout_external(self.issuer_rect);
-        self.label.apply_layout_external(self.label_rect);
-        self.secret.apply_layout_external(self.secret_rect);
-        self.period.apply_layout_external(self.period_rect);
     }
 
     // ---- account building / actions ----------------------------------
@@ -519,6 +539,30 @@ impl AddAccountPanel {
             return;
         }
         let presence = PresenceCtx::empty();
+        self.draw_chrome(scene, transform, text_renderer, theme);
+
+        // Everything between the fixed title and footer scrolls; clip it so
+        // scrolled rows never bleed into the chrome.
+        let clip = RoundedRect::from_rect(self.body_clip, 0.0);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
+        self.draw_import_methods(scene, transform, text_renderer, theme, &presence);
+        self.draw_manual_fields(scene, transform, text_renderer, theme);
+        self.draw_advanced_section(scene, transform, text_renderer, theme, &presence);
+        scene.pop_layer();
+
+        self.draw_footer(scene, transform, text_renderer, theme);
+    }
+
+    /// Scrim, modal card and the fixed title/subtitle — everything outside
+    /// the scrolling body. Split out of [`Self::draw`] to keep that
+    /// function's line count in check.
+    fn draw_chrome(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         // Scrim.
         scene.fill(
             Fill::NonZero,
@@ -563,16 +607,22 @@ impl AddAccountPanel {
             transform * Affine::translate((left, self.modal.y0 + 50.0)),
             None,
         );
+    }
 
-        // Everything between the fixed title and footer scrolls; clip it so
-        // scrolled rows never bleed into the chrome.
-        let clip = RoundedRect::from_rect(self.body_clip, 0.0);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
-
+    /// The two big method cards (scan a QR image / paste a link) and, when
+    /// disclosed, the paste-link row. Split out of [`Self::draw`].
+    fn draw_import_methods(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         // --- Method cards. The image importer leads (it is the real QR
         // path today); pasting a setup link is the calm secondary. ---
         let img_hover = self.image_card_rect.contains(self.last_mouse);
-        self.draw_method_card(
+        Self::draw_method_card(
             scene,
             transform,
             text_renderer,
@@ -585,7 +635,7 @@ impl AddAccountPanel {
             true,
         );
         let link_hover = self.link_card_rect.contains(self.last_mouse);
-        self.draw_method_card(
+        Self::draw_method_card(
             scene,
             transform,
             text_renderer,
@@ -601,7 +651,7 @@ impl AddAccountPanel {
         // Paste-link field (disclosed).
         if self.uri_expanded {
             if self.uri.value().is_empty() {
-                self.draw_placeholder(
+                Self::draw_placeholder(
                     scene,
                     transform,
                     text_renderer,
@@ -611,9 +661,9 @@ impl AddAccountPanel {
                 );
             }
             self.uri
-                .draw(scene, transform, text_renderer, theme, &presence);
+                .draw(scene, transform, text_renderer, theme, presence);
             let parse_hover = self.parse_rect.contains(self.last_mouse);
-            self.draw_button(
+            Self::draw_button(
                 scene,
                 transform,
                 text_renderer,
@@ -624,7 +674,17 @@ impl AddAccountPanel {
                 true,
             );
         }
+    }
 
+    /// The "or enter details" divider plus the three manual fields (issuer,
+    /// account label, secret). Split out of [`Self::draw`].
+    fn draw_manual_fields(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         // "Or enter details" divider.
         let div_y = self.issuer_rect.y0 - 18.0 - 14.0;
         self.draw_divider(
@@ -664,76 +724,96 @@ impl AddAccountPanel {
             Field::Secret,
             "JBSWY3DPEHPK3PXP",
         );
+    }
 
-        // --- Advanced options disclosure ---
+    /// The Advanced-options disclosure header and, when open, the
+    /// algorithm/digits chip rows plus the period field. Split out of
+    /// [`Self::draw`].
+    fn draw_advanced_section(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         self.draw_advanced_header(scene, transform, text_renderer, theme);
-        if self.advanced_open {
-            self.draw_field_label(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                "Algorithm",
-                self.alg_rects[0],
-            );
-            let algorithm_labels: Vec<&str> = Algorithm::ALL
-                .iter()
-                .map(|algorithm| algorithm.as_str())
-                .collect();
-            let selected = Algorithm::ALL
-                .iter()
-                .position(|algorithm| *algorithm == self.algorithm)
-                .unwrap_or(0);
-            let hovered = self
-                .alg_rects
-                .iter()
-                .position(|rect| rect.contains(self.last_mouse));
-            ToggleGroup::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &SegmentedFace::new(&self.alg_rects, &algorithm_labels, selected)
-                    .pill()
-                    .hovered(hovered),
-            );
-            self.draw_field_label(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                "Digits",
-                self.digit_rects[0],
-            );
-            let digit_labels = ["6", "8"];
-            let selected = usize::from(self.digits == 8);
-            let hovered = self
-                .digit_rects
-                .iter()
-                .position(|rect| rect.contains(self.last_mouse));
-            ToggleGroup::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &SegmentedFace::new(&self.digit_rects, &digit_labels, selected)
-                    .pill()
-                    .hovered(hovered),
-            );
-            self.draw_field_label(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                "Period (s)",
-                self.period_rect,
-            );
-            self.period
-                .draw(scene, transform, text_renderer, theme, &presence);
+        if !self.advanced_open {
+            return;
         }
+        Self::draw_field_label(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            "Algorithm",
+            self.alg_rects[0],
+        );
+        let algorithm_labels: Vec<&str> = Algorithm::ALL
+            .iter()
+            .map(|algorithm| algorithm.as_str())
+            .collect();
+        let selected = Algorithm::ALL
+            .iter()
+            .position(|algorithm| *algorithm == self.algorithm)
+            .unwrap_or(0);
+        let hovered = self
+            .alg_rects
+            .iter()
+            .position(|rect| rect.contains(self.last_mouse));
+        ToggleGroup::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &SegmentedFace::new(&self.alg_rects, &algorithm_labels, selected)
+                .pill()
+                .hovered(hovered),
+        );
+        Self::draw_field_label(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            "Digits",
+            self.digit_rects[0],
+        );
+        let digit_labels = ["6", "8"];
+        let selected = usize::from(self.digits == 8);
+        let hovered = self
+            .digit_rects
+            .iter()
+            .position(|rect| rect.contains(self.last_mouse));
+        ToggleGroup::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &SegmentedFace::new(&self.digit_rects, &digit_labels, selected)
+                .pill()
+                .hovered(hovered),
+        );
+        Self::draw_field_label(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            "Period (s)",
+            self.period_rect,
+        );
+        self.period
+            .draw(scene, transform, text_renderer, theme, presence);
+    }
 
-        scene.pop_layer();
-
+    /// The scroll hint, the inline error line and the Cancel/Add-account
+    /// footer buttons. Split out of [`Self::draw`].
+    fn draw_footer(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         // A hint that there is more below when the body is scrollable.
         if self.max_scroll > 0.5 && self.scroll < self.max_scroll - 0.5 {
             self.draw_scroll_hint(scene, transform, theme);
@@ -741,6 +821,7 @@ impl AddAccountPanel {
 
         // Error line, just above the footer.
         if !self.error.is_empty() {
+            let left = self.modal.x0 + PAD;
             text_renderer.draw_text(
                 scene,
                 &self.error,
@@ -755,7 +836,7 @@ impl AddAccountPanel {
         let can_save = !self.secret.value().trim().is_empty();
         let cancel_hover = self.cancel_rect.contains(self.last_mouse);
         let save_hover = self.save_rect.contains(self.last_mouse);
-        self.draw_button(
+        Self::draw_button(
             scene,
             transform,
             text_renderer,
@@ -765,7 +846,7 @@ impl AddAccountPanel {
             cancel_hover,
             true,
         );
-        self.draw_primary_button(
+        Self::draw_primary_button(
             scene,
             transform,
             text_renderer,
@@ -780,9 +861,11 @@ impl AddAccountPanel {
     /// One big, tappable method row: an icon tile, a bold title, and a calm
     /// one-line description. The primary card (QR) gets the accent tint so
     /// the recommended path reads first.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a card is glyph + title + subtitle + hover/primary state; grouping into a struct would only move the fields, not reduce them"
+    )]
     fn draw_method_card(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -835,7 +918,7 @@ impl AddAccountPanel {
         };
 
         // Icon tile on the left.
-        let tile = Rect::new(
+        let icon_tile = Rect::new(
             rect.x0 + 14.0,
             rect.center().y - 16.0,
             rect.x0 + 14.0 + 32.0,
@@ -851,11 +934,11 @@ impl AddAccountPanel {
             transform,
             tile_bg,
             None,
-            &RoundedRect::from_rect(tile, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(icon_tile, f64::from(theme.tokens.radii.md)),
         );
-        draw_glyph(scene, transform, tile, glyph, icon_color);
+        draw_glyph(scene, transform, icon_tile, glyph, icon_color);
 
-        let text_x = tile.x1 + 14.0;
+        let text_x = icon_tile.x1 + 14.0;
         text_renderer.draw_text_weighted(
             scene,
             title,
@@ -948,7 +1031,6 @@ impl AddAccountPanel {
     }
 
     fn draw_field_label(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -967,6 +1049,10 @@ impl AddAccountPanel {
         );
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one text field is scene + transform + renderer + theme + label + field id + placeholder; grouping into a struct would only move the fields, not reduce them"
+    )]
     fn draw_text_field(
         &mut self,
         scene: &mut Scene,
@@ -984,17 +1070,16 @@ impl AddAccountPanel {
             Field::Secret => self.secret_rect,
             _ => return,
         };
-        self.draw_field_label(scene, transform, text_renderer, theme, label, rect);
+        Self::draw_field_label(scene, transform, text_renderer, theme, label, rect);
         let empty = self.field_mut(field).value().is_empty();
         if empty {
-            self.draw_placeholder(scene, transform, text_renderer, theme, rect, placeholder);
+            Self::draw_placeholder(scene, transform, text_renderer, theme, rect, placeholder);
         }
         self.field_mut(field)
             .draw(scene, transform, text_renderer, theme, &presence);
     }
 
     fn draw_placeholder(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -1041,8 +1126,11 @@ impl AddAccountPanel {
         );
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "thin positional wrapper over ButtonFace's builder; grouping into a struct would only move the fields, not reduce them"
+    )]
     fn draw_button(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -1063,8 +1151,11 @@ impl AddAccountPanel {
         );
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "thin positional wrapper over ButtonFace's builder; grouping into a struct would only move the fields, not reduce them"
+    )]
     fn draw_primary_button(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -1088,7 +1179,10 @@ impl AddAccountPanel {
 
     // ---- events ------------------------------------------------------
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the full winit routing signature every Widget::handle_event carries"
+    )]
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -1106,47 +1200,30 @@ impl AddAccountPanel {
         // The modal is fully blocking — every event is consumed.
         *handled = true;
 
-        // Pointer moves drive hover state (read in `draw`) and must reach
-        // every text field so their `is_hovered` is set before a click lands.
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
-            for field in [
-                Field::Uri,
-                Field::Issuer,
-                Field::Label,
-                Field::Secret,
-                Field::Period,
-            ] {
-                let mut throwaway = None;
-                self.field_mut(field).handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    &mut throwaway,
-                    node_id,
-                    taffy,
-                );
-            }
+        if matches!(event, WindowEvent::CursorMoved { .. }) {
+            self.handle_cursor_moved(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                path,
+                handled,
+                node_id,
+                taffy,
+            );
             return;
         }
 
         // Wheel scrolls the body when the form is taller than the window.
         // The next layout pass re-offsets every rect from the new scroll.
         if let WindowEvent::MouseWheel { delta, .. } = event {
-            if self.max_scroll > 0.0 {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 40.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
-                };
-                self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll);
-            }
+            self.handle_wheel(delta, scale_factor);
             return;
         }
 
-        // Keyboard: Esc cancels, Enter saves, Tab cycles focus.
+        // Keyboard: Esc cancels, Enter saves, Tab cycles focus. A key this
+        // doesn't recognise (e.g. a character while a field is focused)
+        // falls through to the forward-to-focused-field tail below.
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -1156,23 +1233,9 @@ impl AddAccountPanel {
                 },
             ..
         } = event
+            && self.handle_key(logical_key, modifiers.state().shift_key())
         {
-            match logical_key {
-                Key::Named(NamedKey::Escape) => {
-                    self.event = Some(AddPanelEvent::Cancel);
-                    self.open = false;
-                    return;
-                }
-                Key::Named(NamedKey::Enter) => {
-                    self.try_save();
-                    return;
-                }
-                Key::Named(NamedKey::Tab) => {
-                    self.focus_next(modifiers.state().shift_key());
-                    return;
-                }
-                _ => {}
-            }
+            return;
         }
 
         // Mouse press: cards / disclosures / chips / buttons / focus.
@@ -1182,73 +1245,16 @@ impl AddAccountPanel {
             ..
         } = event
         {
-            let p = self.last_mouse;
-
-            // Method cards.
-            if self.image_card_rect.contains(p) {
-                // The app routes to the host portal chooser + runs the decode.
-                self.event = Some(AddPanelEvent::PickImageForQr);
-                return;
-            }
-            if self.link_card_rect.contains(p) {
-                self.expand_uri();
-                return;
-            }
-            if self.uri_expanded && self.parse_rect.contains(p) {
-                self.parse_uri_field();
-                return;
-            }
-            // Advanced disclosure header.
-            if self.advanced_header_rect.contains(p) {
-                self.toggle_advanced();
-                return;
-            }
-            // Footer.
-            if self.cancel_rect.contains(p) {
-                self.event = Some(AddPanelEvent::Cancel);
-                self.open = false;
-                return;
-            }
-            if self.save_rect.contains(p) {
-                self.try_save();
-                return;
-            }
-            // Advanced chips (only hittable when open — rects are ZERO otherwise).
-            if self.advanced_open {
-                for (i, alg) in Algorithm::ALL.iter().enumerate() {
-                    if self.alg_rects[i].contains(p) {
-                        self.algorithm = *alg;
-                        return;
-                    }
-                }
-                for (i, d) in [6u8, 8u8].iter().enumerate() {
-                    if self.digit_rects[i].contains(p) {
-                        self.digits = *d;
-                        return;
-                    }
-                }
-            }
-            // Focus a text field if clicked.
-            for field in self.field_order() {
-                let r = self.field_rect(field);
-                if r.contains(p) {
-                    self.set_focus(Some(field));
-                    self.field_mut(field).handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        handled,
-                        &mut None,
-                        node_id,
-                        taffy,
-                    );
-                    return;
-                }
-            }
-            // Click elsewhere — drop text focus, keep modal open.
-            self.set_focus(None);
+            self.handle_mouse_press(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                path,
+                handled,
+                node_id,
+                taffy,
+            );
             return;
         }
 
@@ -1267,6 +1273,174 @@ impl AddAccountPanel {
                 taffy,
             );
         }
+    }
+
+    /// Pointer moves drive hover state (read in [`Self::draw`]) and must
+    /// reach every text field so their `is_hovered` is set before a click
+    /// lands. Split out of [`Self::handle_event`] to keep that function's
+    /// line count in check.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the full winit routing signature every Widget::handle_event carries"
+    )]
+    fn handle_cursor_moved(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let WindowEvent::CursorMoved { position, .. } = event else {
+            return;
+        };
+        self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        for field in [
+            Field::Uri,
+            Field::Issuer,
+            Field::Label,
+            Field::Secret,
+            Field::Period,
+        ] {
+            let mut throwaway = None;
+            self.field_mut(field).handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                &mut throwaway,
+                node_id,
+                taffy,
+            );
+        }
+    }
+
+    /// Scroll the body by one wheel tick, clamped to the current range. Split
+    /// out of [`Self::handle_event`].
+    fn handle_wheel(&mut self, delta: &MouseScrollDelta, scale_factor: f64) {
+        if self.max_scroll <= 0.0 {
+            return;
+        }
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 40.0,
+            MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+        };
+        self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll);
+    }
+
+    /// Esc cancels, Enter saves, Tab cycles focus. Returns `true` when the
+    /// key was one of those three (fully consumed), `false` otherwise so the
+    /// caller falls through to the focused-field tail. Split out of
+    /// [`Self::handle_event`].
+    fn handle_key(&mut self, logical_key: &Key, shift: bool) -> bool {
+        match logical_key {
+            Key::Named(NamedKey::Escape) => {
+                self.event = Some(AddPanelEvent::Cancel);
+                self.open = false;
+                true
+            }
+            Key::Named(NamedKey::Enter) => {
+                self.try_save();
+                true
+            }
+            Key::Named(NamedKey::Tab) => {
+                self.focus_next(shift);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A left click: method cards, disclosures, chips, footer buttons, and
+    /// focusing a text field. Split out of [`Self::handle_event`] to keep
+    /// that function's line count in check.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the full winit routing signature every Widget::handle_event carries"
+    )]
+    fn handle_mouse_press(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let p = self.last_mouse;
+
+        // Method cards.
+        if self.image_card_rect.contains(p) {
+            // The app routes to the host portal chooser + runs the decode.
+            self.event = Some(AddPanelEvent::PickImageForQr);
+            return;
+        }
+        if self.link_card_rect.contains(p) {
+            self.expand_uri();
+            return;
+        }
+        if self.uri_expanded && self.parse_rect.contains(p) {
+            self.parse_uri_field();
+            return;
+        }
+        // Advanced disclosure header.
+        if self.advanced_header_rect.contains(p) {
+            self.toggle_advanced();
+            return;
+        }
+        // Footer.
+        if self.cancel_rect.contains(p) {
+            self.event = Some(AddPanelEvent::Cancel);
+            self.open = false;
+            return;
+        }
+        if self.save_rect.contains(p) {
+            self.try_save();
+            return;
+        }
+        // Advanced chips (only hittable when open — rects are ZERO otherwise).
+        if self.advanced_open {
+            for (alg, rect) in Algorithm::ALL.iter().zip(self.alg_rects.iter()) {
+                if rect.contains(p) {
+                    self.algorithm = *alg;
+                    return;
+                }
+            }
+            for (d, rect) in [6u8, 8u8].iter().zip(self.digit_rects.iter()) {
+                if rect.contains(p) {
+                    self.digits = *d;
+                    return;
+                }
+            }
+        }
+        // Focus a text field if clicked.
+        for field in self.field_order() {
+            let r = self.field_rect(field);
+            if r.contains(p) {
+                self.set_focus(Some(field));
+                self.field_mut(field).handle_event(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    state,
+                    path,
+                    handled,
+                    &mut None,
+                    node_id,
+                    taffy,
+                );
+                return;
+            }
+        }
+        // Click elsewhere — drop text focus, keep modal open.
+        self.set_focus(None);
     }
 
     fn field_rect(&self, f: Field) -> Rect {

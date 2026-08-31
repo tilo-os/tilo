@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::WindowEvent;
 
@@ -58,6 +58,11 @@ impl Widget for StatusLog {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
+        // returns a bare `NodeId` across every implementor, so surfacing a
+        // theoretical error here would mean threading a `Result` through the
+        // whole toolkit for a branch that can't be taken.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -73,6 +78,10 @@ impl Widget for StatusLog {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `layout` only errors for a `NodeId` from a different tree, which
+        // never happens here since `node` is always the id this same widget
+        // received from its own `build_layout` call.
+        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -102,7 +111,7 @@ impl Widget for StatusLog {
 
         // Clip glyphs to the box so long lines never bleed out.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
-        let max_w = (self.rect.width() - PAD * 2.0) as f32;
+        let max_w = ui::num::f32_of_f64(self.rect.width() - PAD * 2.0);
         let inner_h = self.rect.height() - PAD * 2.0;
 
         // Tail: walk from the newest line upward, summing each line's WRAPPED
@@ -111,8 +120,8 @@ impl Widget for StatusLog {
         // line overdraws the wrapped continuation (the cause of the overlap).
         let mut first = self.lines.len();
         let mut used = 0.0_f64;
-        for i in (0..self.lines.len()).rev() {
-            let (_, h) = text_renderer.measure(&self.lines[i], LINE_SIZE, Some(max_w));
+        for (i, line) in self.lines.iter().enumerate().rev() {
+            let (_, h) = text_renderer.measure(line, LINE_SIZE, Some(max_w));
             let need = f64::from(h) + f64::from(LINE_GAP);
             if used + need > inner_h && first != self.lines.len() {
                 break;
@@ -122,14 +131,14 @@ impl Widget for StatusLog {
         }
 
         let mut y = self.rect.y0 + PAD;
-        for line in &self.lines[first..] {
+        for line in self.lines.iter().skip(first) {
             let (_, h) = text_renderer.measure(line, LINE_SIZE, Some(max_w));
             text_renderer.draw_text(
                 scene,
                 line,
                 LINE_SIZE,
                 theme.text_primary,
-                transform * Affine::translate((self.rect.x0 + PAD, y)),
+                transform.pre_translate(Vec2::new(self.rect.x0 + PAD, y)),
                 Some(max_w),
             );
             y += f64::from(h) + f64::from(LINE_GAP);

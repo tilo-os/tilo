@@ -42,6 +42,10 @@ pub type Passphrase = Zeroizing<Vec<u8>>;
 
 /// 32 bytes from the kernel CSPRNG, hex-encoded so it's safe to hand to cryptsetup as a
 /// key file and to `tpm2_create -i`.
+///
+/// # Errors
+///
+/// Returns an error if `/dev/urandom` cannot be opened or read.
 pub fn new_passphrase() -> Result<Passphrase> {
     use std::io::Read;
     let mut f = std::fs::File::open("/dev/urandom").context("opening /dev/urandom")?;
@@ -53,6 +57,10 @@ pub fn new_passphrase() -> Result<Passphrase> {
 /// Does `passphrase` open `device`? Optionally restricted to one keyslot. `--test-passphrase`
 /// does the full key-derivation and digest check without activating a mapping, so it's safe
 /// on an already-open device and needs no device-mapper privileges beyond reading the header.
+///
+/// # Errors
+///
+/// Returns an error if writing the scratch key file or running `cryptsetup` fails.
 pub fn verify_passphrase(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -77,6 +85,10 @@ pub fn verify_passphrase(
 /// SAFETY-CRITICAL: prove the recovery key still opens the device. Everything destructive in
 /// this module takes the result of this call as a precondition — a separate function so the
 /// proof is a value that has to be produced, not a comment claiming it was considered.
+///
+/// # Errors
+///
+/// Returns an error if [`verify_passphrase`] fails to run.
 pub fn verify_recovery(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -103,6 +115,10 @@ pub enum RecoveryCheck<'a> {
 
 /// Keyslot numbers in the header that no `qos-rollback` token claims: the recovery key's
 /// slot and any `systemd-cryptenroll` slots. Nothing in this crate ever writes to them.
+///
+/// # Errors
+///
+/// Returns an error if reading the keyslots or tokens in use fails.
 pub fn foreign_keyslots(runner: &dyn Runner, device: &Path) -> Result<Vec<u32>> {
     let all = keyslots_in_use(runner, device)?;
     let ours: Vec<u32> = list_tokens(runner, device)?
@@ -113,6 +129,11 @@ pub fn foreign_keyslots(runner: &dyn Runner, device: &Path) -> Result<Vec<u32>> 
 }
 
 /// Run a [`RecoveryCheck`].
+///
+/// # Errors
+///
+/// Returns an error if the check fails — the recovery key doesn't open the device, or no
+/// independent unlock path remains — or if the underlying keyslot/token lookups fail.
 pub fn verify_recovery_path(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -152,6 +173,11 @@ pub fn verify_recovery_path(
 }
 
 /// Read every `qos-rollback` token in the header, newest generation first.
+///
+/// # Errors
+///
+/// Returns an error if running `cryptsetup token export` fails to execute. A token id that
+/// simply isn't in use, or a token of a different type, is skipped rather than an error.
 pub fn list_tokens(runner: &dyn Runner, device: &Path) -> Result<Vec<(u32, RollbackToken)>> {
     let mut found = Vec::new();
     // LUKS2 allows 32 tokens; no "list tokens" subcommand is stable across cryptsetup versions,
@@ -190,6 +216,10 @@ pub fn list_tokens(runner: &dyn Runner, device: &Path) -> Result<Vec<(u32, Rollb
 
 /// Create the sealing parent, deterministic from the owner hierarchy seed and template, so it
 /// doesn't need to be persisted and survives a reboot.
+///
+/// # Errors
+///
+/// Returns an error if `tpm2_createprimary` fails.
 pub fn primary(runner: &dyn Runner, ws: &Workspace) -> Result<std::path::PathBuf> {
     policy::flush(runner);
     let ctx = ws.path("primary.ctx");
@@ -215,6 +245,11 @@ pub fn primary(runner: &dyn Runner, ws: &Workspace) -> Result<std::path::PathBuf
 /// attempts count against the TPM's dictionary-attack lockout — the entire reason a
 /// four-digit PIN is defensible; setting `noda` would silently turn it into four digits of
 /// nothing.
+///
+/// # Errors
+///
+/// Returns an error if creating the sealing parent, sealing with `tpm2_create`, or reading
+/// back the sealed public/private blobs fails.
 #[allow(clippy::too_many_arguments)]
 pub fn seal(
     runner: &dyn Runner,
@@ -274,6 +309,12 @@ pub fn seal(
 /// prediction fits the current machine state (wrong generation, or the firmware moved); an
 /// error means the floor rejected the generation or the mechanism failed, and the caller
 /// should not silently move on.
+///
+/// # Errors
+///
+/// Returns an error if the token fails to validate, if a PIN is required but not supplied,
+/// if unsealing fails for a reason other than a prediction mismatch, or if the rollback floor
+/// refuses every prediction that otherwise matched.
 pub fn unseal(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -388,6 +429,11 @@ pub fn unseal(
 /// SAFETY-CRITICAL: if the new slot can't open the device, it's removed again and the call
 /// fails — leaving a non-working slot with a plausible token would produce a machine that
 /// looks enrolled and asks for the recovery key at boot.
+///
+/// # Errors
+///
+/// Returns an error if `luksAddKey` fails, if it doesn't produce exactly one new keyslot, or
+/// if the new keyslot fails to open the device (in which case it is removed before returning).
 pub fn add_generation_slot(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -458,6 +504,10 @@ pub fn add_generation_slot(
 }
 
 /// Keyslot numbers currently in use.
+///
+/// # Errors
+///
+/// Returns an error if reading the LUKS2 header fails.
 pub fn keyslots_in_use(runner: &dyn Runner, device: &Path) -> Result<Vec<u32>> {
     let out = require(
         runner,
@@ -500,6 +550,10 @@ pub fn parse_keyslots(dump: &str) -> Vec<u32> {
 }
 
 /// Attach a token to a keyslot.
+///
+/// # Errors
+///
+/// Returns an error if writing the scratch token file or `cryptsetup token import` fails.
 pub fn import_token(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -528,6 +582,10 @@ pub fn import_token(
 }
 
 /// First token id not currently occupied.
+///
+/// # Errors
+///
+/// Returns an error if all 32 LUKS2 token slots are occupied, or if probing a slot fails.
 pub fn free_token_id(runner: &dyn Runner, device: &Path) -> Result<u32> {
     for id in 0..32u32 {
         let id_s = id.to_string();
@@ -551,6 +609,12 @@ pub fn free_token_id(runner: &dyn Runner, device: &Path) -> Result<u32> {
 /// token is removed before the keyslot, so an interruption leaves an orphan keyslot
 /// (harmless, reclaimable) rather than a token pointing at a slot that no longer exists
 /// (which would make `unlock` try to use it).
+///
+/// # Errors
+///
+/// Returns an error if `proof` doesn't open `device`, if `proof` is bound to the very slot
+/// being removed, if removing the token or keyslot fails, or — the case that most needs
+/// shouting about — if `proof` no longer opens the device after the keyslot is gone.
 pub fn kill_generation_slot(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -609,6 +673,11 @@ pub fn kill_generation_slot(
 }
 
 /// Build the whole seal + slot + token sequence for one generation.
+///
+/// # Errors
+///
+/// Returns an error if `predictions` is empty, or if sealing, adding the keyslot, or
+/// importing the token fails.
 #[allow(clippy::too_many_arguments)]
 pub fn enroll_generation(
     runner: &dyn Runner,

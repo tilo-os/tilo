@@ -168,16 +168,14 @@ pub fn traffic_color(pal: &MapPalette, level: crate::traffic::Congestion) -> Col
 pub fn category_color(theme: &Theme, cat: Category) -> Color {
     let c = &theme.tokens.colors;
     match cat {
-        Category::Landmark => c.semantic.danger,
-        Category::Cafe => c.semantic.warning,
+        Category::Landmark | Category::Hospital => c.semantic.danger,
+        Category::Cafe | Category::Shop => c.semantic.warning,
         Category::Restaurant => draw::mix(c.semantic.danger, c.semantic.warning, 0.5),
         Category::Bar => c.accent[6],
         Category::Museum => c.semantic.info,
         Category::Park => c.semantic.success,
         Category::Transit => c.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
         Category::Hotel => c.accent[7],
-        Category::Shop => c.semantic.warning,
-        Category::Hospital => c.semantic.danger,
         Category::Other => c.neutral[6],
     }
 }
@@ -187,15 +185,11 @@ pub fn category_color(theme: &Theme, cat: Category) -> Color {
 /// rather than a random scatter of shops.
 pub fn category_priority(cat: Category) -> u8 {
     match cat {
-        Category::Transit => 6,
-        Category::Landmark => 6,
-        Category::Hospital => 5,
-        Category::Museum => 5,
+        Category::Transit | Category::Landmark => 6,
+        Category::Hospital | Category::Museum => 5,
         Category::Park => 4,
-        Category::Hotel => 3,
-        Category::Restaurant => 3,
-        Category::Cafe => 2,
-        Category::Bar => 2,
+        Category::Hotel | Category::Restaurant => 3,
+        Category::Cafe | Category::Bar => 2,
         Category::Shop => 1,
         Category::Other => 0,
     }
@@ -220,28 +214,32 @@ pub fn declutter_indices(
     // order as a stable tie-break.
     let mut order: Vec<usize> = (0..pois.len()).collect();
     order.sort_by(|&a, &b| {
-        let sa = selected == Some(pois[a].id.as_str());
-        let sb = selected == Some(pois[b].id.as_str());
-        sb.cmp(&sa)
-            .then(category_priority(pois[b].category).cmp(&category_priority(pois[a].category)))
-            .then(a.cmp(&b))
+        let sa = pois.get(a).is_some_and(|p| selected == Some(p.id.as_str()));
+        let sb = pois.get(b).is_some_and(|p| selected == Some(p.id.as_str()));
+        let pa = pois.get(a).map_or(0, |p| category_priority(p.category));
+        let pb = pois.get(b).map_or(0, |p| category_priority(p.category));
+        sb.cmp(&sa).then(pb.cmp(&pa)).then(a.cmp(&b))
     });
     let min2 = (min_px * min_px).max(0.0);
     let mut kept_pts: Vec<Point> = Vec::new();
     let mut keep = vec![false; pois.len()];
     for &i in &order {
-        let p = pts[i];
+        let Some(&p) = pts.get(i) else { continue };
         let clear = kept_pts.iter().all(|k| {
             let dx = k.x - p.x;
             let dy = k.y - p.y;
             dx * dx + dy * dy >= min2
         });
         if clear {
-            keep[i] = true;
+            if let Some(k) = keep.get_mut(i) {
+                *k = true;
+            }
             kept_pts.push(p);
         }
     }
-    (0..pois.len()).filter(|&i| keep[i]).collect()
+    (0..pois.len())
+        .filter(|&i| keep.get(i).copied().unwrap_or(false))
+        .collect()
 }
 
 /// Project a polyline of geo coords to screen points.
@@ -506,8 +504,9 @@ pub fn draw_route(
     draw::polyline(scene, t, &pts, 5.5, pal.route);
 
     // Start puck (hollow) + end puck (filled).
-    let start = pts[0];
-    let end = *pts.last().unwrap();
+    let (Some(&start), Some(&end)) = (pts.first(), pts.last()) else {
+        return;
+    };
     draw::fill_circle(scene, t, start, 7.0, pal.marker_ring);
     draw::stroke_circle(scene, t, start, 7.0, 3.0, pal.route);
     draw::fill_circle(scene, t, end, 7.0, pal.route);
@@ -643,6 +642,11 @@ pub fn draw_transit(
 }
 
 /// Stroke a polyline as evenly-spaced dashes (`dash` on, `gap` off).
+#[allow(
+    clippy::many_single_char_names,
+    reason = "conventional short names for a 2D segment (a, b), its direction (dx, dy) and \
+              the running dash offset (d) — the standard vocabulary for this kind of geometry"
+)]
 fn draw_dashed(
     scene: &mut Scene,
     t: Affine,
@@ -656,25 +660,39 @@ fn draw_dashed(
         return;
     }
     let period = dash + gap;
+    if period <= 0.0 {
+        return;
+    }
     for seg in pts.windows(2) {
-        let (a, b) = (seg[0], seg[1]);
+        let &[a, b] = seg else { continue };
         let len = a.distance(b);
         if len < 1e-3 {
             continue;
         }
         let (dx, dy) = ((b.x - a.x) / len, (b.y - a.y) / len);
-        let mut d = 0.0;
-        while d < len {
+        // Bounded by the segment length / period rather than a float `while`,
+        // so a pathological input can't spin forever on rounding.
+        let steps = (len / period).ceil() as u32 + 1;
+        for k in 0..steps {
+            let d = period * f64::from(k);
+            if d >= len {
+                break;
+            }
             let s = Point::new(a.x + dx * d, a.y + dy * d);
             let e_len = (d + dash).min(len);
             let e = Point::new(a.x + dx * e_len, a.y + dy * e_len);
             draw::line(scene, t, s, e, width, color);
-            d += period;
         }
     }
 }
 
 /// Draw all place markers; the selected one is enlarged and labelled.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares the standard (scene, t, tr, theme) drawing-context params with every \
+              other draw_* function in this module; bundling them into a context struct is a \
+              file-wide refactor out of scope here"
+)]
 pub fn draw_markers(
     scene: &mut Scene,
     t: Affine,
@@ -806,7 +824,9 @@ pub fn draw_pois(
         &clip,
     );
     for &i in visible {
-        let poi = &pois[i];
+        let Some(poi) = pois.get(i) else {
+            continue;
+        };
         if selected == Some(poi.id.as_str()) {
             continue; // draw the selected POI last, on top
         }
@@ -926,6 +946,11 @@ fn draw_poi_dot(
 /// colour, used for cut-outs (e.g. train windows) so they read against the fill.
 /// Deliberately built from a handful of primitives — no icon-font dependency, so
 /// it renders identically headless and live and tracks the OS theme.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match arm per Category variant, each a short, self-contained icon built \
+              from a handful of primitives; splitting per-arm would only relocate the code"
+)]
 pub fn draw_category_icon(
     scene: &mut Scene,
     t: Affine,
@@ -1461,17 +1486,20 @@ mod tests {
         let theme = Theme::dark();
         let pal = MapPalette::from_theme(&theme);
         let mut tr = TextRenderer::new();
-        let mut model = MapModel::default();
-        model.center = LatLon::new(48.14, 11.58);
-        model.zoom = 16.0;
-        model.places = vec![Place::new(
-            "a",
-            "Alpha",
-            Category::Cafe,
-            "1 Main St",
-            model.center,
-        )];
-        model.selected = Some("a".to_string());
+        let center = LatLon::new(48.14, 11.58);
+        let model = MapModel {
+            center,
+            zoom: 16.0,
+            places: vec![Place::new(
+                "a",
+                "Alpha",
+                Category::Cafe,
+                "1 Main St",
+                center,
+            )],
+            selected: Some("a".to_string()),
+            ..Default::default()
+        };
         let proj = Projection::new(model.center, model.zoom, Point::new(640.0, 400.0));
         let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut scene = Scene::new();
@@ -1549,9 +1577,11 @@ mod tests {
         assert!(layer.mem_len() > 0, "seeded z14 imagery");
 
         let paints = |layer: &mut TileLayer, zoom: f64| {
-            let mut model = MapModel::default();
-            model.center = center;
-            model.zoom = zoom;
+            let model = MapModel {
+                center,
+                zoom,
+                ..Default::default()
+            };
             let mut scene = Scene::new();
             draw_tiles(&mut scene, Affine::IDENTITY, clip, layer, &model, vc, &pal)
         };

@@ -6,6 +6,7 @@
 //! None of this runs under `--shots` (no event loop) — the screenshot uses
 //! the bundled sample data instead.
 
+use std::fmt::Write as _;
 use std::sync::Once;
 use std::time::Duration;
 
@@ -104,17 +105,17 @@ pub struct TransitQuery {
     pub time: Option<String>,
 }
 
-fn client() -> reqwest::blocking::Client {
+fn client() -> Result<reqwest::blocking::Client, String> {
     ensure_crypto_provider();
     reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(12))
         .build()
-        .expect("reqwest client builds")
+        .map_err(|e| e.to_string())
 }
 
 fn fetch_json(url: &str) -> Result<Value, String> {
-    let resp = client().get(url).send().map_err(|e| e.to_string())?;
+    let resp = client()?.get(url).send().map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
@@ -122,6 +123,10 @@ fn fetch_json(url: &str) -> Result<Value, String> {
 }
 
 /// Geocode a free-text query via Nominatim.
+///
+/// # Errors
+///
+/// Returns `Err` if the request fails or the response isn't the expected shape.
 pub fn geocode(query: &str) -> Result<Vec<Place>, String> {
     let q = urlencode(query);
     let url = format!(
@@ -136,6 +141,10 @@ pub fn geocode(query: &str) -> Result<Vec<Place>, String> {
 /// Geocode `query` for the download-by-place flow: like [`geocode`], but each
 /// result carries the Nominatim `boundingbox` so the caller downloads the
 /// place's real area rather than the screen rectangle.
+///
+/// # Errors
+///
+/// Returns `Err` if the request fails or the response isn't the expected shape.
 pub fn geocode_regions(query: &str) -> Result<Vec<RegionHit>, String> {
     let q = urlencode(query);
     let url = format!(
@@ -264,6 +273,10 @@ nwr[\"public_transport\"=\"station\"]({bbox});\
 }
 
 /// Fetch categorised POIs for a viewport bbox from the Overpass API.
+///
+/// # Errors
+///
+/// Returns `Err` if the request fails or the response isn't valid JSON.
 pub fn overpass(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Poi>, String> {
     let url = overpass_url(south, west, north, east);
     let v = fetch_json(&url)?;
@@ -298,9 +311,14 @@ fn poi_from_overpass(el: &Value) -> Option<Poi> {
     // Coordinate: nodes carry lat/lon; ways/relations carry a `center`.
     let (lat, lon) = if let (Some(la), Some(lo)) = (el["lat"].as_f64(), el["lon"].as_f64()) {
         (la, lo)
-    } else if let (Some(la), Some(lo)) =
-        (el["center"]["lat"].as_f64(), el["center"]["lon"].as_f64())
-    {
+    } else if let (Some(la), Some(lo)) = (
+        el.get("center")
+            .and_then(|c| c.get("lat"))
+            .and_then(Value::as_f64),
+        el.get("center")
+            .and_then(|c| c.get("lon"))
+            .and_then(Value::as_f64),
+    ) {
         (la, lo)
     } else {
         return None;
@@ -369,6 +387,10 @@ fn tag_string(tags: &Value, key: &str) -> Option<String> {
 }
 
 /// Route between two coordinates with the OSRM public demo server.
+///
+/// # Errors
+///
+/// Returns `Err` if the request fails or OSRM reports a non-`Ok` routing status.
 pub fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, String> {
     let url = format!(
         "https://router.project-osrm.org/route/v1/{}/{:.6},{:.6};{:.6},{:.6}?overview=full&geometries=geojson&steps=true",
@@ -379,14 +401,23 @@ pub fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, String
         to.lat,
     );
     let v = fetch_json(&url)?;
-    if v["code"].as_str() != Some("Ok") {
-        return Err(v["code"].as_str().unwrap_or("routing failed").to_string());
+    if v.get("code").and_then(Value::as_str) != Some("Ok") {
+        return Err(v
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("routing failed")
+            .to_string());
     }
-    let r0 = &v["routes"][0];
+    let r0 = v
+        .get("routes")
+        .and_then(|r| r.get(0))
+        .unwrap_or(&Value::Null);
     let distance_m = r0["distance"].as_f64().unwrap_or(0.0);
     let duration_s = r0["duration"].as_f64().unwrap_or(0.0);
-    let raw_geometry = r0["geometry"]["coordinates"]
-        .as_array()
+    let raw_geometry = r0
+        .get("geometry")
+        .and_then(|g| g.get("coordinates"))
+        .and_then(Value::as_array)
         .map(|a| {
             a.iter()
                 .filter_map(|c| {
@@ -405,8 +436,16 @@ pub fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, String
         for leg in legs {
             if let Some(s) = leg["steps"].as_array() {
                 for step in s {
-                    let kind = step["maneuver"]["type"].as_str().unwrap_or("");
-                    let modifier = step["maneuver"]["modifier"].as_str().unwrap_or("");
+                    let kind = step
+                        .get("maneuver")
+                        .and_then(|m| m.get("type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let modifier = step
+                        .get("maneuver")
+                        .and_then(|m| m.get("modifier"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
                     let name = step["name"].as_str().unwrap_or("");
                     let dist = step["distance"].as_f64().unwrap_or(0.0);
                     let maneuver = Maneuver::from_osrm(kind, modifier);
@@ -467,6 +506,10 @@ fn step_instruction(m: Maneuver, name: &str) -> String {
 
 /// Reverse-geocode a coordinate to a human place label via Nominatim. Used to
 /// name a device-location origin ("Current location" → a real street/place).
+///
+/// # Errors
+///
+/// Returns `Err` if the request fails or no usable address is found.
 pub fn reverse_geocode(lat: f64, lon: f64) -> Result<String, String> {
     let url = format!(
         "https://nominatim.openstreetmap.org/reverse?lat={lat:.6}&lon={lon:.6}&format=jsonv2&zoom=16&addressdetails=1"
@@ -474,10 +517,18 @@ pub fn reverse_geocode(lat: f64, lon: f64) -> Result<String, String> {
     let v = fetch_json(&url)?;
     // Prefer the specific `name`, then a short leading fragment of the full
     // display name, so the origin label stays compact.
-    if let Some(name) = v["name"].as_str().filter(|s| !s.is_empty()) {
+    if let Some(name) = v
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
         return Ok(name.to_string());
     }
-    if let Some(display) = v["display_name"].as_str().filter(|s| !s.is_empty()) {
+    if let Some(display) = v
+        .get("display_name")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
         let short: Vec<&str> = display.split(',').take(2).map(str::trim).collect();
         return Ok(short.join(", "));
     }
@@ -493,7 +544,7 @@ pub fn transit_url(from: LatLon, to: LatLon, when: &TransitQuery) -> String {
         from.lat, from.lon, to.lat, to.lon
     );
     if let Some(time) = &when.time {
-        url.push_str(&format!("&time={}", urlencode(time)));
+        let _ = write!(url, "&time={}", urlencode(time));
     }
     if when.arrive_by {
         url.push_str("&arriveBy=true");
@@ -503,6 +554,10 @@ pub fn transit_url(from: LatLon, to: LatLon, when: &TransitQuery) -> String {
 
 /// Plan a public-transport journey via the Transitous MOTIS v3 API, anchored to
 /// the caller's depart/arrive [`TransitQuery`].
+///
+/// # Errors
+///
+/// Returns `Err` if the request fails or the response can't be parsed.
 pub fn transit(
     from: LatLon,
     to: LatLon,
@@ -516,6 +571,10 @@ pub fn transit(
 /// Parse a MOTIS `plan` response body into itineraries. Split out (and pure) so
 /// the leg-geometry decoding and field mapping are unit-testable without a
 /// network round-trip.
+///
+/// # Errors
+///
+/// Returns `Err` if the response has no `itineraries` array.
 pub fn parse_transit(v: &Value) -> Result<Vec<TransitJourney>, String> {
     let its = v["itineraries"].as_array().ok_or("no itineraries")?;
     let mut out = Vec::new();
@@ -534,8 +593,18 @@ pub fn parse_transit(v: &Value) -> Result<Vec<TransitJourney>, String> {
                     .unwrap_or("")
                     .to_string();
                 let headsign = leg["headsign"].as_str().unwrap_or("").to_string();
-                let from_name = leg["from"]["name"].as_str().unwrap_or("").to_string();
-                let to_name = leg["to"]["name"].as_str().unwrap_or("").to_string();
+                let from_name = leg
+                    .get("from")
+                    .and_then(|f| f.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let to_name = leg
+                    .get("to")
+                    .and_then(|t| t.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 let dep = hhmm(leg["startTime"].as_str().unwrap_or(""));
                 let arr = hhmm(leg["endTime"].as_str().unwrap_or(""));
                 let duration_min = (leg["duration"].as_f64().unwrap_or(0.0) / 60.0).round() as u32;
@@ -607,10 +676,8 @@ pub fn decode_polyline(s: &str, precision: u32) -> Vec<LatLon> {
         let mut shift = 0u32;
         let mut result = 0i64;
         loop {
-            if *i >= bytes.len() {
-                return None;
-            }
-            let b = i64::from(bytes[*i]) - 63;
+            let &byte = bytes.get(*i)?;
+            let b = i64::from(byte) - 63;
             *i += 1;
             result |= (b & 0x1f) << shift;
             shift += 5;
@@ -637,11 +704,12 @@ pub fn decode_polyline(s: &str, precision: u32) -> Vec<LatLon> {
 
 /// Extract `HH:MM` from an ISO-8601 timestamp; best-effort.
 fn hhmm(iso: &str) -> String {
-    if let Some(t) = iso.find('T') {
-        let rest = &iso[t + 1..];
-        if rest.len() >= 5 {
-            return rest[..5].to_string();
-        }
+    if let Some(t) = iso.find('T')
+        && let Some(rest) = iso.get(t + 1..)
+        && rest.len() >= 5
+        && let Some(clock) = rest.get(..5)
+    {
+        return clock.to_string();
     }
     iso.to_string()
 }
@@ -655,7 +723,9 @@ fn urlencode(s: &str) -> String {
                 out.push(b as char);
             }
             b' ' => out.push_str("%20"),
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out

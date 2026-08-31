@@ -5,8 +5,19 @@
 //! back, and reopened — proving the model is the source of truth, not
 //! an opaque blob.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use qdoc::diff::{BlockOp, RunOp, diff_snapshots};
 use qdoc::{BlockView, DocSnapshot, Document, DocxCodec, FormatProvider, MarkSpan, OdtCodec};
+use std::fmt::Write as _;
 
 const SAMPLE_ODT: &[u8] = include_bytes!("fixtures/sample.odt");
 const SAMPLE_DOCX: &[u8] = include_bytes!("fixtures/sample.docx");
@@ -16,6 +27,10 @@ const XXE_ODT: &[u8] = include_bytes!("fixtures/xxe.odt");
 
 // ---- helpers ---------------------------------------------------------------
 
+#[allow(
+    clippy::expect_used,
+    reason = "test fixture helper: a failure here is a broken fixture, and the message says so"
+)]
 fn import(codec: &dyn FormatProvider, bytes: &[u8]) -> Document {
     let mut d = Document::new();
     codec
@@ -34,7 +49,9 @@ fn covered(block: &BlockView, name: &str) -> Vec<String> {
         .iter()
         .filter(|m: &&MarkSpan| m.name == name)
         .map(|m| {
-            chars[m.start.min(chars.len())..m.end.min(chars.len())]
+            chars
+                .get(m.start.min(chars.len())..m.end.min(chars.len()))
+                .unwrap_or_default()
                 .iter()
                 .collect()
         })
@@ -52,6 +69,10 @@ fn texts(blocks: &[&BlockView]) -> Vec<String> {
 /// The invariant structure both fixtures share: an H1, a paragraph with
 /// a bold and an italic run, two bullet items, a 2x2 table, and
 /// title/author metadata.
+#[allow(
+    clippy::panic,
+    reason = "test assertion helper: a panic here means a fixture bug, and the message is the fixture's context"
+)]
 fn assert_sample_structure(snap: &DocSnapshot, format: &str) {
     let headings = kinds(snap, "heading");
     assert!(
@@ -126,6 +147,12 @@ fn docx_parses_real_file_into_crdt_model() {
 /// and prove both edits + the original structure survive as replayable
 /// CRDT change history (an intermediate version shows the first edit
 /// but not the second).
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test assertion helper: a failure here means a fixture/test bug, and each message says so"
+)]
 fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
     let mut d = import(codec, bytes);
 
@@ -460,8 +487,13 @@ fn large_document_parse_and_serialize_is_fast() {
                 "{name}: bold runs preserved"
             );
 
+            // Display-only byte count; a test fixture is nowhere near f64's exact-integer range.
+            #[allow(clippy::cast_precision_loss)]
             let kib = bytes.len() as f64 / 1024.0;
-            report.push_str(&format!("  {name:>4}: export {export_ms:8.1} ms, reimport {import_ms:8.1} ms, {kib:8.1} KiB\n"));
+            let _ = writeln!(
+                report,
+                "  {name:>4}: export {export_ms:8.1} ms, reimport {import_ms:8.1} ms, {kib:8.1} KiB"
+            );
 
             assert!(
                 export_ms < 15_000.0,

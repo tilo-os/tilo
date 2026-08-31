@@ -81,7 +81,10 @@ impl Action for GitClientAction {
             GitClientAction::SetDiffLayout { layout } => {
                 // Normalise through the enum so an unknown payload lands on a
                 // valid setting instead of wedging.
-                let norm = DiffLayout::from_str(layout).as_str();
+                let norm = layout
+                    .parse::<DiffLayout>()
+                    .unwrap_or(DiffLayout::Unified)
+                    .as_str();
                 doc.put(&obj, settings::keys::DIFF_LAYOUT, norm)?;
             }
             GitClientAction::SetShowWhitespace { on } => {
@@ -113,9 +116,12 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`GitClientAction`] into the wire form the palette and the
 /// on-screen affordances both dispatch — the single point that turns a git
 /// action into a replayable envelope.
-pub fn encode(action: &GitClientAction) -> EncodedAction {
+///
+/// # Errors
+///
+/// Returns an error if `action` fails to serialize into the wire envelope.
+pub fn encode(action: &GitClientAction) -> Result<EncodedAction, ActionError> {
     EncodedAction::encode(GIT_CLIENT_ACTION_TYPE, action)
-        .expect("GitClientAction is always serializable")
 }
 
 /// Build the "set the diff layout to `layout`" action — the single source of
@@ -150,7 +156,11 @@ pub fn provide_resources(repo_name: &str, doc: &AutoCommit) -> Vec<Resource> {
         label,
     );
 
-    // Diff layout — flip to the other layout.
+    // Diff layout — flip to the other layout. Each `ActionSpec::immediate`
+    // can only fail to serialize the payload, which none of these plain
+    // String/bool actions ever do in practice; on that unreachable-in-practice
+    // failure the toggle is simply omitted from the palette rather than
+    // panicking the app over one preference row.
     let next_layout = match s.diff_layout {
         DiffLayout::Unified => DiffLayout::SideBySide,
         DiffLayout::SideBySide => DiffLayout::Unified,
@@ -159,64 +169,60 @@ pub fn provide_resources(repo_name: &str, doc: &AutoCommit) -> Vec<Resource> {
         DiffLayout::SideBySide => "Diff layout: side-by-side",
         DiffLayout::Unified => "Diff layout: unified",
     };
-    repo = repo.with_action(
-        ActionSpec::immediate(
-            "diff-layout",
-            layout_label,
-            GIT_CLIENT_ACTION_TYPE,
-            &set_diff_layout_action(next_layout),
-        )
-        .expect("encode diff-layout action"),
-    );
+    if let Ok(spec) = ActionSpec::immediate(
+        "diff-layout",
+        layout_label,
+        GIT_CLIENT_ACTION_TYPE,
+        &set_diff_layout_action(next_layout),
+    ) {
+        repo = repo.with_action(spec);
+    }
 
     // Syntax highlighting.
-    repo = repo.with_action(
-        ActionSpec::immediate(
-            "syntax-highlight",
-            if s.syntax_highlight {
-                "Turn off syntax highlighting"
-            } else {
-                "Turn on syntax highlighting"
-            },
-            GIT_CLIENT_ACTION_TYPE,
-            &GitClientAction::SetSyntaxHighlight {
-                on: !s.syntax_highlight,
-            },
-        )
-        .expect("encode syntax-highlight action"),
-    );
+    if let Ok(spec) = ActionSpec::immediate(
+        "syntax-highlight",
+        if s.syntax_highlight {
+            "Turn off syntax highlighting"
+        } else {
+            "Turn on syntax highlighting"
+        },
+        GIT_CLIENT_ACTION_TYPE,
+        &GitClientAction::SetSyntaxHighlight {
+            on: !s.syntax_highlight,
+        },
+    ) {
+        repo = repo.with_action(spec);
+    }
 
     // Whitespace rendering.
-    repo = repo.with_action(
-        ActionSpec::immediate(
-            "show-whitespace",
-            if s.show_whitespace {
-                "Hide whitespace"
-            } else {
-                "Show whitespace"
-            },
-            GIT_CLIENT_ACTION_TYPE,
-            &GitClientAction::SetShowWhitespace {
-                on: !s.show_whitespace,
-            },
-        )
-        .expect("encode show-whitespace action"),
-    );
+    if let Ok(spec) = ActionSpec::immediate(
+        "show-whitespace",
+        if s.show_whitespace {
+            "Hide whitespace"
+        } else {
+            "Show whitespace"
+        },
+        GIT_CLIENT_ACTION_TYPE,
+        &GitClientAction::SetShowWhitespace {
+            on: !s.show_whitespace,
+        },
+    ) {
+        repo = repo.with_action(spec);
+    }
 
     // Soft line wrapping.
-    repo = repo.with_action(
-        ActionSpec::immediate(
-            "wrap-lines",
-            if s.wrap_lines {
-                "Stop wrapping long lines"
-            } else {
-                "Wrap long lines"
-            },
-            GIT_CLIENT_ACTION_TYPE,
-            &GitClientAction::SetWrapLines { on: !s.wrap_lines },
-        )
-        .expect("encode wrap-lines action"),
-    );
+    if let Ok(spec) = ActionSpec::immediate(
+        "wrap-lines",
+        if s.wrap_lines {
+            "Stop wrapping long lines"
+        } else {
+            "Wrap long lines"
+        },
+        GIT_CLIENT_ACTION_TYPE,
+        &GitClientAction::SetWrapLines { on: !s.wrap_lines },
+    ) {
+        repo = repo.with_action(spec);
+    }
 
     vec![repo]
 }
@@ -245,7 +251,7 @@ mod tests {
     /// affordance path does (decode from the wire, apply through a local
     /// transport).
     fn dispatch(doc: &mut AutoCommit, action: &GitClientAction) {
-        let encoded = encode(action);
+        let encoded = encode(action).unwrap();
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
@@ -254,7 +260,7 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
@@ -347,9 +353,11 @@ mod tests {
     #[test]
     fn palette_actions_target_the_opposite_of_current_state() {
         let mut doc = AutoCommit::new();
-        let mut s = Settings::default();
-        s.diff_layout = DiffLayout::SideBySide;
-        s.syntax_highlight = false;
+        let s = Settings {
+            diff_layout: DiffLayout::SideBySide,
+            syntax_highlight: false,
+            ..Settings::default()
+        };
         s.write(&mut doc);
         doc.commit();
 
@@ -362,7 +370,7 @@ mod tests {
         // Currently side-by-side, so the exported action flips back to unified.
         assert_eq!(
             immediate_encode(spec),
-            encode(&set_diff_layout_action(DiffLayout::Unified)),
+            encode(&set_diff_layout_action(DiffLayout::Unified)).unwrap(),
         );
         let syn = resources[0]
             .actions
@@ -371,7 +379,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             immediate_encode(syn),
-            encode(&GitClientAction::SetSyntaxHighlight { on: true }),
+            encode(&GitClientAction::SetSyntaxHighlight { on: true }).unwrap(),
         );
     }
 
@@ -390,7 +398,7 @@ mod tests {
         );
         let before_heads = state.doc.get_heads();
 
-        let encoded = encode(&set_diff_layout_action(DiffLayout::SideBySide));
+        let encoded = encode(&set_diff_layout_action(DiffLayout::SideBySide)).unwrap();
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
@@ -429,7 +437,7 @@ mod tests {
         );
 
         let action = set_diff_layout_action(DiffLayout::SideBySide);
-        let encoded = encode(&action);
+        let encoded = encode(&action).unwrap();
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
@@ -455,7 +463,7 @@ mod tests {
             .unwrap();
 
         let from_spec = immediate_encode(spec);
-        let from_builder = encode(&set_diff_layout_action(DiffLayout::SideBySide));
+        let from_builder = encode(&set_diff_layout_action(DiffLayout::SideBySide)).unwrap();
         assert_eq!(from_spec.type_id, from_builder.type_id);
         assert_eq!(
             from_spec.payload, from_builder.payload,

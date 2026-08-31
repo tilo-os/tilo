@@ -6,6 +6,16 @@
 //! where a paper share returns to the quorum when a physical device is
 //! unavailable.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::BTreeMap;
 
 use collab_types::{canonical_bytes, verify_event};
@@ -18,6 +28,13 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
 /// Set up three devices with a 2-of-3 DKG. Returns identities a, b, c.
+// `_a`/`_b`/`_c` names three independent DKG devices — the clearest
+// available convention for a 3-device protocol test, used the same way
+// across every multi-device test in this crate.
+#[allow(
+    clippy::similar_names,
+    reason = "_a/_b/_c device naming is deliberate and used throughout this crate's multi-device tests"
+)]
 fn run_three_device_dkg() -> (ThresholdIdentity, ThresholdIdentity, ThresholdIdentity) {
     let mut rng_a = ChaCha20Rng::from_seed([11u8; 32]);
     let mut rng_b = ChaCha20Rng::from_seed([12u8; 32]);

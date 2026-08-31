@@ -280,7 +280,8 @@ fn parse_groups(contents: &str) -> BTreeMap<String, Group> {
         if let Some(rest) = trimmed.strip_prefix('[') {
             // A group header runs to the *last* `]` on the line so a group name containing one survives.
             if let Some(end) = rest.rfind(']') {
-                let header = rest[..end].to_string();
+                // `end` is the byte offset `rfind` matched `]` at, always a char boundary.
+                let header = rest.get(..end).unwrap_or(rest).to_string();
                 groups.entry(header.clone()).or_default();
                 current = Some(header);
             }
@@ -348,12 +349,12 @@ fn string_list(raw: Option<&str>) -> Vec<String> {
     };
     let mut out = Vec::new();
     let mut item = String::new();
-    let mut chars = raw.chars().peekable();
+    let mut chars = raw.chars();
     while let Some(c) = chars.next() {
         match c {
             '\\' => match chars.next() {
                 Some(';') => item.push(';'),
-                Some('\\') => item.push('\\'),
+                Some('\\') | None => item.push('\\'),
                 Some('s') => item.push(' '),
                 Some('n') => item.push('\n'),
                 Some('t') => item.push('\t'),
@@ -362,7 +363,6 @@ fn string_list(raw: Option<&str>) -> Vec<String> {
                     item.push('\\');
                     item.push(other);
                 }
-                None => item.push('\\'),
             },
             ';' => {
                 let done = std::mem::take(&mut item);
@@ -395,12 +395,11 @@ pub fn unescape(raw: &str) -> String {
             Some('n') => out.push('\n'),
             Some('t') => out.push('\t'),
             Some('r') => out.push('\r'),
-            Some('\\') => out.push('\\'),
+            Some('\\') | None => out.push('\\'),
             Some(other) => {
                 out.push('\\');
                 out.push(other);
             }
-            None => out.push('\\'),
         }
     }
     out

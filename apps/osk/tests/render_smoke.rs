@@ -7,6 +7,20 @@
 //! offscreen tests (e.g. `ui/tests/icon_grid_test.rs`). Set
 //! `QUICK_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+#![allow(
+    clippy::cast_precision_loss,
+    reason = "test viewport dims are small hard-coded literals (a few hundred px), always exactly representable in f32"
+)]
+
 use std::collections::HashMap;
 
 use osk::OskWidget;

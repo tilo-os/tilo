@@ -37,6 +37,8 @@ impl SpeechDispatcherSpeaker {
     /// Connect to the running speech-dispatcher daemon and perform the SSIP
     /// handshake (set client name).
     ///
+    /// # Errors
+    ///
     /// Returns [`TtsError::Ssip`] if the daemon socket can't be opened or the
     /// handshake fails — the factory uses this to fall through to espeak-ng.
     pub fn new() -> Result<Self, TtsError> {
@@ -45,6 +47,11 @@ impl SpeechDispatcherSpeaker {
 
     /// Connect with an explicit `user:component` identity. Mainly for callers
     /// that want to distinguish multiple qOS clients to the daemon.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TtsError::Ssip`] if the daemon socket can't be opened or the
+    /// handshake fails.
     pub fn with_identity(user: &str, component: &str) -> Result<Self, TtsError> {
         let mut client = fifo::Builder::new().build().map_err(|e| TtsError::Ssip {
             detail: format!("connect: {e}"),
@@ -175,6 +182,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "milli only ever reaches 4000, far inside f32's exact-integer range"
+    )]
     fn rate_translation_matches_ssip_range() {
         // The SSIP RATE command takes -100..=100; prove our translation stays
         // inside it for a sweep of normalized rates.

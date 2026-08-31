@@ -72,7 +72,7 @@ fn list_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
 
 pub fn read_screen(doc: &AutoCommit, root: &ObjId) -> Screen {
     get_str(doc, root, "screen")
-        .and_then(|s| Screen::from_str(&s))
+        .and_then(|s| Screen::parse_str(&s))
         .unwrap_or(Screen::Camera)
 }
 
@@ -81,7 +81,7 @@ pub fn write_screen(doc: &mut AutoCommit, root: &ObjId, screen: Screen) {
 }
 
 pub fn read_mode(doc: &AutoCommit, root: &ObjId) -> CaptureMode {
-    get_str(doc, root, "mode").map_or(CaptureMode::Photo, |s| CaptureMode::from_str(&s))
+    get_str(doc, root, "mode").map_or(CaptureMode::Photo, |s| CaptureMode::parse_str(&s))
 }
 
 pub fn write_mode(doc: &mut AutoCommit, root: &ObjId, mode: CaptureMode) {
@@ -89,7 +89,7 @@ pub fn write_mode(doc: &mut AutoCommit, root: &ObjId, mode: CaptureMode) {
 }
 
 pub fn read_facing(doc: &AutoCommit, root: &ObjId) -> Facing {
-    get_str(doc, root, "facing").map_or(Facing::Back, |s| Facing::from_str(&s))
+    get_str(doc, root, "facing").map_or(Facing::Back, |s| Facing::parse_str(&s))
 }
 
 pub fn write_facing(doc: &mut AutoCommit, root: &ObjId, facing: Facing) {
@@ -104,10 +104,10 @@ pub fn read_settings(doc: &AutoCommit, root: &ObjId) -> Settings {
         return s;
     };
     if let Some(v) = get_str(doc, &m, "resolution") {
-        s.resolution = Resolution::from_str(&v);
+        s.resolution = Resolution::parse_str(&v);
     }
     if let Some(v) = get_str(doc, &m, "photo_format") {
-        s.photo_format = PhotoFormat::from_str(&v);
+        s.photo_format = PhotoFormat::parse_str(&v);
     }
     if let Some(v) = get_int(doc, &m, "timer") {
         s.timer = Timer::from_seconds(v);
@@ -128,17 +128,19 @@ pub fn read_settings(doc: &AutoCommit, root: &ObjId) -> Settings {
         s.hdr = v;
     }
     if let Some(v) = get_str(doc, &m, "default_facing") {
-        s.default_facing = Facing::from_str(&v);
+        s.default_facing = Facing::parse_str(&v);
     }
     s
 }
 
 pub fn write_settings(doc: &mut AutoCommit, root: &ObjId, s: &Settings) {
-    let m = match map_at(doc, root, "settings") {
-        Some(m) => m,
-        None => doc
-            .put_object(root, "settings", ObjType::Map)
-            .expect("settings map"),
+    let m = if let Some(m) = map_at(doc, root, "settings") {
+        m
+    } else {
+        let Ok(m) = doc.put_object(root, "settings", ObjType::Map) else {
+            return;
+        };
+        m
     };
     let _ = doc.put(&m, "resolution", s.resolution.as_str());
     let _ = doc.put(&m, "photo_format", s.photo_format.as_str());
@@ -170,11 +172,13 @@ pub fn read_favorites(doc: &AutoCommit, root: &ObjId) -> HashSet<String> {
 /// Star / unstar a library item by id. Unstarring removes the key so the
 /// favorites map does not accumulate tombstoned `false`s.
 pub fn set_favorite(doc: &mut AutoCommit, root: &ObjId, id: &str, on: bool) {
-    let m = match map_at(doc, root, "favorites") {
-        Some(m) => m,
-        None => doc
-            .put_object(root, "favorites", ObjType::Map)
-            .expect("favorites map"),
+    let m = if let Some(m) = map_at(doc, root, "favorites") {
+        m
+    } else {
+        let Ok(m) = doc.put_object(root, "favorites", ObjType::Map) else {
+            return;
+        };
+        m
     };
     if on {
         let _ = doc.put(&m, id, true);
@@ -213,11 +217,13 @@ pub fn read_scans(doc: &AutoCommit, root: &ObjId) -> Vec<ScanEntry> {
 /// Record a scanned code at the front of the history. Re-scanning the same
 /// payload moves it to the front rather than duplicating; the list is capped.
 pub fn record_scan(doc: &mut AutoCommit, root: &ObjId, raw: &str, ts: i64) {
-    let list = match list_at(doc, root, "scans") {
-        Some(l) => l,
-        None => doc
-            .put_object(root, "scans", ObjType::List)
-            .expect("scans list"),
+    let list = if let Some(l) = list_at(doc, root, "scans") {
+        l
+    } else {
+        let Ok(l) = doc.put_object(root, "scans", ObjType::List) else {
+            return;
+        };
+        l
     };
     // Drop any existing entry with the same payload.
     let n = doc.length(&list);
@@ -228,9 +234,9 @@ pub fn record_scan(doc: &mut AutoCommit, root: &ObjId, raw: &str, ts: i64) {
             let _ = doc.delete(&list, i);
         }
     }
-    let m = doc
-        .insert_object(&list, 0, ObjType::Map)
-        .expect("insert scan");
+    let Ok(m) = doc.insert_object(&list, 0, ObjType::Map) else {
+        return;
+    };
     let _ = doc.put(&m, "raw", raw);
     let _ = doc.put(&m, "ts", ts);
     // Trim the tail beyond the cap.
@@ -268,11 +274,13 @@ mod tests {
     fn settings_round_trip() {
         let mut doc = AutoCommit::new();
         let root = ROOT;
-        let mut s = Settings::default();
-        s.grid = false;
-        s.timer = Timer::S10;
-        s.resolution = Resolution::R4K;
-        s.hdr = false;
+        let s = Settings {
+            grid: false,
+            timer: Timer::S10,
+            resolution: Resolution::R4K,
+            hdr: false,
+            ..Settings::default()
+        };
         write_settings(&mut doc, &root, &s);
         let got = read_settings(&doc, &root);
         assert_eq!(got, s);

@@ -4,16 +4,35 @@ use crate::process::{run, run_capture};
 
 /// Set the default audio sink volume to `pct` percent. `pct` is clamped
 /// to `[0, 100]`.
+///
+/// # Errors
+///
+/// Returns an error message if `wpctl` is not installed or the command fails.
 pub fn set_volume(pct: f32) -> Result<(), String> {
-    let clamped = (pct.clamp(0.0, 100.0) / 100.0).clamp(0.0, 1.0);
     // wpctl takes a fraction like `0.50` or `50%`. We use the fraction
     // form to avoid locale-dependent `%` handling in shells.
-    let arg = format!("{clamped:.2}");
+    let arg = volume_arg(pct);
     run("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &arg])
+}
+
+/// The clamped `0.0..=1.0` fraction, formatted as `wpctl` expects it.
+///
+/// Named rather than inlined so the clamping can be asserted on its own: the
+/// shell-out around it succeeds, fails, or reports a missing binary depending
+/// on whether the machine has `wpctl` and a live audio session, none of which
+/// says anything about the arithmetic.
+fn volume_arg(pct: f32) -> String {
+    let clamped = (pct.clamp(0.0, 100.0) / 100.0).clamp(0.0, 1.0);
+    format!("{clamped:.2}")
 }
 
 /// Read the default audio sink volume, returned as a `0.0..=1.0`
 /// fraction.
+///
+/// # Errors
+///
+/// Returns an error message if `wpctl` is not installed, the command fails, or its output
+/// cannot be parsed.
 pub fn get_volume() -> Result<f32, String> {
     let out = run_capture("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"])?;
     parse_wpctl_volume(&out)
@@ -21,11 +40,19 @@ pub fn get_volume() -> Result<f32, String> {
 
 /// Toggle the default audio sink's mute state via
 /// `wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle`.
+///
+/// # Errors
+///
+/// Returns an error message if `wpctl` is not installed or the command fails.
 pub fn toggle_mute() -> Result<(), String> {
     run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])
 }
 
 /// Explicitly set the mute state on the default audio sink.
+///
+/// # Errors
+///
+/// Returns an error message if `wpctl` is not installed or the command fails.
 pub fn set_mute(muted: bool) -> Result<(), String> {
     let arg = if muted { "1" } else { "0" };
     run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", arg])
@@ -40,6 +67,11 @@ pub fn set_mute(muted: bool) -> Result<(), String> {
 /// second. `wpctl set-mute toggle` prints nothing useful, so the new
 /// state is read back; unlike the sink path this is not on an
 /// autorepeating key, so the extra call costs one press, not a burst.
+///
+/// # Errors
+///
+/// Returns an error message if `wpctl` is not installed, either command fails, or the
+/// read-back output cannot be parsed.
 pub fn toggle_source_mute() -> Result<bool, String> {
     run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"])?;
     let out = run_capture("wpctl", &["get-volume", "@DEFAULT_AUDIO_SOURCE@"])?;
@@ -47,6 +79,11 @@ pub fn toggle_source_mute() -> Result<bool, String> {
 }
 
 /// Read the default source's level and mute flag.
+///
+/// # Errors
+///
+/// Returns an error message if `wpctl` is not installed, the command fails, or its output
+/// cannot be parsed.
 pub fn get_source_state() -> Result<VolumeState, String> {
     let out = run_capture("wpctl", &["get-volume", "@DEFAULT_AUDIO_SOURCE@"])?;
     parse_wpctl_volume_state(&out)
@@ -59,6 +96,11 @@ pub fn get_source_state() -> Result<VolumeState, String> {
 /// drawing it at 60% is a lie. [`get_volume`] discards the mute flag, so
 /// it can't back an indicator on its own — and asking twice would race
 /// against a media key pressed in between.
+///
+/// # Errors
+///
+/// Returns an error message if `wpctl` is not installed, the command fails, or its output
+/// cannot be parsed.
 pub fn get_volume_state() -> Result<VolumeState, String> {
     let out = run_capture("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"])?;
     parse_wpctl_volume_state(&out)
@@ -135,16 +177,12 @@ mod tests {
         assert!(parse_wpctl_volume("not-a-line").is_err());
     }
 
-    /// Clamp behaviour is observable through the `pct` argument — the
-    /// function doesn't expose the rounded fraction it formats into the
-    /// CLI string, so we test the clamp arithmetic indirectly via the
-    /// public `set_volume` path. Both extreme inputs must produce a
-    /// `Result` (Ok or "not installed" Err) without panicking.
+    /// Out-of-range input is clamped before it reaches `wpctl`, which would
+    /// otherwise reject it or read it as a different level.
     #[test]
     fn set_volume_clamps_out_of_range() {
-        let r1 = set_volume(150.0);
-        let r2 = set_volume(-25.0);
-        assert!(r1.is_ok() || r1.unwrap_err().contains("not installed"));
-        assert!(r2.is_ok() || r2.unwrap_err().contains("not installed"));
+        assert_eq!(volume_arg(150.0), "1.00", "above range clamps to full");
+        assert_eq!(volume_arg(-25.0), "0.00", "below range clamps to silent");
+        assert_eq!(volume_arg(50.0), "0.50", "in range converts to a fraction");
     }
 }

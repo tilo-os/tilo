@@ -163,7 +163,7 @@ impl PhotosDoc {
             .into_iter()
             .filter_map(|(value, _)| match value {
                 Value::Scalar(s) => s.to_str().and_then(|raw| serde_json::from_str(raw).ok()),
-                _ => None,
+                Value::Object(_) => None,
             })
             .collect()
     }
@@ -270,6 +270,12 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::useless_vec,
+        reason = "see the comment on the loop below: a fixed-size array of two full \
+                  AutoCommit replicas would put this stack frame over clippy's own \
+                  large-array threshold"
+    )]
     fn run_the_empty_replica_against_the_open_one(
         open_actor: u8,
         empty_actor: u8,
@@ -302,8 +308,12 @@ mod tests {
             PhotosDoc::seed(&mut just_started);
 
             let clock = if empty_is_ahead { "ahead" } else { "behind" };
-            // The room hands each of them the other's whole document.
-            for (mut doc, mut incoming, side) in [
+            // The room hands each of them the other's whole document. A `Vec`
+            // rather than a fixed-size array: each element is a full
+            // `AutoCommit` replica, and two of those inline would put this
+            // stack frame over clippy's large-array threshold for no benefit
+            // — the pair is only ever iterated once, never indexed.
+            for (mut doc, mut incoming, side) in vec![
                 (
                     copy(&mut has_picture),
                     copy(&mut just_started),

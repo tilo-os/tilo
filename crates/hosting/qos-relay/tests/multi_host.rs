@@ -26,12 +26,133 @@
 //!       relays does not "leak" a peer's messages onto a relay
 //!       the peer never talks to).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};
 use qos_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay, wait_for};
+
+/// Connect p1 and p2 to relay1, subscribe both to workspace 3, and drain
+/// their initial Ready acks.
+async fn connect_both_to_relay1(
+    user: &TestUser,
+    relay1_addr: iroh_base::EndpointAddr,
+    p1: &crate::common::TestDevice,
+    p2: &crate::common::TestDevice,
+) -> (RelayClient, RelayClient) {
+    let ep1 = client_endpoint().await;
+    let ep2 = client_endpoint().await;
+    let c1 = RelayClient::connect(
+        ep1,
+        relay1_addr.clone(),
+        user.user_pk,
+        p1.cert.clone(),
+        p1.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let c2 = RelayClient::connect(
+        ep2,
+        relay1_addr,
+        user.user_pk,
+        p2.cert.clone(),
+        p2.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+
+    c1.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
+    c2.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
+    for cli in [&c1, &c2] {
+        let env = tokio::time::timeout(Duration::from_secs(2), cli.recv())
+            .await
+            .expect("Ready timeout")
+            .expect("closed");
+        match env {
+            Envelope::Ready { .. } => {}
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+    (c1, c2)
+}
+
+/// Close p2's relay1 session (rather than drop it — a dropped handle may
+/// never get `CONNECTION_CLOSE` onto the wire, leaving relay1 to notice
+/// only by idle timeout) and wait until relay1 has actually noticed the
+/// departure. Nothing makes that atomic with the caller's next delta, so
+/// this polls rather than assumes it — a fixed sleep is a race that only
+/// shows up under load.
+async fn fail_p2_over_from_relay1(
+    c2_r1: RelayClient,
+    relay1: &crate::common::TestRelay,
+    p2_pubkey: [u8; 32],
+) {
+    c2_r1.close().await;
+    for _ in 0..300 {
+        if !relay1.relay.is_subscribed(3, &p2_pubkey).await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !relay1.relay.is_subscribed(3, &p2_pubkey).await,
+        "relay1 never noticed p2 disconnect"
+    );
+}
+
+/// p2 reconnects to relay1 and drains until it has received the delta
+/// that was queued for it while it was away.
+async fn p2_returns_and_drains(
+    relay1_addr: iroh_base::EndpointAddr,
+    user: &TestUser,
+    p2: &crate::common::TestDevice,
+) {
+    let c2_r1_again = RelayClient::connect(
+        client_endpoint().await,
+        relay1_addr,
+        user.user_pk,
+        p2.cert.clone(),
+        p2.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    c2_r1_again
+        .send(Envelope::Subscribe { workspace_id: 3 })
+        .unwrap();
+    let mut got_delta = false;
+    for _ in 0..2 {
+        let env = tokio::time::timeout(Duration::from_secs(3), c2_r1_again.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match env {
+            Envelope::Delta { delta, .. } => {
+                assert_eq!(delta, b"queued-on-relay1".to_vec());
+                got_delta = true;
+            }
+            Envelope::Ready {
+                workspace_id: 3,
+                pending_deltas: 1,
+            } => {}
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+    assert!(got_delta, "p2 should drain the queued delta on reconnect");
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
@@ -48,45 +169,7 @@ async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
 
     // Peers dial relay1 first — verify they can both dial and
     // fan-out works via relay1.
-    let (c1_r1, c2_r1) = {
-        let ep1 = client_endpoint().await;
-        let ep2 = client_endpoint().await;
-        let c1 = RelayClient::connect(
-            ep1,
-            relay1.relay.node_addr(),
-            user.user_pk,
-            p1.cert.clone(),
-            p1.sk.clone(),
-            RevocationList::new(),
-        )
-        .await
-        .unwrap();
-        let c2 = RelayClient::connect(
-            ep2,
-            relay1.relay.node_addr(),
-            user.user_pk,
-            p2.cert.clone(),
-            p2.sk.clone(),
-            RevocationList::new(),
-        )
-        .await
-        .unwrap();
-        (c1, c2)
-    };
-
-    c1_r1.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
-    c2_r1.send(Envelope::Subscribe { workspace_id: 3 }).unwrap();
-
-    for cli in [&c1_r1, &c2_r1] {
-        let env = tokio::time::timeout(Duration::from_secs(2), cli.recv())
-            .await
-            .expect("Ready timeout")
-            .expect("closed");
-        match env {
-            Envelope::Ready { .. } => {}
-            other => panic!("expected Ready, got {other:?}"),
-        }
-    }
+    let (c1_r1, c2_r1) = connect_both_to_relay1(&user, relay1.relay.node_addr(), &p1, &p2).await;
 
     // p1 publishes a delta via relay1; p2 receives via relay1.
     let d1 = Envelope::Delta {
@@ -108,25 +191,8 @@ async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
         other => panic!("expected Delta, got {other:?}"),
     }
 
-    // Now p2 fails over to relay2. Close rather than drop: a dropped
-    // handle may never get CONNECTION_CLOSE onto the wire, leaving
-    // relay1 to notice by idle timeout.
-    c2_r1.close().await;
-    // Relay1 has to have observed the departure before the next delta,
-    // or it fans out to the connection p2 just closed instead of
-    // queueing. Nothing makes that atomic — a relay cannot know a peer
-    // has left until the close arrives — so wait for it rather than
-    // assume it, which is a race that only shows up under load.
-    for _ in 0..300 {
-        if !relay1.relay.is_subscribed(3, &p2.device_pubkey()).await {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(
-        !relay1.relay.is_subscribed(3, &p2.device_pubkey()).await,
-        "relay1 never noticed p2 disconnect"
-    );
+    // Now p2 fails over to relay2.
+    fail_p2_over_from_relay1(c2_r1, &relay1, p2.device_pubkey()).await;
     let ep3 = client_endpoint().await;
     let c2_r2 = RelayClient::connect(
         ep3,
@@ -184,39 +250,7 @@ async fn peer_can_dial_multiple_relays_and_pending_stays_local() {
 
     // p2 returns to relay1 and drains the queue.
     drop(c2_r2);
-    let ep4 = client_endpoint().await;
-    let c2_r1_again = RelayClient::connect(
-        ep4,
-        relay1.relay.node_addr(),
-        user.user_pk,
-        p2.cert.clone(),
-        p2.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    c2_r1_again
-        .send(Envelope::Subscribe { workspace_id: 3 })
-        .unwrap();
-    let mut got_delta = false;
-    for _ in 0..2 {
-        let env = tokio::time::timeout(Duration::from_secs(3), c2_r1_again.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        match env {
-            Envelope::Delta { delta, .. } => {
-                assert_eq!(delta, b"queued-on-relay1".to_vec());
-                got_delta = true;
-            }
-            Envelope::Ready {
-                workspace_id: 3,
-                pending_deltas: 1,
-            } => {}
-            other => panic!("unexpected: {other:?}"),
-        }
-    }
-    assert!(got_delta, "p2 should drain the queued delta on reconnect");
+    p2_returns_and_drains(relay1.relay.node_addr(), &user, &p2).await;
 }
 
 /// Failover latency: if the first host doesn't respond, the client

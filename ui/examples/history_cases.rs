@@ -35,7 +35,16 @@ use vello::kurbo::{Affine, Point, Rect};
 const NOW_SECS: u64 = 1_800_000_000;
 
 fn now() -> std::time::SystemTime {
-    std::time::UNIX_EPOCH + std::time::Duration::from_secs(NOW_SECS)
+    std::time::UNIX_EPOCH
+        .checked_add(std::time::Duration::from_secs(NOW_SECS))
+        .unwrap_or(std::time::UNIX_EPOCH)
+}
+
+/// `NOW_SECS` as a signed offset, for `qdoc::history::commit_stamped_at`
+/// (which timestamps in signed seconds-since-epoch). `NOW_SECS` is a small
+/// fixed constant, always well inside `i64`'s range.
+fn now_i64() -> i64 {
+    i64::try_from(NOW_SECS).unwrap_or(i64::MAX)
 }
 
 // =====================================================================
@@ -51,7 +60,7 @@ fn three_session_doc() -> AutoCommit {
     let root = automerge::ROOT;
     let c = qdoc::model::init(&mut doc, &root);
     let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
-    let base = NOW_SECS as i64 - 6 * 3600;
+    let base = now_i64().saturating_sub(6 * 3600);
     qdoc::history::commit_stamped_at(&mut doc, base);
 
     let para = {
@@ -64,10 +73,10 @@ fn three_session_doc() -> AutoCommit {
         dm.splice_text(&id, 0, 0, "Quarterly report");
         id
     };
-    qdoc::history::commit_stamped_at(&mut doc, base + 20);
+    qdoc::history::commit_stamped_at(&mut doc, base.saturating_add(20));
 
     // Session one: six edits about twenty seconds apart.
-    for i in 0..6 {
+    for i in 0..6i64 {
         let at = text_len(&doc, &root);
         let mut dm = qdoc::DocMut {
             doc: &mut doc,
@@ -75,16 +84,19 @@ fn three_session_doc() -> AutoCommit {
             ids: &mut ids,
         };
         dm.splice_text(&para, at, 0, " Revenue held steady.");
-        qdoc::history::commit_stamped_at(&mut doc, base + 40 + i * 20);
+        let stamp = base.saturating_add(40).saturating_add(i.saturating_mul(20));
+        qdoc::history::commit_stamped_at(&mut doc, stamp);
     }
 
     // Session two, an hour later, by a peer: forked, edited under its own actor,
     // merged back — the shape a sync round has.
     let mut peer = doc.fork();
     peer.set_actor(automerge::ActorId::from("Ada Lovelace".as_bytes()));
-    for i in 0..4 {
+    for i in 0..4i64 {
         let at = text_len(&peer, &root);
-        let cc = qdoc::model::open(&peer, &root).unwrap();
+        let Some(cc) = qdoc::model::open(&peer, &root).ok() else {
+            continue;
+        };
         let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
         let mut dm = qdoc::DocMut {
             doc: &mut peer,
@@ -92,27 +104,42 @@ fn three_session_doc() -> AutoCommit {
             ids: &mut pids,
         };
         dm.splice_text(&para, at, 0, " Costs fell by four percent.");
-        qdoc::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
+        let stamp = base
+            .saturating_add(3600)
+            .saturating_add(i.saturating_mul(30));
+        qdoc::history::commit_stamped_at(&mut peer, stamp);
     }
+    #[allow(
+        clippy::expect_used,
+        reason = "peer forked from this same doc moments ago with no divergent schema; a merge \
+                  failure here means the example's own setup is broken, not a recoverable state"
+    )]
     doc.merge(&mut peer).expect("peers merge");
 
     // Session three, three hours in, back to the local author.
-    for i in 0..7 {
+    for i in 0..7i64 {
         let at = text_len(&doc, &root);
-        let cc = qdoc::model::open(&doc, &root).unwrap();
+        let Some(cc) = qdoc::model::open(&doc, &root).ok() else {
+            continue;
+        };
         let mut dm = qdoc::DocMut {
             doc: &mut doc,
             c: &cc,
             ids: &mut ids,
         };
         dm.splice_text(&para, at, 0, " Headcount is unchanged.");
-        qdoc::history::commit_stamped_at(&mut doc, base + 4 * 3600 + i * 25);
+        let stamp = base
+            .saturating_add(4 * 3600)
+            .saturating_add(i.saturating_mul(25));
+        qdoc::history::commit_stamped_at(&mut doc, stamp);
     }
     doc
 }
 
 fn text_len(doc: &AutoCommit, root: &automerge::ObjId) -> usize {
-    let c = qdoc::model::open(doc, root).expect("qdoc schema");
+    let Some(c) = qdoc::model::open(doc, root).ok() else {
+        return 0;
+    };
     qdoc::model::materialize(doc, &c)
         .blocks
         .first()
@@ -132,7 +159,7 @@ fn singleton_bands_doc() -> AutoCommit {
     let root = automerge::ROOT;
     let c = qdoc::model::init(&mut doc, &root);
     let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
-    qdoc::history::commit_stamped_at(&mut doc, NOW_SECS as i64 - 900);
+    qdoc::history::commit_stamped_at(&mut doc, now_i64().saturating_sub(900));
     let para = {
         let mut dm = qdoc::DocMut {
             doc: &mut doc,
@@ -143,7 +170,7 @@ fn singleton_bands_doc() -> AutoCommit {
         dm.splice_text(&id, 0, 0, "Alice starts.");
         id
     };
-    qdoc::history::commit_stamped_at(&mut doc, NOW_SECS as i64 - 800);
+    qdoc::history::commit_stamped_at(&mut doc, now_i64().saturating_sub(800));
 
     for (who, text, ago) in [
         ("Ada Lovelace", " Ada adds a line.", 700i64),
@@ -153,7 +180,9 @@ fn singleton_bands_doc() -> AutoCommit {
         let mut peer = doc.fork();
         peer.set_actor(automerge::ActorId::from(who.as_bytes()));
         let at = text_len(&peer, &root);
-        let cc = qdoc::model::open(&peer, &root).unwrap();
+        let Some(cc) = qdoc::model::open(&peer, &root).ok() else {
+            continue;
+        };
         let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
         let mut dm = qdoc::DocMut {
             doc: &mut peer,
@@ -161,7 +190,13 @@ fn singleton_bands_doc() -> AutoCommit {
             ids: &mut pids,
         };
         dm.splice_text(&para, at, 0, text);
-        qdoc::history::commit_stamped_at(&mut peer, NOW_SECS as i64 - ago);
+        qdoc::history::commit_stamped_at(&mut peer, now_i64().saturating_sub(ago));
+        #[allow(
+            clippy::expect_used,
+            reason = "peer forked from this same doc moments ago with no divergent schema; a \
+                      merge failure here means the example's own setup is broken, not a \
+                      recoverable state"
+        )]
         doc.merge(&mut peer).expect("peers merge");
     }
     doc
@@ -212,7 +247,7 @@ impl Shot {
         // The pane is placed by hand, the way both hosts place it: the compositor
         // reserves a sheet out of its chrome, the editor a band under its canvas.
         widget.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        self.n += 1;
+        self.n = self.n.saturating_add(1);
         let path = self.dir.join(format!("{:02}-{name}.png", self.n));
         std::fs::create_dir_all(&self.dir).ok();
         OffscreenRenderer::new(w, h).render_png(&scene, theme.tokens.colors.surfaces.base, &path);
@@ -257,6 +292,18 @@ fn segments(entries: &[HistoryEntry], named: &[ui::NamedRange]) -> Vec<ScrubberG
         .collect()
 }
 
+/// Rounds a rendered pixel measurement (always non-negative, far under
+/// `u32::MAX`) to a `u32` for `Shot::paint`'s `w`/`h` parameters.
+fn px_u32(v: f64) -> u32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "v is a rendered pixel measurement, always non-negative and far below u32::MAX"
+    )]
+    let out = v.max(0.0).round() as u32;
+    out
+}
+
 pub fn run(args: &[String]) {
     let dir = args
         .first()
@@ -272,33 +319,63 @@ pub fn run(args: &[String]) {
     // The main surface, over a real three-session document.
     // ---------------------------------------------------------------
     let mut doc = three_session_doc();
-    let entries = rows(&mut doc);
+    let (entries, named) = shoot_main_bands(&mut shot, &mut doc);
+    shoot_long_and_nested(&mut shot, &doc, &entries);
+    let (open_entries, open_named) = shoot_open_band(&mut shot, &doc, &entries);
+    let single_entries = shoot_singleton_and_empty(&mut shot);
+    shoot_narrow_and_thousand(&mut shot, &entries, &named);
+    shoot_version_strip(
+        &mut shot,
+        &entries,
+        &named,
+        &open_entries,
+        &open_named,
+        &single_entries,
+    );
+
+    println!("done: {} shots", shot.n);
+    let _ = Point::ZERO;
+    let _: &Path = shot.dir.as_path();
+}
+
+/// A peer names its own session, the local author names their own afternoon,
+/// then the default/collapsed/expanded/naming/selection shots. Split out of
+/// `run` to keep that under the line cap. Returns the entries and named
+/// ranges later sections reuse.
+fn shoot_main_bands(
+    shot: &mut Shot,
+    doc: &mut AutoCommit,
+) -> (Vec<HistoryEntry>, Vec<ui::NamedRange>) {
+    let entries = rows(doc);
     println!("  ({} changes in the document)", entries.len());
 
     // A peer names its own session, in the document, under its own actor — so the
     // band reads "named by Ada Lovelace" for everyone else.
     let mut peer = doc.fork();
     peer.set_actor(automerge::ActorId::from("Ada Lovelace".as_bytes()));
-    ui::history_groups::name_range(
-        &mut peer,
-        &entries[8].id,
-        Some(&entries[11].id),
-        "Costs section",
-    );
-    qdoc::history::commit_stamped_at(&mut peer, NOW_SECS as i64 - 2 * 3600);
+    if let Some(start) = entries.get(8)
+        && let Some(end) = entries.get(11)
+    {
+        ui::history_groups::name_range(&mut peer, &start.id, Some(&end.id), "Costs section");
+    }
+    qdoc::history::commit_stamped_at(&mut peer, now_i64().saturating_sub(2 * 3600));
+    #[allow(
+        clippy::expect_used,
+        reason = "peer forked from this same doc moments ago with no divergent schema; a merge \
+                  failure here means the example's own setup is broken, not a recoverable state"
+    )]
     doc.merge(&mut peer).expect("peers merge");
 
     // And the local author names their own afternoon.
-    ui::history_groups::name_range(
-        &mut doc,
-        &entries[12].id,
-        Some(&entries[entries.len() - 1].id),
-        "Headcount pass",
-    );
-    qdoc::history::commit_stamped_at(&mut doc, NOW_SECS as i64 - 600);
+    if let Some(start) = entries.get(12)
+        && let Some(end) = entries.last()
+    {
+        ui::history_groups::name_range(doc, &start.id, Some(&end.id), "Headcount pass");
+    }
+    qdoc::history::commit_stamped_at(doc, now_i64().saturating_sub(600));
 
-    let entries = rows(&mut doc);
-    let named = ui::history_groups::read_named_ranges(&doc, &author_dir());
+    let entries = rows(doc);
+    let named = ui::history_groups::read_named_ranges(doc, &author_dir());
     println!("  ({} named runs)", named.len());
 
     let mut t = timeline(520.0, 640.0, entries.clone(), named.clone());
@@ -314,6 +391,11 @@ pub fn run(args: &[String]) {
 
     // Mid-interaction: naming a band in place.
     let mut t = timeline(520.0, 640.0, entries.clone(), named.clone());
+    #[allow(
+        clippy::expect_used,
+        reason = "this shot's whole point is a band being named; if the fixture stopped \
+                  producing one, the demo case itself is broken"
+    )]
     let band = (0..t.row_count())
         .find(|i| t.group_at_row(*i).is_some())
         .expect("a band to name");
@@ -326,17 +408,43 @@ pub fn run(args: &[String]) {
     t.set_selection(Some((14, 18)));
     shot.paint("selection", 520, 640, &mut t);
 
+    (entries, named)
+}
+
+/// A band still open: named with no end anchor. Split out of `run` to keep
+/// that under the line cap. Returns the entries and named ranges the
+/// version-strip section reuses for its own "still open" case.
+fn shoot_open_band(
+    shot: &mut Shot,
+    doc: &AutoCommit,
+    entries: &[HistoryEntry],
+) -> (Vec<HistoryEntry>, Vec<ui::NamedRange>) {
+    let mut open_doc = doc.clone();
+    if let Some(start) = entries.get(12) {
+        ui::history_groups::name_range(&mut open_doc, &start.id, None, "Rework the intro");
+    }
+    qdoc::history::commit_stamped_at(&mut open_doc, now_i64().saturating_sub(300));
+    let open_entries = rows(&mut open_doc);
+    let open_named = ui::history_groups::read_named_ranges(&open_doc, &author_dir());
+    let mut t = timeline(520.0, 640.0, open_entries.clone(), open_named.clone());
+    shot.paint("open-band", 520, 640, &mut t);
+
+    (open_entries, open_named)
+}
+
+/// A very long name, on a wide and then a narrow pane, and a name nested
+/// inside a name. Split out of `run` to keep that under the line cap.
+fn shoot_long_and_nested(shot: &mut Shot, doc: &AutoCommit, entries: &[HistoryEntry]) {
     // A very long name, in the document.
     let long = "Rewrote the introduction, then the second section, then reconsidered \
                 the whole framing and put most of it back where it started";
     let mut long_doc = doc.clone();
-    ui::history_groups::name_range(
-        &mut long_doc,
-        &entries[12].id,
-        Some(&entries[entries.len() - 1].id),
-        long,
-    );
-    qdoc::history::commit_stamped_at(&mut long_doc, NOW_SECS as i64 - 500);
+    if let Some(start) = entries.get(12)
+        && let Some(end) = entries.last()
+    {
+        ui::history_groups::name_range(&mut long_doc, &start.id, Some(&end.id), long);
+    }
+    qdoc::history::commit_stamped_at(&mut long_doc, now_i64().saturating_sub(500));
     let long_entries = rows(&mut long_doc);
     let long_named = ui::history_groups::read_named_ranges(&long_doc, &author_dir());
     let mut t = timeline(520.0, 640.0, long_entries.clone(), long_named.clone());
@@ -350,28 +458,23 @@ pub fn run(args: &[String]) {
 
     // Nesting: a name inside a name, expanded.
     let mut nested_doc = doc.clone();
-    ui::history_groups::name_range(
-        &mut nested_doc,
-        &entries[0].id,
-        Some(&entries[entries.len() - 1].id),
-        "Q3 release",
-    );
-    qdoc::history::commit_stamped_at(&mut nested_doc, NOW_SECS as i64 - 400);
+    if let Some(start) = entries.first()
+        && let Some(end) = entries.last()
+    {
+        ui::history_groups::name_range(&mut nested_doc, &start.id, Some(&end.id), "Q3 release");
+    }
+    qdoc::history::commit_stamped_at(&mut nested_doc, now_i64().saturating_sub(400));
     let nested_entries = rows(&mut nested_doc);
     let nested_named = ui::history_groups::read_named_ranges(&nested_doc, &author_dir());
     let mut t = timeline(520.0, 700.0, nested_entries, nested_named);
     t.set_all_expanded(true);
     shot.paint("nested", 520, 700, &mut t);
+}
 
-    // A band still open: named with no end anchor.
-    let mut open_doc = doc.clone();
-    ui::history_groups::name_range(&mut open_doc, &entries[12].id, None, "Rework the intro");
-    qdoc::history::commit_stamped_at(&mut open_doc, NOW_SECS as i64 - 300);
-    let open_entries = rows(&mut open_doc);
-    let open_named = ui::history_groups::read_named_ranges(&open_doc, &author_dir());
-    let mut t = timeline(520.0, 640.0, open_entries.clone(), open_named.clone());
-    shot.paint("open-band", 520, 640, &mut t);
-
+/// Bands of one, exactly one change, and no history at all. Split out of
+/// `run` to keep that under the line cap. Returns the bands-of-one entries,
+/// which the version-strip section reuses for its own "one band" case.
+fn shoot_singleton_and_empty(shot: &mut Shot) -> Vec<HistoryEntry> {
     // Bands of one: rendered as plain rows, so a history with no structure reads
     // exactly as a flat list.
     let mut single = singleton_bands_doc();
@@ -406,10 +509,46 @@ pub fn run(args: &[String]) {
     let mut t = timeline(520.0, 300.0, rows(&mut blank), Vec::new());
     shot.paint("no-history", 520, 300, &mut t);
 
+    single_entries
+}
+
+/// One id per synthetic history entry: cheap, deterministic, and — unlike a
+/// counter — stable if a future case reorders the thousand-bands list.
+fn synthetic_id(i: i32) -> [u8; 16] {
+    let mut id = [0u8; 16];
+    id[0] = u8::try_from(i % 251).unwrap_or(0);
+    id[1] = u8::try_from(i / 251).unwrap_or(0);
+    id
+}
+
+/// One synthetic `HistoryEntry` for the thousand-bands case. `i` ranges
+/// `0..2000`, so every conversion below is lossless or provably in range.
+fn synthetic_entry(i: i32) -> HistoryEntry {
+    let hue = f32::from(i16::try_from(i).unwrap_or(i16::MAX)) * 7.3 % 360.0;
+    let elapsed = 2000u64.saturating_sub(u64::try_from(i).unwrap_or(0));
+    let delta_chars = usize::try_from((i % 40).saturating_add(1)).unwrap_or(1);
+    HistoryEntry {
+        id: ui::HistoryEntryId(synthetic_id(i)),
+        author: ui::HistoryAuthor::new(format!("Person {}", i / 2), hue, "0badf00d"),
+        op_class: collab_types::OpClass::Splice,
+        artifact_kind: collab_types::ArtifactKind::Note,
+        timestamp: now()
+            .checked_sub(std::time::Duration::from_secs(elapsed))
+            .unwrap_or_else(now),
+        summary: format!("+{delta_chars} -0 chars"),
+        text_delta: Some((delta_chars, 0)),
+        diff_payload: None,
+        redaction: None,
+    }
+}
+
+/// Narrow panes over real bands, and a thousand synthesised bands. Split out
+/// of `run` to keep that under the line cap.
+fn shoot_narrow_and_thousand(shot: &mut Shot, entries: &[HistoryEntry], named: &[ui::NamedRange]) {
     // Narrow, with real bands.
-    let mut t = timeline(300.0, 640.0, entries.clone(), named.clone());
+    let mut t = timeline(300.0, 640.0, entries.to_vec(), named.to_vec());
     shot.paint("narrow-300", 300, 640, &mut t);
-    let mut t = timeline(300.0, 640.0, entries.clone(), named.clone());
+    let mut t = timeline(300.0, 640.0, entries.to_vec(), named.to_vec());
     t.set_all_expanded(true);
     shot.paint("narrow-300-expanded", 300, 640, &mut t);
 
@@ -417,28 +556,7 @@ pub fn run(args: &[String]) {
     // rather than produced from a document, because the producer caps a timeline
     // at 200 rows and the point of the case is what the layout does with a
     // thousand bands, not where they came from.
-    let many: Vec<HistoryEntry> = (0..2000)
-        .map(|i| {
-            let mut id = [0u8; 16];
-            id[0] = (i % 251) as u8;
-            id[1] = (i / 251) as u8;
-            HistoryEntry {
-                id: ui::HistoryEntryId(id),
-                author: ui::HistoryAuthor::new(
-                    format!("Person {}", i / 2),
-                    (i as f32 * 7.3) % 360.0,
-                    "0badf00d",
-                ),
-                op_class: collab_types::OpClass::Splice,
-                artifact_kind: collab_types::ArtifactKind::Note,
-                timestamp: now() - std::time::Duration::from_secs(2000 - i as u64),
-                summary: format!("+{} -0 chars", i % 40 + 1),
-                text_delta: Some((i % 40 + 1, 0)),
-                diff_payload: None,
-                redaction: None,
-            }
-        })
-        .collect();
+    let many: Vec<HistoryEntry> = (0..2000).map(synthetic_entry).collect();
     let mut t = timeline(520.0, 640.0, many, Vec::new());
     println!(
         "  (thousand-bands case: {} changes rendered as {} lines)",
@@ -446,64 +564,67 @@ pub fn run(args: &[String]) {
         t.row_count()
     );
     shot.paint("thousand-bands-synthetic", 520, 640, &mut t);
+}
 
-    // ---------------------------------------------------------------
-    // The version strip.
-    // ---------------------------------------------------------------
-    let segs = segments(&entries, &named);
-    let mut s = scrubber(1000.0, entries.clone(), segs.clone());
-    let h = s.natural_height() as u32;
-    s.set_current_tick(entries.len() - 1);
+/// The version strip: default, parked-inside-a-version, naming, a still-open
+/// version, narrow widths, no versions at all, and no history at all. Split
+/// out of `run` to keep that under the line cap.
+fn shoot_version_strip(
+    shot: &mut Shot,
+    entries: &[HistoryEntry],
+    named: &[ui::NamedRange],
+    open_entries: &[HistoryEntry],
+    open_named: &[ui::NamedRange],
+    single_entries: &[HistoryEntry],
+) {
+    let last_tick = entries.len().saturating_sub(1);
+    let segs = segments(entries, named);
+    let mut s = scrubber(1000.0, entries.to_vec(), segs.clone());
+    let h = px_u32(s.natural_height());
+    s.set_current_tick(last_tick);
     shot.paint("strip-versions", 1000, h, &mut s);
 
     // Parked inside a named version.
-    let mut s = scrubber(1000.0, entries.clone(), segs.clone());
+    let mut s = scrubber(1000.0, entries.to_vec(), segs.clone());
     if let Some(g) = segs.iter().find(|g| g.label.is_some()) {
         s.set_current_tick(g.end);
     }
     shot.paint("strip-inside-a-version", 1000, h, &mut s);
 
     // Naming from the strip.
-    let mut s = scrubber(1000.0, entries.clone(), segs.clone());
-    s.set_current_tick(entries.len() - 1);
+    let mut s = scrubber(1000.0, entries.to_vec(), segs.clone());
+    s.set_current_tick(last_tick);
     s.begin_naming_current_group();
     shot.paint("strip-naming", 1000, h, &mut s);
 
     // A version still open.
-    let open_segs = segments(&open_entries, &open_named);
-    let mut s = scrubber(1000.0, open_entries.clone(), open_segs);
-    s.set_current_tick(open_entries.len() - 1);
+    let open_segs = segments(open_entries, open_named);
+    let mut s = scrubber(1000.0, open_entries.to_vec(), open_segs);
+    s.set_current_tick(open_entries.len().saturating_sub(1));
     shot.paint("strip-open-version", 1000, h, &mut s);
 
     // Narrow strips: the button row has to shed buttons rather than overlap.
     for w in [620u32, 460, 360] {
-        let mut s = scrubber(f64::from(w), entries.clone(), segs.clone());
-        s.set_current_tick(entries.len() - 1);
+        let mut s = scrubber(f64::from(w), entries.to_vec(), segs.clone());
+        s.set_current_tick(last_tick);
         shot.paint(&format!("strip-narrow-{w}"), w, h, &mut s);
     }
 
     // The degenerate case: a strip that was never handed versions. One tick per
     // change, nothing snapping — exactly what it was before.
-    let mut s = scrubber(1000.0, entries.clone(), Vec::new());
-    s.set_current_tick(entries.len() - 1);
-    let plain_h = s.natural_height() as u32;
+    let mut s = scrubber(1000.0, entries.to_vec(), Vec::new());
+    s.set_current_tick(last_tick);
+    let plain_h = px_u32(s.natural_height());
     shot.paint("strip-no-versions", 1000, plain_h, &mut s);
 
     // One change, and none at all.
-    let single_segs = segments(&single_entries, &[]);
-    let mut s = scrubber(1000.0, single_entries, single_segs);
-    shot.paint(
-        "strip-bands-of-one",
-        1000,
-        s.natural_height() as u32,
-        &mut s,
-    );
+    let single_segs = segments(single_entries, &[]);
+    let mut s = scrubber(1000.0, single_entries.to_vec(), single_segs);
+    let single_h = px_u32(s.natural_height());
+    shot.paint("strip-bands-of-one", 1000, single_h, &mut s);
     let mut s = scrubber(1000.0, Vec::new(), Vec::new());
-    shot.paint("strip-no-history", 1000, s.natural_height() as u32, &mut s);
-
-    println!("done: {} shots", shot.n);
-    let _ = Point::ZERO;
-    let _: &Path = shot.dir.as_path();
+    let empty_h = px_u32(s.natural_height());
+    shot.paint("strip-no-history", 1000, empty_h, &mut s);
 }
 
 fn author_dir() -> AuthorDirectory {

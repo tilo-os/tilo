@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
@@ -299,8 +299,15 @@ fn parse_location(v: &Value) -> Option<Location> {
 // ---------------------------------------------------------------------------
 
 /// Frame a JSON-RPC payload as bytes: `Content-Length: N\r\n\r\n<body>`.
+///
+/// Every payload this client builds is either a `json!()` literal or a
+/// `Value` freshly parsed from valid JSON — both are always representable in
+/// JSON (the only way to construct a non-representable `Value`, a NaN/
+/// infinite float, is not something this code does) — so serialization here
+/// cannot practically fail; the empty-frame fallback exists only so a future
+/// caller building a payload another way degrades instead of crashing.
 pub fn encode(payload: &Value) -> Vec<u8> {
-    let body = serde_json::to_vec(payload).expect("serialize json-rpc payload");
+    let body = serde_json::to_vec(payload).unwrap_or_default();
     let mut out = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
     out.extend_from_slice(&body);
     out
@@ -317,6 +324,10 @@ impl<R: BufRead> MessageReader<R> {
     }
 
     /// Read the next framed message. Returns `Ok(None)` at clean EOF.
+    ///
+    /// # Errors
+    /// Returns an error if a header block has no `Content-Length`, the
+    /// underlying reader fails, or the body is not valid JSON.
     pub fn next_message(&mut self) -> std::io::Result<Option<Value>> {
         let mut content_length: Option<usize> = None;
         // Parse headers up to the blank line.
@@ -337,14 +348,11 @@ impl<R: BufRead> MessageReader<R> {
                 content_length = rest.trim().parse().ok();
             }
         }
-        let len = match content_length {
-            Some(len) => len,
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "LSP message missing Content-Length header",
-                ));
-            }
+        let Some(len) = content_length else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "LSP message missing Content-Length header",
+            ));
         };
         let mut body = vec![0u8; len];
         self.reader.read_exact(&mut body)?;
@@ -467,6 +475,11 @@ impl LspClient {
     /// path that is not on the filesystem it starts, answers the handshake, and
     /// then reports nothing at all — which looks exactly like a working editor
     /// with a clean file.
+    ///
+    /// # Errors
+    /// Returns a descriptive error string when `lang` has no server mapping,
+    /// `root` is not a directory, the server binary can't be launched, or its
+    /// piped stdio could not be taken.
     pub fn start(lang: Language, root: &Path) -> Result<LspClient, String> {
         let (prog, args) = Self::server_command(lang)
             .ok_or_else(|| format!("no language server configured for {}", lang.label()))?;
@@ -497,94 +510,30 @@ impl LspClient {
                 }
             })?;
 
-        let stdin = child.stdin.take().expect("piped stdin");
-        let stdout = child.stdout.take().expect("piped stdout");
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| format!("{prog}: piped stdin was not created"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| format!("{prog}: piped stdout was not created"))?;
         let stdin = Arc::new(Mutex::new(stdin));
         let pending: Arc<Mutex<HashMap<i64, Pending>>> = Arc::new(Mutex::new(HashMap::new()));
 
-        let (tx, rx) = mpsc::channel();
-        let reader_pending = pending.clone();
-        // The reader answers the server's own requests itself, so it needs the
-        // write half too. Both ends are behind the same mutex, so a reply can
-        // never interleave with a half-written request from the UI thread.
-        let reader_stdin = stdin.clone();
-        std::thread::Builder::new()
-            .name("code-editor-lsp".into())
-            .spawn(move || {
-                let mut reader = MessageReader::new(BufReader::new(stdout));
-                loop {
-                    if let Ok(Some(msg)) = reader.next_message() {
-                        let routed = route_message(&msg, &reader_pending);
-                        if let Some(reply) = routed.reply {
-                            let bytes = encode(&reply);
-                            if let Ok(mut w) = reader_stdin.lock() {
-                                let _ = w.write_all(&bytes);
-                                let _ = w.flush();
-                            }
-                        }
-                        if let Some(ev) = routed.event
-                            && tx.send(ev).is_err()
-                        {
-                            break;
-                        }
-                    } else {
-                        let _ = tx.send(LspEvent::Exited);
-                        break;
-                    }
-                }
-            })
-            .map_err(|e| format!("failed to start the {prog} reader thread: {e}"))?;
+        let events = spawn_reader_thread(&prog, stdout, stdin.clone(), pending.clone())?;
 
         let mut client = LspClient {
             child,
             stdin,
-            events: rx,
+            events,
             pending,
             next_id: 1,
             server_name: prog,
             root: root.to_path_buf(),
             progress: HashMap::new(),
         };
-
-        // Kick the handshake. `initialize` is a request; once its response
-        // lands (surfaced as `Initialized` by the router) we send `initialized`
-        // — but rust-analyzer tolerates an eager `initialized`, and buffering
-        // the notification here keeps the client simple.
-        //
-        // `window.workDoneProgress` is the capability that makes indexing
-        // visible: without it the server never sends `$/progress`, and a
-        // multi-minute index is silent.
-        let folder_name = root.file_name().map_or_else(
-            || root.display().to_string(),
-            |s| s.to_string_lossy().to_string(),
-        );
-        client.send_request_raw(
-            "initialize",
-            json!({
-                "processId": std::process::id(),
-                "rootUri": root_uri,
-                "rootPath": root.display().to_string(),
-                "workspaceFolders": [ { "uri": root_uri, "name": folder_name } ],
-                "capabilities": {
-                    "window": { "workDoneProgress": true },
-                    "workspace": {
-                        "configuration": true,
-                        "workspaceFolders": true,
-                        "didChangeConfiguration": { "dynamicRegistration": true }
-                    },
-                    "textDocument": {
-                        "synchronization": { "didSave": true },
-                        "hover": { "contentFormat": ["plaintext", "markdown"] },
-                        "completion": { "completionItem": { "snippetSupport": false } },
-                        "publishDiagnostics": {},
-                        "definition": {}
-                    }
-                }
-            }),
-            None,
-        );
-        client.send_notification("initialized", json!({}));
-
+        send_initialize_handshake(&mut client, root, &root_uri);
         Ok(client)
     }
 
@@ -600,7 +549,7 @@ impl LspClient {
     /// carried — the server sends the label once and then updates against the
     /// token, so a UI reading the raw notifications would show "Indexing 12%"
     /// and then a blank label at 13%.
-    pub fn note_progress(&mut self, p: Progress) -> Option<Progress> {
+    pub fn note_progress(&mut self, p: &Progress) -> Option<Progress> {
         if p.done {
             self.progress.remove(&p.token);
             return None;
@@ -610,9 +559,9 @@ impl LspClient {
             .entry(p.token.clone())
             .or_insert_with(|| p.clone());
         if !p.title.is_empty() {
-            entry.title = p.title.clone();
+            entry.title.clone_from(&p.title);
         }
-        entry.message = p.message.clone();
+        entry.message.clone_from(&p.message);
         entry.percentage = p.percentage;
         Some(entry.clone())
     }
@@ -647,7 +596,7 @@ impl LspClient {
     pub fn did_open(&mut self, uri: &str, language_id: &str, version: i64, text: &str) {
         self.send_notification(
             "textDocument/didOpen",
-            json!({
+            &json!({
                 "textDocument": {
                     "uri": uri,
                     "languageId": language_id,
@@ -662,7 +611,7 @@ impl LspClient {
     pub fn did_change(&mut self, uri: &str, version: i64, text: &str) {
         self.send_notification(
             "textDocument/didChange",
-            json!({
+            &json!({
                 "textDocument": { "uri": uri, "version": version },
                 "contentChanges": [ { "text": text } ]
             }),
@@ -677,7 +626,7 @@ impl LspClient {
     pub fn did_save(&mut self, uri: &str) {
         self.send_notification(
             "textDocument/didSave",
-            json!({ "textDocument": { "uri": uri } }),
+            &json!({ "textDocument": { "uri": uri } }),
         );
     }
 
@@ -685,7 +634,7 @@ impl LspClient {
     pub fn request_completion(&mut self, uri: &str, pos: Position) {
         self.send_request(
             "textDocument/completion",
-            json!({
+            &json!({
                 "textDocument": { "uri": uri },
                 "position": { "line": pos.line, "character": pos.character }
             }),
@@ -697,7 +646,7 @@ impl LspClient {
     pub fn request_hover(&mut self, uri: &str, pos: Position) {
         self.send_request(
             "textDocument/hover",
-            json!({
+            &json!({
                 "textDocument": { "uri": uri },
                 "position": { "line": pos.line, "character": pos.character }
             }),
@@ -709,7 +658,7 @@ impl LspClient {
     pub fn request_definition(&mut self, uri: &str, pos: Position) {
         self.send_request(
             "textDocument/definition",
-            json!({
+            &json!({
                 "textDocument": { "uri": uri },
                 "position": { "line": pos.line, "character": pos.character }
             }),
@@ -717,14 +666,16 @@ impl LspClient {
         );
     }
 
-    fn send_request(&mut self, method: &str, params: Value, kind: Pending) {
+    fn send_request(&mut self, method: &str, params: &Value, kind: Pending) {
         let id = self.next_id;
         self.next_id += 1;
-        self.pending.lock().unwrap().insert(id, kind);
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.insert(id, kind);
+        }
         self.send_request_raw(method, params, Some(id));
     }
 
-    fn send_request_raw(&mut self, method: &str, params: Value, id: Option<i64>) {
+    fn send_request_raw(&mut self, method: &str, params: &Value, id: Option<i64>) {
         let id = id.unwrap_or_else(|| {
             let i = self.next_id;
             self.next_id += 1;
@@ -739,7 +690,7 @@ impl LspClient {
         self.write(&payload);
     }
 
-    fn send_notification(&mut self, method: &str, params: Value) {
+    fn send_notification(&self, method: &str, params: &Value) {
         let payload = json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -748,13 +699,95 @@ impl LspClient {
         self.write(&payload);
     }
 
-    fn write(&mut self, payload: &Value) {
+    fn write(&self, payload: &Value) {
         let bytes = encode(payload);
         if let Ok(mut stdin) = self.stdin.lock() {
             let _ = stdin.write_all(&bytes);
             let _ = stdin.flush();
         }
     }
+}
+
+/// Spawn the background thread that reads framed JSON-RPC messages off the
+/// server's stdout, answers server-initiated requests over `reader_stdin`
+/// (both ends are behind the same mutex, so a reply can never interleave
+/// with a half-written request from the UI thread), and forwards
+/// editor-visible events. Returns the receiving end of that event channel.
+fn spawn_reader_thread(
+    prog: &str,
+    stdout: ChildStdout,
+    reader_stdin: Arc<Mutex<ChildStdin>>,
+    reader_pending: Arc<Mutex<HashMap<i64, Pending>>>,
+) -> Result<Receiver<LspEvent>, String> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("code-editor-lsp".into())
+        .spawn(move || {
+            let mut reader = MessageReader::new(BufReader::new(stdout));
+            loop {
+                if let Ok(Some(msg)) = reader.next_message() {
+                    let routed = route_message(&msg, &reader_pending);
+                    if let Some(reply) = routed.reply {
+                        let bytes = encode(&reply);
+                        if let Ok(mut w) = reader_stdin.lock() {
+                            let _ = w.write_all(&bytes);
+                            let _ = w.flush();
+                        }
+                    }
+                    if let Some(ev) = routed.event
+                        && tx.send(ev).is_err()
+                    {
+                        break;
+                    }
+                } else {
+                    let _ = tx.send(LspEvent::Exited);
+                    break;
+                }
+            }
+        })
+        .map_err(|e| format!("failed to start the {prog} reader thread: {e}"))?;
+    Ok(rx)
+}
+
+/// Kick the `initialize`/`initialized` handshake. `initialize` is a request;
+/// once its response lands (surfaced as `Initialized` by the router) the
+/// editor treats the server as ready — but rust-analyzer tolerates an eager
+/// `initialized` sent before that response, which keeps the client simple.
+///
+/// `window.workDoneProgress` is the capability that makes indexing visible:
+/// without it the server never sends `$/progress`, and a multi-minute index
+/// is silent.
+fn send_initialize_handshake(client: &mut LspClient, root: &Path, root_uri: &str) {
+    let folder_name = root.file_name().map_or_else(
+        || root.display().to_string(),
+        |s| s.to_string_lossy().to_string(),
+    );
+    client.send_request_raw(
+        "initialize",
+        &json!({
+            "processId": std::process::id(),
+            "rootUri": root_uri,
+            "rootPath": root.display().to_string(),
+            "workspaceFolders": [ { "uri": root_uri, "name": folder_name } ],
+            "capabilities": {
+                "window": { "workDoneProgress": true },
+                "workspace": {
+                    "configuration": true,
+                    "workspaceFolders": true,
+                    "didChangeConfiguration": { "dynamicRegistration": true }
+                },
+                "textDocument": {
+                    "synchronization": { "didSave": true },
+                    "hover": { "contentFormat": ["plaintext", "markdown"] },
+                    "completion": { "completionItem": { "snippetSupport": false } },
+                    "publishDiagnostics": {},
+                    "definition": {}
+                }
+            }
+        }),
+        None,
+    );
+    client.send_notification("initialized", &json!({}));
 }
 
 impl Drop for LspClient {
@@ -830,7 +863,7 @@ fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Ro
     let Some(id) = id.and_then(Value::as_i64) else {
         return Routed::default();
     };
-    let kind = pending.lock().unwrap().remove(&id);
+    let kind = pending.lock().ok().and_then(|mut p| p.remove(&id));
     let event = match kind {
         Some(Pending::Completion) => LspEvent::Completion(parse_completion(msg)),
         Some(Pending::Hover) => LspEvent::Hover(parse_hover(msg)),
@@ -944,7 +977,7 @@ mod tests {
             percentage: Some(10),
             done: false,
         };
-        assert_eq!(client.note_progress(begin).unwrap().title, "Indexing");
+        assert_eq!(client.note_progress(&begin).unwrap().title, "Indexing");
 
         let report = Progress {
             token: "t1".into(),
@@ -953,7 +986,7 @@ mod tests {
             percentage: Some(55),
             done: false,
         };
-        let shown = client.note_progress(report).expect("still busy");
+        let shown = client.note_progress(&report).expect("still busy");
         assert_eq!(shown.title, "Indexing", "the title survives the report");
         assert_eq!(shown.percentage, Some(55));
         assert_eq!(shown.message.as_deref(), Some("qos-ui"));
@@ -967,7 +1000,7 @@ mod tests {
             percentage: None,
             done: true,
         };
-        assert!(client.note_progress(end).is_none());
+        assert!(client.note_progress(&end).is_none());
         assert!(!client.is_busy());
         assert!(client.busy_task().is_none());
     }
@@ -977,7 +1010,7 @@ mod tests {
         // A quick sub-task at 90% must not hide the index at 5%.
         let mut client = fake_client();
         for (token, title, pct) in [("a", "Indexing", 5u32), ("b", "Fetching", 90)] {
-            client.note_progress(Progress {
+            client.note_progress(&Progress {
                 token: token.into(),
                 title: title.into(),
                 message: None,
@@ -1012,9 +1045,8 @@ mod tests {
         // while looking like a working editor.
         let d = tempfile::tempdir().unwrap();
         let missing = d.path().join("does-not-exist");
-        let err = match LspClient::start(Language::Rust, &missing) {
-            Err(e) => e,
-            Ok(_) => panic!("a non-directory root must be refused"),
+        let Err(err) = LspClient::start(Language::Rust, &missing) else {
+            panic!("a non-directory root must be refused");
         };
         assert!(
             err.contains("not a directory"),

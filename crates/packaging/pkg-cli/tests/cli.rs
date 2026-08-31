@@ -4,6 +4,16 @@
 //! cargo test harness exposes the binary under
 //! `target/debug/qos-pkg`).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::path::PathBuf;
 use std::process::Command;
 

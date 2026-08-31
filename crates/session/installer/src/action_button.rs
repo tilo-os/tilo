@@ -23,7 +23,7 @@ use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -36,6 +36,10 @@ use ui::widget::Widget;
 const HEIGHT: f32 = 44.0;
 const LABEL_SIZE: f32 = 15.0;
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent interaction/lifecycle flag (primary, disabled, hover, press, focus), not a combinatorial state machine"
+)]
 pub struct ActionButton {
     label: String,
     /// CRDT path of the boolean flag raised when the button fires.
@@ -69,12 +73,14 @@ impl ActionButton {
     }
 
     /// Promote to the accent-filled primary call-to-action.
+    #[must_use]
     pub fn primary(mut self) -> Self {
         self.primary = true;
         self
     }
 
     /// Pin a stable E2E `test_id` (defaults to the label otherwise).
+    #[must_use]
     pub fn with_test_id(mut self, id: &str) -> Self {
         self.test_id = Some(id.to_string());
         self
@@ -82,6 +88,7 @@ impl ActionButton {
 
     /// Mark disabled: dimmed, non-interactive, and removed from the focus
     /// order so keyboard nav skips it.
+    #[must_use]
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -104,6 +111,11 @@ impl Widget for ActionButton {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
+        // returns a bare `NodeId` across every implementor, so surfacing a
+        // theoretical error here would mean threading a `Result` through the
+        // whole toolkit for a branch that can't be taken.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -123,6 +135,10 @@ impl Widget for ActionButton {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `layout` only errors for a `NodeId` from a different tree, which
+        // never happens here since `node` is always the id this same widget
+        // received from its own `build_layout` call.
+        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -193,7 +209,7 @@ impl Widget for ActionButton {
             &self.label,
             LABEL_SIZE,
             label_color,
-            transform * Affine::translate((tx, ty)),
+            transform.pre_translate(Vec2::new(tx, ty)),
             None,
         );
     }

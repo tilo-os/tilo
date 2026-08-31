@@ -57,6 +57,12 @@ fn baseline_isa(arch: Arch) -> IsaLevel {
 /// Fails closed if the `publisher` key does not match the manifest's
 /// declared `publisher.identity` — the entry must be vouched for by
 /// the same key that signed the package.
+///
+/// # Errors
+///
+/// Returns an error if the `.qpkg` fails to load, `publisher` doesn't
+/// match the manifest's declared identity, the target arch can't be
+/// inferred, or signing the built entry fails.
 pub fn build_entry(
     qpkg_bytes: &[u8],
     publisher: &SigningIdentity,
@@ -129,6 +135,12 @@ pub fn build_entry(
 /// `node` MUST be serving `<dir>/blobs` (see
 /// [`crate::transport::BlobNode::persistent`]) so the ticket baked
 /// into the entry actually resolves.
+///
+/// # Errors
+///
+/// Returns an error if the upload, [`build_entry`], the index
+/// load/sign, or the index write fails; also if the uploaded blob's
+/// hash disagrees with the built entry (an internal invariant).
 pub async fn publish_to_dir(
     dir: &Path,
     node: &BlobNode,
@@ -170,6 +182,10 @@ pub async fn publish_to_dir(
 /// Serialise a signed entry as the JSON body a registry server's
 /// `/publish` endpoint accepts. The publisher signature in the entry
 /// IS the authentication — no separate password.
+///
+/// # Errors
+///
+/// Returns an error if `entry` fails to serialise.
 pub fn entry_publish_body(entry: &IndexEntry) -> Result<Vec<u8>> {
     serde_json::to_vec_pretty(entry).map_err(|e| anyhow!("encode entry: {e}"))
 }
@@ -179,6 +195,11 @@ pub fn entry_publish_body(entry: &IndexEntry) -> Result<Vec<u8>> {
 /// publisher signature and ingests the blob out of band from the
 /// entry's ticket. Not exercised in-tree (needs a live server); the
 /// `file://` path is the tested reference.
+///
+/// # Errors
+///
+/// Returns an error if `entry` fails to serialise, the request fails,
+/// or the registry responds with a non-success status.
 pub async fn emit_entry_https(base_url: &str, entry: &IndexEntry) -> Result<()> {
     let url = format!("{}/publish", base_url.trim_end_matches('/'));
     let body = entry_publish_body(entry)?;
@@ -199,6 +220,10 @@ pub async fn emit_entry_https(base_url: &str, entry: &IndexEntry) -> Result<()> 
 
 /// Convenience for a signed index built off a fresh (non-directory)
 /// context — used by CI / tooling that assembles an index in memory.
+///
+/// # Errors
+///
+/// Returns an error if signing the index fails.
 pub fn sign_index(index: &mut RegistryIndex, registry_key: &SigningIdentity) -> Result<()> {
     index
         .sign(registry_key)

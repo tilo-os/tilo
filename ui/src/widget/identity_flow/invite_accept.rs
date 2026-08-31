@@ -26,6 +26,18 @@ use crate::widget::identity_flow::{
     IdentityFlowError, InviteEnvelope, ScreenOutcome, build_attestation_from_invite,
 };
 
+/// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
+/// pure `f64` matrix multiply-add with no overflow trap, so it cannot panic
+/// regardless of operand magnitude — centralised here rather than repeating
+/// the exemption at every text transform composed in this module.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is float matrix math and cannot panic"
+)]
+fn translated(transform: Affine, offset: (f64, f64)) -> Affine {
+    transform * Affine::translate(offset)
+}
+
 pub struct InviteAcceptScreen {
     rect: Rect,
     url: String,
@@ -121,6 +133,12 @@ impl InviteAcceptScreen {
 
     /// On success, stores the attestation in `last_accepted_event`; the container
     /// should treat that as a `ScreenOutcome::Advance`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFlowError::DecodeFailed`] if nothing has been
+    /// successfully parsed yet (see [`Self::parse`]), or any error
+    /// [`build_attestation_from_invite`] returns for the parsed envelope.
     pub fn accept(
         &mut self,
         invitee_pubkey: Ed25519PublicKey,
@@ -131,8 +149,7 @@ impl InviteAcceptScreen {
             .as_ref()
             .ok_or_else(|| IdentityFlowError::DecodeFailed("no parsed invite to accept".into()))?;
         let event = build_attestation_from_invite(env, invitee_pubkey, now)?;
-        self.last_accepted_event = Some(event);
-        Ok(self.last_accepted_event.as_ref().unwrap())
+        Ok(self.last_accepted_event.insert(event))
     }
 
     pub fn decline(&mut self) {
@@ -309,170 +326,13 @@ impl Widget for InviteAcceptScreen {
         let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
         let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
         let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
-        let radius = 12.0;
         let pad = 24.0;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        text_renderer.draw_text(
-            scene,
-            "Accept channel invite",
-            22.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + pad, card.y0 + pad)),
-            None,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &RoundedRect::from_rect(self.url_rect, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(if self.url_focus { 2.0 } else { 1.0 }),
-            transform,
-            if self.url_focus {
-                theme.border_focus
-            } else {
-                theme.tokens.colors.border_standard
-            },
-            None,
-            &RoundedRect::from_rect(self.url_rect, 8.0),
-        );
-        let placeholder = if self.url.is_empty() {
-            "Paste a qos://invite/... URL".to_string()
-        } else {
-            self.url.clone()
-        };
-        let url_color = if self.url.is_empty() {
-            theme.tokens.colors.text_dim
-        } else {
-            theme.tokens.colors.text_primary
-        };
-        text_renderer.draw_text(
-            scene,
-            &placeholder,
-            13.0,
-            url_color,
-            transform * Affine::translate((self.url_rect.x0 + 12.0, self.url_rect.y0 + 12.0)),
-            None,
-        );
-        if let Some(env) = &self.parsed {
-            let banner = format!(
-                "{} invited you to #{} as {:?}",
-                env.inviter_label, env.channel_name, env.role
-            );
-            text_renderer.draw_text(
-                scene,
-                &banner,
-                15.0,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((card.x0 + pad, card.y0 + 170.0)),
-                None,
-            );
-            let when = chrono::DateTime::<chrono::Utc>::from(
-                SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(env.expires_unix),
-            )
-            .to_rfc3339();
-            text_renderer.draw_text(
-                scene,
-                &format!("Expires {when}"),
-                12.0,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((card.x0 + pad, card.y0 + 200.0)),
-                None,
-            );
-        } else if let Some(err) = &self.parse_error {
-            text_renderer.draw_text(
-                scene,
-                err,
-                13.0,
-                Color::from_rgb8(220, 80, 80),
-                transform * Affine::translate((card.x0 + pad, card.y0 + 170.0)),
-                None,
-            );
-        }
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &RoundedRect::from_rect(self.decline_rect, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.decline_rect, 8.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            "Decline",
-            13.0,
-            theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((
-                    self.decline_rect.x0 + 16.0,
-                    self.decline_rect.y0 + (self.decline_rect.height() - 13.0) / 2.0,
-                )),
-            None,
-        );
-        let enabled = self.parsed.is_some();
-        let bg = if !enabled {
-            theme.tokens.colors.surfaces.base
-        } else if self.accept_hovered {
-            theme.bg_active
-        } else {
-            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-        };
-        let label_color = if enabled {
-            Color::from_rgb8(255, 255, 255)
-        } else {
-            theme.tokens.colors.text_dim
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            bg,
-            None,
-            &RoundedRect::from_rect(self.accept_rect, 8.0),
-        );
-        let (aw, _) = text_renderer.measure("Accept invite", 14.0, None);
-        text_renderer.draw_text(
-            scene,
-            "Accept invite",
-            14.0,
-            label_color,
-            transform
-                * Affine::translate((
-                    self.accept_rect.x0 + (self.accept_rect.width() - f64::from(aw)) / 2.0,
-                    self.accept_rect.y0 + (self.accept_rect.height() - 14.0) / 2.0,
-                )),
-            None,
-        );
-        if let Some(e) = &self.accept_error {
-            text_renderer.draw_text(
-                scene,
-                e,
-                12.0,
-                Color::from_rgb8(220, 80, 80),
-                transform * Affine::translate((card.x0 + pad, self.accept_rect.y0 - 24.0)),
-                None,
-            );
-        }
+
+        Self::draw_card_chrome(scene, transform, text_renderer, theme, card, pad);
+        self.draw_url_field(scene, transform, text_renderer, theme);
+        self.draw_invite_status(scene, transform, text_renderer, theme, card, pad);
+        self.draw_decline_button(scene, transform, text_renderer, theme);
+        self.draw_accept_button(scene, transform, text_renderer, theme, card, pad);
     }
 
     fn handle_event(
@@ -510,6 +370,236 @@ impl Widget for InviteAcceptScreen {
     }
 }
 
+impl InviteAcceptScreen {
+    /// The card background/border and its title.
+    fn draw_card_chrome(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        pad: f64,
+    ) {
+        let radius = 12.0;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(card, radius),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(card, radius),
+        );
+        text_renderer.draw_text(
+            scene,
+            "Accept channel invite",
+            22.0,
+            theme.tokens.colors.text_primary,
+            translated(transform, (card.x0 + pad, card.y0 + pad)),
+            None,
+        );
+    }
+
+    /// The URL input box and its placeholder/typed text.
+    fn draw_url_field(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &RoundedRect::from_rect(self.url_rect, 8.0),
+        );
+        scene.stroke(
+            &Stroke::new(if self.url_focus { 2.0 } else { 1.0 }),
+            transform,
+            if self.url_focus {
+                theme.border_focus
+            } else {
+                theme.tokens.colors.border_standard
+            },
+            None,
+            &RoundedRect::from_rect(self.url_rect, 8.0),
+        );
+        let placeholder = if self.url.is_empty() {
+            "Paste a qos://invite/... URL".to_string()
+        } else {
+            self.url.clone()
+        };
+        let url_color = if self.url.is_empty() {
+            theme.tokens.colors.text_dim
+        } else {
+            theme.tokens.colors.text_primary
+        };
+        text_renderer.draw_text(
+            scene,
+            &placeholder,
+            13.0,
+            url_color,
+            translated(
+                transform,
+                (self.url_rect.x0 + 12.0, self.url_rect.y0 + 12.0),
+            ),
+            None,
+        );
+    }
+
+    /// The parsed invite's banner + expiry, or the parse error in its place.
+    fn draw_invite_status(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        pad: f64,
+    ) {
+        if let Some(env) = &self.parsed {
+            let banner = format!(
+                "{} invited you to #{} as {:?}",
+                env.inviter_label, env.channel_name, env.role
+            );
+            text_renderer.draw_text(
+                scene,
+                &banner,
+                15.0,
+                theme.tokens.colors.text_primary,
+                translated(transform, (card.x0 + pad, card.y0 + 170.0)),
+                None,
+            );
+            let when = chrono::DateTime::<chrono::Utc>::from(
+                SystemTime::UNIX_EPOCH
+                    .checked_add(std::time::Duration::from_secs(env.expires_unix))
+                    .unwrap_or(SystemTime::UNIX_EPOCH),
+            )
+            .to_rfc3339();
+            text_renderer.draw_text(
+                scene,
+                &format!("Expires {when}"),
+                12.0,
+                theme.tokens.colors.text_dim,
+                translated(transform, (card.x0 + pad, card.y0 + 200.0)),
+                None,
+            );
+        } else if let Some(err) = &self.parse_error {
+            text_renderer.draw_text(
+                scene,
+                err,
+                13.0,
+                Color::from_rgb8(220, 80, 80),
+                translated(transform, (card.x0 + pad, card.y0 + 170.0)),
+                None,
+            );
+        }
+    }
+
+    /// The `[Decline]` button.
+    fn draw_decline_button(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &RoundedRect::from_rect(self.decline_rect, 8.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(self.decline_rect, 8.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            "Decline",
+            13.0,
+            theme.tokens.colors.text_primary,
+            translated(
+                transform,
+                (
+                    self.decline_rect.x0 + 16.0,
+                    self.decline_rect.y0 + (self.decline_rect.height() - 13.0) / 2.0,
+                ),
+            ),
+            None,
+        );
+    }
+
+    /// The `[Accept invite]` button, disabled until an invite has parsed,
+    /// plus any accept-time error underneath it.
+    fn draw_accept_button(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        pad: f64,
+    ) {
+        let enabled = self.parsed.is_some();
+        let bg = if !enabled {
+            theme.tokens.colors.surfaces.base
+        } else if self.accept_hovered {
+            theme.bg_active
+        } else {
+            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+        };
+        let label_color = if enabled {
+            Color::from_rgb8(255, 255, 255)
+        } else {
+            theme.tokens.colors.text_dim
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            bg,
+            None,
+            &RoundedRect::from_rect(self.accept_rect, 8.0),
+        );
+        let (aw, _) = text_renderer.measure("Accept invite", 14.0, None);
+        text_renderer.draw_text(
+            scene,
+            "Accept invite",
+            14.0,
+            label_color,
+            translated(
+                transform,
+                (
+                    self.accept_rect.x0 + (self.accept_rect.width() - f64::from(aw)) / 2.0,
+                    self.accept_rect.y0 + (self.accept_rect.height() - 14.0) / 2.0,
+                ),
+            ),
+            None,
+        );
+        if let Some(e) = &self.accept_error {
+            text_renderer.draw_text(
+                scene,
+                e,
+                12.0,
+                Color::from_rgb8(220, 80, 80),
+                translated(transform, (card.x0 + pad, self.accept_rect.y0 - 24.0)),
+                None,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,7 +616,7 @@ mod tests {
             &sk,
             "Alice",
             Role::Editor,
-            now + Duration::from_secs(3600),
+            now.checked_add(Duration::from_secs(3600)).unwrap_or(now),
         )
         .unwrap();
         env.to_url().unwrap()

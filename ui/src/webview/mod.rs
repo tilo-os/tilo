@@ -59,6 +59,13 @@ pub enum KeyInput {
 /// Forwarded into the page so editing shortcuts (Ctrl+Backspace,
 /// Shift+Arrow, …) reach the web content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one flag per physical modifier key, mirroring winit's own \
+              modifiers state; `apps/browser` constructs this by field name \
+              across the crate boundary, so reshaping it into flags is out \
+              of scope for a lint fix"
+)]
 pub struct KeyModifiers {
     pub ctrl: bool,
     pub shift: bool,
@@ -239,6 +246,8 @@ pub fn normalise_url(input: &str) -> String {
 /// Minimal percent-encoding for search queries (RFC 3986 unreserved set
 /// stays literal, space becomes `+`).
 fn urlencode(s: &str) -> String {
+    use std::fmt::Write as _;
+
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
@@ -246,7 +255,11 @@ fn urlencode(s: &str) -> String {
                 out.push(b as char);
             }
             b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
+            // `write!` to a `String` is infallible; there is nothing
+            // useful to do with the `Result`.
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out

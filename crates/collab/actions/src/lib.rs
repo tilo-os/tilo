@@ -78,6 +78,19 @@
 //! app builds its parameters per frame out of live document state — a `const`
 //! declaration is `Cow::Borrowed` and costs nothing.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod action;
 pub mod door;
 pub mod envelope;

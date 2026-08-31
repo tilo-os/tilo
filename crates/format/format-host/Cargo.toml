@@ -2,7 +2,13 @@
 name = "format-host"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "qOS format-provider router daemon. Hosts WASM Component Model providers via wasmtime and serves a Cap'n Proto RPC interface."
+
+[package.metadata.cargo-machete]
+# Invoked by build.rs to compile the Cap'n Proto schema.
+ignored = ["capnpc"]
 
 [dependencies]
 format-provider-wit = { path = "../format-provider-wit" }

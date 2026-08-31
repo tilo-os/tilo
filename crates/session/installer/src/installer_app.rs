@@ -224,14 +224,13 @@ pub fn next_step(step: Step) -> Option<Step> {
 /// The step reached by pressing Back from `step`, if any.
 pub fn prev_step(step: Step) -> Option<Step> {
     match step {
-        Step::Keyboard => None,
         Step::Disk => Some(Step::Keyboard),
         Step::Account => Some(Step::Disk),
         Step::Options => Some(Step::Account),
         Step::Review => Some(Step::Options),
-        // Back out of Install is handled specially (only on failure) by
-        // the app — see `go_back`.
-        Step::Install => None,
+        // Keyboard is the first step; Back out of Install is handled
+        // specially (only on failure) by the app — see `go_back`.
+        Step::Keyboard | Step::Install => None,
     }
 }
 
@@ -269,9 +268,6 @@ pub fn validate_step(
                 Ok(())
             }
         }
-        // A layout is always selected (seeded to the default), so the
-        // keyboard step never blocks forward progress.
-        Step::Keyboard => Ok(()),
         Step::Options => {
             if valid_hostname(hostname) {
                 Ok(())
@@ -279,7 +275,10 @@ pub fn validate_step(
                 Err("Enter a valid hostname (letters, digits, hyphens)".to_string())
             }
         }
-        Step::Review | Step::Install => Ok(()),
+        // A layout is always selected (seeded to the default) and
+        // Review/Install have nothing left to validate, so these steps
+        // never block forward progress.
+        Step::Keyboard | Step::Review | Step::Install => Ok(()),
     }
 }
 
@@ -321,6 +320,13 @@ impl Widget for Card {
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
+        // `new_with_children` only errors for a child `NodeId` from a
+        // different tree, which never happens here since every id in
+        // `child_nodes` was just built in this same tree by the calls above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "every child node was just built in this same tree"
+        )]
         let node = taffy
             .new_with_children(
                 Style {
@@ -352,6 +358,10 @@ impl Widget for Card {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `layout` only errors for a `NodeId` from a different tree, which
+        // never happens here since `node` is always the id this same widget
+        // received from its own `build_layout` call.
+        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
@@ -405,8 +415,10 @@ impl Widget for Card {
             return;
         };
         if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
-            if let Some(&cnode) = child_nodes.get(idx) {
-                self.children[idx].handle_event(
+            if let Some(&cnode) = child_nodes.get(idx)
+                && let Some(child) = self.children.get_mut(idx)
+            {
+                child.handle_event(
                     event,
                     scale_factor,
                     modifiers,
@@ -457,10 +469,14 @@ impl Widget for Card {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        self.children
-            .iter_mut()
-            .map(|c| c.take_structure_dirty())
-            .fold(false, |acc, d| acc || d)
+        // Every child must be polled regardless of an earlier `true` — this
+        // "takes" (clears) each child's own dirty flag, unlike a
+        // short-circuiting `any`.
+        let mut dirty = false;
+        for child in &mut self.children {
+            dirty |= child.take_structure_dirty();
+        }
+        dirty
     }
 
     fn needs_commit(&self) -> bool {
@@ -491,6 +507,10 @@ impl Widget for Card {
 /// reads it to pump progress lines back as `UserEvent::External`.
 pub type ProxySlot = Arc<Mutex<Option<EventLoopProxy<UserEvent>>>>;
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent wizard-state flag (encryption/FIDO2 opt-in, TPM presence, shot/bootstrap/dirty/focus one-shots), not a combinatorial state machine"
+)]
 pub struct InstallerApp {
     disks: Vec<Disk>,
     selected_disk: Option<usize>,
@@ -597,6 +617,7 @@ impl InstallerApp {
     /// Wire the shared event-loop-proxy slot used to stream install
     /// progress from the worker thread. `main` calls this before handing
     /// the widget to `ui::App`.
+    #[must_use]
     pub fn with_proxy(mut self, slot: ProxySlot) -> Self {
         self.proxy_slot = Some(slot);
         self
@@ -749,7 +770,7 @@ impl InstallerApp {
         }
     }
 
-    fn bootstrap_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
         if state.get(root, USERNAME_PATH).ok().flatten().is_none() {
             let _ = state.put_object(root, USERNAME_PATH, ObjType::Text);
         }
@@ -985,12 +1006,6 @@ impl InstallerApp {
 
     /// Build the composed card subtree for the current step.
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
-        let dim = theme.text_dim;
-        let danger = theme.tokens.colors.semantic.danger;
-        let xl = theme.tokens.typography.scale.xl;
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
-
         let mut children: Vec<Box<dyn Widget>> = vec![Box::new(StepIndicator::new(
             STEP_LABELS
                 .iter()
@@ -1000,302 +1015,342 @@ impl InstallerApp {
         ))];
 
         match self.step {
-            Step::Disk => {
-                children.push(Box::new(Text::new("Install qOS").with_size(xl)));
-                children.push(Box::new(
-                    Text::new(
-                        "Choose where to install. The selected disk will be completely erased.",
-                    )
-                    .with_size(sm)
-                    .with_color(dim),
-                ));
-                if self.disks.is_empty() {
-                    children.push(Box::new(
-                        Text::new("No disks found — is this running on real hardware?")
-                            .with_size(base)
-                            .with_color(danger),
-                    ));
-                } else {
-                    for (i, disk) in self.disks.iter().enumerate() {
-                        children.push(Box::new(DiskRow::new(
-                            disk.clone(),
-                            &disk_path(i),
-                            self.selected_disk == Some(i),
-                        )));
-                    }
-                }
-                children.push(nav_row(
-                    Step::Disk,
-                    NEXT_PATH,
-                    "Next",
-                    self.selected_disk.is_none(),
-                ));
-            }
-            Step::Account => {
-                children.push(Box::new(Text::new("Create your account").with_size(xl)));
-                children.push(Box::new(Text::new("Username").with_size(base)));
-                children.push(Box::new(
-                    TextInput::new(Vec::new())
-                        .with_id("installer.username")
-                        .with_on_change_path(USERNAME_PATH),
-                ));
-                children.push(Box::new(
-                    Text::new("Used to sign in and for your home directory.")
-                        .with_size(sm)
-                        .with_color(dim),
-                ));
-                children.push(Box::new(Text::new("Password").with_size(base)));
-                children.push(Box::new(
-                    TextInput::new(Vec::new())
-                        .with_id("installer.password")
-                        .with_on_change_path(PASSWORD_PATH)
-                        .with_secret(true),
-                ));
-                children.push(Box::new(
-                    Text::new("Choose a strong password; you'll use it to log in.")
-                        .with_size(sm)
-                        .with_color(dim),
-                ));
-                children.push(nav_row(Step::Account, NEXT_PATH, "Next", false));
-            }
-            Step::Keyboard => {
-                children.push(Box::new(Text::new("Keyboard layout").with_size(xl)));
-                children.push(Box::new(
-                    Text::new("Pick the layout that matches your keyboard. The preview below shows exactly what each key will type.")
-                        .with_size(sm)
-                        .with_color(dim),
-                ));
-                children.push(Box::new(
-                    Dropdown::new(layouts::display_names(), KEYMAP_PATH)
-                        .with_id("installer.keymap")
-                        .with_placeholder("Select a keyboard layout"),
-                ));
-                children.push(Box::new(KeyboardView::new(KEYMAP_PATH)));
-                children.push(nav_row(Step::Keyboard, NEXT_PATH, "Next", false));
-            }
-            Step::Options => {
-                children.push(Box::new(Text::new("Installation options").with_size(xl)));
-
-                children.push(Box::new(Text::new("Filesystem").with_size(base)));
-                children.push(Box::new(SegChoice::new(
-                    FILESYSTEMS
-                        .iter()
-                        .map(std::string::ToString::to_string)
-                        .collect(),
-                    (0..FILESYSTEMS.len()).map(fs_path).collect(),
-                    self.selected_fs,
-                )));
-                children.push(Box::new(
-                    Text::new(fs_description(self.selected_fs))
-                        .with_size(sm)
-                        .with_color(dim),
-                ));
-
-                children.push(Box::new(Text::new("Disk encryption").with_size(base)));
-                children.push(Box::new(
-                    SegChoice::new(
-                        ENCRYPT_LABELS
-                            .iter()
-                            .map(std::string::ToString::to_string)
-                            .collect(),
-                        (0..ENCRYPT_LABELS.len()).map(encrypt_path).collect(),
-                        usize::from(self.encrypt),
-                    )
-                    .with_test_id("encryption_choice"),
-                ));
-                children.push(Box::new(
-                    Text::new(encrypt_description(self.encrypt, self.tpm2))
-                        .with_size(sm)
-                        .with_color(dim),
-                ));
-
-                // The extra unlock factors only make sense with encryption on,
-                // so they appear only then.
-                if self.encrypt {
-                    let pin_label = if self.tpm2 {
-                        "Unlock PIN (optional)"
-                    } else {
-                        "Boot passphrase (required — no TPM2 chip)"
-                    };
-                    children.push(Box::new(Text::new(pin_label).with_size(base)));
-                    children.push(Box::new(
-                        TextInput::new(Vec::new())
-                            .with_id("installer.pin")
-                            .with_on_change_path(PIN_PATH)
-                            .with_secret(true),
-                    ));
-                    children.push(Box::new(
-                        Text::new("Add a PIN you'll type at boot alongside the TPM. Leave blank to unlock with the TPM alone.")
-                            .with_size(sm)
-                            .with_color(dim),
-                    ));
-
-                    children.push(Box::new(Text::new("Security key").with_size(base)));
-                    children.push(Box::new(
-                        SegChoice::new(
-                            FIDO2_LABELS
-                                .iter()
-                                .map(std::string::ToString::to_string)
-                                .collect(),
-                            (0..FIDO2_LABELS.len()).map(fido2_path).collect(),
-                            usize::from(self.fido2),
-                        )
-                        .with_test_id("fido2_choice"),
-                    ));
-                    children.push(Box::new(
-                        Text::new("Optionally enroll a FIDO2 security key (e.g. a YubiKey) as another way to unlock. Plug it in before installing.")
-                            .with_size(sm)
-                            .with_color(dim),
-                    ));
-                }
-
-                children.push(Box::new(Text::new("Hostname").with_size(base)));
-                children.push(Box::new(
-                    TextInput::new(Vec::new())
-                        .with_id("installer.hostname")
-                        .with_on_change_path(HOSTNAME_PATH),
-                ));
-                children.push(Box::new(
-                    Text::new("The name your computer uses on the network.")
-                        .with_size(sm)
-                        .with_color(dim),
-                ));
-
-                children.push(Box::new(Text::new("Time zone").with_size(base)));
-                children.push(Box::new(
-                    Dropdown::new(self.timezones.clone(), TIMEZONE_PATH)
-                        .with_id("installer.timezone")
-                        .with_placeholder("Select a time zone")
-                        .open_if(self.tz_open_for_shot),
-                ));
-                children.push(Box::new(
-                    Text::new("Pick from the list — start typing to filter (IANA name, e.g. Europe/Amsterdam or UTC).")
-                        .with_size(sm)
-                        .with_color(dim),
-                ));
-
-                children.push(nav_row(Step::Options, NEXT_PATH, "Next", false));
-            }
-            Step::Review => {
-                children.push(Box::new(Text::new("Review your choices").with_size(xl)));
-
-                let dev = self
-                    .selected_dev()
-                    .unwrap_or_else(|| "<no disk>".to_string());
-                let disk_value = match self.selected_disk_ref() {
-                    Some(d) if d.model.is_empty() => format!("{} ({})", d.name, d.size),
-                    Some(d) => format!("{} ({}, {})", d.name, d.size, d.model),
-                    None => "<no disk>".to_string(),
-                };
-                children.push(summary_row(theme, "Disk", &disk_value));
-                children.push(summary_row(theme, "Filesystem", self.filesystem()));
-                children.push(summary_row(theme, "Encryption", &self.encryption_summary()));
-                children.push(summary_row(theme, "Hostname", self.hostname.trim()));
-                children.push(summary_row(theme, "Time zone", self.timezone.trim()));
-                children.push(summary_row(theme, "Keyboard layout", self.keymap.trim()));
-                children.push(summary_row(theme, "Username", self.username.trim()));
-
-                children.push(Box::new(
-                    Text::new(&format!("This will ERASE {dev} and all data on it."))
-                        .with_size(base)
-                        .with_color(danger),
-                ));
-
-                // Encryption generates a recovery key shown ONCE during the
-                // install. Make the user explicitly acknowledge they'll save
-                // it before they can proceed — otherwise a lost TPM = lost
-                // data with no warning.
-                if self.encrypt {
-                    children.push(Box::new(
-                        Text::new("A recovery key will be shown during install — it is your only backup if the TPM is reset or fails. Save it somewhere safe.")
-                            .with_size(sm)
-                            .with_color(dim),
-                    ));
-                    let ack_label = if self.recovery_ack {
-                        "[x] I will save my recovery key"
-                    } else {
-                        "[ ] I will save my recovery key"
-                    };
-                    children.push(Box::new(
-                        ActionButton::new(ack_label, RECOVERY_ACK_PATH)
-                            .with_test_id("recovery_ack"),
-                    ));
-                }
-
-                // Begin is gated on the recovery-key acknowledgement when
-                // encrypting (otherwise always enabled).
-                let begin_disabled = !self.encryption_ready();
-                children.push(nav_row(
-                    Step::Review,
-                    BEGIN_PATH,
-                    "Begin Install",
-                    begin_disabled,
-                ));
-            }
-            Step::Install => match self.install_state {
-                InstallState::Done => {
-                    children.push(Box::new(
-                        Text::new("qOS is installed")
-                            .with_size(xl)
-                            .with_color(theme.status_success),
-                    ));
-                    children.push(Box::new(
-                        Text::new(
-                            "Installation complete. Remove the installer medium, then reboot.",
-                        )
-                        .with_size(sm)
-                        .with_color(dim),
-                    ));
-                    children.push(Box::new(StatusLog::new(
-                        self.status_lines.clone(),
-                        STATUS_LOG_HEIGHT,
-                    )));
-                    children.push(finish_row());
-                }
-                InstallState::Failed => {
-                    children.push(Box::new(
-                        Text::new("Installation failed")
-                            .with_size(xl)
-                            .with_color(danger),
-                    ));
-                    children.push(Box::new(
-                        Text::new(
-                            "Something went wrong. Review the log, then go back to try again.",
-                        )
-                        .with_size(sm)
-                        .with_color(dim),
-                    ));
-                    children.push(Box::new(StatusLog::new(
-                        self.status_lines.clone(),
-                        STATUS_LOG_HEIGHT,
-                    )));
-                    children.push(Box::new(ActionButton::new("Back", BACK_PATH)));
-                }
-                _ => {
-                    children.push(Box::new(Text::new("Installing qOS…").with_size(xl)));
-                    children.push(Box::new(
-                        Row::new().push(Box::new(Spinner::new())).push(Box::new(
-                            Text::new("Working — this can take a few minutes. Don't power off.")
-                                .with_size(sm)
-                                .with_color(dim),
-                        )),
-                    ));
-                    children.push(Box::new(StatusLog::new(
-                        self.status_lines.clone(),
-                        STATUS_LOG_HEIGHT,
-                    )));
-                }
-            },
+            Step::Disk => self.compose_disk_step(theme, &mut children),
+            Step::Account => Self::compose_account_step(theme, &mut children),
+            Step::Keyboard => Self::compose_keyboard_step(theme, &mut children),
+            Step::Options => self.compose_options_step(theme, &mut children),
+            Step::Review => self.compose_review_step(theme, &mut children),
+            Step::Install => self.compose_install_step(theme, &mut children),
         }
 
         // A transient validation/error line under every step's controls.
         if !self.status.is_empty() {
             children.push(Box::new(
-                Text::new(&self.status).with_size(sm).with_color(danger),
+                Text::new(&self.status)
+                    .with_size(theme.tokens.typography.scale.sm)
+                    .with_color(theme.tokens.colors.semantic.danger),
             ));
         }
 
         Box::new(Card::new(children))
+    }
+
+    fn compose_disk_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+        let dim = theme.text_dim;
+        let danger = theme.tokens.colors.semantic.danger;
+        let xl = theme.tokens.typography.scale.xl;
+        let base = theme.tokens.typography.scale.base;
+        let sm = theme.tokens.typography.scale.sm;
+
+        children.push(Box::new(Text::new("Install qOS").with_size(xl)));
+        children.push(Box::new(
+            Text::new("Choose where to install. The selected disk will be completely erased.")
+                .with_size(sm)
+                .with_color(dim),
+        ));
+        if self.disks.is_empty() {
+            children.push(Box::new(
+                Text::new("No disks found — is this running on real hardware?")
+                    .with_size(base)
+                    .with_color(danger),
+            ));
+        } else {
+            for (i, disk) in self.disks.iter().enumerate() {
+                children.push(Box::new(DiskRow::new(
+                    disk.clone(),
+                    &disk_path(i),
+                    self.selected_disk == Some(i),
+                )));
+            }
+        }
+        children.push(nav_row(
+            Step::Disk,
+            NEXT_PATH,
+            "Next",
+            self.selected_disk.is_none(),
+        ));
+    }
+
+    fn compose_account_step(theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+        let dim = theme.text_dim;
+        let xl = theme.tokens.typography.scale.xl;
+        let base = theme.tokens.typography.scale.base;
+        let sm = theme.tokens.typography.scale.sm;
+
+        children.push(Box::new(Text::new("Create your account").with_size(xl)));
+        children.push(Box::new(Text::new("Username").with_size(base)));
+        children.push(Box::new(
+            TextInput::new(Vec::new())
+                .with_id("installer.username")
+                .with_on_change_path(USERNAME_PATH),
+        ));
+        children.push(Box::new(
+            Text::new("Used to sign in and for your home directory.")
+                .with_size(sm)
+                .with_color(dim),
+        ));
+        children.push(Box::new(Text::new("Password").with_size(base)));
+        children.push(Box::new(
+            TextInput::new(Vec::new())
+                .with_id("installer.password")
+                .with_on_change_path(PASSWORD_PATH)
+                .with_secret(true),
+        ));
+        children.push(Box::new(
+            Text::new("Choose a strong password; you'll use it to log in.")
+                .with_size(sm)
+                .with_color(dim),
+        ));
+        children.push(nav_row(Step::Account, NEXT_PATH, "Next", false));
+    }
+
+    fn compose_keyboard_step(theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+        let dim = theme.text_dim;
+        let xl = theme.tokens.typography.scale.xl;
+        let sm = theme.tokens.typography.scale.sm;
+
+        children.push(Box::new(Text::new("Keyboard layout").with_size(xl)));
+        children.push(Box::new(
+            Text::new("Pick the layout that matches your keyboard. The preview below shows exactly what each key will type.")
+                .with_size(sm)
+                .with_color(dim),
+        ));
+        children.push(Box::new(
+            Dropdown::new(layouts::display_names(), KEYMAP_PATH)
+                .with_id("installer.keymap")
+                .with_placeholder("Select a keyboard layout"),
+        ));
+        children.push(Box::new(KeyboardView::new(KEYMAP_PATH)));
+        children.push(nav_row(Step::Keyboard, NEXT_PATH, "Next", false));
+    }
+
+    fn compose_options_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+        let dim = theme.text_dim;
+        let xl = theme.tokens.typography.scale.xl;
+        let base = theme.tokens.typography.scale.base;
+        let sm = theme.tokens.typography.scale.sm;
+
+        children.push(Box::new(Text::new("Installation options").with_size(xl)));
+
+        children.push(Box::new(Text::new("Filesystem").with_size(base)));
+        children.push(Box::new(SegChoice::new(
+            FILESYSTEMS
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+            (0..FILESYSTEMS.len()).map(fs_path).collect(),
+            self.selected_fs,
+        )));
+        children.push(Box::new(
+            Text::new(fs_description(self.selected_fs))
+                .with_size(sm)
+                .with_color(dim),
+        ));
+
+        children.push(Box::new(Text::new("Disk encryption").with_size(base)));
+        children.push(Box::new(
+            SegChoice::new(
+                ENCRYPT_LABELS
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
+                (0..ENCRYPT_LABELS.len()).map(encrypt_path).collect(),
+                usize::from(self.encrypt),
+            )
+            .with_test_id("encryption_choice"),
+        ));
+        children.push(Box::new(
+            Text::new(encrypt_description(self.encrypt, self.tpm2))
+                .with_size(sm)
+                .with_color(dim),
+        ));
+
+        // The extra unlock factors only make sense with encryption on,
+        // so they appear only then.
+        if self.encrypt {
+            let pin_label = if self.tpm2 {
+                "Unlock PIN (optional)"
+            } else {
+                "Boot passphrase (required — no TPM2 chip)"
+            };
+            children.push(Box::new(Text::new(pin_label).with_size(base)));
+            children.push(Box::new(
+                TextInput::new(Vec::new())
+                    .with_id("installer.pin")
+                    .with_on_change_path(PIN_PATH)
+                    .with_secret(true),
+            ));
+            children.push(Box::new(
+                Text::new("Add a PIN you'll type at boot alongside the TPM. Leave blank to unlock with the TPM alone.")
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+
+            children.push(Box::new(Text::new("Security key").with_size(base)));
+            children.push(Box::new(
+                SegChoice::new(
+                    FIDO2_LABELS
+                        .iter()
+                        .map(std::string::ToString::to_string)
+                        .collect(),
+                    (0..FIDO2_LABELS.len()).map(fido2_path).collect(),
+                    usize::from(self.fido2),
+                )
+                .with_test_id("fido2_choice"),
+            ));
+            children.push(Box::new(
+                Text::new("Optionally enroll a FIDO2 security key (e.g. a YubiKey) as another way to unlock. Plug it in before installing.")
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+        }
+
+        children.push(Box::new(Text::new("Hostname").with_size(base)));
+        children.push(Box::new(
+            TextInput::new(Vec::new())
+                .with_id("installer.hostname")
+                .with_on_change_path(HOSTNAME_PATH),
+        ));
+        children.push(Box::new(
+            Text::new("The name your computer uses on the network.")
+                .with_size(sm)
+                .with_color(dim),
+        ));
+
+        children.push(Box::new(Text::new("Time zone").with_size(base)));
+        children.push(Box::new(
+            Dropdown::new(self.timezones.clone(), TIMEZONE_PATH)
+                .with_id("installer.timezone")
+                .with_placeholder("Select a time zone")
+                .open_if(self.tz_open_for_shot),
+        ));
+        children.push(Box::new(
+            Text::new("Pick from the list — start typing to filter (IANA name, e.g. Europe/Amsterdam or UTC).")
+                .with_size(sm)
+                .with_color(dim),
+        ));
+
+        children.push(nav_row(Step::Options, NEXT_PATH, "Next", false));
+    }
+
+    fn compose_review_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+        let dim = theme.text_dim;
+        let danger = theme.tokens.colors.semantic.danger;
+        let xl = theme.tokens.typography.scale.xl;
+        let base = theme.tokens.typography.scale.base;
+        let sm = theme.tokens.typography.scale.sm;
+
+        children.push(Box::new(Text::new("Review your choices").with_size(xl)));
+
+        let dev = self
+            .selected_dev()
+            .unwrap_or_else(|| "<no disk>".to_string());
+        let disk_value = match self.selected_disk_ref() {
+            Some(d) if d.model.is_empty() => format!("{} ({})", d.name, d.size),
+            Some(d) => format!("{} ({}, {})", d.name, d.size, d.model),
+            None => "<no disk>".to_string(),
+        };
+        children.push(summary_row(theme, "Disk", &disk_value));
+        children.push(summary_row(theme, "Filesystem", self.filesystem()));
+        children.push(summary_row(theme, "Encryption", &self.encryption_summary()));
+        children.push(summary_row(theme, "Hostname", self.hostname.trim()));
+        children.push(summary_row(theme, "Time zone", self.timezone.trim()));
+        children.push(summary_row(theme, "Keyboard layout", self.keymap.trim()));
+        children.push(summary_row(theme, "Username", self.username.trim()));
+
+        children.push(Box::new(
+            Text::new(&format!("This will ERASE {dev} and all data on it."))
+                .with_size(base)
+                .with_color(danger),
+        ));
+
+        // Encryption generates a recovery key shown ONCE during the
+        // install. Make the user explicitly acknowledge they'll save
+        // it before they can proceed — otherwise a lost TPM = lost
+        // data with no warning.
+        if self.encrypt {
+            children.push(Box::new(
+                Text::new("A recovery key will be shown during install — it is your only backup if the TPM is reset or fails. Save it somewhere safe.")
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+            let ack_label = if self.recovery_ack {
+                "[x] I will save my recovery key"
+            } else {
+                "[ ] I will save my recovery key"
+            };
+            children.push(Box::new(
+                ActionButton::new(ack_label, RECOVERY_ACK_PATH).with_test_id("recovery_ack"),
+            ));
+        }
+
+        // Begin is gated on the recovery-key acknowledgement when
+        // encrypting (otherwise always enabled).
+        let begin_disabled = !self.encryption_ready();
+        children.push(nav_row(
+            Step::Review,
+            BEGIN_PATH,
+            "Begin Install",
+            begin_disabled,
+        ));
+    }
+
+    fn compose_install_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+        let dim = theme.text_dim;
+        let danger = theme.tokens.colors.semantic.danger;
+        let xl = theme.tokens.typography.scale.xl;
+        let sm = theme.tokens.typography.scale.sm;
+
+        match self.install_state {
+            InstallState::Done => {
+                children.push(Box::new(
+                    Text::new("qOS is installed")
+                        .with_size(xl)
+                        .with_color(theme.status_success),
+                ));
+                children.push(Box::new(
+                    Text::new("Installation complete. Remove the installer medium, then reboot.")
+                        .with_size(sm)
+                        .with_color(dim),
+                ));
+                children.push(Box::new(StatusLog::new(
+                    self.status_lines.clone(),
+                    STATUS_LOG_HEIGHT,
+                )));
+                children.push(finish_row());
+            }
+            InstallState::Failed => {
+                children.push(Box::new(
+                    Text::new("Installation failed")
+                        .with_size(xl)
+                        .with_color(danger),
+                ));
+                children.push(Box::new(
+                    Text::new("Something went wrong. Review the log, then go back to try again.")
+                        .with_size(sm)
+                        .with_color(dim),
+                ));
+                children.push(Box::new(StatusLog::new(
+                    self.status_lines.clone(),
+                    STATUS_LOG_HEIGHT,
+                )));
+                children.push(Box::new(ActionButton::new("Back", BACK_PATH)));
+            }
+            _ => {
+                children.push(Box::new(Text::new("Installing qOS…").with_size(xl)));
+                children.push(Box::new(
+                    Row::new().push(Box::new(Spinner::new())).push(Box::new(
+                        Text::new("Working — this can take a few minutes. Don't power off.")
+                            .with_size(sm)
+                            .with_color(dim),
+                    )),
+                ));
+                children.push(Box::new(StatusLog::new(
+                    self.status_lines.clone(),
+                    STATUS_LOG_HEIGHT,
+                )));
+            }
+        }
     }
 }
 
@@ -1406,14 +1461,9 @@ fn sample_install_log() -> Vec<String> {
     ]
 }
 
-impl Widget for InstallerApp {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !self.bootstrap_done {
-            self.bootstrap_crdt(state, root);
-            self.bootstrap_done = true;
-        }
-
-        // Cache the editable text fields for display / backend argv.
+impl InstallerApp {
+    /// Cache the editable text fields for display / backend argv.
+    fn sync_cached_fields(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(u) = Self::read_text(state, root, USERNAME_PATH) {
             self.username = u;
         }
@@ -1426,7 +1476,20 @@ impl Widget for InstallerApp {
         if let Some(k) = Self::read_text(state, root, KEYMAP_PATH) {
             self.keymap = k;
         }
+        // Cache the (masked) PIN text for the backend argv / stdin. Reading
+        // it here (rather than only after the encryption-toggle loop below)
+        // is safe: turning encryption off always clears `self.pin` directly
+        // (see `sync_selection_rising_edges`), so that write wins regardless
+        // of read order.
+        if let Some(pin) = Self::read_text(state, root, PIN_PATH) {
+            self.pin = pin;
+        }
+    }
 
+    /// Disk / filesystem / encryption / FIDO2 segmented-selector rising
+    /// edges — each selector raises a per-option boolean flag on pick,
+    /// which this drains and resolves into the corresponding index/state.
+    fn sync_selection_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // Disk-selection rising edges (only meaningful on the Disk step).
         for i in 0..self.disks.len() {
             let p = disk_path(i);
@@ -1466,7 +1529,12 @@ impl Widget for InstallerApp {
                             state.get(root, PIN_PATH).ok().flatten()
                             && let Ok(cur) = state.text(&pobj)
                         {
-                            let _ = state.splice_text(&pobj, 0, cur.chars().count() as isize, "");
+                            let _ = state.splice_text(
+                                &pobj,
+                                0,
+                                ui::num::isize_of_usize(cur.chars().count()),
+                                "",
+                            );
                         }
                         self.pin.clear();
                     }
@@ -1484,12 +1552,11 @@ impl Widget for InstallerApp {
                 self.dirty_structure = true;
             }
         }
+    }
 
-        // Cache the (masked) PIN text for the backend argv / stdin.
-        if let Some(pin) = Self::read_text(state, root, PIN_PATH) {
-            self.pin = pin;
-        }
-
+    /// Recovery-key acknowledgement + wizard-navigation (Back/Next/Begin)
+    /// and Finish-screen (Reboot/Power-off) rising edges.
+    fn sync_navigation_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // Recovery-key acknowledgement toggle (Review step, when encrypting).
         if Self::read_flag(state, root, RECOVERY_ACK_PATH) {
             let _ = state.put(root, RECOVERY_ACK_PATH, false);
@@ -1531,6 +1598,19 @@ impl Widget for InstallerApp {
                 self.run_power(PowerAction::PowerOff);
             }
         }
+    }
+}
+
+impl Widget for InstallerApp {
+    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !self.bootstrap_done {
+            self.bootstrap_crdt(state, root);
+            self.bootstrap_done = true;
+        }
+
+        self.sync_cached_fields(state, root);
+        self.sync_selection_rising_edges(state, root);
+        self.sync_navigation_rising_edges(state, root);
 
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
@@ -1547,6 +1627,13 @@ impl Widget for InstallerApp {
         let card_node = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
+        // `new_with_children` only errors for a child `NodeId` from a
+        // different tree, which never happens here since `card_node` was
+        // just built in this same tree by the call above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "card_node was just built in this same tree"
+        )]
         let root = taffy
             .new_with_children(
                 Style {
@@ -1569,6 +1656,10 @@ impl Widget for InstallerApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `layout` only errors for a `NodeId` from a different tree, which
+        // never happens here since `node` is always the id this same widget
+        // received from its own `build_layout` call.
+        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
@@ -1916,7 +2007,12 @@ mod tests {
         // Select Dvorak through the dropdown's CRDT Text path.
         let (_, kobj) = doc.get(&root, KEYMAP_PATH).unwrap().unwrap();
         let cur = doc.text(&kobj).unwrap();
-        let _ = doc.splice_text(&kobj, 0, cur.chars().count() as isize, "Dvorak");
+        let _ = doc.splice_text(
+            &kobj,
+            0,
+            ui::num::isize_of_usize(cur.chars().count()),
+            "Dvorak",
+        );
         app.sync(&mut doc, &root);
         assert_eq!(app.keymap, "Dvorak");
         let opts = app.install_options();
@@ -2413,7 +2509,7 @@ mod tests {
     fn count_focusable(widget: &dyn Widget) -> usize {
         let mut n = usize::from(widget.is_focusable());
         for c in widget.children() {
-            n += count_focusable(c);
+            n = n.saturating_add(count_focusable(c));
         }
         n
     }

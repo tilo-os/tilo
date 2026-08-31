@@ -140,6 +140,15 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`MusicAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a Music action into a
 /// replayable envelope.
+///
+/// # Panics
+///
+/// Never in practice: every [`MusicAction`] variant holds only `String`/`usize`
+/// fields, which serialize losslessly.
+#[allow(
+    clippy::expect_used,
+    reason = "MusicAction holds only String/usize fields, which serde_json can always serialize"
+)]
 pub fn encode(action: &MusicAction) -> EncodedAction {
     EncodedAction::encode(MUSIC_ACTION_TYPE, action).expect("MusicAction is always serializable")
 }
@@ -248,6 +257,10 @@ pub struct MusicResourceCtx {
     pub playlists: Vec<PlaylistResource>,
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "action is always a MusicAction, which encodes losslessly (see encode()'s own allow)"
+)]
 fn immediate_spec(id: &str, label: &str, action: &MusicAction) -> ActionSpec {
     ActionSpec::immediate(id, label, MUSIC_ACTION_TYPE, action).expect("encode music action")
 }
@@ -359,14 +372,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 

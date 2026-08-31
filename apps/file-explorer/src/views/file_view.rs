@@ -87,6 +87,29 @@ pub struct FolderDropTarget {
 /// layout (cleared + refilled), analogous to the rename-rect channel.
 pub type DropTargets = Rc<RefCell<Vec<FolderDropTarget>>>;
 
+/// Per-item inputs to [`FileView::draw_file_visual`], bundled into one
+/// argument so the paint call stays under clippy's argument-count limit.
+#[derive(Clone, Copy)]
+struct FileVisual<'a> {
+    rect: Rect,
+    entry: &'a Entry,
+    selected: bool,
+    glyph_color: Color,
+    grid: bool,
+}
+
+/// Layout already resolved by [`FileView::draw_list_row`], handed to
+/// [`FileView::draw_list_row_text`] so that helper stays under clippy's
+/// argument-count limit.
+#[derive(Clone, Copy)]
+struct RowTextLayout {
+    i: usize,
+    row: Rect,
+    name_rect: Rect,
+    name_x: f64,
+    selected: bool,
+}
+
 /// A list column the header exposes for click-to-sort. `sort_col` is the index
 /// the app's `SortColumn` command understands (1 = name, 2 = size, 3 = date).
 struct ColSpec {
@@ -181,6 +204,7 @@ impl FileView {
 
     /// Bind the host's folder-drop-target sink; the view republishes its folder
     /// rows into it each layout so the host can hit-test a drag's drop point.
+    #[must_use]
     pub fn with_drop_targets(mut self, sink: DropTargets) -> Self {
         self.drop_targets = Some(sink);
         self
@@ -189,11 +213,13 @@ impl FileView {
     /// Bind the shared thumbnail service (+ the app's peniko memo) so file cells
     /// paint real previews for images/PDF/ebook (and host-provided previews for
     /// workspace files), falling back to a type badge otherwise.
+    #[must_use]
     pub fn with_thumbs(mut self, thumbs: Option<ThumbCtx>) -> Self {
         self.thumbs = thumbs;
         self
     }
 
+    #[must_use]
     pub fn mode(mut self, mode: ViewMode) -> Self {
         self.mode = mode;
         self
@@ -202,11 +228,13 @@ impl FileView {
     /// Render item `index` (if any) as an in-place rename: omit its label and
     /// publish the label's on-screen rect into `sink` so the host can draw the
     /// shared rename editor over it.
+    #[must_use]
     pub fn with_rename(mut self, index: Option<usize>, sink: Rc<Cell<Option<Rect>>>) -> Self {
         self.renaming = index;
         self.rename_rect = Some(sink);
         self
     }
+    #[must_use]
     pub fn with_scale(mut self, scale: f64) -> Self {
         self.scale = scale.clamp(0.5, 3.0);
         self
@@ -218,10 +246,12 @@ impl FileView {
     /// since the rebuild (a *still* double-click's second press) would hit-test
     /// against `(0, 0)` and miss the row, so the folder never opens. Seeding the
     /// real position makes press hit-testing correct from the first event.
+    #[must_use]
     pub fn with_cursor(mut self, cursor: Point) -> Self {
         self.last_cursor = cursor;
         self
     }
+    #[must_use]
     pub fn with_sort(mut self, by: SortBy, order: SortOrder) -> Self {
         self.sort_by = by;
         self.sort_order = order;
@@ -251,7 +281,7 @@ impl FileView {
     fn body_text(&self, theme: &Theme) -> f32 {
         (f64::from(theme.tokens.typography.scale.base) * self.scale) as f32
     }
-    fn header_text(&self, theme: &Theme) -> f32 {
+    fn header_text(theme: &Theme) -> f32 {
         theme.tokens.typography.scale.sm
     }
 
@@ -481,7 +511,7 @@ impl FileView {
     ) {
         let tokens = &theme.tokens;
         let header_h = self.header_h();
-        let hsize = self.header_text(theme);
+        let hsize = Self::header_text(theme);
         let top = self.header_top(vp);
         // Opaque band matching the content background so scrolled rows never
         // bleed through the (transparent-text) header.
@@ -547,121 +577,174 @@ impl FileView {
         theme: &Theme,
         vp: Option<Rect>,
     ) {
-        let tokens = &theme.tokens;
-        let size = self.body_text(theme);
-        let icon_px = LIST_ICON * self.scale;
         for (i, entry) in self.entries.iter().enumerate() {
             let row = self.list_row_rect(i);
             if cull(vp, row) {
                 continue;
             }
-            let selected = self.selection.is_selected(i);
-            let hovered = self.hover == Some(i) && !selected;
-            // Row highlight — inset so it reads as a pill with breathing room.
-            if selected || hovered {
-                let hl = Rect::new(row.x0 + 6.0, row.y0 + 2.0, row.x1 - 6.0, row.y1 - 2.0);
-                let bg = if selected {
-                    tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX]
-                } else {
-                    tokens.colors.surface_white_10
-                };
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    bg,
-                    None,
-                    &RoundedRect::from_rect(hl, ROW_RADIUS),
-                );
-            }
-
-            // Icon + name.
-            let name_rect = self.header_col_rect(0);
-            let icon_x = name_rect.x0 + 4.0;
-            let icon_y = row.y0 + (row.height() - icon_px) / 2.0;
-            let icon_color = if selected {
-                Color::WHITE
-            } else if entry.is_dir {
-                tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX]
-            } else {
-                tokens.colors.text_dim
-            };
-            let file_icon_rect = Rect::new(icon_x, icon_y, icon_x + icon_px, icon_y + icon_px);
-            // A real thumbnail when ready, else the compact type glyph.
-            self.draw_file_visual(
-                scene,
-                transform,
-                tr,
-                theme,
-                file_icon_rect,
-                entry,
-                selected,
-                icon_color,
-                false,
-            );
-            // Sync-state emblem for workspace files (cloud / downloading / local).
-            if let Some(state) = entry.sync_state {
-                draw_sync_badge(scene, transform, file_icon_rect, state, self.scale, theme);
-            }
-            // Optically center the row text so it lines up with the icon, which is
-            // centered by its box (see `crate::text_layout`).
-            let text_y = crate::text_layout::centered_text_y(row.y0, row.height(), size);
-            let name_x = icon_x + icon_px + 10.0;
-            if self.renaming == Some(i) {
-                // Publish the name field's rect and omit the label; the host
-                // draws the in-place rename editor here.
-                if let Some(sink) = &self.rename_rect {
-                    sink.set(Some(Rect::new(
-                        name_x - 4.0,
-                        row.y0 + 3.0,
-                        name_rect.x1 - 4.0,
-                        row.y1 - 3.0,
-                    )));
-                }
-            } else {
-                let label = if entry.is_conflict() {
-                    format!("{}  \u{26A0}", entry.name)
-                } else {
-                    entry.name.clone()
-                };
-                let avail = (name_rect.x1 - name_x - 6.0).max(0.0);
-                let label = truncate(tr, &label, size, avail);
-                tr.draw_text(
-                    scene,
-                    &label,
-                    size,
-                    Self::cell_text(theme, selected),
-                    transform * Affine::translate((name_x, text_y)),
-                    None,
-                );
-            }
-            // Size.
-            if self.show_size() {
-                let size_rect = self.header_col_rect(1);
-                tr.draw_text(
-                    scene,
-                    &human_size(entry),
-                    size,
-                    Self::cell_dim(theme, selected),
-                    transform * Affine::translate((size_rect.x0, text_y)),
-                    None,
-                );
-            }
-            // Modified.
-            if self.show_modified() {
-                let mod_rect = self.header_col_rect(2);
-                tr.draw_text(
-                    scene,
-                    &format_modified(entry.modified),
-                    size,
-                    Self::cell_dim(theme, selected),
-                    transform * Affine::translate((mod_rect.x0, text_y)),
-                    None,
-                );
-            }
+            self.draw_list_row(scene, transform, tr, theme, i, entry);
         }
         // Header last so it composites above the rows (and stays put while
         // they scroll beneath the pinned band).
         self.draw_list_header(scene, transform, tr, theme, vp);
+    }
+
+    /// Paint list row `i` (icon, name, size, modified) — split out of
+    /// [`Self::draw_list`] purely to stay under the line-count limit.
+    fn draw_list_row(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        i: usize,
+        entry: &Entry,
+    ) {
+        let tokens = &theme.tokens;
+        let icon_size_px = LIST_ICON * self.scale;
+        let row = self.list_row_rect(i);
+        let selected = self.selection.is_selected(i);
+        let hovered = self.hover == Some(i) && !selected;
+        // Row highlight — inset so it reads as a pill with breathing room.
+        if selected || hovered {
+            let hl = Rect::new(row.x0 + 6.0, row.y0 + 2.0, row.x1 - 6.0, row.y1 - 2.0);
+            let bg = if selected {
+                tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX]
+            } else {
+                tokens.colors.surface_white_10
+            };
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                bg,
+                None,
+                &RoundedRect::from_rect(hl, ROW_RADIUS),
+            );
+        }
+
+        // Icon + name.
+        let name_rect = self.header_col_rect(0);
+        let icon_x = name_rect.x0 + 4.0;
+        let icon_y = row.y0 + (row.height() - icon_size_px) / 2.0;
+        let icon_color = if selected {
+            Color::WHITE
+        } else if entry.is_dir {
+            tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX]
+        } else {
+            tokens.colors.text_dim
+        };
+        let file_icon_rect =
+            Rect::new(icon_x, icon_y, icon_x + icon_size_px, icon_y + icon_size_px);
+        // A real thumbnail when ready, else the compact type glyph.
+        self.draw_file_visual(
+            scene,
+            transform,
+            tr,
+            theme,
+            FileVisual {
+                rect: file_icon_rect,
+                entry,
+                selected,
+                glyph_color: icon_color,
+                grid: false,
+            },
+        );
+        // Sync-state emblem for workspace files (cloud / downloading / local).
+        if let Some(state) = entry.sync_state {
+            draw_sync_badge(scene, transform, file_icon_rect, state, self.scale, theme);
+        }
+        let name_x = icon_x + icon_size_px + 10.0;
+        self.draw_list_row_text(
+            scene,
+            transform,
+            tr,
+            theme,
+            entry,
+            RowTextLayout {
+                i,
+                row,
+                name_rect,
+                name_x,
+                selected,
+            },
+        );
+    }
+
+    /// Paint row `layout.i`'s name (or the in-place rename rect), size and
+    /// modified columns — the rest of [`Self::draw_list_row`], split out
+    /// purely to stay under the line-count limit.
+    fn draw_list_row_text(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        entry: &Entry,
+        layout: RowTextLayout,
+    ) {
+        let RowTextLayout {
+            i,
+            row,
+            name_rect,
+            name_x,
+            selected,
+        } = layout;
+        let size = self.body_text(theme);
+        // Optically center the row text so it lines up with the icon, which is
+        // centered by its box (see `crate::text_layout`).
+        let text_y = crate::text_layout::centered_text_y(row.y0, row.height(), size);
+        if self.renaming == Some(i) {
+            // Publish the name field's rect and omit the label; the host
+            // draws the in-place rename editor here.
+            if let Some(sink) = &self.rename_rect {
+                sink.set(Some(Rect::new(
+                    name_x - 4.0,
+                    row.y0 + 3.0,
+                    name_rect.x1 - 4.0,
+                    row.y1 - 3.0,
+                )));
+            }
+        } else {
+            let label = if entry.is_conflict() {
+                format!("{}  \u{26A0}", entry.name)
+            } else {
+                entry.name.clone()
+            };
+            let avail = (name_rect.x1 - name_x - 6.0).max(0.0);
+            let label = truncate(tr, &label, size, avail);
+            tr.draw_text(
+                scene,
+                &label,
+                size,
+                Self::cell_text(theme, selected),
+                transform * Affine::translate((name_x, text_y)),
+                None,
+            );
+        }
+        // Size.
+        if self.show_size() {
+            let size_rect = self.header_col_rect(1);
+            tr.draw_text(
+                scene,
+                &human_size(entry),
+                size,
+                Self::cell_dim(theme, selected),
+                transform * Affine::translate((size_rect.x0, text_y)),
+                None,
+            );
+        }
+        // Modified.
+        if self.show_modified() {
+            let mod_rect = self.header_col_rect(2);
+            tr.draw_text(
+                scene,
+                &format_modified(entry.modified),
+                size,
+                Self::cell_dim(theme, selected),
+                transform * Affine::translate((mod_rect.x0, text_y)),
+                None,
+            );
+        }
     }
 
     // --- thumbnails -------------------------------------------------------
@@ -670,7 +753,7 @@ impl FileView {
     /// Local files key on `(path, mtime, size)` — hashing the whole file on the
     /// UI thread would be the jank the off-thread service exists to avoid, and
     /// that tuple still changes whenever the content does.
-    fn thumb_key(&self, ctx: &ThumbCtx, entry: &Entry) -> ThumbKey {
+    fn thumb_key(ctx: &ThumbCtx, entry: &Entry) -> ThumbKey {
         let mtime_ms = entry
             .modified
             .map_or(0, |t| t.timestamp_millis().max(0) as u64);
@@ -683,13 +766,12 @@ impl FileView {
     /// previewed, and a projected file is never hydrated just to preview it.
     /// Ordinary local files are generated by the shared service directly.
     fn request_thumb(
-        &self,
         ctx: &ThumbCtx,
         entry: &Entry,
         key: ThumbKey,
         category: FileCategory,
     ) -> ThumbState {
-        self.request_thumb_in(
+        Self::request_thumb_in(
             ctx,
             entry,
             key,
@@ -703,7 +785,6 @@ impl FileView {
     /// testable without mutating the process environment. Production always
     /// reaches it through [`Self::request_thumb`].
     fn request_thumb_in(
-        &self,
         ctx: &ThumbCtx,
         entry: &Entry,
         key: ThumbKey,
@@ -731,12 +812,7 @@ impl FileView {
 
     /// The `peniko` image for a ready thumbnail, converted once and memoised by
     /// key so a scrolling grid never rebuilds the blob per frame.
-    fn thumb_peniko(
-        &self,
-        ctx: &ThumbCtx,
-        key: ThumbKey,
-        rgba: &thumbnail::RgbaThumb,
-    ) -> PenikoImage {
+    fn thumb_peniko(ctx: &ThumbCtx, key: ThumbKey, rgba: &thumbnail::RgbaThumb) -> PenikoImage {
         if let Some(img) = ctx.imgs.borrow().get(&key) {
             return img.clone();
         }
@@ -761,12 +837,15 @@ impl FileView {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        rect: Rect,
-        entry: &Entry,
-        selected: bool,
-        glyph_color: Color,
-        grid: bool,
+        visual: FileVisual,
     ) {
+        let FileVisual {
+            rect,
+            entry,
+            selected,
+            glyph_color,
+            grid,
+        } = visual;
         // Directories keep their accent folder glyph — no preview, no badge.
         if entry.is_dir {
             self.draw_glyph(scene, transform, rect, entry, glyph_color);
@@ -781,9 +860,9 @@ impl FileView {
             return;
         };
         let category = category_for_path(&entry.path);
-        let key = self.thumb_key(&ctx, entry);
-        if let ThumbState::Ready(rgba) = self.request_thumb(&ctx, entry, key, category) {
-            let img = self.thumb_peniko(&ctx, key, &rgba);
+        let key = Self::thumb_key(&ctx, entry);
+        if let ThumbState::Ready(rgba) = Self::request_thumb(&ctx, entry, key, category) {
+            let img = Self::thumb_peniko(&ctx, key, &rgba);
             let radius = if grid {
                 8.0 * self.scale
             } else {
@@ -894,7 +973,7 @@ impl FileView {
     ) {
         let tokens = &theme.tokens;
         let size = self.body_text(theme);
-        let icon_px = GRID_ICON * self.scale;
+        let icon_size_px = GRID_ICON * self.scale;
         for (i, entry) in self.entries.iter().enumerate() {
             let cell = self.cell_rect(i);
             if cull(vp, cell) {
@@ -918,7 +997,11 @@ impl FileView {
             }
             // A preview tile centred in the upper portion — larger than the bare
             // glyph so a real thumbnail reads well; directories keep the glyph.
-            let preview_px = if entry.is_dir { icon_px } else { icon_px * 1.3 };
+            let preview_px = if entry.is_dir {
+                icon_size_px
+            } else {
+                icon_size_px * 1.3
+            };
             let icon_x = cell.x0 + (self.cell_w() - preview_px) / 2.0;
             let icon_y = cell.y0 + 12.0 * self.scale;
             let icon_color = if selected {
@@ -935,11 +1018,13 @@ impl FileView {
                 transform,
                 tr,
                 theme,
-                file_icon_rect,
-                entry,
-                selected,
-                icon_color,
-                true,
+                FileVisual {
+                    rect: file_icon_rect,
+                    entry,
+                    selected,
+                    glyph_color: icon_color,
+                    grid: true,
+                },
             );
             // Sync-state emblem for workspace files (cloud / downloading / local).
             if let Some(state) = entry.sync_state {
@@ -998,6 +1083,12 @@ impl Widget for FileView {
         // *measured* content height (all the rows / every grid row), so the
         // Scrollable's content overflows the viewport and the wheel +
         // scrollbar thumb move the list.
+        // `new_leaf` only fails on tree-internal bookkeeping errors, never on
+        // caller input; there is none to report here.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "new_leaf cannot fail for a freshly built style"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -1018,8 +1109,8 @@ impl Widget for FileView {
         available: taffy::Size<taffy::AvailableSpace>,
         _tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let width = known.width.map_or(
-            match available.width {
+        let width = known.width.map_or_else(
+            || match available.width {
                 taffy::AvailableSpace::Definite(w) => f64::from(w),
                 _ => self.cell_w() + 2.0 * self.pad_x(),
             },
@@ -1035,6 +1126,12 @@ impl Widget for FileView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `node` was created by `build_layout` in this same tree, so a lookup
+        // miss would mean the frame cycle called these out of order.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
+        )]
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -1379,7 +1476,10 @@ fn truncate(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String 
     let mut keep = chars.len();
     while keep > 0 {
         keep -= 1;
-        let candidate: String = chars[..keep].iter().collect::<String>() + "\u{2026}";
+        let candidate: String = chars
+            .get(..keep)
+            .map_or_else(String::new, |s| s.iter().collect())
+            + "\u{2026}";
         let (cw, _) = tr.measure(&candidate, size, None);
         if f64::from(cw) <= max_w {
             return candidate;
@@ -1398,14 +1498,14 @@ mod tests {
         unsafe { std::mem::zeroed() }
     }
 
-    fn dispatch(v: &mut FileView, tree: &TaffyTree<()>, node: NodeId, ev: WindowEvent) {
+    fn dispatch(v: &mut FileView, tree: &TaffyTree<()>, node: NodeId, ev: &WindowEvent) {
         let mut handled = false;
         let mut focus = None;
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let mods = winit::event::Modifiers::default();
         v.handle_event(
-            &ev,
+            ev,
             1.0,
             &mods,
             &mut doc,
@@ -1510,12 +1610,12 @@ mod tests {
         };
         let sink = new_sink();
         let sel = SelectionModel::new();
-        let v = FileView::new(std::slice::from_ref(&entry), &sel, &sink);
-        let key = v.thumb_key(&ctx, &entry);
+        let _v = FileView::new(std::slice::from_ref(&entry), &sel, &sink);
+        let key = FileView::thumb_key(&ctx, &entry);
 
         // First look schedules generation on the shared service.
         assert!(matches!(
-            v.request_thumb(&ctx, &entry, key, thumbnail::FileCategory::Image),
+            FileView::request_thumb(&ctx, &entry, key, thumbnail::FileCategory::Image),
             ThumbState::Loading
         ));
         assert_eq!(
@@ -1527,7 +1627,7 @@ mod tests {
         service.block_until_idle(std::time::Duration::from_secs(5));
         assert!(
             matches!(
-                v.request_thumb(&ctx, &entry, key, thumbnail::FileCategory::Image),
+                FileView::request_thumb(&ctx, &entry, key, thumbnail::FileCategory::Image),
                 ThumbState::Ready(_)
             ),
             "the service produced a real preview the cell reads back"
@@ -1583,15 +1683,16 @@ mod tests {
         let (service, ctx) = thumb_ctx(&dir.path().join("cache"));
         let sink = new_sink();
         let sel = SelectionModel::new();
-        let v = FileView::new(std::slice::from_ref(&entry), &sel, &sink);
-        let key = v.thumb_key(&ctx, &entry);
+        let _v = FileView::new(std::slice::from_ref(&entry), &sel, &sink);
+        let key = FileView::thumb_key(&ctx, &entry);
 
         assert!(matches!(
-            v.request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
+            FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
             ThumbState::Loading
         ));
         service.block_until_idle(std::time::Duration::from_secs(5));
-        let state = v.request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true);
+        let state =
+            FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true);
         let ready = state
             .ready()
             .expect("the workspace photo previews from its own bytes");
@@ -1623,14 +1724,15 @@ mod tests {
         let (service, ctx) = thumb_ctx(&dir.path().join("cache"));
         let sink = new_sink();
         let sel = SelectionModel::new();
-        let v = FileView::new(std::slice::from_ref(&entry), &sel, &sink);
-        let key = v.thumb_key(&ctx, &entry);
+        let _v = FileView::new(std::slice::from_ref(&entry), &sel, &sink);
+        let key = FileView::thumb_key(&ctx, &entry);
         assert!(matches!(
-            v.request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
+            FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
             ThumbState::Loading
         ));
         service.block_until_idle(std::time::Duration::from_secs(5));
-        let state = v.request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true);
+        let state =
+            FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true);
         let ready = state.ready().expect("the host's preview is adopted");
         assert_eq!(
             (ready.width, ready.height),
@@ -1650,10 +1752,10 @@ mod tests {
         let (service, ctx) = thumb_ctx(&dir.path().join("cache"));
         let sink = new_sink();
         let sel = SelectionModel::new();
-        let v = FileView::new(std::slice::from_ref(&entry), &sel, &sink);
-        let key = v.thumb_key(&ctx, &entry);
+        let _v = FileView::new(std::slice::from_ref(&entry), &sel, &sink);
+        let key = FileView::thumb_key(&ctx, &entry);
         assert!(matches!(
-            v.request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
+            FileView::request_thumb_in(&ctx, &entry, key, thumbnail::FileCategory::Image, true),
             ThumbState::Badge(thumbnail::FileCategory::Image)
         ));
         assert_eq!(
@@ -1675,10 +1777,10 @@ mod tests {
         let entry = ent("archive.zip", false);
         let sink = new_sink();
         let sel = SelectionModel::new();
-        let v = FileView::new(std::slice::from_ref(&entry), &sel, &sink);
-        let key = v.thumb_key(&ctx, &entry);
+        let _v = FileView::new(std::slice::from_ref(&entry), &sel, &sink);
+        let key = FileView::thumb_key(&ctx, &entry);
         assert!(matches!(
-            v.request_thumb(&ctx, &entry, key, thumbnail::FileCategory::Archive),
+            FileView::request_thumb(&ctx, &entry, key, thumbnail::FileCategory::Archive),
             ThumbState::Badge(thumbnail::FileCategory::Archive)
         ));
         assert_eq!(service.pending(), 0, "a badge type never schedules work");
@@ -1813,7 +1915,7 @@ mod tests {
             &mut v,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: dev(),
                 position: (50.0, y).into(),
             },
@@ -1822,7 +1924,7 @@ mod tests {
             &mut v,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: dev(),
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
@@ -1852,7 +1954,7 @@ mod tests {
             &mut v,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: dev(),
                 position: (50.0, y).into(),
             },
@@ -1861,7 +1963,7 @@ mod tests {
             &mut v,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: dev(),
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
@@ -1912,7 +2014,7 @@ mod tests {
             &mut v,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: dev(),
                 position: (50.0, y).into(),
             },
@@ -1921,7 +2023,7 @@ mod tests {
             &mut v,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: dev(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -1931,7 +2033,7 @@ mod tests {
             &mut v,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: dev(),
                 position: (120.0, y).into(),
             },
@@ -1960,7 +2062,7 @@ mod tests {
             &mut v,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: dev(),
                 position: (50.0, y).into(),
             },
@@ -1969,7 +2071,7 @@ mod tests {
             &mut v,
             &tree,
             node,
-            WindowEvent::MouseInput {
+            &WindowEvent::MouseInput {
                 device_id: dev(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -1979,7 +2081,7 @@ mod tests {
             &mut v,
             &tree,
             node,
-            WindowEvent::CursorMoved {
+            &WindowEvent::CursorMoved {
                 device_id: dev(),
                 position: (120.0, y).into(),
             },

@@ -11,6 +11,16 @@
 //! attributed must stay unattributed. Marking prose the agent did not write
 //! would make the mark worthless in exactly the frame where it matters.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use automerge::AutoCommit;
 use word_processor::actions::{RegionKind, WordProcessorAction};
 

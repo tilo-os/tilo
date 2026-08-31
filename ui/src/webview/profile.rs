@@ -98,7 +98,9 @@ pub fn record_input(kind: &'static str) {
     if !enabled() {
         return;
     }
-    let mut s = state().lock().unwrap();
+    let mut s = state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if s.pending_input.is_none() {
         s.pending_input = Some((Instant::now(), kind));
     }
@@ -111,7 +113,9 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
         return;
     }
     let now = Instant::now();
-    let mut s = state().lock().unwrap();
+    let mut s = state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     s.started.get_or_insert(now);
 
     if let Some(prev) = s.last_frame {
@@ -130,12 +134,12 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
     }
 
     match s.last_dims {
-        Some(d) if d != (width, height) => s.dims_changes += 1,
+        Some(d) if d != (width, height) => s.dims_changes = s.dims_changes.saturating_add(1),
         _ => {}
     }
     s.last_dims = Some((width, height));
 
-    s.frame_count += 1;
+    s.frame_count = s.frame_count.saturating_add(1);
     let n = s.frame_count;
     if TRACE.load(Ordering::Relaxed) && n <= TRACE_FRAMES {
         eprintln!(
@@ -155,9 +159,14 @@ pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
     if !enabled() {
         return;
     }
-    let mut s = state().lock().unwrap();
-    s.draw_count += 1;
-    let n = s.draw_count;
+    // Scoped so the mutex guard is dropped before the (I/O) eprintln! below.
+    let n = {
+        let mut s = state()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        s.draw_count = s.draw_count.saturating_add(1);
+        s.draw_count
+    };
     if TRACE.load(Ordering::Relaxed) && n <= TRACE_FRAMES {
         match frame_dims {
             Some((w, h)) => {
@@ -173,6 +182,12 @@ pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
 impl State {
     fn print_summary(&self) {
         let elapsed = self.started.map_or(0.0, |s| s.elapsed().as_secs_f64());
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "frame_count is a live-session counter; reaching 2^52 frames \
+                      (~14,000 years at 10kHz) is not a real scenario, so the f64 \
+                      conversion for an fps estimate stays exact in practice"
+        )]
         let fps = if elapsed > 0.0 {
             self.frame_count as f64 / elapsed
         } else {
@@ -209,18 +224,38 @@ impl Ring {
     }
 
     fn push(&mut self, v: f64) {
-        self.buf[self.next] = v;
-        self.next = (self.next + 1) % SAMPLES;
-        self.len = (self.len + 1).min(SAMPLES);
+        if let Some(slot) = self.buf.get_mut(self.next) {
+            *slot = v;
+        }
+        self.next = self.next.wrapping_add(1) % SAMPLES;
+        self.len = self.len.saturating_add(1).min(SAMPLES);
     }
 
     fn report(&self, label: &str) {
         if self.len == 0 {
             return;
         }
-        let mut sorted: Vec<f64> = self.buf[..self.len].to_vec();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let pct = |p: f64| sorted[((sorted.len() as f64 * p) as usize).min(sorted.len() - 1)];
+        let mut sorted: Vec<f64> = self.buf.get(..self.len).unwrap_or(&[]).to_vec();
+        sorted.sort_by(f64::total_cmp);
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "sorted.len() is at most SAMPLES (512), far inside f64's exact-integer \
+                      range, and every call below passes a fixed non-negative percentile \
+                      constant"
+        )]
+        let pct = |p: f64| {
+            let idx = (sorted.len() as f64 * p) as usize;
+            sorted
+                .get(idx.min(sorted.len().saturating_sub(1)))
+                .copied()
+                .unwrap_or(0.0)
+        };
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "sorted.len() is at most SAMPLES (512), far inside f64's exact-integer range"
+        )]
         let mean = sorted.iter().sum::<f64>() / sorted.len() as f64;
         eprintln!(
             "[webview-profile]   {label:<22} n={n} mean {mean:.1} p50 {p50:.1} p95 {p95:.1} p99 {p99:.1} max {max:.1}",
@@ -228,7 +263,7 @@ impl Ring {
             p50 = pct(0.50),
             p95 = pct(0.95),
             p99 = pct(0.99),
-            max = sorted[sorted.len() - 1],
+            max = sorted.last().copied().unwrap_or(0.0),
         );
     }
 }
@@ -242,7 +277,9 @@ pub fn print_final_summary() {
     }
     if let Some(m) = STATE.get() {
         eprintln!("[webview-profile] --- final ---");
-        m.lock().unwrap().print_summary();
+        m.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .print_summary();
     }
 }
 
@@ -254,12 +291,22 @@ mod tests {
     fn ring_percentiles_are_ordered() {
         let mut r = Ring::new();
         for i in 0..100 {
-            r.push(i as f64);
+            r.push(f64::from(i));
         }
         let mut sorted: Vec<f64> = r.buf[..r.len].to_vec();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         // p50 of 0..100 sits mid-range, p95 near the top.
-        let pct = |p: f64| sorted[((sorted.len() as f64 * p) as usize).min(sorted.len() - 1)];
+        let pct = |p: f64| {
+            let len = u32::try_from(sorted.len()).unwrap_or(u32::MAX);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "p is a fixed non-negative percentile constant, so the \
+                          resulting index is always in range"
+            )]
+            let idx = (f64::from(len) * p) as usize;
+            sorted[idx.min(sorted.len() - 1)]
+        };
         assert!(pct(0.50) >= 45.0 && pct(0.50) <= 55.0);
         assert!(pct(0.95) >= 90.0);
     }
@@ -268,11 +315,12 @@ mod tests {
     fn ring_wraps_and_keeps_recent() {
         let mut r = Ring::new();
         for i in 0..(SAMPLES + 10) {
-            r.push(i as f64);
+            let value = u32::try_from(i).unwrap_or(u32::MAX);
+            r.push(f64::from(value));
         }
         assert_eq!(r.len, SAMPLES);
         // Oldest ten were overwritten; the minimum retained is >= 10.
-        let min = r.buf.iter().cloned().fold(f64::INFINITY, f64::min);
+        let min = r.buf.iter().copied().fold(f64::INFINITY, f64::min);
         assert!(min >= 10.0);
     }
 }

@@ -7,6 +7,16 @@
 //! drive real winit events plus the per-frame harvest hooks
 //! `Widget::update` runs in production.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use shell::shell::build_nirios_overlay_host_with_chrome;
@@ -33,7 +43,7 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
     let strip_id = StripId::new();
 
     let mk_tab = |gid: u64| Tab {
-        id: gid * 10 + 1,
+        id: gid.saturating_mul(10).saturating_add(1),
         title: format!("G{gid}"),
         tile: TileContent::Stub {
             kind: AppKind::Other("Test".into()),
@@ -45,7 +55,7 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
         .map(|&gid| WindowGroup {
             id: gid,
             tabs: vec![mk_tab(gid)],
-            active_tab: gid * 10 + 1,
+            active_tab: gid.saturating_mul(10).saturating_add(1),
             width: WindowWidth::Normal,
             maximized: false,
         })
@@ -147,14 +157,14 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
     }
 }
 
-fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: WindowEvent) {
+fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
     let mut doc = automerge::AutoCommit::new();
     let doc_root = automerge::ROOT.clone();
     let modifiers = Modifiers::default();
     let mut handled = false;
     let mut focus: Option<NodeId> = None;
     host.handle_event(
-        &event,
+        event,
         1.0,
         &modifiers,
         &mut doc,
@@ -208,7 +218,7 @@ fn cursor(host: &mut ShellOverlayHost, layout: &Layout, p: Point) {
     dispatch(
         host,
         layout,
-        WindowEvent::CursorMoved {
+        &WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(p.x, p.y),
         },
@@ -219,7 +229,7 @@ fn press(host: &mut ShellOverlayHost, layout: &Layout) {
     dispatch(
         host,
         layout,
-        WindowEvent::MouseInput {
+        &WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -231,7 +241,7 @@ fn release(host: &mut ShellOverlayHost, layout: &Layout) {
     dispatch(
         host,
         layout,
-        WindowEvent::MouseInput {
+        &WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -242,6 +252,11 @@ fn release(host: &mut ShellOverlayHost, layout: &Layout) {
 // 1. Horizontal window-group resize
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing tree via tree(); the read-guard's lifetime \
+              is tied to st's borrow, so it can't be dropped before tree's last use"
+)]
 fn resize_handle_drag_persists_new_group_widths_into_tree() {
     let (tree, strip_id, ids) = single_strip_tree(&[100, 200]);
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
@@ -303,6 +318,11 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
 /// pins at the display's minimum and the growing one absorbs only the
 /// slack, preserving the pair sum, and the clamped widths persist.
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing tree via tree(); the read-guard's lifetime \
+              is tied to st's borrow, so it can't be dropped before tree's last use"
+)]
 fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let (mut tree, strip_id, ids) = single_strip_tree(&[100, 200]);
     // Start both at Narrow. From two Normals the right group can't reach its
@@ -372,6 +392,11 @@ fn group_grab_point(host: &mut ShellOverlayHost, strip_id: StripId, group_idx: u
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing tree via tree(); the read-guard's lifetime \
+              is tied to st's borrow, so it can't be dropped before tree's last use"
+)]
 fn group_drag_reorders_strip_window_groups_in_tree() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200, 300]);
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
@@ -866,7 +891,7 @@ fn wheel_over_strip_does_not_move_it() {
     dispatch(
         &mut host,
         &layout,
-        WindowEvent::MouseWheel {
+        &WindowEvent::MouseWheel {
             device_id: unsafe { std::mem::zeroed() },
             delta: MouseScrollDelta::LineDelta(0.0, -3.0),
             phase: winit::event::TouchPhase::Moved,
@@ -944,6 +969,11 @@ fn focusing_offscreen_group_scrolls_it_into_view() {
 // 4. Drag-file-to-open
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing tree via tree(); the read-guard's lifetime \
+              is tied to st's borrow, so it can't be dropped before tree's last use"
+)]
 fn dropping_a_code_file_opens_the_editor_in_the_active_workspace() {
     let (tree, _strip_id, _ids) = single_strip_tree(&[100]);
     let (_host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
@@ -981,6 +1011,11 @@ fn dropping_a_code_file_opens_the_editor_in_the_active_workspace() {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing tree via tree(); the read-guard's lifetime \
+              is tied to st's borrow, so it can't be dropped before tree's last use"
+)]
 fn dropping_a_folder_opens_files_app() {
     // An extensionless path that isn't a real dir classifies as a plain file
     // → Files, as does a real folder: a non-code drop never resolves to the

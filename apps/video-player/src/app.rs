@@ -21,13 +21,13 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, VideoPlayer, Widget};
 
 use crate::collab::{CollabPlayback, Role};
-use crate::portal::{self, OpenChannel, OpenOutcome};
 
 /// Inset (logical px) of the floating top overlay (media title + Open) from the
 /// video edges.
@@ -36,6 +36,35 @@ const OVERLAY_MARGIN: f64 = 14.0;
 const OPEN_BTN_H: f64 = 32.0;
 /// Width (logical px) of the floating Open pill.
 const OPEN_BTN_W: f64 = 84.0;
+
+/// Build a taffy node from `children` already built in the same tree.
+/// `new_with_children` only fails when a child id does not resolve in this
+/// tree, which cannot happen for children this same call just built.
+#[allow(
+    clippy::unwrap_used,
+    reason = "new_with_children cannot fail for children built in this same tree; see doc comment"
+)]
+fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> NodeId {
+    taffy.new_with_children(style, children).unwrap()
+}
+
+fn video_open_request() -> PickRequest {
+    PickRequest::open("Open a video", "Play")
+        .thread_name("video-player-portal")
+        .filter(
+            FileFilter::new("Video")
+                .mimetype("video/mp4")
+                .mimetype("video/webm")
+                .mimetype("video/x-matroska")
+                .mimetype("video/quicktime")
+                .glob("*.mp4")
+                .glob("*.webm")
+                .glob("*.mkv")
+                .glob("*.mov")
+                .glob("*.avi"),
+        )
+        .all_files()
+}
 
 /// Build a [`media::Source`] for a filesystem path: a path under the FUSE
 /// workspace mount becomes a [`media::Source::Workspace`] (read-through,
@@ -58,7 +87,7 @@ pub struct PlayerApp {
     open_button_rect: Rect,
     last_cursor: Point,
     /// A file-open portal request in flight, drained each `sync`.
-    portal_rx: Option<OpenChannel>,
+    portal_rx: Option<PortalChannel>,
     /// Collaborative playback state (host/follower). `None` for a local-only
     /// session or the headless `--shots` path.
     collab: Option<CollabPlayback>,
@@ -88,7 +117,8 @@ impl PlayerApp {
 
     /// Open a filesystem `path` immediately (used by `--open PATH` and the
     /// portal outcome). Autoplays.
-    pub fn with_open_path(mut self, path: PathBuf) -> Self {
+    #[must_use]
+    pub fn with_open_path(mut self, path: &Path) -> Self {
         self.open_path(path);
         self
     }
@@ -107,7 +137,7 @@ impl PlayerApp {
     pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
         let mut app = Self::new();
         if let Some(path) = open {
-            app.open_path(path);
+            app.open_path(&path);
         } else {
             // The demo shot must stay hermetic: pin the deterministic
             // synthesized-frame engine so no real GStreamer pipeline is
@@ -183,6 +213,7 @@ impl PlayerApp {
     /// Attach collaborative playback: a live collab socket plus the host/
     /// follower role from the environment. Only the live run path calls this —
     /// `--shots` and tests stay local so no thread/socket is created.
+    #[must_use]
     pub fn with_collab(mut self) -> Self {
         self.collab = Some(CollabPlayback::new(Role::from_env()));
         self.manager = Some(CollaborationManager::new());
@@ -202,8 +233,8 @@ impl PlayerApp {
         self.player.latest_frame().is_some()
     }
 
-    fn open_path(&mut self, path: PathBuf) {
-        let source = source_for_path(&path);
+    fn open_path(&mut self, path: &Path) {
+        let source = source_for_path(path);
         self.title = path.file_name().map_or_else(
             || path.to_string_lossy().into_owned(),
             |n| n.to_string_lossy().into_owned(),
@@ -216,7 +247,7 @@ impl PlayerApp {
     /// Kick off a portal file-open (or the immediate "no portal" outcome in the
     /// hermetic build).
     fn trigger_open(&mut self) {
-        self.portal_rx = Some(portal::request_open());
+        self.portal_rx = Some(video_open_request().send());
     }
 
     /// Drain a pending portal outcome, opening the chosen file.
@@ -225,20 +256,20 @@ impl PlayerApp {
         let mut chosen: Option<PathBuf> = None;
         if let Some(rx) = self.portal_rx.as_ref() {
             match rx.try_recv() {
-                Ok(OpenOutcome::Opened(p)) => {
+                Ok(PortalOutcome::Opened(p)) => {
                     chosen = Some(p);
                     clear = true;
                 }
-                Ok(OpenOutcome::Cancelled | OpenOutcome::Failed(_)) => clear = true,
+                Ok(PortalOutcome::Cancelled | PortalOutcome::Failed(_))
+                | Err(std::sync::mpsc::TryRecvError::Disconnected) => clear = true,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => clear = true,
             }
         }
         if clear {
             self.portal_rx = None;
         }
         if let Some(p) = chosen {
-            self.open_path(p);
+            self.open_path(&p);
         }
     }
 
@@ -366,26 +397,27 @@ impl Widget for PlayerApp {
         // in the node map (so it can intercept the floating Open pill) by owning
         // a single-child root that stretches the player to 100%×100%.
         let player_node = self.player.build_layout(taffy, theme, node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: percent(1.0_f32),
-                    },
-                    ..Default::default()
+        let root = parent_node(
+            taffy,
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Column,
+                size: Size {
+                    width: percent(1.0_f32),
+                    height: percent(1.0_f32),
                 },
-                &[player_node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[player_node],
+        );
         node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -393,9 +425,14 @@ impl Widget for PlayerApp {
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
-        let children = taffy.children(node).unwrap();
+        let Ok(children) = taffy.children(node) else {
+            return;
+        };
         // children[0] = player, filling the whole surface (edge-to-edge).
-        self.player.apply_layout(taffy, children[0], new_origin);
+        let Some(&player_node) = children.first() else {
+            return;
+        };
+        self.player.apply_layout(taffy, player_node, new_origin);
         // Floating Open pill: top-right corner, over the video.
         let by0 = self.rect.y0 + OVERLAY_MARGIN;
         let bx1 = self.rect.x1 - OVERLAY_MARGIN;
@@ -449,7 +486,9 @@ impl Widget for PlayerApp {
             }
         }
         // Forward everything else to the player (its controls + shortcuts).
-        let children = taffy.children(node_id).unwrap();
+        let Ok(children) = taffy.children(node_id) else {
+            return;
+        };
         if let Some(&player_node) = children.first() {
             self.player.handle_event(
                 event,
@@ -538,7 +577,7 @@ mod tests {
     #[test]
     fn opening_a_path_sets_title_and_loads_the_engine() {
         let mut app = PlayerApp::new();
-        app.open_path(PathBuf::from("/tmp/Holiday.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Holiday.mp4"));
         assert_eq!(app.title, "Holiday.mp4");
         assert!(app.player.is_playing(), "autoplay on open");
         assert_eq!(
@@ -550,9 +589,9 @@ mod tests {
     #[test]
     fn portal_outcome_opens_the_chosen_file() {
         let mut app = PlayerApp::new();
-        app.portal_rx = Some(portal::inject_for_test(OpenOutcome::Opened(PathBuf::from(
-            "/tmp/Chosen.webm",
-        ))));
+        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
+            PathBuf::from("/tmp/Chosen.webm"),
+        )));
         app.drain_portal();
         assert_eq!(app.title, "Chosen.webm");
         assert!(app.portal_rx.is_none(), "channel cleared after the outcome");
@@ -590,7 +629,7 @@ mod tests {
     #[test]
     fn opening_a_file_then_syncing_lands_a_frame_and_duration() {
         let mut app = synth_app();
-        app.open_path(PathBuf::from("/tmp/Clip.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Clip.mp4"));
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &root());
         assert!(
@@ -607,7 +646,7 @@ mod tests {
     #[test]
     fn playhead_advances_while_playing_and_a_mid_play_seek_holds() {
         let mut app = synth_app();
-        app.open_path(PathBuf::from("/tmp/Clip.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Clip.mp4"));
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &root()); // baseline the synth clock
         std::thread::sleep(std::time::Duration::from_millis(40));
@@ -634,7 +673,7 @@ mod tests {
     #[test]
     fn volume_and_mute_propagate_to_the_engine() {
         let mut app = synth_app();
-        app.open_path(PathBuf::from("/tmp/Clip.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Clip.mp4"));
         app.player.set_volume(0.3);
         assert!((app.player.volume() - 0.3).abs() < 1e-6);
         assert!((app.player.engine().unwrap().volume() - 0.3).abs() < 1e-6);
@@ -648,7 +687,7 @@ mod tests {
     #[test]
     fn space_key_routed_through_the_app_toggles_playback() {
         let mut app = synth_app();
-        app.open_path(PathBuf::from("/tmp/Clip.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Clip.mp4"));
 
         // Lay the app out so `handle_event` can find the player child node.
         let theme = Theme::dark();

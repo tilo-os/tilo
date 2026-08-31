@@ -54,6 +54,12 @@ pub fn dot(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color) {
 }
 
 /// Draw `text` with its top-left at `(x, y)`, clipped to `max_w`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a text-draw primitive called from dozens of sites across app.rs; bundling \
+              position/size/color into a struct would only add construction boilerplate \
+              at every call site for no real readability gain"
+)]
 pub fn label(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -76,6 +82,12 @@ pub fn label(
 }
 
 /// Draw `text` vertically centred within `[y0, y0+h]`, left edge at `x`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a text-draw primitive called from dozens of sites across app.rs; bundling \
+              position/size/color into a struct would only add construction boilerplate \
+              at every call site for no real readability gain"
+)]
 pub fn label_v(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -94,6 +106,14 @@ pub fn label_v(
 
 /// Draw `text` right-aligned so its right edge sits at `x_right`,
 /// vertically centred in `[y0, y0+h]`.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::many_single_char_names,
+    reason = "a text-draw primitive called from dozens of sites across app.rs; bundling \
+              position/size/color into a struct would only add construction boilerplate \
+              at every call site for no real readability gain, and the short names (t, \
+              h, w, x, y) mirror the affine/geometry vocabulary used throughout paint.rs"
+)]
 pub fn label_right_v(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -112,6 +132,12 @@ pub fn label_right_v(
 }
 
 /// A filled pill with centred label. Returns the pill width used.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a pill-draw primitive called from dozens of sites across app.rs; bundling \
+              position/size/color into a struct would only add construction boilerplate \
+              at every call site for no real readability gain"
+)]
 pub fn chip(
     tr: &mut TextRenderer,
     scene: &mut Scene,

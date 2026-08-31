@@ -240,10 +240,17 @@ impl FileToolbar {
         self.left.get(2).map(|b| b.get_rect())
     }
 
-    /// Group node ranges within the toolbar row's children.
-    fn child_groups<'a>(&self, children: &'a [NodeId]) -> (&'a [NodeId], NodeId, &'a [NodeId]) {
+    /// Group node ranges within the toolbar row's children. `None` if
+    /// `children` doesn't match the shape `build_layout` produced (left
+    /// controls, the path bar, right controls).
+    fn child_groups<'a>(
+        &self,
+        children: &'a [NodeId],
+    ) -> Option<(&'a [NodeId], NodeId, &'a [NodeId])> {
         let nleft = self.left.len();
-        (&children[..nleft], children[nleft], &children[nleft + 1..])
+        let (left, rest) = children.split_at_checked(nleft)?;
+        let (&path_n, right) = rest.split_first()?;
+        Some((left, path_n, right))
     }
 }
 
@@ -292,12 +299,24 @@ impl Widget for FileToolbar {
             flex_shrink: 0.0,
             ..Default::default()
         };
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; every entry in `child_nodes` was just built in this one above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "every child node was just created in this same tree"
+        )]
         let node = taffy.new_with_children(row_style, &child_nodes).unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `node` was created by `build_layout` in this same tree, so a
+        // lookup miss would mean the frame cycle called these out of order.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
+        )]
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -384,7 +403,9 @@ impl Widget for FileToolbar {
         let Ok(children) = taffy.children(node_id) else {
             return;
         };
-        let (left_ns, path_n, right_ns) = self.child_groups(&children);
+        let Some((left_ns, path_n, right_ns)) = self.child_groups(&children) else {
+            return;
+        };
         // Path bar first, so it captures the keyboard while editing.
         self.path_bar.handle_event(
             event,

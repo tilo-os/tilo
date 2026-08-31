@@ -30,18 +30,26 @@ pub struct AboutInfo {
     pub arch: String,
     pub cpu: String,
     pub memory: String,
+    pub identity_name: Option<String>,
+    pub identity_public_key: Option<[u8; 32]>,
 }
 
 impl AboutInfo {
     pub fn from_system() -> Self {
-        Self::from_paths(
+        let mut info = Self::from_paths(
             Path::new("/etc/os-release"),
             Path::new("/proc/sys/kernel/osrelease"),
             Path::new("/proc/uptime"),
             Path::new("/proc/sys/kernel/hostname"),
             Path::new("/proc/cpuinfo"),
             Path::new("/proc/meminfo"),
-        )
+        );
+        if let Ok(identity) = runtime_identity::load() {
+            info.identity_name =
+                Some(identity.display_name().trim().to_string()).filter(|name| !name.is_empty());
+            info.identity_public_key = Some(identity.group_public_key());
+        }
+        info
     }
 
     pub fn from_paths(
@@ -89,25 +97,37 @@ impl AboutInfo {
             arch,
             cpu,
             memory,
+            identity_name: None,
+            identity_public_key: None,
         }
     }
 
-    /// A short, stable identity fingerprint derived from the hostname.
-    /// In a real deployment this is the device's P2P public-key handle;
-    /// derived deterministically here so the panel always shows one.
+    /// A short, stable workspace identity fingerprint.
+    ///
+    /// Connected workspaces use the public group key that identifies the
+    /// person. The hostname-derived value is only a fallback for workspaces
+    /// without an identity.
     pub fn fingerprint(&self) -> String {
-        let mut hash: u64 = 1469598103934665603;
-        for b in self.hostname.bytes() {
-            hash ^= u64::from(b);
-            hash = hash.wrapping_mul(1099511628211);
-        }
-        let hex = format!("{hash:016x}");
+        // The workspace identity is the real thing to fingerprint; the
+        // hostname hash is only a stand-in until one has been provisioned.
+        let fingerprint = self.identity_public_key.map_or_else(
+            || {
+                let mut hash: u64 = 1_469_598_103_934_665_603;
+                for b in self.hostname.bytes() {
+                    hash ^= u64::from(b);
+                    hash = hash.wrapping_mul(1_099_511_628_211);
+                }
+                hash
+            },
+            |[a, b, c, d, e, f, g, h, ..]| u64::from_be_bytes([a, b, c, d, e, f, g, h]),
+        );
+        let hex = format!("{fingerprint:016x}");
         format!(
             "{}·{}·{}·{}",
-            &hex[0..4],
-            &hex[4..8],
-            &hex[8..12],
-            &hex[12..16]
+            hex.get(0..4).unwrap_or_default(),
+            hex.get(4..8).unwrap_or_default(),
+            hex.get(8..12).unwrap_or_default(),
+            hex.get(12..16).unwrap_or_default()
         )
     }
 }
@@ -121,13 +141,16 @@ pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
     let hero_block = hero("\u{f0322}", &info.hostname, &info.pretty_name); // laptop glyph
 
     let identity = card(
-        "Device identity",
+        "Workspace identity",
         rows(vec![
-            value_row("Device name", &info.hostname),
+            value_row(
+                "Person",
+                info.identity_name.as_deref().unwrap_or("Not connected"),
+            ),
             value_row("Identity", &info.fingerprint()),
             caption(
-                "Your identity is the handle collaborators see when you \
-                 share a cluster. It's tied to this device's keypair.",
+                "This is the identity selected for the current workspace. \
+                 Apps receive its public profile; private signing material stays outside the sandbox.",
             ),
         ]),
     );
@@ -316,10 +339,26 @@ mod tests {
             arch: "x86_64".into(),
             cpu: "x".into(),
             memory: "x".into(),
+            identity_name: None,
+            identity_public_key: None,
         };
         let fp = info.fingerprint();
         // 4 groups of 4 hex chars separated by middots.
         assert_eq!(fp.matches('\u{00B7}').count(), 3);
         assert_eq!(info.fingerprint(), fp, "deterministic");
+    }
+
+    #[test]
+    fn workspace_identity_fingerprint_comes_from_public_key() {
+        let mut info = AboutInfo::from_paths(
+            Path::new("/missing"),
+            Path::new("/missing"),
+            Path::new("/missing"),
+            Path::new("/missing"),
+            Path::new("/missing"),
+            Path::new("/missing"),
+        );
+        info.identity_public_key = Some([0xab; 32]);
+        assert_eq!(info.fingerprint(), "abab·abab·abab·abab");
     }
 }

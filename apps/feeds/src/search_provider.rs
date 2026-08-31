@@ -82,7 +82,7 @@ impl FeedsSearchProvider {
 }
 
 impl SearchProvider for FeedsSearchProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         // Rows carry their own per-type kind ("Articles" / "Feeds"); this is
         // the default/diagnostic label.
         "Feeds"

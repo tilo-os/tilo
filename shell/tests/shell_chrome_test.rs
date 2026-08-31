@@ -1,6 +1,16 @@
 //! Interaction tests for shell chrome widgets (`OverviewView`, `GlobalSearch`,
 //! `QuickSettings`, `WorkspaceSettings`, `SidebarWheel`, `TopBar`, …).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 #[test]
 fn visual_smoke_checklist_is_documented() {
     let src = include_str!("../src/shell/mod.rs");
@@ -19,6 +29,8 @@ fn visual_smoke_checklist_is_documented() {
     }
 }
 
+use std::collections::HashMap;
+
 use shell::shell::overview::OverviewView;
 use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
 
@@ -30,18 +42,18 @@ fn mk_workspace(id: u64, name: &str) -> Workspace {
 
 #[test]
 fn overview_view_click_activates_workspace() {
-    let mut tree = WorkspaceTree {
-        workspaces: vec![],
-        active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
-        collaborators: vec![],
-        ..Default::default()
-    };
     let a = mk_workspace(1, "Alpha");
     let b = mk_workspace(2, "Beta");
     let b_id = b.id;
-    tree.workspaces = vec![a, b];
+
+    let mut tree = WorkspaceTree {
+        workspaces: vec![a, b],
+        active: WorkspaceId::from(0),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
+        collaborators: vec![],
+        ..Default::default()
+    };
     tree.active = tree.workspaces[0].id;
 
     let mut ov = OverviewView::new();
@@ -139,11 +151,12 @@ fn workspace_settings_members_tab_reads_the_real_roster() {
     // and that is what the Members pane renders.
     use shell::shell::state::{CapOverride, CapRole, Subject, Verb, Workspace, WorkspaceId};
     use shell::shell::workspace_settings::{WsTab, members_pane_rows};
+    let host_str = "host".to_string();
     let mut ws = Workspace::new(WorkspaceId::new(), "Design");
     ws.set_owner("host");
     let room = ws.id.raw().to_string();
     ws.grant_as(
-        &"host".to_string(),
+        &host_str,
         CapOverride::membership(Subject::person("viewer-user"), room, Verb::Read),
     )
     .expect("the owner may write a membership");
@@ -166,10 +179,11 @@ fn workspace_settings_members_tab_reads_the_real_roster() {
 fn workspace_settings_permissions_tab_lists_granted_capabilities() {
     use shell::shell::state::{CapOverride, Expiry, Scope, Subject, Verb, Workspace, WorkspaceId};
     use shell::shell::workspace_settings::{SubjectKind, WsTab, permissions_pane_layout};
+    let host_str = "host".to_string();
     let mut ws = Workspace::new(WorkspaceId::new(), "Design");
     ws.set_owner("host");
     ws.grant_as(
-        &"host".to_string(),
+        &host_str,
         CapOverride::grant(
             Subject::app("Terminal"),
             Scope::FsPath("/var/workspace".into()),
@@ -206,19 +220,18 @@ fn workspace_settings_permissions_tab_lists_granted_capabilities() {
 fn topbar_leftnav_navigates_workspaces() {
     use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
     use shell::shell::topbar::{TopBar, TopBarEvent};
+    let ws_a = Workspace::new(WorkspaceId::new(), "A");
+    let ws_b = Workspace::new(WorkspaceId::new(), "B");
+    let ws_c = Workspace::new(WorkspaceId::new(), "C");
+
     let mut tree = WorkspaceTree {
-        workspaces: vec![],
+        workspaces: vec![ws_a, ws_b, ws_c],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
-    tree.workspaces = vec![
-        Workspace::new(WorkspaceId::new(), "A"),
-        Workspace::new(WorkspaceId::new(), "B"),
-        Workspace::new(WorkspaceId::new(), "C"),
-    ];
     tree.active = tree.workspaces[1].id;
     let mut tb = TopBar::new();
     tb.emit(TopBarEvent::WorkspaceUp, &mut tree);
@@ -243,27 +256,25 @@ fn topbar_workspace_name_button_emits_settings_request() {
 fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
     use shell::shell::state::{Collaborator, Workspace, WorkspaceId, WorkspaceTree};
     use shell::shell::topbar::{TopBar, TopBarOutput};
+    let collab_1 = Collaborator::new("u1", "Ada");
+    let collab_2 = Collaborator::new("u2", "Bo");
+    let collab_3 = Collaborator::new("u3", "Cy");
+    let collab_4 = Collaborator::new("u4", "Di");
+
     let mut tree = WorkspaceTree {
-        workspaces: vec![],
+        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
-        collaborators: vec![],
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
+        collaborators: vec![collab_1, collab_2, collab_3, collab_4],
         ..Default::default()
     };
-    tree.workspaces = vec![Workspace::new(WorkspaceId::new(), "A")];
     tree.active = tree.workspaces[0].id;
-    tree.collaborators = vec![
-        Collaborator::new("u1", "Ada"),
-        Collaborator::new("u2", "Bo"),
-        Collaborator::new("u3", "Cy"),
-        Collaborator::new("u4", "Di"),
-    ];
-    let tb = TopBar::new();
+    let mut tb = TopBar::new();
     let avatars = tb.visible_avatars(&tree, 3);
     assert_eq!(avatars.len(), 3);
     assert_eq!(tb.overflow_count(&tree, 3), 1);
-    let out = TopBar::new().click_tray_settings();
+    let out = tb.click_tray_settings();
     assert!(matches!(out, TopBarOutput::OpenQuickSettings));
 }
 
@@ -271,15 +282,15 @@ fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
 fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
     use shell::shell::state::{Collaborator, Workspace, WorkspaceId, WorkspaceTree};
     use shell::shell::topbar_chrome::TopBarChrome;
+    let collab_1 = Collaborator::new("alice", "Ada");
+    let collab_2 = Collaborator::new("bob", "Bo");
+
     let mut tree = WorkspaceTree {
         workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
-        collaborators: vec![
-            Collaborator::new("alice", "Ada"),
-            Collaborator::new("bob", "Bo"),
-        ],
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
+        collaborators: vec![collab_1, collab_2],
         ..Default::default()
     };
     tree.active = tree.workspaces[0].id;
@@ -301,8 +312,8 @@ fn topbar_chrome_clock_renders_at_bold_weight() {
     let tree = WorkspaceTree {
         workspaces: vec![mk_workspace(0, "A")],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
@@ -381,8 +392,8 @@ fn topbar_chrome_active_center_dot_is_larger_than_inactive() {
     let tree = WorkspaceTree {
         workspaces: vec![mk_workspace(0, "A")],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
@@ -399,22 +410,21 @@ fn topbar_chrome_active_center_dot_is_larger_than_inactive() {
 fn sidebar_wheel_switches_active_strip() {
     use shell::shell::sidebar_wheel::SidebarWheel;
     use shell::shell::state::{Strip, StripId, Workspace, WorkspaceId, WorkspaceTree};
+    let strip_1 = Strip::new(StripId::new(), "s1");
+    let strip_2 = Strip::new(StripId::new(), "s2");
+    let strip_3 = Strip::new(StripId::new(), "s3");
     let mut ws = Workspace::new(WorkspaceId::new(), "A");
-    ws.strips = vec![
-        Strip::new(StripId::new(), "s1"),
-        Strip::new(StripId::new(), "s2"),
-        Strip::new(StripId::new(), "s3"),
-    ];
+    ws.strips = vec![strip_1, strip_2, strip_3];
+
     let mut tree = WorkspaceTree {
-        workspaces: vec![],
+        workspaces: vec![ws],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
-    let ws_id = ws.id;
-    tree.workspaces = vec![ws];
+    let ws_id = tree.workspaces[0].id;
     tree.active = ws_id;
     tree.active_strip
         .insert(ws_id, tree.workspaces[0].strips[0].id);
@@ -433,18 +443,19 @@ fn sidebar_wheel_switches_active_strip() {
 fn sidebar_wheel_overscroll_commits_new_workspace_past_threshold() {
     use shell::shell::sidebar_wheel::SidebarWheel;
     use shell::shell::state::{Strip, StripId, Workspace, WorkspaceId, WorkspaceTree};
+    let strip_1 = Strip::new(StripId::new(), "s1");
     let mut ws = Workspace::new(WorkspaceId::new(), "A");
-    ws.strips = vec![Strip::new(StripId::new(), "s1")];
+    ws.strips = vec![strip_1];
+
     let mut tree = WorkspaceTree {
-        workspaces: vec![],
+        workspaces: vec![ws],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
-    let ws_id = ws.id;
-    tree.workspaces = vec![ws];
+    let ws_id = tree.workspaces[0].id;
     tree.active = ws_id;
     tree.active_strip
         .insert(ws_id, tree.workspaces[0].strips[0].id);
@@ -477,14 +488,13 @@ fn sidebar_wheel_overscroll_below_threshold_snaps_back() {
     use shell::shell::sidebar_wheel::SidebarWheel;
     use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
     let mut tree = WorkspaceTree {
-        workspaces: vec![],
+        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
-    tree.workspaces = vec![Workspace::new(WorkspaceId::new(), "A")];
     tree.active = tree.workspaces[0].id;
     let mut w = SidebarWheel::new();
     w.begin_overscroll(-1);
@@ -499,14 +509,13 @@ fn sidebar_wheel_management_button_creates_workspace() {
     use shell::shell::sidebar_wheel::SidebarWheel;
     use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
     let mut tree = WorkspaceTree {
-        workspaces: vec![],
+        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
         active: WorkspaceId::from(0),
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };
-    tree.workspaces = vec![Workspace::new(WorkspaceId::new(), "A")];
     tree.active = tree.workspaces[0].id;
     let w = SidebarWheel::new();
     w.click_management_new_workspace(&mut tree);
@@ -602,6 +611,9 @@ fn sidebar_wheel_event_routes_through_shell() {
     // Either the index advanced or the clamp held at the last strip — both
     // valid. This only asserts the shell routed the wheel to the sidebar
     // widget without mutating the search/overview flags.
+    // Deliberately not asserted on: `active_strip_index` is still a placeholder
+    // that always answers 0, so comparing it would pass whatever the wheel did.
+    // The binding stays to mark the spot for when it reports a real index.
     let _ = strips_before;
     assert!(!shell.search_visible());
     assert!(!shell.overview_visible());

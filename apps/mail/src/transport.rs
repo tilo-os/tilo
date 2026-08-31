@@ -53,12 +53,16 @@ pub fn parse_addr_list(s: &str) -> Vec<Addr> {
 }
 
 fn parse_single_addr(s: &str) -> Addr {
+    // Walk from the '<' rather than mixing absolute and relative byte offsets:
+    // the two are only interchangeable while the delimiters stay ASCII, and
+    // slicing a str at a stale offset panics.
     if let Some(open) = s.find('<')
-        && let Some(close) = s[open..].find('>')
+        && let Some(name) = s.get(..open)
+        && let Some(rest) = s.get(open + 1..)
+        && let Some(close) = rest.find('>')
+        && let Some(email) = rest.get(..close)
     {
-        let name = s[..open].trim().trim_matches('"').to_string();
-        let email = s[open + 1..open + close].trim().to_string();
-        return Addr::new(name, email);
+        return Addr::new(name.trim().trim_matches('"'), email.trim());
     }
     Addr::bare(s.to_string())
 }
@@ -66,6 +70,11 @@ fn parse_single_addr(s: &str) -> Addr {
 /// Build a real RFC 5322 / MIME message from a draft, via `mail-builder`.
 /// Produces the exact bytes an SMTP transport would put on the wire,
 /// including a multipart container with base64 attachments when present.
+///
+/// # Errors
+///
+/// Returns `Err` if `mail-builder` cannot serialise the message (for
+/// example a header value it rejects).
 pub fn build_mime(from: &Addr, draft: &Draft) -> std::io::Result<Vec<u8>> {
     let to = parse_addr_list(&draft.to);
     let cc = parse_addr_list(&draft.cc);

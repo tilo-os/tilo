@@ -61,10 +61,12 @@ impl OutputRegistry {
             return *id;
         }
         let id = OutputId(self.next_id);
-        self.next_id = self
-            .next_id
-            .checked_add(1)
-            .expect("OutputId counter exhausted (more than 4 billion outputs)");
+        // Saturate rather than panic: a `u32` counter needs more than 4
+        // billion distinct connectors to ever trip this, far beyond
+        // anything reachable via hotplug in one compositor process's
+        // lifetime. Saturating means the last-ever id would be reused
+        // instead of taking the session down.
+        self.next_id = self.next_id.saturating_add(1);
         self.map.insert(key, id);
         id
     }
@@ -121,7 +123,7 @@ impl OutputRegistry {
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
             };
-            next_x += i32::from(mode.width);
+            next_x = next_x.saturating_add(i32::from(mode.width));
             out.push((id, output));
         }
         out
@@ -192,8 +194,8 @@ mod tests {
         let mut r = OutputRegistry::new();
         r.intern(key(1, 10));
         r.intern(key(1, 11));
-        let collected: Vec<_> = r.iter().collect();
-        assert_eq!(collected.len(), 2);
+        let count = r.iter().count();
+        assert_eq!(count, 2);
     }
 
     #[test]

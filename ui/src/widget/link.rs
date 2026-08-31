@@ -30,6 +30,10 @@ fn os_open(url: &str) {
 /// Test/host hook overriding [`os_open`] on activation; see `opener` below.
 type Opener = Box<dyn FnMut(&str)>;
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (hover/press/focus/enabled), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
+)]
 pub struct Link {
     url: String,
     /// Defaults to the URL; a caller can show a friendlier label via
@@ -70,16 +74,19 @@ impl Link {
     }
 
     /// The URL is still what opens and what the accessible value reports.
+    #[must_use]
     pub fn with_label(mut self, label: &str) -> Self {
         self.label = label.to_string();
         self
     }
 
+    #[must_use]
     pub fn with_font_size(mut self, size: f32) -> Self {
         self.font_size = size;
         self
     }
 
+    #[must_use]
     pub fn on_open<F: FnMut(&str) + 'static>(mut self, f: F) -> Self {
         self.opener = Some(Box::new(f));
         self
@@ -167,6 +174,14 @@ impl Widget for Link {
         }
     }
 
+    // Exact equality is intentional: `new_rect` and `self.rect` are both
+    // widths/heights from finite taffy layout resolution, not independent
+    // float computations prone to precision drift — any bit-level
+    // difference means the layout genuinely changed and a redraw is due.
+    #[allow(
+        clippy::float_cmp,
+        reason = "dirty-checking wants exact equality against the previous layout, not a fuzzy tolerance"
+    )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
         let new_rect = Rect::new(
@@ -181,6 +196,10 @@ impl Widget for Link {
         self.rect = new_rect;
     }
 
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,

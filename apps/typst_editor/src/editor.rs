@@ -187,6 +187,11 @@ impl SourceEditor {
     /// Handle a keyboard event through the shared widget. Returns true if
     /// consumed. `text_id` is the bound source object; the widget is already
     /// bound to it, so edits splice there.
+    ///
+    /// # Panics
+    /// Never panics: `taffy::TaffyTree::new_leaf` cannot return `Err` for a
+    /// freshly created, single-node tree on this taffy version (see
+    /// `ui::widget::TaffyTreeExt`'s doc comment for the same guarantee).
     pub fn handle_key(
         &mut self,
         event: &WindowEvent,
@@ -199,6 +204,10 @@ impl SourceEditor {
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
+        )]
         let node = taffy.new_leaf(Style::default()).unwrap();
         // `text_id` is the object the widget was bound to; pass it as the root so
         // the resolve falls back to it even if the binding were ever cleared.
@@ -461,16 +470,19 @@ fn draw_squiggle(
     y: f64,
     color: vello::peniko::Color,
 ) {
+    const PERIOD: f64 = 4.0;
+    const AMP: f64 = 1.6;
     if x1 <= x0 {
         return;
     }
-    const PERIOD: f64 = 4.0;
-    const AMP: f64 = 1.6;
     let mut path = BezPath::new();
     path.move_to(Point::new(x0, y));
     let mut x = x0;
     let mut up = true;
-    while x < x1 {
+    loop {
+        if x >= x1 {
+            break;
+        }
         x = (x + PERIOD * 0.5).min(x1);
         let dy = if up { -AMP } else { AMP };
         path.line_to(Point::new(x, y + dy));

@@ -126,7 +126,7 @@ use crate::text_break::unicode_word_ranges;
 pub fn prev_word_boundary(text: &str, byte_idx: usize) -> usize {
     let mut byte = byte_idx.min(text.len());
     while byte > 0 && !text.is_char_boundary(byte) {
-        byte -= 1;
+        byte = byte.saturating_sub(1);
     }
     unicode_word_ranges(text)
         .rev()
@@ -139,7 +139,7 @@ pub fn prev_word_boundary(text: &str, byte_idx: usize) -> usize {
 pub fn next_word_boundary(text: &str, byte_idx: usize) -> usize {
     let mut byte = byte_idx.min(text.len());
     while byte < text.len() && !text.is_char_boundary(byte) {
-        byte += 1;
+        byte = byte.saturating_add(1);
     }
     unicode_word_ranges(text)
         .find(|range| range.start > byte)
@@ -152,7 +152,7 @@ pub fn next_word_boundary(text: &str, byte_idx: usize) -> usize {
 pub fn word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
     let mut byte = byte_idx.min(text.len());
     while byte > 0 && !text.is_char_boundary(byte) {
-        byte -= 1;
+        byte = byte.saturating_sub(1);
     }
     let mut previous = None;
     for range in unicode_word_ranges(text) {
@@ -174,10 +174,14 @@ pub fn word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
 /// selection uses this.
 pub fn line_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
     let byte_idx = byte_idx.min(text.len());
-    let start = text[..byte_idx].rfind('\n').map_or(0, |i| i + 1);
-    let end = text[byte_idx..]
-        .find('\n')
-        .map_or(text.len(), |i| byte_idx + i);
+    let start = text
+        .get(..byte_idx)
+        .and_then(|s| s.rfind('\n'))
+        .map_or(0, |i| i.saturating_add(1));
+    let end = text
+        .get(byte_idx..)
+        .and_then(|s| s.find('\n'))
+        .map_or(text.len(), |i| byte_idx.saturating_add(i));
     (start, end)
 }
 
@@ -235,7 +239,8 @@ fn char_to_byte(text: &str, char_idx: usize) -> usize {
 }
 
 fn byte_to_char(text: &str, byte_idx: usize) -> usize {
-    text[..byte_idx.min(text.len())].chars().count()
+    text.get(..byte_idx.min(text.len()))
+        .map_or(0, |s| s.chars().count())
 }
 
 /// Char index of the previous word boundary at or before `char_idx` — the
@@ -410,7 +415,13 @@ pub fn clipboard_copy(text: &str) {
 /// or chat. Returns `false` when the buffer size is wrong or no backend can
 /// carry an image. Used by the PDF reader to copy a selected page region.
 pub fn clipboard_copy_image(width: usize, height: usize, rgba: &[u8]) -> bool {
-    if width == 0 || height == 0 || rgba.len() != width * height * 4 {
+    let Some(expected_len) = width
+        .checked_mul(height)
+        .and_then(|area| area.checked_mul(4))
+    else {
+        return false;
+    };
+    if width == 0 || height == 0 || rgba.len() != expected_len {
         return false;
     }
     if let Some(backend) = clipboard_backend() {

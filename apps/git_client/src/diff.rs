@@ -22,96 +22,102 @@ pub fn parse_unified(path: &str, language: &str, text: &str) -> FileDiff {
         ..Default::default()
     };
 
-    let mut old_no = 0u32;
-    let mut new_no = 0u32;
-    let mut hunk_idx = 0usize;
-    let mut in_hunk = false;
+    let mut state = HunkState::default();
 
     for raw in text.lines() {
         if raw.starts_with("@@") {
-            // Close the previous hunk's line range.
-            if in_hunk && let Some(h) = diff.hunks.last_mut() {
-                h.line_range.1 = diff.lines.len();
-            }
-            let (old_start, new_start, header) = parse_hunk_header(raw);
-            old_no = old_start;
-            new_no = new_start;
-            hunk_idx = diff.hunks.len();
-            let hunk_start_line = diff.lines.len();
-            diff.hunks.push(DiffHunk {
-                header,
-                old_start,
-                new_start,
-                line_range: (hunk_start_line, hunk_start_line),
-            });
-            diff.lines.push(DiffLine {
-                kind: DiffLineKind::Hunk,
-                old_lineno: None,
-                new_lineno: None,
-                content: raw.to_string(),
-                hunk: hunk_idx,
-            });
-            in_hunk = true;
+            state.open_hunk(&mut diff, raw);
             continue;
         }
 
-        if raw.starts_with("diff ")
-            || raw.starts_with("index ")
-            || raw.starts_with("--- ")
-            || raw.starts_with("+++ ")
-            || raw.starts_with("new file")
-            || raw.starts_with("deleted file")
-            || raw.starts_with("rename ")
-            || raw.starts_with("similarity ")
-            || raw.starts_with("Binary ")
+        if is_meta_line(raw) {
+            push_meta_line(&mut diff, raw, state.hunk_idx);
+            continue;
+        }
+
+        if !state.in_hunk {
+            continue;
+        }
+
+        state.push_content_line(&mut diff, raw);
+    }
+
+    state.close_hunk(&mut diff);
+    diff
+}
+
+/// Running position while walking a unified diff: which hunk is open and
+/// the next old/new line numbers to hand out.
+#[derive(Default)]
+struct HunkState {
+    old_no: u32,
+    new_no: u32,
+    hunk_idx: usize,
+    in_hunk: bool,
+}
+
+impl HunkState {
+    /// Close the currently-open hunk's line range, if one is open.
+    fn close_hunk(&self, diff: &mut FileDiff) {
+        if self.in_hunk
+            && let Some(h) = diff.hunks.last_mut()
         {
-            if raw.starts_with("new file") {
-                diff.is_new = true;
-            }
-            if raw.starts_with("deleted file") {
-                diff.is_deleted = true;
-            }
-            if raw.starts_with("Binary ") {
-                diff.binary = true;
-            }
-            diff.lines.push(DiffLine {
-                kind: DiffLineKind::Meta,
-                old_lineno: None,
-                new_lineno: None,
-                content: raw.to_string(),
-                hunk: hunk_idx,
-            });
-            continue;
+            h.line_range.1 = diff.lines.len();
         }
+    }
 
-        if !in_hunk {
-            continue;
-        }
+    /// Close the previous hunk (if any) and open a new one at `raw`'s
+    /// `@@ … @@` header.
+    fn open_hunk(&mut self, diff: &mut FileDiff, raw: &str) {
+        self.close_hunk(diff);
+        let (old_start, new_start, header) = parse_hunk_header(raw);
+        self.old_no = old_start;
+        self.new_no = new_start;
+        self.hunk_idx = diff.hunks.len();
+        let hunk_start_line = diff.lines.len();
+        diff.hunks.push(DiffHunk {
+            header,
+            old_start,
+            new_start,
+            line_range: (hunk_start_line, hunk_start_line),
+        });
+        diff.lines.push(DiffLine {
+            kind: DiffLineKind::Hunk,
+            old_lineno: None,
+            new_lineno: None,
+            content: raw.to_string(),
+            hunk: self.hunk_idx,
+        });
+        self.in_hunk = true;
+    }
 
+    /// Classify and push one `+`/`-`/` ` content line, advancing the
+    /// relevant line counters.
+    fn push_content_line(&mut self, diff: &mut FileDiff, raw: &str) {
         let (kind, body) = match raw.chars().next() {
-            Some('+') => (DiffLineKind::Addition, &raw[1..]),
-            Some('-') => (DiffLineKind::Deletion, &raw[1..]),
-            Some(' ') => (DiffLineKind::Context, &raw[1..]),
+            Some('+') => (DiffLineKind::Addition, raw.get(1..).unwrap_or("")),
+            Some('-') => (DiffLineKind::Deletion, raw.get(1..).unwrap_or("")),
+            Some(' ') => (DiffLineKind::Context, raw.get(1..).unwrap_or("")),
             None => (DiffLineKind::Context, ""),
             _ => (DiffLineKind::Context, raw),
         };
 
         let (old_l, new_l) = match kind {
             DiffLineKind::Addition => {
-                let n = new_no;
-                new_no += 1;
+                let n = self.new_no;
+                self.new_no += 1;
                 (None, Some(n))
             }
             DiffLineKind::Deletion => {
-                let o = old_no;
-                old_no += 1;
+                let o = self.old_no;
+                self.old_no += 1;
                 (Some(o), None)
             }
             _ => {
-                let o = old_no;
-                let n = new_no;
-                old_no += 1;
-                new_no += 1;
+                let o = self.old_no;
+                let n = self.new_no;
+                self.old_no += 1;
+                self.new_no += 1;
                 (Some(o), Some(n))
             }
         };
@@ -121,14 +127,44 @@ pub fn parse_unified(path: &str, language: &str, text: &str) -> FileDiff {
             old_lineno: old_l,
             new_lineno: new_l,
             content: body.to_string(),
-            hunk: hunk_idx,
+            hunk: self.hunk_idx,
         });
     }
+}
 
-    if in_hunk && let Some(h) = diff.hunks.last_mut() {
-        h.line_range.1 = diff.lines.len();
+/// Whether `raw` is a file-level metadata line (`diff --git`, `index`,
+/// `--- a/…`, rename/similarity notes, binary markers, …) rather than hunk
+/// content.
+fn is_meta_line(raw: &str) -> bool {
+    raw.starts_with("diff ")
+        || raw.starts_with("index ")
+        || raw.starts_with("--- ")
+        || raw.starts_with("+++ ")
+        || raw.starts_with("new file")
+        || raw.starts_with("deleted file")
+        || raw.starts_with("rename ")
+        || raw.starts_with("similarity ")
+        || raw.starts_with("Binary ")
+}
+
+/// Record a metadata line's file-level flags and append it to `diff.lines`.
+fn push_meta_line(diff: &mut FileDiff, raw: &str, hunk_idx: usize) {
+    if raw.starts_with("new file") {
+        diff.is_new = true;
     }
-    diff
+    if raw.starts_with("deleted file") {
+        diff.is_deleted = true;
+    }
+    if raw.starts_with("Binary ") {
+        diff.binary = true;
+    }
+    diff.lines.push(DiffLine {
+        kind: DiffLineKind::Meta,
+        old_lineno: None,
+        new_lineno: None,
+        content: raw.to_string(),
+        hunk: hunk_idx,
+    });
 }
 
 /// Parse an `@@ -a,b +c,d @@ trailing @@` header into (`old_start`, `new_start`,
@@ -216,6 +252,9 @@ const GENERIC_KEYWORDS: &[&str] = &[
     "double",
 ];
 
+/// Punctuation / operator characters, coalesced into runs by the tokenizer.
+const PUNCT_CHARS: &str = "+-*/%=<>!&|^~?:;,.(){}[]@#";
+
 /// Tokenize one source line. Comment detection is single-line only (`//`,
 /// `#`); block comments are treated as plain to avoid carrying state across
 /// lines (the diff pane shows discontiguous slices anyway).
@@ -233,12 +272,9 @@ pub fn tokenize(line: &str, language: &str) -> Vec<Token> {
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0;
 
-    while i < chars.len() {
-        let c = chars[i];
-
+    while let Some(&c) = chars.get(i) {
         // Single-line comment to end of line.
-        let rest: String = chars[i..].iter().collect();
-        if comment_lead.iter().any(|p| rest.starts_with(p)) {
+        if let Some(rest) = comment_at(&chars, i, comment_lead) {
             out.push(Token {
                 text: rest,
                 class: TokenClass::Comment,
@@ -248,20 +284,10 @@ pub fn tokenize(line: &str, language: &str) -> Vec<Token> {
 
         // String literal (single or double quoted).
         if c == '"' || c == '\'' {
-            let quote = c;
-            let mut s = String::new();
-            s.push(c);
-            i += 1;
-            while i < chars.len() {
-                s.push(chars[i]);
-                if chars[i] == quote && chars[i - 1] != '\\' {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
+            let (text, next) = read_string_literal(&chars, i, c);
+            i = next;
             out.push(Token {
-                text: s,
+                text,
                 class: TokenClass::Str,
             });
             continue;
@@ -269,15 +295,10 @@ pub fn tokenize(line: &str, language: &str) -> Vec<Token> {
 
         // Number.
         if c.is_ascii_digit() {
-            let mut s = String::new();
-            while i < chars.len()
-                && (chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_')
-            {
-                s.push(chars[i]);
-                i += 1;
-            }
+            let (text, next) = read_number(&chars, i);
+            i = next;
             out.push(Token {
-                text: s,
+                text,
                 class: TokenClass::Number,
             });
             continue;
@@ -285,65 +306,138 @@ pub fn tokenize(line: &str, language: &str) -> Vec<Token> {
 
         // Identifier / keyword / type.
         if c.is_alphabetic() || c == '_' {
-            let mut s = String::new();
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
-                s.push(chars[i]);
-                i += 1;
-            }
-            let class = if keywords.contains(&s.as_str()) {
+            let (text, next) = read_identifier(&chars, i);
+            i = next;
+            let class = if keywords.contains(&text.as_str()) {
                 TokenClass::Keyword
-            } else if s.chars().next().is_some_and(char::is_uppercase) {
+            } else if text.chars().next().is_some_and(char::is_uppercase) {
                 TokenClass::Type
             } else {
                 TokenClass::Plain
             };
-            out.push(Token { text: s, class });
+            out.push(Token { text, class });
             continue;
         }
 
         // Punctuation / operators — coalesce runs of symbol chars.
-        if "+-*/%=<>!&|^~?:;,.(){}[]@#".contains(c) {
-            let mut s = String::new();
-            while i < chars.len() && "+-*/%=<>!&|^~?:;,.(){}[]@#".contains(chars[i]) {
-                // Don't swallow a comment start that begins mid-run.
-                let look: String = chars[i..].iter().collect();
-                if !s.is_empty() && comment_lead.iter().any(|p| look.starts_with(p)) {
-                    break;
-                }
-                s.push(chars[i]);
-                i += 1;
-            }
+        if PUNCT_CHARS.contains(c) {
+            let (text, next) = read_punct(&chars, i, comment_lead);
+            i = next;
             out.push(Token {
-                text: s,
+                text,
                 class: TokenClass::Punct,
             });
             continue;
         }
 
         // Whitespace and everything else — pass through as plain.
-        let mut s = String::new();
-        while i < chars.len()
-            && !chars[i].is_alphanumeric()
-            && chars[i] != '_'
-            && chars[i] != '"'
-            && chars[i] != '\''
-            && !"+-*/%=<>!&|^~?:;,.(){}[]@#".contains(chars[i])
-        {
-            s.push(chars[i]);
-            i += 1;
-        }
-        if s.is_empty() {
-            // Safety: ensure progress.
-            s.push(chars[i]);
-            i += 1;
-        }
+        let (text, next) = read_plain(&chars, i);
+        i = next;
         out.push(Token {
-            text: s,
+            text,
             class: TokenClass::Plain,
         });
     }
 
     out
+}
+
+/// If a single-line comment starts at `i`, return the rest of the line as
+/// its text.
+fn comment_at(chars: &[char], i: usize, comment_lead: &[&str]) -> Option<String> {
+    let rest: String = chars.get(i..).unwrap_or_default().iter().collect();
+    comment_lead
+        .iter()
+        .any(|p| rest.starts_with(p))
+        .then_some(rest)
+}
+
+/// Consume a quoted string literal starting at `i` (the opening quote).
+/// Returns the literal text (quotes included) and the index just past it.
+fn read_string_literal(chars: &[char], start: usize, quote: char) -> (String, usize) {
+    let mut s = String::new();
+    s.push(quote);
+    let mut i = start + 1;
+    while let Some(&ch) = chars.get(i) {
+        s.push(ch);
+        let escaped = i.checked_sub(1).and_then(|p| chars.get(p)) == Some(&'\\');
+        i += 1;
+        if ch == quote && !escaped {
+            break;
+        }
+    }
+    (s, i)
+}
+
+/// Consume a run of digits/`.`/`_` starting at `i`.
+fn read_number(chars: &[char], start: usize) -> (String, usize) {
+    let mut s = String::new();
+    let mut i = start;
+    while let Some(&ch) = chars.get(i) {
+        if !(ch.is_ascii_alphanumeric() || ch == '.' || ch == '_') {
+            break;
+        }
+        s.push(ch);
+        i += 1;
+    }
+    (s, i)
+}
+
+/// Consume an identifier (alphanumeric/`_`) starting at `i`.
+fn read_identifier(chars: &[char], start: usize) -> (String, usize) {
+    let mut s = String::new();
+    let mut i = start;
+    while let Some(&ch) = chars.get(i) {
+        if !(ch.is_alphanumeric() || ch == '_') {
+            break;
+        }
+        s.push(ch);
+        i += 1;
+    }
+    (s, i)
+}
+
+/// Consume a run of punctuation/operator characters starting at `i`,
+/// stopping before a comment lead-in that begins mid-run.
+fn read_punct(chars: &[char], start: usize, comment_lead: &[&str]) -> (String, usize) {
+    let mut s = String::new();
+    let mut i = start;
+    while let Some(&ch) = chars.get(i) {
+        if !PUNCT_CHARS.contains(ch) {
+            break;
+        }
+        let look: String = chars.get(i..).unwrap_or_default().iter().collect();
+        if !s.is_empty() && comment_lead.iter().any(|p| look.starts_with(p)) {
+            break;
+        }
+        s.push(ch);
+        i += 1;
+    }
+    (s, i)
+}
+
+/// Consume a run of characters that are none of alphanumeric/`_`/quote/
+/// punctuation — plain whitespace and stray symbols. Always advances by at
+/// least one character.
+fn read_plain(chars: &[char], start: usize) -> (String, usize) {
+    let mut s = String::new();
+    let mut i = start;
+    while let Some(&ch) = chars.get(i) {
+        if ch.is_alphanumeric() || ch == '_' || ch == '"' || ch == '\'' || PUNCT_CHARS.contains(ch)
+        {
+            break;
+        }
+        s.push(ch);
+        i += 1;
+    }
+    if s.is_empty() {
+        // Safety: ensure progress even if none of the above ever matched.
+        if let Some(&ch) = chars.get(i) {
+            s.push(ch);
+            i += 1;
+        }
+    }
+    (s, i)
 }
 
 #[cfg(test)]

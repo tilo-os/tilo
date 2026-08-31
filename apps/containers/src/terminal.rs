@@ -61,6 +61,11 @@ pub fn terminal_binary() -> PathBuf {
 /// Write a launcher script that runs `command` then drops to a shell, and
 /// return its path. The script is created executable. `dir` is the directory
 /// to write into (a per-user runtime dir at call sites).
+///
+/// # Errors
+///
+/// Returns `Err` when `dir` can't be created, the script can't be written,
+/// or (on Unix) its executable bit can't be set.
 pub fn build_launcher(dir: &Path, stem: &str, command: &str) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join(format!("qos-term-{stem}.sh"));
@@ -100,6 +105,11 @@ pub fn runtime_dir() -> PathBuf {
 
 /// Build (but do not spawn) the `Command` that launches the qOS terminal
 /// running `inner_command`. Exposed for testing the wiring without spawning.
+///
+/// # Errors
+///
+/// Returns `Err` when the launcher script can't be written (see
+/// [`build_launcher`]).
 pub fn terminal_command(inner_command: &str, stem: &str) -> std::io::Result<Command> {
     let launcher = build_launcher(&runtime_dir(), stem, inner_command)?;
     let mut cmd = Command::new(terminal_binary());
@@ -113,6 +123,11 @@ pub fn terminal_command(inner_command: &str, stem: &str) -> std::io::Result<Comm
 
 /// Spawn a qOS terminal entering the named distrobox. Returns an error if the
 /// launcher can't be written or the terminal can't be spawned.
+///
+/// # Errors
+///
+/// Returns `Err` when the launcher script can't be written (see
+/// [`build_launcher`]) or the `terminal` binary can't be spawned.
 pub fn spawn_distrobox_enter(box_name: &str) -> std::io::Result<()> {
     let inner = distrobox_enter_command(box_name);
     let stem = sanitize_stem(box_name);
@@ -121,6 +136,11 @@ pub fn spawn_distrobox_enter(box_name: &str) -> std::io::Result<()> {
 }
 
 /// Spawn a qOS terminal attaching an interactive shell to a container.
+///
+/// # Errors
+///
+/// Returns `Err` when the launcher script can't be written (see
+/// [`build_launcher`]) or the `terminal` binary can't be spawned.
 pub fn spawn_exec_attach(container_id: &str, shell: &str) -> std::io::Result<()> {
     let inner = exec_attach_command(container_id, shell);
     let stem = sanitize_stem(container_id);
@@ -136,7 +156,9 @@ fn sanitize_stem(s: &str) -> String {
         .collect();
     let trimmed = s.trim_matches('-');
     let n = trimmed.len().min(24);
-    trimmed[..n].to_string()
+    // Every char here was normalised to ASCII above, so byte offset `n`
+    // always lands on a char boundary; `.get()` is just the panic-safe form.
+    trimmed.get(..n).unwrap_or(trimmed).to_string()
 }
 
 #[cfg(test)]

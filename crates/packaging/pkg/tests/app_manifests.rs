@@ -3,6 +3,16 @@
 //! breaks this suite first. Every app needs a valid `qos-app.toml` to be
 //! packable, installable, and launchable at all.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

@@ -4,6 +4,16 @@
 //! test uses an in-process p2p zbus connection via
 //! `tokio::net::UnixStream::pair()`, so no broker and no real file dialog.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,6 +72,9 @@ async fn bring_up_pair_with_spawners(
     remote_input_injector: RemoteInputInjectorHandle,
     print_spooler: PrintSpoolerHandle,
 ) -> (Connection, Connection, PortalContext) {
+    use shell::portal::{
+        AccessBackend, FileChooserBackend, PrintBackend, RemoteDesktopBackend, ScreenCastBackend,
+    };
     let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
 
     let ctx = PortalContext {
@@ -79,9 +92,6 @@ async fn bring_up_pair_with_spawners(
     // `try_join!` on the build pair so both ends negotiate auth
     // concurrently — serial `await` calls deadlock because the
     // server-side handshake wants bytes the client hasn't sent yet.
-    use shell::portal::{
-        AccessBackend, FileChooserBackend, PrintBackend, RemoteDesktopBackend, ScreenCastBackend,
-    };
     let fc = FileChooserBackend::new(ctx.clone());
     let sc = ScreenCastBackend::new(ctx.clone());
     let ac = AccessBackend::new(ctx.clone());
@@ -489,6 +499,12 @@ fn streams_of(results: &HashMap<String, OwnedValue>) -> Vec<(u32, HashMap<String
     Vec::try_from(results.get("streams").unwrap().try_clone().unwrap()).unwrap()
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "the generic `body` reference makes the future's Send-ness depend on the \
+              caller's argument; every call site awaits this in place on the test's own \
+              task, never spawning it onto another thread"
+)]
 async fn sc_call(
     proxy: &Proxy<'_>,
     method: &str,

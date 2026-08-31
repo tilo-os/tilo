@@ -283,6 +283,12 @@ impl AccountStore {
     /// config root, preserving accounts of other types already there. The
     /// write half of the seam (Settings owns the lifecycle; this exists so the
     /// round-trip is testable).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shared account store cannot be saved to
+    /// `config_root` (for example, if the directory cannot be created or
+    /// written to).
     pub fn persist_in(&self, config_root: &Path) -> std::io::Result<()> {
         let mut shared = SharedStore::load_in(config_root);
         let mut vault = SecretVault::open_in(config_root);

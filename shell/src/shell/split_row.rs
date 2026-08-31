@@ -53,14 +53,18 @@ impl Widget for SplitRow {
         let right_node = self.right.build_layout(taffy, theme, node_map);
 
         // Force flex-grow 1 — without it taffy sizes the right child by
-        // its intrinsic content width.
-        let mut right_style = taffy.style(right_node).unwrap().clone();
-        right_style.flex_grow = 1.0;
-        right_style.size = Size {
-            width: Dimension::auto(),
-            height: Dimension::percent(1.0),
-        };
-        taffy.set_style(right_node, right_style).unwrap();
+        // its intrinsic content width. A style lookup on a node this
+        // function just inserted is not reachable to fail; if it
+        // (impossibly) does, skip the override rather than panic.
+        if let Ok(style) = taffy.style(right_node) {
+            let mut right_style = style.clone();
+            right_style.flex_grow = 1.0;
+            right_style.size = Size {
+                width: Dimension::auto(),
+                height: Dimension::percent(1.0),
+            };
+            let _ = taffy.set_style(right_node, right_style);
+        }
 
         let node = taffy
             .new_with_children(
@@ -78,24 +82,35 @@ impl Widget for SplitRow {
                 },
                 &[left_node, right_node],
             )
-            .unwrap();
+            // Both children were just created in this same tree, so this
+            // is not reachable to fail; falling back to the left child
+            // alone still shows something instead of panicking.
+            .unwrap_or(left_node);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        let children = taffy.children(node).unwrap();
-        self.left
-            .apply_layout(taffy, children[0], Point::new(self.rect.x0, self.rect.y0));
-        self.right
-            .apply_layout(taffy, children[1], Point::new(self.rect.x0, self.rect.y0));
+        let Ok(children) = taffy.children(node) else {
+            return;
+        };
+        if let Some(&left_child) = children.first() {
+            self.left
+                .apply_layout(taffy, left_child, Point::new(self.rect.x0, self.rect.y0));
+        }
+        if let Some(&right_child) = children.get(1) {
+            self.right
+                .apply_layout(taffy, right_child, Point::new(self.rect.x0, self.rect.y0));
+        }
     }
 
     fn draw(
@@ -124,32 +139,38 @@ impl Widget for SplitRow {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        let children = taffy.children(node_id).unwrap();
-        self.left.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            children[0],
-            taffy,
-        );
+        let Ok(children) = taffy.children(node_id) else {
+            return;
+        };
+        if let Some(&left_child) = children.first() {
+            self.left.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                left_child,
+                taffy,
+            );
+        }
         if *handled {
             return;
         }
-        self.right.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            children[1],
-            taffy,
-        );
+        if let Some(&right_child) = children.get(1) {
+            self.right.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                right_child,
+                taffy,
+            );
+        }
     }
 
     fn name(&self) -> &'static str {

@@ -247,7 +247,10 @@ fn unfold(input: &str) -> Vec<String> {
         if (line.starts_with(' ') || line.starts_with('\t'))
             && let Some(last) = out.last_mut()
         {
-            last.push_str(&line[1..]);
+            // The leading char is a single-byte SP/TAB, so byte offset 1 is
+            // always a char boundary; `.get` is a defensive, never-panicking
+            // way to say so.
+            last.push_str(line.get(1..).unwrap_or(""));
             continue;
         }
         out.push(line.to_string());
@@ -262,9 +265,12 @@ fn split_line(line: &str) -> Option<(String, &str)> {
     let mut i = 0;
     let mut prev_backslash = false;
     while i < bytes.len() {
-        let c = bytes[i] as char;
+        // ':' is ASCII, so a byte-exact match can't land mid-codepoint of a
+        // multi-byte char; `.get` still guards it defensively instead of
+        // trusting that reasoning at the panic site.
+        let c = *bytes.get(i)? as char;
         if c == ':' && !prev_backslash {
-            return Some((line[..i].to_string(), &line[i + 1..]));
+            return Some((line.get(..i)?.to_string(), line.get(i + 1..)?));
         }
         prev_backslash = c == '\\' && !prev_backslash;
         i += 1;

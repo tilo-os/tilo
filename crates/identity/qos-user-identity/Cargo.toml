@@ -2,6 +2,8 @@
 name = "qos-user-identity"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "qos_user_identity"
@@ -73,7 +75,6 @@ thiserror.workspace = true
 base32.workspace = true
 
 [dev-dependencies]
-hex.workspace = true
 # Isolated on-disk fixtures for the persistence-round-trip tests
 # so we do not touch /var/lib/qos on the developer's machine.
 tempfile.workspace = true

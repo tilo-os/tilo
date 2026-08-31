@@ -18,6 +18,16 @@
 //! (identical `get_heads()`), on the real `Relay` / `RelayClient` path,
 //! no mocks of the host.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::Duration;
 
 use automerge::transaction::Transactable;
@@ -45,25 +55,20 @@ fn pending_count(dir: &std::path::Path) -> usize {
     })
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn anti_entropy_recovers_delta_drained_then_lost() {
-    const WS: u64 = 31;
-
-    let user = TestUser::fresh("Alice");
-    let a = user.enrol("laptop", DeviceCapabilities::primary());
-    let b = user.enrol("phone", DeviceCapabilities::member());
-    let members = [a.device_pubkey(), b.device_pubkey()];
-
-    let state = tempfile::tempdir().unwrap();
-    let host_dev = user.enrol("home-server", DeviceCapabilities::host());
-    let host = spawn_relay_on(state.path(), &user, host_dev, &[WS], &members).await;
-    let addr = host.node_addr();
-
-    // ---- A publishes a real edit while B is offline. The host queues it
-    //      for B AND materializes it into its pinned doc. ----
+/// A connects, subscribes, publishes `note = "recover-me"`, and waits
+/// until the host has queued it for the (still offline) B. Returns A's
+/// client (kept alive so its actor state stays valid) and the document
+/// holding the published edit.
+async fn publish_offline_edit(
+    addr: iroh_base::EndpointAddr,
+    user: &TestUser,
+    a: &crate::common::TestDevice,
+    ws: u64,
+    pending_dir: &std::path::Path,
+) -> (RelayClient, AutoCommit) {
     let a_client = RelayClient::connect(
         client_endpoint().await,
-        addr.clone(),
+        addr,
         user.user_pk,
         a.cert.clone(),
         a.sk.clone(),
@@ -72,7 +77,7 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     .await
     .expect("A connect");
     a_client
-        .send(Envelope::Subscribe { workspace_id: WS })
+        .send(Envelope::Subscribe { workspace_id: ws })
         .unwrap();
     // Drain A's Ready(0).
     match tokio::time::timeout(Duration::from_secs(2), a_client.recv())
@@ -90,7 +95,7 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     let d1 = doc_a.save_incremental();
     a_client
         .send(Envelope::Delta {
-            workspace_id: WS,
+            workspace_id: ws,
             author_device_public_key: a.device_pubkey(),
             authored_at_ns: 1,
             delta: d1.clone(),
@@ -98,30 +103,31 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
         })
         .unwrap();
 
-    let b_hex = hex::encode(b.device_pubkey());
-    let pending_dir = state
-        .path()
-        .join("workspaces")
-        .join(WS.to_string())
-        .join("pending")
-        .join(&b_hex);
     let mut queued = 0;
     for _ in 0..40 {
-        queued = pending_count(&pending_dir);
+        queued = pending_count(pending_dir);
         if queued >= 1 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert_eq!(queued, 1, "A's edit is queued for the offline B");
+    (a_client, doc_a)
+}
 
-    // ---- B connects (session 1) and drains its queue — the host DELETES
-    //      the queued copy — but B's wire dies before it durably applies
-    //      the drained delta. Model that by dropping the session right
-    //      after the queue has been flushed. ----
+/// Connect B, subscribe (draining + deleting its queued delta on the
+/// host), then drop the session before it durably applies anything — the
+/// disconnect race this whole test proves anti-entropy recovers from.
+async fn drain_then_lose_session(
+    addr: iroh_base::EndpointAddr,
+    user: &TestUser,
+    b: &crate::common::TestDevice,
+    ws: u64,
+    pending_dir: &std::path::Path,
+) {
     let b1 = RelayClient::connect(
         client_endpoint().await,
-        addr.clone(),
+        addr,
         user.user_pk,
         b.cert.clone(),
         b.sk.clone(),
@@ -129,14 +135,14 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
     )
     .await
     .expect("B connect (1)");
-    b1.send(Envelope::Subscribe { workspace_id: WS }).unwrap();
+    b1.send(Envelope::Subscribe { workspace_id: ws }).unwrap();
 
     // Wait until the host has flushed + deleted the queued delta from
     // disk (the drain is what removes it). B deliberately does NOT apply
     // what it received — the delta is lost in the disconnect race.
     let mut drained = false;
     for _ in 0..80 {
-        if pending_count(&pending_dir) == 0 {
+        if pending_count(pending_dir) == 0 {
             drained = true;
             break;
         }
@@ -147,6 +153,39 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
         "host drained + deleted B's queued delta on subscribe"
     );
     drop(b1); // B's wire dies; it never durably applied the drained delta.
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn anti_entropy_recovers_delta_drained_then_lost() {
+    const WS: u64 = 31;
+
+    let user = TestUser::fresh("Alice");
+    let a = user.enrol("laptop", DeviceCapabilities::primary());
+    let b = user.enrol("phone", DeviceCapabilities::member());
+    let members = [a.device_pubkey(), b.device_pubkey()];
+
+    let state = tempfile::tempdir().unwrap();
+    let host_dev = user.enrol("home-server", DeviceCapabilities::host());
+    let host = spawn_relay_on(state.path(), &user, host_dev, &[WS], &members).await;
+    let addr = host.node_addr();
+    let b_hex = hex::encode(b.device_pubkey());
+    let pending_dir = state
+        .path()
+        .join("workspaces")
+        .join(WS.to_string())
+        .join("pending")
+        .join(&b_hex);
+
+    // ---- A publishes a real edit while B is offline. The host queues it
+    //      for B AND materializes it into its pinned doc. ----
+    let (a_client, mut doc_a) =
+        publish_offline_edit(addr.clone(), &user, &a, WS, &pending_dir).await;
+
+    // ---- B connects (session 1) and drains its queue — the host DELETES
+    //      the queued copy — but B's wire dies before it durably applies
+    //      the drained delta. Model that by dropping the session right
+    //      after the queue has been flushed. ----
+    drain_then_lose_session(addr.clone(), &user, &b, WS, &pending_dir).await;
 
     // The store-and-forward tier is now exhausted for this delta: the
     // queued copy is gone, and a fresh reconnect will find nothing.

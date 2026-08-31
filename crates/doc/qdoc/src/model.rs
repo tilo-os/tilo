@@ -73,6 +73,10 @@ impl NoteKind {
     }
     /// Parse a schema string back into a [`NoteKind`] (`endnote` → `Endnote`,
     /// anything else → `Footnote`, the default).
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "returns Self infallibly by design, not std::str::FromStr's fallible contract; renaming would ripple into sibling codec files outside this pass's scope"
+    )]
     pub fn from_str(s: &str) -> Self {
         if s == NOTE_KIND_ENDNOTE {
             NoteKind::Endnote
@@ -147,7 +151,9 @@ impl IdGen {
     }
     pub fn mint(&mut self) -> String {
         let id = format!("{}.{}", self.actor_hex, self.next);
-        self.next += 1;
+        // Saturates rather than wraps at u64::MAX: an actor would need to mint 2^64 ids first,
+        // at which point holding at the max (and colliding) is preferable to wrapping back to 0.
+        self.next = self.next.saturating_add(1);
         id
     }
 }
@@ -161,7 +167,7 @@ pub fn next_counter_for(doc: &AutoCommit, c: &Containers, actor_hex: &str) -> u6
         if let Some(rest) = id.strip_prefix(&prefix)
             && let Ok(n) = rest.parse::<u64>()
         {
-            next = next.max(n + 1);
+            next = next.max(n.saturating_add(1));
         }
     };
     for id in blocks_in_order(doc, c) {
@@ -279,6 +285,17 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
 /// This op sequence *is* the schema, and [`genesis`] replays it under a fixed
 /// actor. Adding, removing or reordering an op changes the genesis hash, which
 /// is a schema migration for every document in the world, not a local edit.
+///
+/// # Panics
+/// Panics if `root` names an object that doesn't exist in `doc`. Every caller resolves
+/// `root` (`automerge::ROOT`, or a namespace node it just created) immediately before
+/// calling this, so the object is always live; [`init`]'s own callers across the
+/// workspace depend on its infallible `Containers` return, so surfacing this as a
+/// `Result` here would be a public-API break out of scope for a lint-only pass.
+#[allow(
+    clippy::unwrap_used,
+    reason = "root is always a live object at every call site (see the panics note above); init()'s widely-depended-upon infallible signature rules out propagating a Result"
+)]
 fn write_schema(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     doc.put(root, KEY_SCHEMA, SCHEMA_ID).unwrap();
     doc.put(root, KEY_SCHEMA_VERSION, SCHEMA_VERSION).unwrap();
@@ -363,6 +380,10 @@ pub fn shadowed_containers(doc: &AutoCommit, root: &ObjId) -> Vec<String> {
 
 /// Resolve existing containers under `root`. The blobs map is optional so
 /// documents written before it existed still open (it is then created lazily).
+///
+/// # Errors
+/// Returns [`DocError`] if a required container key (`blocks`/`styles`/`preserved`/`meta`)
+/// is missing under `root` or does not resolve to a map.
 pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<Containers, DocError> {
     Ok(Containers {
         root: root.clone(),
@@ -795,16 +816,16 @@ pub fn blob_meta(
             let int_at = |k: &str| match doc.get(&d, k) {
                 Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
                     ScalarValue::Int(v) => *v,
-                    ScalarValue::Uint(v) => *v as i64,
+                    ScalarValue::Uint(v) => i64::try_from(*v).unwrap_or(i64::MAX),
                     _ => 0,
                 },
                 _ => 0,
             };
             Some(crate::blobstore::BlobMeta {
                 mime: str_at(BLOB_MIME),
-                len: int_at(BLOB_LEN).max(0) as u64,
-                w: int_at(BLOB_W).max(0) as u32,
-                h: int_at(BLOB_H).max(0) as u32,
+                len: u64::try_from(int_at(BLOB_LEN).max(0)).unwrap_or(0),
+                w: u32::try_from(int_at(BLOB_W).max(0)).unwrap_or(u32::MAX),
+                h: u32::try_from(int_at(BLOB_H).max(0)).unwrap_or(u32::MAX),
             })
         }
         // A document authored before the bytes moved out still describes itself inline (length + format known).
@@ -891,7 +912,7 @@ pub fn ordered_keys_scan_count() -> u64 {
 }
 
 fn ordered_keys(doc: &AutoCommit, container: &ObjId) -> Vec<String> {
-    ORDERED_KEYS_SCANS.with(|c| c.set(c.get() + 1));
+    ORDERED_KEYS_SCANS.with(|c| c.set(c.get().saturating_add(1)));
     let mut v: Vec<(Vec<u8>, String)> = doc
         .keys(container)
         .filter_map(|id| block_order(doc, container, &id).map(|ord| (ord, id)))
@@ -927,13 +948,17 @@ pub fn meta_str(doc: &AutoCommit, c: &Containers, key: &str) -> Option<String> {
 pub fn columns(doc: &AutoCommit, c: &Containers) -> (u32, Option<f64>) {
     let count = match doc.get(&c.meta, META_COLUMNS) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Uint(u) => *u as u32,
-            ScalarValue::Int(i) if *i > 0 => *i as u32,
+            ScalarValue::Uint(u) => u32::try_from(*u).unwrap_or(u32::MAX),
+            ScalarValue::Int(i) if *i > 0 => u32::try_from(*i).unwrap_or(u32::MAX),
             _ => DEFAULT_COLUMNS,
         },
         _ => DEFAULT_COLUMNS,
     }
     .max(1);
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a page column gap in px; realistic values are far below 2^53 so f64 loses no precision that matters here"
+    )]
     let gap = match doc.get(&c.meta, META_COLUMN_GAP) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
             ScalarValue::F64(f) => Some(*f),
@@ -1008,9 +1033,8 @@ pub fn block_text(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> 
 }
 
 fn marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<MarkSpan> {
-    let tid = match doc.get(block_obj, BLOCK_TEXT) {
-        Ok(Some((Value::Object(ObjType::Text), t))) => t,
-        _ => return vec![],
+    let Ok(Some((Value::Object(ObjType::Text), tid))) = doc.get(block_obj, BLOCK_TEXT) else {
+        return vec![];
     };
     let mut spans: Vec<MarkSpan> = doc
         .marks(&tid)
@@ -1073,9 +1097,9 @@ pub fn preserved_part(doc: &AutoCommit, c: &Containers, key: &str) -> Option<Vec
             let mut segs: Vec<(Vec<u8>, String, Vec<u8>)> = doc
                 .keys(&part_obj)
                 .filter_map(|sid| {
-                    let seg_obj = match doc.get(&part_obj, &sid) {
-                        Ok(Some((Value::Object(ObjType::Map), o))) => o,
-                        _ => return None,
+                    let Ok(Some((Value::Object(ObjType::Map), seg_obj))) = doc.get(&part_obj, &sid)
+                    else {
+                        return None;
                     };
                     let ord = match doc.get(&seg_obj, PRESERVED_SEG_ORD) {
                         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -1110,16 +1134,14 @@ pub fn preserved_part(doc: &AutoCommit, c: &Containers, key: &str) -> Option<Vec
 /// The per-atom segment ids of a preserved part, in source order, paired with each atom's verbatim bytes.
 /// Empty for a part stored in the legacy single-blob form. Lets a codec or test address an individual atom by its stable id.
 pub fn preserved_atoms(doc: &AutoCommit, c: &Containers, key: &str) -> Vec<(String, Vec<u8>)> {
-    let part_obj = match doc.get(&c.preserved, key) {
-        Ok(Some((Value::Object(ObjType::Map), o))) => o,
-        _ => return Vec::new(),
+    let Ok(Some((Value::Object(ObjType::Map), part_obj))) = doc.get(&c.preserved, key) else {
+        return Vec::new();
     };
     let mut segs: Vec<(Vec<u8>, String, Vec<u8>)> = doc
         .keys(&part_obj)
         .filter_map(|sid| {
-            let seg_obj = match doc.get(&part_obj, &sid) {
-                Ok(Some((Value::Object(ObjType::Map), o))) => o,
-                _ => return None,
+            let Ok(Some((Value::Object(ObjType::Map), seg_obj))) = doc.get(&part_obj, &sid) else {
+                return None;
             };
             let ord = match doc.get(&seg_obj, PRESERVED_SEG_ORD) {
                 Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -1147,7 +1169,9 @@ pub fn preserved_atoms(doc: &AutoCommit, c: &Containers, key: &str) -> Vec<(Stri
 /// The same source bytes split into the same ids on every replica, so the same atom converges to one automerge object.
 fn preserved_atom_id(idx: usize, atom: &[u8]) -> String {
     let h = blake3::hash(atom).to_hex();
-    format!("{idx:06}-{}", &h.as_str()[..16])
+    // blake3's hex digest is always 64 ASCII hex chars, so a 16-byte prefix is always a char boundary.
+    let prefix = h.as_str().get(..16).unwrap_or(h.as_str());
+    format!("{idx:06}-{prefix}")
 }
 
 /// Split a preserved part into independently-mergeable atoms whose concatenation is the original bytes verbatim.
@@ -1158,11 +1182,12 @@ pub fn split_preserved_atoms(bytes: &[u8]) -> Vec<Vec<u8>> {
     // Only XML parts (`<?xml` prologue or a leading `<` tag) get split; everything
     // else (images, the mimetype literal, binary settings) is one atom.
     let looks_xml = {
-        let head: &[u8] = &bytes[..bytes.len().min(64)];
+        let head: &[u8] = bytes.get(..bytes.len().min(64)).unwrap_or(bytes);
         let trimmed = head
             .iter()
             .position(|b| !b.is_ascii_whitespace())
-            .map_or(head, |p| &head[p..]);
+            .and_then(|p| head.get(p..))
+            .unwrap_or(head);
         trimmed.starts_with(b"<?xml") || trimmed.starts_with(b"<")
     };
     if !looks_xml {
@@ -1192,7 +1217,7 @@ fn parse_elem_spans(bytes: &[u8]) -> Option<Vec<ElemSpan>> {
     let mut depth: usize = 0;
     let mut spans: Vec<ElemSpan> = Vec::new();
     loop {
-        let before = reader.buffer_position() as usize;
+        let before = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
         match reader.read_event() {
             Ok(Event::Eof) => break,
             Ok(Event::Start(_)) => {
@@ -1200,7 +1225,7 @@ fn parse_elem_spans(bytes: &[u8]) -> Option<Vec<ElemSpan>> {
                     depth,
                     start: before,
                 });
-                depth += 1;
+                depth = depth.saturating_add(1);
             }
             Ok(Event::Empty(_)) => {
                 spans.push(ElemSpan {
@@ -1236,7 +1261,13 @@ fn split_xml_top_level(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
     let max_depth = spans.iter().map(|s| s.depth).max().unwrap_or(0);
     for d in 0..=max_depth {
         // Require a single shared parent: exactly one element at the parent depth.
-        if d > 0 && spans.iter().filter(|s| s.depth == d - 1).count() != 1 {
+        if d > 0
+            && spans
+                .iter()
+                .filter(|s| s.depth == d.saturating_sub(1))
+                .count()
+                != 1
+        {
             break; // the tree already branched above this depth — stop descending
         }
         // Elements at this depth, in source order.
@@ -1254,13 +1285,13 @@ fn split_xml_top_level(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
         if boundaries.is_empty() {
             continue;
         }
-        let mut atoms: Vec<Vec<u8>> = Vec::with_capacity(boundaries.len() + 1);
+        let mut atoms: Vec<Vec<u8>> = Vec::with_capacity(boundaries.len().saturating_add(1));
         let mut prev = 0usize;
         for &b in &boundaries {
-            atoms.push(bytes[prev..b].to_vec());
+            atoms.push(bytes.get(prev..b)?.to_vec());
             prev = b;
         }
-        atoms.push(bytes[prev..].to_vec());
+        atoms.push(bytes.get(prev..)?.to_vec());
         // Byte-fidelity guard: atoms MUST concatenate back to the source exactly.
         let total: usize = atoms.iter().map(std::vec::Vec::len).sum();
         if total != bytes.len() {
@@ -1272,16 +1303,15 @@ fn split_xml_top_level(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
 }
 
 fn read_attrs(doc: &AutoCommit, block_obj: &ObjId) -> BTreeMap<String, AttrVal> {
-    let attrs_obj = match doc.get(block_obj, BLOCK_ATTRS) {
-        Ok(Some((Value::Object(ObjType::Map), a))) => a,
-        _ => return BTreeMap::new(),
+    let Ok(Some((Value::Object(ObjType::Map), attrs_obj))) = doc.get(block_obj, BLOCK_ATTRS) else {
+        return BTreeMap::new();
     };
     let mut out = BTreeMap::new();
     for key in doc.keys(&attrs_obj) {
         if let Ok(Some((Value::Scalar(s), _))) = doc.get(&attrs_obj, &key) {
             let val = match s.as_ref() {
                 ScalarValue::Int(i) => AttrVal::Int(*i),
-                ScalarValue::Uint(u) => AttrVal::Int(*u as i64),
+                ScalarValue::Uint(u) => AttrVal::Int(i64::try_from(*u).unwrap_or(i64::MAX)),
                 ScalarValue::Boolean(b) => AttrVal::Bool(*b),
                 ScalarValue::Str(st) => AttrVal::Str(st.to_string()),
                 ScalarValue::F64(f) => AttrVal::Float(*f),
@@ -1299,6 +1329,11 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         .map(|id| materialize_block(doc, &c.blocks, &id))
         .collect();
     let (columns, column_gap) = columns(doc, c);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a page column gap in px; document-realistic values fit f32 exactly"
+    )]
+    let column_gap = column_gap.map(|g| g as f32);
     let mut snap = DocSnapshot {
         schema: SCHEMA_ID.to_string(),
         schema_version: SCHEMA_VERSION,
@@ -1313,7 +1348,7 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         changes: materialize_changes(doc, c),
         bookmarks: bookmarks(doc, c),
         columns,
-        column_gap: column_gap.map(|g| g as f32),
+        column_gap,
         language: language(doc, c),
     };
     project_blob_meta(doc, c, &mut snap);
@@ -1350,8 +1385,10 @@ fn project_blob_meta(doc: &AutoCommit, c: &Containers, snap: &mut DocSnapshot) {
                 b.attrs
                     .insert(ATTR_BLOB_MIME.to_string(), AttrVal::Str(meta.mime.clone()));
             }
-            b.attrs
-                .insert(ATTR_BLOB_BYTES.to_string(), AttrVal::Int(meta.len as i64));
+            b.attrs.insert(
+                ATTR_BLOB_BYTES.to_string(),
+                AttrVal::Int(i64::try_from(meta.len).unwrap_or(i64::MAX)),
+            );
             if meta.w > 0 && meta.h > 0 {
                 b.attrs
                     .insert(ATTR_BLOB_W.to_string(), AttrVal::Int(i64::from(meta.w)));
@@ -1380,7 +1417,7 @@ fn read_style_props(doc: &AutoCommit, style_obj: &ObjId) -> BTreeMap<String, Att
         if let Ok(Some((Value::Scalar(s), _))) = doc.get(style_obj, &key) {
             let val = match s.as_ref() {
                 ScalarValue::Int(i) => AttrVal::Int(*i),
-                ScalarValue::Uint(u) => AttrVal::Int(*u as i64),
+                ScalarValue::Uint(u) => AttrVal::Int(i64::try_from(*u).unwrap_or(i64::MAX)),
                 ScalarValue::Boolean(b) => AttrVal::Bool(*b),
                 ScalarValue::Str(st) => AttrVal::Str(st.to_string()),
                 ScalarValue::F64(f) => AttrVal::Float(*f),
@@ -1423,18 +1460,15 @@ pub fn all_styles(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, BTreeMap
 }
 
 fn materialize_block(doc: &AutoCommit, container: &ObjId, id: &str) -> BlockView {
-    let obj = match doc.get(container, id) {
-        Ok(Some((Value::Object(ObjType::Map), o))) => o,
-        _ => {
-            return BlockView {
-                id: id.into(),
-                kind: String::new(),
-                text: String::new(),
-                marks: vec![],
-                attrs: BTreeMap::new(),
-                children: vec![],
-            };
-        }
+    let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(container, id) else {
+        return BlockView {
+            id: id.into(),
+            kind: String::new(),
+            text: String::new(),
+            marks: vec![],
+            attrs: BTreeMap::new(),
+            children: vec![],
+        };
     };
     let kind = match doc.get(&obj, BLOCK_KIND) {
         Ok(Some((v, _))) => v.to_str().unwrap_or("").to_string(),
@@ -1482,6 +1516,18 @@ impl DocRef<'_> {
     }
 }
 
+// The `put`/`put_object` calls below all target either `self.c`'s cached container ids (resolved
+// once by `open`/`init` and never touched by anything but this single-threaded, synchronous API) or
+// an object this same method just created a line above — never anything derived from untrusted
+// document *content* (text, attrs, offsets). Automerge only errors these ops when the target object
+// id has been deleted, which cannot happen mid-call here. Threading `Result` through every mutator
+// would also break the many external callers (apps/word-processor, apps/agent, fs, …) that already
+// depend on `DocMut`'s infallible method signatures — out of scope for a lint-only pass.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "every put/put_object here targets a container id this API itself resolved or just created; see the note above for why threading Result through is out of scope"
+)]
 impl DocMut<'_> {
     /// Resolve-or-create a region's block container. The body always exists; header/footer maps are created
     /// lazily on first write and cached back into `Containers` for later reads. Takes `&Containers` by
@@ -1601,6 +1647,9 @@ impl DocMut<'_> {
 
     /// Insert a block into a page region (`Body`/`Header`/`Footer`). Header/footer containers are created
     /// lazily on first insert. Block ids are minted from the same per-replica generator as the body, so they never collide across regions.
+    ///
+    /// # Panics
+    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
     pub fn insert_block_in(&mut self, region: Region, after: Option<&str>, kind: &str) -> String {
         let container = self.region_container(region);
         let key = self.order_after_in(&container, after);
@@ -1664,9 +1713,8 @@ impl DocMut<'_> {
         let Some(obj) = block_obj(self.doc, &container, block_id) else {
             return;
         };
-        let attrs = match self.doc.get(&obj, BLOCK_ATTRS) {
-            Ok(Some((Value::Object(ObjType::Map), a))) => a,
-            _ => return,
+        let Ok(Some((Value::Object(ObjType::Map), attrs))) = self.doc.get(&obj, BLOCK_ATTRS) else {
+            return;
         };
         let _ = self.doc.put(&attrs, key, value);
     }
@@ -1681,7 +1729,7 @@ impl DocMut<'_> {
             region,
             block_id,
             idx,
-            idx + 1,
+            idx.saturating_add(1),
             MARK_FIELD,
             FIELD_PAGE_NUMBER,
         );
@@ -1702,6 +1750,9 @@ impl DocMut<'_> {
 
     /// Create a new note (footnote/endnote) with an empty block sequence and return its freshly-minted id
     /// (filled in via [`Self::insert_note_block`] + [`Self::splice_note_text`]); id shares the body's generator so it never collides.
+    ///
+    /// # Panics
+    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
     pub fn insert_note(&mut self, kind: NoteKind) -> String {
         let notes = self.notes_container();
         let id = self.ids.mint();
@@ -1720,7 +1771,7 @@ impl DocMut<'_> {
     /// with a `note-ref` mark valued with the note id (inverse of import, which re-creates both the note and its marker).
     pub fn insert_note_ref(&mut self, block_id: &str, idx: usize, note_id: &str) {
         self.splice_text(block_id, idx, 0, &FIELD_PLACEHOLDER.to_string());
-        self.add_mark(block_id, idx, idx + 1, MARK_NOTE_REF, note_id);
+        self.add_mark(block_id, idx, idx.saturating_add(1), MARK_NOTE_REF, note_id);
     }
 
     /// Convenience: create a footnote, place its reference marker at `idx` in `block_id`, and return the new note id.
@@ -1747,6 +1798,9 @@ impl DocMut<'_> {
     }
 
     /// Insert a block into a note's content (created lazily); returns its id, or `None` if the note id is unknown.
+    ///
+    /// # Panics
+    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
     pub fn insert_note_block(
         &mut self,
         note_id: &str,
@@ -1831,6 +1885,9 @@ impl DocMut<'_> {
     /// Create a new comment with an `author`, a `date` string, and an empty block sequence; returns its
     /// freshly-minted id (shares the body's generator so it never collides). Content is filled via
     /// [`Self::insert_comment_block`] + [`Self::splice_comment_text`]; the body anchor via [`Self::add_comment_mark`].
+    ///
+    /// # Panics
+    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
     pub fn insert_comment(&mut self, author: &str, date: &str) -> String {
         let comments = self.comments_container();
         let id = self.ids.mint();
@@ -1883,6 +1940,9 @@ impl DocMut<'_> {
     }
 
     /// Insert a block into a comment's content (created lazily); returns its id, or `None` if the comment id is unknown.
+    ///
+    /// # Panics
+    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
     pub fn insert_comment_block(
         &mut self,
         comment_id: &str,
@@ -1950,6 +2010,9 @@ impl DocMut<'_> {
 
     /// Create a tracked-change record of `kind` with an `author` + `date`; returns its freshly-minted id (shares
     /// the body's generator). The body anchor is placed separately via [`Self::add_change_mark`] — callers usually go through [`Self::track_insert`]/[`Self::track_delete`].
+    ///
+    /// # Panics
+    /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
     pub fn insert_change(
         &mut self,
         kind: crate::snapshot::ChangeKind,
@@ -1999,7 +2062,7 @@ impl DocMut<'_> {
                 crate::snapshot::ChangeKind::Ins,
                 block_id,
                 char_idx,
-                char_idx + n,
+                char_idx.saturating_add(n),
                 &id,
             );
         }
@@ -2045,7 +2108,8 @@ impl DocMut<'_> {
                 if let Some((b, start, end)) = range
                     && end > start
                 {
-                    self.splice_text(&b, start, (end - start) as isize, "");
+                    let del_len = isize::try_from(end.saturating_sub(start)).unwrap_or(isize::MAX);
+                    self.splice_text(&b, start, del_len, "");
                 }
             }
         }
@@ -2066,7 +2130,8 @@ impl DocMut<'_> {
                 if let Some((b, start, end)) = range
                     && end > start
                 {
-                    self.splice_text(&b, start, (end - start) as isize, "");
+                    let del_len = isize::try_from(end.saturating_sub(start)).unwrap_or(isize::MAX);
+                    self.splice_text(&b, start, del_len, "");
                 }
             }
             crate::snapshot::ChangeKind::Del => {
@@ -2100,10 +2165,10 @@ impl DocMut<'_> {
             let blen = crate::model::block_text(self.doc, self.c, block_id)
                 .map_or(0, |t| t.chars().count());
             if s < blen {
-                e = s + 1;
+                e = s.saturating_add(1);
             } else if blen > 0 {
                 // End-of-block point: sit over the last character.
-                s = blen - 1;
+                s = blen.saturating_sub(1);
                 e = blen;
             }
         }
@@ -2159,6 +2224,10 @@ impl DocMut<'_> {
         self.forget_order(&container, id);
     }
 
+    /// Move block `id` to a new position, ordered directly after `after` (or first, when `after` is `None`).
+    ///
+    /// # Panics
+    /// Panics if `self.c.blocks` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
     pub fn move_block(&mut self, id: &str, after: Option<&str>) {
         // Compute the target key with the block still at its old position (mirrors the pre-index behaviour).
         let key = self.order_after(after);
@@ -2208,9 +2277,8 @@ impl DocMut<'_> {
         let Some(obj) = block_obj(self.doc, &self.c.blocks, block_id) else {
             return;
         };
-        let attrs = match self.doc.get(&obj, BLOCK_ATTRS) {
-            Ok(Some((Value::Object(ObjType::Map), a))) => a,
-            _ => return,
+        let Ok(Some((Value::Object(ObjType::Map), attrs))) = self.doc.get(&obj, BLOCK_ATTRS) else {
+            return;
         };
         let _ = self.doc.put(&attrs, key, value);
     }
@@ -2271,6 +2339,9 @@ impl DocMut<'_> {
 
     /// Upsert a named style into the styles container. Each property is written as its own scalar register
     /// *into the existing sub-map*, so replicas editing different properties of the same style field-level merge.
+    ///
+    /// # Panics
+    /// Panics if `self.c.styles` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
     pub fn set_style(&mut self, id: &str, props: &BTreeMap<String, AttrVal>) {
         let obj = match self.doc.get(&self.c.styles, id) {
             Ok(Some((Value::Object(ObjType::Map), o))) => o,
@@ -2314,12 +2385,15 @@ impl DocMut<'_> {
     /// `Map<segment_id, {ord, bytes}>`. The same source splits into the same stable ids on every replica, so two
     /// replicas modifying different unmodeled atoms of the same part now merge instead of clobbering; reconstruction via [`preserved_part`] reproduces `bytes` byte-for-byte.
     pub fn set_preserved(&mut self, key: &str, bytes: &[u8]) {
-        self.set_preserved_atoms(key, split_preserved_atoms(bytes));
+        self.set_preserved_atoms(key, &split_preserved_atoms(bytes));
     }
 
     /// Stash a preserved part already split into ordered atoms (verbatim byte slices that concatenate back to
     /// the whole part). Each atom becomes an independent automerge object keyed by a stable id, so distinct atoms merge across replicas. Replaces any existing part under `key`.
-    pub fn set_preserved_atoms(&mut self, key: &str, atoms: Vec<Vec<u8>>) {
+    ///
+    /// # Panics
+    /// Panics if `self.c.preserved` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
+    pub fn set_preserved_atoms(&mut self, key: &str, atoms: &[Vec<u8>]) {
         // Replace the part wholesale: a fresh map keyed by per-atom stable ids.
         let part = self
             .doc
@@ -2332,7 +2406,11 @@ impl DocMut<'_> {
                 .put_object(&part, id.as_str(), ObjType::Map)
                 .unwrap();
             // Order key: the atom's source position, big-endian, so segments sort back into source order deterministically.
-            let ord = (idx as u32).to_be_bytes().to_vec();
+            // A document has nowhere near u32::MAX top-level XML atoms; clamping is a formality, not a real limit.
+            let ord = u32::try_from(idx)
+                .unwrap_or(u32::MAX)
+                .to_be_bytes()
+                .to_vec();
             let _ = self
                 .doc
                 .put(&seg, PRESERVED_SEG_ORD, ScalarValue::Bytes(ord));
@@ -2345,9 +2423,9 @@ impl DocMut<'_> {
     /// Overwrite a single preserved atom's verbatim bytes in place, by its stable segment id, without disturbing
     /// the part's other atoms. No-op if the part isn't segmented or the segment id is absent.
     pub fn set_preserved_atom_bytes(&mut self, key: &str, segment_id: &str, bytes: &[u8]) {
-        let part = match self.doc.get(&self.c.preserved, key) {
-            Ok(Some((Value::Object(ObjType::Map), o))) => o,
-            _ => return,
+        let Ok(Some((Value::Object(ObjType::Map), part))) = self.doc.get(&self.c.preserved, key)
+        else {
+            return;
         };
         if let Ok(Some((Value::Object(ObjType::Map), seg))) = self.doc.get(&part, segment_id) {
             let _ = self.doc.put(
@@ -2360,6 +2438,9 @@ impl DocMut<'_> {
 
     /// Store `bytes` in the content-addressed blob store and write a descriptor under their blake3 hex hash
     /// (the key an `image` block's `blob` attr references). Creates the blobs map lazily for older documents.
+    ///
+    /// # Panics
+    /// Panics if `self.c.root` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
     pub fn put_blob(&mut self, bytes: &[u8]) -> String {
         let hash = crate::blobstore::put(bytes);
         let blobs = match blobs_obj(self.doc, self.c) {
@@ -2382,9 +2463,11 @@ impl DocMut<'_> {
             let _ = self
                 .doc
                 .put(&d, BLOB_MIME, ScalarValue::Str(meta.mime.as_str().into()));
-            let _ = self
-                .doc
-                .put(&d, BLOB_LEN, ScalarValue::Int(meta.len as i64));
+            let _ = self.doc.put(
+                &d,
+                BLOB_LEN,
+                ScalarValue::Int(i64::try_from(meta.len).unwrap_or(i64::MAX)),
+            );
             let _ = self
                 .doc
                 .put(&d, BLOB_W, ScalarValue::Int(i64::from(meta.w)));
@@ -2571,17 +2654,16 @@ mod genesis_detection_tests {
             .iter()
             .filter(|ch| is_schema_genesis_actor(ch.actor_id()))
             .collect();
-        let authored: Vec<_> = changes
+        let has_authored = changes
             .iter()
-            .filter(|ch| !is_schema_genesis_actor(ch.actor_id()))
-            .collect();
+            .any(|ch| !is_schema_genesis_actor(ch.actor_id()));
 
         assert!(
             !genesis.is_empty(),
             "the schema has to be written by the genesis actor"
         );
         assert!(
-            !authored.is_empty(),
+            has_authored,
             "the edit has to be attributed to this replica"
         );
         assert_eq!(
@@ -3421,6 +3503,31 @@ mod preserved_tests {
         assert!(preserved_atoms(&doc, &c, "odt/part/settings.xml").is_empty());
     }
 
+    /// Read-modify-write the one atom containing `needle` (test fixture helper: the fixture
+    /// guarantees exactly one match), returning its id and current bytes.
+    fn find_atom(atoms: &[(String, Vec<u8>)], needle: &[u8]) -> (String, Vec<u8>) {
+        atoms
+            .iter()
+            .find(|(_, b)| b.windows(needle.len()).any(|w| w == needle))
+            .map(|(id, b)| (id.clone(), b.clone()))
+            .expect("fixture atom present")
+    }
+
+    fn edit_atom(bytes: &[u8], from: &str, to: &str) -> Vec<u8> {
+        String::from_utf8_lossy(bytes)
+            .replace(from, to)
+            .into_bytes()
+    }
+
+    /// Merge `src` into `dst` via the low-level Automerge (mirroring `Document::merge`, which
+    /// sidesteps an automerge-0.8 `AutoCommit::merge` patch-log panic), reloaded from the merged bytes.
+    fn merge_into(dst: &mut AutoCommit, src: &mut AutoCommit) -> AutoCommit {
+        let mut a = automerge::Automerge::load(&dst.save()).unwrap();
+        let mut b = automerge::Automerge::load(&src.save()).unwrap();
+        let _ = a.merge(&mut b);
+        AutoCommit::load(&a.save()).unwrap()
+    }
+
     /// THE core win: two replicas import the same part, each rewrites a DIFFERENT
     /// unmodeled atom of it, then merge — and BOTH edits survive. Under the old
     /// whole-part `Bytes` scalar this was last-writer-wins (one edit clobbered the
@@ -3443,17 +3550,10 @@ mod preserved_tests {
         doc_b.set_actor(automerge::ActorId::random());
         let c_b = open(&doc_b, &ROOT).unwrap();
 
+        // Replica A rewrites ONLY the alpha atom; replica B rewrites ONLY bravo.
         let atoms_a = preserved_atoms(&doc, &c, "odt/part/styles.xml");
-        let id_alpha = atoms_a
-            .iter()
-            .find(|(_, b)| b.windows(5).any(|w| w == b"alpha"))
-            .map(|(id, _)| id.clone())
-            .unwrap();
-        let id_bravo = atoms_a
-            .iter()
-            .find(|(_, b)| b.windows(5).any(|w| w == b"bravo"))
-            .map(|(id, _)| id.clone())
-            .unwrap();
+        let (id_alpha, cur_alpha) = find_atom(&atoms_a, b"alpha");
+        let (id_bravo, cur_bravo) = find_atom(&atoms_a, b"bravo");
         let atoms_b = preserved_atoms(&doc_b, &c_b, "odt/part/styles.xml");
         assert!(
             atoms_b.iter().any(|(id, _)| id == &id_alpha)
@@ -3461,26 +3561,7 @@ mod preserved_tests {
             "fork shares the same stable atom ids: A={atoms_a:?} B={atoms_b:?}"
         );
 
-        // Replica A rewrites ONLY the alpha atom; replica B rewrites ONLY bravo. Read-modify-write the atom (keeping
-        // its framing), mirroring how a codec would re-model one region in place.
-        let edit_atom = |bytes: &[u8], from: &str, to: &str| -> Vec<u8> {
-            String::from_utf8_lossy(bytes)
-                .replace(from, to)
-                .into_bytes()
-        };
-        let cur_alpha = atoms_a
-            .iter()
-            .find(|(id, _)| id == &id_alpha)
-            .unwrap()
-            .1
-            .clone();
         let new_alpha = edit_atom(&cur_alpha, "alpha", "ALPHA-EDITED");
-        let cur_bravo = atoms_a
-            .iter()
-            .find(|(id, _)| id == &id_bravo)
-            .unwrap()
-            .1
-            .clone();
         let new_bravo = edit_atom(&cur_bravo, "bravo", "BRAVO-EDITED");
         {
             let mut dm = DocMut {
@@ -3502,14 +3583,6 @@ mod preserved_tests {
         }
         doc_b.commit();
 
-        // Merge both directions via the low-level Automerge (mirroring `Document::merge`, which sidesteps an
-        // automerge-0.8 AutoCommit::merge patch-log panic). Reload each side from the merged bytes.
-        let merge_into = |dst: &mut AutoCommit, src: &mut AutoCommit| -> AutoCommit {
-            let mut a = automerge::Automerge::load(&dst.save()).unwrap();
-            let mut b = automerge::Automerge::load(&src.save()).unwrap();
-            let _ = a.merge(&mut b);
-            AutoCommit::load(&a.save()).unwrap()
-        };
         let merged_a = merge_into(&mut doc, &mut doc_b);
         let merged_b = merge_into(&mut doc_b, &mut doc);
         doc = merged_a;

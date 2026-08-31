@@ -12,13 +12,13 @@ use std::sync::OnceLock;
 /// Whether the active connection is metered (cellular / capped). `false` (i.e.
 /// "stable, prefetch is fine") is the default when the status is unknown.
 pub fn is_metered() -> bool {
+    // Consult NetworkManager once, cached for the process lifetime.
+    static CACHED: OnceLock<bool> = OnceLock::new();
     // Deterministic override first: tests + operators set `QOS_MUSIC_METERED=1`
     // (metered) or `=0` (stable) to force the decision.
     if let Ok(v) = std::env::var("QOS_MUSIC_METERED") {
         return v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes");
     }
-    // Otherwise consult NetworkManager once, cached for the process lifetime.
-    static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| nm_metered().unwrap_or(false))
 }
 

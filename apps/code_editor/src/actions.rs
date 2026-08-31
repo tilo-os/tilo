@@ -92,9 +92,14 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`CodeEditorAction`] into the wire form the palette and the
 /// on-screen affordances both dispatch — the single point that turns a Code
 /// action into a replayable envelope.
-pub fn encode(action: &CodeEditorAction) -> EncodedAction {
+///
+/// # Errors
+/// Returns an error if `action` can't be serialized (it always can — every
+/// `CodeEditorAction` variant holds only plain, serializable data — so this
+/// is here for the caller to propagate rather than something expected to
+/// trigger).
+pub fn encode(action: &CodeEditorAction) -> Result<EncodedAction, ActionError> {
     EncodedAction::encode(CODE_EDITOR_ACTION_TYPE, action)
-        .expect("CodeEditorAction is always serializable")
 }
 
 /// Build a "create buffer" action for `node`, seeded with `seed`. The single
@@ -145,6 +150,12 @@ pub struct CodeEditorResourceCtx {
 /// enumeration), and go-to-file navigation stays in the app's own quick-open.
 ///
 /// [`CreateBuffer`]: CodeEditorAction::CreateBuffer
+///
+/// # Panics
+/// Panics if the "New file" action fails to encode. `CreateBuffer` holds
+/// only a `u64` and a `String`, which always serialize, so this is not a
+/// data-dependent failure; the [`ResourceProvider`] trait this feeds gives
+/// no `Result` to propagate one through instead.
 pub fn provide_resources(ctx: &CodeEditorResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let label = if ctx.project_name.trim().is_empty() {
         "Project".to_string()
@@ -156,15 +167,18 @@ pub fn provide_resources(ctx: &CodeEditorResourceCtx, _doc: &AutoCommit) -> Vec<
     // Project-level: create a new (untitled) buffer. Immediate, not prompted —
     // the file's *name* lives only in the in-memory model, so a pure-document
     // action has nowhere to carry it; the app names the freshly-adopted buffer.
-    project = project.with_action(
-        ActionSpec::immediate(
-            "new-file",
-            "New file",
-            CODE_EDITOR_ACTION_TYPE,
-            &create_buffer_action(ctx.next_id, ""),
-        )
-        .expect("encode new-file action"),
-    );
+    #[allow(
+        clippy::expect_used,
+        reason = "CreateBuffer holds only a u64 and a String, which always encode; ResourceProvider::resources returns Vec<Resource> with no Result to propagate a failure through instead"
+    )]
+    let new_file = ActionSpec::immediate(
+        "new-file",
+        "New file",
+        CODE_EDITOR_ACTION_TYPE,
+        &create_buffer_action(ctx.next_id, ""),
+    )
+    .expect("encode new-file action");
+    project = project.with_action(new_file);
 
     for f in &ctx.open_files {
         let label = if f.name.trim().is_empty() {
@@ -202,7 +216,7 @@ mod tests {
     /// Dispatch an action through the executor, as the on-screen affordance path
     /// does (decode from the wire, apply through a local transport).
     fn dispatch(doc: &mut AutoCommit, action: &CodeEditorAction) {
-        let encoded = encode(action);
+        let encoded = encode(action).unwrap();
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
@@ -211,7 +225,7 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
@@ -290,7 +304,7 @@ mod tests {
         assert!(EditorDoc::buffer_text(&state.doc, 9).is_none());
 
         // Create a buffer via the action + host undo recording.
-        let encoded = encode(&create_buffer_action(9, "hello"));
+        let encoded = encode(&create_buffer_action(9, "hello")).unwrap();
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
@@ -332,7 +346,7 @@ mod tests {
         );
 
         let action = create_buffer_action(2, "fn main() {}\n");
-        let encoded = encode(&action);
+        let encoded = encode(&action).unwrap();
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
@@ -366,7 +380,7 @@ mod tests {
             .unwrap();
 
         let from_spec = immediate_encode(spec);
-        let from_builder = encode(&create_buffer_action(12, ""));
+        let from_builder = encode(&create_buffer_action(12, "")).unwrap();
         assert_eq!(from_spec.type_id, from_builder.type_id);
         assert_eq!(
             from_spec.payload, from_builder.payload,

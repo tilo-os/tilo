@@ -2,6 +2,8 @@
 name = "feeds"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "feeds"
@@ -18,7 +20,6 @@ automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
@@ -26,7 +27,7 @@ taffy.workspace = true
 # --- Feed reading stack ---------------------------------------------------
 # Real RSS/Atom/JSON-feed parsing; pure-Rust TLS so we don't drag in a
 # system OpenSSL build dep inside the distrobox.
-feed-rs = "2"
+feed-rs = "2.4"
 reqwest = { workspace = true, features = ["rustls-tls", "gzip", "brotli"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time", "io-util", "sync", "macros"] }
 # org.freedesktop.portal.FileChooser (via ashpd) — an app never draws its own

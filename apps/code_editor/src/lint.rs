@@ -31,7 +31,7 @@ fn has_lifetimes(language: Language) -> bool {
 /// quote followed by an identifier. Deciding by looking for the partner is what
 /// distinguishes them without a real lexer.
 fn is_lifetime_tick(line: &str, at: usize) -> bool {
-    let rest = &line[at + 1..];
+    let rest = line.get(at + 1..).unwrap_or("");
     let mut it = rest.chars();
     let Some(first) = it.next() else {
         // A trailing quote at end of line closes nothing.
@@ -89,141 +89,20 @@ pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
         let line_no = li + 1;
         let char_len = line.chars().count();
 
-        // Trailing whitespace.
-        if line.ends_with(' ') || line.ends_with('\t') {
-            let trimmed = line.trim_end();
-            out.push(Diagnostic {
-                severity: Severity::Hint,
-                line: line_no,
-                col: trimmed.chars().count() + 1,
-                message: "Trailing whitespace".to_string(),
-            });
-        }
-
-        // Mixed leading tabs + spaces.
-        let leading: String = line
-            .chars()
-            .take_while(|c| *c == ' ' || *c == '\t')
-            .collect();
-        if leading.contains('\t') && leading.contains(' ') {
-            out.push(Diagnostic {
-                severity: Severity::Warning,
-                line: line_no,
-                col: 1,
-                message: "Mixed tabs and spaces in indentation".to_string(),
-            });
-        }
-
-        // Over-long line.
-        if char_len > max_len {
-            out.push(Diagnostic {
-                severity: Severity::Info,
-                line: line_no,
-                col: max_len + 1,
-                message: format!("Line exceeds {max_len} characters ({char_len})"),
-            });
-        }
-
-        // TODO / FIXME markers.
-        if let Some(byte) = line.find("TODO").or_else(|| line.find("FIXME")) {
-            let col = line[..byte].chars().count() + 1;
-            let marker = if line[byte..].starts_with("TODO") {
-                "TODO"
-            } else {
-                "FIXME"
-            };
-            out.push(Diagnostic {
-                severity: Severity::Info,
-                line: line_no,
-                col,
-                message: format!("Unresolved {marker} marker"),
-            });
-        }
+        lint_textual_facts(&mut out, line, line_no, char_len, max_len);
 
         if scope == Scope::TextualOnly {
             continue;
         }
 
-        // Bracket balance, skipping string/char/comment-ish content crudely.
-        // Toggle a naive block-comment tracker for C-family languages.
-        let mut chars = line.char_indices().peekable();
-        let mut in_string = false;
-        let mut string_delim = '"';
-        while let Some((bi, ch)) = chars.next() {
-            if in_block_comment {
-                if ch == '*'
-                    && let Some(&(_, '/')) = chars.peek()
-                {
-                    in_block_comment = false;
-                    chars.next();
-                }
-                continue;
-            }
-            if in_string {
-                if ch == '\\' {
-                    chars.next();
-                } else if ch == string_delim {
-                    in_string = false;
-                }
-                continue;
-            }
-            match ch {
-                // A single quote is not always a string. In Rust `<'_>`,
-                // `&'a str` and `'static` are lifetimes: one quote with no
-                // partner. Treating one as an unterminated char literal makes
-                // the scanner swallow the rest of the line — including the
-                // bracket that closes the signature — and report "Unclosed '('"
-                // on code that is perfectly valid. Opening real qOS sources
-                // produced eight such warnings on the first file.
-                '\'' if has_lifetimes(language) && is_lifetime_tick(line, bi) => {}
-                '"' | '\'' => {
-                    in_string = true;
-                    string_delim = ch;
-                }
-                '/' => {
-                    if let Some(&(_, '/')) = chars.peek() {
-                        break; // line comment — ignore the rest
-                    }
-                    if let Some(&(_, '*')) = chars.peek() {
-                        in_block_comment = true;
-                        chars.next();
-                    }
-                }
-                '#' if matches!(
-                    language,
-                    Language::Python | Language::Shell | Language::Toml | Language::Yaml
-                ) =>
-                {
-                    break; // hash line comment
-                }
-                '(' | '[' | '{' => {
-                    let col = line[..bi].chars().count() + 1;
-                    bracket_stack.push((ch, line_no, col));
-                }
-                ')' | ']' | '}' => {
-                    let expected = match ch {
-                        ')' => '(',
-                        ']' => '[',
-                        _ => '{',
-                    };
-                    match bracket_stack.last() {
-                        Some(&(open, _, _)) if open == expected => {
-                            bracket_stack.pop();
-                        }
-                        _ => {
-                            let col = line[..bi].chars().count() + 1;
-                            out.push(Diagnostic {
-                                severity: Severity::Warning,
-                                line: line_no,
-                                col,
-                                message: format!("Unmatched closing '{ch}'"),
-                            });
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        scan_line_brackets(
+            line,
+            line_no,
+            language,
+            &mut bracket_stack,
+            &mut in_block_comment,
+            &mut out,
+        );
     }
 
     // Any brackets left open at EOF.
@@ -238,6 +117,159 @@ pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
 
     out.sort_by_key(|a| (a.line, a.col));
     out
+}
+
+/// The checks that are facts about the text, independent of [`Scope`]:
+/// trailing whitespace, mixed tab/space indentation, an over-long line, and a
+/// lonely `TODO`/`FIXME` marker.
+fn lint_textual_facts(
+    out: &mut Vec<Diagnostic>,
+    line: &str,
+    line_no: usize,
+    char_len: usize,
+    max_len: usize,
+) {
+    // Trailing whitespace.
+    if line.ends_with(' ') || line.ends_with('\t') {
+        let trimmed = line.trim_end();
+        out.push(Diagnostic {
+            severity: Severity::Hint,
+            line: line_no,
+            col: trimmed.chars().count() + 1,
+            message: "Trailing whitespace".to_string(),
+        });
+    }
+
+    // Mixed leading tabs + spaces.
+    let leading: String = line
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+    if leading.contains('\t') && leading.contains(' ') {
+        out.push(Diagnostic {
+            severity: Severity::Warning,
+            line: line_no,
+            col: 1,
+            message: "Mixed tabs and spaces in indentation".to_string(),
+        });
+    }
+
+    // Over-long line.
+    if char_len > max_len {
+        out.push(Diagnostic {
+            severity: Severity::Info,
+            line: line_no,
+            col: max_len + 1,
+            message: format!("Line exceeds {max_len} characters ({char_len})"),
+        });
+    }
+
+    // TODO / FIXME markers.
+    if let Some(byte) = line.find("TODO").or_else(|| line.find("FIXME")) {
+        let col = line.get(..byte).unwrap_or("").chars().count() + 1;
+        let marker = if line.get(byte..).is_some_and(|s| s.starts_with("TODO")) {
+            "TODO"
+        } else {
+            "FIXME"
+        };
+        out.push(Diagnostic {
+            severity: Severity::Info,
+            line: line_no,
+            col,
+            message: format!("Unresolved {marker} marker"),
+        });
+    }
+}
+
+/// The structural guess: scan one line for bracket balance, skipping
+/// string/char/comment-ish content crudely. `bracket_stack` and
+/// `in_block_comment` carry state across lines within one [`lint`] call.
+fn scan_line_brackets(
+    line: &str,
+    line_no: usize,
+    language: Language,
+    bracket_stack: &mut Vec<(char, usize, usize)>,
+    in_block_comment: &mut bool,
+    out: &mut Vec<Diagnostic>,
+) {
+    let mut chars = line.char_indices().peekable();
+    let mut in_string = false;
+    let mut string_delim = '"';
+    while let Some((bi, ch)) = chars.next() {
+        if *in_block_comment {
+            if ch == '*'
+                && let Some(&(_, '/')) = chars.peek()
+            {
+                *in_block_comment = false;
+                chars.next();
+            }
+            continue;
+        }
+        if in_string {
+            if ch == '\\' {
+                chars.next();
+            } else if ch == string_delim {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            // A single quote is not always a string. In Rust `<'_>`,
+            // `&'a str` and `'static` are lifetimes: one quote with no
+            // partner. Treating one as an unterminated char literal makes
+            // the scanner swallow the rest of the line — including the
+            // bracket that closes the signature — and report "Unclosed '('"
+            // on code that is perfectly valid. Opening real qOS sources
+            // produced eight such warnings on the first file.
+            '\'' if has_lifetimes(language) && is_lifetime_tick(line, bi) => {}
+            '"' | '\'' => {
+                in_string = true;
+                string_delim = ch;
+            }
+            '/' => {
+                if let Some(&(_, '/')) = chars.peek() {
+                    break; // line comment — ignore the rest
+                }
+                if let Some(&(_, '*')) = chars.peek() {
+                    *in_block_comment = true;
+                    chars.next();
+                }
+            }
+            '#' if matches!(
+                language,
+                Language::Python | Language::Shell | Language::Toml | Language::Yaml
+            ) =>
+            {
+                break; // hash line comment
+            }
+            '(' | '[' | '{' => {
+                let col = line.get(..bi).unwrap_or("").chars().count() + 1;
+                bracket_stack.push((ch, line_no, col));
+            }
+            ')' | ']' | '}' => {
+                let expected = match ch {
+                    ')' => '(',
+                    ']' => '[',
+                    _ => '{',
+                };
+                match bracket_stack.last() {
+                    Some(&(open, _, _)) if open == expected => {
+                        bracket_stack.pop();
+                    }
+                    _ => {
+                        let col = line.get(..bi).unwrap_or("").chars().count() + 1;
+                        out.push(Diagnostic {
+                            severity: Severity::Warning,
+                            line: line_no,
+                            col,
+                            message: format!("Unmatched closing '{ch}'"),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]

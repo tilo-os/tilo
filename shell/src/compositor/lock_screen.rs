@@ -127,6 +127,10 @@ pub fn draw_lock_scene(
 /// line, notification summary) centred at `(cx, cy)`. Factored out of
 /// [`draw_lock_scene`] so it can be stamped once per output; draws no
 /// backdrop of its own.
+///
+/// Split into per-section helpers (below) purely to keep each function
+/// short; the sections still run in the same top-to-bottom order and each
+/// one's vertical position is threaded through from the one above it.
 fn draw_lock_widget(
     scene: &mut Scene,
     (cx, cy): (f64, f64),
@@ -134,7 +138,21 @@ fn draw_lock_widget(
     text: &mut TextRenderer,
     view: &LockView<'_>,
 ) {
-    // 2. Clock + date, centred in the upper third.
+    draw_lock_clock_and_date(scene, cx, cy, theme, text, view);
+    let title_y = draw_lock_padlock_and_title(scene, cx, cy, theme, text);
+    let field_geom = draw_lock_password_field(scene, cx, title_y, theme, text, view);
+    draw_lock_status_and_notifications(scene, cx, field_geom, theme, text, view);
+}
+
+/// Clock + date, centred in the upper third. Part of [`draw_lock_widget`].
+fn draw_lock_clock_and_date(
+    scene: &mut Scene,
+    cx: f64,
+    cy: f64,
+    theme: &Theme,
+    text: &mut TextRenderer,
+    view: &LockView<'_>,
+) {
     if !view.clock.is_empty() {
         let clock_size = 64.0_f32;
         let (cw, _) = text.measure(view.clock, clock_size, None);
@@ -159,8 +177,19 @@ fn draw_lock_widget(
             None,
         );
     }
+}
 
-    // 3. Padlock body — a rounded rectangle just above centre.
+/// Padlock glyph (body, shackle, keyhole) + the "Locked" title beneath it.
+/// Returns the title's baseline y — where the password field starts. Part
+/// of [`draw_lock_widget`].
+fn draw_lock_padlock_and_title(
+    scene: &mut Scene,
+    cx: f64,
+    cy: f64,
+    theme: &Theme,
+    text: &mut TextRenderer,
+) -> f64 {
+    // Padlock body — a rounded rectangle just above centre.
     let bw = 60.0_f64;
     let bh = 46.0_f64;
     let body_y = cy - 60.0;
@@ -173,8 +202,8 @@ fn draw_lock_widget(
         &body,
     );
 
-    // 4. Shackle — upper semicircle on the body's top edge. In screen
-    //    (y-down) space, start_angle = PI sweeping +PI traces the upper half.
+    // Shackle — upper semicircle on the body's top edge. In screen
+    // (y-down) space, start_angle = PI sweeping +PI traces the upper half.
     let r = bw / 3.2;
     let shackle = Arc::new(Point::new(cx, body_y), (r, r), PI, PI, 0.0);
     scene.stroke(
@@ -185,7 +214,7 @@ fn draw_lock_widget(
         &shackle,
     );
 
-    // 5. Keyhole — a dot punched into the body in the backdrop colour.
+    // Keyhole — a dot punched into the body in the backdrop colour.
     let keyhole = Circle::new(Point::new(cx, body_y + bh / 2.0), 6.0);
     scene.fill(
         Fill::NonZero,
@@ -195,7 +224,7 @@ fn draw_lock_widget(
         &keyhole,
     );
 
-    // 6. "Locked" title.
+    // "Locked" title.
     let title = "Locked";
     let title_size = 24.0_f32;
     let (tw, _) = text.measure(title, title_size, None);
@@ -208,9 +237,21 @@ fn draw_lock_widget(
         Affine::translate((cx - f64::from(tw) / 2.0, title_y)),
         None,
     );
+    title_y
+}
 
-    // 7. Password field — rounded pill, one dot per typed character. Only
-    //    the length is available here, never the plaintext.
+/// Password field — rounded pill, one dot per typed character. Only the
+/// length is available here, never the plaintext. Returns `(field_y,
+/// field_h)` so the status line below can be positioned. Part of
+/// [`draw_lock_widget`].
+fn draw_lock_password_field(
+    scene: &mut Scene,
+    cx: f64,
+    title_y: f64,
+    theme: &Theme,
+    text: &mut TextRenderer,
+    view: &LockView<'_>,
+) -> (f64, f64) {
     let field_w = 280.0_f64;
     let field_h = 44.0_f64;
     let field_x = cx - field_w / 2.0;
@@ -257,23 +298,43 @@ fn draw_lock_widget(
         let dot_r = 4.0_f64;
         let gap = 14.0_f64;
         let shown = view.password_len.min(18);
-        let total_w = (shown as f64 - 1.0).max(0.0) * gap;
-        let start_x = cx - total_w / 2.0;
-        let dot_y = field_y + field_h / 2.0;
-        for i in 0..shown {
-            let dot = Circle::new(Point::new(start_x + i as f64 * gap, dot_y), dot_r);
-            scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                theme.text_primary,
-                None,
-                &dot,
-            );
+        // `shown` is capped to at most 18 by the `.min` above, so both
+        // usize -> f64 conversions below are always exact.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "shown and i are both bounded by `.min(18)` above, so this usize -> f64 cast never loses precision"
+        )]
+        {
+            let total_w = (shown as f64 - 1.0).max(0.0) * gap;
+            let start_x = cx - total_w / 2.0;
+            let dot_y = field_y + field_h / 2.0;
+            for i in 0..shown {
+                let dot = Circle::new(Point::new(start_x + i as f64 * gap, dot_y), dot_r);
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    theme.text_primary,
+                    None,
+                    &dot,
+                );
+            }
         }
     }
+    (field_y, field_h)
+}
 
-    // 8. Status line under the field: "Verifying…" while a check runs, else
-    //    the last error (danger colour), else the neutral hint.
+/// Status line (verifying / error / hint) plus the count-only notification
+/// summary below the password field. Part of [`draw_lock_widget`].
+fn draw_lock_status_and_notifications(
+    scene: &mut Scene,
+    cx: f64,
+    (field_y, field_h): (f64, f64),
+    theme: &Theme,
+    text: &mut TextRenderer,
+    view: &LockView<'_>,
+) {
+    // Status line under the field: "Verifying…" while a check runs, else
+    // the last error (danger colour), else the neutral hint.
     let line_y = field_y + field_h + 26.0;
     if view.verifying {
         let verifying = "Verifying…";
@@ -312,8 +373,8 @@ fn draw_lock_widget(
         );
     }
 
-    // 9. Count-only notification summary (lock-suppression). Show
-    //    "N notifications" — never any content.
+    // Count-only notification summary (lock-suppression). Show
+    // "N notifications" — never any content.
     let label = count_label(view.notification_count);
     if !label.is_empty() {
         let label_size = 14.0_f32;

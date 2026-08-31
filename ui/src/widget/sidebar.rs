@@ -42,6 +42,35 @@ pub const DEFAULT_DRAWER_BREAKPOINT: f64 = 760.0;
 /// a stale clock (first frame, or a parked event loop) can't teleport it.
 const MAX_FRAME_DT: f64 = 0.1;
 
+/// Narrows a screen-space/eased-reveal `f64` value to `f32` for vello;
+/// every call site here is a bounded `0.0..=1.0` fraction or px value.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "bounded 0..1 fraction or screen-space px value, always well within f32 range"
+)]
+fn px(v: f64) -> f32 {
+    v as f32
+}
+
+/// Widens a small bounded UI loop count (shadow-band step index/count,
+/// always single digits) to `f64` for interpolation math.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "loop step counts here are always small, far below f64's exact-integer range"
+)]
+fn count_f64(n: usize) -> f64 {
+    n as f64
+}
+
+/// As [`count_f64`], narrowing to `f32`.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "loop step counts here are always small, far below f32's exact-integer range"
+)]
+fn count_f32(n: usize) -> f32 {
+    n as f32
+}
+
 /// Which edge the drawer is anchored to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SidebarSide {
@@ -113,34 +142,42 @@ impl SidebarDrawer {
 
     // --- builders -----------------------------------------------------------
 
+    #[must_use]
     pub fn side(mut self, side: SidebarSide) -> Self {
         self.side = side;
         self
     }
+    #[must_use]
     pub fn left(self) -> Self {
         self.side(SidebarSide::Left)
     }
+    #[must_use]
     pub fn right(self) -> Self {
         self.side(SidebarSide::Right)
     }
+    #[must_use]
     pub fn breakpoint(mut self, px: f64) -> Self {
         self.breakpoint = px;
         self
     }
+    #[must_use]
     pub fn docked_width(mut self, px: f64) -> Self {
         self.docked_width = px;
         self
     }
+    #[must_use]
     pub fn overlay_width(mut self, px: f64) -> Self {
         self.overlay_width = px;
         self
     }
     /// `0.0` hides it entirely.
+    #[must_use]
     pub fn rail_width(mut self, px: f64) -> Self {
         self.rail_width = px;
         self
     }
     /// A summon-on-demand panel.
+    #[must_use]
     pub fn closed(mut self) -> Self {
         self.flap = FlapState::closed_by_default();
         self
@@ -354,7 +391,7 @@ impl SidebarDrawer {
         if self.scrim_rect.width() <= 0.0 {
             return;
         }
-        let reveal = self.flap.reveal().clamp(0.0, 1.0) as f32;
+        let reveal = px(self.flap.reveal().clamp(0.0, 1.0));
         if reveal <= 0.0 {
             return;
         }
@@ -369,17 +406,17 @@ impl SidebarDrawer {
         let sr = self.scrim_rect;
         let steps = 6usize;
         let band = 16.0_f64.min(sr.width());
-        let w = band / steps as f64;
+        let w = band / count_f64(steps);
         for i in 0..steps {
-            let t = i as f32 / steps as f32;
+            let t = count_f32(i) / count_f32(steps);
             let a = reveal * 0.15 * (1.0 - t);
             if a <= 0.001 {
                 continue;
             }
             let c = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(a);
             let (bx0, bx1) = match self.side {
-                SidebarSide::Left => (sr.x0 + w * i as f64, sr.x0 + w * (i as f64 + 1.0)),
-                SidebarSide::Right => (sr.x1 - w * (i as f64 + 1.0), sr.x1 - w * i as f64),
+                SidebarSide::Left => (sr.x0 + w * count_f64(i), sr.x0 + w * (count_f64(i) + 1.0)),
+                SidebarSide::Right => (sr.x1 - w * (count_f64(i) + 1.0), sr.x1 - w * count_f64(i)),
             };
             scene.fill(
                 Fill::NonZero,
@@ -475,7 +512,22 @@ fn glyph_box(rect: Rect) -> Rect {
 
 fn mix(a: Color, b: Color, t: f64) -> Color {
     let t = t.clamp(0.0, 1.0);
-    let lerp = |x: u8, y: u8| (f64::from(x) + (f64::from(y) - f64::from(x)) * t).round() as u8;
+    let lerp = |x: u8, y: u8| {
+        let blended = (f64::from(x) + (f64::from(y) - f64::from(x)) * t)
+            .round()
+            .clamp(0.0, 255.0);
+        // blended is a convex combination of two u8-derived values (t
+        // clamped to [0, 1] above), then clamped again immediately above,
+        // so it can't wrap or flip sign on the way into u8.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "blended is clamped to [0.0, 255.0] on the line above"
+        )]
+        {
+            blended as u8
+        }
+    };
     Color::from_rgba8(
         lerp(a.r(), b.r()),
         lerp(a.g(), b.g()),

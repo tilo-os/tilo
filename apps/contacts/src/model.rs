@@ -145,19 +145,19 @@ impl Birthday {
         if let Some(rest) = s.strip_prefix("--") {
             let digits: String = rest.chars().filter(char::is_ascii_digit).collect();
             if digits.len() == 4 {
-                let m = digits[0..2].parse().ok()?;
-                let d = digits[2..4].parse().ok()?;
-                return Self::month_day(m, d);
+                let month = digits.get(0..2)?.parse().ok()?;
+                let day = digits.get(2..4)?.parse().ok()?;
+                return Self::month_day(month, day);
             }
             return None;
         }
 
         // Basic 8-digit ISO with no separators (vCard 4.0): YYYYMMDD.
         if s.len() == 8 && s.chars().all(|c| c.is_ascii_digit()) {
-            let y = s[0..4].parse().ok()?;
-            let m = s[4..6].parse().ok()?;
-            let d = s[6..8].parse().ok()?;
-            return Self::full(y, m, d);
+            let year = s.get(0..4)?.parse().ok()?;
+            let month = s.get(4..6)?.parse().ok()?;
+            let day = s.get(6..8)?.parse().ok()?;
+            return Self::full(year, month, day);
         }
 
         let sep = s.chars().find(|c| matches!(c, '-' | '/' | '.'))?;
@@ -177,9 +177,9 @@ impl Birthday {
                     // Year last. `.` is the European D.M.Y convention; `/` / `-`
                     // read US-style M/D/Y. Fall back to a swap when the first
                     // reading is out of range.
-                    let (m, d) = if sep == '.' { (b, a) } else { (a, b) };
-                    let (m, d) = (u32::try_from(m).ok()?, u32::try_from(d).ok()?);
-                    Self::full(c as i32, m, d).or_else(|| Self::full(c as i32, d, m))
+                    let (month, day) = if sep == '.' { (b, a) } else { (a, b) };
+                    let (month, day) = (u32::try_from(month).ok()?, u32::try_from(day).ok()?);
+                    Self::full(c as i32, month, day).or_else(|| Self::full(c as i32, day, month))
                 } else {
                     None
                 }
@@ -187,9 +187,9 @@ impl Birthday {
             [a, b] => {
                 let (a, b): (i64, i64) = (a.parse().ok()?, b.parse().ok()?);
                 // Year-less. `.` is European D.M; otherwise US M/D.
-                let (m, d) = if sep == '.' { (b, a) } else { (a, b) };
-                let (m, d) = (u32::try_from(m).ok()?, u32::try_from(d).ok()?);
-                Self::month_day(m, d).or_else(|| Self::month_day(d, m))
+                let (month, day) = if sep == '.' { (b, a) } else { (a, b) };
+                let (month, day) = (u32::try_from(month).ok()?, u32::try_from(day).ok()?);
+                Self::month_day(month, day).or_else(|| Self::month_day(day, month))
             }
             _ => None,
         }
@@ -462,54 +462,68 @@ fn sort_cmp(a: &Contact, b: &Contact, sort: SortKey) -> std::cmp::Ordering {
     }
 }
 
-/// Seed an empty store with a varied sample address book so a fresh
-/// launch shows a populated list and a fully-filled detail pane.
-pub fn sample_contacts() -> Vec<Contact> {
-    let mk = |first: &str,
-              last: &str,
-              org: &str,
-              title: &str,
-              phones: &[(&str, &str)],
-              emails: &[(&str, &str)],
-              addresses: Vec<Address>,
-              birthday: &str,
-              website: &str,
-              notes: &str,
-              groups: &[&str],
-              favorite: bool|
-     -> Contact {
-        Contact {
-            id: Uuid::new_v4(),
-            first: first.to_string(),
-            last: last.to_string(),
-            org: org.to_string(),
-            title: title.to_string(),
-            website: website.to_string(),
-            birthday: Birthday::parse(birthday),
-            notes: notes.to_string(),
-            phones: phones.iter().map(|(l, v)| Labeled::new(l, v)).collect(),
-            emails: emails.iter().map(|(l, v)| Labeled::new(l, v)).collect(),
-            addresses,
-            groups: groups
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-            favorite,
-        }
-    };
+/// Named-field bundle for [`make_sample`] — keeps each seed contact's call
+/// site self-describing instead of a wall of positional strings.
+struct SampleSpec<'a> {
+    first: &'a str,
+    last: &'a str,
+    org: &'a str,
+    title: &'a str,
+    phones: &'a [(&'a str, &'a str)],
+    emails: &'a [(&'a str, &'a str)],
+    addresses: Vec<Address>,
+    birthday: &'a str,
+    website: &'a str,
+    notes: &'a str,
+    groups: &'a [&'a str],
+    favorite: bool,
+}
 
+/// Build one fully-populated seed [`Contact`] from a [`SampleSpec`].
+fn make_sample(spec: SampleSpec<'_>) -> Contact {
+    Contact {
+        id: Uuid::new_v4(),
+        first: spec.first.to_string(),
+        last: spec.last.to_string(),
+        org: spec.org.to_string(),
+        title: spec.title.to_string(),
+        website: spec.website.to_string(),
+        birthday: Birthday::parse(spec.birthday),
+        notes: spec.notes.to_string(),
+        phones: spec
+            .phones
+            .iter()
+            .map(|(l, v)| Labeled::new(l, v))
+            .collect(),
+        emails: spec
+            .emails
+            .iter()
+            .map(|(l, v)| Labeled::new(l, v))
+            .collect(),
+        addresses: spec.addresses,
+        groups: spec
+            .groups
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
+        favorite: spec.favorite,
+    }
+}
+
+/// First half of the seed address book: Lovelace through Johnson.
+fn sample_contacts_part1() -> Vec<Contact> {
     vec![
-        mk(
-            "Ada",
-            "Lovelace",
-            "Analytical Engines",
-            "Chief Mathematician",
-            &[("mobile", "+44 20 7946 0101"), ("work", "+44 20 7946 0199")],
-            &[
+        make_sample(SampleSpec {
+            first: "Ada",
+            last: "Lovelace",
+            org: "Analytical Engines",
+            title: "Chief Mathematician",
+            phones: &[("mobile", "+44 20 7946 0101"), ("work", "+44 20 7946 0199")],
+            emails: &[
                 ("work", "ada@analyticalengines.co.uk"),
                 ("home", "ada.lovelace@example.com"),
             ],
-            vec![Address {
+            addresses: vec![Address {
                 label: "home".into(),
                 street: "12 St James's Square".into(),
                 city: "London".into(),
@@ -517,20 +531,20 @@ pub fn sample_contacts() -> Vec<Contact> {
                 postal: "SW1Y 4LE".into(),
                 country: "United Kingdom".into(),
             }],
-            "1815-12-10",
-            "https://analyticalengines.co.uk",
-            "First programmer. Prefers correspondence by letter. Working on Note G.",
-            &["Work", "Favorites"],
-            true,
-        ),
-        mk(
-            "Grace",
-            "Hopper",
-            "US Navy",
-            "Rear Admiral",
-            &[("work", "+1 202 555 0143")],
-            &[("work", "grace.hopper@navy.mil")],
-            vec![Address {
+            birthday: "1815-12-10",
+            website: "https://analyticalengines.co.uk",
+            notes: "First programmer. Prefers correspondence by letter. Working on Note G.",
+            groups: &["Work", "Favorites"],
+            favorite: true,
+        }),
+        make_sample(SampleSpec {
+            first: "Grace",
+            last: "Hopper",
+            org: "US Navy",
+            title: "Rear Admiral",
+            phones: &[("work", "+1 202 555 0143")],
+            emails: &[("work", "grace.hopper@navy.mil")],
+            addresses: vec![Address {
                 label: "work".into(),
                 street: "9620 Maryland Ave".into(),
                 city: "Arlington".into(),
@@ -538,34 +552,34 @@ pub fn sample_contacts() -> Vec<Contact> {
                 postal: "22203".into(),
                 country: "USA".into(),
             }],
-            "1906-12-09",
-            "",
-            "Coined the term \"debugging\". Keeps a nanosecond on her desk.",
-            &["Work"],
-            true,
-        ),
-        mk(
-            "Alan",
-            "Turing",
-            "Bletchley Park",
-            "Cryptanalyst",
-            &[("home", "+44 1908 555 0117")],
-            &[("home", "alan.turing@example.com")],
-            vec![],
-            "1912-06-23",
-            "https://turing.org.uk",
-            "Morning runner. Reach out about the Bombe redesign.",
-            &["Friends"],
-            false,
-        ),
-        mk(
-            "Katherine",
-            "Johnson",
-            "NASA",
-            "Research Mathematician",
-            &[("work", "+1 757 555 0188"), ("mobile", "+1 757 555 0042")],
-            &[("work", "k.johnson@nasa.gov")],
-            vec![Address {
+            birthday: "1906-12-09",
+            website: "",
+            notes: "Coined the term \"debugging\". Keeps a nanosecond on her desk.",
+            groups: &["Work"],
+            favorite: true,
+        }),
+        make_sample(SampleSpec {
+            first: "Alan",
+            last: "Turing",
+            org: "Bletchley Park",
+            title: "Cryptanalyst",
+            phones: &[("home", "+44 1908 555 0117")],
+            emails: &[("home", "alan.turing@example.com")],
+            addresses: vec![],
+            birthday: "1912-06-23",
+            website: "https://turing.org.uk",
+            notes: "Morning runner. Reach out about the Bombe redesign.",
+            groups: &["Friends"],
+            favorite: false,
+        }),
+        make_sample(SampleSpec {
+            first: "Katherine",
+            last: "Johnson",
+            org: "NASA",
+            title: "Research Mathematician",
+            phones: &[("work", "+1 757 555 0188"), ("mobile", "+1 757 555 0042")],
+            emails: &[("work", "k.johnson@nasa.gov")],
+            addresses: vec![Address {
                 label: "work".into(),
                 street: "100 NASA Rd".into(),
                 city: "Hampton".into(),
@@ -573,48 +587,54 @@ pub fn sample_contacts() -> Vec<Contact> {
                 postal: "23666".into(),
                 country: "USA".into(),
             }],
-            "1918-08-26",
-            "",
-            "Orbital mechanics. Double-checks every trajectory by hand.",
-            &["Work", "Favorites"],
-            true,
-        ),
-        mk(
-            "Tim",
-            "Berners-Lee",
-            "W3C",
-            "Director",
-            &[("mobile", "+41 22 555 0190")],
-            &[("work", "timbl@w3.org")],
-            vec![],
-            "1955-06-08",
-            "https://w3.org",
-            "Invented the Web. Ask about standards, not implementations.",
-            &["Work"],
-            false,
-        ),
-        mk(
-            "Radia",
-            "Perlman",
-            "",
-            "Network Engineer",
-            &[("mobile", "+1 408 555 0173")],
-            &[("home", "radia@example.com")],
-            vec![],
-            "1951-12-18",
-            "",
-            "Mother of the spanning tree protocol.",
-            &["Friends"],
-            false,
-        ),
-        mk(
-            "Margaret",
-            "Hamilton",
-            "MIT",
-            "Lead Software Engineer",
-            &[("work", "+1 617 555 0156")],
-            &[("work", "mhamilton@mit.edu")],
-            vec![Address {
+            birthday: "1918-08-26",
+            website: "",
+            notes: "Orbital mechanics. Double-checks every trajectory by hand.",
+            groups: &["Work", "Favorites"],
+            favorite: true,
+        }),
+    ]
+}
+
+/// Second half of the seed address book: Berners-Lee through Hamilton.
+fn sample_contacts_part2() -> Vec<Contact> {
+    vec![
+        make_sample(SampleSpec {
+            first: "Tim",
+            last: "Berners-Lee",
+            org: "W3C",
+            title: "Director",
+            phones: &[("mobile", "+41 22 555 0190")],
+            emails: &[("work", "timbl@w3.org")],
+            addresses: vec![],
+            birthday: "1955-06-08",
+            website: "https://w3.org",
+            notes: "Invented the Web. Ask about standards, not implementations.",
+            groups: &["Work"],
+            favorite: false,
+        }),
+        make_sample(SampleSpec {
+            first: "Radia",
+            last: "Perlman",
+            org: "",
+            title: "Network Engineer",
+            phones: &[("mobile", "+1 408 555 0173")],
+            emails: &[("home", "radia@example.com")],
+            addresses: vec![],
+            birthday: "1951-12-18",
+            website: "",
+            notes: "Mother of the spanning tree protocol.",
+            groups: &["Friends"],
+            favorite: false,
+        }),
+        make_sample(SampleSpec {
+            first: "Margaret",
+            last: "Hamilton",
+            org: "MIT",
+            title: "Lead Software Engineer",
+            phones: &[("work", "+1 617 555 0156")],
+            emails: &[("work", "mhamilton@mit.edu")],
+            addresses: vec![Address {
                 label: "work".into(),
                 street: "77 Massachusetts Ave".into(),
                 city: "Cambridge".into(),
@@ -622,13 +642,21 @@ pub fn sample_contacts() -> Vec<Contact> {
                 postal: "02139".into(),
                 country: "USA".into(),
             }],
-            "1936-08-17",
-            "",
-            "Apollo guidance software. Coined \"software engineering\".",
-            &["Work"],
-            false,
-        ),
+            birthday: "1936-08-17",
+            website: "",
+            notes: "Apollo guidance software. Coined \"software engineering\".",
+            groups: &["Work"],
+            favorite: false,
+        }),
     ]
+}
+
+/// Seed an empty store with a varied sample address book so a fresh
+/// launch shows a populated list and a fully-filled detail pane.
+pub fn sample_contacts() -> Vec<Contact> {
+    let mut out = sample_contacts_part1();
+    out.extend(sample_contacts_part2());
+    out
 }
 
 #[cfg(test)]

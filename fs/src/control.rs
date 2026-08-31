@@ -65,7 +65,9 @@ pub enum Resp {
         ino: u64,
     },
     NotFound,
-    Snapshot(qdoc::DocSnapshot),
+    /// Boxed: a full document snapshot dwarfs every other variant, and this
+    /// enum sits inline in [`Result`]s the caller passes around by value.
+    Snapshot(Box<qdoc::DocSnapshot>),
     Inserted {
         block: String,
     },
@@ -77,7 +79,9 @@ pub enum Resp {
 
 async fn write_msg<W: AsyncWriteExt + Unpin>(w: &mut W, msg: &Resp) -> std::io::Result<()> {
     let bytes = postcard::to_allocvec(msg).map_err(std::io::Error::other)?;
-    w.write_all(&(bytes.len() as u32).to_le_bytes()).await?;
+    let len = u32::try_from(bytes.len())
+        .map_err(|_| std::io::Error::other("control frame too large to length-prefix"))?;
+    w.write_all(&len.to_le_bytes()).await?;
     w.write_all(&bytes).await?;
     Ok(())
 }
@@ -117,8 +121,10 @@ fn apply(
     namespace: &Arc<Mutex<Namespace>>,
     enforcement: &Enforcement,
 ) -> (Resp, Vec<u8>) {
-    let mut ns = namespace.lock().unwrap();
-    match req {
+    let mut ns = namespace
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let outcome = match req {
         Req::Open { path } => {
             let resp = match ns.resolve_path_ino(&path) {
                 Some(ino)
@@ -133,38 +139,41 @@ fn apply(
         }
         Req::Snapshot { ino } => {
             if let Err(resp) = check(&ns, enforcement, ino, Access::Read) {
-                return (resp, Vec::new());
+                (resp, Vec::new())
+            } else {
+                let resp = match ns.document_snapshot(ino) {
+                    Some(s) => Resp::Snapshot(Box::new(s)),
+                    None => Resp::NotFound,
+                };
+                (resp, Vec::new())
             }
-            let resp = match ns.document_snapshot(ino) {
-                Some(s) => Resp::Snapshot(s),
-                None => Resp::NotFound,
-            };
-            (resp, Vec::new())
         }
         Req::InsertBlock { ino, after, kind } => {
             if let Err(resp) = check(&ns, enforcement, ino, Access::Write) {
-                return (resp, Vec::new());
+                (resp, Vec::new())
+            } else {
+                let r = ns.document_insert_block(ino, after.as_deref(), &kind);
+                let delta = ns.save_incremental();
+                let resp = match r {
+                    Some(block) => Resp::Inserted { block },
+                    None => Resp::Err("not a document".into()),
+                };
+                (resp, delta)
             }
-            let r = ns.document_insert_block(ino, after.as_deref(), &kind);
-            let delta = ns.save_incremental();
-            let resp = match r {
-                Some(block) => Resp::Inserted { block },
-                None => Resp::Err("not a document".into()),
-            };
-            (resp, delta)
         }
         Req::RemoveBlock { ino, block } => {
             if let Err(resp) = check(&ns, enforcement, ino, Access::Write) {
-                return (resp, Vec::new());
-            }
-            let ok = ns.document_remove_block(ino, &block);
-            let delta = ns.save_incremental();
-            let resp = if ok {
-                Resp::Ok
+                (resp, Vec::new())
             } else {
-                Resp::Err("not a document".into())
-            };
-            (resp, delta)
+                let ok = ns.document_remove_block(ino, &block);
+                let delta = ns.save_incremental();
+                let resp = if ok {
+                    Resp::Ok
+                } else {
+                    Resp::Err("not a document".into())
+                };
+                (resp, delta)
+            }
         }
         Req::Splice {
             ino,
@@ -174,18 +183,31 @@ fn apply(
             ins,
         } => {
             if let Err(resp) = check(&ns, enforcement, ino, Access::Write) {
-                return (resp, Vec::new());
-            }
-            let ok = ns.document_splice(ino, &block, idx as usize, del as isize, &ins);
-            let delta = ns.save_incremental();
-            let resp = if ok {
-                Resp::Ok
+                (resp, Vec::new())
             } else {
-                Resp::Err("not a document".into())
-            };
-            (resp, delta)
+                // `idx`/`del` cross the control socket from the client, so clamp
+                // rather than trust them to fit the narrower native width.
+                let idx = usize::try_from(idx).unwrap_or(usize::MAX);
+                let del = isize::try_from(del).unwrap_or_else(|_| {
+                    if del.is_negative() {
+                        isize::MIN
+                    } else {
+                        isize::MAX
+                    }
+                });
+                let ok = ns.document_splice(ino, &block, idx, del, &ins);
+                let delta = ns.save_incremental();
+                let resp = if ok {
+                    Resp::Ok
+                } else {
+                    Resp::Err("not a document".into())
+                };
+                (resp, delta)
+            }
         }
-    }
+    };
+    drop(ns);
+    outcome
 }
 
 async fn handle_conn(
@@ -210,10 +232,16 @@ async fn handle_conn(
     let push_tx = tx.clone();
     let poll_ns = namespace.clone();
     let notifier = tokio::spawn(async move {
-        let mut last = poll_ns.lock().unwrap().heads();
+        let mut last = poll_ns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .heads();
         loop {
             tokio::time::sleep(Duration::from_millis(150)).await;
-            let now = poll_ns.lock().unwrap().heads();
+            let now = poll_ns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .heads();
             if now != last {
                 last = now;
                 // Coalesce: drop the signal if the client is backed up (it re-reads latest next time); stop if it's gone.
@@ -287,6 +315,9 @@ pub struct Client {
 }
 
 impl Client {
+    /// # Errors
+    ///
+    /// Returns an error if the socket at `path` can't be connected to.
     pub async fn connect(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         Ok(Self {
             stream: UnixStream::connect(path).await?,
@@ -295,18 +326,21 @@ impl Client {
 
     async fn request(&mut self, req: &Req) -> std::io::Result<Resp> {
         let bytes = postcard::to_allocvec(req).map_err(std::io::Error::other)?;
-        self.stream
-            .write_all(&(bytes.len() as u32).to_le_bytes())
-            .await?;
+        let len = u32::try_from(bytes.len())
+            .map_err(|_| std::io::Error::other("control frame too large to length-prefix"))?;
+        self.stream.write_all(&len.to_le_bytes()).await?;
         self.stream.write_all(&bytes).await?;
         loop {
             match read_msg(&mut self.stream).await? {
-                Resp::Changed => continue, // skip pushes; this is a request/response
+                Resp::Changed => {} // skip pushes; this is a request/response
                 other => return Ok(other),
             }
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request can't be sent or the response can't be read.
     pub async fn open(&mut self, path: &str) -> std::io::Result<Option<u64>> {
         match self.request(&Req::Open { path: path.into() }).await? {
             Resp::Opened { ino } => Ok(Some(ino)),
@@ -314,13 +348,19 @@ impl Client {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request can't be sent or the response can't be read.
     pub async fn snapshot(&mut self, ino: u64) -> std::io::Result<Option<qdoc::DocSnapshot>> {
         match self.request(&Req::Snapshot { ino }).await? {
-            Resp::Snapshot(s) => Ok(Some(s)),
+            Resp::Snapshot(s) => Ok(Some(*s)),
             _ => Ok(None),
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request can't be sent, the response can't be read, or the server refuses the insert (e.g. not a document).
     pub async fn insert_block(
         &mut self,
         ino: u64,
@@ -339,6 +379,9 @@ impl Client {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request can't be sent, the response can't be read, or the edit is refused (no write capability, or not a document).
     pub async fn splice(
         &mut self,
         ino: u64,
@@ -357,6 +400,9 @@ impl Client {
         applied(self.request(&req).await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request can't be sent, the response can't be read, or the edit is refused (no write capability, or not a document).
     pub async fn remove_block(&mut self, ino: u64, block: &str) -> std::io::Result<()> {
         applied(
             self.request(&Req::RemoveBlock {
@@ -368,6 +414,10 @@ impl Client {
     }
 
     /// Block until the workspace changes (a server-pushed `Changed`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection is lost or a malformed frame is read.
     pub async fn wait_changed(&mut self) -> std::io::Result<()> {
         loop {
             if let Resp::Changed = read_msg(&mut self.stream).await? {
@@ -386,7 +436,7 @@ mod tests {
     /// Two apps open the same document over the socket and both edit it — each sees the other's edit (collaborative editing via the FS).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_clients_edit_one_document() {
-        let namespace = Arc::new(Mutex::new(Namespace::new("server")));
+        let namespace = Arc::new(Mutex::new(Namespace::new("server").unwrap()));
         let bid = {
             let mut ns = namespace.lock().unwrap();
             let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
@@ -423,7 +473,7 @@ mod tests {
 
         const ALICE: IdentityKey = [0xA1; 32];
 
-        let namespace = Arc::new(Mutex::new(Namespace::new("server")));
+        let namespace = Arc::new(Mutex::new(Namespace::new("server").unwrap()));
         let hidden_block = {
             let mut ns = namespace.lock().unwrap();
             let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
@@ -533,7 +583,7 @@ mod tests {
 
         const ALICE: IdentityKey = [0xA1; 32];
 
-        let namespace = Arc::new(Mutex::new(Namespace::new("server")));
+        let namespace = Arc::new(Mutex::new(Namespace::new("server").unwrap()));
         let block = {
             let mut ns = namespace.lock().unwrap();
             let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
@@ -619,7 +669,7 @@ mod tests {
         let (ep_a, look_a) = bind_ephemeral_endpoint().await.unwrap();
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
-        let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
+        let ns_a = Arc::new(Mutex::new(Namespace::new("A").unwrap()));
         let bid = {
             let mut n = ns_a.lock().unwrap();
             let ino = n.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
@@ -671,16 +721,16 @@ mod tests {
             None,
         ));
 
-        let mut ed_a = Client::connect(&sock_a).await.unwrap();
-        let ino_a = ed_a.open("doc.md").await.unwrap().unwrap();
-        ed_a.splice(ino_a, &bid, 4, 0, " +A").await.unwrap(); // "base +A"
+        let mut editor_a = Client::connect(&sock_a).await.unwrap();
+        let ino_a = editor_a.open("doc.md").await.unwrap().unwrap();
+        editor_a.splice(ino_a, &bid, 4, 0, " +A").await.unwrap(); // "base +A"
 
         // editor on B must see it after P2P propagation
-        let mut ed_b = Client::connect(&sock_b).await.unwrap();
-        let ino_b = ed_b.open("doc.md").await.unwrap().unwrap();
+        let mut editor_b = Client::connect(&sock_b).await.unwrap();
+        let ino_b = editor_b.open("doc.md").await.unwrap().unwrap();
         let mut seen = false;
         for _ in 0..50 {
-            let snap = ed_b.snapshot(ino_b).await.unwrap().unwrap();
+            let snap = editor_b.snapshot(ino_b).await.unwrap().unwrap();
             let text: String = snap.blocks.iter().map(|b| b.text.clone()).collect();
             if text.contains("+A") {
                 seen = true;

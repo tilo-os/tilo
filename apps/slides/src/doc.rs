@@ -39,6 +39,13 @@ pub struct SlidesDoc;
 impl SlidesDoc {
     // --- object lookup ------------------------------------------------------
 
+    // ROOT is Automerge's permanent, undeletable root Map, so put_object on
+    // it cannot fail short of a corrupted document — there is no meaningful
+    // ObjId to fall back to.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on ROOT cannot fail short of a corrupted document; see the comment above"
+    )]
     fn deck_ensure(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "deck") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -55,6 +62,12 @@ impl SlidesDoc {
         }
     }
 
+    // `deck` was just fetched-or-created above via `deck_ensure`, so
+    // put_object on it cannot fail short of a corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on the just-ensured deck Map cannot fail short of a corrupted document"
+    )]
     fn slides_list_ensure(doc: &mut AutoCommit) -> ObjId {
         let deck = Self::deck_ensure(doc);
         match doc.get(&deck, "slides") {
@@ -91,9 +104,8 @@ impl SlidesDoc {
 
     fn element_obj(doc: &AutoCommit, slide_idx: usize, elem_id: &str) -> Option<ObjId> {
         let slide = Self::slide_obj(doc, slide_idx)?;
-        let elements = match doc.get(&slide, "elements") {
-            Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::List), elements))) = doc.get(&slide, "elements") else {
+            return None;
         };
         let n = doc.length(&elements);
         for j in 0..n {
@@ -117,6 +129,13 @@ impl SlidesDoc {
 
     // --- writers ------------------------------------------------------------
 
+    // `obj` is always a Map already live in the document (deck / slide /
+    // element) when this is called, so put_object on it cannot fail short of
+    // a corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on a live document object cannot fail short of a corrupted document"
+    )]
     fn write_text(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &str) {
         let tid = match doc.get(obj, key) {
             Ok(Some((Value::Object(ObjType::Text), id))) => id,
@@ -145,6 +164,13 @@ impl SlidesDoc {
         Self::write_text(doc, obj, "text", &el.text);
     }
 
+    // `obj` is the slide Map the caller just created/fetched, and `elements`
+    // is that same Map's own list, so both put_object and insert_object below
+    // cannot fail short of a corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object/insert_object on a live document object cannot fail short of a corrupted document"
+    )]
     fn write_slide(doc: &mut AutoCommit, obj: &ObjId, slide: &Slide) {
         let _ = doc.put(obj, "id", slide.id.as_str());
         let _ = doc.put(obj, "layout", slide.layout.as_str());
@@ -169,6 +195,16 @@ impl SlidesDoc {
     }
 
     /// Seed an (assumed empty) document with a whole deck.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: `slides` is the List just ensured above and `i`
+    /// never exceeds its current length, so `insert_object` cannot fail
+    /// short of a corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "insert_object at a valid in-range index on the just-ensured slides List cannot fail short of a corrupted document"
+    )]
     pub fn seed(doc: &mut AutoCommit, deck: &Deck) {
         let deck_obj = Self::deck_ensure(doc);
         Self::write_text(doc, &deck_obj, "title", &deck.title);
@@ -194,6 +230,15 @@ impl SlidesDoc {
 
     /// Splice into the deck title's text. `char_pos`/`del` are char counts —
     /// the live-edit path for the inline title rename (mirrors `splice_notes`).
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: `deck` was just fetched-or-created above, so
+    /// `put_object` on it cannot fail short of a corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on the just-ensured deck Map cannot fail short of a corrupted document"
+    )]
     pub fn splice_title(doc: &mut AutoCommit, char_pos: usize, del: usize, ins: &str) {
         let deck = Self::deck_ensure(doc);
         let tid = match doc.get(&deck, "title") {
@@ -222,6 +267,16 @@ impl SlidesDoc {
         }
     }
 
+    /// Splice into a slide's speaker notes. `char_pos`/`del` are char counts.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: `s` was just resolved to a live slide Map, so
+    /// `put_object` on it cannot fail short of a corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on a live slide Map cannot fail short of a corrupted document"
+    )]
     pub fn splice_notes(
         doc: &mut AutoCommit,
         slide_idx: usize,
@@ -307,6 +362,15 @@ impl SlidesDoc {
     }
 
     /// Splice into a text element's body. `char_pos`/`del` are char counts.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: `e` was just resolved to a live element Map, so
+    /// `put_object` on it cannot fail short of a corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on a live element Map cannot fail short of a corrupted document"
+    )]
     pub fn splice_element_text(
         doc: &mut AutoCommit,
         slide_idx: usize,
@@ -390,9 +454,8 @@ impl SlidesDoc {
         let palette = PaletteKind::from_str(
             &str_field(doc, &deck, "palette").unwrap_or_else(|| "indigo".into()),
         );
-        let slides_list = match doc.get(&deck, "slides") {
-            Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::List), slides_list))) = doc.get(&deck, "slides") else {
+            return None;
         };
         let mut slides = Vec::new();
         for i in 0..doc.length(&slides_list) {
@@ -516,9 +579,8 @@ mod tests {
         longer.push('!');
         SlidesDoc::write_text(&mut doc, &obj, "notes", &longer);
         let grew = doc.save().len() - before;
-        let tid = match doc.get(&obj, "notes") {
-            Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            _ => panic!("notes text missing"),
+        let Ok(Some((Value::Object(ObjType::Text), tid))) = doc.get(&obj, "notes") else {
+            panic!("notes text missing")
         };
         assert_eq!(doc.text(&tid).unwrap(), longer, "value round-trips");
         assert!(grew < 40, "one-char text edit grew doc by {grew} bytes");

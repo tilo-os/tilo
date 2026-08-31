@@ -31,7 +31,7 @@ pub struct BatteryHistory {
 
 impl BatteryHistory {
     /// Add a sample if the cadence allows it. Returns whether durable state
-    /// changed, so a frequent UPower poll does not become a frequent disk
+    /// changed, so a frequent `UPower` poll does not become a frequent disk
     /// write.
     pub fn record(&mut self, point: BatteryHistoryPoint) -> bool {
         self.points
@@ -45,7 +45,8 @@ impl BatteryHistory {
         }
         self.points.push(point);
         if self.points.len() > MAX_POINTS {
-            self.points.drain(..self.points.len() - MAX_POINTS);
+            self.points
+                .drain(..self.points.len().saturating_sub(MAX_POINTS));
         }
         true
     }
@@ -63,6 +64,10 @@ pub fn load_ups_history() -> BatteryHistory {
         .unwrap_or_default()
 }
 
+/// # Errors
+///
+/// Returns an error if no private per-user state directory is available (no `XDG_STATE_HOME`
+/// and no resolvable home directory), or if serialising or writing the history file fails.
 pub fn record_power_history(
     kind: PowerSourceKind,
     capacity: u32,

@@ -11,7 +11,7 @@
 use std::time::{Duration, Instant};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
 
 use crate::text_render::{TextRenderer, TextWeight};
@@ -49,6 +49,7 @@ impl StatusBubble {
         }
     }
 
+    #[must_use]
     pub fn with_linger(mut self, linger: Duration) -> Self {
         self.linger = linger;
         self
@@ -90,7 +91,12 @@ impl StatusBubble {
         if e >= self.linger {
             return 0.0;
         }
-        let remain = self.linger.checked_sub(e).unwrap();
+        let Some(remain) = self.linger.checked_sub(e) else {
+            // `e >= self.linger` already returned above, so this is
+            // unreachable in practice; treat it as fully faded rather than
+            // panic if that invariant ever slips.
+            return 0.0;
+        };
         if remain < FADE {
             (remain.as_secs_f32() / FADE.as_secs_f32()).clamp(0.0, 1.0)
         } else {
@@ -156,7 +162,7 @@ pub fn draw_pill(
         text,
         text_size,
         theme.tokens.colors.text_primary,
-        transform * Affine::translate((tx, ty)),
+        transform.pre_translate(Vec2::new(tx, ty)),
         None,
         TextWeight::Medium,
     );
@@ -187,7 +193,7 @@ mod tests {
 
     #[test]
     fn poke_reveals_then_fades_after_linger() {
-        let mut b = StatusBubble::new().with_linger(Duration::from_millis(1000));
+        let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
         let t0 = Instant::now();
         assert!(!b.is_visible(t0), "hidden until poked");
         assert!(b.poke(t0), "poke reveals and reports the change");
@@ -203,13 +209,13 @@ mod tests {
         let a = b.alpha(t0 + Duration::from_millis(850));
         assert!(a > 0.0 && a < 1.0, "fades out across the tail: {a}");
         // Past the linger: gone.
-        assert!(!b.is_visible(t0 + Duration::from_millis(1000)));
-        assert!(!b.needs_frame(t0 + Duration::from_millis(1000)));
+        assert!(!b.is_visible(t0 + Duration::from_secs(1)));
+        assert!(!b.needs_frame(t0 + Duration::from_secs(1)));
     }
 
     #[test]
     fn hover_pins_open_then_lingers_after_leave() {
-        let mut b = StatusBubble::new().with_linger(Duration::from_millis(1000));
+        let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
         let t0 = Instant::now();
         b.set_hover(true, t0);
         // Pinned open regardless of time while the pointer stays over it.
@@ -228,14 +234,14 @@ mod tests {
             "still up right after leaving"
         );
         assert!(
-            !b.is_visible(t0 + Duration::from_secs(60) + Duration::from_millis(1000)),
+            !b.is_visible(t0 + Duration::from_secs(60) + Duration::from_secs(1)),
             "fades a linger after the pointer leaves"
         );
     }
 
     #[test]
     fn a_fresh_poke_restarts_the_countdown() {
-        let mut b = StatusBubble::new().with_linger(Duration::from_millis(1000));
+        let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
         let t0 = Instant::now();
         b.poke(t0);
         // Almost expired…

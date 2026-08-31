@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
@@ -81,7 +81,6 @@ impl KeyboardView {
     /// Draw one rounded key cap with `glyph` centred; if `shift` is set it
     /// is drawn small in the top-left corner (used for the number row).
     fn draw_key(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -100,7 +99,7 @@ impl KeyboardView {
             &cap,
         );
 
-        let font = ((key.height() * 0.42) as f32).clamp(8.0, 16.0);
+        let font = ui::num::f32_of_f64(key.height() * 0.42).clamp(8.0, 16.0);
 
         // Shifted glyph (corner), drawn first / dim so the base reads clear.
         if let Some(s) = shift
@@ -113,7 +112,7 @@ impl KeyboardView {
                 s,
                 sf,
                 theme.text_dim,
-                transform * Affine::translate((key.x0 + 3.0, key.y0 + 1.0)),
+                transform.pre_translate(Vec2::new(key.x0 + 3.0, key.y0 + 1.0)),
                 None,
             );
         }
@@ -127,7 +126,7 @@ impl KeyboardView {
                 glyph,
                 font,
                 theme.text_primary,
-                transform * Affine::translate((tx, ty)),
+                transform.pre_translate(Vec2::new(tx, ty)),
                 None,
             );
         }
@@ -150,6 +149,11 @@ impl Widget for KeyboardView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
+        // returns a bare `NodeId` across every implementor, so surfacing a
+        // theoretical error here would mean threading a `Result` through the
+        // whole toolkit for a branch that can't be taken.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -165,6 +169,10 @@ impl Widget for KeyboardView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `layout` only errors for a `NodeId` from a different tree, which
+        // never happens here since `node` is always the id this same widget
+        // received from its own `build_layout` call.
+        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -174,6 +182,10 @@ impl Widget for KeyboardView {
         );
     }
 
+    #[allow(
+        clippy::similar_names,
+        reason = "row_x0/row_y0 and sb_x0/sb_y0 are the clearest short names for this row/spacebar-cap geometry"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -203,24 +215,24 @@ impl Widget for KeyboardView {
         // 12 keys is the widest row; reserve up to ~1.25u of stagger room.
         let unit = inner_w / 13.5;
         let key_gap = unit * 0.12;
-        let row_pitch = inner_h / ROWS as f64;
+        let row_pitch = inner_h / ui::num::f64_of_usize(ROWS);
         let key_h = (row_pitch - key_gap).max(6.0);
 
         let x_base = self.rect.x0 + PAD;
         let y_base = self.rect.y0 + PAD;
 
-        for (r, glyphs) in self.layout.rows.iter().enumerate() {
-            let row_x0 = x_base + STAGGER[r] * unit;
-            let row_y0 = y_base + r as f64 * row_pitch;
+        for (r, (glyphs, &stagger)) in self.layout.rows.iter().zip(STAGGER.iter()).enumerate() {
+            let row_x0 = x_base + stagger * unit;
+            let row_y0 = y_base + ui::num::f64_of_usize(r) * row_pitch;
             for (i, glyph) in glyphs.iter().enumerate() {
-                let kx = row_x0 + i as f64 * unit;
+                let kx = row_x0 + ui::num::f64_of_usize(i) * unit;
                 let key = Rect::new(kx, row_y0, kx + (unit - key_gap), row_y0 + key_h);
                 let shift = if r == 0 {
                     self.layout.number_shift.get(i).copied()
                 } else {
                     None
                 };
-                self.draw_key(scene, transform, text_renderer, theme, key, glyph, shift);
+                Self::draw_key(scene, transform, text_renderer, theme, key, glyph, shift);
             }
         }
 
@@ -229,7 +241,7 @@ impl Widget for KeyboardView {
         let sb_x0 = self.rect.center().x - sb_w / 2.0;
         let sb_y0 = y_base + 4.0 * row_pitch;
         let sb = Rect::new(sb_x0, sb_y0, sb_x0 + sb_w, sb_y0 + key_h);
-        self.draw_key(scene, transform, text_renderer, theme, sb, "", None);
+        Self::draw_key(scene, transform, text_renderer, theme, sb, "", None);
     }
 
     fn handle_event(
@@ -298,7 +310,12 @@ mod tests {
         // Change the stored selection, re-sync → preview follows.
         let (_, obj) = doc.get(&root, "installer.keymap").unwrap().unwrap();
         let cur = doc.text(&obj).unwrap();
-        let _ = doc.splice_text(&obj, 0, cur.chars().count() as isize, "Dvorak");
+        let _ = doc.splice_text(
+            &obj,
+            0,
+            ui::num::isize_of_usize(cur.chars().count()),
+            "Dvorak",
+        );
         kv.sync(&mut doc, &root);
         assert_eq!(kv.layout_id(), "dvorak");
     }
