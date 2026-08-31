@@ -172,7 +172,7 @@ fn render_scenario(
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
-    let mut widget = imager::app_root();
+    let mut widget = imager::app_root_for_shot(scenario);
     let mut state = ui::State::new();
     imager::seed_scenario(&mut state.doc, scenario);
     widget.sync(&mut state.doc, &state.root);
