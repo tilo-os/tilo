@@ -34,6 +34,7 @@ use crate::draw;
 use crate::geo::{self, Projection};
 use crate::location::{self, LocationChannel, LocationOutcome};
 use crate::map_controls::{MapControlAction, MapControls};
+use crate::map_info_sheet::{MapInfo, MapInfoSheet};
 use crate::model::{Category, LatLon, MapModel, Panel, TransitMode, TransitTimeMode, TravelMode};
 use crate::net::{self, NetMsg};
 use crate::offline_panel::{OfflineAction, OfflineFrame, OfflinePanel};
@@ -51,15 +52,6 @@ use ui::widget::TextInput;
 enum EndField {
     Origin,
     Dest,
-}
-
-/// Which map-data info sheet is open (reached from the ⋯ overflow menu). The
-/// attribution + licences the OSM/CARTO data require live here, one tap away,
-/// rather than pasted permanently over the map.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MapInfo {
-    Attribution,
-    Licenses,
 }
 
 // --- Layout metrics (logical px) -------------------------------------------
@@ -144,8 +136,6 @@ enum Hit {
     Journey(usize),
     /// Toggle the bottom-right ⋯ overflow menu (attribution / offline / licenses).
     ToggleOverflow,
-    /// Dismiss the open map-data info sheet.
-    CloseMapInfo,
 }
 
 #[allow(
@@ -245,8 +235,8 @@ pub struct MapsApp {
     // bottom-right ⋯ overflow menu (attribution / offline maps / licenses) — a
     // shared ContextMenu so it is themed, keyboard-navigable and a11y-correct.
     overflow: ContextMenu,
-    /// The open map-data info sheet (attribution or licenses), if any.
-    map_info: Option<MapInfo>,
+    /// Attribution/licence modal. Owns state, drawing geometry, and hit-testing.
+    info_sheet: MapInfoSheet,
 
     /// Offline download/cache-management component. It owns its widget state,
     /// drawing, and hit-testing; this app only performs requested tile effects.
@@ -372,7 +362,7 @@ impl MapsApp {
                 m.push(MenuItem::action("Licenses", || {}));
                 m
             },
-            map_info: None,
+            info_sheet: MapInfoSheet::default(),
             offline_panel: OfflinePanel::new(cache_bytes),
             nav_open,
             pois: Vec::new(),
@@ -389,6 +379,11 @@ impl MapsApp {
     /// map-first and panel-open states can be captured headlessly.
     pub fn set_nav_open(&mut self, open: bool) {
         self.nav_open = open;
+    }
+
+    /// Screenshot-only hook for the shared attribution dialog.
+    pub fn set_demo_attribution(&mut self) {
+        self.info_sheet.open(MapInfo::Attribution);
     }
 
     /// Screenshot-only hook: force the active side panel so each tab can be
@@ -1966,9 +1961,6 @@ impl MapsApp {
                     ]);
                 }
             }
-            Hit::CloseMapInfo => {
-                self.map_info = None;
-            }
         }
     }
 
@@ -2273,13 +2265,11 @@ impl MapsApp {
         // The ⋯ overflow button (attribution / offline / licenses) sits bottom-
         // right; its menu and the info sheet draw last, on top of everything.
         self.draw_overflow(scene, t, tr, theme);
-        if let Some(info) = self.map_info {
-            self.draw_map_info_sheet(scene, t, tr, theme, info);
-        }
         if self.overflow.is_open() {
             self.overflow
                 .draw(scene, t, tr, theme, &PresenceCtx::empty());
         }
+        self.info_sheet.draw(scene, t, tr, theme, self.rect);
         self.map_controls.draw_tooltip(scene, t, tr, theme);
     }
 
@@ -2312,98 +2302,6 @@ impl MapsApp {
             draw::fill_circle(scene, t, Point::new(ctr.x + dx, ctr.y), 1.9, col);
         }
         self.click_targets.push((r, Hit::ToggleOverflow));
-    }
-
-    /// A small centred sheet with the map-data attribution or licenses, reached
-    /// from the ⋯ menu. Honest, one line per credit/term — the OSM/CARTO
-    /// requirement met by being reachable rather than pasted over the map.
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "conventional short names for the shared drawing context (scene, t: transform, \
-              tr: text renderer, c: theme colours, r: rect) used consistently across every \
-              draw_* method in this file"
-    )]
-    fn draw_map_info_sheet(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        info: MapInfo,
-    ) {
-        let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, self.rect, draw::alpha(Color::BLACK, 0.45));
-        self.click_targets.push((self.rect, Hit::CloseMapInfo));
-
-        let (title, lines): (&str, &[&str]) = match info {
-            MapInfo::Attribution => (
-                "Attribution",
-                &[
-                    "Map data © OpenStreetMap contributors",
-                    "Basemap tiles © CARTO",
-                ],
-            ),
-            MapInfo::Licenses => (
-                "Licenses",
-                &[
-                    "OpenStreetMap data — Open Database License (ODbL)",
-                    "CARTO basemaps — under CARTO's basemap terms",
-                    "© OpenStreetMap contributors · © CARTO",
-                ],
-            ),
-        };
-
-        let w = 440.0_f64.min(self.rect.width() - 40.0);
-        let row_h = 26.0;
-        let h = 64.0 + lines.len() as f64 * row_h + 16.0;
-        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
-        let cy = f64::midpoint(self.rect.y0, self.rect.y1);
-        let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
-        draw::card(scene, t, card, 16.0, c.surfaces.raised, c.border_standard);
-        self.click_targets.push((card, Hit::Consume));
-
-        let x = card.x0 + 22.0;
-        let right = card.x1 - 22.0;
-        let mut y = card.y0 + 20.0;
-        draw::text_w(
-            scene,
-            tr,
-            t,
-            title,
-            x,
-            y,
-            17.0,
-            theme.text_primary,
-            TextWeight::Bold,
-        );
-        let close = Rect::new(right - 26.0, card.y0 + 16.0, right, card.y0 + 42.0);
-        draw::text_center(
-            scene,
-            tr,
-            t,
-            "✕",
-            close.x0,
-            close.x1,
-            vmid(close.y0, 26.0, 14.0),
-            14.0,
-            theme.text_dim,
-        );
-        self.click_targets.push((close, Hit::CloseMapInfo));
-        y += 36.0;
-        for line in lines {
-            draw::text_clip(
-                scene,
-                tr,
-                t,
-                line,
-                x,
-                y,
-                12.5,
-                theme.text_primary,
-                right - x,
-            );
-            y += row_h;
-        }
     }
 
     /// The leading menu button in the narrow overlay layout: toggles the panel
@@ -4565,6 +4463,15 @@ impl Widget for MapsApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // The shared information dialog is modal and owns its event routing.
+        // Covered map controls must never observe the same event.
+        if self
+            .info_sheet
+            .handle_event(event, scale_factor, *modifiers, state)
+        {
+            *handled = true;
+            return;
+        }
         // A click, scroll or keypress dismisses any shown control tooltip.
         if matches!(
             event,
@@ -4827,6 +4734,14 @@ impl Widget for MapsApp {
         self.rect
     }
 
+    fn modal_capture(&self) -> Option<Rect> {
+        self.info_sheet.modal_capture()
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.info_sheet.accessibility()
+    }
+
     fn needs_idle_sync(&self) -> bool {
         // Keep idling only while real work is outstanding: net requests, the
         // initial load, tiles genuinely in flight, or an active offline
@@ -4986,9 +4901,9 @@ impl MapsApp {
     /// [`build`].
     fn overflow_select(&mut self, idx: usize) {
         match idx {
-            0 => self.map_info = Some(MapInfo::Attribution),
+            0 => self.info_sheet.open(MapInfo::Attribution),
             1 => self.offline_panel.open(self.tiles.cache_bytes()),
-            2 => self.map_info = Some(MapInfo::Licenses),
+            2 => self.info_sheet.open(MapInfo::Licenses),
             _ => {}
         }
         self.mark_dirty();
@@ -5099,8 +5014,6 @@ impl MapsApp {
             Key::Named(NamedKey::Escape) => {
                 if self.overflow.is_open() {
                     self.overflow.close();
-                } else if self.map_info.is_some() {
-                    self.map_info = None;
                 } else if self.offline_panel.is_open() {
                     self.offline_panel.close();
                 } else if self.selected_poi.is_some() {
@@ -5280,8 +5193,8 @@ mod tests {
 
         // Row 0 -> attribution sheet; row 1 -> offline dialog; row 2 -> licenses.
         a.overflow_select(0);
-        assert_eq!(a.map_info, Some(MapInfo::Attribution));
-        a.map_info = None;
+        assert_eq!(a.info_sheet.current(), Some(MapInfo::Attribution));
+        a.info_sheet.close();
         a.overflow_select(1);
         assert!(
             a.offline_panel.is_open(),
@@ -5289,7 +5202,7 @@ mod tests {
         );
         a.offline_panel.close();
         a.overflow_select(2);
-        assert_eq!(a.map_info, Some(MapInfo::Licenses));
+        assert_eq!(a.info_sheet.current(), Some(MapInfo::Licenses));
 
         // Toggling again closes it.
         tap(&mut a, &Hit::ToggleOverflow);
@@ -6654,7 +6567,7 @@ mod tests {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let mut app = app_at(1280.0, 720.0);
-        app.map_info = Some(MapInfo::Attribution);
+        app.info_sheet.open(MapInfo::Attribution);
         let mut scene = Scene::new();
         app.draw_app(&mut scene, Affine::IDENTITY, &mut text, &theme);
 
@@ -6664,7 +6577,10 @@ mod tests {
             .center();
         move_to(&mut app, traffic.x, traffic.y);
         assert!(press_left(&mut app));
-        assert_eq!(app.map_info, None, "the modal sheet consumed the press");
+        assert!(
+            !app.info_sheet.is_open(),
+            "the modal sheet consumed the press"
+        );
         assert!(
             !app.map_controls.traffic_enabled(),
             "the covered traffic control did not activate"
