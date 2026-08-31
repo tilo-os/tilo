@@ -31,7 +31,7 @@ streaming = ["dep:reqwest"]
 #   * `zbus`      — MPRIS (`org.mpris.MediaPlayer2`) so media keys + GNOME's
 #                   media controls drive playback (see `src/mpris.rs`);
 #   * `ashpd`/`url` — the native XDG file-chooser portal for picking a
-#                   playlist cover image (see `src/portal.rs`).
+#                   playlist cover image through `ui::portal`.
 audio = ["dep:gstreamer", "dep:zbus", "dep:tokio", "ui/portal"]
 # Real YouTube-Music streaming via the pure-Rust `rustypipe` InnerTube client:
 # real search (`music_search_tracks`) and real audio-stream resolution

@@ -14,7 +14,7 @@ name = "vpn"
 path = "src/main.rs"
 
 [dependencies]
-ui = { path = "../../ui" }
+ui = { path = "../../ui", features = ["portal"] }
 # The qOS action model: every document-mutating operation is a serializable,
 # replayable action dispatched through one executor, so undo, multi-peer replay
 # and the Ctrl+K command palette all work from a single implementation.
@@ -26,9 +26,6 @@ uuid.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-ashpd.workspace = true
-tokio.workspace = true
-url.workspace = true
 serial_test.workspace = true
 
 [lints]

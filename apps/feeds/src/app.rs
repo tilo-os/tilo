@@ -28,6 +28,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextWeight};
@@ -44,8 +45,21 @@ use crate::model::{
     Article, BlockKind, Feed, FeedKind, Filter, Id, ReadFont, ReadSettings, ReadTheme, Store,
     relative_time,
 };
-use crate::portal::{self, ImportOutcome};
 use crate::reader_theme::ReaderPalette;
+
+fn opml_import_request() -> PickRequest {
+    PickRequest::open("Import OPML", "Import")
+        .thread_name("feeds-portal-import")
+        .filter(
+            FileFilter::new("OPML")
+                .mimetype("text/x-opml")
+                .mimetype("application/xml")
+                .mimetype("text/xml")
+                .glob("*.opml")
+                .glob("*.xml"),
+        )
+        .all_files()
+}
 use crate::{opml, sample};
 
 const SIDEBAR_W: f64 = 256.0;
@@ -363,7 +377,7 @@ pub struct FeedsApp {
     // --- OPML import (XDG portal) ---------------------------------------
     /// In-flight import file-chooser: the portal worker's receiver, drained
     /// once per frame in `sync`. `None` when no picker is open.
-    import_rx: Option<portal::ImportChannel>,
+    import_rx: Option<PortalChannel>,
 
     // --- per-feed context menu ------------------------------------------
     /// Right-click menu over a sidebar feed. Uses the shared `ui` primitive so
@@ -1008,7 +1022,7 @@ impl FeedsApp {
         if self.import_rx.is_some() {
             return;
         }
-        self.import_rx = Some(portal::request_import());
+        self.import_rx = Some(opml_import_request().send());
         self.set_toast("Choose an OPML file…");
     }
 
@@ -1030,7 +1044,7 @@ impl FeedsApp {
         };
         self.import_rx = None;
         match outcome {
-            ImportOutcome::Opened(path) => match std::fs::read_to_string(&path) {
+            PortalOutcome::Opened(path) => match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     let new_ids = self.apply_opml_import(&text, doc);
                     if new_ids.is_empty() {
@@ -1048,8 +1062,8 @@ impl FeedsApp {
                     true
                 }
             },
-            ImportOutcome::Cancelled => false,
-            ImportOutcome::Failed(reason) => {
+            PortalOutcome::Cancelled => false,
+            PortalOutcome::Failed(reason) => {
                 self.set_toast(format!("Import failed: {reason}"));
                 true
             }
@@ -5187,7 +5201,7 @@ mod tests {
         std::fs::write(&path, opml::sample_opml()).unwrap();
 
         let feeds_before = a.store.feeds.len();
-        a.import_rx = Some(portal::inject_for_test(ImportOutcome::Opened(path)));
+        a.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(path)));
         assert!(
             a.import_rx.is_some(),
             "a request is in flight until drained"
@@ -5227,7 +5241,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         a.sync(&mut doc, &automerge::ROOT);
         let before = a.store.feeds.len();
-        a.import_rx = Some(portal::inject_for_test(ImportOutcome::Cancelled));
+        a.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
         a.sync(&mut doc, &automerge::ROOT);
         assert!(a.import_rx.is_none(), "cancel clears the request");
         assert_eq!(a.store.feeds.len(), before, "cancel adds no feeds");

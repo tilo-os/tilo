@@ -25,6 +25,7 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 use ui::ColorCompat;
 use ui::collaboration::PresencePayload;
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -47,6 +48,50 @@ const MENUBAR_H: f64 = 44.0;
 const FORMULA_H: f64 = 34.0;
 const TABS_H: f64 = 34.0;
 const NAME_BOX_W: f64 = 92.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Interchange {
+    Csv,
+    Xlsx,
+    Ods,
+}
+
+impl Interchange {
+    fn ext(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            Self::Xlsx => "xlsx",
+            Self::Ods => "ods",
+        }
+    }
+
+    fn filter(self) -> FileFilter {
+        match self {
+            Self::Csv => FileFilter::new("CSV").glob("*.csv"),
+            Self::Xlsx => FileFilter::new("Excel workbook").glob("*.xlsx"),
+            Self::Ods => FileFilter::new("Calc spreadsheet").glob("*.ods"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingIo {
+    Import(Interchange),
+    Export(Interchange),
+}
+
+fn spreadsheet_import_request(format: Interchange) -> PickRequest {
+    PickRequest::open("Import spreadsheet", "Import")
+        .thread_name("sheets-portal-import")
+        .filter(format.filter())
+        .all_files()
+}
+
+fn spreadsheet_export_request(format: Interchange, suggested: &str) -> PickRequest {
+    PickRequest::save("Export spreadsheet", "Export", suggested)
+        .thread_name("sheets-portal-export")
+        .filter(format.filter())
+}
 
 /// A top-level menu-bar action.
 #[derive(Clone, Debug, PartialEq)]
@@ -349,7 +394,7 @@ pub struct SheetsApp {
     /// An in-flight interchange file dialog: the operation and the channel its
     /// chosen path arrives on, drained once per frame in [`Self::drain_io`].
     /// `None` when no import/export chooser is open.
-    io: Option<(crate::portal::PendingIo, crate::portal::PortalChannel)>,
+    io: Option<(PendingIo, PortalChannel)>,
     /// The last copied/cut rectangle, kept so an in-app paste can restore raw
     /// inputs and formats exactly (and shift relative formula references),
     /// beyond the plain-text payload other apps see on the system clipboard.
@@ -1168,7 +1213,7 @@ impl SheetsApp {
     /// No file picker exists in the toolkit yet, so "most recent in the
     /// folder" is the selection heuristic (drop a file there, then import).
     fn import_csv(&mut self, _doc: &mut AutoCommit) {
-        self.begin_import(crate::portal::Interchange::Csv);
+        self.begin_import(Interchange::Csv);
     }
 
     /// Core: import the CSV file at `path` into a new sheet. Split out from the
@@ -1217,7 +1262,7 @@ impl SheetsApp {
     }
 
     fn export_csv(&mut self, _doc: &mut AutoCommit) {
-        self.begin_export(crate::portal::Interchange::Csv);
+        self.begin_export(Interchange::Csv);
     }
 
     /// Core: write the active sheet's computed values to `path` as CSV.
@@ -1248,7 +1293,7 @@ impl SheetsApp {
     }
 
     fn export_xlsx(&mut self, _doc: &mut AutoCommit) {
-        self.begin_export(crate::portal::Interchange::Xlsx);
+        self.begin_export(Interchange::Xlsx);
     }
 
     /// Core: write the active sheet to `path` as an `.xlsx` workbook.
@@ -1261,7 +1306,7 @@ impl SheetsApp {
     }
 
     fn export_ods(&mut self, _doc: &mut AutoCommit) {
-        self.begin_export(crate::portal::Interchange::Ods);
+        self.begin_export(Interchange::Ods);
     }
 
     /// Core: write the active sheet to `path` as an `.ods` spreadsheet.
@@ -1313,7 +1358,7 @@ impl SheetsApp {
     }
 
     fn import_xlsx(&mut self, _doc: &mut AutoCommit) {
-        self.begin_import(crate::portal::Interchange::Xlsx);
+        self.begin_import(Interchange::Xlsx);
     }
 
     /// Core: import the `.xlsx` workbook at `path` into new sheets.
@@ -1325,7 +1370,7 @@ impl SheetsApp {
     }
 
     fn import_ods(&mut self, _doc: &mut AutoCommit) {
-        self.begin_import(crate::portal::Interchange::Ods);
+        self.begin_import(Interchange::Ods);
     }
 
     /// Core: import the `.ods` spreadsheet at `path` into new sheets.
@@ -1338,13 +1383,13 @@ impl SheetsApp {
 
     /// Open the host file chooser to pick a file to import (unless one is
     /// already in flight). The chosen path is handled in [`Self::drain_io`].
-    fn begin_import(&mut self, fmt: crate::portal::Interchange) {
+    fn begin_import(&mut self, fmt: Interchange) {
         if self.io.is_some() {
             return;
         }
         self.io = Some((
-            crate::portal::PendingIo::Import(fmt),
-            crate::portal::request_import(fmt),
+            PendingIo::Import(fmt),
+            spreadsheet_import_request(fmt).send(),
         ));
         self.status = format!("Choose a .{} file to import…", fmt.ext());
     }
@@ -1352,7 +1397,7 @@ impl SheetsApp {
     /// Open the host Save dialog to pick where to export the active sheet,
     /// seeding the filename with the sheet's name (unless one is already in
     /// flight). The chosen destination is handled in [`Self::drain_io`].
-    fn begin_export(&mut self, fmt: crate::portal::Interchange) {
+    fn begin_export(&mut self, fmt: Interchange) {
         if self.io.is_some() {
             return;
         }
@@ -1363,8 +1408,8 @@ impl SheetsApp {
             .unwrap_or_else(|| "Sheet".into());
         let suggested = format!("{name}.{}", fmt.ext());
         self.io = Some((
-            crate::portal::PendingIo::Export(fmt),
-            crate::portal::request_export(fmt, &suggested),
+            PendingIo::Export(fmt),
+            spreadsheet_export_request(fmt, &suggested).send(),
         ));
         self.status = "Choose where to save…".into();
     }
@@ -1373,7 +1418,6 @@ impl SheetsApp {
     /// frame, and run the chosen import/export against the picked path. The UI
     /// thread never blocks: the portal round-trip lives on its own worker.
     fn drain_io(&mut self, doc: &mut AutoCommit) {
-        use crate::portal::{Interchange, PendingIo, PortalOutcome};
         let Some((op, rx)) = &self.io else { return };
         let op = *op;
         match rx.try_recv() {
@@ -5416,7 +5460,6 @@ mod tests {
     /// the host file chooser feeds, via an injected outcome (no D-Bus dialog).
     #[test]
     fn portal_drain_exports_then_imports_through_the_picked_path() {
-        use crate::portal::{Interchange, PendingIo, PortalOutcome};
         let tmp = std::env::temp_dir().join(format!("qos-sheets-portal-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
@@ -5427,7 +5470,7 @@ mod tests {
         // Inject a Save outcome as though the user picked `path`, then drain.
         app.io = Some((
             PendingIo::Export(Interchange::Csv),
-            crate::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
+            ui::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
         ));
         app.drain_io(&mut doc);
         assert!(
@@ -5445,7 +5488,7 @@ mod tests {
         let before = SheetsDoc::sheet_count(&mut doc);
         app.io = Some((
             PendingIo::Import(Interchange::Csv),
-            crate::portal::inject_for_test(PortalOutcome::Opened(path)),
+            ui::portal::inject_for_test(PortalOutcome::Opened(path)),
         ));
         app.drain_io(&mut doc);
         assert_eq!(
@@ -5465,12 +5508,11 @@ mod tests {
     /// A cancelled chooser clears the in-flight dialog and touches nothing.
     #[test]
     fn portal_cancel_is_silent() {
-        use crate::portal::{Interchange, PendingIo, PortalOutcome};
         let (mut app, mut doc) = seeded_app();
         let before = SheetsDoc::sheet_count(&mut doc);
         app.io = Some((
             PendingIo::Import(Interchange::Xlsx),
-            crate::portal::inject_for_test(PortalOutcome::Cancelled),
+            ui::portal::inject_for_test(PortalOutcome::Cancelled),
         ));
         app.drain_io(&mut doc);
         assert!(app.io.is_none());

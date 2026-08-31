@@ -48,7 +48,6 @@ pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod model;
-pub mod portal;
 pub mod render;
 pub mod text_layer;
 
