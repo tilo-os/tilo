@@ -138,6 +138,11 @@ fn hdr_surface_quadrants() {
 /// through the CPU HDR->SDR tone-mapper on either output (both leave
 /// `hdr_tonemap` disabled), without the `hdr-decode` feature.
 #[test]
+#[allow(
+    clippy::similar_names,
+    reason = "on_sdr/on_hdr name the two output-capability cases under test; renaming either \
+              away from the sdr/hdr pair would hurt readability, not help it"
+)]
 fn peer_view_sdr_stream_never_cpu_tonemaps() {
     let sdr_display = DisplayCapabilities::sdr_default();
     let hdr_display = DisplayCapabilities::hdr10_baseline();

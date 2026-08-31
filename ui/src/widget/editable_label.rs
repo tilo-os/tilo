@@ -88,6 +88,11 @@ impl EditableLabel {
         self
     }
 
+    pub fn set_font_size(&mut self, size: f32) {
+        self.size = size;
+        self.input.set_font_size(size);
+    }
+
     #[must_use]
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
         self.idle_color = Some(color);

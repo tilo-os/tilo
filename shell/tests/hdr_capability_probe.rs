@@ -43,9 +43,7 @@ fn adapter_probe_returns_sensible_capabilities_on_this_host() {
             compatible_surface: None,
         })
         .block_on();
-    let adapter = if let Ok(a) = adapter_opt {
-        a
-    } else {
+    let Ok(adapter) = adapter_opt else {
         eprintln!("skipping: no wgpu adapter (no llvmpipe or GPU)");
         return;
     };
@@ -72,6 +70,8 @@ fn adapter_probe_returns_sensible_capabilities_on_this_host() {
 
 #[test]
 fn hdr10_baseline_supports_pq_and_prefers_hdr_format() {
+    use vello::wgpu::TextureFormat;
+
     let caps = DisplayCapabilities::hdr10_baseline();
     assert!(caps.supports_pq_output);
     assert!(caps.bt2020_gamut);
@@ -86,7 +86,6 @@ fn hdr10_baseline_supports_pq_and_prefers_hdr_format() {
     assert_eq!(max_luminance_nits_u32, 1000);
     let fmt = preferred_hdr_swapchain_format(&caps).expect("HDR10 has a format");
     // Either scRGB or HDR10 primary — both are HDR-capable.
-    use vello::wgpu::TextureFormat;
     assert!(
         matches!(
             fmt,

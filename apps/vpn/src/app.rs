@@ -25,7 +25,7 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{EmptyState, ModalDialog, Toggle, ToggleFace, Widget};
+use ui::widget::{Button, ButtonFace, EmptyState, ModalDialog, Toggle, ToggleFace, Widget};
 
 use crate::actions::{self, VPN_ACTION_TYPE};
 use crate::config::{self, CommandPlan};
@@ -1094,8 +1094,26 @@ impl VpnApp {
         );
 
         // Compact import buttons.
-        self.draw_secondary_button(scene, tr, t, theme, lay.imp_conf, "Import .conf");
-        self.draw_secondary_button(scene, tr, t, theme, lay.imp_ovpn, "Import .ovpn");
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(lay.imp_conf, "Import .conf")
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(12.0)
+                .hovered(point_in(lay.imp_conf, self.last_mouse)),
+        );
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(lay.imp_ovpn, "Import .ovpn")
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(12.0)
+                .hovered(point_in(lay.imp_ovpn, self.last_mouse)),
+        );
 
         // Tor global pill.
         Self::draw_pill_toggle(
@@ -1109,59 +1127,17 @@ impl VpnApp {
         );
 
         // Add button (accent).
-        let hov = point_in(lay.add_btn, self.last_mouse);
-        let bg = if hov {
-            theme.tokens.colors.accent[4]
-        } else {
-            theme.tokens.colors.accent[5]
-        };
-        fill_round(scene, t, lay.add_btn, f64::from(theme.tokens.radii.md), bg);
-        text_center(
+        Button::paint(
+            scene,
+            t,
             tr,
-            scene,
-            t,
-            "+ Add tunnel",
-            13.0,
-            Color::WHITE,
-            lay.add_btn,
-            TextWeight::Semibold,
-        );
-    }
-
-    /// A compact bordered secondary button (used by the header import actions).
-    fn draw_secondary_button(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        r: Rect,
-        label: &str,
-    ) {
-        let hov = point_in(r, self.last_mouse);
-        let bg = if hov {
-            theme.tokens.colors.surface_white_10
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
-        fill_round(scene, t, r, f64::from(theme.tokens.radii.md), bg);
-        stroke_round(
-            scene,
-            t,
-            r,
-            f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.border_standard,
-            1.0,
-        );
-        text_center(
-            tr,
-            scene,
-            t,
-            label,
-            12.0,
-            theme.text_primary,
-            r,
-            TextWeight::Medium,
+            theme,
+            &ButtonFace::new(lay.add_btn, "+ Add tunnel")
+                .primary()
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(13.0)
+                .weight(TextWeight::Semibold)
+                .hovered(point_in(lay.add_btn, self.last_mouse)),
         );
     }
 
@@ -1540,45 +1516,20 @@ impl VpnApp {
         lay: &LayoutRects,
         c: &Connection,
     ) {
-        let hov = point_in(lay.connect_btn, self.last_mouse);
-        let (bg, fg, label) = if c.is_connected() {
-            (
-                theme
-                    .tokens
-                    .colors
-                    .semantic
-                    .danger
-                    .multiply_alpha(if hov { 1.0 } else { 0.9 }),
-                Color::WHITE,
-                "Disconnect",
-            )
+        let face = if c.is_connected() {
+            ButtonFace::new(lay.connect_btn, "Disconnect").danger()
         } else {
-            (
-                if hov {
-                    theme.tokens.colors.accent[4]
-                } else {
-                    theme.tokens.colors.accent[5]
-                },
-                Color::WHITE,
-                "Connect",
-            )
+            ButtonFace::new(lay.connect_btn, "Connect").primary()
         };
-        fill_round(
+        Button::paint(
             scene,
             t,
-            lay.connect_btn,
-            f64::from(theme.tokens.radii.md),
-            bg,
-        );
-        text_center(
             tr,
-            scene,
-            t,
-            label,
-            14.0,
-            fg,
-            lay.connect_btn,
-            TextWeight::Semibold,
+            theme,
+            &face
+                .radius(f64::from(theme.tokens.radii.md))
+                .weight(TextWeight::Semibold)
+                .hovered(point_in(lay.connect_btn, self.last_mouse)),
         );
     }
 
@@ -2115,7 +2066,7 @@ impl VpnApp {
         );
         self.draw_add_kind_selector(scene, tr, t, theme, card, x);
         self.draw_add_fields(scene, tr, t, theme, card);
-        Self::draw_add_modal_footer(scene, tr, t, theme, card);
+        self.draw_add_modal_footer(scene, tr, t, theme, card);
     }
 
     /// The `WireGuard`/`OpenVPN` segmented protocol selector in the add
@@ -2218,61 +2169,35 @@ impl VpnApp {
     /// The Cancel/Save buttons and the import-tip line at the bottom of the
     /// add modal. Split out of [`Self::draw_add_modal`].
     fn draw_add_modal_footer(
+        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         t: Affine,
         theme: &Theme,
         card: Rect,
     ) {
-        let by = card.y1 - 52.0;
-        let cancel = Rect::new(
-            card.x1 - 28.0 - 200.0,
-            by,
-            card.x1 - 28.0 - 110.0,
-            by + 36.0,
-        );
-        let save = Rect::new(card.x1 - 28.0 - 100.0, by, card.x1 - 28.0, by + 36.0);
-        fill_round(
+        let (cancel, save) = add_modal_button_rects(card);
+        Button::paint(
             scene,
             t,
-            cancel,
-            f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.surfaces.base,
-        );
-        stroke_round(
-            scene,
-            t,
-            cancel,
-            f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.border_standard,
-            1.0,
-        );
-        text_center(
             tr,
+            theme,
+            &ButtonFace::new(cancel, "Cancel")
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(13.0)
+                .hovered(point_in(cancel, self.last_mouse)),
+        );
+        Button::paint(
             scene,
             t,
-            "Cancel",
-            13.0,
-            theme.text_primary,
-            cancel,
-            TextWeight::Medium,
-        );
-        fill_round(
-            scene,
-            t,
-            save,
-            f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.accent[5],
-        );
-        text_center(
             tr,
-            scene,
-            t,
-            "Save",
-            13.0,
-            Color::WHITE,
-            save,
-            TextWeight::Semibold,
+            theme,
+            &ButtonFace::new(save, "Save")
+                .primary()
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(13.0)
+                .weight(TextWeight::Semibold)
+                .hovered(point_in(save, self.last_mouse)),
         );
         text_w(
             tr,
@@ -2282,7 +2207,7 @@ impl VpnApp {
             11.0,
             theme.text_dim,
             card.x0 + 28.0,
-            by - 24.0,
+            cancel.y0 - 24.0,
             TextWeight::Regular,
         );
     }
@@ -2538,32 +2463,6 @@ impl VpnApp {
         *handled = true;
     }
 
-    fn modal_button_rects(&self, lay: &LayoutRects) -> (Rect, Rect) {
-        // (cancel, primary) — matches the draw layout above.
-        let card = lay.modal_card;
-        let by = card.y1 - 52.0;
-        match self.modal {
-            Modal::Add => (
-                Rect::new(
-                    card.x1 - 28.0 - 200.0,
-                    by,
-                    card.x1 - 28.0 - 110.0,
-                    by + 36.0,
-                ),
-                Rect::new(card.x1 - 28.0 - 100.0, by, card.x1 - 28.0, by + 36.0),
-            ),
-            _ => (
-                Rect::new(
-                    card.x1 - 28.0 - 220.0,
-                    by,
-                    card.x1 - 28.0 - 120.0,
-                    by + 36.0,
-                ),
-                Rect::new(card.x1 - 28.0 - 110.0, by, card.x1 - 28.0, by + 36.0),
-            ),
-        }
-    }
-
     fn add_modal_hit(&mut self, doc: &mut AutoCommit, p: Point, lay: &LayoutRects) {
         let card = lay.modal_card;
         // kind segments
@@ -2600,13 +2499,28 @@ impl VpnApp {
             self.add_focus = AddField::Endpoint;
             return;
         }
-        let (cancel, save) = self.modal_button_rects(lay);
+        // Draw and hit-testing share this geometry, so a themed face never
+        // drifts away from its click target as the modal is resized.
+        let (cancel, save) = add_modal_button_rects(card);
         if point_in(cancel, p) {
             self.modal = Modal::None;
         } else if point_in(save, p) {
             self.commit_add(doc);
         }
     }
+}
+
+fn add_modal_button_rects(card: Rect) -> (Rect, Rect) {
+    let by = card.y1 - 52.0;
+    (
+        Rect::new(
+            card.x1 - 28.0 - 200.0,
+            by,
+            card.x1 - 28.0 - 110.0,
+            by + 36.0,
+        ),
+        Rect::new(card.x1 - 28.0 - 100.0, by, card.x1 - 28.0, by + 36.0),
+    )
 }
 
 fn render_config_text(c: &Connection) -> String {
@@ -3279,5 +3193,31 @@ mod tests {
         app.commit_add(&mut doc);
         assert_eq!(app.vault.connections.len(), before + 1);
         assert!(app.vault.connections.iter().any(|c| c.name == "Travel"));
+    }
+
+    #[test]
+    fn add_modal_shared_button_rects_drive_save_and_cancel() {
+        let (mut app, mut doc) = demo_with_doc();
+        app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+        let before = app.vault.connections.len();
+        app.open_add(ConnKind::WireGuard);
+        app.add_name = "Shared face".into();
+        app.add_endpoint = "vpn.example:51820".into();
+        let card = app.layout().modal_card;
+        let (cancel, save) = add_modal_button_rects(card);
+        assert!(cancel.x1 <= save.x0, "button rects do not overlap");
+
+        dispatch(&mut app, &mut doc, &cursor_at(save.center()));
+        dispatch(&mut app, &mut doc, &press());
+        assert_eq!(app.vault.connections.len(), before + 1);
+        assert_eq!(app.modal, Modal::None);
+
+        app.open_add(ConnKind::OpenVpn);
+        let card = app.layout().modal_card;
+        let (cancel, _) = add_modal_button_rects(card);
+        dispatch(&mut app, &mut doc, &cursor_at(cancel.center()));
+        dispatch(&mut app, &mut doc, &press());
+        assert_eq!(app.vault.connections.len(), before + 1);
+        assert_eq!(app.modal, Modal::None, "Cancel dismisses without saving");
     }
 }
