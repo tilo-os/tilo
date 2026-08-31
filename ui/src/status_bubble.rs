@@ -220,21 +220,21 @@ mod tests {
         b.set_hover(true, t0);
         // Pinned open regardless of time while the pointer stays over it.
         assert!(
-            b.is_visible(t0 + Duration::from_mins(1)),
+            b.is_visible(t0 + Duration::from_secs(60)),
             "hover pins the bubble open"
         );
         assert!(
-            !b.needs_frame(t0 + Duration::from_mins(1)),
+            !b.needs_frame(t0 + Duration::from_secs(60)),
             "a pinned bubble needs no frames"
         );
         // Leaving starts a fresh linger.
-        b.set_hover(false, t0 + Duration::from_mins(1));
+        b.set_hover(false, t0 + Duration::from_secs(60));
         assert!(
-            b.is_visible(t0 + Duration::from_mins(1)),
+            b.is_visible(t0 + Duration::from_secs(60)),
             "still up right after leaving"
         );
         assert!(
-            !b.is_visible(t0 + Duration::from_mins(1) + Duration::from_secs(1)),
+            !b.is_visible(t0 + Duration::from_secs(60) + Duration::from_secs(1)),
             "fades a linger after the pointer leaves"
         );
     }

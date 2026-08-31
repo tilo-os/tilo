@@ -42,7 +42,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.api-tester", api_tester::app_root)
+        &LaunchSpec::new("dev.qos.api-tester", api_tester::app_root)
             .shot_root(shot_root)
             .allowed_flags(&["--rail-open"])
             .configure_app(|app| api_tester::actions::register(app.action_registry_mut())),

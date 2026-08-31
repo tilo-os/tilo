@@ -180,7 +180,7 @@ impl ApplicationsProvider {
                                 "Loading…".to_string(),
                             )
                             .with_app_name("Applications")
-                            .with_dismiss_after(std::time::Duration::from_mins(2)),
+                            .with_dismiss_after(std::time::Duration::from_secs(120)),
                         );
                         st.bump();
                         id
@@ -311,7 +311,7 @@ pub(crate) fn launch_installed_app(
         let id = st.push_notification_full(
             Notification::new(format!("Opening {display_name}"), "Loading…".to_string())
                 .with_app_name("Applications")
-                .with_dismiss_after(std::time::Duration::from_mins(2)),
+                .with_dismiss_after(std::time::Duration::from_secs(120)),
         );
         st.bump();
         id

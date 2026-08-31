@@ -441,8 +441,9 @@ fn handle_symbol(
         '}' => '}',
         '~' => '\u{a0}',
         '_' => '\u{2011}',
-        // Optional hyphen (no visible glyph) and anything unrecognized.
-        '-' | _ => return,
+        // Optional hyphen (no visible glyph, so falls through here too) and
+        // anything else unrecognized.
+        _ => return,
     };
     push_char(
         doc,

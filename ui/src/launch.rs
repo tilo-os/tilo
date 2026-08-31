@@ -305,8 +305,8 @@ impl LaunchError {
               is the documented contract, not an incidental exit deep in \
               library code"
 )]
-pub fn run_or_exit(spec: LaunchSpec) {
-    if let Err(error) = run(&spec) {
+pub fn run_or_exit(spec: &LaunchSpec) {
+    if let Err(error) = run(spec) {
         eprintln!("error: {error}");
         std::process::exit(error.exit_code());
     }
@@ -756,7 +756,9 @@ mod tests {
     }
 
     fn unexpected_live(_args: &LaunchArgs) -> Result<(), LaunchError> {
-        panic!("screenshot dispatch reached the live handler")
+        Err(LaunchError::Operation(
+            "screenshot dispatch reached the live handler".into(),
+        ))
     }
 
     fn custom_live(args: &LaunchArgs) -> Result<(), LaunchError> {

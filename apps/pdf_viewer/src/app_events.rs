@@ -1046,7 +1046,7 @@ impl PdfApp {
 
     /// While an inline text field is focused it owns the keyboard, so tool
     /// hotkeys and page navigation don't fire mid-sentence. The field is a
-    /// shared TextInput: Escape cancels; every other key routes to the
+    /// shared `TextInput`: Escape cancels; every other key routes to the
     /// widget — caret motion, selection (shift+arrows), clipboard
     /// (Ctrl+C/V/X), and Enter (which submits → commit). Returns whether it
     /// consumed this key.
@@ -1739,7 +1739,7 @@ mod event_tests {
         st: &mut ui::State,
         taffy: &TaffyTree<()>,
         node: NodeId,
-        mods: &winit::event::Modifiers,
+        mods: winit::event::Modifiers,
         ev: &winit::event::WindowEvent,
     ) {
         use ui::Widget as _;
@@ -1748,7 +1748,7 @@ mod event_tests {
         app.handle_event(
             ev,
             1.0,
-            mods,
+            &mods,
             &mut st.doc,
             &st.root,
             &mut handled,
@@ -1765,7 +1765,7 @@ mod event_tests {
         st: &mut ui::State,
         taffy: &TaffyTree<()>,
         node: NodeId,
-        mods: &winit::event::Modifiers,
+        mods: winit::event::Modifiers,
         dev: winit::event::DeviceId,
     ) {
         use winit::dpi::PhysicalPosition;
@@ -1825,7 +1825,7 @@ mod event_tests {
         let mods = winit::event::Modifiers::default();
         let dev = dummy_device_id();
 
-        arm_highlight_tool_via_toolbar(&mut app, &mut st, &taffy, node, &mods, dev);
+        arm_highlight_tool_via_toolbar(&mut app, &mut st, &taffy, node, mods, dev);
 
         // Drag across page one to lay down a highlight.
         let origin = app.page_origins()[0];
@@ -1837,7 +1837,7 @@ mod event_tests {
             &mut st,
             &taffy,
             node,
-            &mods,
+            mods,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(p0.0, p0.1),
@@ -1848,7 +1848,7 @@ mod event_tests {
             &mut st,
             &taffy,
             node,
-            &mods,
+            mods,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Pressed,
@@ -1860,7 +1860,7 @@ mod event_tests {
             &mut st,
             &taffy,
             node,
-            &mods,
+            mods,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(p1.0, p1.1),
@@ -1871,7 +1871,7 @@ mod event_tests {
             &mut st,
             &taffy,
             node,
-            &mods,
+            mods,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Released,
@@ -2317,7 +2317,7 @@ mod event_tests {
         st: &mut ui::State,
         taffy: &TaffyTree<()>,
         node: NodeId,
-        mods: &winit::event::Modifiers,
+        mods: winit::event::Modifiers,
         dev: winit::event::DeviceId,
     ) -> String {
         use winit::dpi::PhysicalPosition;
@@ -2386,7 +2386,7 @@ mod event_tests {
         let mods = winit::event::Modifiers::default();
         let dev = dummy_device_id();
 
-        let note_id = right_click_seeded_note(&mut app, &mut st, &taffy, node, &mods, dev);
+        let note_id = right_click_seeded_note(&mut app, &mut st, &taffy, node, mods, dev);
 
         // A draw pass captures the Delete item rect (exactly as it does live).
         let theme = ui::theme::Theme::dark();
@@ -2407,7 +2407,7 @@ mod event_tests {
             &mut st,
             &taffy,
             node,
-            &mods,
+            mods,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(ic.0, ic.1),
@@ -2418,7 +2418,7 @@ mod event_tests {
             &mut st,
             &taffy,
             node,
-            &mods,
+            mods,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Pressed,

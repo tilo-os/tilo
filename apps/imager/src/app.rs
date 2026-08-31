@@ -3149,7 +3149,7 @@ impl Widget for ImagerApp {
         let consumed = self.handle_customize_event(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             &lay,
@@ -3246,7 +3246,7 @@ impl ImagerApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         lay: &Layout,
@@ -3261,7 +3261,7 @@ impl ImagerApp {
         let resp = self.customize.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             &mut self.actions,

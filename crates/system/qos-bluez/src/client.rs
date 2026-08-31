@@ -488,7 +488,7 @@ pub fn bluez_error_text(name: &str, detail: Option<&str>) -> String {
 
 /// How long to leave a scan running before it stops on its own. Discovery costs radio time
 /// and battery on every nearby device, so it's not left on indefinitely.
-pub const DISCOVERY_WINDOW: Duration = Duration::from_mins(1);
+pub const DISCOVERY_WINDOW: Duration = Duration::from_secs(60);
 
 #[cfg(test)]
 mod tests {

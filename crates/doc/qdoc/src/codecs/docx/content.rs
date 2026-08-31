@@ -183,7 +183,7 @@ impl BodyState {
         self.cur_para_marks.clear();
     }
 
-    /// Finalise the paragraph's properties: pick the block kind (list_item/heading/paragraph), set attrs, stash whole-block marks.
+    /// Finalise the paragraph's properties: pick the block kind (`list_item`/heading/paragraph), set attrs, stash whole-block marks.
     fn finalize_ppr(&mut self, doc: &mut DocMut, reg: &StyleRegistry) {
         let Some(id) = self.cur.clone() else {
             return;

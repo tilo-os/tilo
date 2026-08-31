@@ -221,11 +221,11 @@ impl Widget for PreviewPane {
         // 5. Controls (toggle, checkbox, slider).
         let y = self.draw_controls_section(scene, t, tr, &layout, y);
         // 6. List with a selected row.
-        let y = self.draw_list_section(scene, t, tr, &layout, y);
+        let y = Self::draw_list_section(scene, t, tr, &layout, y);
         // 7. Badges.
         let y = self.draw_badges_section(scene, t, tr, &layout, y);
         // 8. Charts (bar chart + sparkline) sharing a row.
-        self.draw_charts_section(scene, t, tr, &layout, y);
+        Self::draw_charts_section(scene, t, tr, &layout, y);
     }
 
     fn name(&self) -> &'static str {
@@ -641,11 +641,124 @@ impl PreviewPane {
         y + row_h + layout.gap
     }
 
+    /// One "LIST" row: selection highlight, avatar initial, name/subtitle,
+    /// optional unread badge, and the row separator (part of
+    /// [`Self::draw_list_section`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
+    )]
+    fn draw_list_row(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        th: &Theme,
+        list_rect: Rect,
+        radius: f64,
+        rowh: f64,
+        i: usize,
+        name: &str,
+        sub: &str,
+        col: Color,
+        badge: u32,
+        total: usize,
+    ) {
+        let sem = &th.tokens.colors.semantic;
+        let ry0 = list_rect.y0 + i as f64 * rowh;
+        let rr = Rect::new(list_rect.x0, ry0, list_rect.x1, ry0 + rowh);
+        if i == 1 {
+            draw::fill_rrect(
+                scene,
+                t,
+                rr,
+                radius * 0.6,
+                Self::alpha(th.accent_primary, 0.16),
+            );
+            draw::fill_rect(
+                scene,
+                t,
+                Rect::new(rr.x0, rr.y0 + 6.0, rr.x0 + 3.0, rr.y1 - 6.0),
+                th.accent_primary,
+            );
+        }
+        // avatar
+        let ac = Point::new(rr.x0 + 22.0, rr.center().y);
+        draw::circle(scene, t, ac, 12.0, col);
+        let initial = name.chars().next().unwrap_or('?').to_string();
+        draw::text_center(
+            tr,
+            scene,
+            t,
+            &initial,
+            12.0,
+            model::color(model::on_color([col.r(), col.g(), col.b()])),
+            ac.x - 12.0,
+            ac.x + 12.0,
+            ac.y - 12.0,
+            ac.y + 12.0,
+            TextWeight::Bold,
+        );
+        draw::text_w(
+            tr,
+            scene,
+            t,
+            name,
+            13.0,
+            th.text_primary,
+            rr.x0 + 44.0,
+            rr.y0 + 7.0,
+            TextWeight::Medium,
+        );
+        draw::text(
+            tr,
+            scene,
+            t,
+            sub,
+            11.0,
+            th.text_dim,
+            rr.x0 + 44.0,
+            rr.y0 + 22.0,
+        );
+        // trailing badge
+        if badge > 0 {
+            let bw2 = 22.0;
+            let br = Rect::new(
+                rr.x1 - bw2 - 10.0,
+                rr.center().y - 9.0,
+                rr.x1 - 10.0,
+                rr.center().y + 9.0,
+            );
+            draw::fill_rrect(scene, t, br, 9.0, sem.danger);
+            draw::text_center(
+                tr,
+                scene,
+                t,
+                &badge.to_string(),
+                10.0,
+                Color::WHITE,
+                br.x0,
+                br.x1,
+                br.y0,
+                br.y1,
+                TextWeight::Bold,
+            );
+        }
+        if i + 1 < total {
+            draw::line(
+                scene,
+                t,
+                Point::new(rr.x0 + 44.0, rr.y1),
+                Point::new(rr.x1 - 10.0, rr.y1),
+                Self::alpha(th.border_standard, 0.6),
+                1.0,
+            );
+        }
+    }
+
     /// The "LIST" section: three specimen rows (one selected) with avatar,
     /// name, subtitle, and an unread-count badge on one row (part of
     /// [`Widget::draw`]). Returns the cursor `y` for the next section.
     fn draw_list_section(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -669,95 +782,21 @@ impl PreviewPane {
         draw::fill_rrect(scene, t, list_rect, radius, th.bg_app);
         draw::stroke_rrect(scene, t, list_rect, radius, th.border_standard, 1.0);
         for (i, (name, sub, col, badge)) in people.iter().enumerate() {
-            let ry0 = y + i as f64 * rowh;
-            let rr = Rect::new(list_rect.x0, ry0, list_rect.x1, ry0 + rowh);
-            if i == 1 {
-                draw::fill_rrect(
-                    scene,
-                    t,
-                    rr,
-                    radius * 0.6,
-                    Self::alpha(th.accent_primary, 0.16),
-                );
-                draw::fill_rect(
-                    scene,
-                    t,
-                    Rect::new(rr.x0, rr.y0 + 6.0, rr.x0 + 3.0, rr.y1 - 6.0),
-                    th.accent_primary,
-                );
-            }
-            // avatar
-            let ac = Point::new(rr.x0 + 22.0, rr.center().y);
-            draw::circle(scene, t, ac, 12.0, *col);
-            let initial = name.chars().next().unwrap_or('?').to_string();
-            draw::text_center(
-                tr,
+            Self::draw_list_row(
                 scene,
                 t,
-                &initial,
-                12.0,
-                model::color(model::on_color([col.r(), col.g(), col.b()])),
-                ac.x - 12.0,
-                ac.x + 12.0,
-                ac.y - 12.0,
-                ac.y + 12.0,
-                TextWeight::Bold,
-            );
-            draw::text_w(
                 tr,
-                scene,
-                t,
+                th,
+                list_rect,
+                radius,
+                rowh,
+                i,
                 name,
-                13.0,
-                th.text_primary,
-                rr.x0 + 44.0,
-                rr.y0 + 7.0,
-                TextWeight::Medium,
-            );
-            draw::text(
-                tr,
-                scene,
-                t,
                 sub,
-                11.0,
-                th.text_dim,
-                rr.x0 + 44.0,
-                rr.y0 + 22.0,
+                *col,
+                *badge,
+                people.len(),
             );
-            // trailing badge
-            if *badge > 0 {
-                let bw2 = 22.0;
-                let br = Rect::new(
-                    rr.x1 - bw2 - 10.0,
-                    rr.center().y - 9.0,
-                    rr.x1 - 10.0,
-                    rr.center().y + 9.0,
-                );
-                draw::fill_rrect(scene, t, br, 9.0, sem.danger);
-                draw::text_center(
-                    tr,
-                    scene,
-                    t,
-                    &badge.to_string(),
-                    10.0,
-                    Color::WHITE,
-                    br.x0,
-                    br.x1,
-                    br.y0,
-                    br.y1,
-                    TextWeight::Bold,
-                );
-            }
-            if i + 1 < people.len() {
-                draw::line(
-                    scene,
-                    t,
-                    Point::new(rr.x0 + 44.0, rr.y1),
-                    Point::new(rr.x1 - 10.0, rr.y1),
-                    Self::alpha(th.border_standard, 0.6),
-                    1.0,
-                );
-            }
         }
         y + rowh * people.len() as f64 + layout.gap
     }
@@ -815,7 +854,6 @@ impl PreviewPane {
     /// The "DATA" section: a bar chart and a sparkline sharing a row (part
     /// of [`Widget::draw`]).
     fn draw_charts_section(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,

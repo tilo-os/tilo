@@ -82,7 +82,7 @@ const LISTS: &[(&str, &str)] = &[
 const EXCLUDED_LISTS: &[&str] = &["ublock-quick-fixes.txt", "adguard-base.txt"];
 
 /// Re-download a cached list after this age.
-const CACHE_MAX_AGE: Duration = Duration::from_hours(168);
+const CACHE_MAX_AGE: Duration = Duration::from_secs(604800);
 
 /// Load + compile the filter lists in the background and install the
 /// compiled content filter into `engine` when ready.

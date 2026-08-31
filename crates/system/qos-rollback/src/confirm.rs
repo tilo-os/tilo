@@ -109,10 +109,9 @@ pub fn load_base(state: Option<&State>, tokens: &[(u32, RollbackToken)]) -> Resu
     };
     if let Some((who, bad)) = bases.iter().find(|(_, b)| *b != first) {
         bail!(
-            "the recorded NV counter base disagrees between sources ({} says {bad}, {} says \
-             {first}); refusing to compute a floor advance from an ambiguous base",
-            who,
-            first_source
+            "the recorded NV counter base disagrees between sources ({who} says {bad}, \
+             {first_source} says {first}); refusing to compute a floor advance from an \
+             ambiguous base"
         );
     }
     Ok(Some(first))

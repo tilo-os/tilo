@@ -126,15 +126,12 @@ impl OfflinePanel {
     }
 
     pub fn adopt_results(&mut self, results: Result<Vec<RegionHit>, String>) {
-        match results {
-            Ok(hits) => {
-                self.input.set_suggestions_open(Self::suggestions(&hits));
-                self.results = hits;
-            }
-            Err(_) => {
-                self.results.clear();
-                self.input.set_suggestions_open(Vec::new());
-            }
+        if let Ok(hits) = results {
+            self.input.set_suggestions_open(Self::suggestions(&hits));
+            self.results = hits;
+        } else {
+            self.results.clear();
+            self.input.set_suggestions_open(Vec::new());
         }
     }
 

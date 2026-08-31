@@ -133,7 +133,7 @@ pub fn spawn_render_thread(
     mut surface: RenderSurface<'static>,
     mut renderer: Renderer,
 ) -> Result<RenderThreadHandle, String> {
-    let (render_tx, rx) = mpsc::sync_channel::<RenderRequest>(1);
+    let (req_tx, rx) = mpsc::sync_channel::<RenderRequest>(1);
     let (scene_pool_tx, scene_pool) = mpsc::sync_channel::<Scene>(2);
     let (outcome_tx, frame_complete) = mpsc::sync_channel::<FrameOutcome>(8);
 
@@ -216,7 +216,7 @@ pub fn spawn_render_thread(
     drop(scene_pool_tx);
 
     Ok(RenderThreadHandle {
-        render_tx,
+        render_tx: req_tx,
         scene_pool,
         frame_complete,
         join: Some(join),

@@ -523,6 +523,10 @@ fn finish_style(
     clippy::too_many_lines,
     reason = "the per-style registration and reset logic is already extracted into finish_style/reset_style_accum above; what's left is a local prop! macro that applies one XML property to ~14 flat accumulator locals by name — moving it out would need either a closure (which would hold a standing &mut borrow on those same locals the surrounding match also writes directly, a borrow-checker conflict) or bundling them into an accumulator struct, neither safe to introduce without compiling"
 )]
+#[allow(
+    clippy::similar_names,
+    reason = "in_ppr/in_rpr mirror the OOXML element names w:pPr (paragraph properties) and w:rPr (run properties) verbatim"
+)]
 pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry) {
     let Ok(s) = std::str::from_utf8(xml) else {
         return;

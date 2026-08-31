@@ -325,8 +325,10 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
                 "x_to": x2,
                 "y_to": y2,
             });
-            if let Some(s) = steps {
-                v["steps"] = json!(s);
+            if let Some(s) = steps
+                && let Some(obj) = v.as_object_mut()
+            {
+                obj.insert("steps".to_string(), json!(s));
             }
             v
         }
@@ -592,7 +594,12 @@ fn main() -> ExitCode {
 
     let cmd_json = match command_to_wire(&invocation.command) {
         Ok(j) => j,
-        Err(ParseError::Help) => unreachable!(),
+        // `command_to_wire` never produces `Help` — degrade like a usage
+        // error rather than assert a state that would need main to panic.
+        Err(ParseError::Help) => {
+            eprintln!("qos-control: internal error: unexpected help state");
+            return ExitCode::from(2);
+        }
         Err(ParseError::Usage(msg)) => {
             eprintln!("qos-control: {msg}");
             return ExitCode::from(2);
@@ -602,7 +609,7 @@ fn main() -> ExitCode {
     let mut stream = match connect(&invocation.socket) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("qos-control: connect {:?}: {e}", invocation.socket);
+            eprintln!("qos-control: connect {}: {e}", invocation.socket.display());
             return ExitCode::from(2);
         }
     };
@@ -632,8 +639,8 @@ mod tests {
     use super::*;
 
     fn parse(args: &[&str]) -> Result<Invocation, ParseError> {
-        let argv: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
-        parse_args(&argv)
+        let owned: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
+        parse_args(&owned)
     }
 
     #[test]

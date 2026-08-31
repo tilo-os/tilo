@@ -222,6 +222,11 @@ impl Error for OnboardingError {}
 /// Delegates to [`crate::firstboot::ensure_collaboration_identity`] so the
 /// human root, certified device key, and Iroh endpoint identity are created
 /// as one idempotent ceremony.
+///
+/// # Errors
+///
+/// Returns an error if minting the collaboration identity fails, or if one
+/// already exists but its fingerprint can't be read back.
 pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
     let identity_paths = crate::firstboot::collaboration_identity_paths();
     mint_into_with_paths(identity_dir, &identity_paths)
@@ -262,8 +267,8 @@ fn read_fingerprint(path: &Path) -> Result<String, String> {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for b in bytes {
         // `b >> 4` and `b & 0xF` are both always in 0..16, so these never miss;
         // `.get()` documents that rather than indexing directly.

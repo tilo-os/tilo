@@ -85,7 +85,7 @@ fn start_session_and_learn_offset(
     w: u32,
     h: u32,
 ) -> (SharedFlatpakSession, PeerSurfaceMetrics, PeerView, Instant) {
-    let session = SharedFlatpakSession::start(HOST_PEER, app_id, SURFACE, w, h, config())
+    let session = SharedFlatpakSession::start(HOST_PEER, app_id, SURFACE, w, h, &config())
         .expect("session construction");
     session.add_viewer(VIEWER_PEER, false);
 
@@ -242,7 +242,7 @@ fn backpressure_drops_frames_but_input_stream_still_delivers() {
     const W: u32 = 128;
     const H: u32 = 128;
 
-    let session = SharedFlatpakSession::start(HOST_PEER, "org.gimp.GIMP", SURFACE, W, H, config())
+    let session = SharedFlatpakSession::start(HOST_PEER, "org.gimp.GIMP", SURFACE, W, H, &config())
         .expect("session construction");
     session.add_viewer(VIEWER_PEER, false);
 
@@ -324,7 +324,7 @@ fn read_only_viewer_input_drops_but_video_still_flows() {
     const W: u32 = 64;
     const H: u32 = 64;
 
-    let session = SharedFlatpakSession::start(HOST_PEER, "org.gimp.GIMP", SURFACE, W, H, config())
+    let session = SharedFlatpakSession::start(HOST_PEER, "org.gimp.GIMP", SURFACE, W, H, &config())
         .expect("session construction");
     session.add_viewer(VIEWER_PEER, true); // read-only
 

@@ -908,135 +908,142 @@ pub struct SqlHighlighter {
     types: HashSet<String>,
 }
 
+/// Case-insensitive SQL keywords for [`SqlHighlighter::new`], split out as a
+/// module-level table (rather than a local `const` in the constructor) so
+/// the constructor itself stays short.
+const SQL_KEYWORDS: &[&str] = &[
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "INSERT",
+    "INTO",
+    "VALUES",
+    "UPDATE",
+    "SET",
+    "DELETE",
+    "CREATE",
+    "TABLE",
+    "DROP",
+    "ALTER",
+    "ADD",
+    "COLUMN",
+    "INDEX",
+    "VIEW",
+    "JOIN",
+    "INNER",
+    "LEFT",
+    "RIGHT",
+    "OUTER",
+    "FULL",
+    "ON",
+    "GROUP",
+    "BY",
+    "ORDER",
+    "HAVING",
+    "LIMIT",
+    "OFFSET",
+    "AS",
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "LIKE",
+    "BETWEEN",
+    "IS",
+    "DISTINCT",
+    "UNION",
+    "ALL",
+    "PRIMARY",
+    "KEY",
+    "FOREIGN",
+    "REFERENCES",
+    "DEFAULT",
+    "CONSTRAINT",
+    "UNIQUE",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "WITH",
+    "BEGIN",
+    "COMMIT",
+    "ROLLBACK",
+    "PRAGMA",
+    "EXISTS",
+    "USING",
+    "CASCADE",
+    "CHECK",
+    "AUTOINCREMENT",
+    "ASC",
+    "DESC",
+];
+const SQL_CONSTANTS: &[&str] = &["NULL", "TRUE", "FALSE"];
+const SQL_FUNCTIONS: &[&str] = &[
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "ROUND",
+    "COALESCE",
+    "IFNULL",
+    "LENGTH",
+    "LOWER",
+    "UPPER",
+    "SUBSTR",
+    "SUBSTRING",
+    "TRIM",
+    "REPLACE",
+    "ABS",
+    "CAST",
+    "DATE",
+    "TIME",
+    "DATETIME",
+    "STRFTIME",
+    "NOW",
+    "GROUP_CONCAT",
+    "TOTAL",
+    "NULLIF",
+    "INSTR",
+];
+const SQL_TYPES: &[&str] = &[
+    "INTEGER",
+    "INT",
+    "BIGINT",
+    "SMALLINT",
+    "TEXT",
+    "VARCHAR",
+    "CHAR",
+    "BLOB",
+    "REAL",
+    "FLOAT",
+    "DOUBLE",
+    "NUMERIC",
+    "DECIMAL",
+    "BOOLEAN",
+    "BOOL",
+    "DATE",
+    "DATETIME",
+    "TIMESTAMP",
+    "TIME",
+    "SERIAL",
+];
+
 impl SqlHighlighter {
     pub fn new() -> Self {
-        const KW: &[&str] = &[
-            "SELECT",
-            "FROM",
-            "WHERE",
-            "INSERT",
-            "INTO",
-            "VALUES",
-            "UPDATE",
-            "SET",
-            "DELETE",
-            "CREATE",
-            "TABLE",
-            "DROP",
-            "ALTER",
-            "ADD",
-            "COLUMN",
-            "INDEX",
-            "VIEW",
-            "JOIN",
-            "INNER",
-            "LEFT",
-            "RIGHT",
-            "OUTER",
-            "FULL",
-            "ON",
-            "GROUP",
-            "BY",
-            "ORDER",
-            "HAVING",
-            "LIMIT",
-            "OFFSET",
-            "AS",
-            "AND",
-            "OR",
-            "NOT",
-            "IN",
-            "LIKE",
-            "BETWEEN",
-            "IS",
-            "DISTINCT",
-            "UNION",
-            "ALL",
-            "PRIMARY",
-            "KEY",
-            "FOREIGN",
-            "REFERENCES",
-            "DEFAULT",
-            "CONSTRAINT",
-            "UNIQUE",
-            "CASE",
-            "WHEN",
-            "THEN",
-            "ELSE",
-            "END",
-            "COUNT",
-            "SUM",
-            "AVG",
-            "MIN",
-            "MAX",
-            "WITH",
-            "BEGIN",
-            "COMMIT",
-            "ROLLBACK",
-            "PRAGMA",
-            "EXISTS",
-            "USING",
-            "CASCADE",
-            "CHECK",
-            "AUTOINCREMENT",
-            "ASC",
-            "DESC",
-        ];
-        const CONST: &[&str] = &["NULL", "TRUE", "FALSE"];
-        const FUNCTIONS: &[&str] = &[
-            "COUNT",
-            "SUM",
-            "AVG",
-            "MIN",
-            "MAX",
-            "ROUND",
-            "COALESCE",
-            "IFNULL",
-            "LENGTH",
-            "LOWER",
-            "UPPER",
-            "SUBSTR",
-            "SUBSTRING",
-            "TRIM",
-            "REPLACE",
-            "ABS",
-            "CAST",
-            "DATE",
-            "TIME",
-            "DATETIME",
-            "STRFTIME",
-            "NOW",
-            "GROUP_CONCAT",
-            "TOTAL",
-            "NULLIF",
-            "INSTR",
-        ];
-        const TYPES: &[&str] = &[
-            "INTEGER",
-            "INT",
-            "BIGINT",
-            "SMALLINT",
-            "TEXT",
-            "VARCHAR",
-            "CHAR",
-            "BLOB",
-            "REAL",
-            "FLOAT",
-            "DOUBLE",
-            "NUMERIC",
-            "DECIMAL",
-            "BOOLEAN",
-            "BOOL",
-            "DATE",
-            "DATETIME",
-            "TIMESTAMP",
-            "TIME",
-            "SERIAL",
-        ];
         Self {
-            generic: GenericHighlighter::new(KW, CONST, None, true),
-            functions: FUNCTIONS.iter().map(|word| (*word).to_string()).collect(),
-            types: TYPES.iter().map(|word| (*word).to_string()).collect(),
+            generic: GenericHighlighter::new(SQL_KEYWORDS, SQL_CONSTANTS, None, true),
+            functions: SQL_FUNCTIONS
+                .iter()
+                .map(|word| (*word).to_string())
+                .collect(),
+            types: SQL_TYPES.iter().map(|word| (*word).to_string()).collect(),
         }
     }
 }
@@ -1047,26 +1054,56 @@ impl Default for SqlHighlighter {
     }
 }
 
+impl SqlHighlighter {
+    /// `spans` when the carried state says we're still inside a `/* … */`
+    /// block comment: look for the close marker and recurse on the
+    /// remainder. Split out of `spans` to keep that under the line cap.
+    fn spans_in_block_comment(&self, line: &str) -> LineSpans {
+        let n = line.len();
+        if let Some(close) = line.find("*/") {
+            let end = close.saturating_add(2);
+            let rest = line.get(end..).unwrap_or_default();
+            let mut ls = self.spans(rest, 0);
+            shift_spans(&mut ls.spans, end);
+            let mut spans = vec![Span::new(0..end, TokenKind::Comment)];
+            spans.append(&mut ls.spans);
+            return LineSpans {
+                spans,
+                carry: ls.carry,
+            };
+        }
+        LineSpans {
+            spans: vec![Span::new(0..n, TokenKind::Comment)],
+            carry: IN_BLOCK_COMMENT,
+        }
+    }
+
+    /// SQL token kind for the identifier `word`, restricted to the
+    /// categories SQL actually paints — an identifier that merely matches a
+    /// generic classifier keyword is not up-cast to `Type`/`Function`.
+    /// Split out of `spans` to keep that under the line cap.
+    fn classify_sql_word(&self, word: &str) -> Option<TokenKind> {
+        let upper = word.to_ascii_uppercase();
+        let kind = if self.functions.contains(&upper) {
+            Some(TokenKind::Function)
+        } else if self.types.contains(&upper) {
+            Some(TokenKind::Type)
+        } else {
+            self.generic.classify_word(word)
+        }?;
+        matches!(
+            kind,
+            TokenKind::Keyword | TokenKind::Constant | TokenKind::Function | TokenKind::Type
+        )
+        .then_some(kind)
+    }
+}
+
 impl Highlighter for SqlHighlighter {
     fn spans(&self, line: &str, carry: HlState) -> LineSpans {
         let n = line.len();
         if carry & IN_BLOCK_COMMENT != 0 {
-            if let Some(close) = line.find("*/") {
-                let end = close.saturating_add(2);
-                let rest = line.get(end..).unwrap_or_default();
-                let mut ls = self.spans(rest, 0);
-                shift_spans(&mut ls.spans, end);
-                let mut spans = vec![Span::new(0..end, TokenKind::Comment)];
-                spans.append(&mut ls.spans);
-                return LineSpans {
-                    spans,
-                    carry: ls.carry,
-                };
-            }
-            return LineSpans {
-                spans: vec![Span::new(0..n, TokenKind::Comment)],
-                carry: IN_BLOCK_COMMENT,
-            };
+            return self.spans_in_block_comment(line);
         }
         let mut spans = Vec::new();
         let bytes = line.as_bytes();
@@ -1105,30 +1142,10 @@ impl Highlighter for SqlHighlighter {
             }
             if is_ident_start(c) {
                 let end = ident_end(line, i);
-                let Some(word) = line.get(i..end) else {
-                    i = end;
-                    continue;
-                };
-                let upper = word.to_ascii_uppercase();
-                let kind = if self.functions.contains(&upper) {
-                    Some(TokenKind::Function)
-                } else if self.types.contains(&upper) {
-                    Some(TokenKind::Type)
-                } else {
-                    self.generic.classify_word(word)
-                };
-                if let Some(kind) = kind {
-                    // Don't up-case-classify identifiers as Type in SQL; only
-                    // explicitly listed SQL types receive that category.
-                    if matches!(
-                        kind,
-                        TokenKind::Keyword
-                            | TokenKind::Constant
-                            | TokenKind::Function
-                            | TokenKind::Type
-                    ) {
-                        spans.push(Span::new(i..end, kind));
-                    }
+                if let Some(word) = line.get(i..end)
+                    && let Some(kind) = self.classify_sql_word(word)
+                {
+                    spans.push(Span::new(i..end, kind));
                 }
                 i = end;
                 continue;

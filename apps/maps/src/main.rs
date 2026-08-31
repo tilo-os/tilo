@@ -49,7 +49,7 @@ pub fn main() {
     maps::net::ensure_crypto_provider();
 
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.maps", maps::app_root)
+        &LaunchSpec::new("dev.qos.maps", maps::app_root)
             .shot_root(shot_root)
             .allowed_flags(&[
                 "--nav-closed",

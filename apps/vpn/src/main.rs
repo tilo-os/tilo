@@ -47,7 +47,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.vpn", vpn::app_root)
+        &LaunchSpec::new("dev.qos.vpn", vpn::app_root)
             .shot_root(shot_root)
             .scenarios(&["confirm"])
             .configure_app(|app| vpn::actions::register(app.action_registry_mut())),

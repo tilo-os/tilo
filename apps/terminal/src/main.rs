@@ -66,7 +66,7 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 /// when the live event loop's own setup fails.
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new_with_args("dev.qos.terminal", live_root)
+        &LaunchSpec::new_with_args("dev.qos.terminal", live_root)
             .live_handler(run_live)
             .shot_handler(run_shot)
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)

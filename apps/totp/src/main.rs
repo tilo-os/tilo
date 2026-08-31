@@ -58,7 +58,7 @@ fn configure(app: &mut ui::App) {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new(APP_ID, totp::app_root)
+        &LaunchSpec::new(APP_ID, totp::app_root)
             .shot_root(shot_root)
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
             .allowed_options(&["--screen"])

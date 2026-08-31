@@ -1446,7 +1446,7 @@ impl Core {
         if let Some(consumed) = self.route_overview_search_field(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             focus_target,
@@ -1477,7 +1477,7 @@ impl Core {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
@@ -1508,7 +1508,7 @@ impl Core {
         self.search.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             &mut ac_handled,
@@ -2011,7 +2011,7 @@ impl Core {
     /// narrow pane). Returns the y cursor for the next section.
     #[allow(clippy::too_many_arguments)]
     fn draw_detail_hero(
-        &mut self,
+        &self,
         rect: Rect,
         scene: &mut Scene,
         t: Affine,

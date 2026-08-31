@@ -41,7 +41,7 @@ pub const FUSE_ROOT_ID: u64 = 1;
 /// Attribute/entry kernel TTL — generous, since a qOS payload is
 /// immutable for the mount's lifetime (content-addressed; a new
 /// package id publishes rather than mutates).
-pub const TTL: Duration = Duration::from_hours(1);
+pub const TTL: Duration = Duration::from_secs(3600);
 
 /// Default kernel max-readahead (1 MiB, matching fs/'s workspace
 /// mount) — large enough that one mmap fault pulls a meaningful prefix into cache.

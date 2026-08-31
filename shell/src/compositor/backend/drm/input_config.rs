@@ -776,7 +776,7 @@ mod tests {
         // The loop runs at the display's cadence; stat'ing 144 times a second for a rarely-edited file is waste.
         let path = scratch("ratelimit");
         std::fs::write(&path, "{}").expect("write");
-        let mut w = SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_hours(1));
+        let mut w = SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_secs(3600));
         let now = Instant::now();
         assert!(!w.changed(now), "baseline");
         std::fs::remove_file(&path).expect("remove");

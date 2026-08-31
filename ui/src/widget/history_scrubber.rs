@@ -1563,7 +1563,7 @@ mod tests {
         s.rect = rect;
         s.set_now_for_test(
             SystemTime::UNIX_EPOCH
-                .checked_add(Duration::from_hours(1))
+                .checked_add(Duration::from_secs(3600))
                 .unwrap_or(SystemTime::UNIX_EPOCH),
         );
         s

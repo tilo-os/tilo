@@ -645,7 +645,7 @@ impl ChromeState {
             mode: FsMode::Read,
             scope: Expiry::EndOfSession,
         };
-        store.insert(&caller, cap);
+        store.insert(&caller, &cap);
     }
 
     /// Real Wayland app-id for `Foreign`, or the built-in

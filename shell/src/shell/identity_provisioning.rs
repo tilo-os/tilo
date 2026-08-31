@@ -275,7 +275,7 @@ mod tests {
             &sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + std::time::Duration::from_hours(1),
+            SystemTime::now() + std::time::Duration::from_secs(3600),
         )
         .unwrap();
         let url = env.to_url().unwrap();

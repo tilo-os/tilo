@@ -48,7 +48,8 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         .join("shell");
     assert!(
         binary.exists(),
-        "expected the compositor binary at {binary:?}; run `cargo build -p shell` first"
+        "expected the compositor binary at {}; run `cargo build -p shell` first",
+        binary.display()
     );
 
     let mut child = Command::new(&binary)
@@ -74,14 +75,14 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
-                Ok(0) => return,
+                // EOF (child exited) or a read error both end the drain.
+                Ok(0) | Err(_) => return,
                 Ok(_) => {
                     if !signalled && line.contains("test_control listening on") {
                         let _ = tx.send(());
                         signalled = true;
                     }
                 }
-                Err(_) => return,
             }
         }
     });
@@ -92,9 +93,8 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
-                Ok(0) => return,
+                Ok(0) | Err(_) => return,
                 Ok(_) => {}
-                Err(_) => return,
             }
         }
     });
@@ -103,6 +103,7 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         (child, socket_path)
     } else {
         let _ = child.kill();
+        let _ = child.wait();
         panic!("timed out waiting for the control socket to listen");
     }
 }

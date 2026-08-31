@@ -187,6 +187,17 @@ fn pump_no_op(host: &mut ShellOverlayHost, layout: &Layout) {
 }
 
 #[test]
+#[allow(
+    clippy::similar_names,
+    reason = "the a/b suffix pairs (strip_a_total_tabs/strip_b_total_tabs, \
+              tree_a_total/tree_b_total) mirror the two strips under test; renaming either \
+              away from the pair would hurt readability, not help it"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "tree is read from through the end of the function (tree_strip_a/b, \
+              tree_a_total/b_total, tree_b_has_dragged), so st can't be dropped any earlier"
+)]
 fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     let (tree, s_a, s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);

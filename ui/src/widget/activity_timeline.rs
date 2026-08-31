@@ -3308,7 +3308,7 @@ mod tests {
                     .checked_add(Duration::from_secs(500))
                     .unwrap_or(SystemTime::UNIX_EPOCH),
                 SystemTime::UNIX_EPOCH
-                    .checked_add(Duration::from_mins(10))
+                    .checked_add(Duration::from_secs(600))
                     .unwrap_or(SystemTime::UNIX_EPOCH),
             )),
             ..Default::default()

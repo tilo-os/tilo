@@ -246,7 +246,7 @@ fn writer_loop(
     loop {
         let timeout = match deadline {
             Some(d) => d.saturating_duration_since(Instant::now()),
-            None => Duration::from_hours(1),
+            None => Duration::from_secs(3600),
         };
         match rx.recv_timeout(timeout) {
             Ok(Msg::Full(bytes)) => {
@@ -334,7 +334,7 @@ mod tests {
         let mut store = DocStore::open_for("dev.qos.autosave-drop").unwrap();
         let mut doc = store.new_document();
         {
-            let mut saver = Autosave::spawn(store, Duration::from_mins(10));
+            let mut saver = Autosave::spawn(store, Duration::from_secs(600));
             saver.seed(&mut doc);
             doc.put(&ROOT, "k", "v").unwrap();
             saver.request(&mut doc);

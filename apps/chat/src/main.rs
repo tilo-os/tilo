@@ -79,7 +79,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.chat", chat::app_root)
+        &LaunchSpec::new("dev.qos.chat", chat::app_root)
             .shot_handler(shot_handler)
             .scenarios(&["narrow", "compact", "starter", "context", "attach"])
             .open_state(open_state)

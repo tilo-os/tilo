@@ -226,6 +226,10 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
     }
 }
 
+#[allow(
+    clippy::many_single_char_names,
+    reason = "t/w/s/h/y are the standard graphics convention: transform, stroke width, size, half-extent, position"
+)]
 fn icon_screen(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, w: f64) {
     let cx = rect.center().x;
     let cy = rect.center().y;

@@ -111,13 +111,10 @@ impl HistoryView {
         }
     }
 
-    /// One commit row: selection tint, graph dot, ref pills, summary,
-    /// author/time/hash meta line, and the row separator (part of
-    /// [`Self::draw_list`]).
-    #[allow(clippy::too_many_arguments)]
-    fn draw_commit_row(
+    /// The graph dot for a commit row — filled lane-coloured circle, hollow
+    /// centre for a merge (part of [`Self::draw_commit_row`]).
+    fn draw_commit_dot(
         scene: &mut Scene,
-        tr: &mut TextRenderer,
         t: Affine,
         theme: &Theme,
         area: Rect,
@@ -125,16 +122,8 @@ impl HistoryView {
         commit: &Commit,
         row: usize,
         y: f64,
-        rrect: Rect,
-        selected: usize,
-        text_x: f64,
     ) {
         let c = &theme.tokens.colors;
-        if row == selected {
-            draw::fill_rect(scene, t, rrect, c.accent[2]);
-        }
-
-        // Dot.
         let graph_x = area.x0 + GRAPH_PAD;
         let lane = layout.lane_of.get(row).copied().unwrap_or(0);
         let cx = graph_x + lane as f64 * LANE_W + LANE_W / 2.0;
@@ -159,7 +148,25 @@ impl HistoryView {
                 c.surfaces.base,
             );
         }
+    }
 
+    /// Ref pills, summary, author/time/hash meta line, and the row
+    /// separator (part of [`Self::draw_commit_row`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "see the comment above draw_commit_row"
+    )]
+    fn draw_commit_row_text(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        area: Rect,
+        commit: &Commit,
+        y: f64,
+        text_x: f64,
+    ) {
+        let c = &theme.tokens.colors;
         // Ref pills.
         let mut px = text_x;
         let pill_y = y + 9.0;
@@ -245,7 +252,42 @@ impl HistoryView {
         );
     }
 
+    /// One commit row: selection tint, graph dot, ref pills, summary,
+    /// author/time/hash meta line, and the row separator (part of
+    /// [`Self::draw_list`]). Split into [`Self::draw_commit_dot`] and
+    /// [`Self::draw_commit_row_text`] to keep each half under the
+    /// line-count lint.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
+    )]
+    fn draw_commit_row(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        area: Rect,
+        layout: &GraphLayout,
+        commit: &Commit,
+        row: usize,
+        y: f64,
+        rrect: Rect,
+        selected: usize,
+        text_x: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        if row == selected {
+            draw::fill_rect(scene, t, rrect, c.accent[2]);
+        }
+        Self::draw_commit_dot(scene, t, theme, area, layout, commit, row, y);
+        Self::draw_commit_row_text(scene, tr, t, theme, area, commit, y, text_x);
+    }
+
     /// Draw the detail panel for `commit` on the right.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
+    )]
     pub fn draw_detail(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -288,6 +330,14 @@ impl HistoryView {
 
     /// The commit summary line (part of [`Self::draw_detail`]). Returns the
     /// `y` for the next section.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
+    )]
     fn draw_detail_summary(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -360,6 +410,10 @@ impl HistoryView {
 
     /// The commit / date / parents / refs metadata grid (part of
     /// [`Self::draw_detail`]). Returns the `y` for the next section.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
+    )]
     fn draw_detail_meta_grid(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -413,6 +467,14 @@ impl HistoryView {
     /// The full commit body message, if any (part of [`Self::draw_detail`]).
     /// Returns the `y` for the next section (unchanged when there is no
     /// body).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
+    )]
     fn draw_detail_body(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -443,7 +505,14 @@ impl HistoryView {
     }
 
     /// The changed-files list, if any (part of [`Self::draw_detail`]).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
+    )]
     fn draw_detail_files(
         scene: &mut Scene,
         tr: &mut TextRenderer,

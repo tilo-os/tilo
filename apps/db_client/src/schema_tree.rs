@@ -210,10 +210,10 @@ impl SchemaTree {
             let y = body_top + vi as f64 * ROW_H;
             match row {
                 Row::Schema { name } => {
-                    self.draw_schema_row(scene, t, tr, theme, session, name, r, y)
+                    self.draw_schema_row(scene, t, tr, theme, session, name, r, y);
                 }
                 Row::Table { name } => {
-                    self.draw_table_row(scene, t, tr, theme, session, name, r, y)
+                    self.draw_table_row(scene, t, tr, theme, session, name, r, y);
                 }
                 Row::Column {
                     table, text, icon, ..

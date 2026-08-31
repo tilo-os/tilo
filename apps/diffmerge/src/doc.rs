@@ -31,6 +31,11 @@ pub struct MergeDoc;
 
 impl MergeDoc {
     /// Get-or-create the top-level `merged` Text object.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: `ROOT` is Automerge's permanent, undeletable root
+    /// Map, so `put_object` on it cannot fail short of a corrupted document.
     #[allow(
         clippy::expect_used,
         reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"

@@ -217,9 +217,8 @@ where
     if !throttle.should_encode(now) {
         return EncodeTickOutcome::Throttled;
     }
-    let rgba = match fetch_frame() {
-        Some(bytes) => bytes,
-        None => return EncodeTickOutcome::NoFrame,
+    let Some(rgba) = fetch_frame() else {
+        return EncodeTickOutcome::NoFrame;
     };
     match encoder.encode(&rgba) {
         Ok(nalus) => {
@@ -403,7 +402,9 @@ mod tests {
         let orig_rgb = strip_alpha(&input);
         let rgba = match &frame.pixels {
             crate::network::decoder::DecodedPixels::Rgba8(b) => b,
-            other => panic!("H.264 decoder returned non-RGBA pixels: {other:?}"),
+            other @ crate::network::decoder::DecodedPixels::P010 { .. } => {
+                panic!("H.264 decoder returned non-RGBA pixels: {other:?}")
+            }
         };
         let decoded_rgb = strip_alpha(rgba);
         // PSNR inlined so this test stays self-contained without re-exporting `encoder::tests::psnr`.
