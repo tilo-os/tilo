@@ -8,6 +8,7 @@
 //! fences → `code`=true block (+ optional `lang`).
 
 use crate::document::{MarkSpan, MarkValue};
+use crate::export::InlinePlan;
 use crate::format::{CodecError, Confidence, FormatProvider};
 use crate::model::{DocMut, DocRef};
 use crate::schema::{
@@ -851,13 +852,10 @@ fn span_decl(m: &MarkSpan) -> Option<String> {
     }
 }
 
-/// Combined `style="…"` value for all styling marks covering char `i`; sorted for a stable, idempotent round-trip.
-fn span_style_at(marks: &[MarkSpan], i: usize) -> Option<String> {
-    let mut decls: Vec<String> = marks
-        .iter()
-        .filter(|m| i >= m.start && i < m.end)
-        .filter_map(span_decl)
-        .collect();
+/// Combined `style="…"` value for a run's styling marks; sorted for a
+/// stable, idempotent round-trip.
+fn span_style(marks: &[&MarkSpan]) -> Option<String> {
+    let mut decls: Vec<String> = marks.iter().filter_map(|mark| span_decl(mark)).collect();
     if decls.is_empty() {
         return None;
     }
@@ -866,11 +864,12 @@ fn span_style_at(marks: &[MarkSpan], i: usize) -> Option<String> {
     Some(decls.join("; "))
 }
 
-/// Vertical wrapper (`sup`/`sub`) covering char `i`; `super` wins on overlap (shouldn't occur in modeled data).
-fn vert_wrap_at(marks: &[MarkSpan], i: usize) -> Option<&'static str> {
+/// Vertical wrapper (`sup`/`sub`) for a run; `super` wins on overlap (which
+/// should not occur in modeled data).
+fn vert_wrap(marks: &[&MarkSpan]) -> Option<&'static str> {
     let mut sup = false;
     let mut sub = false;
-    for m in marks.iter().filter(|m| i >= m.start && i < m.end) {
+    for m in marks {
         match m.name.as_str() {
             "super" => sup = true,
             "sub" => sub = true,
@@ -884,22 +883,6 @@ fn vert_wrap_at(marks: &[MarkSpan], i: usize) -> Option<&'static str> {
     } else {
         None
     }
-}
-
-fn link_href(marks: &[MarkSpan], i: usize) -> Option<&str> {
-    marks
-        .iter()
-        .find(|m| m.name == "link" && i >= m.start && i < m.end)
-        .and_then(|m| m.value.as_str())
-}
-
-/// Note id of a `note-ref` mark covering exactly `[i, i+1)` (a footnote placeholder), if any.
-fn note_ref_at(marks: &[MarkSpan], i: usize) -> Option<&str> {
-    let end = i.saturating_add(1);
-    marks
-        .iter()
-        .find(|m| m.name == MARK_NOTE_REF && m.start == i && m.end == end)
-        .and_then(|m| m.value.as_str())
 }
 
 /// Export-time footnote registry: assigns each referenced note a sequential 1-based
@@ -966,8 +949,8 @@ fn render_inline_notes(
     marks: &[MarkSpan],
     mut footnotes: Option<&mut Footnotes>,
 ) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
+    let plan = InlinePlan::new(text, marks);
+    let n = text.chars().count();
     let cap = n.saturating_add(1);
     let mut open_at: Vec<Vec<&'static str>> = vec![Vec::new(); cap];
     let mut close_at: Vec<Vec<&'static str>> = vec![Vec::new(); cap];
@@ -990,14 +973,13 @@ fn render_inline_notes(
     let mut cur_link: Option<&str> = None;
     let mut cur_span: Option<String> = None;
     let mut cur_wrap: Option<&'static str> = None;
-    for i in 0..=n {
-        for d in close_at.get(i).into_iter().flatten() {
+    for point in plan.points() {
+        for d in close_at.get(point.offset).into_iter().flatten() {
             out.push_str(d);
         }
-        // Span wrapper sits inside the link around toggle marks (close on link change, reopen after); `<sup>`/`<sub>` nests one level deeper.
-        let span = if i < n { span_style_at(marks, i) } else { None };
-        let wrap = if i < n { vert_wrap_at(marks, i) } else { None };
-        let link = if i < n { link_href(marks, i) } else { None };
+        let span = point.run.as_ref().and_then(|run| span_style(&run.marks));
+        let wrap = point.run.as_ref().and_then(|run| vert_wrap(&run.marks));
+        let link = point.run.as_ref().and_then(|run| run.link);
         let link_changing = link != cur_link;
         // Close the vertical wrapper first (innermost) when it, the span, or the link changes.
         if (link_changing || span != cur_span || wrap != cur_wrap)
@@ -1032,15 +1014,15 @@ fn render_inline_notes(
             let _ = write!(out, "<{w}>");
             cur_wrap = Some(w);
         }
-        for d in open_at.get(i).into_iter().flatten() {
+        for d in open_at.get(point.offset).into_iter().flatten() {
             out.push_str(d);
         }
-        if i < n {
-            if let (Some(fns), Some(note_id)) = (footnotes.as_deref_mut(), note_ref_at(marks, i)) {
+        if let Some(run) = &point.run {
+            if let (Some(fns), Some(note_id)) = (footnotes.as_deref_mut(), run.note_reference) {
                 let num = fns.number(note_id);
                 let _ = write!(out, "[^{num}]");
-            } else if let Some(ch) = chars.get(i) {
-                out.push(*ch);
+            } else {
+                out.push_str(run.text);
             }
         }
     }

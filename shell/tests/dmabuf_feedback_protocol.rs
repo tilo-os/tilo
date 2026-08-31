@@ -258,11 +258,12 @@ fn dmabuf_global_is_advertised_with_feedback() {
 /// A wrong or absent number sends the client to no GPU at all.
 #[test]
 fn feedback_main_device_is_the_advertised_render_node() {
+    use std::os::unix::fs::MetadataExt as _;
+
     let Some((app, node)) = walk() else {
         eprintln!("skipping: no advertisable render node on this machine");
         return;
     };
-    use std::os::unix::fs::MetadataExt as _;
     let expected = std::fs::metadata(&node)
         .expect("probed render node must stat")
         .rdev();

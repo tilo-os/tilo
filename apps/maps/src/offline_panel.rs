@@ -47,6 +47,7 @@ pub(crate) struct DownloadRequest {
 }
 
 /// Inputs from the map and tile layer needed to render one panel frame.
+#[derive(Clone, Copy)]
 pub(crate) struct OfflineFrame<'a> {
     pub viewport: Rect,
     pub viewport_bounds: GeoBounds,

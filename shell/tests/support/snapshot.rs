@@ -225,7 +225,7 @@ mod tests {
                 || {
                     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                         .parent()
-                        .unwrap_or(Path::new("."))
+                        .unwrap_or_else(|| Path::new("."))
                         .join("target")
                 },
                 PathBuf::from,
