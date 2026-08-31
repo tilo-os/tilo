@@ -113,6 +113,22 @@ fn phases(
     Ok([sync_us, build_us, compute_us, apply_us, draw_us])
 }
 
+/// Whether the text this frame drew was shaped again or reused.
+///
+/// A miss runs cosmic-text; a hit is an `Arc` clone. Text is the expensive
+/// part of drawing, so a frame that re-shapes what it drew last frame is
+/// paying for a cache that is not working.
+fn shape_stats(
+    widget: &mut dyn Widget,
+    (w, h): (u32, u32),
+    theme: &ui::Theme,
+    state: &mut ui::State,
+    text: &mut TextRenderer,
+) -> anyhow::Result<(u64, u64, u128)> {
+    shot::compose(widget, (w, h), theme, state, text)?;
+    Ok(text.take_shape_stats())
+}
+
 /// Report the shape of a timing sample, not just its mean: a frame budget is
 /// missed by the slow frames, and an average hides them.
 fn report(label: &str, mut us: Vec<u128>) {
@@ -217,6 +233,22 @@ fn main() -> anyhow::Result<()> {
     }
     report("load_project", load);
     report("get_heads", heads);
+
+    // Is the text cache earning its keep on a steady frame?
+    {
+        let mut widget = video_editor::VideoEditorApp::new_for_shot(ShotScenario::Markers);
+        let mut state = ui::State::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        for _ in 0..8 {
+            shape_stats(&mut widget, (1920, 1080), &theme, &mut state, &mut text)?;
+        }
+        let (hits, misses, ns) =
+            shape_stats(&mut widget, (1920, 1080), &theme, &mut state, &mut text)?;
+        println!(
+            "\ntext shaping on a settled frame: {hits} hits, {misses} misses, {}us shaping",
+            ns / 1000,
+        );
+    }
 
     // The other half of a frame: compositing the picture. This is the
     // production compositor, the one the preview and the export both call, so

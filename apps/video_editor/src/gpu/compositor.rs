@@ -97,6 +97,17 @@ pub struct VideoCompositor {
     /// Uploaded title pictures, keyed by the raster they came from, so a
     /// held title is uploaded once instead of every frame.
     title_textures: std::collections::HashMap<usize, SourceTexture>,
+    /// The buffer the finished frame is copied into to be read back, kept
+    /// across frames with the size it was made for.
+    ///
+    /// An export reads back every frame at full resolution — 8 MB at 1080p —
+    /// and this used to be allocated and freed for each one. Allocating a
+    /// buffer that size thirty times a second is real work for the driver's
+    /// allocator, and it is pure waste: the size only changes when the output
+    /// size does. The accumulation textures beside it were already kept this
+    /// way; the readback buffer was the one thing in the frame still being
+    /// rebuilt from scratch.
+    readback: Option<(wgpu::Buffer, u32, u32)>,
 }
 
 impl VideoCompositor {
@@ -353,12 +364,26 @@ impl VideoCompositor {
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let unpadded = w * 4;
         let padded = unpadded.div_ceil(align) * align;
-        let staging = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("video-composite-readback"),
-            size: (padded * h) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        // Re-use the buffer whenever the output size is unchanged, which is
+        // every frame of an export and every frame of a preview that is not
+        // being resized.
+        if !matches!(self.readback, Some((_, rw, rh)) if rw == w && rh == h) {
+            self.readback = Some((
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("video-composite-readback"),
+                    size: u64::from(padded) * u64::from(h),
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                }),
+                w,
+                h,
+            ));
+        }
+        let staging = &self
+            .readback
+            .as_ref()
+            .expect("readback buffer just ensured")
+            .0;
 
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("video-composite-readback"),
@@ -371,7 +396,7 @@ impl VideoCompositor {
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyBufferInfo {
-                buffer: &staging,
+                buffer: staging,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded),
