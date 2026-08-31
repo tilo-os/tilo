@@ -108,6 +108,12 @@ impl RunError {
 
 /// Optional knobs for `run_with`.
 #[derive(Debug, Clone, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent CLI-exposed launch knob (no_services, minimal_libs, \
+              landlock_enforce, allow_missing_runtime, allow_unsigned_runtime), not combinatorial \
+              state — grouping them into an enum would not make any combination less valid"
+)]
 pub struct RunOptions {
     /// Skip all service-socket resolution.
     pub no_services: bool,

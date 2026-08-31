@@ -178,7 +178,7 @@ fn run_handoff() {
     let serve_socket = socket.clone();
     let serve_store = store;
     std::thread::spawn(move || {
-        let _ = ush::supervisor::serve(&serve_socket, serve_store, PathBuf::from("/"));
+        let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
     });
 
     // Wait for the listener rather than sleeping a fixed amount.
@@ -274,7 +274,7 @@ fn a_malformed_request_is_answered() {
 
     let serve_socket = socket.clone();
     std::thread::spawn(move || {
-        let _ = ush::supervisor::serve(&serve_socket, store, PathBuf::from("/"));
+        let _ = ush::supervisor::serve(&serve_socket, &store, &PathBuf::from("/"));
     });
     let deadline = Instant::now() + Duration::from_secs(10);
     while !socket.exists() && Instant::now() < deadline {

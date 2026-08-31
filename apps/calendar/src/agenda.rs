@@ -62,7 +62,7 @@ impl AgendaView {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
@@ -74,7 +74,7 @@ impl AgendaView {
         self.scroll.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             &mut handled,

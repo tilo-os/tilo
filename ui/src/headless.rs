@@ -41,7 +41,7 @@ use crate::presence::PresenceCtx;
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::Widget;
+use crate::widget::{TaffyTreeExt, Widget};
 
 /// Viewport the driver lays out at unless a spec overrides it. Matches the
 /// default `--shots` viewport so a driven frame and a screenshot agree.
@@ -176,6 +176,7 @@ impl FrameHarness {
 
     /// Drive a record-aware app: the live document is a record's, and the
     /// widget names which one. Mirrors [`crate::App::with_records`].
+    #[must_use]
     pub fn with_records(
         mut self,
         records: crate::record::RecordSet,
@@ -226,6 +227,11 @@ impl FrameHarness {
     /// rects while drawing, so skipping it would leave every click silently
     /// missing — exactly the false-pass this harness must avoid. Nothing is
     /// rasterised; the `Scene` is encoded on the CPU and discarded.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "viewport width/height are pixel dimensions, always far below \
+                  f32's 2^24 exact-integer range"
+    )]
     pub fn relayout(&mut self) {
         // Records first, as `ui::App` does: an action that opened a document
         // must be editing that document by the time the next frame syncs.
@@ -245,41 +251,47 @@ impl FrameHarness {
             .root
             .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
         let (w, h) = self.viewport;
-        let root_node = self
-            .taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
-                    },
-                    ..Default::default()
+        // `TaffyTreeExt::parent_node` is panic-free by construction (see its
+        // doc comment): `child` was just built in this same fresh tree.
+        let root_node = self.taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
                 },
-                &[child],
-            )
-            .expect("headless root node");
+                ..Default::default()
+            },
+            &[child],
+        );
         let measure_map = self.node_map.clone();
         let text = &mut self.text;
-        self.taffy
-            .compute_layout_with_measure(
-                root_node,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        // SAFETY: `node_map` holds pointers into `self.root`,
-                        // which outlives this call and is not otherwise
-                        // borrowed here. Same contract as `App`'s own measure
-                        // closure.
-                        unsafe { (*ptr).measure(known, available, text) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("headless layout");
+        let layout_result = self.taffy.compute_layout_with_measure(
+            root_node,
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    // SAFETY: `node_map` holds pointers into `self.root`,
+                    // which outlives this call and is not otherwise
+                    // borrowed here. Same contract as `App`'s own measure
+                    // closure.
+                    unsafe { (*ptr).measure(known, available, text) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        );
+        // Mirrors `App`'s own frame loop (`ui/src/app.rs`): a computed-layout
+        // failure skips this frame rather than crashing the driven process.
+        if let Err(err) = layout_result {
+            tracing::error!(
+                ?err,
+                "headless: compute_layout_with_measure failed; skipping frame"
+            );
+            return;
+        }
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::BuildLayout, t_build);
         }

@@ -71,7 +71,8 @@ impl FileChange {
     /// The directory portion shown dimmed after the name.
     pub fn dir(&self) -> &str {
         match self.path.rfind('/') {
-            Some(i) => &self.path[..i],
+            // `rfind` on a `char` always lands on a byte boundary.
+            Some(i) => self.path.get(..i).unwrap_or(""),
             None => "",
         }
     }

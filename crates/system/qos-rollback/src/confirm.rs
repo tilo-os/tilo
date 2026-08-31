@@ -59,6 +59,10 @@ pub fn state_path() -> PathBuf {
     PathBuf::from("/var/lib/qos/rollback/state.json")
 }
 
+/// # Errors
+///
+/// Returns an error if `path` exists but cannot be read or parsed; a missing file is not an
+/// error and yields `None`.
 pub fn load_state(path: &Path) -> Result<Option<State>> {
     match std::fs::read_to_string(path) {
         Ok(s) => Ok(Some(
@@ -69,6 +73,9 @@ pub fn load_state(path: &Path) -> Result<Option<State>> {
     }
 }
 
+/// # Errors
+///
+/// Returns an error if the parent directory cannot be created, or the file cannot be written.
 pub fn save_state(path: &Path, state: &State) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;

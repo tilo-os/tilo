@@ -131,6 +131,12 @@ fn block_key(block_id: &str) -> PresenceKey {
 
 impl Session {
     /// Connect, announce the route, and ask the room for the document.
+    ///
+    /// # Errors
+    ///
+    /// When the connection to the compositor's collaboration broker cannot
+    /// be made, or the initial route join or presence announce fails to
+    /// send.
     pub fn connect(cfg: Config) -> Result<Self> {
         let mut link = match &cfg.endpoint {
             Some(path) => Link::connect_endpoint(
@@ -211,6 +217,13 @@ impl Session {
     /// agent sitting at 0% forever while every log line says it joined
     /// fine. A harness then reports "the agent did not finish", which
     /// names the one component that was working.
+    ///
+    /// # Errors
+    ///
+    /// When no participant answers with the document within
+    /// `await_document` (see [`Self::unanswered`] for the message), or when
+    /// a turn's own I/O — receiving from the broker, decoding a snapshot,
+    /// applying an edit — fails.
     pub fn run(&mut self) -> Result<()> {
         let joined = Instant::now();
         loop {
@@ -253,6 +266,10 @@ impl Session {
 
     /// Run until `deadline`, then return whether an instruction was
     /// carried out. For tests.
+    ///
+    /// # Errors
+    ///
+    /// Whenever a turn's own I/O fails — see [`Self::run`].
     pub fn run_until(&mut self, deadline: Instant) -> Result<bool> {
         let mut acted = false;
         while Instant::now() < deadline {
@@ -505,25 +522,28 @@ impl Session {
         let Some((at, asked)) = plan::find_addressed(&blocks, &self.cfg.name) else {
             return Ok(false);
         };
-        let ins_id = blocks[at].id.clone();
+        let Some(instruction_block) = blocks.get(at) else {
+            return Ok(false);
+        };
+        let ins_id = instruction_block.id.clone();
         if self.handled.contains(&ins_id) {
             return Ok(false);
         }
         if !Self::settled(
             self.watching.get(&ins_id),
-            &blocks[at].text,
+            &instruction_block.text,
             Instant::now(),
             self.cfg.settle,
         ) {
             self.watching
-                .insert(ins_id, (blocks[at].text.clone(), Instant::now()));
+                .insert(ins_id, (instruction_block.text.clone(), Instant::now()));
             return Ok(false);
         }
         self.watching.remove(&ins_id);
         self.handled.insert(ins_id.clone());
 
         let plan = self.decide(&ins_id, &asked, &blocks);
-        self.run_plan(&ins_id, plan)
+        self.run_plan(&ins_id, &plan)
     }
 
     /// Whether a paragraph's text has stopped changing for long enough to
@@ -608,7 +628,7 @@ impl Session {
     /// is removed once, at the end, so a step that needs to see it (`table`
     /// reads the bullets *above* it) can still do so wherever it falls in
     /// the sequence.
-    fn run_plan(&mut self, ins_id: &str, plan: Plan) -> Result<bool> {
+    fn run_plan(&mut self, ins_id: &str, plan: &Plan) -> Result<bool> {
         self.dispatched_this_turn.clear();
         let blocks = plan::blocks(&self.editor.as_ref().context("no document")?.snapshot()?);
         if let Some(what) = plan.unanswered() {
@@ -686,7 +706,7 @@ impl Session {
             .iter()
             .any(|b| b.id == ins_id)
         {
-            self.edit(ins_id, wp::remove_blocks_action(vec![ins_id.to_string()]))?;
+            self.edit(ins_id, &wp::remove_blocks_action(vec![ins_id.to_string()]))?;
         }
         Ok(true)
     }
@@ -700,7 +720,7 @@ impl Session {
             .map_or(0, |b| b.text.chars().count());
         self.edit(
             ins_id,
-            wp::splice_text_action(RegionKind::Body, ins_id, 0, n, reply),
+            &wp::splice_text_action(RegionKind::Body, ins_id, 0, n, reply),
         )
     }
 
@@ -714,22 +734,32 @@ impl Session {
                 "{}: I looked for bullets above this line and found none.",
                 self.cfg.name
             );
-            self.splice_reply(blocks, &blocks[at].id, &reply)?;
+            let Some(instruction_block) = blocks.get(at) else {
+                return Ok(false);
+            };
+            self.splice_reply(blocks, &instruction_block.id, &reply)?;
             return Ok(false);
         }
-        let lines: Vec<&str> = bullets.iter().map(|&i| blocks[i].text.as_str()).collect();
+        let lines: Vec<&str> = bullets
+            .iter()
+            .filter_map(|&i| blocks.get(i).map(|b| b.text.as_str()))
+            .collect();
         let rows = plan::table_cells(&lines);
         let cols = rows.first().map_or(1, Vec::len).max(1);
-        let last_bullet = blocks[*bullets.last().expect("non-empty")].id.clone();
+        let Some(last_bullet_block) = bullets.last().and_then(|&i| blocks.get(i)) else {
+            // `bullets` was already shown non-empty above.
+            return Ok(false);
+        };
+        let last_bullet = last_bullet_block.id.clone();
         let before: HashSet<String> = plan::table_ids(blocks).into_iter().collect();
 
         self.edit(
             &last_bullet,
-            wp::insert_table_action(&last_bullet, rows.len(), cols),
+            &wp::insert_table_action(&last_bullet, rows.len(), cols),
         )?;
 
         // The table's cells were minted inside the action; read them back.
-        let fresh = plan::blocks(&self.editor.as_ref().expect("editor").snapshot()?);
+        let fresh = plan::blocks(&self.editor.as_ref().context("no document")?.snapshot()?);
         let table_id = plan::table_ids(&fresh)
             .into_iter()
             .find(|t| !before.contains(t))
@@ -746,11 +776,14 @@ impl Session {
             }
             self.edit(
                 &cell_id,
-                wp::splice_text_action(RegionKind::Body, &cell_id, 0, 0, &text),
+                &wp::splice_text_action(RegionKind::Body, &cell_id, 0, 0, &text),
             )?;
         }
-        let gone: Vec<String> = bullets.iter().map(|&i| blocks[i].id.clone()).collect();
-        self.edit(&last_bullet, wp::remove_blocks_action(gone))?;
+        let gone: Vec<String> = bullets
+            .iter()
+            .filter_map(|&i| blocks.get(i).map(|b| b.id.clone()))
+            .collect();
+        self.edit(&last_bullet, &wp::remove_blocks_action(gone))?;
         Ok(true)
     }
 
@@ -763,11 +796,17 @@ impl Session {
                 "{}: there is no image in this document to caption.",
                 self.cfg.name
             );
-            self.splice_reply(blocks, &blocks[at].id, &reply)?;
+            let Some(instruction_block) = blocks.get(at) else {
+                return Ok(false);
+            };
+            self.splice_reply(blocks, &instruction_block.id, &reply)?;
             return Ok(false);
         };
-        let img_id = blocks[img].id.clone();
-        self.edit(&img_id, wp::insert_paragraph_action(&img_id, "Figure 1"))?;
+        let Some(img_block) = blocks.get(img) else {
+            return Ok(false);
+        };
+        let img_id = img_block.id.clone();
+        self.edit(&img_id, &wp::insert_paragraph_action(&img_id, "Figure 1"))?;
         Ok(true)
     }
 
@@ -784,13 +823,12 @@ impl Session {
         };
         self.edit(
             &title_id,
-            wp::set_paragraph_style_action(vec![title_id.clone()], "heading", Some(1), None),
+            &wp::set_paragraph_style_action(vec![title_id.clone()], "heading", Some(1), None),
         )?;
-        if !found.sections.is_empty() {
-            let anchor = found.sections[0].clone();
+        if let Some(anchor) = found.sections.first().cloned() {
             self.edit(
                 &anchor,
-                wp::set_paragraph_style_action(found.sections.clone(), "heading", Some(2), None),
+                &wp::set_paragraph_style_action(found.sections.clone(), "heading", Some(2), None),
             )?;
         }
         tracing::info!(sections = found.sections.len(), "made the draft a document");
@@ -799,7 +837,7 @@ impl Session {
 
     /// Show the caret on `focus`, apply `action`, broadcast the change, and
     /// pause so the room can see it happen.
-    fn edit(&mut self, focus: &str, action: WordProcessorAction) -> Result<()> {
+    fn edit(&mut self, focus: &str, action: &WordProcessorAction) -> Result<()> {
         let caret_pos = self
             .editor
             .as_ref()
@@ -819,12 +857,12 @@ impl Session {
             .editor
             .as_mut()
             .context("no document yet")?
-            .apply(&action)?;
+            .apply(action)?;
         if let Some(data) = delta {
             self.link.send(&CollabRequest::SyncIncremental { data })?;
-            tracing::info!(block = %focus, "applied {}", describe(&action));
+            tracing::info!(block = %focus, "applied {}", describe(action));
         } else {
-            tracing::warn!(block = %focus, "{} changed nothing", describe(&action));
+            tracing::warn!(block = %focus, "{} changed nothing", describe(action));
         }
         std::thread::sleep(self.cfg.pace);
         Ok(())

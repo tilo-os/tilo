@@ -194,6 +194,13 @@ pub struct GitClientApp {
     tab_rects: Vec<(Screen, Rect)>,
 }
 
+impl Default for GitClientApp {
+    /// Equivalent to [`GitClientApp::new`].
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GitClientApp {
     /// Build the app, loading the repository discovered from the current
     /// directory (or `GIT_CLIENT_REPO`). Falls back to the bundled sample
@@ -848,21 +855,49 @@ impl GitClientApp {
         // group first so the title can be clamped to stop before it on a
         // narrow window instead of running underneath.
         self.tab_rects.clear();
-        let tab_h = 32.0;
-        let tab_y = bar.y0 + (APPBAR_H - tab_h) / 2.0;
-        let mut widths: Vec<f64> = Vec::new();
-        for (_, label) in &TABS {
-            let w = f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0) + 28.0;
-            widths.push(w);
-        }
         let settings_w = 220.0;
-        let total: f64 = widths.iter().sum::<f64>() + (TABS.len() as f64 - 1.0) * 6.0;
-        let mut tx = bar.x1 - settings_w - total - 20.0;
-        let tab_group_left = tx - 6.0;
+        let (widths, total) = Self::measure_appbar_tabs(tr);
+        let tx_start = bar.x1 - settings_w - total - 20.0;
+        let tab_group_left = tx_start - 6.0;
 
         // Repo name + branch. Clamp the title so it ellipsises before the tab
         // group rather than colliding with it when the bar is tight.
         let title_x = bar.x0 + 20.0 + left_pad;
+        self.draw_appbar_title(scene, tr, t, theme, bar, title_x, tab_group_left);
+
+        self.draw_appbar_tab_group(scene, tr, t, theme, bar, &widths, total, tx_start);
+
+        // Settings cluster on the far right: diff layout toggle + flags.
+        self.draw_settings_cluster(scene, tr, t, theme, bar, settings_w);
+    }
+
+    /// Each tab's pixel width and their combined width (including the 6px
+    /// gaps between them) — needed both to clamp the title and to lay out
+    /// the tab group's pill background.
+    fn measure_appbar_tabs(tr: &mut TextRenderer) -> (Vec<f64>, f64) {
+        let widths: Vec<f64> = TABS
+            .iter()
+            .map(|(_, label)| {
+                f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0) + 28.0
+            })
+            .collect();
+        let total = widths.iter().sum::<f64>() + (TABS.len() as f64 - 1.0) * 6.0;
+        (widths, total)
+    }
+
+    /// Draw the repo name, branch pill and pending-changes/error subtitle,
+    /// clamped so a long name ellipsises before the tab group.
+    fn draw_appbar_title(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        bar: Rect,
+        title_x: f64,
+        tab_group_left: f64,
+    ) {
+        let c = &theme.tokens.colors;
         let title_max = (tab_group_left - title_x - 8.0).max(40.0) as f32;
         draw::text_weighted(
             scene,
@@ -924,10 +959,31 @@ impl GitClientApp {
             bar.y0 + 30.0,
             Some(title_max),
         );
-        let group_bg = Rect::new(tx - 6.0, tab_y, tx + total + 6.0, tab_y + tab_h);
+    }
+
+    /// Draw the tab-group pill background and each tab, recording its hit
+    /// rect in `self.tab_rects`.
+    fn draw_appbar_tab_group(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        bar: Rect,
+        widths: &[f64],
+        total: f64,
+        tx_start: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let tab_h = 32.0;
+        let tab_y = bar.y0 + (APPBAR_H - tab_h) / 2.0;
+        let group_bg = Rect::new(tx_start - 6.0, tab_y, tx_start + total + 6.0, tab_y + tab_h);
         draw::fill_round(scene, t, group_bg, 9.0, c.surfaces.base);
+        let mut tx = tx_start;
         for (i, (screen, label)) in TABS.iter().enumerate() {
-            let w = widths[i];
+            let Some(&w) = widths.get(i) else {
+                continue;
+            };
             let trect = Rect::new(tx, tab_y, tx + w, tab_y + tab_h);
             let active = *screen == self.screen;
             if active {
@@ -950,9 +1006,6 @@ impl GitClientApp {
             self.tab_rects.push((*screen, trect));
             tx += w + 6.0;
         }
-
-        // Settings cluster on the far right: diff layout toggle + flags.
-        self.draw_settings_cluster(scene, tr, t, theme, bar, settings_w);
     }
 
     fn draw_settings_cluster(
@@ -1178,76 +1231,8 @@ impl GitClientApp {
         let staged = self.selected_is_staged();
 
         if let Some((old_path, path, adds, dels)) = info {
-            let title = match &old_path {
-                Some(old) => format!("{old}  →  {path}"),
-                None => path,
-            };
-            let summary = format!("+{adds}  −{dels}");
-            let aw = f64::from(draw::mono_width(tr, &summary, 12.0));
-            draw::mono(
-                scene,
-                tr,
-                t,
-                &summary,
-                12.0,
-                c.text_dim,
-                header.x1 - aw - 16.0,
-                header.y0 + 10.0,
-            );
-
-            // Discard-file affordance on the worktree (unstaged / untracked)
-            // side of a real repo. Two-click armed: shows "Discard file?" when
-            // armed, filled danger.
-            let mut title_max = (header.width() - 160.0) as f32;
-            let can_discard = self.repo_path.is_some() && !staged && self.selected_change.is_some();
-            if can_discard {
-                let armed = self.armed_discard == Some(DiscardTarget::File);
-                let label = if armed {
-                    "Discard file?"
-                } else {
-                    "Discard file"
-                };
-                let lw = f64::from(tr.measure_weighted(label, 11.5, None, TextWeight::Medium).0);
-                let bw = lw + 20.0;
-                let bx = header.x1 - aw - 16.0 - 12.0 - bw;
-                let brect = Rect::new(bx, header.y0 + 6.0, bx + bw, header.y1 - 6.0);
-                let bg = if armed {
-                    c.semantic.danger
-                } else {
-                    c.surface_white_10
-                };
-                let fg = if armed {
-                    Color::WHITE
-                } else {
-                    c.semantic.danger
-                };
-                draw::fill_round(scene, t, brect, 6.0, bg);
-                draw::text_weighted(
-                    scene,
-                    tr,
-                    t,
-                    label,
-                    11.5,
-                    fg,
-                    bx + 10.0,
-                    header.y0 + 10.0,
-                    None,
-                    TextWeight::Medium,
-                );
-                self.discard_file_rect = brect;
-                title_max = (bx - header.x0 - 24.0).max(40.0) as f32;
-            }
-            draw::text_weighted(
-                scene,
-                tr,
-                t,
-                &title,
-                13.0,
-                c.text_primary,
-                header.x0 + 16.0,
-                header.y0 + 9.0,
-                Some(title_max),
-                TextWeight::Medium,
+            self.draw_diff_header_file(
+                scene, tr, t, theme, header, old_path, path, adds, dels, staged,
             );
         } else {
             draw::text(
@@ -1263,6 +1248,136 @@ impl GitClientApp {
             );
         }
 
+        self.draw_diff_body(scene, tr, t, theme, pane, header, key, staged);
+    }
+
+    /// Draw the diff-pane header for the selected file: title, +/− summary,
+    /// and (on the worktree side of a real repo) the two-click "Discard
+    /// file" affordance.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_diff_header_file(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        header: Rect,
+        old_path: Option<String>,
+        path: String,
+        adds: u32,
+        dels: u32,
+        staged: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        let title = match &old_path {
+            Some(old) => format!("{old}  →  {path}"),
+            None => path,
+        };
+        let summary = format!("+{adds}  −{dels}");
+        let aw = f64::from(draw::mono_width(tr, &summary, 12.0));
+        draw::mono(
+            scene,
+            tr,
+            t,
+            &summary,
+            12.0,
+            c.text_dim,
+            header.x1 - aw - 16.0,
+            header.y0 + 10.0,
+        );
+
+        // Discard-file affordance on the worktree (unstaged / untracked)
+        // side of a real repo. Two-click armed: shows "Discard file?" when
+        // armed, filled danger.
+        let mut title_max = (header.width() - 160.0) as f32;
+        let can_discard = self.repo_path.is_some() && !staged && self.selected_change.is_some();
+        if can_discard {
+            title_max = self.draw_discard_file_button(scene, tr, t, theme, header, aw);
+        }
+        draw::text_weighted(
+            scene,
+            tr,
+            t,
+            &title,
+            13.0,
+            c.text_primary,
+            header.x0 + 16.0,
+            header.y0 + 9.0,
+            Some(title_max),
+            TextWeight::Medium,
+        );
+    }
+
+    /// Draw the "Discard file" / (armed) "Discard file?" button and return
+    /// the title's clamped max width now that the button occupies space.
+    fn draw_discard_file_button(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        header: Rect,
+        summary_w: f64,
+    ) -> f32 {
+        let c = &theme.tokens.colors;
+        let armed = self.armed_discard == Some(DiscardTarget::File);
+        let label = if armed {
+            "Discard file?"
+        } else {
+            "Discard file"
+        };
+        let lw = f64::from(tr.measure_weighted(label, 11.5, None, TextWeight::Medium).0);
+        let bw = lw + 20.0;
+        let bx = header.x1 - summary_w - 16.0 - 12.0 - bw;
+        let brect = Rect::new(bx, header.y0 + 6.0, bx + bw, header.y1 - 6.0);
+        let bg = if armed {
+            c.semantic.danger
+        } else {
+            c.surface_white_10
+        };
+        let fg = if armed {
+            Color::WHITE
+        } else {
+            c.semantic.danger
+        };
+        draw::fill_round(scene, t, brect, 6.0, bg);
+        draw::text_weighted(
+            scene,
+            tr,
+            t,
+            label,
+            11.5,
+            fg,
+            bx + 10.0,
+            header.y0 + 10.0,
+            None,
+            TextWeight::Medium,
+        );
+        self.discard_file_rect = brect;
+        (bx - header.x0 - 24.0).max(40.0) as f32
+    }
+
+    /// Draw the diff body below the header: the hunk view for the selected
+    /// file, or an empty pane when nothing is selected.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_diff_body(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        pane: Rect,
+        header: Rect,
+        key: Option<DiffKey>,
+        staged: bool,
+    ) {
+        let c = &theme.tokens.colors;
         let viewport = Rect::new(pane.x0, header.y1, pane.x1, pane.y1);
         let armed_hunk = match self.armed_discard {
             Some(DiscardTarget::Hunk(h)) => Some(h),
@@ -1508,6 +1623,23 @@ impl GitClientApp {
         let cx = self.rect.x0 + (self.rect.width() - cw) / 2.0;
         let cy = self.rect.y0 + (self.rect.height() * 0.30).max(80.0);
 
+        let y = self.draw_open_intro(scene, tr, t, theme, cx, cw, cy);
+        self.draw_open_path_field(scene, tr, t, theme, presence, cx, cw, y);
+    }
+
+    /// Draw the branch-glyph mark, title and subtitle above the path field.
+    /// Returns the y position the path field should start at.
+    fn draw_open_intro(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        cx: f64,
+        cw: f64,
+        cy: f64,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
         // Branch glyph mark.
         let mark = Rect::new(cx + cw / 2.0 - 22.0, cy, cx + cw / 2.0 + 22.0, cy + 44.0);
         draw::fill_round(scene, t, mark, 12.0, c.accent[2]);
@@ -1554,8 +1686,27 @@ impl GitClientApp {
             y,
             Some(cw as f32),
         );
-        y += 40.0;
+        y + 40.0
+    }
 
+    /// Draw the repository path field, Open button, and any open error
+    /// below the intro block drawn by [`Self::draw_open_intro`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn draw_open_path_field(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        cx: f64,
+        cw: f64,
+        mut y: f64,
+    ) {
+        let c = &theme.tokens.colors;
         // Path field + Open button.
         let btn_w = 92.0;
         let gap = 10.0;
@@ -1744,7 +1895,7 @@ impl GitClientApp {
         if let (Some(path), Some(file)) = (self.repo(), self.current_path()) {
             let unstage = area == ChangeArea::Staged;
             // Map the displayed line's hunk to the Nth diff hunk for the file.
-            let local = self.local_hunk_index(&file, hunk);
+            let local = Self::local_hunk_index(&file, hunk);
             let res = crate::repo::apply_hunk(&path, &file, local, unstage);
             self.run_action(res);
             return;
@@ -1760,7 +1911,7 @@ impl GitClientApp {
     /// parsed `DiffLine.hunk` is already a 0-based index into the file's
     /// `DiffHunk` list, so it maps directly; this helper exists so the
     /// mapping is named and testable if the parser's convention shifts.
-    fn local_hunk_index(&self, file: &str, hunk: usize) -> usize {
+    fn local_hunk_index(file: &str, hunk: usize) -> usize {
         // `hunk` indexes `FileDiff.hunks`; libgit2's hunk callback walks the
         // same hunks in the same order, so they're 1:1.
         let _ = file;
@@ -1916,6 +2067,15 @@ impl Widget for GitClientApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The app draws itself; a single full-size leaf node carries it.
+        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
+        // cannot actually return `Err` for a fresh leaf (see the
+        // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
+        // `Widget::build_layout` returns a bare `NodeId` across every
+        // implementor, so there is nowhere to surface a theoretical error.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: taffy::Size {
@@ -1930,7 +2090,9 @@ impl Widget for GitClientApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        // Real fallback rather than a panic if `node` somehow doesn't
+        // belong to this tree, matching every `ui` widget's `apply_layout`.
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -2010,21 +2172,21 @@ impl Widget for GitClientApp {
                     }
                 }
                 // Keep an in-flight text-selection drag updating.
-                self.forward_to_inputs(event, scale_factor, modifiers, state, path, taffy);
+                self.forward_to_inputs(event, scale_factor, *modifiers, state, path, taffy);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_press(event, scale_factor, modifiers, state, path, taffy);
+                self.handle_press(event, scale_factor, *modifiers, state, path, taffy);
                 *handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 ..
             } => {
-                self.forward_to_inputs(event, scale_factor, modifiers, state, path, taffy);
+                self.forward_to_inputs(event, scale_factor, *modifiers, state, path, taffy);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -2035,7 +2197,7 @@ impl Widget for GitClientApp {
                 *handled = true;
             }
             WindowEvent::KeyboardInput { .. } => {
-                self.handle_key(event, modifiers, state, path, taffy, handled);
+                self.handle_key(event, *modifiers, state, path, taffy, handled);
             }
             _ => {}
         }
@@ -2092,7 +2254,7 @@ impl GitClientApp {
         input: &mut TextInput,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         taffy: &TaffyTree<()>,
@@ -2102,7 +2264,7 @@ impl GitClientApp {
         input.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             &mut handled,
@@ -2119,7 +2281,7 @@ impl GitClientApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         taffy: &TaffyTree<()>,
@@ -2160,7 +2322,7 @@ impl GitClientApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         taffy: &TaffyTree<()>,
@@ -2233,7 +2395,7 @@ impl GitClientApp {
     fn handle_key(
         &mut self,
         event: &WindowEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         taffy: &TaffyTree<()>,
