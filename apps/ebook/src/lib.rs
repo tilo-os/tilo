@@ -51,6 +51,7 @@ pub mod paginate;
 pub mod paint;
 mod reader_bubble;
 pub mod reader_theme;
+mod reading_settings;
 pub mod search_provider;
 mod shelf_controls;
 pub mod xhtml;

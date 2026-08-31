@@ -54,6 +54,7 @@ pub mod net;
 mod offline_panel;
 pub mod rank;
 pub mod sample;
+mod search_box;
 pub mod tiles;
 pub mod traffic;
 
