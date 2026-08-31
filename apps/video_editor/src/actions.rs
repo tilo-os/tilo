@@ -40,8 +40,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ParamType, Resource, ResourceProvider,
 };
 
 use crate::doc::VideoDoc;
@@ -849,14 +849,27 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 ("set-saturation", "Set saturation", FilterAxis::Saturation),
             ] {
                 let base = clip.clone();
-                cr = cr.with_action(ActionSpec::prompted(
+                // Typed rather than prompted: `parse_unit` answered 0.5 for
+                // anything it could not read, so `set-brightness banana`
+                // silently made a real, plausible-looking edit instead of
+                // being refused. A `Number` parameter is checked before the
+                // document is touched, and a caller can *read* the type
+                // rather than parse "Value 0–1" out of a placeholder.
+                cr = cr.with_action(ActionSpec::typed(
                     id,
                     label,
-                    "Value 0–1",
                     "0.5",
                     ExecutionLocus::ClientLocal,
-                    move |arg: &str| {
-                        let v = parse_unit(arg);
+                    vec![ActionParam::required(
+                        "value",
+                        ParamType::Number,
+                        "0 to 1; 0.5 leaves the picture as shot",
+                    )],
+                    move |args: &ActionArgs| {
+                        // Out of range is clamped rather than refused: 1.4 is
+                        // a legible intent ("as bright as it goes"), unlike a
+                        // word, which now never reaches here.
+                        let v = args.number("value").unwrap_or(0.5).clamp(0.0, 1.0);
                         let mut next = base.clone();
                         match field {
                             FilterAxis::Brightness => next.filters.brightness = v,
@@ -1988,6 +2001,55 @@ mod tests {
             from_spec.payload, from_builder.payload,
             "slider folds into one clip write"
         );
+    }
+
+    /// A grade action declares a number, and a word is refused before the
+    /// document is touched.
+    ///
+    /// This used to be a free-text prompt parsed by `parse_unit`, which
+    /// answered `0.5` for anything it could not read. So `set-brightness
+    /// banana` did not fail — it made a real edit, to a plausible value, and
+    /// reported success. A caller had no way to learn the type either: "Value
+    /// 0–1" was prose in a placeholder. Declaring the parameter makes the type
+    /// readable and makes a bad value an error rather than an edit.
+    #[test]
+    fn a_word_is_refused_where_the_grade_declares_a_number() {
+        use qos_actions::params::ArgValue;
+
+        let (app, doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        let clip_res = resources[0]
+            .children
+            .iter()
+            .flat_map(|t| t.children.iter())
+            .find(|c| c.kind == "video.clip")
+            .unwrap();
+        let spec = clip_res
+            .actions
+            .iter()
+            .find(|a| a.id == "set-brightness")
+            .unwrap();
+
+        // The type is published, not described in prose.
+        assert_eq!(spec.params().len(), 1, "one declared parameter");
+        assert_eq!(spec.params()[0].name.as_ref(), "value");
+        assert_eq!(spec.params()[0].ty, ParamType::Number);
+
+        let refused = ActionArgs::bind(
+            &spec.params(),
+            [("value".to_string(), ArgValue::Text("banana".into()))],
+        );
+        assert!(
+            refused.is_err(),
+            "a word bound to a number-typed parameter must be refused, not read as 0.5",
+        );
+
+        let bound = ActionArgs::bind(
+            &spec.params(),
+            [("value".to_string(), ArgValue::Number(0.8))],
+        )
+        .expect("a number binds");
+        assert_eq!(bound.number("value"), Some(0.8));
     }
 
     /// The Ctrl+K "Add effect" prompt appends the named effect to the clip's
