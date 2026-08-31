@@ -104,6 +104,13 @@ pub enum RevocationError {
 
 /// Sign a revocation entry with the user root signing key. Fills
 /// `signature` in place.
+///
+/// # Errors
+///
+/// Returns [`RevocationError::BadSignature`] if `entry.user_public_key`
+/// does not match the public key derived from `root_signing_key`, or
+/// [`RevocationError::Canonical`] if the entry cannot be canonically
+/// encoded (effectively unreachable).
 pub fn sign_revocation_entry(
     entry: &mut RevocationEntry,
     root_signing_key: &ed25519_dalek::SigningKey,
@@ -119,6 +126,12 @@ pub fn sign_revocation_entry(
 }
 
 /// Verify a revocation entry's signature.
+///
+/// # Errors
+///
+/// Returns [`RevocationError::InvalidUserPublicKey`] if
+/// `entry.user_public_key` is not a valid Ed25519 point, or
+/// [`RevocationError::BadSignature`] if the signature does not verify.
 pub fn verify_revocation_entry(entry: &RevocationEntry) -> Result<(), RevocationError> {
     let vk = ed25519_dalek::VerifyingKey::from_bytes(&entry.user_public_key)
         .map_err(|_| RevocationError::InvalidUserPublicKey)?;
@@ -154,6 +167,11 @@ impl RevocationList {
     ///
     /// Wrong-user signatures return `Err(BadSignature)` — callers
     /// should log + drop, not propagate.
+    ///
+    /// # Errors
+    ///
+    /// Returns anything [`verify_revocation_entry`] can return if
+    /// `entry`'s signature does not verify.
     pub fn insert(&mut self, entry: RevocationEntry) -> Result<bool, RevocationError> {
         verify_revocation_entry(&entry)?;
         let key = entry.revoked_device_public_key;

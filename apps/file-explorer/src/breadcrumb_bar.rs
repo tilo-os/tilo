@@ -193,7 +193,9 @@ impl BreadcrumbBar {
         };
 
         // The root label always shows (no chevron — it pairs with the icon).
-        let (root_label, root_path) = self.segments[0].clone();
+        let Some((root_label, root_path)) = self.segments.first().cloned() else {
+            return;
+        };
         push_text(
             &mut self.laid,
             &mut x,
@@ -207,7 +209,10 @@ impl BreadcrumbBar {
         // Components below the root, chevron-joined. Tail-priority collapse:
         // when the trail can't fit, fold leading components into a single `…`
         // so the deepest (most relevant) components stay on screen.
-        let comps: Vec<(usize, String, f64)> = self.segments[1..]
+        let comps: Vec<(usize, String, f64)> = self
+            .segments
+            .get(1..)
+            .unwrap_or(&[])
             .iter()
             .enumerate()
             .map(|(i, (label, _))| {
@@ -241,7 +246,9 @@ impl BreadcrumbBar {
             push_text(&mut self.laid, &mut x, tr, ELLIPSIS, None, false, true);
         }
         for idx in show {
-            let (label, target) = self.segments[idx].clone();
+            let Some((label, target)) = self.segments.get(idx).cloned() else {
+                continue;
+            };
             push_text(
                 &mut self.laid,
                 &mut x,
@@ -264,6 +271,12 @@ impl Widget for BreadcrumbBar {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` only fails on tree-internal bookkeeping errors, never on
+        // caller input; there is none to report here.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "new_leaf cannot fail for a freshly built style"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -279,6 +292,12 @@ impl Widget for BreadcrumbBar {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `node` was created by `build_layout` in this same tree, so a
+        // lookup miss would mean the frame cycle called these out of order.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
+        )]
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),

@@ -18,7 +18,7 @@
 //! piece and plugs in against the upstream API when it ships.
 
 use std::io::{Cursor, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Inventory record for one unpacked extension.
 #[derive(Debug, Clone, PartialEq)]
@@ -70,16 +70,28 @@ pub fn extensions_dir() -> PathBuf {
 
 /// Download and install an extension package from a web-store URL
 /// (AMO serves `.xpi`, the Chrome store `.crx`).
+///
+/// # Errors
+///
+/// Returns [`ExtensionError::Download`] if the URL can't be fetched or
+/// responds with an error status, or any error [`install_from_bytes`] can
+/// return for the downloaded package.
 pub fn install_from_url(url: &str) -> Result<ExtensionInfo, ExtensionError> {
     let bytes = reqwest::blocking::get(url)
         .and_then(reqwest::blocking::Response::error_for_status)
         .and_then(reqwest::blocking::Response::bytes)
         .map_err(|e| ExtensionError::Download(e.to_string()))?;
-    install_from_bytes(&bytes, extensions_dir())
+    install_from_bytes(&bytes, &extensions_dir())
 }
 
 /// Unpack an extension archive into `root` and inventory it.
-pub fn install_from_bytes(archive: &[u8], root: PathBuf) -> Result<ExtensionInfo, ExtensionError> {
+///
+/// # Errors
+///
+/// Returns [`ExtensionError::Archive`] if `archive` isn't a valid CRX/zip
+/// package, [`ExtensionError::Manifest`] if it has no valid `manifest.json`,
+/// or [`ExtensionError::Io`] if unpacking it under `root` fails.
+pub fn install_from_bytes(archive: &[u8], root: &Path) -> Result<ExtensionInfo, ExtensionError> {
     let zip_bytes = strip_crx_header(archive)?;
     let mut zip = zip::ZipArchive::new(Cursor::new(zip_bytes))
         .map_err(|e| ExtensionError::Archive(e.to_string()))?;
@@ -109,11 +121,11 @@ pub fn install_from_bytes(archive: &[u8], root: PathBuf) -> Result<ExtensionInfo
 
 /// All extensions currently unpacked under [`extensions_dir`].
 pub fn list_installed() -> Vec<ExtensionInfo> {
-    list_in(extensions_dir())
+    list_in(&extensions_dir())
 }
 
-fn list_in(root: PathBuf) -> Vec<ExtensionInfo> {
-    let Ok(entries) = std::fs::read_dir(&root) else {
+fn list_in(root: &Path) -> Vec<ExtensionInfo> {
+    let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
     let mut found: Vec<ExtensionInfo> = entries
@@ -139,7 +151,8 @@ fn strip_crx_header(bytes: &[u8]) -> Result<&[u8], ExtensionError> {
     let word = |at: usize| -> Result<u32, ExtensionError> {
         bytes
             .get(at..at + 4)
-            .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+            .and_then(|s| <[u8; 4]>::try_from(s).ok())
+            .map(u32::from_le_bytes)
             .ok_or_else(|| ExtensionError::Archive("truncated CRX header".into()))
     };
     let version = word(4)?;
@@ -167,21 +180,28 @@ fn strip_crx_header(bytes: &[u8]) -> Result<&[u8], ExtensionError> {
 fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| ExtensionError::Manifest(e.to_string()))?;
-    let name = value["name"]
-        .as_str()
+    let name = value
+        .get("name")
+        .and_then(serde_json::Value::as_str)
         .ok_or_else(|| ExtensionError::Manifest("manifest has no name".into()))?
         .to_string();
-    let version = value["version"]
-        .as_str()
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
         .ok_or_else(|| ExtensionError::Manifest("manifest has no version".into()))?
         .to_string();
-    let manifest_version = value["manifest_version"].as_u64().unwrap_or(2);
-    let description = value["description"]
-        .as_str()
+    let manifest_version = value
+        .get("manifest_version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(2);
+    let description = value
+        .get("description")
+        .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let permissions = value["permissions"]
-        .as_array()
+    let permissions = value
+        .get("permissions")
+        .and_then(serde_json::Value::as_array)
         .map(|a| {
             a.iter()
                 .filter_map(|p| p.as_str().map(str::to_string))
@@ -189,9 +209,14 @@ fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
         })
         .unwrap_or_default();
     // Firefox packages carry a stable add-on id.
-    let gecko_id = value["browser_specific_settings"]["gecko"]["id"]
-        .as_str()
-        .or_else(|| value["applications"]["gecko"]["id"].as_str());
+    let nested_id = |top: &str| {
+        value
+            .get(top)
+            .and_then(|v| v.get("gecko"))
+            .and_then(|v| v.get("id"))
+            .and_then(serde_json::Value::as_str)
+    };
+    let gecko_id = nested_id("browser_specific_settings").or_else(|| nested_id("applications"));
     let id = gecko_id.map_or_else(|| slug(&name), str::to_string);
 
     Ok(ExtensionInfo {
@@ -236,7 +261,7 @@ mod tests {
         let mut buf = Cursor::new(Vec::new());
         {
             let mut zip = zip::ZipWriter::new(&mut buf);
-            let opts: zip::write::SimpleFileOptions = Default::default();
+            let opts = zip::write::SimpleFileOptions::default();
             zip.start_file("manifest.json", opts).unwrap();
             zip.write_all(MANIFEST.as_bytes()).unwrap();
             zip.start_file("background.js", opts).unwrap();
@@ -249,7 +274,7 @@ mod tests {
     #[test]
     fn installs_xpi_and_reads_manifest() {
         let root = tempfile::tempdir().unwrap();
-        let info = install_from_bytes(&fixture_zip(), root.path().to_path_buf()).unwrap();
+        let info = install_from_bytes(&fixture_zip(), root.path()).unwrap();
         assert_eq!(info.id, "addon@darkreader.org");
         assert_eq!(info.name, "Dark Reader");
         assert_eq!(info.manifest_version, 2);
@@ -269,15 +294,15 @@ mod tests {
         crx.extend_from_slice(&zip_data);
 
         let root = tempfile::tempdir().unwrap();
-        let info = install_from_bytes(&crx, root.path().to_path_buf()).unwrap();
+        let info = install_from_bytes(&crx, root.path()).unwrap();
         assert_eq!(info.name, "Dark Reader");
     }
 
     #[test]
     fn lists_installed_extensions() {
         let root = tempfile::tempdir().unwrap();
-        install_from_bytes(&fixture_zip(), root.path().to_path_buf()).unwrap();
-        let listed = list_in(root.path().to_path_buf());
+        install_from_bytes(&fixture_zip(), root.path()).unwrap();
+        let listed = list_in(root.path());
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "Dark Reader");
     }
@@ -287,14 +312,14 @@ mod tests {
         let mut buf = Cursor::new(Vec::new());
         {
             let mut zip = zip::ZipWriter::new(&mut buf);
-            let opts: zip::write::SimpleFileOptions = Default::default();
+            let opts = zip::write::SimpleFileOptions::default();
             zip.start_file("readme.txt", opts).unwrap();
             zip.write_all(b"hi").unwrap();
             zip.finish().unwrap();
         }
         let root = tempfile::tempdir().unwrap();
         assert!(matches!(
-            install_from_bytes(&buf.into_inner(), root.path().to_path_buf()),
+            install_from_bytes(&buf.into_inner(), root.path()),
             Err(ExtensionError::Manifest(_))
         ));
     }

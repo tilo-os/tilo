@@ -33,6 +33,11 @@ pub struct FsBlobStore {
 
 impl FsBlobStore {
     /// Create / open a store rooted at `root`; the `store/` subdirectory is created lazily on first `put`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `root` cannot be created (permission denied, or a
+    /// non-directory already occupies the path).
     pub fn new(root: PathBuf) -> io::Result<Self> {
         fs::create_dir_all(&root)?;
         Ok(Self { root })
@@ -44,6 +49,11 @@ impl FsBlobStore {
 
     /// Sum the byte length of every blob in the store. Linear in blob
     /// count; fine for v0 — a future cache could keep a running total.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store directory cannot be read, or if
+    /// reading an entry's metadata fails.
     pub fn total_bytes(&self) -> io::Result<u64> {
         let mut total = 0u64;
         if !self.root.exists() {
@@ -116,6 +126,12 @@ pub enum StoreError {
 
 impl Store {
     /// Open / create a store rooted at `root`, creating every required subdirectory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `store/` or `payloads/` subdirectories
+    /// cannot be created, if the on-disk registry cannot be loaded, or if
+    /// the blob store cannot be opened.
     pub fn open(root: &Path) -> Result<Self, StoreError> {
         fs::create_dir_all(root.join("store"))?;
         fs::create_dir_all(root.join("payloads"))?;
@@ -146,6 +162,10 @@ impl Store {
     }
 
     /// Resolve a single id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Unknown`] if `id` is not present in the registry.
     pub fn resolve(&self, id: PackageId) -> Result<RegistryEntry, StoreError> {
         let inner = self.inner.lock();
         inner
@@ -156,37 +176,62 @@ impl Store {
     }
 
     /// Flip Tried → Pinned (idempotent).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Unknown`] if `id` is not present in the
+    /// registry, or an error if persisting the updated registry fails.
     pub fn pin(&self, id: PackageId) -> Result<(), StoreError> {
         let mut inner = self.inner.lock();
         if !inner.registry.set_pinning(&id, Pinning::Pinned) {
             return Err(StoreError::Unknown(id));
         }
         inner.persist_registry()?;
+        drop(inner);
         Ok(())
     }
 
     /// Flip Pinned → Tried (idempotent).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Unknown`] if `id` is not present in the
+    /// registry, or an error if persisting the updated registry fails.
     pub fn unpin(&self, id: PackageId) -> Result<(), StoreError> {
         let mut inner = self.inner.lock();
         if !inner.registry.set_pinning(&id, Pinning::Tried) {
             return Err(StoreError::Unknown(id));
         }
         inner.persist_registry()?;
+        drop(inner);
         Ok(())
     }
 
     /// LRU touch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Unknown`] if `id` is not present in the
+    /// registry, or an error if persisting the updated registry fails.
     pub fn mark_used(&self, id: PackageId) -> Result<(), StoreError> {
         let mut inner = self.inner.lock();
         if !inner.registry.touch(&id) {
             return Err(StoreError::Unknown(id));
         }
         inner.persist_registry()?;
+        drop(inner);
         Ok(())
     }
 
     /// Remove a Tried package: drop the registry entry, the payload tree,
     /// and any blobs unique to it. Refuses to remove Pinned packages.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Unknown`] if `id` is not present in the
+    /// registry, [`StoreError::PinnedRemove`] if the package is currently
+    /// pinned, or an error if persisting the registry or removing the
+    /// payload tree fails.
     pub fn remove(&self, id: PackageId) -> Result<u64, StoreError> {
         let mut inner = self.inner.lock();
         let Some(entry) = inner.registry.get(&id).cloned() else {
@@ -199,14 +244,20 @@ impl Store {
         inner.registry.remove(&id);
         inner.persist_registry()?;
         let freed = inner.gc_after_remove(&id, &entry)?;
+        drop(inner);
         Ok(freed)
     }
 
     /// Insert an entry directly; used by the install flow after the qpkg has been parsed + the payload extracted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if persisting the updated registry fails.
     pub fn put_entry(&self, entry: RegistryEntry) -> Result<(), StoreError> {
         let mut inner = self.inner.lock();
         inner.registry.insert(entry);
         inner.persist_registry()?;
+        drop(inner);
         Ok(())
     }
 
@@ -218,6 +269,10 @@ impl Store {
     }
 
     /// (`total_bytes`, `by_pinning`) reported from on-disk reality: blob-store occupancy + payload-tree occupancy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the blob store's total size cannot be read.
     pub fn disk_usage(&self) -> Result<DiskUsage, StoreError> {
         let inner = self.inner.lock();
         let payloads_root = inner.root.join("payloads");
@@ -226,8 +281,10 @@ impl Store {
         for entry in inner.registry.entries() {
             let pl = payloads_root.join(entry.id.to_hex());
             let size = dir_size(&pl).unwrap_or(0);
-            *by_pinning.entry(entry.pinning).or_default() += size;
+            let counter = by_pinning.entry(entry.pinning).or_default();
+            *counter = counter.saturating_add(size);
         }
+        drop(inner);
         let pinned_bytes = by_pinning.get(&Pinning::Pinned).copied().unwrap_or(0);
         let tried_bytes = by_pinning.get(&Pinning::Tried).copied().unwrap_or(0);
         // Blobs are content-addressed and shared across packages, so we
@@ -243,6 +300,10 @@ impl Store {
     }
 
     /// Total store-only bytes (blob-store + every payload tree); used by the GC heuristic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Store::disk_usage`] fails.
     pub fn total_bytes_for_gc(&self) -> Result<u64, StoreError> {
         let u = self.disk_usage()?;
         Ok(u.total_bytes)
@@ -271,11 +332,7 @@ impl Inner {
     /// Remove the payload tree, then (for v0) leave blob-layer sweeping
     /// to a later full sweep rather than re-deriving the live blob set
     /// from remaining entries. Returns the bytes freed from the payload tree.
-    fn gc_after_remove(
-        &mut self,
-        id: &PackageId,
-        _entry: &RegistryEntry,
-    ) -> Result<u64, StoreError> {
+    fn gc_after_remove(&self, id: &PackageId, _entry: &RegistryEntry) -> Result<u64, StoreError> {
         let payload_dir = self.root.join("payloads").join(id.to_hex());
         let freed = dir_size(&payload_dir).unwrap_or(0);
         if payload_dir.exists() {

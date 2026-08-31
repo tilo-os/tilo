@@ -1079,10 +1079,7 @@ impl TextRenderer {
         let mut lines = Vec::new();
         let mut start = 0usize;
         while start < text.len() {
-            loop {
-                let Some(character) = text.get(start..).and_then(|rest| rest.chars().next()) else {
-                    break;
-                };
+            while let Some(character) = text.get(start..).and_then(|rest| rest.chars().next()) {
                 if !collapsible_edge(character) {
                     break;
                 }
@@ -1987,6 +1984,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "buckets glyph y-positions into small row indices for a three-line test layout; round() already yields an integer-valued f32 far below i32::MAX"
+    )]
     fn measure_and_draw_use_dictionary_breaks_for_thai() {
         let mut tr = TextRenderer::new();
         let style = TextStyle::new(18.0);

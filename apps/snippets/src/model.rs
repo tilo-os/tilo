@@ -185,16 +185,19 @@ pub fn placeholders_in(body: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;
     while i + 1 < bytes.len() {
-        if bytes[i] == b'$' && bytes[i + 1] == b'{' {
-            // Find the closing brace.
-            if let Some(rel) = body[i + 2..].find('}') {
-                let name = body[i + 2..i + 2 + rel].trim().to_string();
-                if !name.is_empty() && !out.contains(&name) {
-                    out.push(name);
-                }
-                i = i + 2 + rel + 1;
-                continue;
+        // Find the closing brace.
+        if bytes.get(i).copied() == Some(b'$')
+            && bytes.get(i + 1).copied() == Some(b'{')
+            && let Some(rest) = body.get(i + 2..)
+            && let Some(rel) = rest.find('}')
+            && let Some(name) = body.get(i + 2..i + 2 + rel)
+        {
+            let name = name.trim().to_string();
+            if !name.is_empty() && !out.contains(&name) {
+                out.push(name);
             }
+            i = i + 2 + rel + 1;
+            continue;
         }
         i += 1;
     }
@@ -205,27 +208,44 @@ pub fn placeholders_in(body: &str) -> Vec<String> {
 /// from `values`. A placeholder with no value — either absent from the
 /// map or mapped to an empty string — is left untouched so a partial fill
 /// stays legible and the preview keeps showing which slots remain.
-pub fn expand(body: &str, values: &std::collections::HashMap<String, String>) -> String {
-    let bytes = body.as_bytes();
+pub fn expand<S: std::hash::BuildHasher>(
+    body: &str,
+    values: &std::collections::HashMap<String, String, S>,
+) -> String {
     let mut out = String::with_capacity(body.len());
     let mut i = 0;
-    while i < bytes.len() {
-        if i + 1 < bytes.len()
-            && bytes[i] == b'$'
-            && bytes[i + 1] == b'{'
-            && let Some(rel) = body[i + 2..].find('}')
+    while let Some(rest) = body.get(i..) {
+        let Some(c) = rest.chars().next() else {
+            break;
+        };
+        let c_len = c.len_utf8();
+        if c == '$'
+            && let Some(after_dollar) = body.get(i + c_len..)
+            && after_dollar.starts_with('{')
+            && let Some(rel) = after_dollar.get(1..).and_then(|r| r.find('}'))
         {
-            let name = body[i + 2..i + 2 + rel].trim();
-            match values.get(name) {
-                Some(v) if !v.is_empty() => out.push_str(v),
-                // Absent or empty: keep the placeholder visible.
-                _ => out.push_str(&body[i..=(i + 2 + rel)]),
+            let brace_start = i + c_len + 1;
+            let end = brace_start + rel;
+            if let Some(name) = body.get(brace_start..end) {
+                let name = name.trim();
+                match values.get(name) {
+                    Some(v) if !v.is_empty() => out.push_str(v),
+                    // Absent or empty: keep the placeholder visible.
+                    _ => {
+                        if let Some(slice) = body.get(i..=end) {
+                            out.push_str(slice);
+                        }
+                    }
+                }
             }
-            i = i + 2 + rel + 1;
+            i = end + 1;
             continue;
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        // Push the whole character, not its individual bytes — a raw
+        // `bytes[i] as char` here would mangle any multi-byte UTF-8
+        // character in the body into mojibake.
+        out.push(c);
+        i += c_len;
     }
     out
 }

@@ -87,7 +87,7 @@ impl Prefs {
             1500 => 2000,
             2000 => 3000,
             3000 => 5000,
-            5000 => 1000,
+            // 5000 falls back here too, alongside any off-grid value.
             _ => 1000,
         };
     }
@@ -110,10 +110,11 @@ mod tests {
     fn round_trip_through_doc() {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        let mut p = Prefs::default();
-        p.interval_ms = 3000;
-        p.show_kernel_threads = true;
-        p.confirm_kill = false;
+        let p = Prefs {
+            interval_ms: 3000,
+            show_kernel_threads: true,
+            confirm_kill: false,
+        };
         p.store(&mut doc, &root);
 
         let loaded = Prefs::load(&doc, &root);

@@ -124,7 +124,7 @@ pub fn admins_from_group(contents: &str) -> HashSet<String> {
         .lines()
         .filter_map(|line| {
             let f: Vec<&str> = line.split(':').collect();
-            if f.len() < 4 || !matches!(f.first(), Some(&"wheel") | Some(&"sudo")) {
+            if f.len() < 4 || !matches!(f.first(), Some(&("wheel" | "sudo"))) {
                 return None;
             }
             f.get(3).copied()

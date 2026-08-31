@@ -80,7 +80,7 @@ fn frame(
     table: &mut Table,
     doc: &mut AutoCommit,
     t: &ObjId,
-) -> (TaffyTree<()>, NodeId, (f64, f64)) {
+) -> Option<(TaffyTree<()>, NodeId, (f64, f64))> {
     table.sync(doc, t);
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -101,11 +101,12 @@ fn frame(
         },
     );
     if let Err(e) = layout_result {
-        panic!("layout failed: {e}");
+        eprintln!("table_shots: layout failed: {e}");
+        return None;
     }
     table.apply_layout(&taffy, node, Point::new(MARGIN, MARGIN));
     let r = table.get_rect();
-    (taffy, node, (r.width(), r.height()))
+    Some((taffy, node, (r.width(), r.height())))
 }
 
 fn dispatch(
@@ -180,7 +181,9 @@ pub fn run(_args: &[String]) {
     let mut table = Table::new("demo").with_header();
 
     // 1. base
-    let (taffy, node, size) = frame(&mut table, &mut doc, &t);
+    let Some((taffy, node, size)) = frame(&mut table, &mut doc, &t) else {
+        return;
+    };
     shoot(&mut table, size, &dir.join("table-base.png"));
 
     // Middle column boundary (between col 0 and col 1), in the top gutter.
@@ -214,7 +217,9 @@ pub fn run(_args: &[String]) {
         "middle click inserted a column"
     );
 
-    let (_taffy2, _node2, size2) = frame(&mut table, &mut doc, &t);
+    let Some((_taffy2, _node2, size2)) = frame(&mut table, &mut doc, &t) else {
+        return;
+    };
     shoot(&mut table, size2, &dir.join("table-after-insert.png"));
 
     // The freshly inserted middle column is empty; its neighbours are intact.

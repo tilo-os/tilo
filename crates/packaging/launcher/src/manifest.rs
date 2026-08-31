@@ -463,6 +463,12 @@ pub enum FsPolicyViolation {
 /// something plausible — that is how the original hole stayed
 /// invisible. A bypass for OS-shipped packages would make this a rule
 /// about strangers, not a boundary.
+///
+/// # Errors
+///
+/// Returns [`FsPolicyViolation::Write`] or [`FsPolicyViolation::Read`] if
+/// `manifest`'s `[sandbox.fs]` names any path at all — the vocabulary was
+/// removed; naming one is refused, not silently dropped.
 pub fn enforce_fs_policy(manifest: &MinimalManifest) -> Result<(), FsPolicyViolation> {
     // Writes first: a package asking for `/` is the more alarming of the
     // two and should be the line the user reads.
@@ -491,6 +497,12 @@ pub enum ServiceReq {
 }
 
 impl ServiceReq {
+    /// # Errors
+    ///
+    /// Returns [`ServiceReqParseError::MissingAt`] if `raw` has no `@`,
+    /// [`ServiceReqParseError::BadVersion`] if the part after `@` is not a
+    /// `u32`, or [`ServiceReqParseError::BadKind`] if the part before `@` is
+    /// not `required`/`optional`.
     pub fn parse(raw: &str) -> Result<ServiceReq, ServiceReqParseError> {
         let (kind, rest) = raw
             .split_once('@')
@@ -528,6 +540,11 @@ pub enum ServiceReqParseError {
 }
 
 /// Read + parse a manifest TOML file.
+///
+/// # Errors
+///
+/// Returns [`ManifestError::Io`] if `path` cannot be read, or
+/// [`ManifestError::Parse`] if its contents are not a valid manifest.
 pub fn read_manifest(path: &Path) -> Result<MinimalManifest, ManifestError> {
     let raw = std::fs::read_to_string(path).map_err(|e| ManifestError::Io {
         path: path.to_path_buf(),

@@ -137,8 +137,8 @@ pub fn text_center(
     y: f64,
 ) {
     let (w, _) = tr.measure(s, size, None);
-    let x = x0 + ((x1 - x0) - f64::from(w)) / 2.0;
-    tr.draw_text(scene, s, size, color, t * Affine::translate((x, y)), None);
+    let cx = x0 + ((x1 - x0) - f64::from(w)) / 2.0;
+    tr.draw_text(scene, s, size, color, t * Affine::translate((cx, y)), None);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -154,8 +154,8 @@ pub fn text_vc(
     y0: f64,
     h: f64,
 ) {
-    let y = y0 + (h - f64::from(size)) / 2.0;
-    tr.draw_text(scene, s, size, color, t * Affine::translate((x, y)), None);
+    let ty = y0 + (h - f64::from(size)) / 2.0;
+    tr.draw_text(scene, s, size, color, t * Affine::translate((x, ty)), None);
 }
 
 /// Draw a pill (rounded chip) with a centred label. Returns the pill width so
@@ -283,8 +283,11 @@ pub fn poly(
         return;
     }
     let mut p = BezPath::new();
-    p.move_to(pts[0]);
-    for pt in &pts[1..] {
+    let Some((&first, rest)) = pts.split_first() else {
+        return;
+    };
+    p.move_to(first);
+    for pt in rest {
         p.line_to(*pt);
     }
     if closed {

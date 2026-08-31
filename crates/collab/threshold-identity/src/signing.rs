@@ -99,6 +99,11 @@ pub struct SigningRound2Partial {
 /// Produce this device's round-1 commitment + private nonces. The
 /// commitment is broadcast; the nonces stay local and round 2 consumes
 /// them by value.
+///
+/// # Errors
+///
+/// Returns an error if the freshly-generated commitments cannot be
+/// serialized (effectively unreachable).
 pub fn sign_round1<R: CryptoRng + RngCore>(
     share: &SecretShare,
     rng: &mut R,
@@ -119,6 +124,22 @@ pub fn sign_round1<R: CryptoRng + RngCore>(
 /// raw bytes to sign (typically `collab_types::canonical_bytes` output);
 /// `commitments` must contain one for every signer in the quorum
 /// including this device — order doesn't matter.
+///
+/// # Errors
+///
+/// Returns an error if a commitment in `commitments` fails to
+/// deserialize, or if the underlying FROST round-2 signing operation
+/// fails (e.g. a malformed commitment set).
+// `nonces` is taken by value deliberately, not left over-eagerly:
+// `SigningSessionNonces` doesn't implement `Clone` specifically so a
+// single-use nonce can't be reused (FROST security requires this —
+// see the type's own doc comment). A `&SigningSessionNonces` parameter
+// would let a caller sign twice with the same nonce, which leaks the
+// signing key. Do not "fix" this into a reference.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "nonces must be consumed exactly once — taking ownership is how single-use is enforced at the type level"
+)]
 pub fn sign_round2(
     share: &SecretShare,
     nonces: SigningSessionNonces,
@@ -161,6 +182,15 @@ pub fn sign_round2(
 /// entries, all agreeing on the message, commitment set, and commitment
 /// bytes. Returns a 64-byte signature byte-compatible with
 /// `collab_types::verify_event` against `group_pk`.
+///
+/// # Errors
+///
+/// Returns [`ThresholdError::InsufficientPartials`] if `partials` has
+/// fewer than `threshold` entries (this also covers the pathological
+/// `threshold == 0` case, so an empty `partials` never reaches the
+/// aggregation step below), [`ThresholdError::DkgStateMisuse`] if the
+/// partials disagree on the signed message or commitment set, or a
+/// FROST deserialization/aggregation error for a malformed partial.
 pub fn aggregate_signature(
     group_pk: &Ed25519PublicKey,
     partials: &[SigningRound2Partial],
@@ -172,8 +202,13 @@ pub fn aggregate_signature(
             need: threshold as usize,
         });
     }
-    let first = partials.first().expect("just checked non-empty");
-    for other in &partials[1..] {
+    let Some(first) = partials.first() else {
+        return Err(ThresholdError::InsufficientPartials {
+            have: 0,
+            need: threshold as usize,
+        });
+    };
+    for other in partials.iter().skip(1) {
         if other.signed_message_bytes != first.signed_message_bytes
             || other.commitment_indices != first.commitment_indices
             || other.commitments_bytes != first.commitments_bytes
@@ -204,11 +239,11 @@ pub fn aggregate_signature(
         let vs = VerifyingShare::deserialize(&p.verifying_share_bytes)?;
         verifying_shares.insert(id, vs);
     }
-    let group_vk = frost_ed25519::VerifyingKey::deserialize(group_pk.as_bytes())?;
+    let verifying_key = frost_ed25519::VerifyingKey::deserialize(group_pk.as_bytes())?;
     // `min_signers` is `Option<u16>` in frost-core 3.x for backward
     // compatibility with older serialised PKPs; always pass
     // `Some(threshold)` since `aggregate`'s pre-checks consult it.
-    let pkp = PublicKeyPackage::new(verifying_shares, group_vk, Some(threshold));
+    let pkp = PublicKeyPackage::new(verifying_shares, verifying_key, Some(threshold));
 
     // Build the SignatureShare map.
     let mut shares = BTreeMap::new();
@@ -232,6 +267,12 @@ pub fn aggregate_signature(
 /// through `collab_types::verify_event` (ed25519-dalek) — this helper
 /// lets the crate's own tests assert FROST round-trip correctness before
 /// reaching the foreign Ed25519 implementation.
+///
+/// # Errors
+///
+/// Returns [`VerifyError::InvalidPublicKey`] if `group_pk` is not a
+/// valid Ed25519 point, or [`VerifyError::BadSignature`] if
+/// `signature` is malformed or does not verify against `message`.
 pub fn verify_threshold_signature(
     group_pk: &Ed25519PublicKey,
     message: &[u8],

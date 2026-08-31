@@ -173,8 +173,8 @@ impl Action for CalculatorAction {
                 doc.put(&row, "result", result.as_str())?;
                 // Cap from the tail so the newest [`HISTORY_CAP`] survive.
                 while doc.length(&list) > HISTORY_CAP {
-                    let last = doc.length(&list) - 1;
-                    doc.delete(&list, last)?;
+                    let tail_idx = doc.length(&list) - 1;
+                    doc.delete(&list, tail_idx)?;
                 }
             }
             CalculatorAction::DeleteHistoryEntry { index } => {
@@ -242,6 +242,19 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`CalculatorAction`] into the wire form the palette and the
 /// on-screen affordances both dispatch — the single point that turns a
 /// calculator action into a replayable envelope.
+///
+/// # Panics
+///
+/// Panics if `action` fails to serialize. `CalculatorAction`'s fields are
+/// plain `String`/`usize`/`GraphKind` data with a derived `Serialize` impl,
+/// so this is not reachable in practice.
+#[allow(
+    clippy::expect_used,
+    reason = "CalculatorAction always serializes (derived impl over plain \
+              data); returning Result here would ripple through every call \
+              site in app.rs and this module for an error path that can't \
+              occur"
+)]
 pub fn encode(action: &CalculatorAction) -> EncodedAction {
     EncodedAction::encode(CALCULATOR_ACTION_TYPE, action)
         .expect("CalculatorAction is always serializable")
@@ -340,6 +353,10 @@ fn graph_label(kind: GraphKind, f: &PlotFn) -> String {
     clip(&format!("{} = {}", kind.lhs(), rhs), 48)
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "mirrors encode()'s always-serializable invariant"
+)]
 fn immediate_spec(id: &str, label: &str, action: &CalculatorAction) -> ActionSpec {
     ActionSpec::immediate(id, label, CALCULATOR_ACTION_TYPE, action)
         .expect("encode calculator action")
@@ -495,14 +512,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 
@@ -660,11 +677,13 @@ mod tests {
         // Seed one history entry via the real `store` write path, then move it
         // into a host State so undo is the real host path.
         let mut seeded = AutoCommit::new();
-        let mut model = CalcModel::default();
-        model.history = vec![HistoryEntry {
-            expr: "1+1".into(),
-            result: "2".into(),
-        }];
+        let model = CalcModel {
+            history: vec![HistoryEntry {
+                expr: "1+1".into(),
+                result: "2".into(),
+            }],
+            ..CalcModel::default()
+        };
         crate::doc::store(&mut seeded, &model);
         let mut state = ui::State::new();
         state.doc = seeded;

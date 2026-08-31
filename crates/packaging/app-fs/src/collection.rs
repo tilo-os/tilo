@@ -54,8 +54,12 @@ impl Collection {
 
     /// Encode in the wire format described in the module docs.
     pub fn encode(&self) -> Vec<u8> {
-        let mut out =
-            Vec::with_capacity(MAGIC.len() + 4 + self.entries.len().saturating_mul(4 + 32));
+        let mut out = Vec::with_capacity(
+            MAGIC
+                .len()
+                .saturating_add(4)
+                .saturating_add(self.entries.len().saturating_mul(4 + 32)),
+        );
         out.extend_from_slice(MAGIC);
         let count = u32::try_from(self.entries.len()).unwrap_or(u32::MAX);
         out.extend_from_slice(&count.to_le_bytes());

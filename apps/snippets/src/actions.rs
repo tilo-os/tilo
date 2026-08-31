@@ -96,7 +96,7 @@ impl Action for SnippetsAction {
                 }
             }
             SnippetsAction::Rename { id, title } => {
-                Self::edit(doc, id, |s| s.title = title.clone());
+                Self::edit(doc, id, |s| s.title.clone_from(title));
             }
             SnippetsAction::SetLanguage { id, language } => {
                 let lang = Language::from_slug(language);
@@ -106,13 +106,13 @@ impl Action for SnippetsAction {
                 Self::edit(doc, id, |s| s.favorite = *favorite);
             }
             SnippetsAction::SetDescription { id, description } => {
-                Self::edit(doc, id, |s| s.description = description.clone());
+                Self::edit(doc, id, |s| s.description.clone_from(description));
             }
             SnippetsAction::SetFolder { id, folder } => {
-                Self::edit(doc, id, |s| s.folder = folder.clone());
+                Self::edit(doc, id, |s| s.folder.clone_from(folder));
             }
             SnippetsAction::SetTags { id, tags } => {
-                Self::edit(doc, id, |s| s.tags = tags.clone());
+                Self::edit(doc, id, |s| s.tags.clone_from(tags));
             }
             SnippetsAction::RecordUse { id } => {
                 Self::edit(doc, id, |s| s.uses = s.uses.saturating_add(1));
@@ -134,6 +134,15 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`SnippetsAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a Snippets action into
 /// a replayable envelope.
+///
+/// # Panics
+/// Never in practice: every field of [`SnippetsAction`] is a plain `String`,
+/// `bool` or `Vec<String>` (or a [`Snippet`], itself built from the same),
+/// all of which always serialize.
+#[allow(
+    clippy::expect_used,
+    reason = "SnippetsAction's fields are plain strings/bools/vecs, which always serialize — a failure here would mean serde itself is broken"
+)]
 pub fn encode(action: &SnippetsAction) -> EncodedAction {
     EncodedAction::encode(SNIPPETS_ACTION_TYPE, action)
         .expect("SnippetsAction is always serializable")
@@ -225,6 +234,10 @@ pub struct SnippetsResourceCtx {
     pub current_folder: String,
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "SnippetsAction's fields are plain strings/bools/vecs, which always serialize — a failure here would mean serde itself is broken"
+)]
 fn encode_spec(id: &str, label: &str, action: &SnippetsAction) -> ActionSpec {
     ActionSpec::immediate(id, label, SNIPPETS_ACTION_TYPE, action).expect("encode snippets action")
 }
@@ -364,14 +377,14 @@ mod tests {
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 

@@ -305,6 +305,11 @@ impl SigningIdentity {
 
     /// Build a fresh `SignedOp` envelope wrapping `payload`, bumping the
     /// internal seq so callers don't need to track sequence numbers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`collab_types::CanonicalError`] when `payload` fails to
+    /// canonicalize for signing.
     pub fn sign_op(
         &mut self,
         payload: Vec<u8>,
@@ -425,6 +430,11 @@ impl CollaborationManager {
     /// Connect to the launcher-inherited typed collaboration service and
     /// announce an explicit route. Headless participants use this instead of
     /// relying on process-wide `QUICK_APP_ID` / `QOS_WORKSPACE_ID` variables.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`runtime_portal::NotAvailable`] when the launcher did not
+    /// hand down a collab service connection.
     pub fn for_route(
         app_id: impl Into<String>,
         cluster_id: Uuid,
@@ -442,6 +452,11 @@ impl CollaborationManager {
 
     /// Explicit typed endpoint for diagnostics and headless harnesses that
     /// are not launched through the app launcher. Takes ownership of `fd`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`runtime_portal::NotAvailable`] when `fd` does not bootstrap
+    /// a working collab service connection.
     pub fn for_route_fd(
         fd: RawFd,
         app_id: impl Into<String>,
@@ -564,7 +579,7 @@ impl CollaborationManager {
     /// spawns onto.
     pub fn from_relay_session(
         session: qos_relay::RelayCoeditSession,
-        handle: tokio::runtime::Handle,
+        handle: &tokio::runtime::Handle,
     ) -> Self {
         let (outbound_tx, outbound_rx) = tokio_mpsc::unbounded_channel::<CollabRequest>();
         let (inbound_tx, inbound_rx) = tokio_mpsc::unbounded_channel::<CollabEvent>();
@@ -587,7 +602,7 @@ impl CollaborationManager {
         Self::from_sdk_fd_for_test_with_identity(fd, app_id, cluster_id, Vec::new())
     }
 
-    /// Like [`Self::from_sdk_fd_for_test`] but stamps the join_channel
+    /// Like [`Self::from_sdk_fd_for_test`] but stamps the `join_channel`
     /// call with a caller-supplied identity blob.
     #[cfg(test)]
     fn from_sdk_fd_for_test_with_identity(
@@ -688,6 +703,7 @@ impl CollaborationManager {
 
     /// Bind a signing identity, builder-style for chaining at boot.
     /// Replaces any previous identity.
+    #[must_use]
     pub fn with_identity(mut self, identity: SigningIdentity) -> Self {
         self.identity = Some(identity);
         self
@@ -706,6 +722,12 @@ impl CollaborationManager {
     /// Sign and send a CRDT mutation envelope. Best-effort like
     /// [`Self::send`]: an unsent frame isn't retried, but the next live
     /// edit republishes state, bounding the loss to one round-trip.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignedSendError::NoIdentity`] when no signing identity is
+    /// bound, or [`SignedSendError::Canonical`] when `payload` fails to
+    /// canonicalize for signing.
     pub fn send_signed_op(
         &mut self,
         payload: Vec<u8>,
@@ -1087,6 +1109,12 @@ fn run_shovel(
 
 /// SDK-side event loop: dispatches outbound requests to SDK calls, and
 /// spawns one subscription task per stream on the first `join_channel`.
+// Not `Send`: `client` wraps a capnp-rpc handle (`Rc`-based, `!Send`), and
+// this only ever runs inside `run_shovel`'s `LocalSet` on its own thread.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
 async fn drive_shovel(
     client: runtime_collab::CollabClient,
     identity_bytes: Vec<u8>,
@@ -1167,6 +1195,14 @@ struct SdkRoute {
     presence: Option<runtime_collab::PresenceHandle>,
 }
 
+// Not `Send`: `client`/`channel` wrap capnp-rpc handles, which are
+// `Rc`-based and inherently `!Send` — this runs only on the shovel
+// thread's `LocalSet` (see `run_shovel`), never crossing a thread
+// boundary, so the non-`Send` future is by design, not an oversight.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
 async fn ensure_sdk_route(
     client: &runtime_collab::CollabClient,
     identity_bytes: &[u8],
@@ -1196,6 +1232,25 @@ async fn ensure_sdk_route(
         }
     };
 
+    spawn_op_stream(&channel, inbound_tx).await;
+    spawn_context_stream(&channel, inbound_tx).await;
+    spawn_action_stream(&channel, inbound_tx).await;
+    let presence = spawn_presence_stream(&channel, inbound_tx).await;
+
+    routes.insert(channel_id, SdkRoute { channel, presence });
+}
+
+/// Bridge `channel`'s doc/incremental op stream into [`CollabEvent`]s on
+/// `inbound_tx`, spawned as a `LocalSet` task so it doesn't block the
+/// caller's route setup.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn spawn_op_stream(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+) {
     if let Ok(stream) = channel.subscribe().await {
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
@@ -1228,7 +1283,18 @@ async fn ensure_sdk_route(
             }
         });
     }
+}
 
+/// Bridge `channel`'s collaborator/permissions context stream into
+/// [`CollabEvent::Context`] on `inbound_tx`.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn spawn_context_stream(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+) {
     if let Ok(stream) = channel.subscribe_context().await {
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
@@ -1256,7 +1322,18 @@ async fn ensure_sdk_route(
             }
         });
     }
+}
 
+/// Bridge `channel`'s action stream into [`CollabEvent::ActionArrived`] on
+/// `inbound_tx`.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn spawn_action_stream(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+) {
     if let Ok(stream) = channel.subscribe_actions().await {
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
@@ -1274,8 +1351,21 @@ async fn ensure_sdk_route(
             }
         });
     }
+}
 
-    let presence = match channel.presence().await {
+/// Open `channel`'s presence handle and, if available, bridge its stream
+/// into translated [`CollabEvent`]s on `inbound_tx`. Returns the handle so
+/// the caller can store it on the route (needed for outbound presence
+/// sends), regardless of whether the inbound stream subscribed.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn spawn_presence_stream(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+) -> Option<runtime_collab::PresenceHandle> {
+    match channel.presence().await {
         Ok(handle) => {
             if let Ok(stream) = handle.subscribe_all().await {
                 let tx = inbound_tx.clone();
@@ -1290,11 +1380,15 @@ async fn ensure_sdk_route(
             Some(handle)
         }
         Err(_) => None,
-    };
-
-    routes.insert(channel_id, SdkRoute { channel, presence });
+    }
 }
 
+// Not `Send`: `route.channel` wraps a capnp-rpc handle (`Rc`-based,
+// `!Send`), and this only ever runs inside the shovel thread's `LocalSet`.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
 async fn dispatch_sdk_request(
     route: &SdkRoute,
     request: CollabRequest,
@@ -1500,6 +1594,10 @@ fn translate_relay_inbound(inbound: qos_relay::Inbound) -> Option<CollabEvent> {
 /// Unpack the SDK's 0x00RRGGBB u32 into [R, G, B] floats in 0..1 — the
 /// shape the legacy dialect already used, so existing consumers render
 /// identically.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "each channel is masked to 0..=255 by `& 0xFF`, always exactly representable in f32"
+)]
 fn unpack_color(packed: u32) -> [f32; 3] {
     let r = ((packed >> 16) & 0xFF) as f32 / 255.0;
     let g = ((packed >> 8) & 0xFF) as f32 / 255.0;
@@ -1525,13 +1623,16 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> CollabEvent {
                     id: String::from("<undecodable>"),
                 });
             let payload = match other {
-                runtime_collab::PresencePayload::Caret { pos } => {
-                    PresencePayload::Caret { pos: pos as usize }
-                }
+                runtime_collab::PresencePayload::Caret { pos } => PresencePayload::Caret {
+                    // A wire-supplied offset that doesn't fit `usize` on this
+                    // target can't address anything real; clamp rather than
+                    // wrap it into an unrelated in-range position.
+                    pos: usize::try_from(pos).unwrap_or(usize::MAX),
+                },
                 runtime_collab::PresencePayload::Selection { start, end } => {
                     PresencePayload::Selection {
-                        start: start as usize,
-                        end: end as usize,
+                        start: usize::try_from(start).unwrap_or(usize::MAX),
+                        end: usize::try_from(end).unwrap_or(usize::MAX),
                     }
                 }
                 runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
@@ -1600,7 +1701,7 @@ mod tests {
         scrollback_requests: Vec<(u64, u32)>,
     }
 
-    /// Shared between the test-thread's tokio LocalSet and the caller.
+    /// Shared between the test-thread's tokio `LocalSet` and the caller.
     /// `Arc<Mutex<_>>` (not `Rc<RefCell<_>>`) because the broker
     /// struct crosses a `thread::spawn` boundary before it's driven
     /// through the RPC system.
@@ -1854,20 +1955,21 @@ mod tests {
             let seed = backlog.remove(0);
             let mut ctx: channel_context::Builder = results.get().init_ctx();
             {
-                let mut collabs = ctx
-                    .reborrow()
-                    .init_collaborators(seed.collaborators.len() as u32);
+                let mut collabs = ctx.reborrow().init_collaborators(
+                    u32::try_from(seed.collaborators.len()).unwrap_or(u32::MAX),
+                );
                 for (i, (uid, name, color)) in seed.collaborators.iter().enumerate() {
-                    let mut c = collabs.reborrow().get(i as u32);
+                    let mut c = collabs.reborrow().get(u32::try_from(i).unwrap_or(u32::MAX));
                     c.set_user_id(uid);
                     c.set_display_name(name);
                     c.set_color(*color);
                 }
             }
             {
-                let mut perms = ctx.init_permissions(seed.permissions.len() as u32);
+                let mut perms =
+                    ctx.init_permissions(u32::try_from(seed.permissions.len()).unwrap_or(u32::MAX));
                 for (i, p) in seed.permissions.iter().enumerate() {
-                    perms.set(i as u32, p.as_str());
+                    perms.set(u32::try_from(i).unwrap_or(u32::MAX), p.as_str());
                 }
             }
             Promise::ok(())
@@ -1888,7 +1990,10 @@ mod tests {
             params: channel_handle::SendParams,
             _results: channel_handle::SendResults,
         ) -> Promise<(), capnp::Error> {
-            let op = match params.get().and_then(|r| r.get_op()) {
+            let op = match params
+                .get()
+                .and_then(channel_handle::send_params::Reader::get_op)
+            {
                 Ok(o) => o.to_vec(),
                 Err(e) => return Promise::err(e),
             };
@@ -1926,7 +2031,10 @@ mod tests {
             params: channel_handle::SendUnsignedSnapshotParams,
             _results: channel_handle::SendUnsignedSnapshotResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(d) = params.get().and_then(|r| r.get_data()) else {
+            let Ok(d) = params
+                .get()
+                .and_then(channel_handle::send_unsigned_snapshot_params::Reader::get_data)
+            else {
                 return Promise::ok(());
             };
             self.captures
@@ -1942,7 +2050,10 @@ mod tests {
             params: channel_handle::SendUnsignedIncrementalParams,
             _results: channel_handle::SendUnsignedIncrementalResults,
         ) -> Promise<(), capnp::Error> {
-            let Ok(d) = params.get().and_then(|r| r.get_data()) else {
+            let Ok(d) = params
+                .get()
+                .and_then(channel_handle::send_unsigned_incremental_params::Reader::get_data)
+            else {
                 return Promise::ok(());
             };
             self.captures
@@ -1990,9 +2101,11 @@ mod tests {
                 });
             let mut batch: scrollback_batch::Builder = results.get().init_batch();
             {
-                let mut ops = batch.reborrow().init_ops(seed.ops.len() as u32);
+                let mut ops = batch
+                    .reborrow()
+                    .init_ops(u32::try_from(seed.ops.len()).unwrap_or(u32::MAX));
                 for (i, op) in seed.ops.iter().enumerate() {
-                    ops.set(i as u32, op);
+                    ops.set(u32::try_from(i).unwrap_or(u32::MAX), op);
                 }
             }
             batch.set_earliest_seq(seed.earliest_seq);
@@ -2023,13 +2136,13 @@ mod tests {
                 .get_channel_id()
                 .and_then(|t| {
                     t.to_str()
-                        .map(|s| s.to_owned())
+                        .map(str::to_owned)
                         .map_err(|e| capnp::Error::failed(format!("bad utf8: {e}")))
                 })
                 .unwrap_or_default();
             let identity = reader
                 .get_identity()
-                .map(|b| b.to_vec())
+                .map(<[u8]>::to_vec)
                 .unwrap_or_default();
             self.captures
                 .lock()
@@ -2076,7 +2189,7 @@ mod tests {
                         r.compat(),
                         w.compat_write(),
                         rpc_twoparty_capnp::Side::Server,
-                        Default::default(),
+                        capnp::message::ReaderOptions::default(),
                     ));
                     let rpc = RpcSystem::new(network, Some(broker_client.client));
                     let _ = rpc.await;
@@ -2370,9 +2483,11 @@ mod tests {
             ),
             "both legacy sends must reach the SDK",
         );
-        let c = captures.lock().unwrap();
-        assert_eq!(c.unsigned_snapshots, vec![b"snap".to_vec()]);
-        assert_eq!(c.unsigned_incrementals, vec![b"delta".to_vec()]);
+        {
+            let c = captures.lock().unwrap();
+            assert_eq!(c.unsigned_snapshots, vec![b"snap".to_vec()]);
+            assert_eq!(c.unsigned_incrementals, vec![b"delta".to_vec()]);
+        }
     }
 
     /// Every presence variant reaches the SDK method that keeps its key —
@@ -2419,7 +2534,7 @@ mod tests {
             payload: PresencePayload::Arrived,
         });
         mgr.send(CollabRequest::Presence {
-            key: key.clone(),
+            key,
             payload: PresencePayload::Left,
         });
 
@@ -2437,25 +2552,27 @@ mod tests {
             ),
             "every presence variant must reach the corresponding SDK method",
         );
-        let c = captures.lock().unwrap();
-        assert_eq!(
-            c.pointer_publishes,
-            vec![(expected_key_bytes.clone(), 1.5, 2.5)],
-            "a pointer carries the key its publisher chose, like every other \
-             keyed variant here",
-        );
-        assert!(
-            c.cursor_publishes.is_empty(),
-            "and does not go out through the keyless call, which would drop \
-             the space on the way",
-        );
-        assert_eq!(c.caret_publishes, vec![(expected_key_bytes.clone(), 12)]);
-        assert_eq!(
-            c.selection_publishes,
-            vec![(expected_key_bytes.clone(), 3, 9)]
-        );
-        assert_eq!(c.arrived, vec![expected_key_bytes.clone()]);
-        assert_eq!(c.left, vec![expected_key_bytes]);
+        {
+            let c = captures.lock().unwrap();
+            assert_eq!(
+                c.pointer_publishes,
+                vec![(expected_key_bytes.clone(), 1.5, 2.5)],
+                "a pointer carries the key its publisher chose, like every other \
+                 keyed variant here",
+            );
+            assert!(
+                c.cursor_publishes.is_empty(),
+                "and does not go out through the keyless call, which would drop \
+                 the space on the way",
+            );
+            assert_eq!(c.caret_publishes, vec![(expected_key_bytes.clone(), 12)]);
+            assert_eq!(
+                c.selection_publishes,
+                vec![(expected_key_bytes.clone(), 3, 9)]
+            );
+            assert_eq!(c.arrived, vec![expected_key_bytes.clone()]);
+            assert_eq!(c.left, vec![expected_key_bytes]);
+        }
     }
 
     #[test]
@@ -2507,8 +2624,8 @@ mod tests {
             presence_backlog: vec![],
             context_backlog: vec![SeedContext {
                 collaborators: vec![
-                    ("alice".to_owned(), "Alice".to_owned(), 0x00FF8000),
-                    ("bob".to_owned(), "Bob".to_owned(), 0x000080FF),
+                    ("alice".to_owned(), "Alice".to_owned(), 0x00FF_8000),
+                    ("bob".to_owned(), "Bob".to_owned(), 0x0000_80FF),
                 ],
                 permissions: vec!["edit".to_owned(), "share".to_owned()],
             }],
@@ -2568,7 +2685,7 @@ mod tests {
             },
             SeedPresence {
                 user_id: "peer-bob".to_owned(),
-                key_bytes: key_bytes.clone(),
+                key_bytes,
                 payload: SeedPayload::Left,
             },
         ];
@@ -2692,7 +2809,7 @@ mod tests {
 
         let e = translate_presence_event(runtime_collab::PresenceEvent {
             user_id: "peer".into(),
-            key_bytes: key_bytes.clone(),
+            key_bytes,
             payload: SdkPayload::Caret { pos: 3 },
         });
         if let CollabEvent::RemotePresenceUpdate {

@@ -131,6 +131,12 @@ impl RollbackToken {
         }
     }
 
+    /// The keyslot this token is bound to.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the token has no keyslot binding, or if the binding is not a
+    /// parseable number.
     pub fn keyslot(&self) -> Result<u32> {
         let first = self
             .keyslots
@@ -141,19 +147,34 @@ impl RollbackToken {
             .with_context(|| format!("token keyslot {first:?} is not a number"))
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `sealed_public` is not valid base64.
     pub fn decoded_public(&self) -> Result<Vec<u8>> {
         B64.decode(&self.sealed_public)
             .context("token sealed_public is not base64")
     }
+
+    /// # Errors
+    ///
+    /// Returns an error if `sealed_private` is not valid base64.
     pub fn decoded_private(&self) -> Result<Vec<u8>> {
         B64.decode(&self.sealed_private)
             .context("token sealed_private is not base64")
     }
+
+    /// # Errors
+    ///
+    /// Returns an error if `key_name` is not valid base64.
     pub fn decoded_key_name(&self) -> Result<Vec<u8>> {
         B64.decode(&self.key_name)
             .context("token key_name is not base64")
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if any prediction's `approved_policy` or `signature` is not valid
+    /// base64.
     pub fn decoded_predictions(&self) -> Result<Vec<Prediction>> {
         self.predictions
             .iter()
@@ -171,6 +192,11 @@ impl RollbackToken {
             .collect()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the token type or schema version is unrecognised, if it carries no
+    /// signed prediction, if `nv_operand` is inconsistent with `nv_base`/`generation`, or if
+    /// [`Self::keyslot`] fails.
     pub fn validate(&self) -> Result<()> {
         if self.token_type != TOKEN_TYPE {
             bail!("token type {:?} is not {TOKEN_TYPE}", self.token_type);
@@ -205,10 +231,17 @@ impl RollbackToken {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if serialisation fails (effectively unreachable for this type).
     pub fn to_json(&self) -> Result<String> {
         serde_json::to_string(self).context("serialising the rollback token")
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `s` is not valid JSON for this schema, or if the decoded token
+    /// fails [`Self::validate`].
     pub fn from_json(s: &str) -> Result<Self> {
         let t: Self = serde_json::from_str(s).context("parsing a qos-rollback LUKS2 token")?;
         t.validate()?;

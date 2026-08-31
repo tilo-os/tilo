@@ -522,15 +522,14 @@ impl DisplayPane {
                 x: index as i32 * 1920,
                 ..Default::default()
             });
-        let mut output_rows = self.build_output_primary_rows(output, connected, &config);
-        output_rows.extend(self.build_output_mode_and_rotation_rows(output, &config));
-        output_rows.extend(self.build_output_capability_rows(output, &config));
+        let mut output_rows = Self::build_output_primary_rows(output, connected, &config);
+        output_rows.extend(Self::build_output_mode_and_rotation_rows(output, &config));
+        output_rows.extend(Self::build_output_capability_rows(output, &config));
         card(&output.label, rows(output_rows))
     }
 
     /// Enable/primary toggles + scale/position/mirroring dropdowns.
     fn build_output_primary_rows(
-        &self,
         output: &DisplayOutput,
         connected: &[&DisplayOutput],
         config: &OutputConfig,
@@ -623,7 +622,6 @@ impl DisplayPane {
 
     /// Resolution/refresh-rate dropdown (or an unavailable note) + rotation.
     fn build_output_mode_and_rotation_rows(
-        &self,
         output: &DisplayOutput,
         config: &OutputConfig,
     ) -> Vec<El> {
@@ -675,11 +673,7 @@ impl DisplayPane {
     }
 
     /// HDR / variable-refresh-rate / colour-profile rows.
-    fn build_output_capability_rows(
-        &self,
-        output: &DisplayOutput,
-        config: &OutputConfig,
-    ) -> Vec<El> {
+    fn build_output_capability_rows(output: &DisplayOutput, config: &OutputConfig) -> Vec<El> {
         let hdr_key = output_key(&output.connector, "hdr");
         let vrr_key = output_key(&output.connector, "vrr");
         let profile_key = output_key(&output.connector, "color_profile");

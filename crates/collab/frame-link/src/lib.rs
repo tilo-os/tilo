@@ -410,7 +410,10 @@ impl<T> FrameLink<T> {
         let Ok(range_u64) = u64::try_from(range) else {
             return Duration::ZERO;
         };
-        let raw = i128::from(x % range_u64) - jitter_ns;
+        // `range_u64 >= 1` always (it's `jitter_ns * 2 + 1` and `jitter_ns >=
+        // 0`), so the `%` can't actually panic; `checked_rem` + a 0 fallback
+        // says so without relying on that proof at the call site.
+        let raw = i128::from(x.checked_rem(range_u64).unwrap_or(0)).saturating_sub(jitter_ns);
         if raw >= 0 {
             // `raw < range == jitter_ns * 2 + 1`, so this always fits `u64`
             // for any jitter configuration that reached this point.

@@ -41,8 +41,22 @@ fn validate_software_locator(locator: &str) -> io::Result<()> {
 pub trait SecretProvider {
     fn protection(&self) -> KeyProtection;
     fn backend_id(&self) -> &'static str;
+
+    /// # Errors
+    ///
+    /// Returns an error if `secret` can't be stored, or if `locator` is
+    /// already in use by a different secret.
     fn store(&self, locator: &str, secret: &[u8]) -> io::Result<()>;
+
+    /// # Errors
+    ///
+    /// Returns an error if no secret is stored at `locator`, or it can't be
+    /// authenticated and retrieved.
     fn load(&self, locator: &str) -> io::Result<Zeroizing<Vec<u8>>>;
+
+    /// # Errors
+    ///
+    /// Returns an error if the secret at `locator` can't be removed.
     fn remove(&self, locator: &str) -> io::Result<()>;
 }
 
@@ -289,7 +303,7 @@ pub(crate) fn provider_for<'a>(
 pub(crate) fn preferred_provider(identity_dir: &Path) -> Box<dyn SecretProvider + '_> {
     #[cfg(test)]
     {
-        return Box::new(BrokerFileProvider::new(identity_dir));
+        Box::new(BrokerFileProvider::new(identity_dir))
     }
     #[cfg(not(test))]
     {

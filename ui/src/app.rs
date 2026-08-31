@@ -1789,9 +1789,6 @@ impl App {
     /// Announces changed [live regions](crate::a11y::AccessNode::live)
     /// without moving focus.
     fn scan_live_regions(&mut self) {
-        if self.screen_reader.is_none() {
-            return;
-        }
         fn visit(w: &dyn Widget, out: &mut Vec<(String, crate::a11y::Politeness, String)>) {
             if let Some(node) = w.accessibility()
                 && let (Some(politeness), Some(name)) = (node.live, node.name.clone())
@@ -1801,6 +1798,9 @@ impl App {
             for child in w.children() {
                 visit(child, out);
             }
+        }
+        if self.screen_reader.is_none() {
+            return;
         }
         // A live region without an accessible name can't be tracked stably
         // across frames, so it's skipped.
@@ -1906,7 +1906,8 @@ impl App {
                         idx.saturating_sub(1)
                     }
                 } else {
-                    idx.saturating_add(1) % len
+                    let next = idx.saturating_add(1);
+                    if next >= len { 0 } else { next }
                 }
             }
             None => 0,
@@ -2465,7 +2466,7 @@ struct ImeWindowState {
     height: u32,
 }
 
-/// Split out of `AppHandler::handle_redraw_requested` (clippy::too_many_lines).
+/// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
 /// Draws the root widget, its overlay, the action palette, and any visible
 /// tooltip into `scene`. Returns the transform and logical window rect the
 /// rest of the frame (legacy cursors, remote presence, debug outlines, HUD)
@@ -2552,7 +2553,7 @@ fn draw_frame_content(
     (transform, window_rect, t_draw_us)
 }
 
-/// Split out of `AppHandler::handle_redraw_requested` (clippy::too_many_lines).
+/// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
 /// Legacy path — `state.collab.cursors` predates `PresenceCtx`; kept for apps
 /// that still write into it directly.
 fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
@@ -2564,6 +2565,10 @@ fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
         path.line_to(Point::new(0.0, 22.0));
         path.close_path();
 
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
+        )]
         let cursor_transform =
             transform * Affine::translate((f64::from(cursor.x), f64::from(cursor.y)));
         scene.fill(
@@ -2586,13 +2591,17 @@ fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
             &cursor.name,
             10.0,
             Color::WHITE,
-            cursor_transform * Affine::translate((10.0, 20.0)),
+            {
+                #[allow(clippy::arithmetic_side_effects, reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow")]
+                let name_transform = cursor_transform * Affine::translate((10.0, 20.0));
+                name_transform
+            },
             None,
         );
     }
 }
 
-/// Split out of `AppHandler::handle_redraw_requested` (clippy::too_many_lines).
+/// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
 /// Only active in `App::debug_mode` — draws each widget's layout rect and a
 /// depth-cycled label over the frame just rendered.
 fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
@@ -2633,7 +2642,11 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
             &label,
             10.0,
             color,
-            transform * Affine::translate((rect.x0 + 2.0, text_y)),
+            {
+                #[allow(clippy::arithmetic_side_effects, reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow")]
+                let label_transform = transform * Affine::translate((rect.x0 + 2.0, text_y));
+                label_transform
+            },
             None,
         );
         for child in widget.children() {
@@ -2662,7 +2675,7 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
     );
 }
 
-/// Split out of `AppHandler::handle_redraw_requested` (clippy::too_many_lines).
+/// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
 /// `None` means taffy layout computation failed and the caller must abandon
 /// the frame; otherwise `(relayout_branch, compute_us, apply_us)` for the
 /// perf log line.
@@ -2813,7 +2826,7 @@ impl AppHandler {
         self.ime_state = next;
     }
 
-    /// Split out of `window_event`'s `RedrawRequested` arm (clippy::too_many_lines).
+    /// Split out of `window_event`'s `RedrawRequested` arm (`clippy::too_many_lines`).
     /// Body unchanged from the original inline arm — see `window_event` for the
     /// event-loop plumbing this is called from. The layout pass, draw pass,
     /// legacy cursor drawing, and debug-outline drawing are further split
@@ -2825,10 +2838,10 @@ impl AppHandler {
     /// error-path behaviour with no clippy/cargo loop available here to
     /// verify against.
     #[allow(clippy::too_many_lines, reason = "see doc comment above")]
-    fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop, window: Arc<Window>) {
+    fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
         if self.render.is_none() {
             qos_startup_metrics::mark("first-redraw-init-render-start");
-            if let Err(reason) = self.init_render(&window) {
+            if let Err(reason) = self.init_render(window) {
                 // Retrying every redraw would only spin.
                 crate::diag!("qos: {reason}");
                 event_loop.exit();
@@ -3031,7 +3044,7 @@ impl AppHandler {
         }
     }
 
-    /// Split out of `window_event`'s catch-all arm (clippy::too_many_lines). Body
+    /// Split out of `window_event`'s catch-all arm (`clippy::too_many_lines`). Body
     /// unchanged from the original inline arm: a sequential chain of
     /// mutually-exclusive `if !handled && ...` input-routing checks (Ctrl+K,
     /// screen reader, undo/redo, Tab, arrow nav, gesture nav, generic widget
@@ -3041,7 +3054,7 @@ impl AppHandler {
     /// method is possible but risks silently reordering that precedence with
     /// no clippy/cargo loop available here to verify against.
     #[allow(clippy::too_many_lines, reason = "see doc comment above")]
-    fn handle_other_window_event(&mut self, window: Arc<Window>, other: WindowEvent) {
+    fn handle_other_window_event(&mut self, window: &Arc<Window>, other: WindowEvent) {
         let event = other;
         let app = &mut self.app;
         let __prof_input = app.profiler.as_ref().map(|_| std::time::Instant::now());
@@ -3779,11 +3792,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 self.app.layout_dirty = true;
                 window.request_redraw();
             }
-            WindowEvent::RedrawRequested => self.handle_redraw_requested(event_loop, window),
+            WindowEvent::RedrawRequested => self.handle_redraw_requested(event_loop, &window),
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.app.modifiers = modifiers;
             }
-            other => self.handle_other_window_event(window, other),
+            other => self.handle_other_window_event(&window, other),
         }
     }
 
@@ -3906,9 +3919,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // own needs draining — a live collab socket, or a root still
         // wanting another frame.
         if app.collab_manager.is_connected() || needs_frame || tooltip_pending || typing_active {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(16),
-            ));
+            // `Instant::checked_add` is the non-panicking form; 16ms from now can only
+            // fail to represent right at the end of time, in which case waking
+            // immediately is a harmless fallback.
+            let next_tick = Instant::now()
+                .checked_add(Duration::from_millis(16))
+                .unwrap_or_else(Instant::now);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next_tick));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
         }
@@ -4188,7 +4205,9 @@ mod pointer_broadcast_tests {
         });
         let key = PresenceKey::Workspace { id: "home".into() };
         app.set_presence_broadcast_scope(Some(key.clone()));
-        let observed = captured.lock().unwrap();
+        // Clone out of the guard so the lock is released before the assertion,
+        // rather than held across it.
+        let observed = captured.lock().unwrap().clone();
         assert!(
             observed
                 .iter()
@@ -4211,17 +4230,15 @@ mod pointer_broadcast_tests {
         let mut app = App::new(app_state, root);
         {
             let doc = &mut app.state_mut_for_test().doc;
-            let m = match doc.get(&ROOT, "m") {
-                Ok(Some((automerge::Value::Object(ObjType::Map), id))) => id,
-                _ => panic!("m exists"),
+            let Ok(Some((automerge::Value::Object(ObjType::Map), m))) = doc.get(&ROOT, "m") else {
+                panic!("m exists")
             };
             doc.put(&m, "a", 10).unwrap();
         }
 
         let mut peer = automerge::AutoCommit::load(&base_bytes).unwrap();
-        let pm = match peer.get(&ROOT, "m") {
-            Ok(Some((automerge::Value::Object(ObjType::Map), id))) => id,
-            _ => panic!("m exists"),
+        let Ok(Some((automerge::Value::Object(ObjType::Map), pm))) = peer.get(&ROOT, "m") else {
+            panic!("m exists")
         };
         peer.put(&pm, "b", 20).unwrap();
         let incoming = peer.save();
@@ -4230,9 +4247,8 @@ mod pointer_broadcast_tests {
 
         // A replace would drop "a".
         let doc = &mut app.state_mut_for_test().doc;
-        let m = match doc.get(&ROOT, "m") {
-            Ok(Some((automerge::Value::Object(ObjType::Map), id))) => id,
-            _ => panic!("m exists"),
+        let Ok(Some((automerge::Value::Object(ObjType::Map), m))) = doc.get(&ROOT, "m") else {
+            panic!("m exists")
         };
         assert!(
             doc.get(&m, "a").unwrap().is_some(),
@@ -4357,16 +4373,16 @@ mod rebuild_focus_tests {
             let node = taffy
                 .new_with_children(taffy::Style::default(), &child_nodes)
                 .unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let layout = taffy.layout(node).unwrap();
             self.rect = Rect::new(
-                origin.x + layout.location.x as f64,
-                origin.y + layout.location.y as f64,
-                origin.x + layout.location.x as f64 + layout.size.width as f64,
-                origin.y + layout.location.y as f64 + layout.size.height as f64,
+                origin.x + f64::from(layout.location.x),
+                origin.y + f64::from(layout.location.y),
+                origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+                origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
             );
             if let Ok(child_nodes) = taffy.children(node) {
                 for (c, &cn) in self.children.iter_mut().zip(child_nodes.iter()) {
@@ -4397,7 +4413,7 @@ mod rebuild_focus_tests {
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
-            self.children.iter().map(|c| c.as_ref()).collect()
+            self.children.iter().map(Box::as_ref).collect()
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             self.children
@@ -4415,7 +4431,7 @@ mod rebuild_focus_tests {
         fn take_focus_reset(&mut self) -> bool {
             std::mem::take(&mut self.request_reset)
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "RebuildHarness"
         }
         fn get_rect(&self) -> Rect {
@@ -4540,6 +4556,11 @@ mod screen_reader_tests {
         }
     }
     // SAFETY: test-only, single-threaded, so the !Send Rc is fine.
+    #[allow(
+        clippy::non_send_fields_in_send_ty,
+        reason = "the Rc<RefCell<_>> is deliberately asserted Send above — this test double \
+                  never actually crosses a thread"
+    )]
     unsafe impl Send for SharedRecorder {}
 
     struct TwoButtons {
@@ -4575,7 +4596,7 @@ mod screen_reader_tests {
             let node = taffy
                 .new_with_children(taffy::Style::default(), &kids)
                 .unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
@@ -4602,7 +4623,7 @@ mod screen_reader_tests {
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
-            self.kids.iter().map(|c| c.as_ref()).collect()
+            self.kids.iter().map(Box::as_ref).collect()
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             self.kids
@@ -4610,7 +4631,7 @@ mod screen_reader_tests {
                 .map(|c| &mut **c as &mut (dyn Widget + '_))
                 .collect()
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "two-buttons"
         }
         fn get_rect(&self) -> KurboRect {
@@ -4736,7 +4757,7 @@ mod screen_reader_tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
@@ -4765,7 +4786,7 @@ mod screen_reader_tests {
         fn children(&self) -> Vec<&dyn Widget> {
             vec![]
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "live-widget"
         }
         fn get_rect(&self) -> KurboRect {
@@ -4980,7 +5001,7 @@ mod focus_trap_tests {
             let node = taffy
                 .new_with_children(taffy::Style::default(), &kids)
                 .unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
@@ -5007,7 +5028,7 @@ mod focus_trap_tests {
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
-            self.kids.iter().map(|c| c.as_ref()).collect()
+            self.kids.iter().map(Box::as_ref).collect()
         }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             self.kids
@@ -5015,7 +5036,7 @@ mod focus_trap_tests {
                 .map(|c| &mut **c as &mut (dyn Widget + '_))
                 .collect()
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "two-kids"
         }
         fn get_rect(&self) -> KurboRect {
@@ -5066,7 +5087,7 @@ mod focus_trap_tests {
             let node = taffy
                 .new_with_children(taffy::Style::default(), &kids)
                 .unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
@@ -5093,7 +5114,7 @@ mod focus_trap_tests {
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
-            let mut v: Vec<&dyn Widget> = self.outer.iter().map(|c| c.as_ref()).collect();
+            let mut v: Vec<&dyn Widget> = self.outer.iter().map(Box::as_ref).collect();
             v.push(&self.modal);
             v
         }
@@ -5106,7 +5127,7 @@ mod focus_trap_tests {
             v.push(&mut self.modal as &mut (dyn Widget + '_));
             v
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "modal-host"
         }
         fn get_rect(&self) -> KurboRect {
@@ -5418,7 +5439,7 @@ mod low_vision_tests {
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
@@ -5448,7 +5469,7 @@ mod low_vision_tests {
         fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
             Some(self.intent.clone())
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "AppearanceRoot"
         }
         fn get_rect(&self) -> vello::kurbo::Rect {
@@ -5554,7 +5575,7 @@ mod fullscreen_tests {
             node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
@@ -5580,7 +5601,7 @@ mod fullscreen_tests {
             _t: &TaffyTree<()>,
         ) {
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "FsRoot"
         }
         fn get_rect(&self) -> Rect {
@@ -5656,7 +5677,7 @@ mod action_palette_tests {
     /// Stands in for an app's contacts/files provider.
     struct PeopleProvider;
     impl crate::search::SearchProvider for PeopleProvider {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "People"
         }
         fn search(&self, query: &str) -> Vec<crate::search::SearchResult> {
@@ -5680,7 +5701,7 @@ mod action_palette_tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
@@ -5706,7 +5727,7 @@ mod action_palette_tests {
             _t: &TaffyTree<()>,
         ) {
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "publisher"
         }
         fn get_rect(&self) -> KurboRect {
@@ -5988,7 +6009,7 @@ mod view_presence_tests {
             node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: taffy::NodeId, _o: Point) {}
@@ -6015,7 +6036,7 @@ mod view_presence_tests {
             _t: &TaffyTree<()>,
         ) {
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "view-root"
         }
         fn get_rect(&self) -> KurboRect {
@@ -6119,13 +6140,11 @@ mod view_presence_tests {
 
     #[test]
     fn follow_binds_local_viewport_and_unfollow_releases() {
-        let mut app = app_with_root(ViewRoot::new());
-
         fn deliver(app: &mut App, peer: &str, scroll: Vec<f64>, mode: &str) {
             let subset = ViewSubset {
                 scroll,
                 open_resource: None,
-                viewport: Default::default(),
+                viewport: crate::view::ViewRect::default(),
                 view_mode: Some(mode.into()),
             };
             app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
@@ -6134,6 +6153,8 @@ mod view_presence_tests {
                 payload: PresencePayload::Arrived,
             });
         }
+
+        let mut app = app_with_root(ViewRoot::new());
 
         deliver(&mut app, "bob", vec![100.0], "list");
         assert_eq!(
@@ -6225,7 +6246,7 @@ mod semantic_tree_app_tests {
                         Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
                         _ => 0,
                     };
-                    doc.put(&ROOT, "n", ScalarValue::Int(n + 1))?;
+                    doc.put(&ROOT, "n", ScalarValue::Int(n.saturating_add(1)))?;
                 }
                 CounterAction::SetLabel(s) => {
                     doc.put(&ROOT, "label", s.as_str())?;
@@ -6264,7 +6285,7 @@ mod semantic_tree_app_tests {
             let node = taffy
                 .new_with_children(taffy::Style::default(), &[kid])
                 .unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
@@ -6296,7 +6317,7 @@ mod semantic_tree_app_tests {
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             vec![&mut self.button]
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "CounterCard"
         }
         fn get_rect(&self) -> KurboRect {

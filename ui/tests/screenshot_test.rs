@@ -38,9 +38,7 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
 
 #[test]
 fn headless_renderer_paints_a_solid_background_and_a_filled_rect() {
-    let mut renderer = if let Some(r) = try_new_renderer(128, 64) {
-        r
-    } else {
+    let Some(mut renderer) = try_new_renderer(128, 64) else {
         eprintln!("offscreen: no wgpu adapter available — skipping screenshot test");
         return;
     };
@@ -86,9 +84,7 @@ fn headless_renderer_paints_a_solid_background_and_a_filled_rect() {
 
 #[test]
 fn headless_renderer_writes_a_png_file() {
-    let mut renderer = if let Some(r) = try_new_renderer(32, 32) {
-        r
-    } else {
+    let Some(mut renderer) = try_new_renderer(32, 32) else {
         eprintln!("offscreen: no wgpu adapter available — skipping PNG test");
         return;
     };
@@ -122,6 +118,10 @@ fn headless_renderer_writes_a_png_file() {
 }
 
 #[test]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "w/h are small fixed test-canvas dimensions, exactly representable in f32"
+)]
 fn headless_renderer_captures_a_widget_tree() {
     // Drives a real widget through `build_layout` → taffy compute →
     // `apply_layout` → `draw`, proving the offscreen harness can be pointed
@@ -134,9 +134,7 @@ fn headless_renderer_captures_a_widget_tree() {
     use ui::widget::{Container, Widget};
 
     let (w, h) = (160, 80);
-    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
-        r
-    } else {
+    let Some(mut renderer) = try_new_renderer(w, h) else {
         eprintln!("offscreen: no wgpu adapter available — skipping widget render test");
         return;
     };
@@ -199,6 +197,10 @@ fn headless_renderer_captures_a_widget_tree() {
 /// *colourless-over-magenta* (green = 0, r == b) — the pill body never
 /// extends there, though the per-pill drop shadow may darken the base.
 #[test]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "bar_w/bar_h are small fixed test-canvas dimensions, exactly representable in f32"
+)]
 fn tab_bar_renders_pills_inside_six_px_insets() {
     use std::collections::HashMap;
     use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
@@ -209,10 +211,8 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
 
     // 240 wide gives us room for the first 96 px min-width pill + gap;
     // 40 tall matches TAB_BAR_HEIGHT exactly.
-    let (w, h) = (240u32, 40u32);
-    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
-        r
-    } else {
+    let (bar_w, bar_h) = (240u32, 40u32);
+    let Some(mut renderer) = try_new_renderer(bar_w, bar_h) else {
         eprintln!("offscreen: no wgpu adapter available — skipping tab-bar test");
         return;
     };
@@ -230,8 +230,8 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
         .compute_layout_with_measure(
             root,
             Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
+                width: AvailableSpace::Definite(bar_w as f32),
+                height: AvailableSpace::Definite(bar_h as f32),
             },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = node_map.get(&node_id) {
@@ -262,7 +262,7 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
         std::fs::create_dir_all(&dir).ok();
         let file = std::fs::File::create(&path).expect("create screenshot png");
         let mut bw = std::io::BufWriter::new(file);
-        let mut enc = png::Encoder::new(&mut bw, w, h);
+        let mut enc = png::Encoder::new(&mut bw, bar_w, bar_h);
         enc.set_color(png::ColorType::Rgba);
         enc.set_depth(png::BitDepth::Eight);
         let mut writer = enc.write_header().expect("png header");
@@ -272,7 +272,7 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
 
     // Top inset (y < 6): pill body does not extend here; a drop shadow may
     // darken the base but cannot introduce green or break r==b.
-    let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, w, 20, 2);
+    let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, bar_w, 20, 2);
     assert_eq!(
         g, 0x00,
         "no pill body fill in top inset (got r={r}, g={g}, b={b})"
@@ -284,7 +284,7 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
 
     // Bottom inset (y > 34): same rationale; the shadow's +6px y-offset
     // means more bleed here, but the r==b / g==0 invariant still holds.
-    let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, w, 20, 37);
+    let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, bar_w, 20, 37);
     assert_eq!(
         g, 0x00,
         "no pill body fill in bottom inset (got r={r}, g={g}, b={b})"
@@ -296,7 +296,7 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
 
     // Pill interior (first pill center ~= (48, 20)): translucent-white fill
     // drops the G channel below 0xff when composited over magenta.
-    let (r, g, b, a) = OffscreenRenderer::sample(&rgba, w, 48, 20);
+    let (r, g, b, a) = OffscreenRenderer::sample(&rgba, bar_w, 48, 20);
     assert_eq!(a, 0xff, "pill center should be opaque");
     assert!(
         g < 0xff,

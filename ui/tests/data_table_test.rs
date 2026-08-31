@@ -212,10 +212,10 @@ fn cell_render_receives_text_renderer_and_rect() {
 #[test]
 fn data_table_virtualization_windows_rows() {
     let mut t = DataTable::new(cols());
-    let rows: Vec<Row> = (0..10_000)
+    let rows: Vec<Row> = (0u64..10_000)
         .map(|i| Row {
             name: format!("r{i}"),
-            size: i as u64,
+            size: i,
         })
         .collect();
     t.set_rows(rows);

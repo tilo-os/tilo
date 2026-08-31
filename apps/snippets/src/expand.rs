@@ -104,6 +104,17 @@ impl ExpandModal {
         theme: &Theme,
         area: Rect,
     ) {
+        let panel = Self::draw_frame(scene, t, theme, area);
+        let pad = 24.0;
+        let y = self.draw_header(scene, t, tr, theme, panel, pad);
+        let y = self.draw_fields(scene, t, tr, theme, panel, pad, y);
+        self.draw_preview(scene, t, tr, theme, panel, pad, y);
+        self.draw_buttons(scene, t, tr, theme, panel, pad);
+    }
+
+    /// Scrim + the panel's background and border. Returns the panel rect
+    /// every other section draws relative to.
+    fn draw_frame(scene: &mut Scene, t: Affine, theme: &Theme, area: Rect) -> Rect {
         let c = &theme.tokens.colors;
         // Scrim.
         draw::fill_rect(scene, t, area, c.surfaces.overlay);
@@ -129,8 +140,21 @@ impl ExpandModal {
             1.0,
             c.border_standard,
         );
+        panel
+    }
 
-        let pad = 24.0;
+    /// The "Fill in variables" title and the snippet's own title beneath
+    /// it. Returns the y cursor for the next section.
+    fn draw_header(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        pad: f64,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
         let mut y = panel.y0 + pad;
 
         draw::text(
@@ -156,9 +180,23 @@ impl ExpandModal {
             c.text_dim,
             TextWeight::Regular,
         );
-        y += 30.0;
+        y + 30.0
+    }
 
-        // Field inputs.
+    /// One labelled input row per placeholder, or a "no variables" note
+    /// when the snippet has none. Records `field_rects` for hit-testing
+    /// and returns the y cursor for the next section.
+    fn draw_fields(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        pad: f64,
+        mut y: f64,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
         self.field_rects.clear();
         let label_w = 130.0;
         for (i, f) in self.fields.iter_mut().enumerate() {
@@ -231,7 +269,21 @@ impl ExpandModal {
             );
             y += 30.0;
         }
+        y
+    }
 
+    /// The live "PREVIEW" panel: the substituted body, syntax-highlighted.
+    fn draw_preview(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        pad: f64,
+        mut y: f64,
+    ) {
+        let c = &theme.tokens.colors;
         // Live preview header.
         y += 4.0;
         draw::text(
@@ -288,8 +340,19 @@ impl ExpandModal {
             }
             cy += 19.0;
         }
+    }
 
-        // Buttons.
+    /// The Copy / Cancel buttons, right-aligned along the panel's bottom
+    /// edge. Records `copy_rect` / `cancel_rect` for hit-testing.
+    fn draw_buttons(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        pad: f64,
+    ) {
         let by = panel.y1 - 52.0;
         let copy_label = if self.all_filled() {
             "Copy"
@@ -540,7 +603,7 @@ mod tests {
 
     fn drive(modal: &mut ExpandModal, event: &WindowEvent, doc: &mut AutoCommit) -> ExpandOutcome {
         let mut taffy = TaffyTree::new();
-        let node = taffy.new_leaf(Default::default()).unwrap();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
         let mut focus = None;
         modal.handle_event(
             event,

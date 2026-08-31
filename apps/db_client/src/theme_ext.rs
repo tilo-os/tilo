@@ -104,10 +104,9 @@ impl ThemeExt for Theme {
             TypeClass::Real => sem.success,
             TypeClass::Numeric => self.accent_primary,
             TypeClass::Text => sem.warning,
-            TypeClass::Blob => self.text_dim,
             TypeClass::Boolean => sem.danger,
             TypeClass::DateTime => mix(sem.info, sem.success, 0.5),
-            TypeClass::Unknown => self.text_dim,
+            TypeClass::Blob | TypeClass::Unknown => self.text_dim,
         }
     }
 }

@@ -28,6 +28,10 @@ use crate::model::{ConnId, ConnKind, ConnStatus, Connection, Vault};
 pub struct VpnDoc;
 
 impl VpnDoc {
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on ROOT is infallible; see VpnDoc::write_connection's # Panics doc"
+    )]
     fn connections_map(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "connections") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -56,6 +60,15 @@ impl VpnDoc {
     }
 
     /// Upsert one connection's fields.
+    ///
+    /// # Panics
+    /// Never in practice: `put_object` only fails when the target object id
+    /// doesn't resolve to a document object, and both `ROOT` and the freshly
+    /// resolved `connections` map always do.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on an existing map object is infallible; see this function's # Panics doc"
+    )]
     pub fn write_connection(doc: &mut AutoCommit, c: &Connection) {
         let conns = Self::connections_map(doc);
         let key = c.id.to_string();
@@ -159,13 +172,13 @@ impl VpnDoc {
                 connections.push(Connection {
                     id,
                     name: s("name"),
-                    kind: ConnKind::from_str(&s("kind")),
+                    kind: ConnKind::parse(&s("kind")),
                     endpoint: s("endpoint"),
                     address: s("address"),
                     dns: s("dns"),
                     public_key: s("public_key"),
                     allowed_ips: s("allowed_ips"),
-                    status: ConnStatus::from_str(&s("status")),
+                    status: ConnStatus::parse(&s("status")),
                     last_handshake_secs: if last_hs < 0 {
                         None
                     } else {

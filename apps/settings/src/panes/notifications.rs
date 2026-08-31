@@ -741,7 +741,7 @@ impl NotificationsPane {
         changed
     }
 
-    fn reconcile_per_app_rules(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+    fn reconcile_per_app_rules(&mut self, state: &AutoCommit, root: &ObjId) -> bool {
         let mut changed = false;
         let now = unix_now();
         for app in &self.apps {

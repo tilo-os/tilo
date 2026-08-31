@@ -125,6 +125,11 @@ pub enum EnrollmentError {
 /// valid `DeviceCert` under `user_public_key` with
 /// `can_admit_devices == true`. This function does not enforce
 /// that policy (it is stateless); the caller wires the check.
+///
+/// # Errors
+///
+/// Returns [`EnrollmentError::Payload`] if the token cannot be
+/// canonically encoded for signing (effectively unreachable).
 pub fn mint_enrollment_token(
     user_public_key: [u8; 32],
     capabilities: DeviceCapabilities,
@@ -153,6 +158,13 @@ pub fn mint_enrollment_token(
 /// unexpired at `now_ns`. Does not check the issuer's cert chain
 /// or capabilities — that is up to the caller (typically the
 /// device holding the root key).
+///
+/// # Errors
+///
+/// Returns [`EnrollmentError::Expired`] if `now_ns` is at or past the
+/// token's expiry, [`EnrollmentError::InvalidIssuerPublicKey`] if
+/// `token.issuer_device_public_key` is not a valid Ed25519 point, or
+/// [`EnrollmentError::BadSignature`] if the signature does not verify.
 pub fn verify_enrollment_token(
     token: &EnrollmentToken,
     now_ns: u64,
@@ -175,6 +187,11 @@ pub fn verify_enrollment_token(
 /// ambiguous characters (`0`/`O`, `1`/`I`/`l`) and is
 /// case-insensitive. A v1 token encodes to roughly 250-260 chars —
 /// fits inside a printable QR code with plenty of headroom.
+///
+/// # Errors
+///
+/// Returns [`EnrollmentError::Payload`] if `token` cannot be
+/// canonically encoded (effectively unreachable).
 pub fn encode_enrollment_token(token: &EnrollmentToken) -> Result<String, EnrollmentError> {
     let bytes = canonical_bytes(token)?;
     Ok(base32::encode(base32::Alphabet::Crockford, &bytes))
@@ -183,6 +200,12 @@ pub fn encode_enrollment_token(token: &EnrollmentToken) -> Result<String, Enroll
 /// Decode a base32-Crockford-encoded token back into an
 /// [`EnrollmentToken`]. Rejects malformed base32 and any postcard
 /// decode error (including trailing bytes).
+///
+/// # Errors
+///
+/// Returns [`EnrollmentError::MalformedBase32`] if `text` is not
+/// valid Crockford base32, or [`EnrollmentError::Payload`] if the
+/// decoded bytes do not deserialize as an `EnrollmentToken`.
 pub fn decode_enrollment_token(text: &str) -> Result<EnrollmentToken, EnrollmentError> {
     let bytes = base32::decode(base32::Alphabet::Crockford, text)
         .ok_or(EnrollmentError::MalformedBase32)?;

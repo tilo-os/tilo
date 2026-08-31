@@ -393,14 +393,13 @@ impl RelayCoeditSession {
                     // envelope has no author of its own). A non-co-edit
                     // presence frame won't decode — skip it rather than
                     // surface it unattributed.
-                    match AttributedPresence::decode(&payload) {
-                        Some(AttributedPresence { author, body }) => {
-                            return Some(Inbound::Presence {
-                                author,
-                                payload: body,
-                            });
-                        }
-                        None => {}
+                    if let Some(AttributedPresence { author, body }) =
+                        AttributedPresence::decode(&payload)
+                    {
+                        return Some(Inbound::Presence {
+                            author,
+                            payload: body,
+                        });
                     }
                 }
                 Envelope::Ready { pending_deltas, .. } => {
@@ -476,6 +475,8 @@ mod tests {
 
     #[test]
     fn non_coedit_bytes_do_not_masquerade_as_coedit() {
+        use automerge::transaction::Transactable;
+
         // Bodies that are not a CoeditPayload must not decode into a
         // bogus variant — `recv` skips such frames rather than mis-apply
         // them. Empty, an out-of-range enum tag, and a genuine Automerge
@@ -483,7 +484,6 @@ mod tests {
         assert!(CoeditPayload::decode(&[]).is_none());
         assert!(CoeditPayload::decode(&[5, 0, 0]).is_none());
 
-        use automerge::transaction::Transactable;
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "k", "v").unwrap();
         let raw_delta = doc.save_incremental();

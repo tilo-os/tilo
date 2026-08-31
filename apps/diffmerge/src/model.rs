@@ -85,156 +85,169 @@ pub struct DiffModel {
     pub modified: usize,
 }
 
-impl DiffModel {
-    /// Compute a line-aligned diff of `left` vs `right`.
-    pub fn compute(left: &str, right: &str) -> Self {
-        let diff = TextDiff::configure()
-            .algorithm(Algorithm::Patience)
-            .diff_lines(left, right);
+/// One line from the underlying `similar` diff, stripped of the trailing
+/// newline `similar` keeps on each line so the renderer measures clean text.
+#[derive(Clone)]
+struct DiffChange {
+    tag: ChangeTag,
+    text: String,
+    old: Option<usize>,
+    new: Option<usize>,
+}
 
-        // Collect the per-line change stream, stripping the trailing newline
-        // `similar` keeps on each line so the renderer measures clean text.
-        #[derive(Clone)]
-        struct Ch {
-            tag: ChangeTag,
-            text: String,
-            old: Option<usize>,
-            new: Option<usize>,
-        }
-        let mut changes: Vec<Ch> = Vec::new();
-        for ch in diff.iter_all_changes() {
-            changes.push(Ch {
-                tag: ch.tag(),
-                text: ch.value().trim_end_matches(['\n', '\r']).to_string(),
-                old: ch.old_index().map(|i| i + 1),
-                new: ch.new_index().map(|i| i + 1),
-            });
-        }
+/// Run the line-level diff and collect its change stream.
+fn collect_changes(left: &str, right: &str) -> Vec<DiffChange> {
+    let diff = TextDiff::configure()
+        .algorithm(Algorithm::Patience)
+        .diff_lines(left, right);
 
-        // Walk the stream and pair adjacent Delete/Insert runs into Modify
-        // rows so a changed line shows old-vs-new side by side instead of as
-        // two separate add/remove rows. Leftover deletes/inserts become
-        // single-sided rows.
-        let mut rows: Vec<AlignedRow> = Vec::new();
-        let mut i = 0;
-        while i < changes.len() {
-            match changes[i].tag {
-                ChangeTag::Equal => {
-                    let c = &changes[i];
-                    rows.push(AlignedRow {
-                        kind: RowKind::Equal,
-                        left_no: c.old,
-                        right_no: c.new,
-                        left: Some(c.text.clone()),
-                        right: Some(c.text.clone()),
-                        block: None,
-                    });
+    diff.iter_all_changes()
+        .map(|ch| DiffChange {
+            tag: ch.tag(),
+            text: ch.value().trim_end_matches(['\n', '\r']).to_string(),
+            old: ch.old_index().map(|i| i + 1),
+            new: ch.new_index().map(|i| i + 1),
+        })
+        .collect()
+}
+
+/// Walk the change stream and pair adjacent Delete/Insert runs into `Modify`
+/// rows so a changed line shows old-vs-new side by side instead of as two
+/// separate add/remove rows. Leftover deletes/inserts become single-sided
+/// rows.
+fn align_rows(changes: &[DiffChange]) -> Vec<AlignedRow> {
+    let mut rows: Vec<AlignedRow> = Vec::new();
+    let mut i = 0usize;
+    while let Some(c) = changes.get(i) {
+        match c.tag {
+            ChangeTag::Equal => {
+                rows.push(AlignedRow {
+                    kind: RowKind::Equal,
+                    left_no: c.old,
+                    right_no: c.new,
+                    left: Some(c.text.clone()),
+                    right: Some(c.text.clone()),
+                    block: None,
+                });
+                i += 1;
+            }
+            ChangeTag::Delete => {
+                // Gather the full delete run, then the immediately following
+                // insert run; zip them into Modify rows.
+                let del_start = i;
+                while matches!(changes.get(i), Some(next) if next.tag == ChangeTag::Delete) {
                     i += 1;
                 }
-                ChangeTag::Delete => {
-                    // Gather the full delete run, then the immediately
-                    // following insert run; zip them into Modify rows.
-                    let del_start = i;
-                    while i < changes.len() && changes[i].tag == ChangeTag::Delete {
-                        i += 1;
-                    }
-                    let del_end = i;
-                    let ins_start = i;
-                    while i < changes.len() && changes[i].tag == ChangeTag::Insert {
-                        i += 1;
-                    }
-                    let ins_end = i;
-
-                    let dels = &changes[del_start..del_end];
-                    let inss = &changes[ins_start..ins_end];
-                    let paired = dels.len().min(inss.len());
-                    for k in 0..paired {
-                        rows.push(AlignedRow {
-                            kind: RowKind::Modify,
-                            left_no: dels[k].old,
-                            right_no: inss[k].new,
-                            left: Some(dels[k].text.clone()),
-                            right: Some(inss[k].text.clone()),
-                            block: None,
-                        });
-                    }
-                    for d in &dels[paired..] {
-                        rows.push(AlignedRow {
-                            kind: RowKind::Delete,
-                            left_no: d.old,
-                            right_no: None,
-                            left: Some(d.text.clone()),
-                            right: None,
-                            block: None,
-                        });
-                    }
-                    for ins in &inss[paired..] {
-                        rows.push(AlignedRow {
-                            kind: RowKind::Insert,
-                            left_no: None,
-                            right_no: ins.new,
-                            left: None,
-                            right: Some(ins.text.clone()),
-                            block: None,
-                        });
-                    }
+                let del_end = i;
+                let ins_start = i;
+                while matches!(changes.get(i), Some(next) if next.tag == ChangeTag::Insert) {
+                    i += 1;
                 }
-                ChangeTag::Insert => {
-                    let c = &changes[i];
+                let ins_end = i;
+
+                let dels = changes.get(del_start..del_end).unwrap_or(&[]);
+                let inss = changes.get(ins_start..ins_end).unwrap_or(&[]);
+                let paired = dels.len().min(inss.len());
+                for (d, ins) in dels.iter().zip(inss.iter()) {
+                    rows.push(AlignedRow {
+                        kind: RowKind::Modify,
+                        left_no: d.old,
+                        right_no: ins.new,
+                        left: Some(d.text.clone()),
+                        right: Some(ins.text.clone()),
+                        block: None,
+                    });
+                }
+                for d in dels.iter().skip(paired) {
+                    rows.push(AlignedRow {
+                        kind: RowKind::Delete,
+                        left_no: d.old,
+                        right_no: None,
+                        left: Some(d.text.clone()),
+                        right: None,
+                        block: None,
+                    });
+                }
+                for ins in inss.iter().skip(paired) {
                     rows.push(AlignedRow {
                         kind: RowKind::Insert,
                         left_no: None,
-                        right_no: c.new,
+                        right_no: ins.new,
                         left: None,
-                        right: Some(c.text.clone()),
+                        right: Some(ins.text.clone()),
                         block: None,
                     });
-                    i += 1;
                 }
             }
+            ChangeTag::Insert => {
+                rows.push(AlignedRow {
+                    kind: RowKind::Insert,
+                    left_no: None,
+                    right_no: c.new,
+                    left: None,
+                    right: Some(c.text.clone()),
+                    block: None,
+                });
+                i += 1;
+            }
         }
+    }
+    rows
+}
 
-        // Group contiguous change-rows into blocks and stamp the block index
-        // back onto each row.
-        let mut blocks: Vec<ChangeBlock> = Vec::new();
-        let mut r = 0;
-        while r < rows.len() {
-            if !rows[r].is_change() {
-                r += 1;
-                continue;
-            }
-            let first = r;
-            let mut has_add = false;
-            let mut has_del = false;
-            while r < rows.len() && rows[r].is_change() {
-                match rows[r].kind {
-                    RowKind::Insert => has_add = true,
-                    RowKind::Delete => has_del = true,
-                    RowKind::Modify => {
-                        has_add = true;
-                        has_del = true;
-                    }
-                    RowKind::Equal => {}
-                }
-                r += 1;
-            }
-            let last = r - 1;
-            let kind = match (has_add, has_del) {
-                (true, true) => BlockKind::Modified,
-                (true, false) => BlockKind::Added,
-                (false, true) => BlockKind::Removed,
-                (false, false) => BlockKind::Modified,
-            };
-            let idx = blocks.len();
-            for row in rows.iter_mut().take(last + 1).skip(first) {
-                row.block = Some(idx);
-            }
-            blocks.push(ChangeBlock {
-                first_row: first,
-                last_row: last,
-                kind,
-            });
+/// Group contiguous change-rows into blocks and stamp the block index back
+/// onto each row.
+fn group_blocks(rows: &mut [AlignedRow]) -> Vec<ChangeBlock> {
+    let mut blocks: Vec<ChangeBlock> = Vec::new();
+    let mut r = 0usize;
+    while let Some(row) = rows.get(r) {
+        if !row.is_change() {
+            r += 1;
+            continue;
         }
+        let first = r;
+        let mut has_add = false;
+        let mut has_del = false;
+        while let Some(row) = rows.get(r) {
+            if !row.is_change() {
+                break;
+            }
+            match row.kind {
+                RowKind::Insert => has_add = true,
+                RowKind::Delete => has_del = true,
+                RowKind::Modify => {
+                    has_add = true;
+                    has_del = true;
+                }
+                RowKind::Equal => {}
+            }
+            r += 1;
+        }
+        let last = r - 1;
+        let kind = match (has_add, has_del) {
+            (true, false) => BlockKind::Added,
+            (false, true) => BlockKind::Removed,
+            (true, true) | (false, false) => BlockKind::Modified,
+        };
+        let idx = blocks.len();
+        for row in rows.iter_mut().take(last + 1).skip(first) {
+            row.block = Some(idx);
+        }
+        blocks.push(ChangeBlock {
+            first_row: first,
+            last_row: last,
+            kind,
+        });
+    }
+    blocks
+}
+
+impl DiffModel {
+    /// Compute a line-aligned diff of `left` vs `right`.
+    pub fn compute(left: &str, right: &str) -> Self {
+        let changes = collect_changes(left, right);
+        let mut rows = align_rows(&changes);
+        let blocks = group_blocks(&mut rows);
 
         let added = rows.iter().filter(|r| r.kind == RowKind::Insert).count();
         let removed = rows.iter().filter(|r| r.kind == RowKind::Delete).count();
@@ -307,16 +320,129 @@ impl MergeHunk {
     pub fn resolved_lines(&self) -> Vec<String> {
         match self.resolution {
             Resolution::Unchanged => self.base.clone(),
-            Resolution::Ours | Resolution::TookOurs => self.ours.clone(),
+            // Conflict is provisional: show ours until the user decides.
+            Resolution::Ours | Resolution::TookOurs | Resolution::Conflict => self.ours.clone(),
             Resolution::Theirs | Resolution::TookTheirs => self.theirs.clone(),
             Resolution::TookBoth => {
                 let mut v = self.ours.clone();
                 v.extend(self.theirs.clone());
                 v
             }
-            // Provisional: show ours until the user decides.
-            Resolution::Conflict => self.ours.clone(),
         }
+    }
+}
+
+/// Mutable state threaded through the base/gap sweep in [`MergeModel::compute`]
+/// that accumulates clean runs and divergent segments into hunks.
+#[derive(Default)]
+struct MergeBuilder {
+    hunks: Vec<MergeHunk>,
+    clean_run: Vec<String>,
+    seg_base: Vec<String>,
+    seg_ours: Vec<String>,
+    seg_theirs: Vec<String>,
+    seg_any_ours: bool,
+    seg_any_theirs: bool,
+    seg_open: bool,
+}
+
+impl MergeBuilder {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Flush an accumulated run of clean base lines as a passthrough hunk.
+    fn flush_clean(&mut self) {
+        if self.clean_run.is_empty() {
+            return;
+        }
+        let lines = std::mem::take(&mut self.clean_run);
+        self.hunks.push(MergeHunk {
+            base: lines.clone(),
+            ours: lines.clone(),
+            theirs: lines,
+            resolution: Resolution::Unchanged,
+            is_change: false,
+        });
+    }
+
+    /// Close the currently-open divergent segment (if any) into a hunk,
+    /// classifying it as an auto-resolve or a real conflict.
+    fn close_segment(&mut self) {
+        if !self.seg_open {
+            return;
+        }
+        let resolution = if self.seg_any_ours && self.seg_any_theirs {
+            if self.seg_ours == self.seg_theirs {
+                Resolution::Ours
+            } else {
+                Resolution::Conflict
+            }
+        } else if self.seg_any_ours {
+            Resolution::Ours
+        } else {
+            Resolution::Theirs
+        };
+        self.hunks.push(MergeHunk {
+            base: std::mem::take(&mut self.seg_base),
+            ours: std::mem::take(&mut self.seg_ours),
+            theirs: std::mem::take(&mut self.seg_theirs),
+            resolution,
+            is_change: true,
+        });
+        self.seg_any_ours = false;
+        self.seg_any_theirs = false;
+        self.seg_open = false;
+    }
+
+    /// Fold in the insertions (if any) sitting in the gap before a base line
+    /// (or the trailing gap when called for the tail).
+    fn push_gap(&mut self, ours_ins: &[String], theirs_ins: &[String]) {
+        if ours_ins.is_empty() && theirs_ins.is_empty() {
+            return;
+        }
+        self.flush_clean();
+        self.seg_open = true;
+        self.seg_ours.extend(ours_ins.iter().cloned());
+        self.seg_theirs.extend(theirs_ins.iter().cloned());
+        self.seg_any_ours |= !ours_ins.is_empty();
+        self.seg_any_theirs |= !theirs_ins.is_empty();
+    }
+
+    /// Fold in one base line: either it passes through clean, or it (and its
+    /// per-side replacements) join the open divergent segment.
+    fn push_line(&mut self, base_line: &str, orep: Option<&[String]>, trep: Option<&[String]>) {
+        if orep.is_none() && trep.is_none() {
+            self.close_segment();
+            self.clean_run.push(base_line.to_string());
+            return;
+        }
+        self.flush_clean();
+        self.seg_open = true;
+        self.seg_base.push(base_line.to_string());
+        // Replacement (None => keep base line on that side).
+        match orep {
+            Some(lines) => {
+                self.seg_ours.extend(lines.iter().cloned());
+                self.seg_any_ours = true;
+            }
+            None => self.seg_ours.push(base_line.to_string()),
+        }
+        match trep {
+            Some(lines) => {
+                self.seg_theirs.extend(lines.iter().cloned());
+                self.seg_any_theirs = true;
+            }
+            None => self.seg_theirs.push(base_line.to_string()),
+        }
+    }
+
+    /// Finish the sweep: flush any still-open segment/run and return the
+    /// resulting hunks.
+    fn finish(mut self) -> Vec<MergeHunk> {
+        self.close_segment();
+        self.flush_clean();
+        self.hunks
     }
 }
 
@@ -340,141 +466,36 @@ impl MergeModel {
         let theirs_align = SideAlign::build(&base_lines, &split_lines(theirs));
 
         let n = base_lines.len();
-        let mut hunks: Vec<MergeHunk> = Vec::new();
+        let mut builder = MergeBuilder::new();
 
-        // We interleave gaps and base lines: gap(0), line(0), gap(1), line(1),
+        // Interleave gaps and base lines: gap(0), line(0), gap(1), line(1),
         // …, line(n-1), gap(n). A "unit" is either a gap insertion region or a
-        // base line. We classify each unit as clean or divergent, then coalesce
-        // consecutive divergent units into a single hunk.
-        //
-        // `push_clean` flushes a run of clean base lines; `push_change` emits a
-        // divergent hunk built from the accumulated segment.
-        let mut clean_run: Vec<String> = Vec::new();
-        let flush_clean = |hunks: &mut Vec<MergeHunk>, run: &mut Vec<String>| {
-            if !run.is_empty() {
-                let lines = std::mem::take(run);
-                hunks.push(MergeHunk {
-                    base: lines.clone(),
-                    ours: lines.clone(),
-                    theirs: lines,
-                    resolution: Resolution::Unchanged,
-                    is_change: false,
-                });
-            }
-        };
-
-        // Pending divergent segment accumulators.
-        let mut seg_base: Vec<String> = Vec::new();
-        let mut seg_ours: Vec<String> = Vec::new();
-        let mut seg_theirs: Vec<String> = Vec::new();
-        let mut seg_any_ours = false;
-        let mut seg_any_theirs = false;
-        let mut seg_open = false;
-
-        let close_segment = |hunks: &mut Vec<MergeHunk>,
-                             base: &mut Vec<String>,
-                             ours: &mut Vec<String>,
-                             theirs: &mut Vec<String>,
-                             any_ours: &mut bool,
-                             any_theirs: &mut bool,
-                             open: &mut bool| {
-            if !*open {
-                return;
-            }
-            let resolution = if *any_ours && *any_theirs {
-                if *ours == *theirs {
-                    Resolution::Ours
-                } else {
-                    Resolution::Conflict
-                }
-            } else if *any_ours {
-                Resolution::Ours
-            } else {
-                Resolution::Theirs
-            };
-            hunks.push(MergeHunk {
-                base: std::mem::take(base),
-                ours: std::mem::take(ours),
-                theirs: std::mem::take(theirs),
-                resolution,
-                is_change: true,
-            });
-            *any_ours = false;
-            *any_theirs = false;
-            *open = false;
-        };
-
-        // Iterate gaps and lines together.
+        // base line. The builder classifies each unit as clean or divergent,
+        // and coalesces consecutive divergent units into a single hunk.
         for i in 0..=n {
-            // --- Gap insertions before base line i (i == n is the tail). ---
-            let oi = &ours_align.inserts_before[i];
-            let ti = &theirs_align.inserts_before[i];
-            if !oi.is_empty() || !ti.is_empty() {
-                flush_clean(&mut hunks, &mut clean_run);
-                seg_open = true;
-                seg_ours.extend(oi.clone());
-                seg_theirs.extend(ti.clone());
-                seg_any_ours |= !oi.is_empty();
-                seg_any_theirs |= !ti.is_empty();
-            }
+            let oi = ours_align
+                .inserts_before
+                .get(i)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let ti = theirs_align
+                .inserts_before
+                .get(i)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            builder.push_gap(oi, ti);
 
-            if i == n {
+            let Some(base_line) = base_lines.get(i) else {
                 break;
-            }
-
-            // --- Base line i. ---
-            let orep = &ours_align.replace[i];
-            let trep = &theirs_align.replace[i];
-            let o_changed = orep.is_some();
-            let t_changed = trep.is_some();
-
-            if !o_changed && !t_changed {
-                // Clean line: close any open divergent segment, accrue clean.
-                close_segment(
-                    &mut hunks,
-                    &mut seg_base,
-                    &mut seg_ours,
-                    &mut seg_theirs,
-                    &mut seg_any_ours,
-                    &mut seg_any_theirs,
-                    &mut seg_open,
-                );
-                clean_run.push(base_lines[i].clone());
-            } else {
-                flush_clean(&mut hunks, &mut clean_run);
-                seg_open = true;
-                seg_base.push(base_lines[i].clone());
-                // Replacement (None => keep base line on that side).
-                match orep {
-                    Some(lines) => {
-                        seg_ours.extend(lines.clone());
-                        seg_any_ours = true;
-                    }
-                    None => seg_ours.push(base_lines[i].clone()),
-                }
-                match trep {
-                    Some(lines) => {
-                        seg_theirs.extend(lines.clone());
-                        seg_any_theirs = true;
-                    }
-                    None => seg_theirs.push(base_lines[i].clone()),
-                }
-            }
+            };
+            let orep = ours_align.replace.get(i).and_then(Option::as_deref);
+            let trep = theirs_align.replace.get(i).and_then(Option::as_deref);
+            builder.push_line(base_line, orep, trep);
         }
 
-        // Final flushes.
-        close_segment(
-            &mut hunks,
-            &mut seg_base,
-            &mut seg_ours,
-            &mut seg_theirs,
-            &mut seg_any_ours,
-            &mut seg_any_theirs,
-            &mut seg_open,
-        );
-        flush_clean(&mut hunks, &mut clean_run);
-
-        Self { hunks }
+        Self {
+            hunks: builder.finish(),
+        }
     }
 
     /// Indices of hunks that are real changes (conflicts or auto-resolves).
@@ -572,8 +593,10 @@ impl SideAlign {
                 Delete {
                     old_index, old_len, ..
                 } => {
-                    for k in old_index..(old_index + old_len) {
-                        replace[k] = Some(Vec::new());
+                    if let Some(slice) = replace.get_mut(old_index..old_index + old_len) {
+                        for slot in slice {
+                            *slot = Some(Vec::new());
+                        }
                     }
                 }
                 Insert {
@@ -581,11 +604,14 @@ impl SideAlign {
                     new_index,
                     new_len,
                 } => {
-                    let lines: Vec<String> = (new_index..new_index + new_len)
-                        .map(|j| side[j].clone())
-                        .collect();
+                    let lines = side
+                        .get(new_index..new_index + new_len)
+                        .map(<[String]>::to_vec)
+                        .unwrap_or_default();
                     // Insertion attaches to the gap before base line old_index.
-                    inserts_before[old_index.min(n)].extend(lines);
+                    if let Some(slot) = inserts_before.get_mut(old_index.min(n)) {
+                        slot.extend(lines);
+                    }
                 }
                 Replace {
                     old_index,
@@ -593,18 +619,25 @@ impl SideAlign {
                     new_index,
                     new_len,
                 } => {
-                    let lines: Vec<String> = (new_index..new_index + new_len)
-                        .map(|j| side[j].clone())
-                        .collect();
+                    let lines = side
+                        .get(new_index..new_index + new_len)
+                        .map(<[String]>::to_vec)
+                        .unwrap_or_default();
                     // The whole replacement maps onto the first replaced base
                     // line; the remaining replaced base lines become deletions
                     // so the segment spans the entire base range.
                     if old_len == 0 {
-                        inserts_before[old_index.min(n)].extend(lines);
+                        if let Some(slot) = inserts_before.get_mut(old_index.min(n)) {
+                            slot.extend(lines);
+                        }
                     } else {
-                        replace[old_index] = Some(lines);
-                        for k in (old_index + 1)..(old_index + old_len) {
-                            replace[k] = Some(Vec::new());
+                        if let Some(slot) = replace.get_mut(old_index) {
+                            *slot = Some(lines);
+                        }
+                        if let Some(slice) = replace.get_mut(old_index + 1..old_index + old_len) {
+                            for slot in slice {
+                                *slot = Some(Vec::new());
+                            }
                         }
                     }
                 }

@@ -120,7 +120,7 @@ impl ui::widget::Widget for LiveStore {
         self.inner.sync(state, path);
         for (id, action) in self.inner.take_pending_actions() {
             if let Some(item) = self.inner.items().iter().find(|i| i.id == id).cloned() {
-                self.worker.request(Request::Act(item, action));
+                self.worker.request(Request::Act(Box::new(item), action));
             }
         }
         if self.inner.take_refresh_requested() {

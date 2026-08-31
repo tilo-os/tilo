@@ -63,6 +63,14 @@ const DEFAULT_URL: &str = "https://duckduckgo.com";
 const SHOTS_URL: &str = "https://example.org";
 
 /// Root widget for the browser app. See module docs.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, unrelated flag (bootstrap/headless \
+              mode, engine-reported nav state, settings-pane visibility, dirty \
+              gates); grouping them into enums would not express any real \
+              invariant between them and would touch every read/write site \
+              across this file"
+)]
 pub struct BrowserWidget {
     rect: Rect,
     engine: SharedEngine,
@@ -122,6 +130,7 @@ impl BrowserWidget {
 
     /// Set the first URI loaded before the widget bootstraps. The binary uses
     /// this only after validating the URI against Browser's declared schemes.
+    #[must_use]
     pub fn with_initial_uri(mut self, uri: String) -> Self {
         self.initial_url = uri;
         self
@@ -243,7 +252,7 @@ impl BrowserWidget {
 
     /// One-shot CRDT bootstrap so children can read/write their paths
     /// on the first frame.
-    fn bootstrap_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
         if state.get(root, URL_PATH).ok().flatten().is_none()
             && let Ok(obj_id) = state.put_object(root, URL_PATH, ObjType::Text)
         {
@@ -474,7 +483,10 @@ impl BrowserWidget {
                 ((r.y1 - full.y0) / full.height()) as f32,
             ]
         });
-        *self.content_rect.lock().unwrap() = frac;
+        *self
+            .content_rect
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = frac;
     }
 }
 
@@ -571,13 +583,21 @@ impl Widget for BrowserWidget {
             },
             ..Default::default()
         };
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; `child_node` was just built in this one above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "every child node was just created in this same tree"
+        )]
         let node = taffy.new_with_children(style, &[child_node]).unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),

@@ -248,9 +248,9 @@ impl DiffMergeApp {
     /// ([`Widget::take_committed_action`]). The in-memory merge model was already
     /// updated by the chip handler for immediate feedback and is reconciled from
     /// the document on the next `sync`.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::DiffmergeAction) {
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::DiffmergeAction) {
         self.actions
-            .dispatch(doc, crate::actions::DIFFMERGE_ACTION_TYPE, &action);
+            .dispatch(doc, crate::actions::DIFFMERGE_ACTION_TYPE, action);
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
@@ -345,8 +345,9 @@ impl DiffMergeApp {
                 self.pending_left = Some((label, content));
                 true
             }
-            Some((llabel, lcontent)) => {
-                self.diff.set_inputs(&llabel, &lcontent, &label, &content);
+            Some((left_label, left_content)) => {
+                self.diff
+                    .set_inputs(&left_label, &left_content, &label, &content);
                 self.mode = Mode::Diff;
                 self.structure_dirty = true;
                 false
@@ -487,7 +488,7 @@ impl DiffMergeApp {
         // Poke only on a genuine change to the summary, never every frame.
         if label != self.last_status {
             self.status_bubble.poke(now);
-            self.last_status = label.clone();
+            self.last_status.clone_from(&label);
         }
 
         let text_size = 12.0f32;
@@ -520,6 +521,82 @@ impl DiffMergeApp {
         );
         ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
         scene.pop_layer();
+    }
+
+    /// Keyboard shortcuts: F8/F7 or n/p for next/prev change, 1/2 for mode.
+    /// Returns `true` if the event was consumed.
+    fn handle_keyboard_shortcut(&mut self, event: &WindowEvent) -> bool {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+
+        match logical_key {
+            Key::Character(ch) => match ch.as_str() {
+                "n" | "N" => {
+                    self.act(Action::NextChange);
+                    true
+                }
+                "p" | "P" => {
+                    self.act(Action::PrevChange);
+                    true
+                }
+                "1" => {
+                    self.act(Action::ModeDiff);
+                    true
+                }
+                "2" => {
+                    self.act(Action::ModeMerge);
+                    true
+                }
+                _ => false,
+            },
+            Key::Named(NamedKey::F8) => {
+                self.act(Action::NextChange);
+                true
+            }
+            Key::Named(NamedKey::F7) => {
+                self.act(Action::PrevChange);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Toolbar button clicks. Returns `true` if the event was consumed.
+    fn handle_toolbar_click(&mut self, event: &WindowEvent) -> bool {
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let hit = self
+            .tool_hits
+            .iter()
+            .find(|t| t.rect.contains(self.cursor))
+            .map(|t| t.action);
+        let Some(action) = hit else {
+            return false;
+        };
+        self.act(action);
+        true
+    }
+}
+
+impl Default for DiffMergeApp {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -648,72 +725,14 @@ impl Widget for DiffMergeApp {
             self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
 
-        // Keyboard shortcuts: F8/F7 or n/p for next/prev change, 1/2 for mode.
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            match logical_key {
-                Key::Character(ch) => match ch.as_str() {
-                    "n" | "N" => {
-                        self.act(Action::NextChange);
-                        *handled = true;
-                        return;
-                    }
-                    "p" | "P" => {
-                        self.act(Action::PrevChange);
-                        *handled = true;
-                        return;
-                    }
-                    "1" => {
-                        self.act(Action::ModeDiff);
-                        *handled = true;
-                        return;
-                    }
-                    "2" => {
-                        self.act(Action::ModeMerge);
-                        *handled = true;
-                        return;
-                    }
-                    _ => {}
-                },
-                Key::Named(NamedKey::F8) => {
-                    self.act(Action::NextChange);
-                    *handled = true;
-                    return;
-                }
-                Key::Named(NamedKey::F7) => {
-                    self.act(Action::PrevChange);
-                    *handled = true;
-                    return;
-                }
-                _ => {}
-            }
+        if self.handle_keyboard_shortcut(event) {
+            *handled = true;
+            return;
         }
 
-        // Toolbar clicks.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            let hit = self
-                .tool_hits
-                .iter()
-                .find(|t| t.rect.contains(self.cursor))
-                .map(|t| t.action);
-            if let Some(action) = hit {
-                self.act(action);
-                *handled = true;
-                return;
-            }
+        if self.handle_toolbar_click(event) {
+            *handled = true;
+            return;
         }
 
         // Route to the active view.
@@ -751,7 +770,7 @@ impl Widget for DiffMergeApp {
                 // it through the shared action path so the chip and Ctrl+K produce
                 // the same replayable action under one undo boundary.
                 if let Some(action) = self.merge.take_pending_action() {
-                    self.perform_action(state, action);
+                    self.perform_action(state, &action);
                     *handled = true;
                 }
             }
@@ -966,7 +985,7 @@ mod tests {
             .merge
             .take_pending_action()
             .expect("a chip click queues a resolution");
-        app.perform_action(&mut state.doc, action);
+        app.perform_action(&mut state.doc, &action);
 
         assert!(
             app.last_dispatched().is_some(),
@@ -1035,7 +1054,7 @@ mod tests {
             .unwrap();
         let from_spec = match &spec.input {
             qos_actions::ActionInput::Immediate(e) => e.clone(),
-            _ => panic!("take-theirs is immediate"),
+            qos_actions::ActionInput::Prompted { .. } => panic!("take-theirs is immediate"),
         };
 
         // Chip path: `resolve` queues the action a click builds.

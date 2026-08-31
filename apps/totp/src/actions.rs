@@ -158,8 +158,12 @@ fn move_within(doc: &mut Doc, id: &str, delta: i64) {
     if target < 0 || target as usize >= ordered.len() {
         return; // already at the edge
     }
-    let a = &ordered[pos];
-    let b = &ordered[target as usize];
+    let Some(a) = ordered.get(pos) else {
+        return;
+    };
+    let Some(b) = ordered.get(target as usize) else {
+        return;
+    };
     AuthDoc::set_order(doc, a.id, b.order);
     AuthDoc::set_order(doc, b.id, a.order);
 }
@@ -173,6 +177,16 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`TotpAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns an action into a
 /// replayable envelope.
+///
+/// # Panics
+/// Never in practice: every `TotpAction` field is a `String`, `u8` or `u32`,
+/// all of which `serde_json` always serializes; this only panics if a future
+/// field type introduces a case JSON can't represent (e.g. a non-string map
+/// key or a non-finite float).
+#[allow(
+    clippy::expect_used,
+    reason = "TotpAction's fields are all JSON-safe primitives; see this function's # Panics doc"
+)]
 pub fn encode(action: &TotpAction) -> EncodedAction {
     EncodedAction::encode(TOTP_ACTION_TYPE, action).expect("TotpAction is always serializable")
 }
@@ -236,6 +250,10 @@ pub fn move_down_action(id: AccountId) -> TotpAction {
 // Resource tree
 // ===========================================================================
 
+#[allow(
+    clippy::expect_used,
+    reason = "TotpAction's fields are all JSON-safe primitives, and id/label are static strings; see encode()'s # Panics doc"
+)]
 fn encode_spec(id: &str, label: &str, action: &TotpAction) -> ActionSpec {
     ActionSpec::immediate(id, label, TOTP_ACTION_TYPE, action).expect("encode totp action")
 }
@@ -376,14 +394,14 @@ mod tests {
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 

@@ -11,19 +11,30 @@
 //! percent/date styling (`office:value` + a small set of named styles), and
 //! live formulas (`table:formula`, in ODF `of:=SUM([.A1:.A3])` form).
 
-use std::io::Write;
+use std::fmt::Write as _;
+use std::io::Write as _;
 use std::path::Path;
 
 use crate::model::{CellFormat, addr_to_a1};
 use crate::xlsx::{ImportedCell, SheetTable};
 
 /// Read every sheet of an `.ods` document into tables (via calamine).
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened as a valid `.ods`
+/// document, or if a sheet's cell or formula range cannot be read.
 pub fn read_ods(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
     let mut wb: calamine::Ods<_> = calamine::open_workbook(path)?;
     crate::xlsx::read_calamine(&mut wb)
 }
 
 /// Write tables to an `.ods` document.
+///
+/// # Errors
+///
+/// Returns an error if the output file cannot be created, or if writing
+/// any ZIP member (`mimetype`, the manifest, or `content.xml`) fails.
 pub fn write_ods(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
     let file = std::fs::File::create(path)?;
     let mut zip = zip::ZipWriter::new(file);
@@ -68,19 +79,21 @@ fn content_xml(tables: &[SheetTable]) -> String {
     s.push_str("</office:automatic-styles>");
     s.push_str("<office:body><office:spreadsheet>");
     for table in tables {
-        s.push_str(&format!(
+        let _ = write!(
+            s,
             r#"<table:table table:name="{}">"#,
             xml_escape_attr(&table.name)
-        ));
+        );
         let cols = table.rows.iter().map(std::vec::Vec::len).max().unwrap_or(0);
-        s.push_str(&format!(
+        let _ = write!(
+            s,
             r#"<table:table-column table:number-columns-repeated="{}"/>"#,
             cols.max(1)
-        ));
+        );
         for row in &table.rows {
             s.push_str("<table:table-row>");
             for cell in row {
-                s.push_str(&cell_xml(cell));
+                s.push_str(&cell_xml(cell.as_ref()));
             }
             s.push_str("</table:table-row>");
         }
@@ -96,7 +109,7 @@ const NUMBER_STYLES: &str = r#"<number:currency-style style:name="ceUSD"><number
 /// Emit one `<table:table-cell>` (or an empty one). A cell holding a formula
 /// carries a `table:formula` attribute (ODF `of:=…` form) alongside its cached
 /// value so `LibreOffice` shows a live formula and our importer can recover it.
-fn cell_xml(cell: &Option<ImportedCell>) -> String {
+fn cell_xml(cell: Option<&ImportedCell>) -> String {
     let Some(cell) = cell else {
         return "<table:table-cell/>".into();
     };
@@ -172,22 +185,23 @@ fn rewrite_refs_to_ods(body: &str) -> String {
     let mut out = String::new();
     let mut cursor = 0;
     for span in &spans {
-        if span.start > cursor {
-            out.extend(chars[cursor..span.start].iter());
+        if let Some(slice) = chars.get(cursor..span.start) {
+            out.extend(slice.iter());
         }
         if span.tl == span.br {
-            out.push_str(&format!("[.{}]", addr_to_a1(span.tl.0, span.tl.1)));
+            let _ = write!(out, "[.{}]", addr_to_a1(span.tl.0, span.tl.1));
         } else {
-            out.push_str(&format!(
+            let _ = write!(
+                out,
                 "[.{}:.{}]",
                 addr_to_a1(span.tl.0, span.tl.1),
                 addr_to_a1(span.br.0, span.br.1)
-            ));
+            );
         }
         cursor = span.end;
     }
-    if cursor < chars.len() {
-        out.extend(chars[cursor..].iter());
+    if let Some(slice) = chars.get(cursor..) {
+        out.extend(slice.iter());
     }
     out
 }
@@ -206,12 +220,12 @@ mod tests {
     use super::*;
     use crate::model::{CellValue, Currency};
 
-    fn cell(raw: &str, format: CellFormat) -> Option<ImportedCell> {
-        Some(ImportedCell {
+    fn cell(raw: &str, format: CellFormat) -> ImportedCell {
+        ImportedCell {
             raw: raw.into(),
             format,
             formula: None,
-        })
+        }
     }
 
     fn sample_table() -> SheetTable {
@@ -219,16 +233,16 @@ mod tests {
             name: "Budget".into(),
             rows: vec![
                 vec![
-                    cell("Item", CellFormat::Text),
-                    cell("Cost", CellFormat::Text),
+                    Some(cell("Item", CellFormat::Text)),
+                    Some(cell("Cost", CellFormat::Text)),
                 ],
                 vec![
-                    cell("Rent", CellFormat::Text),
-                    cell("1200", CellFormat::Currency(Currency::USD)),
+                    Some(cell("Rent", CellFormat::Text)),
+                    Some(cell("1200", CellFormat::Currency(Currency::USD))),
                 ],
                 vec![
-                    cell("Tax rate", CellFormat::Text),
-                    cell("0.21", CellFormat::Percent),
+                    Some(cell("Tax rate", CellFormat::Text)),
+                    Some(cell("0.21", CellFormat::Percent)),
                 ],
             ],
         }

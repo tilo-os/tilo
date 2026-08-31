@@ -38,7 +38,9 @@ fn fake_sig(byte: u8) -> Signature {
 }
 
 fn t(secs: u64) -> SystemTime {
-    SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(secs))
+        .unwrap()
 }
 
 // ---------- round-trips for every wire type ----------

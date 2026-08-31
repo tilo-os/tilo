@@ -55,6 +55,10 @@ pub fn vline(scene: &mut Scene, t: Affine, x: f64, y0: f64, y1: f64, color: Colo
 }
 
 /// Left-aligned text at a baseline-ish position. `y` is the top of the line.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a thin pass-through over TextRenderer::draw_text's own geometry + style params, matching the sibling draw helpers below"
+)]
 pub fn text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -193,9 +197,8 @@ pub fn kind_color(theme: &Theme, kind: ChangeKind) -> Color {
     match kind {
         ChangeKind::Added | ChangeKind::Untracked => c.semantic.success,
         ChangeKind::Modified => c.semantic.warning,
-        ChangeKind::Deleted => c.semantic.danger,
+        ChangeKind::Deleted | ChangeKind::Conflicted => c.semantic.danger,
         ChangeKind::Renamed => c.semantic.info,
-        ChangeKind::Conflicted => c.semantic.danger,
     }
 }
 
@@ -217,7 +220,10 @@ pub fn author_color(theme: &Theme, email: &str) -> Color {
         c.accent[6],
         c.semantic.danger,
     ];
-    palette[(h.finish() % palette.len() as u64) as usize]
+    // `palette` is a fixed non-empty array, so the modulo below always lands
+    // in bounds; the fallback is unreachable in practice.
+    let idx = (h.finish() % palette.len() as u64) as usize;
+    palette.get(idx).copied().unwrap_or(c.semantic.danger)
 }
 
 /// Lane colour for the commit graph — cycles through accent + semantic
@@ -232,13 +238,22 @@ pub fn lane_color(theme: &Theme, lane: usize) -> Color {
         c.accent[7],
         c.semantic.danger,
     ];
-    palette[lane % palette.len()]
+    // `palette` is a fixed non-empty array, so the modulo below always lands
+    // in bounds; the fallback is unreachable in practice.
+    palette
+        .get(lane % palette.len())
+        .copied()
+        .unwrap_or(c.semantic.danger)
 }
 
 /// Two-initials avatar disc for an author. `color` is the author's stable
 /// per-email hue (see [`author_color`]); the disc + centred monogram are
 /// painted by the shared toolkit avatar so shape/placement match every other
 /// app. Returns the disc diameter.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a thin pass-through over the scene + geometry + style params every draw helper in this module takes"
+)]
 pub fn avatar(
     scene: &mut Scene,
     tr: &mut TextRenderer,

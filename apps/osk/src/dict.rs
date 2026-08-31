@@ -91,7 +91,14 @@ impl Dictionary {
         let max_weight = entries.first().map_or(1, |e| e.weight).max(1);
 
         let mut by_lex: Vec<u32> = (0..entries.len() as u32).collect();
-        by_lex.sort_by(|&a, &b| entries[a as usize].word.cmp(&entries[b as usize].word));
+        // `by_lex` is built from `0..entries.len()` just above, so every
+        // index is in range; `get` keeps that an invariant rather than an
+        // indexing panic.
+        by_lex.sort_by(|&a, &b| {
+            let wa = entries.get(a as usize).map_or("", |e| e.word.as_str());
+            let wb = entries.get(b as usize).map_or("", |e| e.word.as_str());
+            wa.cmp(wb)
+        });
 
         Self {
             entries,
@@ -117,8 +124,11 @@ impl Dictionary {
     /// The compact frequency weight of `word` (case-insensitive), or `None`
     /// if absent.
     pub fn weight(&self, word: &str) -> Option<u32> {
+        // `lex_index_of` always returns a valid index into `entries` when it
+        // returns `Some` (see its doc); `get` keeps that an invariant.
         self.lex_index_of(&word.to_lowercase())
-            .map(|i| self.entries[i].weight)
+            .and_then(|i| self.entries.get(i))
+            .map(|e| e.weight)
     }
 
     /// Whether `word` (case-insensitive) is in the dictionary.
@@ -147,9 +157,15 @@ impl Dictionary {
     pub fn iter_prefix<'a>(&'a self, prefix: &str) -> impl Iterator<Item = &'a Entry> + 'a {
         let prefix = prefix.to_lowercase();
         let (lo, hi) = self.lex_range(&prefix);
-        self.by_lex[lo..hi]
+        // `lex_range` always returns a `lo..hi` window inside `by_lex`, and
+        // every `by_lex` value is a valid index into `entries` (see the
+        // field doc); `get`/`filter_map` keep those invariants rather than
+        // indexing panics.
+        self.by_lex
+            .get(lo..hi)
+            .unwrap_or(&[])
             .iter()
-            .map(move |&i| &self.entries[i as usize])
+            .filter_map(move |&i| self.entries.get(i as usize))
     }
 
     /// Top-`n` completions of `prefix`, ranked by frequency descending.
@@ -164,10 +180,16 @@ impl Dictionary {
 
     /// Index into `entries` for an exact (already-lowercased) word.
     fn lex_index_of(&self, word: &str) -> Option<usize> {
-        let res = self
-            .by_lex
-            .binary_search_by(|&i| self.entries[i as usize].word.as_str().cmp(word));
-        res.ok().map(|pos| self.by_lex[pos] as usize)
+        // Every value in `by_lex` is a valid index into `entries` (see the
+        // field doc), so `get` here never actually misses.
+        let res = self.by_lex.binary_search_by(|&i| {
+            self.entries
+                .get(i as usize)
+                .map_or(std::cmp::Ordering::Equal, |e| e.word.as_str().cmp(word))
+        });
+        res.ok()
+            .and_then(|pos| self.by_lex.get(pos))
+            .map(|&i| i as usize)
     }
 
     /// `[lo, hi)` range in `by_lex` of words with the given prefix.
@@ -175,16 +197,22 @@ impl Dictionary {
         if prefix.is_empty() {
             return (0, self.by_lex.len());
         }
-        // Lower bound: first word >= prefix.
-        let lo = self
-            .by_lex
-            .partition_point(|&i| self.entries[i as usize].word.as_str() < prefix);
+        // Lower bound: first word >= prefix. Every `by_lex` value indexes
+        // `entries` in range (see the field doc); `get` keeps that an
+        // invariant instead of an indexing panic in the comparator.
+        let lo = self.by_lex.partition_point(|&i| {
+            self.entries
+                .get(i as usize)
+                .is_some_and(|e| e.word.as_str() < prefix)
+        });
         // Upper bound: first word that does not start with prefix. We compare
         // against `prefix` truncated-then-incremented conceptually by checking
         // the `starts_with` boundary directly.
-        let hi = self.by_lex[lo..]
-            .partition_point(|&i| self.entries[i as usize].word.as_str().starts_with(prefix))
-            + lo;
+        let hi = self.by_lex.get(lo..).unwrap_or(&[]).partition_point(|&i| {
+            self.entries
+                .get(i as usize)
+                .is_some_and(|e| e.word.as_str().starts_with(prefix))
+        }) + lo;
         (lo, hi)
     }
 }

@@ -27,6 +27,13 @@
 //! to share the old bottom legend now lives in the header, appearing
 //! only while a filter is active.
 
+#![allow(
+    clippy::many_single_char_names,
+    reason = "t (Affine), c (Colors), r/d (Rect), x/y/w/h (geometry) and their \
+              close relatives are the standard vocabulary shared by every \
+              draw helper in this file"
+)]
+
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -91,6 +98,13 @@ struct Regions {
     dropdown: Vec<(Rect, String, String)>, // (rect, value, label)
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, unrelated flag (live-tail state, \
+              focus, repaint gate, live-binary vs. --shots mode); grouping \
+              them into enums would not express any real invariant between \
+              them and would touch every read/write site across this file"
+)]
 pub struct LogsApp {
     /// Full journal — external read-only data, not CRDT state.
     entries: Vec<LogEntry>,
@@ -245,7 +259,11 @@ impl LogsApp {
         self.filtered
             .iter()
             .copied()
-            .find(|&i| self.entries[i].priority.level() <= Priority::Err.level())
+            .find(|&i| {
+                self.entries
+                    .get(i)
+                    .is_some_and(|e| e.priority.level() <= Priority::Err.level())
+            })
             .or_else(|| self.filtered.first().copied())
     }
 
@@ -290,7 +308,7 @@ impl LogsApp {
             .and_then(|abs| self.filtered_pos(abs))
             .unwrap_or(0) as isize;
         let new_pos = (cur_pos + delta).clamp(0, self.filtered.len() as isize - 1) as usize;
-        let abs = self.filtered[new_pos];
+        let abs = self.filtered.get(new_pos).copied().unwrap_or(0);
         self.sel_raw = abs as i64;
         LogsDoc::set_selected(doc, root, abs as i64);
         self.scroll_into_view(new_pos);
@@ -321,7 +339,41 @@ impl LogsApp {
         // there is no standing legend strip to reserve room for.
         let content_bottom = y0 + h;
 
-        // Filter bar controls.
+        let (search, unit_trigger, boot_trigger, chips) = Self::filter_bar_regions(x0, w, filter);
+        let (live_pill, clear_btn) = self.header_controls(x0, w, header);
+
+        // Content area between the filter bar and the window bottom.
+        let cx0 = x0 + PAD;
+        let cy0 = content_top + PAD;
+        let cx1 = x0 + w - PAD;
+        let cy1 = content_bottom - PAD;
+        let gap = 14.0;
+
+        let (list_header, list_body, detail, back_btn, narrow) =
+            self.content_split(w, cx0, cy0, cx1, cy1, gap);
+        let dropdown = self.dropdown_regions(unit_trigger, boot_trigger);
+
+        Regions {
+            header,
+            filter,
+            search,
+            unit_trigger,
+            boot_trigger,
+            live_pill,
+            clear_btn,
+            chips,
+            list_header,
+            list_body,
+            detail,
+            narrow,
+            back_btn,
+            dropdown,
+        }
+    }
+
+    /// `regions()`'s filter-bar controls: search box, unit/boot dropdown
+    /// triggers, and the right-aligned severity chips.
+    fn filter_bar_regions(x0: f64, w: f64, filter: Rect) -> (Rect, Rect, Rect, Vec<Rect>) {
         let fy = filter.y0 + (FILTER_H - CONTROL_H) / 2.0;
         let mut fx = x0 + PAD;
         let search = Rect::new(fx, fy, fx + 320.0, fy + CONTROL_H);
@@ -341,10 +393,14 @@ impl LogsApp {
                 Rect::new(cx, fy, cx + chip_w, fy + CONTROL_H)
             })
             .collect();
+        (search, unit_trigger, boot_trigger, chips)
+    }
 
-        // Header: live pill + clear filters, right-aligned. The live pill is
-        // the rightmost control; the "Clear filters" button sits just left of
-        // it and is only laid out (non-zero) while a filter is active.
+    /// `regions()`'s header: live pill + clear filters, right-aligned. The
+    /// live pill is the rightmost control; the "Clear filters" button sits
+    /// just left of it and is only laid out (non-zero) while a filter is
+    /// active.
+    fn header_controls(&self, x0: f64, w: f64, header: Rect) -> (Rect, Rect) {
         let hy = header.y0 + (HEADER_H - 30.0) / 2.0;
         let live_pill = Rect::new(x0 + w - PAD - 124.0, hy, x0 + w - PAD, hy + 30.0);
         let clear_btn = if self.filter.is_clear() {
@@ -354,16 +410,27 @@ impl LogsApp {
             let x1 = live_pill.x0 - 12.0;
             Rect::new(x1 - 104.0, cy, x1, cy + 26.0)
         };
+        (live_pill, clear_btn)
+    }
 
-        // Content area between the filter bar and the window bottom.
-        let cx0 = x0 + PAD;
-        let cy0 = content_top + PAD;
-        let cx1 = x0 + w - PAD;
-        let cy1 = content_bottom - PAD;
-        let gap = 14.0;
-
-        // Responsive split: side-by-side when wide, single-pane push when
-        // narrow. The choice is driven purely from the allocated width.
+    /// `regions()`'s responsive split: side-by-side when wide, single-pane
+    /// push when narrow. The choice is driven purely from the allocated
+    /// width. Returns `(list_header, list_body, detail, back_btn, narrow)`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one regions() section threading the shared content-area \
+                  geometry (width + the four content corners + pane gap) \
+                  through the list/detail split"
+    )]
+    fn content_split(
+        &self,
+        w: f64,
+        cx0: f64,
+        cy0: f64,
+        cx1: f64,
+        cy1: f64,
+        gap: f64,
+    ) -> (Rect, Rect, Rect, Rect, bool) {
         let narrow = PushNav::is_narrow(w);
         let (list_header, list_body, detail, back_btn) = if narrow {
             // Single-pane push: the list and detail each fill the whole
@@ -392,8 +459,15 @@ impl LogsApp {
             let detail_rect = Rect::new(cx0 + list_w + gap, cy0, cx1, cy1);
             (lh, lb, detail_rect, Rect::ZERO)
         };
+        (list_header, list_body, detail, back_btn, narrow)
+    }
 
-        // Open dropdown rows.
+    /// `regions()`'s open dropdown rows (empty when no popup is open).
+    fn dropdown_regions(
+        &self,
+        unit_trigger: Rect,
+        boot_trigger: Rect,
+    ) -> Vec<(Rect, String, String)> {
         let mut dropdown = Vec::new();
         if let Some(p) = self.popup {
             let (trigger, mut items) = match p {
@@ -422,23 +496,7 @@ impl LogsApp {
                 dropdown.push((irect, val, label));
             }
         }
-
-        Regions {
-            header,
-            filter,
-            search,
-            unit_trigger,
-            boot_trigger,
-            live_pill,
-            clear_btn,
-            chips,
-            list_header,
-            list_body,
-            detail,
-            narrow,
-            back_btn,
-            dropdown,
-        }
+        dropdown
     }
 }
 
@@ -476,10 +534,10 @@ fn fill_circle(scene: &mut Scene, t: Affine, center: Point, radius: f64, c: Colo
 fn text_at(
     tr: &mut TextRenderer,
     scene: &mut Scene,
-    t: Affine,
-    s: &str,
+    transform: Affine,
+    text: &str,
     size: f32,
-    c: Color,
+    color: Color,
     x: f64,
     y: f64,
     weight: TextWeight,
@@ -487,10 +545,10 @@ fn text_at(
 ) {
     tr.draw_text_styled(
         scene,
-        s,
+        text,
         size,
-        c,
-        t * Affine::translate((x, y)),
+        color,
+        transform * Affine::translate((x, y)),
         None,
         weight,
         false,
@@ -526,7 +584,7 @@ fn elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64, mono: bool) -> S
         if keep == 0 {
             return "…".to_string();
         }
-        let cand: String = chars[..keep].iter().collect::<String>() + "…";
+        let cand: String = chars.get(..keep).unwrap_or(&[]).iter().collect::<String>() + "…";
         if f64::from(measure(tr, &cand)) <= max_w {
             return cand;
         }
@@ -560,9 +618,22 @@ impl LogsApp {
         // The OS owns the window title/app-name — the header draws only its
         // functional controls (the entry counts, an optional Clear-filters
         // button, and the live-tail pill).
+        self.draw_header_clear_button(scene, t, tr, theme, reg);
+        self.draw_header_counts(scene, t, tr, theme, reg);
+        self.draw_header_live_pill(scene, t, tr, theme, reg);
+    }
 
-        // Clear-filters button — right-aligned, just left of the live pill,
-        // shown only while a filter is active (its rect is zero otherwise).
+    /// `draw_header`'s Clear-filters button — right-aligned, just left of the
+    /// live pill, shown only while a filter is active (its rect is zero
+    /// otherwise).
+    fn draw_header_clear_button(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
         if !self.filter.is_clear() && reg.clear_btn.width() > 0.0 {
             fill_round(
                 scene,
@@ -595,8 +666,18 @@ impl LogsApp {
                 false,
             );
         }
+    }
 
-        // Counts, just left of whichever right-aligned control is present.
+    /// `draw_header`'s entry counts, just left of whichever right-aligned
+    /// control is present.
+    fn draw_header_counts(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
         let counts = format!(
             "{} shown · {} total",
             self.filtered.len(),
@@ -620,8 +701,18 @@ impl LogsApp {
             TextWeight::Medium,
             false,
         );
+    }
 
-        // Live-tail pill.
+    /// `draw_header`'s live-tail pill.
+    fn draw_header_live_pill(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
+        let c = &theme.tokens.colors;
         let on = self.live_tail;
         let pill_bg = if on {
             theme.accent_primary
@@ -647,7 +738,7 @@ impl LogsApp {
             4.0,
             dot_c,
         );
-        let label = if on { "Live tail" } else { "Live tail" };
+        let label = "Live tail";
         let lc = if on { Color::WHITE } else { theme.text_dim };
         text_at(
             tr,
@@ -672,7 +763,6 @@ impl LogsApp {
         reg: &Regions,
     ) {
         let c = &theme.tokens.colors;
-        let tc = Self::theme_colors(theme);
         fill_rect(scene, t, reg.filter, c.surfaces.base);
         line(
             scene,
@@ -684,8 +774,22 @@ impl LogsApp {
             c.border_standard,
             1.0,
         );
+        self.draw_filter_search_box(scene, t, tr, theme, reg);
+        self.draw_filter_dropdown_triggers(scene, t, tr, theme, reg);
+        self.draw_filter_severity_chips(scene, t, tr, theme, reg);
+    }
 
-        // --- Search box ---
+    /// `draw_filter_bar`'s search box: field background, focus ring, search
+    /// glyph, and the shared [`TextInput`] itself.
+    fn draw_filter_search_box(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
+        let c = &theme.tokens.colors;
         let focused = self.search_input.is_focused();
         fill_round(
             scene,
@@ -742,14 +846,23 @@ impl LogsApp {
         ));
         let presence = PresenceCtx::empty();
         self.search_input.draw(scene, t, tr, theme, &presence);
+    }
 
-        // --- Unit + boot dropdown triggers ---
+    /// `draw_filter_bar`'s unit + boot dropdown triggers.
+    fn draw_filter_dropdown_triggers(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
         let unit_label = if self.filter.unit.is_empty() {
             "All units".to_string()
         } else {
             self.filter.unit.clone()
         };
-        self.draw_dropdown_trigger(
+        Self::draw_dropdown_trigger(
             scene,
             t,
             tr,
@@ -772,7 +885,7 @@ impl LogsApp {
                     |(_, l)| l.clone(),
                 )
         };
-        self.draw_dropdown_trigger(
+        Self::draw_dropdown_trigger(
             scene,
             t,
             tr,
@@ -783,10 +896,23 @@ impl LogsApp {
             self.popup == Some(Popup::Boot),
             !self.filter.boot.is_empty(),
         );
+    }
 
-        // --- Severity threshold chips ---
+    /// `draw_filter_bar`'s severity threshold chips.
+    fn draw_filter_severity_chips(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
+        let c = &theme.tokens.colors;
+        let tc = Self::theme_colors(theme);
         for (i, chip) in reg.chips.iter().enumerate() {
-            let p = Priority::ALL[i];
+            let Some(p) = Priority::ALL.get(i).copied() else {
+                continue;
+            };
             let active = p.level() <= self.filter.min_priority;
             let col = p.color(&tc);
             if active {
@@ -820,7 +946,6 @@ impl LogsApp {
 
     #[allow(clippy::too_many_arguments)]
     fn draw_dropdown_trigger(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1070,8 +1195,12 @@ impl LogsApp {
         let first = (f64::from(self.scroll) / ROW_H).floor().max(0.0) as usize;
         let visible = (body.height() / ROW_H).ceil() as usize + 2;
         for pos in first..(first + visible).min(self.filtered.len()) {
-            let abs = self.filtered[pos];
-            let e = &self.entries[abs];
+            let Some(&abs) = self.filtered.get(pos) else {
+                continue;
+            };
+            let Some(e) = self.entries.get(abs) else {
+                continue;
+            };
             let row_y0 = body.y0 + pos as f64 * ROW_H - f64::from(self.scroll);
             let row = Rect::new(body.x0, row_y0, body.x1, row_y0 + ROW_H);
             if row.y1 < body.y0 || row.y0 > body.y1 {

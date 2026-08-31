@@ -78,6 +78,20 @@ impl EntryChangeRequest {
 
 /// Compute the signing digest for a `(action, entry)` pair.
 /// The entry's `signature_hex` field is deliberately ignored.
+///
+/// # Panics
+///
+/// Panics if `postcard::to_stdvec` fails to encode the payload. In
+/// practice unreachable — every field is owned data with the derived
+/// `Serialize` impl, and postcard only errors on a failing custom
+/// `Serialize` impl or a sequence length overflowing its varint
+/// encoding, neither of which applies here (see
+/// [`crate::entry::entry_signing_message`]'s `# Panics` note).
+#[allow(
+    clippy::expect_used,
+    reason = "postcard::to_stdvec cannot fail for this owned, derive(Serialize) payload — see \
+              the # Panics note above; propagating a phantom Result buys no real safety here"
+)]
 pub fn change_signing_message(action: EntryAction, entry: &RegistryEntry) -> [u8; 32] {
     let payload = ChangeSigningPayload {
         action,

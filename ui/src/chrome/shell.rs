@@ -287,6 +287,11 @@ fn light_ends(theme: &Theme) -> (f64, f64) {
 /// matters: in a premultiplying renderer, an alpha pushed past 1.0 doesn't
 /// no-op, it silently brightens the colour components too.
 fn scaled(base: Color, gain: f32) -> Color {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "explicitly clamped to 0.0..=255.0 immediately above the cast"
+    )]
     let a = (f32::from(base.a()) * gain).clamp(0.0, 255.0).round() as u8;
     Color::from_rgba8(base.r(), base.g(), base.b(), a)
 }
@@ -388,6 +393,12 @@ pub fn paint_glass_body(
         let glow = scaled(glow, opacity);
         let (lit, seated) = ends;
         let y = |t: f64| Point::new(inset.x0, inset.y0 + inset.height() * t);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "GLASS_GLOW_SPAN is a fixed compile-time constant; the f64->f32 \
+                      narrowing is deterministic, not data-dependent"
+        )]
+        let glow_span_offset = GLASS_GLOW_SPAN as f32;
         let grad = vello::peniko::Gradient::new_linear(y(lit), y(seated))
             .with_extend(vello::peniko::Extend::Pad)
             .with_stops(
@@ -397,7 +408,7 @@ pub fn paint_glass_body(
                         color: glow.into(),
                     },
                     vello::peniko::ColorStop {
-                        offset: GLASS_GLOW_SPAN as f32,
+                        offset: glow_span_offset,
                         color: glow.with_alpha_factor(0.0).into(),
                     },
                 ][..],
@@ -537,6 +548,11 @@ pub fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f3
         return;
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "explicitly clamped to 0.0..=255.0 immediately above the cast"
+    )]
     let tone = (strength * 255.0).round().clamp(0.0, 255.0) as u8;
     if tone > 0 {
         scene.push_layer(
@@ -558,6 +574,11 @@ pub fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f3
         scene.pop_layer();
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "explicitly clamped to 0.0..=255.0 immediately above the cast"
+    )]
     let level = (strength * SCRIM_LEVEL_SHARE * 255.0)
         .round()
         .clamp(0.0, 255.0) as u8;
@@ -578,6 +599,12 @@ pub fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f3
 /// Must mirror the shader: soft light against black is `Cb²` (W3C
 /// compositing) composited `lerp(Cb, Cb², αs)`, then an ordinary
 /// source-over of the theme's scrim hue for the level stage.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "explicitly clamped to 0.0..=1.0 immediately before the *255.0 scale, \
+              so the final value is always within 0..=255"
+)]
 pub fn scrim_maps(value: u8, strength: f32, theme: &Theme) -> u8 {
     let strength = f64::from(strength.clamp(0.0, 1.0));
     let v = f64::from(value) / 255.0;

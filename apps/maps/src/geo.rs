@@ -155,8 +155,8 @@ pub fn simplify_polyline(pts: &[LatLon], tolerance_m: f64) -> Vec<LatLon> {
         };
         let (mut far, mut far_d2) = (lo, -1.0f64);
         for i in (lo + 1)..hi {
-            let Some(&p_i) = plane.get(i) else { continue };
-            let d2 = perp_dist2(p_i, p_lo, p_hi);
+            let Some(&p_cur) = plane.get(i) else { continue };
+            let d2 = perp_dist2(p_cur, p_lo, p_hi);
             if d2 > far_d2 {
                 far = i;
                 far_d2 = d2;

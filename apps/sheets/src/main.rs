@@ -3,15 +3,15 @@
 //! Modes:
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!     (headless screenshot; identical passes to the live app).
 //!
 //! Shots flags:
 //!   * `--viewport WxH`     — override the desktop viewport (e.g. the narrow
-//!                            560x720 responsive layout).
+//!     560x720 responsive layout).
 //!   * `--scenario NAME`    — snap a specific surface into view for the frame:
-//!                            `file`, `format`, `docsettings`, `editing`,
-//!                            `pointmode`, `summary`, `multiselect`, `tabmenu`,
-//!                            `commandpalette`.
+//!     `file`, `format`, `docsettings`, `editing`,
+//!     `pointmode`, `summary`, `multiselect`, `tabmenu`,
+//!     `commandpalette`.
 //!
 //! The shots path always seeds the sample workbook and disables on-disk
 //! persistence, so a screenshot shows real formulas without ever touching the
@@ -89,6 +89,12 @@ pub fn main() {
     );
 }
 
+/// Render one `--shots` scenario to a PNG.
+///
+/// # Errors
+///
+/// Returns an error if `--shots` was not given a path, or if
+/// `render_shot_to_png` fails to build the layout or write the file.
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
     let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
@@ -121,6 +127,10 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 
 /// Run one offscreen frame against `app` and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
+///
+/// # Errors
+///
+/// Returns an error if Taffy fails to build or compute the layout tree.
 fn render_shot_to_png(
     mut app: sheets::SheetsApp,
     viewport: (u32, u32),
@@ -136,7 +146,7 @@ fn render_shot_to_png(
         _ => Theme::dark(),
     };
     let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
+    let permission_ctx = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -187,7 +197,7 @@ fn render_shot_to_png(
         &mut text_renderer,
         &theme,
         &presence,
-        &permission,
+        &permission_ctx,
     );
 
     if let Some(parent) = out.parent() {

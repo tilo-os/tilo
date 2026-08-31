@@ -163,6 +163,13 @@ pub struct LaunchEnv {
 }
 
 /// Resolve an entry into a launch.
+///
+/// # Errors
+///
+/// Returns [`HostLaunchError::NotAnApplication`] if `entry` is not
+/// `Type=Application`, [`HostLaunchError::NeedsTerminal`] if it declares
+/// `Terminal=true`, [`HostLaunchError::NoExec`] if it has no usable `Exec=`,
+/// or [`HostLaunchError::BadExec`] if `Exec=` fails to parse.
 pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLaunchError> {
     if entry.entry_type != EntryType::Application {
         return Err(HostLaunchError::NotAnApplication {
@@ -257,6 +264,11 @@ fn build_env(wayland_socket: Option<&Path>) -> BTreeMap<String, String> {
 }
 
 /// Find the entry with this desktop-file id on the current system and plan a launch for it.
+///
+/// # Errors
+///
+/// Returns [`HostLaunchError::NotFound`] if no scanned entry has this id, or
+/// any error [`plan`] can return.
 pub fn plan_by_id(desktop_id: &str, env: &LaunchEnv) -> Result<HostLaunch, HostLaunchError> {
     let scan = crate::cache::cached_scan();
     let entry = scan

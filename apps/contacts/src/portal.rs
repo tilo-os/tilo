@@ -50,8 +50,8 @@ pub fn request_import() -> ImportChannel {
 
 /// Open the host Save dialog for the address book, seeding the filename field
 /// with `current_name`.
-pub fn request_export(current_name: String) -> ExportChannel {
-    PickRequest::save("Export contacts", "Export", &current_name)
+pub fn request_export(current_name: &str) -> ExportChannel {
+    PickRequest::save("Export contacts", "Export", current_name)
         .thread_name("contacts-portal-export")
         .filter(export_filter())
         .send()

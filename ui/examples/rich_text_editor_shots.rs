@@ -28,39 +28,32 @@ const HEIGHT: u32 = 720;
 
 /// Seed one rich-text field under `root[key]` with text, block style, and inline
 /// marks, then return an editor bound to it (synced).
+///
+/// # Errors
+///
+/// Returns an error if any of the underlying CRDT operations (creating the
+/// field object, splicing the text, setting the block style, or applying a
+/// mark) fails.
 fn seeded(
     state: &mut State,
     key: &str,
     text: &str,
     style: &str,
     marks: &[(&str, usize, usize)],
-) -> RichTextEditor {
-    let field = state
-        .doc
-        .put_object(&state.root, key, ObjType::Map)
-        .unwrap_or_else(|e| panic!("put_object({key}) failed: {e}"));
-    let tid = state
-        .doc
-        .put_object(&field, "text", ObjType::Text)
-        .unwrap_or_else(|e| panic!("put_object({key}.text) failed: {e}"));
-    state
-        .doc
-        .splice_text(&tid, 0, 0, text)
-        .unwrap_or_else(|e| panic!("splice_text({key}) failed: {e}"));
-    state
-        .doc
-        .put(&field, "style", style)
-        .unwrap_or_else(|e| panic!("put({key}.style) failed: {e}"));
+) -> Result<RichTextEditor, automerge::AutomergeError> {
+    let field = state.doc.put_object(&state.root, key, ObjType::Map)?;
+    let tid = state.doc.put_object(&field, "text", ObjType::Text)?;
+    state.doc.splice_text(&tid, 0, 0, text)?;
+    state.doc.put(&field, "style", style)?;
     for (name, s, e) in marks {
         let m = automerge::marks::Mark::new(name.to_string(), true, *s, *e);
         state
             .doc
-            .mark(&tid, m, automerge::marks::ExpandMark::None)
-            .unwrap_or_else(|err| panic!("mark({key}, {name}) failed: {err}"));
+            .mark(&tid, m, automerge::marks::ExpandMark::None)?;
     }
     let mut ed = RichTextEditor::new(key);
     ed.sync(&mut state.doc, &state.root);
-    ed
+    Ok(ed)
 }
 
 /// Lay one editor out at `(x, y)` for `width` logical px and draw it. Returns the
@@ -95,11 +88,15 @@ fn place_and_draw(
     ed.get_rect().height()
 }
 
-fn shoot(theme: &Theme, out: &Path) {
+/// # Errors
+///
+/// Returns an error if seeding any of the demo document's rich-text fields
+/// fails (see [`seeded`]).
+fn shoot(theme: &Theme, out: &Path) -> Result<(), automerge::AutomergeError> {
     let mut state = State::new();
 
     let fox = "The quick brown fox jumps over the lazy dog.";
-    let mut heading = seeded(&mut state, "h", "Rich Text Editor", "heading", &[]);
+    let mut heading = seeded(&mut state, "h", "Rich Text Editor", "heading", &[])?;
     let mut body = seeded(
         &mut state,
         "b",
@@ -107,28 +104,28 @@ fn shoot(theme: &Theme, out: &Path) {
         "body",
         // "quick" bold, "brown fox" italic, "lazy dog" underlined.
         &[("bold", 4, 9), ("italic", 10, 19), ("underline", 35, 43)],
-    );
+    )?;
     let mut bullet1 = seeded(
         &mut state,
         "l1",
         "Caret, selection & word motion",
         "bullet",
         &[],
-    );
+    )?;
     let mut bullet2 = seeded(
         &mut state,
         "l2",
         "Bold / italic / underline runs",
         "bullet",
         &[("bold", 0, 4)],
-    );
+    )?;
     let mut sub = seeded(
         &mut state,
         "s",
         "Backed by one CRDT document",
         "subheading",
         &[],
-    );
+    )?;
     let mut empty = RichTextEditor::new("e").with_placeholder("Start writing…");
     empty.sync(&mut state.doc, &state.root);
     let mut focused = seeded(
@@ -137,7 +134,7 @@ fn shoot(theme: &Theme, out: &Path) {
         "A focused body field shows its caret",
         "body",
         &[],
-    );
+    )?;
     focused.set_focus(true);
 
     let mut tr = TextRenderer::new();
@@ -178,12 +175,20 @@ fn shoot(theme: &Theme, out: &Path) {
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
     r.render_png(&scene, theme.bg_app, out);
     println!("wrote {}", out.display());
+    Ok(())
 }
 
 pub fn run(_args: &[String]) {
     let dir = std::env::var("RTE_SHOTS_OUT").unwrap_or_else(|_| "/tmp/rte_shots".to_string());
-    std::fs::create_dir_all(&dir)
-        .unwrap_or_else(|e| panic!("failed to create output dir {dir}: {e}"));
-    shoot(&Theme::dark(), &PathBuf::from(&dir).join("rte-dark.png"));
-    shoot(&Theme::light(), &PathBuf::from(&dir).join("rte-light.png"));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("rich_text_editor_shots: failed to create output dir {dir}: {e}");
+        return;
+    }
+    if let Err(e) = shoot(&Theme::dark(), &PathBuf::from(&dir).join("rte-dark.png")) {
+        eprintln!("rich_text_editor_shots: failed to render dark shot: {e}");
+        return;
+    }
+    if let Err(e) = shoot(&Theme::light(), &PathBuf::from(&dir).join("rte-light.png")) {
+        eprintln!("rich_text_editor_shots: failed to render light shot: {e}");
+    }
 }

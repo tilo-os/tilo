@@ -674,7 +674,7 @@ pub fn build_launch_command(
         launcher_bin,
         wayland_socket,
         room,
-        LaunchExtras {
+        &LaunchExtras {
             capabilities_file,
             render_node,
             document,
@@ -689,7 +689,9 @@ pub fn build_launch_command(
 /// `--capabilities` flag); `render_node` pins the app's EGL/Vulkan
 /// loaders to this compositor's GPU; `document` rides across as
 /// `--open <path>`; `uri` is the one opaque URI argument for
-/// [`launch_with_uri`].
+/// [`launch_with_uri`]. `Clone`/`Copy` since every field is a reference —
+/// [`build_launch_command_for`] takes it by `&` and copies it back apart.
+#[derive(Clone, Copy)]
 struct LaunchExtras<'a> {
     capabilities_file: Option<&'a Path>,
     render_node: Option<&'a Path>,
@@ -702,14 +704,14 @@ fn build_launch_command_for(
     launcher_bin: &Path,
     wayland_socket: &Path,
     room: RoomId,
-    extras: LaunchExtras<'_>,
+    extras: &LaunchExtras<'_>,
 ) -> LaunchCommand {
     let LaunchExtras {
         capabilities_file,
         render_node,
         document,
         uri,
-    } = extras;
+    } = *extras;
     let mut args = vec![
         "run".to_string(),
         "--manifest".to_string(),
@@ -860,7 +862,7 @@ fn launch_with_context(
         &launcher_bin,
         &socket,
         room,
-        LaunchExtras {
+        &LaunchExtras {
             capabilities_file: capabilities_file.as_deref(),
             render_node: crate::compositor::render_node::resolved(),
             document,
@@ -934,6 +936,13 @@ pub fn launch_uri_in_room(
     launch_with_uri(package_id, room, uri)
 }
 
+/// [`launch_uri_in_room`], reading `room` and `capabilities` off `workspace`
+/// instead of taking them separately.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`launch_with_document`]
+/// (via [`launch_uri_in_room`] and [`launch_with_uri`]).
 pub fn launch_uri_in_workspace(
     package_id: &str,
     workspace: &Workspace,

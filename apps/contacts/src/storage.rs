@@ -74,6 +74,11 @@ pub fn load(path: &Path) -> Vec<Contact> {
 /// Test-only, and deliberately still wrong in the way the old code was wrong
 /// — a fresh `AutoCommit` per call — because its only job now is to produce
 /// the artefact the migration has to be able to read.
+///
+/// # Errors
+///
+/// Returns the underlying I/O error if the parent directory can't be created
+/// or the file can't be written.
 #[cfg(test)]
 pub fn save(path: &Path, contacts: &[Contact]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {

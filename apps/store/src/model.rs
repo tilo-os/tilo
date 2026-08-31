@@ -124,15 +124,12 @@ impl ActionKind {
     /// Label shown on the card's action button.
     pub fn label(self) -> &'static str {
         match self {
-            ActionKind::Open => "Open",
-            ActionKind::Remove => "Remove",
-            ActionKind::Update => "Update",
+            ActionKind::Open | ActionKind::FlatpakOpen => "Open",
+            ActionKind::Remove | ActionKind::FlatpakRemove => "Remove",
+            ActionKind::Update | ActionKind::FlatpakUpdate => "Update",
             ActionKind::MarkInstalled => "Mark installed",
             ActionKind::Unmark => "Installed",
             ActionKind::FlatpakInstall => "Install",
-            ActionKind::FlatpakUpdate => "Update",
-            ActionKind::FlatpakOpen => "Open",
-            ActionKind::FlatpakRemove => "Remove",
             ActionKind::NeedsFlatpakHost => "Install flatpak first",
         }
     }
@@ -418,33 +415,39 @@ mod tests {
     #[test]
     fn action_kind_reflects_source_and_install_state() {
         // qOS not-installed → Open (fetch-on-demand + run).
-        let a = qos_item("Notes", InstalledState::Not, "0.1.0");
-        assert_eq!(a.action_kind(true), ActionKind::Open);
-        assert!(a.pin_action().is_none());
+        let not_installed = qos_item("Notes", InstalledState::Not, "0.1.0");
+        assert_eq!(not_installed.action_kind(true), ActionKind::Open);
+        assert!(not_installed.pin_action().is_none());
 
         // qOS installed + up-to-date → still Open (relaunch), and it
         // now offers the pin toggle + a secondary Remove.
-        let b = qos_item("Notes", qinstalled("0.1.0", "0.1.0", false), "0.1.0");
-        assert_eq!(b.action_kind(true), ActionKind::Open);
-        assert_eq!(b.pin_action(), Some(ActionKind::MarkInstalled));
-        assert!(b.offers_remove());
+        let up_to_date = qos_item("Notes", qinstalled("0.1.0", "0.1.0", false), "0.1.0");
+        assert_eq!(up_to_date.action_kind(true), ActionKind::Open);
+        assert_eq!(up_to_date.pin_action(), Some(ActionKind::MarkInstalled));
+        assert!(up_to_date.offers_remove());
 
         // qOS installed but newer available → Update.
-        let c = qos_item("Notes", qinstalled("0.1.0", "0.2.0", false), "0.2.0");
-        assert_eq!(c.action_kind(true), ActionKind::Update);
+        let stale = qos_item("Notes", qinstalled("0.1.0", "0.2.0", false), "0.2.0");
+        assert_eq!(stale.action_kind(true), ActionKind::Update);
 
         // qOS pinned → pin toggle flips to Unmark.
-        let p = qos_item("Notes", qinstalled("0.1.0", "0.1.0", true), "0.1.0");
-        assert_eq!(p.pin_action(), Some(ActionKind::Unmark));
+        let pinned = qos_item("Notes", qinstalled("0.1.0", "0.1.0", true), "0.1.0");
+        assert_eq!(pinned.pin_action(), Some(ActionKind::Unmark));
 
-        let d = flatpak_item("Chess", InstalledState::Not);
-        assert_eq!(d.action_kind(true), ActionKind::FlatpakInstall);
-        assert_eq!(d.action_kind(false), ActionKind::NeedsFlatpakHost);
-        assert!(d.pin_action().is_none());
-
-        let e = flatpak_item("Chess", qinstalled("1.0", "1.0", false));
+        let flatpak_not_installed = flatpak_item("Chess", InstalledState::Not);
         assert_eq!(
-            e.action_kind(true),
+            flatpak_not_installed.action_kind(true),
+            ActionKind::FlatpakInstall
+        );
+        assert_eq!(
+            flatpak_not_installed.action_kind(false),
+            ActionKind::NeedsFlatpakHost
+        );
+        assert!(flatpak_not_installed.pin_action().is_none());
+
+        let flatpak_installed = flatpak_item("Chess", qinstalled("1.0", "1.0", false));
+        assert_eq!(
+            flatpak_installed.action_kind(true),
             ActionKind::FlatpakOpen,
             "an installed app's primary action is to open it — a store \
              that can install a Flatpak and then not start it is not \
@@ -454,7 +457,7 @@ mod tests {
         let update = flatpak_item("Chess", qinstalled("0.9", "1.0", false));
         assert_eq!(update.action_kind(true), ActionKind::FlatpakUpdate);
         assert_eq!(
-            e.remove_action(),
+            flatpak_installed.remove_action(),
             Some(ActionKind::FlatpakRemove),
             "removal moves to the secondary slot, and is Flatpak's own \
              removal rather than qos-install's"

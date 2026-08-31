@@ -157,7 +157,7 @@ impl EbookAction {
         excerpt: &str,
         color: &str,
         text: &str,
-    ) -> Result<(), ActionError> {
+    ) {
         if let Ok(uuid) = id.parse::<Uuid>() {
             let anno = Annotation {
                 id: uuid,
@@ -176,7 +176,6 @@ impl EbookAction {
             };
             BooksDoc::upsert_annotation(doc, &anno);
         }
-        Ok(())
     }
 
     fn apply_toggle_bookmark(
@@ -186,7 +185,7 @@ impl EbookAction {
         chapter: usize,
         block: usize,
         excerpt: &str,
-    ) -> Result<(), ActionError> {
+    ) {
         // Deterministic against the document at the replay's base state.
         let existing: Vec<Uuid> = BooksDoc::annotations_for(doc, book_id)
             .into_iter()
@@ -216,7 +215,6 @@ impl EbookAction {
                 BooksDoc::remove_annotation(doc, id);
             }
         }
-        Ok(())
     }
 
     fn apply_highlight_selection(
@@ -227,7 +225,7 @@ impl EbookAction {
         color: &str,
         remove_groups: &[String],
         pieces: &[HiPiece],
-    ) -> Result<(), ActionError> {
+    ) {
         for g in remove_groups {
             if let Ok(uuid) = g.parse::<Uuid>() {
                 BooksDoc::remove_group(doc, uuid);
@@ -256,14 +254,9 @@ impl EbookAction {
                 BooksDoc::upsert_annotation(doc, &anno);
             }
         }
-        Ok(())
     }
 
-    fn apply_change_highlight_color(
-        doc: &mut Doc,
-        group: &str,
-        color: &str,
-    ) -> Result<(), ActionError> {
+    fn apply_change_highlight_color(doc: &mut Doc, group: &str, color: &str) {
         if let Ok(group_uuid) = group.parse::<Uuid>() {
             let col = HiColor::from_str(color);
             let rows: Vec<Annotation> = BooksDoc::list_annotations(doc)
@@ -275,14 +268,12 @@ impl EbookAction {
                 BooksDoc::upsert_annotation(doc, &a);
             }
         }
-        Ok(())
     }
 
-    fn apply_delete_highlight(doc: &mut Doc, group: &str) -> Result<(), ActionError> {
+    fn apply_delete_highlight(doc: &mut Doc, group: &str) {
         if let Ok(group_uuid) = group.parse::<Uuid>() {
             BooksDoc::remove_group(doc, group_uuid);
         }
-        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -298,7 +289,7 @@ impl EbookAction {
         excerpt: &str,
         color: &str,
         text: &str,
-    ) -> Result<(), ActionError> {
+    ) {
         if let (Ok(group_uuid), Ok(cid)) = (group.parse::<Uuid>(), id.parse::<Uuid>()) {
             let anno = Annotation {
                 id: cid,
@@ -316,7 +307,6 @@ impl EbookAction {
             };
             BooksDoc::upsert_annotation(doc, &anno);
         }
-        Ok(())
     }
 
     fn apply_move_annotation(
@@ -327,7 +317,7 @@ impl EbookAction {
         start: usize,
         end: usize,
         excerpt: &str,
-    ) -> Result<(), ActionError> {
+    ) {
         // Reposition exactly the one row; a missing id (never produced by
         // our builder) is a no-op so a bad replay can't wedge a peer.
         if let Ok(uuid) = id.parse::<Uuid>()
@@ -342,7 +332,6 @@ impl EbookAction {
             a.excerpt = excerpt.to_string();
             BooksDoc::upsert_annotation(doc, &a);
         }
-        Ok(())
     }
 }
 
@@ -361,16 +350,18 @@ impl Action for EbookAction {
                 excerpt,
                 color,
                 text,
-            } => Self::apply_add_note(
+            } => Ok(Self::apply_add_note(
                 doc, book_id, id, *chapter, *block, *start, *end, excerpt, color, text,
-            ),
+            )),
             EbookAction::ToggleBookmark {
                 book_id,
                 id,
                 chapter,
                 block,
                 excerpt,
-            } => Self::apply_toggle_bookmark(doc, book_id, id, *chapter, *block, excerpt),
+            } => Ok(Self::apply_toggle_bookmark(
+                doc, book_id, id, *chapter, *block, excerpt,
+            )),
             EbookAction::HighlightSelection {
                 book_id,
                 group,
@@ -378,7 +369,7 @@ impl Action for EbookAction {
                 color,
                 remove_groups,
                 pieces,
-            } => Self::apply_highlight_selection(
+            } => Ok(Self::apply_highlight_selection(
                 doc,
                 book_id,
                 group,
@@ -386,11 +377,11 @@ impl Action for EbookAction {
                 color,
                 remove_groups,
                 pieces,
-            ),
+            )),
             EbookAction::ChangeHighlightColor { group, color } => {
-                Self::apply_change_highlight_color(doc, group, color)
+                Ok(Self::apply_change_highlight_color(doc, group, color))
             }
-            EbookAction::DeleteHighlight { group } => Self::apply_delete_highlight(doc, group),
+            EbookAction::DeleteHighlight { group } => Ok(Self::apply_delete_highlight(doc, group)),
             EbookAction::AddComment {
                 book_id,
                 group,
@@ -402,9 +393,9 @@ impl Action for EbookAction {
                 excerpt,
                 color,
                 text,
-            } => Self::apply_add_comment(
+            } => Ok(Self::apply_add_comment(
                 doc, book_id, group, id, *chapter, *block, *start, *end, excerpt, color, text,
-            ),
+            )),
             EbookAction::MoveAnnotation {
                 id,
                 chapter,
@@ -412,7 +403,9 @@ impl Action for EbookAction {
                 start,
                 end,
                 excerpt,
-            } => Self::apply_move_annotation(doc, id, *chapter, *block, *start, *end, excerpt),
+            } => Ok(Self::apply_move_annotation(
+                doc, id, *chapter, *block, *start, *end, excerpt,
+            )),
         }
     }
 

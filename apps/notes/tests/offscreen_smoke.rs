@@ -31,10 +31,10 @@ use vello::peniko::Color;
 
 /// Sanity-assert the editor laid out multiple non-degenerate blocks for
 /// the kitchen-sink Welcome body. Pinned so a future regression in
-/// MainPanel's flex chain (where an outside `set_style` accidentally
+/// `MainPanel`'s flex chain (where an outside `set_style` accidentally
 /// drops `flex_direction: Column`, collapsing every block to width 0 —
-/// happened in the first round of Phase 2 wiring) gets caught here
-/// instead of in a quiet snapshot.
+/// this has regressed before) gets caught here instead of in a quiet
+/// snapshot.
 fn assert_blocks_non_degenerate(app: &mut NotesApp) {
     let panel = app.main_panel_mut();
     let n = panel.editor().blocks().len();

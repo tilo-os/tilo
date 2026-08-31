@@ -87,6 +87,17 @@ impl LogsDoc {
     }
 
     /// Replace the whole search string.
+    ///
+    /// # Panics
+    /// Never in practice: `put_object` on `root` only fails for an invalid
+    /// or deleted parent object, and `root` is the document root the
+    /// toolkit hands to `sync` — permanent for the life of the doc.
+    #[allow(
+        clippy::expect_used,
+        reason = "root is the document root, permanent and undeletable, so \
+                  put_object on it cannot fail short of a corrupted document \
+                  — there is no meaningful ObjId to fall back to"
+    )]
     pub fn search_set(doc: &mut AutoCommit, root: &ObjId, s: &str) {
         let id = match search_obj(doc, root) {
             Some(id) => id,
@@ -159,7 +170,7 @@ fn get_str(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
     }
 }
 
-fn search_obj(doc: &mut AutoCommit, root: &ObjId) -> Option<ObjId> {
+fn search_obj(doc: &AutoCommit, root: &ObjId) -> Option<ObjId> {
     match doc.get(root, K_SEARCH) {
         Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
         _ => None,

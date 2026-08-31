@@ -99,6 +99,12 @@ pub enum ActionError {
 /// peer can reconstruct them.
 pub trait Action: std::fmt::Debug {
     /// Apply this action's mutation to `doc`. See the trait contract.
+    ///
+    /// # Errors
+    ///
+    /// Implementations return [`ActionError::Automerge`] for a document
+    /// write failure, or [`ActionError::Refused`] if the app declines to
+    /// carry out an otherwise well-formed action.
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError>;
 
     /// Where this action prefers to run. Defaults to [`ExecutionLocus::ClientLocal`].
@@ -118,6 +124,10 @@ pub struct EncodedAction {
 
 impl EncodedAction {
     /// Serialize a concrete action under a registry `type_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Encode`] if `action` fails to serialize.
     pub fn encode<A>(type_id: impl Into<String>, action: &A) -> Result<Self, ActionError>
     where
         A: Action + Serialize,

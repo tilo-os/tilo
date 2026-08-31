@@ -109,9 +109,10 @@ fn bwrap() -> PathBuf {
         .find(|candidate| candidate.is_file())
         .unwrap_or_else(|| {
             panic!(
-                "bwrap is not on PATH ({path:?}). It is how a qOS app runs, so \
+                "bwrap is not on PATH ({}). It is how a qOS app runs, so \
                  this is a broken environment rather than a reason to skip the \
-                 test."
+                 test.",
+                path.to_string_lossy()
             )
         })
 }

@@ -57,12 +57,7 @@ impl Rgba {
             return None;
         }
         let i = ((y as usize) * (self.w as usize) + (x as usize)) * 4;
-        Some([
-            self.bytes[i],
-            self.bytes[i + 1],
-            self.bytes[i + 2],
-            self.bytes[i + 3],
-        ])
+        self.bytes.get(i..i + 4)?.try_into().ok()
     }
 }
 
@@ -110,7 +105,10 @@ pub fn crop(src: &Rgba, rect: Rect01) -> Rgba {
         let row = ((y0 + y) as usize) * (src.w as usize) * 4;
         let start = row + (x0 as usize) * 4;
         let end = start + (w as usize) * 4;
-        bytes.extend_from_slice(&src.bytes[start..end]);
+        // In bounds: x0/w and y0/h are clamped above to stay within src.
+        if let Some(slice) = src.bytes.get(start..end) {
+            bytes.extend_from_slice(slice);
+        }
     }
     Rgba { w, h, bytes }
 }
@@ -138,7 +136,13 @@ fn rotate_cw(src: &Rgba) -> Rgba {
             let sy = sh - 1 - dx;
             let si = (sy * sw + sx) * 4;
             let di = (dy * dw + dx) * 4;
-            bytes[di..di + 4].copy_from_slice(&src.bytes[si..si + 4]);
+            // In bounds: si/di are derived from the loop bounds above, each
+            // strictly less than the source/destination buffer length.
+            if let (Some(dst), Some(src_px)) =
+                (bytes.get_mut(di..di + 4), src.bytes.get(si..si + 4))
+            {
+                dst.copy_from_slice(src_px);
+            }
         }
     }
     Rgba {

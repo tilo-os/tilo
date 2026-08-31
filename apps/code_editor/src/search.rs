@@ -353,9 +353,9 @@ pub fn line_matches(line: &str, query: &Query) -> Vec<(usize, usize)> {
 /// Whether the span at `start..start+len` is bounded by non-word characters on
 /// both sides — the "whole word" rule.
 fn is_word_bounded(hay: &[char], start: usize, len: usize) -> bool {
-    let before_ok = start == 0 || hay.get(start - 1).map_or(true, |&c| !is_word_char(c));
+    let before_ok = start == 0 || hay.get(start - 1).is_none_or(|&c| !is_word_char(c));
     let after = start + len;
-    let after_ok = after >= hay.len() || hay.get(after).map_or(true, |&c| !is_word_char(c));
+    let after_ok = after >= hay.len() || hay.get(after).is_none_or(|&c| !is_word_char(c));
     before_ok && after_ok
 }
 

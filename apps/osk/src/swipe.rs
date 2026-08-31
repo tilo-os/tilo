@@ -120,8 +120,10 @@ impl SwipeModel for GeometricSwipeModel {
 
         // The keys nearest the path's first and last points constrain the
         // candidate's first/last letters — the cheapest, strongest prune.
-        let start = *path.first().unwrap();
-        let end = *path.last().unwrap();
+        // `path.len() >= 2` is checked above, so both ends always exist.
+        let (Some(&start), Some(&end)) = (path.first(), path.last()) else {
+            return Vec::new();
+        };
         let start_letters = nearby_letters(start, &centres, key_scale * 1.6);
         let end_letters = nearby_letters(end, &centres, key_scale * 1.6);
 
@@ -148,9 +150,11 @@ impl SwipeModel for GeometricSwipeModel {
                 continue;
             }
             // First/last letter must be near the path ends (the classic
-            // SHARK² location prune).
-            let first = chars[0];
-            let last = chars[chars.len() - 1];
+            // SHARK² location prune). `len >= 2` was checked above, so both
+            // ends always exist.
+            let (Some(&first), Some(&last)) = (chars.first(), chars.last()) else {
+                continue;
+            };
             if !start_letters.contains(&first) {
                 continue;
             }
@@ -240,7 +244,11 @@ fn nearby_letters(p: Point, centres: &HashMap<char, Point>, radius: f64) -> Vec<
     // radius — guards against a swipe that started slightly off the key.
     if let Some((&nearest, _)) = centres
         .iter()
-        .min_by(|a, b| dist2(p, *a.1).partial_cmp(&dist2(p, *b.1)).unwrap())
+        .min_by(|a, b| {
+            dist2(p, *a.1)
+                .partial_cmp(&dist2(p, *b.1))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .filter(|(ch, _)| !v.contains(ch))
     {
         v.push(nearest);
@@ -267,16 +275,20 @@ fn resample(path: &[Point], n: usize) -> Vec<Point> {
     if path.is_empty() {
         return Vec::new();
     }
+    // `path` is non-empty from the check above, so `first()` always hits.
+    let Some(&first_pt) = path.first() else {
+        return Vec::new();
+    };
     if path.len() == 1 || n <= 1 {
-        return vec![path[0]; n.max(1)];
+        return vec![first_pt; n.max(1)];
     }
     let total = polyline_length(path);
     if total <= f64::EPSILON {
-        return vec![path[0]; n];
+        return vec![first_pt; n];
     }
     let step = total / (n - 1) as f64;
     let mut out = Vec::with_capacity(n);
-    out.push(path[0]);
+    out.push(first_pt);
     let mut seg = 0usize;
     let mut seg_consumed = 0.0;
     let mut acc = 0.0;
@@ -284,8 +296,12 @@ fn resample(path: &[Point], n: usize) -> Vec<Point> {
         acc += step;
         // Advance along segments until we've covered `acc` arc length.
         loop {
-            let a = path[seg];
-            let b = path[seg + 1];
+            // `seg` is bounded below `path.len() - 1` by the loop condition
+            // (`seg + 1 >= path.len() - 1` breaks it out first), so both
+            // indices are always in range.
+            let (Some(&a), Some(&b)) = (path.get(seg), path.get(seg + 1)) else {
+                break;
+            };
             let seg_len = dist(a, b);
             let remaining = seg_len - seg_consumed;
             let need = acc - traversed(path, seg, seg_consumed);
@@ -303,35 +319,50 @@ fn resample(path: &[Point], n: usize) -> Vec<Point> {
             seg_consumed = 0.0;
         }
     }
-    out.push(*path.last().unwrap());
+    // Same non-emptiness invariant as `first_pt` above.
+    if let Some(&last_pt) = path.last() {
+        out.push(last_pt);
+    }
     out
 }
 
 /// Arc length already traversed up to `(seg, seg_consumed)`.
 fn traversed(path: &[Point], seg: usize, seg_consumed: f64) -> f64 {
-    let mut t = 0.0;
-    for i in 0..seg {
-        t += dist(path[i], path[i + 1]);
-    }
+    // Same pairs as `for i in 0..seg { path[i], path[i + 1] }`, without
+    // indexing: `windows(2)` already yields `(path[i], path[i + 1])`.
+    let t: f64 = path
+        .windows(2)
+        .take(seg)
+        .map(|w| match w {
+            [a, b] => dist(*a, *b),
+            _ => 0.0,
+        })
+        .sum();
     t + seg_consumed
 }
 
 fn polyline_length(path: &[Point]) -> f64 {
-    path.windows(2).map(|w| dist(w[0], w[1])).sum()
+    path.windows(2)
+        .map(|w| match w {
+            [a, b] => dist(*a, *b),
+            _ => 0.0,
+        })
+        .sum()
 }
 
 fn bbox_diag(path: &[Point]) -> f64 {
     if path.is_empty() {
         return 0.0;
     }
-    let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    let mut min_pt = Point::new(f64::MAX, f64::MAX);
+    let mut max_pt = Point::new(f64::MIN, f64::MIN);
     for p in path {
-        minx = minx.min(p.x);
-        miny = miny.min(p.y);
-        maxx = maxx.max(p.x);
-        maxy = maxy.max(p.y);
+        min_pt.x = min_pt.x.min(p.x);
+        min_pt.y = min_pt.y.min(p.y);
+        max_pt.x = max_pt.x.max(p.x);
+        max_pt.y = max_pt.y.max(p.y);
     }
-    dist(Point::new(minx, miny), Point::new(maxx, maxy))
+    dist(min_pt, max_pt)
 }
 
 /// Mean Euclidean distance between corresponding points of two equal-length
@@ -341,7 +372,8 @@ fn mean_point_distance(a: &[Point], b: &[Point]) -> f64 {
     if n == 0 {
         return f64::MAX;
     }
-    let sum: f64 = (0..n).map(|i| dist(a[i], b[i])).sum();
+    // `zip` already yields exactly `n = a.len().min(b.len())` pairs.
+    let sum: f64 = a.iter().zip(b.iter()).map(|(&pa, &pb)| dist(pa, pb)).sum();
     sum / n as f64
 }
 

@@ -175,7 +175,7 @@ fn render_shot(
     // leaves no file anywhere the live app would ever look.
     let staging = out
         .parent()
-        .unwrap_or(std::path::Path::new("."))
+        .unwrap_or_else(|| std::path::Path::new("."))
         .join("photos-shots");
     let mut state = ui::State::new();
     let mut app = photos::PhotosApp::new();

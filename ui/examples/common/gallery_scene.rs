@@ -133,88 +133,94 @@ fn typography_intro_and_serif(column: Column, theme: &Theme) -> Column {
     ))
 }
 
-/// The seven BEFORE/AFTER typography-feature specimen pairs (kerning
-/// through hanging punctuation), plus the pagination note. Split out of
+/// The first five BEFORE/AFTER typography-feature specimen pairs (kerning
+/// through variable-font optical sizing). Split out of
 /// `build_typography_showcase` to keep that under the line cap.
 fn typography_feature_pairs(column: Column, theme: &Theme) -> Column {
     column
-                .push(specimen_pair(
-                    theme,
-                    "BEFORE · kerning disabled",
-                    Text::new("AVATAR  WAVE  To Ta Yo").with_style(
-                        TextStyle::new(25.0)
-                            .with_family(FontChoice::Serif)
-                            .with_kerning(false),
-                    ),
-                    "AFTER · kerning enabled",
-                    Text::new("AVATAR  WAVE  To Ta Yo").with_style(
-                        TextStyle::new(25.0)
-                            .with_family(FontChoice::Serif)
-                            .with_kerning(true),
-                    ),
-                ))
-                .push(specimen_pair(
-                    theme,
-                    "BEFORE · standard forms",
-                    Text::new("office · affinity · historic 1847").with_style(
-                        TextStyle::new(20.0).with_family(FontChoice::Serif),
-                    ),
-                    "AFTER · discretionary ligatures + small caps",
-                    Text::new("office · affinity · historic 1847").with_style(
-                        TextStyle::new(20.0)
-                            .with_family(FontChoice::Serif)
-                            .with_discretionary_ligatures(true)
-                            .with_small_caps(true),
-                    ),
-                ))
-                .push(specimen_pair(
-                    theme,
-                    "BEFORE · proportional lining figures",
-                    Text::new("1847  2026  €12,408.50").with_style(
-                        TextStyle::new(20.0)
-                            .with_family(FontChoice::Serif)
-                            .with_numeric_style(NumericStyle::ProportionalLining),
-                    ),
-                    "AFTER · tabular old-style figures",
-                    Text::new("1847  2026  €12,408.50").with_style(
-                        TextStyle::new(20.0)
-                            .with_family(FontChoice::Serif)
-                            .with_numeric_style(NumericStyle::TabularOldstyle),
-                    ),
-                ))
-                .push(specimen_pair(
-                    theme,
-                    "BEFORE · default spacing",
-                    Text::new("A WELL-SPACED HEADING").with_style(
-                        TextStyle::new(18.0)
-                            .with_weight(TextWeight::Semibold)
-                            .with_family(FontChoice::Serif),
-                    ),
-                    "AFTER · +0.075em tracking",
-                    Text::new("A WELL-SPACED HEADING").with_style(
-                        TextStyle::new(18.0)
-                            .with_weight(TextWeight::Semibold)
-                            .with_family(FontChoice::Serif)
-                            .with_tracking(0.075),
-                    ),
-                ))
-                .push(specimen_pair(
-                    theme,
-                    "BEFORE · Adwaita Sans wght 300 · opsz 14",
-                    Text::new("Variable fonts adapt continuously").with_style(
-                        TextStyle::new(23.0)
-                            .with_family(FontChoice::Named("Adwaita Sans".into()))
-                            .with_font_variation(OpenTypeTag::WEIGHT, 300.0)
-                            .with_optical_sizing(OpticalSizing::Value(14.0)),
-                    ),
-                    "AFTER · Adwaita Sans wght 720 · optical sizing auto",
-                    Text::new("Variable fonts adapt continuously").with_style(
-                        TextStyle::new(23.0)
-                            .with_family(FontChoice::Named("Adwaita Sans".into()))
-                            .with_font_variation(OpenTypeTag::WEIGHT, 720.0)
-                            .with_optical_sizing(OpticalSizing::Auto),
-                    ),
-                ))
+        .push(specimen_pair(
+            theme,
+            "BEFORE · kerning disabled",
+            Text::new("AVATAR  WAVE  To Ta Yo").with_style(
+                TextStyle::new(25.0)
+                    .with_family(FontChoice::Serif)
+                    .with_kerning(false),
+            ),
+            "AFTER · kerning enabled",
+            Text::new("AVATAR  WAVE  To Ta Yo").with_style(
+                TextStyle::new(25.0)
+                    .with_family(FontChoice::Serif)
+                    .with_kerning(true),
+            ),
+        ))
+        .push(specimen_pair(
+            theme,
+            "BEFORE · standard forms",
+            Text::new("office · affinity · historic 1847")
+                .with_style(TextStyle::new(20.0).with_family(FontChoice::Serif)),
+            "AFTER · discretionary ligatures + small caps",
+            Text::new("office · affinity · historic 1847").with_style(
+                TextStyle::new(20.0)
+                    .with_family(FontChoice::Serif)
+                    .with_discretionary_ligatures(true)
+                    .with_small_caps(true),
+            ),
+        ))
+        .push(specimen_pair(
+            theme,
+            "BEFORE · proportional lining figures",
+            Text::new("1847  2026  €12,408.50").with_style(
+                TextStyle::new(20.0)
+                    .with_family(FontChoice::Serif)
+                    .with_numeric_style(NumericStyle::ProportionalLining),
+            ),
+            "AFTER · tabular old-style figures",
+            Text::new("1847  2026  €12,408.50").with_style(
+                TextStyle::new(20.0)
+                    .with_family(FontChoice::Serif)
+                    .with_numeric_style(NumericStyle::TabularOldstyle),
+            ),
+        ))
+        .push(specimen_pair(
+            theme,
+            "BEFORE · default spacing",
+            Text::new("A WELL-SPACED HEADING").with_style(
+                TextStyle::new(18.0)
+                    .with_weight(TextWeight::Semibold)
+                    .with_family(FontChoice::Serif),
+            ),
+            "AFTER · +0.075em tracking",
+            Text::new("A WELL-SPACED HEADING").with_style(
+                TextStyle::new(18.0)
+                    .with_weight(TextWeight::Semibold)
+                    .with_family(FontChoice::Serif)
+                    .with_tracking(0.075),
+            ),
+        ))
+        .push(specimen_pair(
+            theme,
+            "BEFORE · Adwaita Sans wght 300 · opsz 14",
+            Text::new("Variable fonts adapt continuously").with_style(
+                TextStyle::new(23.0)
+                    .with_family(FontChoice::Named("Adwaita Sans".into()))
+                    .with_font_variation(OpenTypeTag::WEIGHT, 300.0)
+                    .with_optical_sizing(OpticalSizing::Value(14.0)),
+            ),
+            "AFTER · Adwaita Sans wght 720 · optical sizing auto",
+            Text::new("Variable fonts adapt continuously").with_style(
+                TextStyle::new(23.0)
+                    .with_family(FontChoice::Named("Adwaita Sans".into()))
+                    .with_font_variation(OpenTypeTag::WEIGHT, 720.0)
+                    .with_optical_sizing(OpticalSizing::Auto),
+            ),
+        ))
+}
+
+/// The remaining three BEFORE/AFTER specimen pairs (wrapping through
+/// hanging punctuation), plus the pagination note. Split out of
+/// `build_typography_showcase` to keep that under the line cap.
+fn typography_wrapping_and_punctuation(column: Column, theme: &Theme) -> Column {
+    column
                 .push(specimen_pair(
                     theme,
                     "BEFORE · ordinary wrapping",
@@ -281,7 +287,7 @@ fn typography_feature_pairs(column: Column, theme: &Theme) -> Column {
                 ))
 }
 
-/// Code sample, multilingual scripts, hyphenation demo, BiDi text and
+/// Code sample, multilingual scripts, hyphenation demo, `BiDi` text and
 /// emoji clusters. Split out of `build_typography_showcase` to keep that
 /// under the line cap.
 fn typography_scripts_and_bidi(column: Column, theme: &Theme) -> Column {
@@ -339,6 +345,7 @@ fn typography_scripts_and_bidi(column: Column, theme: &Theme) -> Column {
 pub fn build_typography_showcase(theme: &Theme) -> Box<dyn Widget> {
     let column = typography_intro_and_serif(col(9.0), theme);
     let column = typography_feature_pairs(column, theme);
+    let column = typography_wrapping_and_punctuation(column, theme);
     let column = typography_scripts_and_bidi(column, theme);
     card(None, "Typography & Scripts", Box::new(column))
 }

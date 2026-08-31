@@ -791,6 +791,11 @@ pub fn axis_values(delta: MouseScrollDelta) -> ((f64, f64), Option<(i32, i32)>) 
 
 /// Round a `wl_pointer.axis_value120` component to `i32`, clamped to that
 /// type's range first — a real wheel notch never gets near either bound, this just keeps the cast itself infallible.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "clamped to [i32::MIN, i32::MAX] and .round()-ed first, so the cast to i32 never \
+              truncates a fraction or wraps out of range"
+)]
 fn v120_component(value: f64) -> i32 {
     value
         .round()
@@ -1431,9 +1436,9 @@ pub fn route_input(
             button,
             ..
         } => route_mouse_input(state, fb, captured, *element, *button),
-        WindowEvent::MouseWheel { delta, .. } => route_mouse_wheel(state, fb, *delta, modifiers),
+        WindowEvent::MouseWheel { delta, .. } => route_mouse_wheel(state, fb, *delta, *modifiers),
         WindowEvent::KeyboardInput { .. } => {
-            route_keyboard_input(state, fb, captured, event, modifiers)
+            route_keyboard_input(state, fb, captured, event, *modifiers)
         }
         _ => false,
     }
@@ -1537,7 +1542,7 @@ fn route_mouse_wheel(
     state: &mut State,
     fb: &mut FrameBuilder,
     delta: MouseScrollDelta,
-    modifiers: &Modifiers,
+    modifiers: Modifiers,
 ) -> bool {
     let mods = modifiers.state();
     if mods.alt_key() && !mods.control_key() && !mods.super_key() {
@@ -1587,7 +1592,7 @@ fn route_keyboard_input(
     fb: &FrameBuilder,
     captured: bool,
     event: &WindowEvent,
-    modifiers: &Modifiers,
+    modifiers: Modifiers,
 ) -> bool {
     let WindowEvent::KeyboardInput { event: key, .. } = event else {
         return false;
@@ -1598,7 +1603,7 @@ fn route_keyboard_input(
     };
     // Anything the shell has up that Escape would dismiss — the summoned workspace wheel counts, since Escape must reach the shell, not a focused client.
     let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
-    let shell_owns = captured || is_shell_chord(event, modifiers, overlay_open);
+    let shell_owns = captured || is_shell_chord(event, &modifiers, overlay_open);
     let forward = if pressed {
         let forward = !shell_owns && state.client_input.keyboard_focus.is_some();
         if forward {
@@ -2551,6 +2556,11 @@ mod tests {
 
         // Wherever local input would land on a client, the firewall must name that same client; wherever it lands on chrome, the firewall must name nothing.
         let mut inside = 0;
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "tree is read for every probe in the loop below; the block already ends \
+                      right after the loop, so there's no earlier point to drop the guard"
+        )]
         {
             let chrome = fb.chrome();
             let tree = chrome.tree();

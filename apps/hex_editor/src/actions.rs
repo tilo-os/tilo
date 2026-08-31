@@ -84,8 +84,8 @@ impl Action for HexEditorAction {
             HexEditorAction::OverwriteBytes { offset, bytes } => {
                 for (i, b) in bytes.iter().enumerate() {
                     let idx = offset.saturating_add(i);
-                    if idx < buf.len() {
-                        buf[idx] = *b;
+                    if let Some(slot) = buf.get_mut(idx) {
+                        *slot = *b;
                     }
                 }
             }
@@ -108,6 +108,19 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`HexEditorAction`] into the wire form the palette and the
 /// keyboard affordances both dispatch. The single point that turns a buffer
 /// edit into a replayable envelope.
+///
+/// # Panics
+///
+/// Never in practice: every [`HexEditorAction`] variant holds only `usize`
+/// and `Vec<u8>` fields, which always serialize. `ActionSpec::prompted`'s
+/// `build` closure must return an `EncodedAction` directly rather than a
+/// `Result`, so there is no error path here to propagate to instead.
+#[allow(
+    clippy::expect_used,
+    reason = "HexEditorAction always serializes (usize/Vec<u8> fields only); \
+              the prompted-builder closure this feeds must return EncodedAction \
+              directly, not a Result, so there is nowhere to propagate a failure"
+)]
 pub fn encode(action: &HexEditorAction) -> EncodedAction {
     EncodedAction::encode(HEX_EDITOR_ACTION_TYPE, action)
         .expect("HexEditorAction is always serializable")
@@ -170,6 +183,10 @@ fn parse_hex_byte(s: &str) -> Option<u8> {
     u8::from_str_radix(t, 16).ok()
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "HexEditorAction always serializes (usize/Vec<u8> fields only); see encode()"
+)]
 fn immediate_spec(id: &str, label: &str, action: &HexEditorAction) -> ActionSpec {
     ActionSpec::immediate(id, label, HEX_EDITOR_ACTION_TYPE, action)
         .expect("encode hex_editor action")
@@ -262,14 +279,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 

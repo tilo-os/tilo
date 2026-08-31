@@ -21,8 +21,8 @@ pub fn request_open() -> PortalChannel {
 
 /// Open the host Save dialog, seeding the filename field with `suggested_name`.
 /// The chosen destination comes back as [`PortalOutcome::Opened`].
-pub fn request_save(suggested_name: String) -> PortalChannel {
-    PickRequest::save("Save file", "Save", &suggested_name)
+pub fn request_save(suggested_name: &str) -> PortalChannel {
+    PickRequest::save("Save file", "Save", suggested_name)
         .thread_name("hex-portal-save")
         .filter(FileFilter::all_files())
         .send()

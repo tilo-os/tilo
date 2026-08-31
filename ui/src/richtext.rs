@@ -187,6 +187,14 @@ pub struct RichTextLayout {
     fragmentation: crate::text_render::Fragmentation,
 }
 
+/// Cosmic-text runs plus the byte-ranged background/baseline decoration
+/// tables built alongside them by `RichTextLayout::build_rich_runs`.
+type RichRuns<'a, 's> = (
+    Vec<(std::borrow::Cow<'a, str>, Attrs<'s>)>,
+    Vec<(usize, usize, [u8; 3])>,
+    Vec<(usize, usize, BaselineShift)>,
+);
+
 impl RichTextLayout {
     fn line_map(text: &str) -> (Vec<usize>, Vec<usize>) {
         let mut line_starts = vec![0];
@@ -396,11 +404,7 @@ impl RichTextLayout {
         base: &Attrs<'s>,
         size: f32,
         line_height_mult: f32,
-    ) -> (
-        Vec<(std::borrow::Cow<'a, str>, Attrs<'s>)>,
-        Vec<(usize, usize, [u8; 3])>,
-        Vec<(usize, usize, BaselineShift)>,
-    ) {
+    ) -> RichRuns<'a, 's> {
         let mut backgrounds: Vec<(usize, usize, [u8; 3])> = Vec::new();
         let mut baselines: Vec<(usize, usize, BaselineShift)> = Vec::new();
         let mut cursor: usize = 0;
@@ -911,6 +915,12 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "sweeping integer pixel positions across a fixed 400.0-wide test layout: width().ceil() is always small and non-negative, so the round trip through usize is exact"
+    )]
     fn mixed_bidi_boundary_preserves_both_visual_affinities() {
         let layout = layout("abc אבג xyz", 400.0);
         let (_, top, height) = layout.caret_geometry(0);
@@ -1357,7 +1367,7 @@ mod tests {
         let mut base_glyph_size = None;
         let mut super_glyph_size = None;
         for run in layout.buffer.layout_runs() {
-            for g in run.glyphs.iter() {
+            for g in run.glyphs {
                 if g.start == 0 {
                     base_glyph_size = Some(g.font_size);
                 } else if g.start == 1 {

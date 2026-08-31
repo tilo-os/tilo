@@ -163,7 +163,7 @@ impl PhotosDoc {
             .into_iter()
             .filter_map(|(value, _)| match value {
                 Value::Scalar(s) => s.to_str().and_then(|raw| serde_json::from_str(raw).ok()),
-                _ => None,
+                Value::Object(_) => None,
             })
             .collect()
     }

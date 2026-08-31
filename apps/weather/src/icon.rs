@@ -162,12 +162,12 @@ fn draw_rain(scene: &mut Scene, t: Affine, rect: Rect, p: &IconPalette, heavy: b
     let cx = rect.x0 + rect.width() / 2.0;
     let top = rect.y0 + rect.height() * 0.74;
     let stroke = Stroke::new((s * 0.05).max(1.2));
-    let n = if heavy { 4 } else { 3 };
-    for i in 0..n {
-        let x = cx + (f64::from(i) - (f64::from(n) - 1.0) / 2.0) * s * 0.18;
-        let a = Point::new(x + s * 0.04, top);
-        let b = Point::new(x - s * 0.02, top + s * 0.16);
-        scene.stroke(&stroke, t, p.rain, None, &Line::new(a, b));
+    let count = if heavy { 4 } else { 3 };
+    for i in 0..count {
+        let drop_x = cx + (f64::from(i) - (f64::from(count) - 1.0) / 2.0) * s * 0.18;
+        let drop_top = Point::new(drop_x + s * 0.04, top);
+        let drop_bottom = Point::new(drop_x - s * 0.02, top + s * 0.16);
+        scene.stroke(&stroke, t, p.rain, None, &Line::new(drop_top, drop_bottom));
     }
 }
 
@@ -192,10 +192,10 @@ fn draw_fog_lines(scene: &mut Scene, t: Affine, rect: Rect, p: &IconPalette) {
     let cx = rect.x0 + rect.width() / 2.0;
     let stroke = Stroke::new((s * 0.05).max(1.2));
     for i in 0..3 {
-        let y = rect.y0 + rect.height() * 0.80 + f64::from(i) * s * 0.10;
-        let a = Point::new(cx - s * 0.28, y);
-        let b = Point::new(cx + s * 0.28, y);
-        scene.stroke(&stroke, t, p.cloud, None, &Line::new(a, b));
+        let line_y = rect.y0 + rect.height() * 0.80 + f64::from(i) * s * 0.10;
+        let start = Point::new(cx - s * 0.28, line_y);
+        let end = Point::new(cx + s * 0.28, line_y);
+        scene.stroke(&stroke, t, p.cloud, None, &Line::new(start, end));
     }
 }
 

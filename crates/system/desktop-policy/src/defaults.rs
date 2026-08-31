@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 pub struct ResourceKind(String);
 
 impl ResourceKind {
+    /// # Errors
+    ///
+    /// Returns [`DefaultAppError::InvalidResource`] if `ext` is empty
+    /// (after trimming and stripping a leading `.`), longer than 64
+    /// characters, or contains anything but letters, digits, `+`, `-` or
+    /// `_`.
     pub fn extension(ext: &str) -> Result<Self, DefaultAppError> {
         let ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
         if ext.is_empty()
@@ -23,6 +29,12 @@ impl ResourceKind {
         Ok(Self(format!("ext:{ext}")))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DefaultAppError::InvalidResource`] if `mime` has no `/`,
+    /// is longer than 255 characters, either side of the `/` is empty,
+    /// contains an invalid MIME token character, contains a second `/`, or
+    /// either side is a bare `*` wildcard.
     pub fn mime(mime: &str) -> Result<Self, DefaultAppError> {
         let mime = mime.trim().to_ascii_lowercase();
         let Some((top, subtype)) = mime.split_once('/') else {
@@ -40,6 +52,13 @@ impl ResourceKind {
         Ok(Self(format!("mime:{mime}")))
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DefaultAppError::InvalidResource`] if `scheme` is empty
+    /// (after trimming and stripping a trailing `:`), longer than 32
+    /// characters, does not start with a letter, contains anything but
+    /// letters, digits, `+`, `-` or `.`, or names a reserved scheme
+    /// (`file`, `data`, `javascript`).
     pub fn scheme(scheme: &str) -> Result<Self, DefaultAppError> {
         let scheme = scheme.trim().trim_end_matches(':').to_ascii_lowercase();
         let mut chars = scheme.chars();
@@ -184,6 +203,12 @@ impl<'a> DefaultAppResolver<'a> {
         Self { candidates }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DefaultAppError::InvalidPackage`] if `package_id` fails
+    /// [`validate_package_id`], [`DefaultAppError::NotInstalled`] if it
+    /// names no candidate, or [`DefaultAppError::DoesNotHandle`] if the
+    /// candidate does not claim `resource`.
     pub fn validate_app(
         &self,
         resource: &ResourceKind,
@@ -281,6 +306,10 @@ impl<'a> DefaultAppResolver<'a> {
 }
 
 impl PersonalDefaults {
+    /// # Errors
+    ///
+    /// Returns an error if [`DefaultAppResolver::validate_app`] rejects
+    /// `package_id` for `resource`; the existing handler is left untouched.
     pub fn set(
         &mut self,
         resource: ResourceKind,
@@ -306,12 +335,20 @@ impl PersonalDefaults {
             .unwrap_or_default()
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DefaultAppError::Persist`] if no config directory is
+    /// available, or [`PersonalDefaults::save_at`] fails.
     pub fn save(&self) -> Result<(), DefaultAppError> {
         let path = personal_path()
             .ok_or_else(|| DefaultAppError::Persist("no config directory".into()))?;
         self.save_at(&path)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DefaultAppError::Persist`] if `self` can't be serialised
+    /// or written to `path`.
     pub fn save_at(&self, path: &Path) -> Result<(), DefaultAppError> {
         let mut body =
             serde_json::to_vec_pretty(self).map_err(|e| DefaultAppError::Persist(e.to_string()))?;
@@ -329,6 +366,11 @@ fn personal_path() -> Option<PathBuf> {
     Some(root.join("qos/default-apps.json"))
 }
 
+/// # Errors
+///
+/// Returns [`DefaultAppError::InvalidPackage`] if `id` is empty, longer
+/// than 255 characters, starts or ends with `.`, contains `..`, or
+/// contains anything but letters, digits, `.`, `-` or `_`.
 pub fn validate_package_id(id: &str) -> Result<(), DefaultAppError> {
     if id.is_empty()
         || id.len() > 255

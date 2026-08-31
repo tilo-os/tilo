@@ -253,6 +253,11 @@ fn opening_a_non_image_says_so_and_opens_nothing() {
 /// Rotating must move the pixels the app would export — asserted on the output
 /// buffer and on a sampled corner, not on the quarter-turn counter.
 #[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "fx/fy are literal fractions in 0..=1 in this test, so (dim - 1) * frac stays within 0..dim"
+)]
 fn rotating_changes_the_exported_pixels() {
     let dir = tempfile::tempdir().unwrap();
     let (path, _) = staged(dir.path(), 300, 200);
@@ -838,6 +843,10 @@ fn every_toolbar_control_is_inside_the_window_at_every_size() {
 /// that estimate, so a label that outgrows it fails here rather than
 /// silently rendering clipped or overlapping its neighbour.
 #[test]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "label.chars().count() is a handful of glyphs in a toolbar tooltip, nowhere near f32's precision limit"
+)]
 fn toolbar_labels_fit_inside_the_buttons_they_are_sized_for() {
     // Mirrors `Button::paint`: 14 px, Medium, an icon derived from the
     // button height, and a 6 px gap between the two.

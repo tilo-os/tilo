@@ -3,6 +3,7 @@
 //! Spins up:
 //! - one relay bound to workspace 42, membership = {A, B}
 //! - two peer devices A + B, each dials the relay
+//!
 //! Both subscribe to 42; A publishes a Delta envelope. Assert B
 //! receives the same delta bytes via the relay's fan-out.
 
@@ -82,12 +83,12 @@ async fn first_time_home_device_bootstraps_from_retained_checkpoint() {
     b_client
         .send(Envelope::Subscribe { workspace_id: 19 })
         .unwrap();
-    let replay = tokio::time::timeout(Duration::from_secs(2), b_client.recv())
+    let received = tokio::time::timeout(Duration::from_secs(2), b_client.recv())
         .await
         .unwrap()
         .unwrap();
-    let Envelope::Delta { delta, .. } = replay else {
-        panic!("expected retained checkpoint, got {replay:?}");
+    let Envelope::Delta { delta, .. } = received else {
+        panic!("expected retained checkpoint, got {received:?}");
     };
     assert!(matches!(
         CoeditPayload::decode(&delta),
@@ -100,6 +101,52 @@ async fn first_time_home_device_bootstraps_from_retained_checkpoint() {
             pending_deltas: 1
         }))
     ));
+}
+
+/// Publish synthetic deltas from `a_client` until `pending_dir` shows a
+/// queued file (the relay noticed the closed session), or the retry budget
+/// runs out — the caller's own `assert!` reports the timeout.
+async fn publish_until_queued(
+    a_client: &RelayClient,
+    a_key: [u8; 32],
+    pending_dir: &std::path::Path,
+) {
+    for authored_at_ns in 1..=80 {
+        a_client
+            .send(Envelope::Delta {
+                workspace_id: 9,
+                author_device_public_key: a_key,
+                authored_at_ns,
+                delta: b"offline-change".to_vec(),
+                signature: [0; 64],
+            })
+            .unwrap();
+        if pending_dir
+            .read_dir()
+            .is_ok_and(|mut files| files.next().is_some())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Drain replayed `Delta`s until the `Ready` marker reports at least one
+/// pending delta was queued for this reconnect.
+async fn wait_for_ready_with_pending(b_again: &RelayClient) {
+    loop {
+        match tokio::time::timeout(Duration::from_secs(2), b_again.recv()).await {
+            Ok(Some(Envelope::Ready {
+                workspace_id: 9,
+                pending_deltas,
+            })) => {
+                assert!(pending_deltas >= 1);
+                break;
+            }
+            Ok(Some(Envelope::Delta { .. })) => {}
+            other => panic!("expected queued delta or Ready, got {other:?}"),
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -158,24 +205,7 @@ async fn home_host_remembers_authenticated_devices_for_offline_delivery() {
         .path()
         .join("workspaces/9/pending")
         .join(hex::encode(b.device_pubkey()));
-    for authored_at_ns in 1..=80 {
-        a_client
-            .send(Envelope::Delta {
-                workspace_id: 9,
-                author_device_public_key: a_key,
-                authored_at_ns,
-                delta: b"offline-change".to_vec(),
-                signature: [0; 64],
-            })
-            .unwrap();
-        if pending_dir
-            .read_dir()
-            .is_ok_and(|mut files| files.next().is_some())
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    publish_until_queued(&a_client, a_key, &pending_dir).await;
     assert!(
         pending_dir
             .read_dir()
@@ -200,19 +230,7 @@ async fn home_host_remembers_authenticated_devices_for_offline_delivery() {
         tokio::time::timeout(Duration::from_secs(2), b_again.recv()).await,
         Ok(Some(Envelope::Delta { ref delta, .. })) if delta == b"offline-change"
     ));
-    loop {
-        match tokio::time::timeout(Duration::from_secs(2), b_again.recv()).await {
-            Ok(Some(Envelope::Ready {
-                workspace_id: 9,
-                pending_deltas,
-            })) => {
-                assert!(pending_deltas >= 1);
-                break;
-            }
-            Ok(Some(Envelope::Delta { .. })) => {}
-            other => panic!("expected queued delta or Ready, got {other:?}"),
-        }
-    }
+    wait_for_ready_with_pending(&b_again).await;
 
     let members: Vec<String> = serde_json::from_slice(
         &std::fs::read(state.path().join("workspaces/9/membership.json")).unwrap(),

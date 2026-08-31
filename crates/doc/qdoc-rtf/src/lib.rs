@@ -123,17 +123,17 @@ impl ColorTable {
     /// Register a color and return its 1-based RTF color index (`\cfN`).
     fn intern(&mut self, rgb: (u8, u8, u8)) -> usize {
         if let Some(&pos) = self.seen.get(&rgb) {
-            return pos + 1;
+            return pos.saturating_add(1);
         }
         let pos = self.colors.len();
         self.colors.push(rgb);
         self.seen.insert(rgb, pos);
-        pos + 1
+        pos.saturating_add(1)
     }
 
     /// The 1-based RTF color index for an already-registered color, if present.
     fn index_of(&self, rgb: (u8, u8, u8)) -> Option<usize> {
-        self.seen.get(&rgb).map(|&p| p + 1)
+        self.seen.get(&rgb).map(|&p| p.saturating_add(1))
     }
 
     /// Render the `{\colortbl …}` group; the leading empty entry (`;`) is
@@ -212,7 +212,7 @@ fn render_heading(out: &mut String, block: &BlockView, colors: &ColorTable) {
     out.push_str("{\\pard");
     push_align(out, block);
     // Bold + larger font for the whole heading paragraph.
-    let _ = write!(out, "\\b\\fs{}", pt * 2);
+    let _ = write!(out, "\\b\\fs{}", pt.saturating_mul(2));
     out.push(' ');
     render_inline(out, &block.text, &block.marks, colors);
     out.push_str("\\par}\n");
@@ -231,7 +231,8 @@ fn render_paragraph(out: &mut String, block: &BlockView, colors: &ColorTable, in
 fn render_quote(out: &mut String, block: &BlockView, colors: &ColorTable, indent_level: i64) {
     // A quote is an indented, italic paragraph one level deeper than its context.
     out.push_str("{\\pard");
-    push_indent(out, indent_level + 1);
+    let child_indent = indent_level.saturating_add(1);
+    push_indent(out, child_indent);
     push_align(out, block);
     let _ = write!(out, "\\i\\fs{}", BODY_PT * 2);
     out.push(' ');
@@ -240,7 +241,7 @@ fn render_quote(out: &mut String, block: &BlockView, colors: &ColorTable, indent
     }
     out.push_str("\\par}\n");
     // Multi-paragraph quotes carry child blocks; render them indented too.
-    render_blocks(out, &block.children, colors, indent_level + 1);
+    render_blocks(out, &block.children, colors, child_indent);
 }
 
 fn render_code(out: &mut String, block: &BlockView) {
@@ -263,7 +264,7 @@ fn render_list_item(out: &mut String, block: &BlockView, colors: &ColorTable) {
     let ordered = matches!(block.attrs.get("ordered"), Some(AttrVal::Bool(true)));
     out.push_str("{\\pard");
     // Hanging indent: left margin one step past the bullet at this nesting level.
-    push_indent(out, level + 1);
+    push_indent(out, level.saturating_add(1));
     let _ = write!(out, "\\fi-{INDENT_TWIPS}");
     let _ = write!(out, "\\fs{}", BODY_PT * 2);
     out.push(' ');
@@ -321,7 +322,7 @@ fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
             .collect()
     } else if !block.children.is_empty() {
         let cols = match block.attrs.get("cols") {
-            Some(AttrVal::Int(n)) => (*n).max(1) as usize,
+            Some(AttrVal::Int(n)) => usize::try_from((*n).max(1)).unwrap_or(1),
             _ => block.children.len().max(1),
         };
         block
@@ -345,13 +346,15 @@ fn render_table(out: &mut String, block: &BlockView, colors: &ColorTable) {
         .unwrap_or(1)
         .max(1);
     let total_twips: i64 = 9000;
-    let col_w = total_twips / max_cols as i64;
+    let max_cols_i64 = i64::try_from(max_cols).unwrap_or(i64::MAX).max(1);
+    let col_w = total_twips.checked_div(max_cols_i64).unwrap_or(total_twips);
 
     for row in &rows {
         out.push_str("\\trowd");
         // Cell boundary positions: cumulative right edge of each column.
         for c in 1..=max_cols {
-            let _ = write!(out, "\\cellx{}", col_w * c as i64);
+            let c_i64 = i64::try_from(c).unwrap_or(i64::MAX);
+            let _ = write!(out, "\\cellx{}", col_w.saturating_mul(c_i64));
         }
         // Cell contents.
         for cell in row {
@@ -401,7 +404,7 @@ fn push_align(out: &mut String, block: &BlockView) {
 /// Emit a left-indent control word for `indent_level` steps (0 = none).
 fn push_indent(out: &mut String, indent_level: i64) {
     if indent_level > 0 {
-        let _ = write!(out, "\\li{}", indent_level * INDENT_TWIPS);
+        let _ = write!(out, "\\li{}", indent_level.saturating_mul(INDENT_TWIPS));
     }
 }
 
@@ -432,11 +435,15 @@ fn render_inline(out: &mut String, text: &str, marks: &[MarkSpan], colors: &Colo
     bounds.dedup();
 
     for w in bounds.windows(2) {
-        let (seg_start, seg_end) = (w[0], w[1]);
+        let &[seg_start, seg_end] = w else {
+            continue;
+        };
         if seg_start >= seg_end {
             continue;
         }
-        let segment = &text[seg_start..seg_end];
+        let Some(segment) = text.get(seg_start..seg_end) else {
+            continue;
+        };
         let active: Vec<&MarkSpan> = marks
             .iter()
             .filter(|m| m.start <= seg_start && m.end >= seg_end && m.start < m.end)
@@ -488,7 +495,7 @@ fn push_run_group(out: &mut String, segment: &str, active: &[&MarkSpan], colors:
         .find(|m| m.name == "size" || m.name == "fontSize")
         .and_then(|m| m.value.as_int())
     {
-        let _ = write!(out, "\\fs{}", pt * 2);
+        let _ = write!(out, "\\fs{}", pt.saturating_mul(2));
         wrote_cw = true;
     }
     // Color (`\cfN`).
@@ -551,14 +558,17 @@ fn mark_str(m: &MarkSpan) -> Option<String> {
 /// Parse a `#rrggbb` / `rrggbb` (or `#rgb`) hex color into `(r, g, b)`.
 fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
     let h = s.trim().trim_start_matches('#');
-    let parse2 = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    let parse2 = |i: usize| {
+        h.get(i..i.saturating_add(2))
+            .and_then(|s| u8::from_str_radix(s, 16).ok())
+    };
     match h.len() {
         6 => Some((parse2(0)?, parse2(2)?, parse2(4)?)),
         3 => {
             // #abc → #aabbcc
             let d = |i: usize| {
-                let c = u8::from_str_radix(&h[i..=i], 16).ok()?;
-                Some(c * 16 + c)
+                let c = u8::from_str_radix(h.get(i..=i)?, 16).ok()?;
+                Some(c.checked_mul(16)?.checked_add(c)?)
             };
             Some((d(0)?, d(1)?, d(2)?))
         }
@@ -586,7 +596,10 @@ fn push_escaped(out: &mut String, text: &str) {
                 // Emit each UTF-16 code unit as a signed 16-bit `\uN?`.
                 let mut buf = [0u16; 2];
                 for unit in c.encode_utf16(&mut buf) {
-                    let signed = *unit as i16;
+                    // RTF's `\uN` control word wants the code unit's bits
+                    // reinterpreted as signed 16-bit — this is the intended
+                    // encoding, not a lossy truncation.
+                    let signed = unit.cast_signed();
                     let _ = write!(out, "\\u{signed}?");
                 }
             }

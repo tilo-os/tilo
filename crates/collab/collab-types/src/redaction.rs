@@ -73,8 +73,9 @@ impl OpId {
         hasher.update(seq.to_le_bytes());
         hasher.update(signing_bytes);
         let digest = hasher.finalize();
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(&digest[..16]);
+        // SHA-256 always yields 32 bytes, so the 16-byte prefix always
+        // exists; the fallback is unreachable in practice.
+        let bytes = digest.first_chunk::<16>().copied().unwrap_or([0u8; 16]);
         Self(bytes)
     }
 
@@ -145,6 +146,10 @@ impl RedactedMarker {
 
     /// Encode to canonical bytes — the form an op's payload field
     /// carries after redaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if canonical serialisation fails.
     pub fn canonical(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(self)
     }
@@ -182,6 +187,10 @@ pub enum RedactionError {
 
 /// Encode a `RedactRequest` to canonical bytes — the form an op's payload
 /// carries when `op_class == Redact`.
+///
+/// # Errors
+///
+/// Returns [`CanonicalError`] if canonical serialisation fails.
 pub fn encode_redact_payload(req: &RedactRequest) -> Result<Vec<u8>, CanonicalError> {
     canonical_bytes(req)
 }
@@ -193,6 +202,14 @@ pub fn encode_redact_payload(req: &RedactRequest) -> Result<Vec<u8>, CanonicalEr
 /// (catching the identity mismatch before the validator sees it).
 ///
 /// The returned struct is owned, so callers can drop the original envelope.
+///
+/// # Errors
+///
+/// Returns [`RedactionError::WrongOpClass`] if `op.op_class != Redact`,
+/// [`RedactionError::Malformed`] if the payload doesn't decode as a
+/// `RedactRequest`, [`RedactionError::ReasonTooLong`] if `reason` exceeds
+/// [`MAX_REDACTION_REASON_BYTES`], or [`RedactionError::RedactorMismatch`]
+/// if `redacted_by` disagrees with `op.author`.
 pub fn parse_redact_payload(op: &SignedOp) -> Result<RedactRequest, RedactionError> {
     if op.op_class != OpClass::Redact {
         return Err(RedactionError::WrongOpClass {
@@ -214,6 +231,10 @@ pub fn parse_redact_payload(op: &SignedOp) -> Result<RedactRequest, RedactionErr
 /// `RedactRequest::target_op_hash` carries. Shared rather than
 /// re-implemented at each call site, keeping the audit log's verification
 /// in lock-step with the minting path.
+///
+/// # Errors
+///
+/// Returns [`CanonicalError`] if canonicalising `op` fails.
 pub fn hash_target_op(op: &SignedOp) -> Result<[u8; 32], CanonicalError> {
     let bytes = canonical_bytes(op)?;
     let digest = Sha256::digest(&bytes);
@@ -234,7 +255,7 @@ mod tests {
     fn dummy_op(seq: u64) -> SignedOp {
         let (_, pk) = generate_keypair();
         SignedOp::new_unsigned(
-            vec![seq as u8],
+            vec![seq.to_le_bytes()[0]],
             ArtifactId::new(),
             pk,
             AttestationId::new(),

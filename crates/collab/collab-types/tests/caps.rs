@@ -32,13 +32,15 @@ use collab_types::{
 };
 
 fn t(secs: u64) -> SystemTime {
-    SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(secs))
+        .unwrap()
 }
 
 #[allow(clippy::too_many_arguments)]
 fn make_role_attestation(
     issuer_sk: &SigningKey,
-    issuer_pk: Ed25519PublicKey,
+    issuer_pub: Ed25519PublicKey,
     subject: Ed25519PublicKey,
     channel: ChannelId,
     role: Role,
@@ -48,7 +50,7 @@ fn make_role_attestation(
 ) -> RoleAttestation {
     let mut att = Attestation {
         id: AttestationId::new(),
-        issued_by: issuer_pk,
+        issued_by: issuer_pub,
         subject,
         claims,
         valid_from,
@@ -77,15 +79,15 @@ fn channel_with_author(
     ArtifactId,
     ChannelId,
 ) {
-    let (owner_sk, owner_pk) = generate_keypair();
-    let (author_sk, author_pk) = generate_keypair();
+    let (owner_sk, owner_pub) = generate_keypair();
+    let (author_sk, author_pub) = generate_keypair();
     let channel = ChannelId::new();
     let artifact = ArtifactId::new();
 
     let ra = make_role_attestation(
         &owner_sk,
-        owner_pk,
-        author_pk,
+        owner_pub,
+        author_pub,
         channel,
         role,
         t(0),
@@ -95,14 +97,14 @@ fn channel_with_author(
     let attestation_id = ra.attestation.id;
 
     let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pk);
+    state.authorised_signers.push(owner_pub);
     state.artifacts.insert(artifact, ArtifactKind::Note);
     state.register_attestation(ra);
 
     (
         state,
         author_sk,
-        author_pk,
+        author_pub,
         attestation_id,
         artifact,
         channel,
@@ -111,7 +113,7 @@ fn channel_with_author(
 
 fn build_op(
     artifact: ArtifactId,
-    author_pk: Ed25519PublicKey,
+    author_pub: Ed25519PublicKey,
     author_sk: &SigningKey,
     attestation_id: AttestationId,
     op_class: OpClass,
@@ -120,7 +122,7 @@ fn build_op(
     let mut op = SignedOp::new_unsigned(
         b"payload".to_vec(),
         artifact,
-        author_pk,
+        author_pub,
         attestation_id,
         op_class,
         t(10),
@@ -135,12 +137,12 @@ fn build_op(
 
 #[test]
 fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
-    let (mut state, author_sk, author_pk, att, artifact, _ch) =
+    let (mut state, author_sk, author_pub, att, artifact, _ch) =
         channel_with_author(Role::Commenter);
 
     // A comment op passes validation AND is applied (recorded to the op
     // log that fan-out relays from).
-    let comment = build_op(artifact, author_pk, &author_sk, att, OpClass::Comment, 1);
+    let comment = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
     assert!(
         state.apply_and_relay(&comment).is_ok(),
         "commenter's comment op must validate + apply"
@@ -151,14 +153,14 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
         "the comment op was applied (relayable)"
     );
     assert_eq!(
-        state.last_seq_per_author.get(&author_pk).copied(),
+        state.last_seq_per_author.get(&author_pub).copied(),
         Some(1),
         "seq advanced for the applied comment"
     );
 
     // An EDIT op (EditMeta) from the SAME actor is rejected at
     // validation: the real validate path returns the role denial...
-    let edit = build_op(artifact, author_pk, &author_sk, att, OpClass::EditMeta, 2);
+    let edit = build_op(artifact, author_pub, &author_sk, att, OpClass::EditMeta, 2);
     assert_eq!(
         validate_inbound_op(&edit, &mut state.clone()),
         Err(ValidationError::RoleForbidsOpClass),
@@ -168,7 +170,7 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
     // ...and on the apply-and-relay path it is neither applied nor
     // relayed: the op log is unchanged and the seq counter did not move.
     let before_log = state.op_log.len();
-    let before_seq = state.last_seq_per_author.get(&author_pk).copied();
+    let before_seq = state.last_seq_per_author.get(&author_pub).copied();
     let res = state.apply_and_relay(&edit);
     assert_eq!(res, Err(ValidationError::RoleForbidsOpClass));
     assert_eq!(
@@ -177,12 +179,12 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
         "rejected edit was NOT applied"
     );
     assert_eq!(
-        state.last_seq_per_author.get(&author_pk).copied(),
+        state.last_seq_per_author.get(&author_pub).copied(),
         before_seq,
         "rejected edit did NOT advance seq (nothing to relay)"
     );
     // A splice (text edit) is likewise rejected.
-    let splice = build_op(artifact, author_pk, &author_sk, att, OpClass::Splice, 2);
+    let splice = build_op(artifact, author_pub, &author_sk, att, OpClass::Splice, 2);
     assert_eq!(
         state.apply_and_relay(&splice),
         Err(ValidationError::RoleForbidsOpClass)
@@ -199,7 +201,7 @@ fn commenter_may_comment_but_not_edit_on_the_real_apply_path() {
 
 #[test]
 fn app_scoped_restriction_caps_an_editor_to_comment_only() {
-    let (mut state, author_sk, author_pk, att, artifact, _ch) = channel_with_author(Role::Editor);
+    let (mut state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(Role::Editor);
 
     // Baseline: the coarse role table permits an Editor to splice, and
     // with no overrides the op applies.
@@ -208,7 +210,7 @@ fn app_scoped_restriction_caps_an_editor_to_comment_only() {
         ArtifactKind::Note,
         OpClass::Splice
     ));
-    let splice_ok = build_op(artifact, author_pk, &author_sk, att, OpClass::Splice, 1);
+    let splice_ok = build_op(artifact, author_pub, &author_sk, att, OpClass::Splice, 1);
     assert!(
         state.clone().apply_and_relay(&splice_ok).is_ok(),
         "unrestricted editor may splice"
@@ -225,7 +227,7 @@ fn app_scoped_restriction_caps_an_editor_to_comment_only() {
 
     // Now a splice inside the finance app is denied by the CAPABILITY
     // layer (distinct from a pure role denial) on the real path...
-    let splice = build_op(artifact, author_pk, &author_sk, att, OpClass::Splice, 1);
+    let splice = build_op(artifact, author_pub, &author_sk, att, OpClass::Splice, 1);
     assert_eq!(
         validate_inbound_op(&splice, &mut state.clone()),
         Err(ValidationError::CapabilityDenied),
@@ -237,7 +239,7 @@ fn app_scoped_restriction_caps_an_editor_to_comment_only() {
 
     // ...but a comment inside the same app is still allowed (the
     // restriction caps AT comment, not below it).
-    let comment = build_op(artifact, author_pk, &author_sk, att, OpClass::Comment, 1);
+    let comment = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
     assert!(
         state.apply_and_relay(&comment).is_ok(),
         "comment is within the restricted cap ceiling"
@@ -250,14 +252,14 @@ fn app_scoped_restriction_caps_an_editor_to_comment_only() {
 
 #[test]
 fn per_resource_share_grants_a_viewer_comment_on_one_artifact() {
-    let (mut state, author_sk, author_pk, att, artifact, _ch) = channel_with_author(Role::Viewer);
+    let (mut state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(Role::Viewer);
 
     // A second artifact the viewer is NOT shared on.
     let other = ArtifactId::new();
     state.artifacts.insert(other, ArtifactKind::Note);
 
     // By role alone a Viewer cannot comment anywhere.
-    let denied = build_op(artifact, author_pk, &author_sk, att, OpClass::Comment, 1);
+    let denied = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
     assert_eq!(
         validate_inbound_op(&denied, &mut state.clone()),
         Err(ValidationError::RoleForbidsOpClass),
@@ -267,10 +269,10 @@ fn per_resource_share_grants_a_viewer_comment_on_one_artifact() {
     // Share THIS artifact with the viewer, comment-only.
     state
         .cap_overrides
-        .push(CapOverride::share(author_pk, artifact, Verb::Comment));
+        .push(CapOverride::share(author_pub, artifact, Verb::Comment));
 
     // Now a comment on the shared artifact is allowed on the real path...
-    let comment = build_op(artifact, author_pk, &author_sk, att, OpClass::Comment, 1);
+    let comment = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
     assert!(
         state.apply_and_relay(&comment).is_ok(),
         "share grants comment on the shared artifact"
@@ -279,13 +281,13 @@ fn per_resource_share_grants_a_viewer_comment_on_one_artifact() {
 
     // ...but the same viewer still cannot comment on a DIFFERENT
     // artifact (the share is instance-scoped), nor edit the shared one.
-    let elsewhere = build_op(other, author_pk, &author_sk, att, OpClass::Comment, 2);
+    let elsewhere = build_op(other, author_pub, &author_sk, att, OpClass::Comment, 2);
     assert_eq!(
         state.apply_and_relay(&elsewhere),
         Err(ValidationError::RoleForbidsOpClass),
         "the share does not leak to other artifacts"
     );
-    let edit_shared = build_op(artifact, author_pk, &author_sk, att, OpClass::EditMeta, 2);
+    let edit_shared = build_op(artifact, author_pub, &author_sk, att, OpClass::EditMeta, 2);
     assert_eq!(
         state.apply_and_relay(&edit_shared),
         Err(ValidationError::RoleForbidsOpClass),
@@ -297,18 +299,18 @@ fn per_resource_share_grants_a_viewer_comment_on_one_artifact() {
 
 #[test]
 fn denied_role_cannot_be_rescued_by_a_grant() {
-    let (mut state, author_sk, author_pk, att, artifact, _ch) = channel_with_author(Role::Denied);
+    let (mut state, author_sk, author_pub, att, artifact, _ch) = channel_with_author(Role::Denied);
 
     // Even a workspace-wide Admin grant to this exact user is inert
     // against an explicit Denied block.
     state.cap_overrides.push(CapOverride::new(
-        Subject::User(author_pk),
+        Subject::User(author_pub),
         Scope::Workspace,
         Effect::Grant,
         Verb::Admin,
     ));
 
-    let comment = build_op(artifact, author_pk, &author_sk, att, OpClass::Comment, 1);
+    let comment = build_op(artifact, author_pub, &author_sk, att, OpClass::Comment, 1);
     assert_eq!(
         state.apply_and_relay(&comment),
         Err(ValidationError::RoleForbidsOpClass),

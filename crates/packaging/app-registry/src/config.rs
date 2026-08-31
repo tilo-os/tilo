@@ -38,6 +38,10 @@ pub enum RegistryTrust {
 
 impl RegistryTrust {
     /// Parse `ed25519:<hex>` or `unsigned`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `s` is neither `unsigned` nor `ed25519:<hex32>`.
     pub fn parse(s: &str) -> Result<Self, ConfigError> {
         if s == "unsigned" {
             return Ok(RegistryTrust::Unsigned);
@@ -167,6 +171,10 @@ impl RegistriesConfig {
 
     /// Load + merge the global and per-workspace configs; missing files
     /// aren't an error, and if neither exists returns the built-in [`Self::default_central`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a present config file fails to read or parse.
     pub fn load(workspace_root: Option<&Path>) -> Result<Self, ConfigError> {
         Self::load_from(global_path().as_deref(), workspace_root)
     }
@@ -174,6 +182,10 @@ impl RegistriesConfig {
     /// Merge an explicit global-config path with a workspace root.
     /// [`Self::load`] calls this with the real global path; tests pass a
     /// temp path so they never read the host's ~/.config/qos.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a present config file fails to read or parse.
     pub fn load_from(
         global: Option<&Path>,
         workspace_root: Option<&Path>,
@@ -224,6 +236,10 @@ impl RegistriesConfig {
     }
 
     /// Serialise to the `registries.toml` schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if TOML encoding fails.
     pub fn to_toml(&self) -> Result<String, ConfigError> {
         let file = RegistryFile {
             registries: self.registries.iter().map(RegistryRow::from_ref).collect(),

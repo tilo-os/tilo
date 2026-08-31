@@ -205,6 +205,11 @@ impl History {
 
     /// Persist history to the JSON file, creating the parent directory if
     /// needed. Returns an error only on genuine IO failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the platform exposes no data directory, if the
+    /// parent directory can't be created, or if the write itself fails.
     pub fn save(&self) -> std::io::Result<()> {
         let path = history_path().ok_or_else(|| {
             std::io::Error::new(
@@ -336,6 +341,11 @@ fn best(a: Option<f64>, b: Option<f64>) -> Option<f64> {
 /// callers that want the recency/frequency-only default filter the empty
 /// query out before calling this.
 fn fuzzy_score(haystack: &str, needle: &str) -> Option<f64> {
+    // Blend weight: matching at all is worth this base, contiguity and start
+    // each add up to the remainder, so a contiguous prefix ≈ 1.0 and a
+    // scattered mid-word match ≈ the base.
+    const BASE: f64 = 0.3;
+
     if needle.is_empty() {
         return Some(1.0);
     }
@@ -348,7 +358,7 @@ fn fuzzy_score(haystack: &str, needle: &str) -> Option<f64> {
     for &nc in &need {
         let mut found = None;
         while hi < hay.len() {
-            if hay[hi] == nc {
+            if hay.get(hi) == Some(&nc) {
                 found = Some(hi);
                 hi += 1;
                 break;
@@ -364,7 +374,11 @@ fn fuzzy_score(haystack: &str, needle: &str) -> Option<f64> {
     // Contiguity: fraction of the matched characters that are adjacent to
     // their predecessor. 1.0 for a pure substring, 0.0 for all-gaps.
     let contiguity = if need.len() > 1 {
-        let adjacent = matched.windows(2).filter(|w| w[1] == w[0] + 1).count() as f64;
+        let adjacent = matched
+            .iter()
+            .zip(matched.iter().skip(1))
+            .filter(|pair| *pair.1 == *pair.0 + 1)
+            .count() as f64;
         adjacent / (need.len() - 1) as f64
     } else {
         // A single matched char is trivially "contiguous".
@@ -373,19 +387,17 @@ fn fuzzy_score(haystack: &str, needle: &str) -> Option<f64> {
 
     // Start strength: prefix (index 0) beats a word-boundary start, which
     // beats a mid-word start.
-    let first = matched[0];
+    let Some(&first) = matched.first() else {
+        return None;
+    };
     let start_bonus = if first == 0 {
         1.0
-    } else if is_boundary(hay[first - 1]) {
+    } else if hay.get(first - 1).is_some_and(|&c| is_boundary(c)) {
         0.6
     } else {
         0.0
     };
 
-    // Blend: matching at all is worth a base, contiguity and start each
-    // add up to the remainder, so a contiguous prefix ≈ 1.0 and a
-    // scattered mid-word match ≈ the base.
-    const BASE: f64 = 0.3;
     let score = BASE + 0.45 * contiguity + 0.25 * start_bonus;
     Some(score.min(1.0))
 }

@@ -13,7 +13,7 @@
     )
 )]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -182,12 +182,22 @@ enum Cmd {
     },
 }
 
+/// Fold an `i32` exit code (from [`std::process::ExitStatus::code`] or
+/// [`RunError::to_exit_code`]) into the `u8` [`ExitCode`] takes. Both
+/// sources are always in `0..=255` in practice — a POSIX wait status is
+/// already masked to the low byte, and `RunError`'s codes are small
+/// constants — so the `1` fallback (generic failure) never fires for a real
+/// exit.
+fn exit_code(code: i32) -> ExitCode {
+    ExitCode::from(u8::try_from(code).unwrap_or(1))
+}
+
 fn main() -> ExitCode {
     // Hidden subcommand: parsed BEFORE clap so its argv shape (positional
     // paths, `--` separator) doesn't collide with clap's flag parsing.
     let raw_args: Vec<String> = std::env::args().collect();
     if raw_args.get(1).map(std::string::String::as_str) == Some(SANDBOX_EXEC_SUBCOMMAND) {
-        run_sandbox_exec(&raw_args[2..]);
+        run_sandbox_exec(raw_args.get(2..).unwrap_or(&[]));
     }
 
     init_tracing();
@@ -239,14 +249,14 @@ fn main() -> ExitCode {
             match run(&manifest, &payload_root, &opts) {
                 Ok(status) => {
                     if let Some(code) = status.code() {
-                        ExitCode::from(code as u8)
+                        exit_code(code)
                     } else {
                         ExitCode::from(1)
                     }
                 }
                 Err(e) => {
                     eprintln!("qos-launcher: {e}");
-                    ExitCode::from(e.to_exit_code() as u8)
+                    exit_code(e.to_exit_code())
                 }
             }
         }
@@ -268,13 +278,15 @@ fn main() -> ExitCode {
             allow_unsigned_runtime,
         } => exec_installed(
             &package,
-            no_services,
-            wayland_socket,
-            workspace_id,
-            open,
-            open_uri,
-            allow_missing_runtime,
-            allow_unsigned_runtime,
+            ExecArgs {
+                no_services,
+                wayland_socket,
+                workspace_id,
+                open,
+                open_uri,
+                allow_missing_runtime,
+                allow_unsigned_runtime,
+            },
         ),
         Cmd::RunHost {
             desktop_id,
@@ -282,8 +294,27 @@ fn main() -> ExitCode {
             open,
             open_url,
             dry_run,
-        } => run_host(desktop_id, wayland_socket, open, open_url, dry_run),
+        } => run_host(
+            &desktop_id,
+            wayland_socket,
+            open.as_deref(),
+            open_url,
+            dry_run,
+        ),
     }
+}
+
+/// CLI arguments for [`Cmd::Exec`], grouped to keep [`exec_installed`] under
+/// clippy's argument-count limit — this is argv plumbing, not a sandbox
+/// policy struct.
+struct ExecArgs {
+    no_services: bool,
+    wayland_socket: Option<PathBuf>,
+    workspace_id: Option<String>,
+    open: Option<PathBuf>,
+    open_uri: Option<String>,
+    allow_missing_runtime: bool,
+    allow_unsigned_runtime: bool,
 }
 
 /// Resolve `package` in the registry and launch its GUI entrypoint.
@@ -292,16 +323,7 @@ fn main() -> ExitCode {
 /// is the same sandboxed launch, built from the same manifest by the
 /// same code. The app still gets exactly one writable directory, and
 /// no flag here can change that.
-fn exec_installed(
-    package: &str,
-    no_services: bool,
-    wayland_socket: Option<PathBuf>,
-    workspace_id: Option<String>,
-    open: Option<PathBuf>,
-    open_uri: Option<String>,
-    allow_missing_runtime: bool,
-    allow_unsigned_runtime: bool,
-) -> ExitCode {
+fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
     let entry = match registry::find_installed(package) {
         Ok(Some(e)) => e,
         Ok(None) => {
@@ -332,45 +354,44 @@ fn exec_installed(
         return ExitCode::from(2);
     }
     let opts = RunOptions {
-        no_services,
+        no_services: args.no_services,
         mode: LaunchMode::Gui,
         landlock_enforce: true,
-        allow_missing_runtime,
-        allow_unsigned_runtime,
-        wayland_socket,
-        workspace_id,
+        allow_missing_runtime: args.allow_missing_runtime,
+        allow_unsigned_runtime: args.allow_unsigned_runtime,
+        wayland_socket: args.wayland_socket,
+        workspace_id: args.workspace_id,
         app_id: Some(package.to_string()),
-        open_document: open,
-        open_uri,
+        open_document: args.open,
+        open_uri: args.open_uri,
         ..Default::default()
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
-        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Ok(status) => exit_code(status.code().unwrap_or(1)),
         Err(e) => {
             eprintln!("qos-launcher: {e}");
-            ExitCode::from(e.to_exit_code() as u8)
+            exit_code(e.to_exit_code())
         }
     }
 }
 
 /// Launch a host application. Unconfined — see [`launcher::host`].
 fn run_host(
-    desktop_id: String,
+    desktop_id: &str,
     wayland_socket: Option<PathBuf>,
-    open: Option<PathBuf>,
+    open: Option<&Path>,
     open_url: Option<String>,
     dry_run: bool,
 ) -> ExitCode {
     let env = LaunchEnv {
         wayland_socket,
         files: open
-            .as_ref()
             .map(|p| vec![p.display().to_string()])
             .unwrap_or_default(),
         urls: open_url.into_iter().collect(),
     };
     if dry_run {
-        return match launcher::host::plan_host(&desktop_id, &env) {
+        return match launcher::host::plan_host(desktop_id, &env) {
             Ok(plan) => {
                 println!("desktop-id : {}", plan.desktop_id);
                 println!("name       : {}", plan.display_name);
@@ -390,11 +411,11 @@ fn run_host(
             }
         };
     }
-    match launcher::host::run_host(&desktop_id, &env) {
-        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+    match launcher::host::run_host(desktop_id, &env) {
+        Ok(status) => exit_code(status.code().unwrap_or(1)),
         Err(e) => {
             eprintln!("qos-launcher: {e}");
-            ExitCode::from(e.to_exit_code() as u8)
+            exit_code(e.to_exit_code())
         }
     }
 }
@@ -512,14 +533,14 @@ fn run_installed(
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {
             if let Some(code) = status.code() {
-                ExitCode::from(code as u8)
+                exit_code(code)
             } else {
                 ExitCode::from(1)
             }
         }
         Err(e) => {
             eprintln!("qos-launcher: {e}");
-            ExitCode::from(e.to_exit_code() as u8)
+            exit_code(e.to_exit_code())
         }
     }
 }

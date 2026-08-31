@@ -101,23 +101,37 @@ struct ShadowSprites {
     corner: Image,
 }
 
-fn bake(r: u8, g: u8, b: u8, w: u32, h: u32, f: impl Fn(u32, u32) -> f64) -> Image {
-    let mut data = Vec::<u8>::with_capacity((w * h * 4) as usize);
-    for y in 0..h {
-        for x in 0..w {
-            let a = f(x, y).clamp(0.0, 1.0);
-            data.push((f64::from(r) * a).round() as u8);
-            data.push((f64::from(g) * a).round() as u8);
-            data.push((f64::from(b) * a).round() as u8);
-            data.push((a * 255.0).round() as u8);
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "alpha is clamped to 0.0..=1.0 and channel values are u8 (0..=255), so \
+              each product rounds to an integer already within 0..=255"
+)]
+fn bake(
+    red: u8,
+    green: u8,
+    blue: u8,
+    width: u32,
+    height: u32,
+    profile: impl Fn(u32, u32) -> f64,
+) -> Image {
+    let mut data =
+        Vec::<u8>::with_capacity(width.saturating_mul(height).saturating_mul(4) as usize);
+    for row in 0..height {
+        for col in 0..width {
+            let alpha = profile(col, row).clamp(0.0, 1.0);
+            data.push((f64::from(red) * alpha).round() as u8);
+            data.push((f64::from(green) * alpha).round() as u8);
+            data.push((f64::from(blue) * alpha).round() as u8);
+            data.push((alpha * 255.0).round() as u8);
         }
     }
     Image {
         data: Blob::new(Arc::new(data)),
         format: Format::Rgba8,
         alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width: w,
-        height: h,
+        width,
+        height,
     }
 }
 
@@ -195,7 +209,12 @@ fn blit(scene: &mut Scene, transform: Affine, local: Affine, brush: &ImageBrush,
         return;
     }
     let shape = local.inverse().transform_rect_bbox(clip);
-    scene.fill(Fill::NonZero, transform * local, brush, None, &shape);
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Affine composition is matrix multiplication on f64 fields; it cannot panic or overflow"
+    )]
+    let combined = transform * local;
+    scene.fill(Fill::NonZero, combined, brush, None, &shape);
 }
 
 /// Paint a soft drop shadow for `rect`.
@@ -326,9 +345,14 @@ pub fn shadow(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, tok
     if alpha <= 0.0 {
         return;
     }
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "translating a Rect by a Vec2 offset is vector addition on f64 fields; it cannot panic or overflow"
+    )]
+    let shadow_rect = rect + Vec2::new(0.0, f64::from(token.offset_y));
     scene.draw_blurred_rounded_rect(
         transform,
-        rect + Vec2::new(0.0, f64::from(token.offset_y)),
+        shadow_rect,
         token.color,
         radius.clamp(0.0, rect.width().min(rect.height()) / 2.0),
         std_dev_for(token.blur),
@@ -376,7 +400,7 @@ pub fn pill(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let r = radius.unwrap_or(rect.height() / 2.0);
+    let r = radius.unwrap_or_else(|| rect.height() / 2.0);
     let shape = RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, r);
     scene.fill(Fill::NonZero, transform, fill, None, &shape);
     if let Some(bc) = border {
@@ -415,7 +439,12 @@ mod tests {
     }
 
     fn alpha_at(img: &Image, x: u32, y: u32) -> u8 {
-        img.data.data()[((y * img.width + x) * 4 + 3) as usize]
+        let idx = y
+            .saturating_mul(img.width)
+            .saturating_add(x)
+            .saturating_mul(4)
+            .saturating_add(3);
+        img.data.data()[idx as usize]
     }
 
     /// Ends of the band are zero, and the peak sits where
@@ -433,11 +462,21 @@ mod tests {
             "outer end of the band must be ~0"
         );
         // Peak column: SHADOW_PEAK_RADIUS along the band.
-        let peak_x = (SHADOW_PEAK_RADIUS * n as f64).round() as u32;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "SHADOW_PEAK_RADIUS is a 0.0..=1.0 fraction of the band, so the \
+                      product with n stays within 0..n"
+        )]
+        let peak_x = (SHADOW_PEAK_RADIUS * f64::from(n)).round() as u32;
         let peak = alpha_at(&s.edge, peak_x, 0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "255.0 * (1.0 - SHADOW_PEAK_RADIUS) is within 0.0..=255.0"
+        )]
         let expected = (255.0 * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32;
         assert!(
-            (peak as i32 - expected).abs() <= 2,
+            (i32::from(peak) - expected).abs() <= 2,
             "the baked peak must be {expected}/255; got {peak}"
         );
         // Every row must match — that's what lets one sprite stretch to
@@ -485,15 +524,20 @@ mod tests {
     #[test]
     fn corner_sprite_contours_are_circular() {
         let s = build_shadow_sprites(0, 0, 0);
-        let n = SHADOW_SPRITE_SIZE as f64;
+        let n = f64::from(SHADOW_SPRITE_SIZE);
         // Walking a quarter circle of radius `r` (in band units) out
         // from the corner must hold the alpha constant.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to 0.0..=n - 1.0 immediately above, so it's always within u32 range"
+        )]
         let px = |u: f64| ((u + 1.0) * 0.5 * n).round().clamp(0.0, n - 1.0) as u32;
         for r in [0.25_f64, 0.5, 0.75] {
-            let straight = alpha_at(&s.corner, px(r), px(0.0)) as i32;
+            let straight = i32::from(alpha_at(&s.corner, px(r), px(0.0)));
             for deg in [15.0_f64, 30.0, 45.0, 60.0, 75.0] {
                 let (sin, cos) = deg.to_radians().sin_cos();
-                let got = alpha_at(&s.corner, px(r * cos), px(r * sin)) as i32;
+                let got = i32::from(alpha_at(&s.corner, px(r * cos), px(r * sin)));
                 assert!(
                     (got - straight).abs() <= 3,
                     "at radius {r} the corner alpha must not depend on the \
@@ -505,6 +549,11 @@ mod tests {
 
     /// The red channel of the render *is* the composited alpha, so a
     /// sample reads the production output of [`shadow`] directly.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test sample coordinates are always non-negative pixel offsets within the rendered canvas"
+    )]
     fn render_token_shadow(
         w: u32,
         h: u32,
@@ -545,7 +594,7 @@ mod tests {
         for d in [2.0_f64, 5.0, 9.0, 14.0] {
             let edge = at(250.0 + d, 200.0);
             let corner = at(cc + (radius + d) * k, cc + (radius + d) * k);
-            let (lo, hi) = (edge.min(corner) as f64, edge.max(corner) as f64);
+            let (lo, hi) = (f64::from(edge.min(corner)), f64::from(edge.max(corner)));
             assert!(
                 hi - lo <= 14.0,
                 "at {d} px out the shadow must be as dense at the rounded \
@@ -578,7 +627,7 @@ mod tests {
             full > 60,
             "a full-strength shadow must actually paint (got {full})"
         );
-        let ratio = half as f64 / full as f64;
+        let ratio = f64::from(half) / f64::from(full);
         assert!(
             (ratio - 0.5).abs() <= 0.08,
             "halving the token's alpha must halve the shadow: {full} -> \
@@ -600,9 +649,16 @@ mod tests {
         let at = render_token_shadow(400, 400, rect, 24.0, &token);
         let reach = std_dev_for(token.blur) * 2.5;
         let mut last = 0.0_f64;
-        for d in 1..=((reach * 2.0) as u32) {
-            if at(250.0 + d as f64, 200.0) > 2 {
-                last = d as f64;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "reach is 2.5 * std_dev_for(a non-negative blur), so reach * 2.0 is \
+                      always non-negative and far below u32::MAX"
+        )]
+        let steps = (reach * 2.0) as u32;
+        for d in 1..=steps {
+            if at(250.0 + f64::from(d), 200.0) > 2 {
+                last = f64::from(d);
             }
         }
         assert!(
@@ -620,6 +676,11 @@ mod tests {
     /// The red channel of the render *is* the composited alpha, so the
     /// sampler reads the production output of [`soft_shadow`] in the
     /// same units [`shadow_profile`] declares.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test sample coordinates are always non-negative pixel offsets within the rendered canvas"
+    )]
     fn render_shadow(w: u32, h: u32, rect: Rect, spread: f64) -> impl Fn(f64, f64) -> u8 {
         use crate::offscreen::OffscreenRenderer;
         let mut scene = Scene::new();
@@ -662,22 +723,38 @@ mod tests {
         let (cx, cy) = (200.0, 200.0);
         let half = rect.width() / 2.0 + spread; // 80 px
         let (mut peak, mut peak_dx) = (0u8, 0.0f64);
-        for dx in 0..=(half as u32) {
-            let v = at(cx + dx as f64, cy);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "half is rect.width() / 2.0 + spread, always non-negative for any rect this toolkit draws"
+        )]
+        let steps = half as u32;
+        for dx in 0..=steps {
+            let v = at(cx + f64::from(dx), cy);
             if v > peak {
                 peak = v;
-                peak_dx = dx as f64;
+                peak_dx = f64::from(dx);
             }
         }
 
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "255.0 * (1.0 - SHADOW_PEAK_RADIUS) is within 0.0..=255.0"
+        )]
         let expected = (255.0 * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "255.0 * (1.0 - SHADOW_PEAK_RADIUS)^2 is within 0.0..=255.0"
+        )]
+        let double_premultiplied =
+            (255.0 * (1.0 - SHADOW_PEAK_RADIUS) * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32;
         assert!(
-            (peak as i32 - expected).abs() <= 6,
+            (i32::from(peak) - expected).abs() <= 6,
             "full-intensity white shadow must peak at ~{expected}/255 \
              (the sprite's own alpha envelope); got {peak}. A peak near \
              {} means the premultiplied sprite is being premultiplied a \
              second time.",
-            (255.0 * (1.0 - SHADOW_PEAK_RADIUS) * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32,
+            double_premultiplied,
         );
 
         let expected_dx = rect.width() / 2.0 - (1.0 - 2.0 * SHADOW_PEAK_RADIUS) * spread;
@@ -706,10 +783,10 @@ mod tests {
     fn outward_profiles(rect: Rect, spread: f64, span: u32) -> (Vec<u8>, Vec<u8>) {
         let at = render_shadow(1400, 900, rect, spread);
         let right = (0..span)
-            .map(|k| at(rect.x1 + k as f64, rect.center().y))
+            .map(|k| at(rect.x1 + f64::from(k), rect.center().y))
             .collect();
         let bottom = (0..span)
-            .map(|k| at(rect.center().x, rect.y1 + k as f64))
+            .map(|k| at(rect.center().x, rect.y1 + f64::from(k)))
             .collect();
         (right, bottom)
     }
@@ -721,6 +798,11 @@ mod tests {
     #[test]
     fn soft_shadow_falloff_width_is_the_spread_not_the_rects_size() {
         let spread = 40.0;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "spread is a small positive px constant in these tests, always well within u32 range"
+        )]
         let span = spread as u32 + 6;
         // Wide (the overview's active row), tall, and a small square.
         let wide = outward_profiles(Rect::new(150.0, 330.0, 1172.0, 565.0), spread, span);
@@ -738,10 +820,19 @@ mod tests {
             // 1. Every sample matches the declared envelope at its own
             //    distance from the edge, in units of `spread`.
             for (k, got) in profile.iter().enumerate() {
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "k is a small profile-vector index (at most a few hundred), \
+                              far below where f64 loses integer precision"
+                )]
                 let u = (k as f64 + 0.5) / spread;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "255.0 * shadow_profile(u) is within 0.0..=255.0"
+                )]
                 let want = (255.0 * shadow_profile(u)).round() as i32;
                 assert!(
-                    (*got as i32 - want).abs() <= 8,
+                    (i32::from(*got) - want).abs() <= 8,
                     "{label}: {k} px out from the edge must be {want}/255 \
                      (shadow_profile({u:.3})); got {got}. Whole profile: \
                      {profile:?}"
@@ -749,6 +840,11 @@ mod tests {
             }
             // 2. …so the band is `spread` wide: still painting half way
             //    out, nothing at all past the spread.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "spread * 0.5 is a small positive px offset, always within the profile vector's length"
+            )]
             let half_way = profile[(spread * 0.5) as usize];
             assert!(
                 half_way >= 8,
@@ -756,14 +852,25 @@ mod tests {
                  be painting; got {half_way}/255: {profile:?}",
                 spread * 0.5,
             );
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "spread is a small positive px constant, always within the profile vector's length"
+            )]
+            let spread_floor = spread as usize;
             assert!(
-                profile[spread as usize..].iter().all(|v| *v == 0),
+                profile[spread_floor..].iter().all(|v| *v == 0),
                 "{label}: nothing may paint past {spread} px — the spread \
                  *is* the falloff width: {profile:?}"
             );
             // 3. And it is actually a shadow at the edge, not a hairline.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "255.0 * shadow_profile(0.0) is within 0.0..=255.0"
+            )]
+            let edge_alpha = (255.0 * shadow_profile(0.0)) as i32;
             assert!(
-                profile[0] as i32 >= (255.0 * shadow_profile(0.0)) as i32 - 12,
+                i32::from(profile[0]) >= edge_alpha - 12,
                 "{label}: the shadow at the edge must read ~{}/255; got {}",
                 (255.0 * shadow_profile(0.0)).round(),
                 profile[0]
@@ -780,7 +887,7 @@ mod tests {
         ] {
             for (k, (x, y)) in a.iter().zip(b.iter()).enumerate() {
                 assert!(
-                    (*x as i32 - *y as i32).abs() <= 6,
+                    (i32::from(*x) - i32::from(*y)).abs() <= 6,
                     "{label}: the profiles diverge {k} px out from the \
                      edge ({x} vs {y}): {a:?} vs {b:?}"
                 );
@@ -797,10 +904,10 @@ mod tests {
         let rect = Rect::new(150.0, 330.0, 1172.0, 565.0);
         let at = render_shadow(1400, 900, rect, spread);
         for r in [6.0_f64, 12.0, 20.0, 28.0, 36.0] {
-            let straight = at(rect.x1 + r, rect.center().y) as i32;
+            let straight = i32::from(at(rect.x1 + r, rect.center().y));
             for deg in [15.0_f64, 30.0, 45.0, 60.0, 75.0] {
                 let (sin, cos) = deg.to_radians().sin_cos();
-                let got = at(rect.x1 + r * cos, rect.y1 + r * sin) as i32;
+                let got = i32::from(at(rect.x1 + r * cos, rect.y1 + r * sin));
                 assert!(
                     (got - straight).abs() <= 8,
                     "{r} px out from the bottom-right corner at {deg}° \
@@ -824,16 +931,31 @@ mod tests {
         // between them the field must not vary at all.
         for dy in [1.0_f64, 8.0, 20.0] {
             let y = rect.y1 + dy;
-            let mut samples: Vec<(f64, u8)> = Vec::new();
-            let mut x = rect.x0 + spread;
-            while x <= rect.x1 - spread {
-                samples.push((x, at(x, y)));
-                x += 1.0;
-            }
+            let start = rect.x0 + spread;
+            let end = rect.x1 - spread;
+            let span = end - start;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "span is the sampled interior width in px (rect width minus \
+                          2*spread); always non-negative here and far below u32::MAX \
+                          for any rect this toolkit draws"
+            )]
+            let steps = if span >= 0.0 {
+                (span as u32).saturating_add(1)
+            } else {
+                0
+            };
+            let samples: Vec<(f64, u8)> = (0..steps)
+                .map(|i| {
+                    let x = start + f64::from(i);
+                    (x, at(x, y))
+                })
+                .collect();
             let lo = samples.iter().map(|(_, v)| *v).min().unwrap();
             let hi = samples.iter().map(|(_, v)| *v).max().unwrap();
             assert!(
-                hi as i32 - lo as i32 <= 3,
+                i32::from(hi) - i32::from(lo) <= 3,
                 "{dy} px below the bottom edge the shadow varies from \
                  {lo} to {hi} across the edge's length; the worst \
                  columns were {:?}",
@@ -904,10 +1026,20 @@ mod tests {
         // 24 px tall — narrower than 2 · spread — and 120 px wide.
         let pill = Rect::new(400.0, 400.0, 520.0, 424.0);
         let at = render_shadow(1400, 900, pill, spread);
-        for k in 0..(spread as u32 + 4) {
-            let u = (k as f64 + 0.5) / spread;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "spread is a small positive px constant in these tests, always well within u32 range"
+        )]
+        let steps = spread as u32 + 4;
+        for k in 0..steps {
+            let u = (f64::from(k) + 0.5) / spread;
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "255.0 * shadow_profile(u) is within 0.0..=255.0"
+            )]
             let want = (255.0 * shadow_profile(u)).round() as i32;
-            let got = at(pill.center().x, pill.y1 + k as f64) as i32;
+            let got = i32::from(at(pill.center().x, pill.y1 + f64::from(k)));
             assert!(
                 (got - want).abs() <= 8,
                 "{k} px below a {}-px-tall pill must read {want}/255 \
