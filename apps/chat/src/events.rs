@@ -1077,7 +1077,7 @@ impl ChatApp {
             Focus::Thread => self
                 .thread_draft_key()
                 .unwrap_or_else(|| self.active_channel.clone()),
-            _ => self.active_channel.clone(),
+            Focus::Main => self.active_channel.clone(),
         }
     }
 
@@ -1201,7 +1201,7 @@ impl ChatApp {
                 Some(key) => (key, self.thread_open.clone()),
                 None => (self.active_channel.clone(), None),
             },
-            _ => (self.active_channel.clone(), None),
+            Focus::Main => (self.active_channel.clone(), None),
         };
         let text = ChatDoc::draft_text(doc, &key);
         if text.trim().is_empty() {

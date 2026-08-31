@@ -551,9 +551,9 @@ fn build_nav(snap: &DocSnapshot, chapters: &[Chapter]) -> String {
             .first()
             .map_or("chapter-1.xhtml", |c| c.href.as_str());
         list.push_str("  <ol>\n");
-        let _ = write!(
+        let _ = writeln!(
             list,
-            "    <li><a href=\"{}\">{}</a></li>\n",
+            "    <li><a href=\"{}\">{}</a></li>",
             escape_xml_attr(href),
             escape_xml_text(&title)
         );
@@ -704,39 +704,39 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
         .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string());
 
     let mut metadata = String::new();
-    let _ = write!(
+    let _ = writeln!(
         metadata,
-        "    <dc:identifier id=\"book-id\">{}</dc:identifier>\n",
+        "    <dc:identifier id=\"book-id\">{}</dc:identifier>",
         escape_xml_text(&identifier)
     );
-    let _ = write!(
+    let _ = writeln!(
         metadata,
-        "    <dc:title>{}</dc:title>\n",
+        "    <dc:title>{}</dc:title>",
         escape_xml_text(&title)
     );
-    let _ = write!(
+    let _ = writeln!(
         metadata,
-        "    <dc:language>{}</dc:language>\n",
+        "    <dc:language>{}</dc:language>",
         escape_xml_text(&language)
     );
     if let Some(a) = &author {
-        let _ = write!(
+        let _ = writeln!(
             metadata,
-            "    <dc:creator>{}</dc:creator>\n",
+            "    <dc:creator>{}</dc:creator>",
             escape_xml_text(a)
         );
     }
     if let Some(subject) = snap.properties.get("subject") {
-        let _ = write!(
+        let _ = writeln!(
             metadata,
-            "    <dc:subject>{}</dc:subject>\n",
+            "    <dc:subject>{}</dc:subject>",
             escape_xml_text(subject)
         );
     }
     // EPUB 3 requires a dcterms:modified meta.
-    let _ = write!(
+    let _ = writeln!(
         metadata,
-        "    <meta property=\"dcterms:modified\">{}</meta>\n",
+        "    <meta property=\"dcterms:modified\">{}</meta>",
         escape_xml_text(&normalize_modified(&modified))
     );
 
@@ -746,17 +746,17 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
         "    <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n",
     );
     for ch in chapters {
-        let _ = write!(
+        let _ = writeln!(
             manifest,
-            "    <item id=\"{}\" href=\"{}\" media-type=\"application/xhtml+xml\"/>\n",
+            "    <item id=\"{}\" href=\"{}\" media-type=\"application/xhtml+xml\"/>",
             escape_xml_attr(&ch.id),
             escape_xml_attr(&ch.href)
         );
     }
     for img in images {
-        let _ = write!(
+        let _ = writeln!(
             manifest,
-            "    <item id=\"{}\" href=\"{}\" media-type=\"{}\"/>\n",
+            "    <item id=\"{}\" href=\"{}\" media-type=\"{}\"/>",
             escape_xml_attr(&img.id),
             escape_xml_attr(&img.href),
             img.media_type
@@ -766,9 +766,9 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
     // Spine: chapters in order.
     let mut spine = String::new();
     for ch in chapters {
-        let _ = write!(
+        let _ = writeln!(
             spine,
-            "    <itemref idref=\"{}\"/>\n",
+            "    <itemref idref=\"{}\"/>",
             escape_xml_attr(&ch.id)
         );
     }

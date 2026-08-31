@@ -103,7 +103,9 @@ impl NumberControls {
                 });
                 self.controls.len() - 1
             });
-        let control = &mut self.controls[index];
+        let Some(control) = self.controls.get_mut(index) else {
+            return;
+        };
         control.active = true;
         if !control.input.is_editing() {
             control.input.set_value(value);
@@ -186,6 +188,17 @@ pub(crate) struct NoteComposer {
     delete: Rect,
     save: Rect,
     cursor: Point,
+}
+
+/// Geometry computed once per `NoteComposer::draw` call and shared by its
+/// chrome/button drawing helpers.
+struct NoteLayout {
+    card: Rect,
+    left: f64,
+    pad: f64,
+    inner_width: f32,
+    excerpt: String,
+    input_rect: Rect,
 }
 
 impl Default for NoteComposer {
@@ -280,24 +293,14 @@ impl NoteComposer {
         (self.input.take_dirty(), self.input.take_submit())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
+    /// Geometry for the card, header excerpt and input box — pure so it can
+    /// be computed once and shared by the chrome/button drawing helpers.
+    fn compute_note_layout(
         text_renderer: &mut TextRenderer,
-        theme: &Theme,
         bounds: Rect,
         anchor_y: Option<f64>,
         annotation: &Annotation,
-    ) {
-        if self.id != Some(annotation.id) {
-            return;
-        }
-        if !self.input.is_focused() && self.input.value() != annotation.note {
-            self.input.set_text(&annotation.note);
-        }
-        let colors = &theme.tokens.colors;
+    ) -> NoteLayout {
         let width = 344.0_f64.min(bounds.width() - 24.0);
         let pad = 16.0;
         let inner_width = (width - pad * 2.0) as f32;
@@ -321,12 +324,38 @@ impl NoteComposer {
             Some(y) if y - 14.0 - height >= top_limit => y - 14.0 - height,
             _ => (bottom_limit - height).max(top_limit),
         };
-        self.card = Rect::new(x0, y0, x0 + width, y0 + height);
+        let card = Rect::new(x0, y0, x0 + width, y0 + height);
+        let left = card.x0 + pad;
+        let input_y = card.y0 + pad + 26.0 + f64::from(excerpt_height) + 10.0;
+        let input_rect = Rect::new(left, input_y, card.x1 - pad, input_y + input_height);
+        NoteLayout {
+            card,
+            left,
+            pad,
+            inner_width,
+            excerpt,
+            input_rect,
+        }
+    }
+
+    /// Shadow, card background/border, the "Note" header, excerpt and the
+    /// (already laid-out) shared text input.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_note_chrome(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: &NoteLayout,
+        annotation: &Annotation,
+    ) {
+        let colors = &theme.tokens.colors;
         let shadow = Rect::new(
-            self.card.x0 - 1.0,
-            self.card.y0 + 4.0,
-            self.card.x1 + 1.0,
-            self.card.y1 + 7.0,
+            layout.card.x0 - 1.0,
+            layout.card.y0 + 4.0,
+            layout.card.x1 + 1.0,
+            layout.card.y1 + 7.0,
         );
         paint::fill_round(
             scene,
@@ -338,25 +367,24 @@ impl NoteComposer {
         paint::fill_round(
             scene,
             transform,
-            self.card,
+            layout.card,
             f64::from(theme.tokens.radii.lg),
             colors.surfaces.raised,
         );
         paint::stroke_round(
             scene,
             transform,
-            self.card,
+            layout.card,
             f64::from(theme.tokens.radii.lg),
             theme.border_focus,
             1.4,
         );
 
-        let left = self.card.x0 + pad;
-        let mut y = self.card.y0 + pad;
+        let y = layout.card.y0 + layout.pad;
         paint::circle(
             scene,
             transform,
-            Point::new(left + 6.0, y + 7.0),
+            Point::new(layout.left + 6.0, y + 7.0),
             6.0,
             ReaderPalette::highlight_swatch(annotation.color),
         );
@@ -365,22 +393,21 @@ impl NoteComposer {
             "Note",
             13.5,
             colors.text_primary,
-            transform * Affine::translate((left + 20.0, y)),
+            transform * Affine::translate((layout.left + 20.0, y)),
             None,
             TextWeight::Semibold,
         );
-        y += 26.0;
+        let excerpt_y = y + 26.0;
         text_renderer.draw_text(
             scene,
-            &excerpt,
+            &layout.excerpt,
             12.0,
             colors.text_dim,
-            transform * Affine::translate((left, y)),
-            Some(inner_width),
+            transform * Affine::translate((layout.left, excerpt_y)),
+            Some(layout.inner_width),
         );
-        y += f64::from(excerpt_height) + 10.0;
-        let input_rect = Rect::new(left, y, self.card.x1 - pad, y + input_height);
-        self.input.apply_layout_external(input_rect);
+
+        self.input.apply_layout_external(layout.input_rect);
         self.input.draw(
             scene,
             transform,
@@ -388,13 +415,23 @@ impl NoteComposer {
             theme,
             &ui::presence::PresenceCtx::empty(),
         );
+    }
 
-        let button_y = input_rect.y1 + 16.0;
-        self.delete = Rect::new(left, button_y, left + 76.0, button_y + 32.0);
+    /// Delete/Save buttons beneath the input box.
+    fn draw_note_buttons(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: &NoteLayout,
+    ) {
+        let button_y = layout.input_rect.y1 + 16.0;
+        self.delete = Rect::new(layout.left, button_y, layout.left + 76.0, button_y + 32.0);
         self.save = Rect::new(
-            self.card.x1 - pad - 84.0,
+            layout.card.x1 - layout.pad - 84.0,
             button_y,
-            self.card.x1 - pad,
+            layout.card.x1 - layout.pad,
             button_y + 32.0,
         );
         Button::paint(
@@ -419,6 +456,29 @@ impl NoteComposer {
                 .text_size(13.0)
                 .hovered(self.save.contains(self.cursor)),
         );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        bounds: Rect,
+        anchor_y: Option<f64>,
+        annotation: &Annotation,
+    ) {
+        if self.id != Some(annotation.id) {
+            return;
+        }
+        if !self.input.is_focused() && self.input.value() != annotation.note {
+            self.input.set_text(&annotation.note);
+        }
+        let layout = Self::compute_note_layout(text_renderer, bounds, anchor_y, annotation);
+        self.card = layout.card;
+        self.draw_note_chrome(scene, transform, text_renderer, theme, &layout, annotation);
+        self.draw_note_buttons(scene, transform, text_renderer, theme, &layout);
     }
 }
 

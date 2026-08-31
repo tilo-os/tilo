@@ -1982,7 +1982,7 @@ impl ApiTesterApp {
 
     /// Seed the picker CRDT strings from the current model so the dropdowns
     /// display the right value.
-    fn seed_method_env(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn seed_method_env(&self, state: &mut AutoCommit, path: &ObjId) {
         ApiDoc::set_text(state, path, METHOD_PATH, self.request.method.as_str());
         let env_name = self
             .active_env

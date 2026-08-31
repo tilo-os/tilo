@@ -287,7 +287,7 @@ pub fn resolve_service_binds(
         let host = OwnedFd::from(stream);
 
         if next_child_fd == 31 {
-            next_child_fd += 1;
+            next_child_fd = next_child_fd.saturating_add(1);
         }
         let child_fd = next_child_fd;
         next_child_fd = next_child_fd.saturating_add(1);

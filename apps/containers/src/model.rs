@@ -328,270 +328,298 @@ pub fn sample_engine() -> Engine {
 
 fn sample_containers() -> Vec<Container> {
     vec![
-        Container {
-            id: "9f3c1a7be4d2c0118af26b5d4e9f01a2".into(),
-            name: "web-frontend".into(),
-            image: "docker.io/library/nginx:1.27-alpine".into(),
-            status: ContainerStatus::Running,
-            status_detail: "Up 4 hours".into(),
-            command: "nginx -g 'daemon off;'".into(),
-            created: "4 hours ago".into(),
-            ports: vec![
-                PortMapping {
-                    host_port: 8080,
-                    container_port: 80,
-                    protocol: "tcp".into(),
-                },
-                PortMapping {
-                    host_port: 8443,
-                    container_port: 443,
-                    protocol: "tcp".into(),
-                },
-            ],
-            mounts: vec![
-                Mount {
-                    source: "/var/workspace/site/dist".into(),
-                    destination: "/usr/share/nginx/html".into(),
-                    read_only: true,
-                },
-                Mount {
-                    source: "nginx-conf".into(),
-                    destination: "/etc/nginx/conf.d".into(),
-                    read_only: false,
-                },
-            ],
-            env: vec![
-                ("NGINX_HOST".into(), "localhost".into()),
-                ("NGINX_PORT".into(), "80".into()),
-                ("TZ".into(), "UTC".into()),
-            ],
-            labels: vec![
-                ("io.qos.cluster".into(), "dev-stack".into()),
-                ("maintainer".into(), "NGINX Docker Maintainers".into()),
-            ],
-            stats: Stats {
-                cpu_percent: 0.07,
-                mem_bytes: 18 * 1024 * 1024,
-                mem_limit_bytes: 256 * 1024 * 1024,
-                net_rx_bytes: 4_812_344,
-                net_tx_bytes: 19_004_221,
-                block_read_bytes: 1_204_224,
-                block_write_bytes: 90_112,
-                pids: 5,
-            },
-            logs: sample_nginx_logs(),
-        },
-        Container {
-            id: "1b77e0a9c3f54d2e8e0c9a1f6b2d3e4f".into(),
-            name: "api-server".into(),
-            image: "registry.qos.local/api:2.4.1".into(),
-            status: ContainerStatus::Running,
-            status_detail: "Up 4 hours (healthy)".into(),
-            command: "/usr/local/bin/api --config /etc/api/config.toml".into(),
-            created: "4 hours ago".into(),
-            ports: vec![PortMapping {
-                host_port: 3000,
-                container_port: 3000,
-                protocol: "tcp".into(),
-            }],
-            mounts: vec![
-                Mount {
-                    source: "/var/workspace/api/config".into(),
-                    destination: "/etc/api".into(),
-                    read_only: true,
-                },
-                Mount {
-                    source: "api-data".into(),
-                    destination: "/var/lib/api".into(),
-                    read_only: false,
-                },
-            ],
-            env: vec![
-                ("RUST_LOG".into(), "info".into()),
-                ("DATABASE_URL".into(), "postgres://db:5432/app".into()),
-                ("PORT".into(), "3000".into()),
-            ],
-            labels: vec![("io.qos.cluster".into(), "dev-stack".into())],
-            stats: Stats {
-                cpu_percent: 0.23,
-                mem_bytes: 142 * 1024 * 1024,
-                mem_limit_bytes: 512 * 1024 * 1024,
-                net_rx_bytes: 88_120_004,
-                net_tx_bytes: 41_993_120,
-                block_read_bytes: 7_340_032,
-                block_write_bytes: 2_097_152,
-                pids: 14,
-            },
-            logs: sample_api_logs(),
-        },
-        Container {
-            id: "c4e8d2b0a6f9417c83b1d5e7f0a9c2b4".into(),
-            name: "postgres".into(),
-            image: "docker.io/library/postgres:16".into(),
-            status: ContainerStatus::Running,
-            status_detail: "Up 4 hours (healthy)".into(),
-            command: "postgres".into(),
-            created: "4 hours ago".into(),
-            ports: vec![PortMapping {
-                host_port: 5432,
-                container_port: 5432,
-                protocol: "tcp".into(),
-            }],
-            mounts: vec![Mount {
-                source: "pgdata".into(),
-                destination: "/var/lib/postgresql/data".into(),
-                read_only: false,
-            }],
-            env: vec![
-                ("POSTGRES_DB".into(), "app".into()),
-                ("POSTGRES_USER".into(), "app".into()),
-                ("PGDATA".into(), "/var/lib/postgresql/data/pgdata".into()),
-            ],
-            labels: vec![("io.qos.cluster".into(), "dev-stack".into())],
-            stats: Stats {
-                cpu_percent: 0.04,
-                mem_bytes: 96 * 1024 * 1024,
-                mem_limit_bytes: 1024 * 1024 * 1024,
-                net_rx_bytes: 12_004_221,
-                net_tx_bytes: 33_882_104,
-                block_read_bytes: 41_943_040,
-                block_write_bytes: 134_217_728,
-                pids: 9,
-            },
-            logs: sample_postgres_logs(),
-        },
-        Container {
-            id: "7a2f9c4e1d8b6053f2a9c1e4b7d0f3a6".into(),
-            name: "redis-cache".into(),
-            image: "docker.io/library/redis:7-alpine".into(),
-            status: ContainerStatus::Running,
-            status_detail: "Up 4 hours".into(),
-            command: "redis-server --save 60 1".into(),
-            created: "4 hours ago".into(),
-            ports: vec![PortMapping {
-                host_port: 6379,
-                container_port: 6379,
-                protocol: "tcp".into(),
-            }],
-            mounts: vec![],
-            env: vec![("TZ".into(), "UTC".into())],
-            labels: vec![("io.qos.cluster".into(), "dev-stack".into())],
-            stats: Stats {
-                cpu_percent: 0.01,
-                mem_bytes: 6 * 1024 * 1024,
-                mem_limit_bytes: 128 * 1024 * 1024,
-                net_rx_bytes: 2_204_004,
-                net_tx_bytes: 1_882_104,
-                block_read_bytes: 0,
-                block_write_bytes: 524_288,
-                pids: 4,
-            },
-            logs: vec![
-                "1:C 30 Jun 2026 09:14:02.114 * Redis version=7.2.5, bits=64, pid=1, just started"
-                    .into(),
-                "1:M 30 Jun 2026 09:14:02.116 * Ready to accept connections tcp".into(),
-            ],
-        },
-        Container {
-            id: "e0b3a7c9f2d14e6b8c0a3f5d7e9b1c2d".into(),
-            name: "build-runner".into(),
-            image: "registry.qos.local/ci-runner:latest".into(),
-            status: ContainerStatus::Exited,
-            status_detail: "Exited (0) 2 hours ago".into(),
-            command: "/runner/entrypoint.sh".into(),
-            created: "yesterday".into(),
-            ports: vec![],
-            mounts: vec![Mount {
-                source: "/run/user/1000/podman/podman.sock".into(),
-                destination: "/var/run/docker.sock".into(),
-                read_only: false,
-            }],
-            env: vec![
-                ("CI".into(), "true".into()),
-                ("RUNNER_LABELS".into(), "qos,rust".into()),
-            ],
-            labels: vec![("io.qos.cluster".into(), "ci".into())],
-            stats: Stats::default(),
-            logs: vec![
-                "[runner] job qos-build#4821 picked up".into(),
-                "[runner] cargo build -p shell ... ok (184.2s)".into(),
-                "[runner] job complete, exit 0".into(),
-            ],
-        },
-        Container {
-            id: "5d1c8b3a0e7f24698b2d6a0c4e8f1b3d".into(),
-            name: "minio".into(),
-            image: "docker.io/minio/minio:latest".into(),
-            status: ContainerStatus::Exited,
-            status_detail: "Exited (137) 3 days ago".into(),
-            command: "minio server /data --console-address :9001".into(),
-            created: "5 days ago".into(),
-            ports: vec![
-                PortMapping {
-                    host_port: 9000,
-                    container_port: 9000,
-                    protocol: "tcp".into(),
-                },
-                PortMapping {
-                    host_port: 9001,
-                    container_port: 9001,
-                    protocol: "tcp".into(),
-                },
-            ],
-            mounts: vec![Mount {
-                source: "minio-data".into(),
-                destination: "/data".into(),
-                read_only: false,
-            }],
-            env: vec![
-                ("MINIO_ROOT_USER".into(), "admin".into()),
-                ("MINIO_ROOT_PASSWORD".into(), "********".into()),
-            ],
-            labels: vec![],
-            stats: Stats::default(),
-            logs: vec![
-                "API: http://0.0.0.0:9000".into(),
-                "WARNING: Console endpoint is listening on a dynamic port".into(),
-                "Received signal SIGKILL, exiting".into(),
-            ],
-        },
-        Container {
-            id: "a9f0c3e7b1d24856c8a0f2e4d6b8c1a3".into(),
-            name: "grafana".into(),
-            image: "docker.io/grafana/grafana:11.1.0".into(),
-            status: ContainerStatus::Paused,
-            status_detail: "Paused".into(),
-            command: "/run.sh".into(),
-            created: "2 days ago".into(),
-            ports: vec![PortMapping {
-                host_port: 3001,
-                container_port: 3000,
-                protocol: "tcp".into(),
-            }],
-            mounts: vec![Mount {
-                source: "grafana-storage".into(),
-                destination: "/var/lib/grafana".into(),
-                read_only: false,
-            }],
-            env: vec![("GF_SECURITY_ADMIN_USER".into(), "admin".into())],
-            labels: vec![("io.qos.cluster".into(), "observability".into())],
-            stats: Stats {
-                cpu_percent: 0.0,
-                mem_bytes: 54 * 1024 * 1024,
-                mem_limit_bytes: 256 * 1024 * 1024,
-                net_rx_bytes: 502_004,
-                net_tx_bytes: 188_210,
-                block_read_bytes: 0,
-                block_write_bytes: 0,
-                pids: 11,
-            },
-            logs: vec![
-                "logger=settings t=2026-06-28 level=info msg=\"Starting Grafana\" version=11.1.0"
-                    .into(),
-                "logger=http.server level=info msg=\"HTTP Server Listen\" address=[::]:3000".into(),
-            ],
-        },
+        sample_container_web_frontend(),
+        sample_container_api_server(),
+        sample_container_postgres(),
+        sample_container_redis_cache(),
+        sample_container_build_runner(),
+        sample_container_minio(),
+        sample_container_grafana(),
     ]
+}
+
+fn sample_container_web_frontend() -> Container {
+    Container {
+        id: "9f3c1a7be4d2c0118af26b5d4e9f01a2".into(),
+        name: "web-frontend".into(),
+        image: "docker.io/library/nginx:1.27-alpine".into(),
+        status: ContainerStatus::Running,
+        status_detail: "Up 4 hours".into(),
+        command: "nginx -g 'daemon off;'".into(),
+        created: "4 hours ago".into(),
+        ports: vec![
+            PortMapping {
+                host_port: 8080,
+                container_port: 80,
+                protocol: "tcp".into(),
+            },
+            PortMapping {
+                host_port: 8443,
+                container_port: 443,
+                protocol: "tcp".into(),
+            },
+        ],
+        mounts: vec![
+            Mount {
+                source: "/var/workspace/site/dist".into(),
+                destination: "/usr/share/nginx/html".into(),
+                read_only: true,
+            },
+            Mount {
+                source: "nginx-conf".into(),
+                destination: "/etc/nginx/conf.d".into(),
+                read_only: false,
+            },
+        ],
+        env: vec![
+            ("NGINX_HOST".into(), "localhost".into()),
+            ("NGINX_PORT".into(), "80".into()),
+            ("TZ".into(), "UTC".into()),
+        ],
+        labels: vec![
+            ("io.qos.cluster".into(), "dev-stack".into()),
+            ("maintainer".into(), "NGINX Docker Maintainers".into()),
+        ],
+        stats: Stats {
+            cpu_percent: 0.07,
+            mem_bytes: 18 * 1024 * 1024,
+            mem_limit_bytes: 256 * 1024 * 1024,
+            net_rx_bytes: 4_812_344,
+            net_tx_bytes: 19_004_221,
+            block_read_bytes: 1_204_224,
+            block_write_bytes: 90_112,
+            pids: 5,
+        },
+        logs: sample_nginx_logs(),
+    }
+}
+
+fn sample_container_api_server() -> Container {
+    Container {
+        id: "1b77e0a9c3f54d2e8e0c9a1f6b2d3e4f".into(),
+        name: "api-server".into(),
+        image: "registry.qos.local/api:2.4.1".into(),
+        status: ContainerStatus::Running,
+        status_detail: "Up 4 hours (healthy)".into(),
+        command: "/usr/local/bin/api --config /etc/api/config.toml".into(),
+        created: "4 hours ago".into(),
+        ports: vec![PortMapping {
+            host_port: 3000,
+            container_port: 3000,
+            protocol: "tcp".into(),
+        }],
+        mounts: vec![
+            Mount {
+                source: "/var/workspace/api/config".into(),
+                destination: "/etc/api".into(),
+                read_only: true,
+            },
+            Mount {
+                source: "api-data".into(),
+                destination: "/var/lib/api".into(),
+                read_only: false,
+            },
+        ],
+        env: vec![
+            ("RUST_LOG".into(), "info".into()),
+            ("DATABASE_URL".into(), "postgres://db:5432/app".into()),
+            ("PORT".into(), "3000".into()),
+        ],
+        labels: vec![("io.qos.cluster".into(), "dev-stack".into())],
+        stats: Stats {
+            cpu_percent: 0.23,
+            mem_bytes: 142 * 1024 * 1024,
+            mem_limit_bytes: 512 * 1024 * 1024,
+            net_rx_bytes: 88_120_004,
+            net_tx_bytes: 41_993_120,
+            block_read_bytes: 7_340_032,
+            block_write_bytes: 2_097_152,
+            pids: 14,
+        },
+        logs: sample_api_logs(),
+    }
+}
+
+fn sample_container_postgres() -> Container {
+    Container {
+        id: "c4e8d2b0a6f9417c83b1d5e7f0a9c2b4".into(),
+        name: "postgres".into(),
+        image: "docker.io/library/postgres:16".into(),
+        status: ContainerStatus::Running,
+        status_detail: "Up 4 hours (healthy)".into(),
+        command: "postgres".into(),
+        created: "4 hours ago".into(),
+        ports: vec![PortMapping {
+            host_port: 5432,
+            container_port: 5432,
+            protocol: "tcp".into(),
+        }],
+        mounts: vec![Mount {
+            source: "pgdata".into(),
+            destination: "/var/lib/postgresql/data".into(),
+            read_only: false,
+        }],
+        env: vec![
+            ("POSTGRES_DB".into(), "app".into()),
+            ("POSTGRES_USER".into(), "app".into()),
+            ("PGDATA".into(), "/var/lib/postgresql/data/pgdata".into()),
+        ],
+        labels: vec![("io.qos.cluster".into(), "dev-stack".into())],
+        stats: Stats {
+            cpu_percent: 0.04,
+            mem_bytes: 96 * 1024 * 1024,
+            mem_limit_bytes: 1024 * 1024 * 1024,
+            net_rx_bytes: 12_004_221,
+            net_tx_bytes: 33_882_104,
+            block_read_bytes: 41_943_040,
+            block_write_bytes: 134_217_728,
+            pids: 9,
+        },
+        logs: sample_postgres_logs(),
+    }
+}
+
+fn sample_container_redis_cache() -> Container {
+    Container {
+        id: "7a2f9c4e1d8b6053f2a9c1e4b7d0f3a6".into(),
+        name: "redis-cache".into(),
+        image: "docker.io/library/redis:7-alpine".into(),
+        status: ContainerStatus::Running,
+        status_detail: "Up 4 hours".into(),
+        command: "redis-server --save 60 1".into(),
+        created: "4 hours ago".into(),
+        ports: vec![PortMapping {
+            host_port: 6379,
+            container_port: 6379,
+            protocol: "tcp".into(),
+        }],
+        mounts: vec![],
+        env: vec![("TZ".into(), "UTC".into())],
+        labels: vec![("io.qos.cluster".into(), "dev-stack".into())],
+        stats: Stats {
+            cpu_percent: 0.01,
+            mem_bytes: 6 * 1024 * 1024,
+            mem_limit_bytes: 128 * 1024 * 1024,
+            net_rx_bytes: 2_204_004,
+            net_tx_bytes: 1_882_104,
+            block_read_bytes: 0,
+            block_write_bytes: 524_288,
+            pids: 4,
+        },
+        logs: vec![
+            "1:C 30 Jun 2026 09:14:02.114 * Redis version=7.2.5, bits=64, pid=1, just started"
+                .into(),
+            "1:M 30 Jun 2026 09:14:02.116 * Ready to accept connections tcp".into(),
+        ],
+    }
+}
+
+fn sample_container_build_runner() -> Container {
+    Container {
+        id: "e0b3a7c9f2d14e6b8c0a3f5d7e9b1c2d".into(),
+        name: "build-runner".into(),
+        image: "registry.qos.local/ci-runner:latest".into(),
+        status: ContainerStatus::Exited,
+        status_detail: "Exited (0) 2 hours ago".into(),
+        command: "/runner/entrypoint.sh".into(),
+        created: "yesterday".into(),
+        ports: vec![],
+        mounts: vec![Mount {
+            source: "/run/user/1000/podman/podman.sock".into(),
+            destination: "/var/run/docker.sock".into(),
+            read_only: false,
+        }],
+        env: vec![
+            ("CI".into(), "true".into()),
+            ("RUNNER_LABELS".into(), "qos,rust".into()),
+        ],
+        labels: vec![("io.qos.cluster".into(), "ci".into())],
+        stats: Stats::default(),
+        logs: vec![
+            "[runner] job qos-build#4821 picked up".into(),
+            "[runner] cargo build -p shell ... ok (184.2s)".into(),
+            "[runner] job complete, exit 0".into(),
+        ],
+    }
+}
+
+fn sample_container_minio() -> Container {
+    Container {
+        id: "5d1c8b3a0e7f24698b2d6a0c4e8f1b3d".into(),
+        name: "minio".into(),
+        image: "docker.io/minio/minio:latest".into(),
+        status: ContainerStatus::Exited,
+        status_detail: "Exited (137) 3 days ago".into(),
+        command: "minio server /data --console-address :9001".into(),
+        created: "5 days ago".into(),
+        ports: vec![
+            PortMapping {
+                host_port: 9000,
+                container_port: 9000,
+                protocol: "tcp".into(),
+            },
+            PortMapping {
+                host_port: 9001,
+                container_port: 9001,
+                protocol: "tcp".into(),
+            },
+        ],
+        mounts: vec![Mount {
+            source: "minio-data".into(),
+            destination: "/data".into(),
+            read_only: false,
+        }],
+        env: vec![
+            ("MINIO_ROOT_USER".into(), "admin".into()),
+            ("MINIO_ROOT_PASSWORD".into(), "********".into()),
+        ],
+        labels: vec![],
+        stats: Stats::default(),
+        logs: vec![
+            "API: http://0.0.0.0:9000".into(),
+            "WARNING: Console endpoint is listening on a dynamic port".into(),
+            "Received signal SIGKILL, exiting".into(),
+        ],
+    }
+}
+
+fn sample_container_grafana() -> Container {
+    Container {
+        id: "a9f0c3e7b1d24856c8a0f2e4d6b8c1a3".into(),
+        name: "grafana".into(),
+        image: "docker.io/grafana/grafana:11.1.0".into(),
+        status: ContainerStatus::Paused,
+        status_detail: "Paused".into(),
+        command: "/run.sh".into(),
+        created: "2 days ago".into(),
+        ports: vec![PortMapping {
+            host_port: 3001,
+            container_port: 3000,
+            protocol: "tcp".into(),
+        }],
+        mounts: vec![Mount {
+            source: "grafana-storage".into(),
+            destination: "/var/lib/grafana".into(),
+            read_only: false,
+        }],
+        env: vec![("GF_SECURITY_ADMIN_USER".into(), "admin".into())],
+        labels: vec![("io.qos.cluster".into(), "observability".into())],
+        stats: Stats {
+            cpu_percent: 0.0,
+            mem_bytes: 54 * 1024 * 1024,
+            mem_limit_bytes: 256 * 1024 * 1024,
+            net_rx_bytes: 502_004,
+            net_tx_bytes: 188_210,
+            block_read_bytes: 0,
+            block_write_bytes: 0,
+            pids: 11,
+        },
+        logs: vec![
+            "logger=settings t=2026-06-28 level=info msg=\"Starting Grafana\" version=11.1.0"
+                .into(),
+            "logger=http.server level=info msg=\"HTTP Server Listen\" address=[::]:3000".into(),
+        ],
+    }
 }
 
 fn sample_images() -> Vec<Image> {

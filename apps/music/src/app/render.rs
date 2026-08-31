@@ -132,6 +132,12 @@ pub(super) struct TrackColumns {
 /// this row is the current track, hovered, has room for the album column,
 /// and shows a numbered (vs. blank) leading index column.
 #[derive(Clone, Copy)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "this struct IS the bool-bundling fix for draw_track_row_content's argument \
+              count; its four fields are independent per-row flags, and splitting them into \
+              sub-structs would not express any real invariant between them"
+)]
 struct TrackRowFlags {
     is_current: bool,
     hovered: bool,

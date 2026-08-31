@@ -951,6 +951,7 @@ impl Pane {
     /// Draw one row's content within its (already framed) `row` rect: unread
     /// dot, avatar, name/date, subject (+ thread-size badge), snippet, and
     /// star/attachment glyphs. Part of [`Self::draw_list_row`].
+    #[allow(clippy::too_many_arguments)]
     fn draw_list_row_content(
         &self,
         scene: &mut Scene,
@@ -964,7 +965,7 @@ impl Pane {
     ) {
         let unread = !msg.read;
         self.draw_list_row_identity(scene, t, tr, theme, row, msg, unread, now_min);
-        self.draw_list_row_subject(scene, t, tr, theme, row, msg, len, unread);
+        Self::draw_list_row_subject(scene, t, tr, theme, row, msg, len, unread);
     }
 
     /// The unread dot, avatar, sender name, and relative date of a list row.
@@ -1048,7 +1049,6 @@ impl Pane {
         reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
     )]
     fn draw_list_row_subject(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
