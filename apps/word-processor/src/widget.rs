@@ -39,6 +39,9 @@ use crate::num;
 #[cfg(test)]
 use crate::recovery_banner::AUTOSAVE_EDIT_THRESHOLD;
 use crate::recovery_banner::{RecoveryBanner, RecoveryDecision, RecoveryPalette};
+#[cfg(test)]
+use crate::ruler::RulerMarker;
+use crate::ruler::{Ruler, RulerColors, RulerEffect, RulerModel};
 use crate::style_color_picker::StyleColorPicker;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 #[cfg(test)]
@@ -213,14 +216,9 @@ fn with_alpha(base: Color, alpha: u8) -> Color {
 
 const PAGE_TOP: f64 = 28.0;
 const MAX_PAGE_W: f64 = 820.0;
-/// Pixels per inch — the page is a fixed `MAX_PAGE_W` px wide ≙ 8.5in (US-Letter),
-/// so one inch is this many px. Drives the ruler's tick spacing + labels.
-const PX_PER_INCH: f64 = MAX_PAGE_W / 8.5;
 /// Height of the horizontal ruler band carved out of the canvas top (below the
 /// toolbar / recovery banner / find bar, above the page).
 const RULER_H: f64 = 24.0;
-/// Pointer pick radius (px, screen space) for grabbing a ruler marker.
-const RULER_GRAB: f64 = 8.0;
 /// Vertical gap between consecutive discrete pages (the canvas shows through it),
 /// à la Google Docs. Together with `LETTER_RATIO` this drives true pagination.
 const PAGE_GAP: f64 = 22.0;
@@ -370,23 +368,6 @@ enum ToolAction {
 /// toolbar's last row.
 const ZOOM_SWATCH_GAP: f64 = 16.0;
 
-/// Fill a triangle from three screen-space points (ruler indent wedges).
-fn fill_tri(
-    scene: &mut Scene,
-    transform: Affine,
-    col: Color,
-    a: (f64, f64),
-    b: (f64, f64),
-    c: (f64, f64),
-) {
-    let mut p = vello::kurbo::BezPath::new();
-    p.move_to(a);
-    p.line_to(b);
-    p.line_to(c);
-    p.close_path();
-    scene.fill(Fill::NonZero, transform, col, None, &p);
-}
-
 /// Which layout element the bottom bar is editing. Each mode shows draggable
 /// guides on the page with live preview.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -457,32 +438,6 @@ struct GuideDrag {
     mode: LayoutMode,
     side: Side,
     kind: DragKind,
-}
-
-/// A draggable marker on the horizontal ruler. Margin markers edit `self.margins`
-/// (page-wide, persisted like the on-page guides); indent + tab markers edit the
-/// caret paragraph's block attrs.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum RulerMarker {
-    /// Left page margin (the down-pointing wedge at the left text edge).
-    MarginLeft,
-    /// Right page margin.
-    MarginRight,
-    /// Left / hanging indent of the current paragraph (the bottom up-wedge).
-    IndentLeft,
-    /// First-line indent of the current paragraph (the top down-wedge).
-    IndentFirst,
-    /// A tab stop on the current paragraph, by index into its sorted stop list.
-    Tab(usize),
-}
-
-/// An active ruler-marker drag.
-#[derive(Clone, Copy)]
-struct RulerDrag {
-    marker: RulerMarker,
-    /// Set once a tab marker has been dragged below the ruler band — releasing
-    /// there removes the stop (the standard "drag off to delete" gesture).
-    drop_off: bool,
 }
 
 impl Side {
@@ -1700,10 +1655,8 @@ pub struct WordProcessorWidget {
     /// "Ruler" button + the View bottom-bar chip). Default ON — it is the primary
     /// surface for margin / indent / tab-stop editing.
     ruler_on: bool,
-    /// The ruler band's rect in screen space, cached each frame for hit-testing.
-    ruler_rect: Rect,
-    /// An active ruler-marker drag, if any.
-    ruler_drag: Option<RulerDrag>,
+    /// Horizontal ruler component: painting, geometry and marker drag lifecycle.
+    ruler: Ruler,
     /// The page rect in screen space (post-scroll), cached each frame so the
     /// event handler can hit-test layout guides against it.
     page_rect: Rect,
@@ -1876,8 +1829,7 @@ impl WordProcessorWidget {
             layout_mode: LayoutMode::None,
             guide_drag: None,
             ruler_on: true,
-            ruler_rect: Rect::ZERO,
-            ruler_drag: None,
+            ruler: Ruler::default(),
             page_rect: Rect::ZERO,
             layout_chips: Vec::new(),
             // Default the panel open: it is the primary surface for the
@@ -2763,21 +2715,6 @@ fn apply_edges(e: &mut Edges, page: Rect, side: Side, p: Point, kind: DragKind) 
     }
 }
 
-/// The ruler's page-span and text-region background bands: a recessed
-/// "field" tone across the whole page width, and the "paper" tone between
-/// the margins so the active typing column reads as the lit part of the
-/// ruler.
-fn draw_ruler_field(
-    scene: &mut Scene,
-    transform: Affine,
-    cc: ChromeColors,
-    page_span: Rect,
-    text_span: Rect,
-) {
-    scene.fill(Fill::NonZero, transform, cc.field, None, &page_span);
-    scene.fill(Fill::NonZero, transform, cc.paper, None, &text_span);
-}
-
 /// The shared draw arguments [`WordProcessorWidget::draw_styles_panel`]
 /// threads through its per-section helpers, so each one carries a handful of
 /// positions rather than the whole argument list.
@@ -3152,338 +3089,77 @@ impl WordProcessorWidget {
 
     /// Map an unscaled content x (the page coordinate space) to screen x using the
     /// cached zoom + anchor — the same scale-about the page content draws through.
+    #[cfg(test)]
     fn content_x_to_screen(&self, cx: f64) -> f64 {
         self.zoom.content_x_to_screen(cx)
     }
 
-    /// Inverse of [`Self::content_x_to_screen`].
-    fn screen_x_to_content(&self, sx: f64) -> f64 {
-        self.zoom.screen_x_to_content(sx)
-    }
-
-    /// The screen-space x of every ruler marker for the current margins + caret
-    /// paragraph, as `(marker, screen_x)`. `page_x` is the page's left edge in
-    /// content space. Shared by `draw_ruler` (positions) and the event handler
-    /// (hit-testing), so the picked marker always matches what is drawn.
-    fn ruler_markers(&self, page_x: f64, page_w: f64) -> Vec<(RulerMarker, f64)> {
-        let m = self.margins;
-        let left_margin_cx = page_x + m.left; // left text edge
-        let right_margin_cx = page_x + page_w - m.right;
-        let indent = self.caret_block_indent();
-        let first = self.caret_block_first_line_indent();
-        let left_indent_cx = left_margin_cx + indent;
-        let first_indent_cx = left_indent_cx + first;
-        let mut v = vec![
-            (
-                RulerMarker::MarginLeft,
-                self.content_x_to_screen(left_margin_cx),
-            ),
-            (
-                RulerMarker::MarginRight,
-                self.content_x_to_screen(right_margin_cx),
-            ),
-            (
-                RulerMarker::IndentLeft,
-                self.content_x_to_screen(left_indent_cx),
-            ),
-            (
-                RulerMarker::IndentFirst,
-                self.content_x_to_screen(first_indent_cx),
-            ),
-        ];
-        for (i, t) in self.caret_block_tab_stops().into_iter().enumerate() {
-            v.push((
-                RulerMarker::Tab(i),
-                self.content_x_to_screen(left_margin_cx + t),
-            ));
+    fn ruler_model(&self, band: Rect, page_x: f64, page_w: f64) -> RulerModel {
+        RulerModel {
+            band,
+            page_x,
+            page_w,
+            margin_left: self.margins.left,
+            margin_right: self.margins.right,
+            indent_left: self.caret_block_indent(),
+            indent_first: self.caret_block_first_line_indent(),
+            tab_stops: self.caret_block_tab_stops(),
+            zoom: self.zoom.factor(),
+            anchor_x: self.zoom.anchor().x,
         }
-        v
     }
 
-    /// Draw the horizontal ruler band: a fixed-height strip with inch ticks +
-    /// labels aligned to the page, a tinted "text region" between the margins, and
-    /// the draggable margin / indent / tab markers.
-    #[allow(clippy::too_many_arguments)] // each param is a distinct draw input; no natural grouping
+    fn current_ruler_model(&self) -> RulerModel {
+        self.ruler_model(self.ruler.rect(), self.page_rect.x0, self.page_rect.width())
+    }
+
+    #[cfg(test)]
+    fn ruler_markers(&self, page_x: f64, page_w: f64) -> Vec<(RulerMarker, f64)> {
+        Ruler::markers(&self.ruler_model(self.ruler.rect(), page_x, page_w))
+    }
+
     fn draw_ruler(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        tr: &mut TextRenderer,
-        _theme: &Theme,
+        text: &mut TextRenderer,
         band: Rect,
         page_x: f64,
         page_w: f64,
     ) {
-        let cc = self.chrome;
-        self.ruler_rect = band;
-        // Band background.
-        scene.fill(Fill::NonZero, transform, cc.bar, None, &band);
-        // Hairline along the bottom edge separating ruler from canvas.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.border,
-            None,
-            &Rect::new(band.x0, band.y1 - 1.0, band.x1, band.y1),
-        );
-
-        // Clamp drawing to the band's visible width.
-        let clip = |x: f64| x.clamp(band.x0, band.x1);
-        let page_span = Rect::new(
-            clip(self.content_x_to_screen(page_x)),
-            band.y0 + 4.0,
-            clip(self.content_x_to_screen(page_x + page_w)),
-            band.y1 - 4.0,
-        );
-        let text_span = Rect::new(
-            clip(self.content_x_to_screen(page_x + self.margins.left)),
-            band.y0 + 4.0,
-            clip(self.content_x_to_screen(page_x + page_w - self.margins.right)),
-            band.y1 - 4.0,
-        );
-        draw_ruler_field(scene, transform, cc, page_span, text_span);
-
-        self.draw_ruler_ticks(scene, transform, tr, band, page_x, page_w);
-
-        // "in" unit label at the far left of the band.
-        let mid = f64::midpoint(band.y0, band.y1);
-        tr.draw_text(
-            scene,
-            "in",
-            9.0,
-            cc.text_dim,
-            transform * Affine::translate((band.x0 + 4.0, mid - 6.0)),
-            None,
-        );
-
-        // Markers. Margins draw as solid wedges at the band edges; indent markers
-        // as smaller wedges (first-line points down from the top, hanging/left
-        // points up from the bottom); tab stops as small ⌐ ticks.
-        self.draw_ruler_markers(scene, transform, band, page_x, page_w);
-    }
-
-    /// Inch ticks + quarter ticks, measured from the left text margin (so "0"
-    /// sits at the left indent edge — the standard word-processor convention).
-    /// Ticks are placed in content space and mapped through zoom so they track
-    /// the page at any scale.
-    fn draw_ruler_ticks(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        band: Rect,
-        page_x: f64,
-        page_w: f64,
-    ) {
-        let cc = self.chrome;
-        let mid = f64::midpoint(band.y0, band.y1);
-        let unit_px = PX_PER_INCH; // ticks per inch
-        let left_margin_cx = page_x + self.margins.left;
-        let right_margin_cx = page_x + page_w - self.margins.right;
-        let max_in = num::i32_of_f64(((right_margin_cx - left_margin_cx) / unit_px).ceil());
-        for i in 0..=max_in {
-            let cx = left_margin_cx + f64::from(i) * unit_px;
-            let sx = self.content_x_to_screen(cx);
-            if sx < band.x0 - 2.0 || sx > band.x1 + 2.0 {
-                continue;
-            }
-            // Major inch tick + number.
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                cc.text_dim,
-                None,
-                &Rect::new(sx - 0.5, mid - 5.0, sx + 0.5, mid + 5.0),
-            );
-            if i > 0 {
-                tr.draw_text(
-                    scene,
-                    &i.to_string(),
-                    9.0,
-                    cc.text_dim,
-                    transform * Affine::translate((sx + 2.0, band.y0 + 1.0)),
-                    None,
-                );
-            }
-            // Quarter-inch minor ticks between this inch and the next.
-            for q in 1..4 {
-                let qcx = cx + f64::from(q) * unit_px / 4.0;
-                if qcx > right_margin_cx + 1.0 {
-                    break;
-                }
-                let qsx = self.content_x_to_screen(qcx);
-                let h = if q == 2 { 3.5 } else { 2.0 }; // half-inch tick is taller
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    with_alpha(cc.text_dim, 0xaa),
-                    None,
-                    &Rect::new(qsx - 0.5, mid - h, qsx + 0.5, mid + h),
-                );
-            }
-        }
-    }
-
-    /// Margin/indent/tab-stop markers along the ruler: margins as tall wedge
-    /// handles at the band edges, indents as small wedges (first-line points
-    /// down from the top, hanging/left points up from the bottom), tab stops
-    /// as small ⌐ marks on the band's lower edge.
-    fn draw_ruler_markers(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        band: Rect,
-        page_x: f64,
-        page_w: f64,
-    ) {
-        let cc = self.chrome;
-        let mid = f64::midpoint(band.y0, band.y1);
-        let drag_marker = self.ruler_drag.map(|d| d.marker);
-        for (marker, sx) in self.ruler_markers(page_x, page_w) {
-            if sx < band.x0 - 6.0 || sx > band.x1 + 6.0 {
-                continue;
-            }
-            let active = drag_marker == Some(marker);
-            let col = if active { cc.accent } else { cc.text };
-            match marker {
-                RulerMarker::MarginLeft | RulerMarker::MarginRight => {
-                    // Tall thin handle spanning the band at the margin edge.
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        if active { cc.accent } else { cc.accent_faint },
-                        None,
-                        &Rect::new(sx - 1.0, band.y0 + 2.0, sx + 1.0, band.y1 - 2.0),
-                    );
-                    // A small grab knob.
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        col,
-                        None,
-                        &vello::kurbo::Circle::new((sx, mid), 3.0),
-                    );
-                }
-                RulerMarker::IndentFirst => {
-                    // Down-pointing wedge near the top of the band.
-                    fill_tri(
-                        scene,
-                        transform,
-                        col,
-                        (sx - 4.0, band.y0 + 2.0),
-                        (sx + 4.0, band.y0 + 2.0),
-                        (sx, band.y0 + 9.0),
-                    );
-                }
-                RulerMarker::IndentLeft => {
-                    // Up-pointing wedge near the bottom of the band.
-                    fill_tri(
-                        scene,
-                        transform,
-                        col,
-                        (sx - 4.0, band.y1 - 2.0),
-                        (sx + 4.0, band.y1 - 2.0),
-                        (sx, band.y1 - 9.0),
-                    );
-                }
-                RulerMarker::Tab(_) => {
-                    // Small ⌐ tab mark sitting on the band's lower edge.
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        col,
-                        None,
-                        &Rect::new(sx - 0.5, mid, sx + 0.5, band.y1 - 3.0),
-                    );
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        col,
-                        None,
-                        &Rect::new(sx - 0.5, band.y1 - 3.5, sx + 4.0, band.y1 - 3.0),
-                    );
-                }
-            }
-        }
-    }
-
-    /// A left press inside the ruler band: grab the nearest marker to start a
-    /// drag, or — on the page span with no marker hit — add a tab stop on the
-    /// caret paragraph at the clicked position.
-    fn ruler_press(&mut self, state: &mut AutoCommit) {
-        let page_x = self.page_rect.x0;
-        let page_w = self.page_rect.width();
-        if page_w <= 0.0 {
-            return;
-        }
-        let px = self.pointer.x;
-        let py = self.pointer.y;
-        let band = self.ruler_rect;
-        // Nearest marker within the grab radius, ties broken first by the
-        // pointer's vertical zone (first-line wedge in the top third, hanging
-        // wedge in the bottom third, margin bar owns the middle) and then by a
-        // type priority so small indent/tab handles win over the full-height
-        // margin bar when still ambiguous.
-        let top_zone = py < band.y0 + (band.y1 - band.y0) / 3.0;
-        let bot_zone = py > band.y1 - (band.y1 - band.y0) / 3.0;
-        let priority = |m: RulerMarker| -> i32 {
-            match m {
-                RulerMarker::Tab(_) => 4,
-                RulerMarker::IndentFirst => {
-                    if top_zone {
-                        5
-                    } else {
-                        1
-                    }
-                }
-                RulerMarker::IndentLeft => {
-                    if bot_zone {
-                        5
-                    } else {
-                        1
-                    }
-                }
-                // The margin bar wins the middle zone (where indent wedges are
-                // absent), so a 0-indent paragraph can still grab its margin.
-                RulerMarker::MarginLeft | RulerMarker::MarginRight => {
-                    if top_zone || bot_zone {
-                        1
-                    } else {
-                        3
-                    }
-                }
-            }
+        let model = self.ruler_model(band, page_x, page_w);
+        let colors = RulerColors {
+            bar: self.chrome.bar,
+            field: self.chrome.field,
+            paper: self.chrome.paper,
+            border: self.chrome.border,
+            text: self.chrome.text,
+            text_dim: self.chrome.text_dim,
+            accent: self.chrome.accent,
+            accent_faint: self.chrome.accent_faint,
         };
-        let mut best: Option<(RulerMarker, f64, i32)> = None;
-        for (marker, sx) in self.ruler_markers(page_x, page_w) {
-            let d = (px - sx).abs();
-            if d > RULER_GRAB {
-                continue;
+        self.ruler.draw(scene, transform, text, colors, &model);
+    }
+
+    fn apply_ruler_preview(&mut self, effect: RulerEffect) {
+        match effect {
+            RulerEffect::PreviewMarginLeft(value) => self.margins.left = value,
+            RulerEffect::PreviewMarginRight(value) => self.margins.right = value,
+            RulerEffect::PreviewIndentLeft(value) => self.set_caret_block_indent_view(value),
+            RulerEffect::PreviewIndentFirst(value) => {
+                self.set_caret_block_first_line_view(value);
             }
-            let pr = priority(marker);
-            let better = match best {
-                None => true,
-                Some((_, bd, bpr)) => d < bd - 0.5 || ((d - bd).abs() <= 0.5 && pr > bpr),
-            };
-            if better {
-                best = Some((marker, d, pr));
+            RulerEffect::PreviewTab { index, value } => {
+                self.set_caret_tab_stop_view(index, value);
             }
+            _ => {}
         }
-        if let Some((marker, _, _)) = best {
-            self.ruler_drag = Some(RulerDrag {
-                marker,
-                drop_off: false,
-            });
-            return;
-        }
-        // No marker — a click in the page span adds a tab stop (px from the left
-        // text margin). Clicks outside the page span do nothing.
-        let text_left_sx = self.content_x_to_screen(page_x + self.margins.left);
-        let text_right_sx = self.content_x_to_screen(page_x + page_w - self.margins.right);
-        if px >= text_left_sx && px <= text_right_sx {
-            let cx = self.screen_x_to_content(px);
-            let tab_px = (cx - (page_x + self.margins.left)).max(0.0);
-            self.inner.add_tab_stop(state, tab_px);
+    }
+
+    fn ruler_press(&mut self, state: &mut AutoCommit) {
+        let model = self.current_ruler_model();
+        if let Some(RulerEffect::AddTab(value)) = self.ruler.press(self.pointer, &model) {
+            self.inner.add_tab_stop(state, value);
             self.refresh_blocks(state);
             self.needs_commit = true;
             self.modified = true;
@@ -3491,83 +3167,38 @@ impl WordProcessorWidget {
         }
     }
 
-    /// Live-update a ruler-marker drag from the current pointer. Margin + indent
-    /// markers update the widget value (persisted on release); tab markers update
-    /// the in-progress stop position. A tab dragged below the band is flagged for
-    /// removal on release ("drag off to delete").
     fn ruler_drag_move(&mut self) {
-        let Some(mut drag) = self.ruler_drag else {
-            return;
-        };
-        let page_x = self.page_rect.x0;
-        let page_w = self.page_rect.width();
-        if page_w <= 0.0 {
-            return;
+        let model = self.current_ruler_model();
+        if let Some(effect) = self.ruler.drag_to(self.pointer, &model) {
+            self.apply_ruler_preview(effect);
         }
-        let cx = self.screen_x_to_content(self.pointer.x);
-        let left_margin_cx = page_x + self.margins.left;
-        match drag.marker {
-            RulerMarker::MarginLeft => {
-                // Distance of the pointer from the page's left edge → left margin.
-                let v = (cx - page_x).clamp(4.0, page_w / 2.0);
-                self.margins.left = v;
-            }
-            RulerMarker::MarginRight => {
-                let v = (page_x + page_w - cx).clamp(4.0, page_w / 2.0);
-                self.margins.right = v;
-            }
-            RulerMarker::IndentLeft => {
-                let v = (cx - left_margin_cx).max(0.0);
-                // Drag follows in the widget's cached block view so the preview is
-                // live; persisted to the document on release.
-                self.set_caret_block_indent_view(v);
-            }
-            RulerMarker::IndentFirst => {
-                let base = left_margin_cx + self.caret_block_indent();
-                let v = cx - base; // may be negative (hanging first line)
-                self.set_caret_block_first_line_view(v);
-            }
-            RulerMarker::Tab(i) => {
-                // Below the band → mark for removal; else move the stop.
-                drag.drop_off = self.pointer.y > self.ruler_rect.y1;
-                self.ruler_drag = Some(drag);
-                if !drag.drop_off {
-                    let v = (cx - left_margin_cx).max(0.0);
-                    self.set_caret_tab_stop_view(i, v);
-                }
-                return;
-            }
-        }
-        self.ruler_drag = Some(drag);
     }
 
-    /// Persist a ruler-marker drag on release.
     fn ruler_drag_release(&mut self, state: &mut AutoCommit) {
-        let Some(drag) = self.ruler_drag.take() else {
+        let Some(effect) = self.ruler.release() else {
             return;
         };
-        match drag.marker {
-            RulerMarker::MarginLeft | RulerMarker::MarginRight => {
-                self.persist_margins(state);
-            }
-            RulerMarker::IndentLeft => {
-                let v = self.caret_block_indent();
+        match effect {
+            RulerEffect::CommitMargins => self.persist_margins(state),
+            RulerEffect::CommitIndentLeft => {
+                let value = self.caret_block_indent();
                 let block = self.inner.caret.block.clone();
-                self.inner.set_block_indent(state, &block, v);
+                self.inner.set_block_indent(state, &block, value);
             }
-            RulerMarker::IndentFirst => {
-                let v = self.caret_block_first_line_indent();
+            RulerEffect::CommitIndentFirst => {
+                let value = self.caret_block_first_line_indent();
                 let block = self.inner.caret.block.clone();
-                self.inner.set_block_first_line_indent(state, &block, v);
+                self.inner.set_block_first_line_indent(state, &block, value);
             }
-            RulerMarker::Tab(i) => {
+            RulerEffect::CommitTabs { remove } => {
                 let mut stops = self.caret_block_tab_stops();
-                if drag.drop_off && i < stops.len() {
-                    stops.remove(i);
+                if let Some(index) = remove.filter(|index| *index < stops.len()) {
+                    stops.remove(index);
                 }
                 let block = self.inner.caret.block.clone();
                 self.inner.set_block_tab_stops(state, &block, &stops);
             }
+            _ => return,
         }
         self.refresh_blocks(state);
         self.needs_commit = true;
@@ -3598,8 +3229,8 @@ impl WordProcessorWidget {
     fn set_caret_tab_stop_view(&mut self, i: usize, v: f64) {
         let id = self.inner.caret.block.clone();
         let mut stops = self.caret_block_tab_stops();
-        if i < stops.len() {
-            stops[i] = v.max(0.0);
+        if let Some(stop) = stops.get_mut(i) {
+            *stop = v.max(0.0);
         }
         let encoded = stops
             .iter()
@@ -5182,9 +4813,9 @@ impl WordProcessorWidget {
                 canvas_right,
                 canvas.y0,
             );
-            self.draw_ruler(scene, transform, text_renderer, theme, band, page_x, page_w);
+            self.draw_ruler(scene, transform, text_renderer, band, page_x, page_w);
         } else {
-            self.ruler_rect = Rect::ZERO;
+            self.ruler.clear();
         }
         // True pagination: each page is a fixed US-Letter sheet (height `letter_h`)
         // stacked with `PAGE_GAP` between sheets. A block lays into the current
@@ -7442,7 +7073,7 @@ impl WordProcessorWidget {
                 self.dirty = true;
             }
             *handled = true;
-        } else if self.ruler_drag.is_some() {
+        } else if self.ruler.is_dragging() {
             // Live-drag a ruler marker (margin / indent / tab). Updates the
             // value for an instant preview; persisted on release.
             self.ruler_drag_move();
@@ -7675,7 +7306,7 @@ impl WordProcessorWidget {
         }
         // Ruler band (when on): grab a marker to drag, else a click in the
         // page span adds a tab stop on the current paragraph.
-        if self.ruler_on && self.ruler_rect.contains(self.pointer) {
+        if self.ruler_on && self.ruler.rect().contains(self.pointer) {
             self.ruler_press(state);
             self.dirty = true;
             *handled = true;
@@ -7847,7 +7478,7 @@ impl WordProcessorWidget {
             }
             self.dirty = true;
             *handled = true;
-        } else if self.ruler_drag.is_some() {
+        } else if self.ruler.is_dragging() {
             // A ruler-marker drag persists on release (margins → page meta,
             // indents / tab stops → the caret block's attrs).
             self.ruler_drag_release(state);
@@ -14185,10 +13816,13 @@ mod tests {
             .find(|(k, _)| *k == RulerMarker::MarginLeft)
             .map(|(_, x)| *x)
             .unwrap();
-        wp.pointer = Point::new(marker_x, f64::midpoint(wp.ruler_rect.y0, wp.ruler_rect.y1));
+        wp.pointer = Point::new(
+            marker_x,
+            f64::midpoint(wp.ruler.rect().y0, wp.ruler.rect().y1),
+        );
         wp.ruler_press(&mut state.doc);
         assert_eq!(
-            wp.ruler_drag.map(|d| d.marker),
+            wp.ruler.drag_marker(),
             Some(RulerMarker::MarginLeft),
             "grabbed the left-margin marker"
         );
@@ -14206,7 +13840,7 @@ mod tests {
 
         // Release persists into the document (a fresh widget reloads the value).
         wp.ruler_drag_release(&mut state.doc);
-        assert!(wp.ruler_drag.is_none(), "drag ended on release");
+        assert!(!wp.ruler.is_dragging(), "drag ended on release");
         let mut wp2 = WordProcessorWidget::new();
         wp2.sync(&mut state.doc, &state.root);
         assert!(
@@ -14234,12 +13868,9 @@ mod tests {
             .map(|(_, x)| *x)
             .unwrap();
         // The hanging/left-indent wedge lives in the lower third of the band.
-        wp.pointer = Point::new(mxl, wp.ruler_rect.y1 - 2.0);
+        wp.pointer = Point::new(mxl, wp.ruler.rect().y1 - 2.0);
         wp.ruler_press(&mut state.doc);
-        assert_eq!(
-            wp.ruler_drag.map(|d| d.marker),
-            Some(RulerMarker::IndentLeft)
-        );
+        assert_eq!(wp.ruler.drag_marker(), Some(RulerMarker::IndentLeft));
 
         // Drag the indent marker 60 px right of the left text margin.
         let target = page_x + wp.margins.left + 60.0;
@@ -14281,7 +13912,7 @@ mod tests {
         let tab_content_x = page_x + wp.margins.left + 200.0;
         wp.pointer = Point::new(
             wp.content_x_to_screen(tab_content_x),
-            f64::midpoint(wp.ruler_rect.y0, wp.ruler_rect.y1),
+            f64::midpoint(wp.ruler.rect().y0, wp.ruler.rect().y1),
         );
         wp.ruler_press(&mut state.doc);
         let stops = wp.model().block_tab_stops(&state.doc, &block);
@@ -14345,18 +13976,18 @@ mod tests {
             .find(|(k, _)| matches!(k, RulerMarker::Tab(0)))
             .map(|(_, x)| *x)
             .unwrap();
-        wp.pointer = Point::new(tx, f64::midpoint(wp.ruler_rect.y0, wp.ruler_rect.y1));
+        wp.pointer = Point::new(tx, f64::midpoint(wp.ruler.rect().y0, wp.ruler.rect().y1));
         wp.ruler_press(&mut state.doc);
         assert!(
-            matches!(wp.ruler_drag.map(|d| d.marker), Some(RulerMarker::Tab(0))),
+            matches!(wp.ruler.drag_marker(), Some(RulerMarker::Tab(0))),
             "grabbed the tab marker"
         );
 
         // Drag below the band → flagged for removal, then release removes it.
-        wp.pointer = Point::new(tx, wp.ruler_rect.y1 + 40.0);
+        wp.pointer = Point::new(tx, wp.ruler.rect().y1 + 40.0);
         wp.ruler_drag_move();
         assert!(
-            wp.ruler_drag.is_some_and(|d| d.drop_off),
+            wp.ruler.dropping_tab(),
             "dragging below the band flags drop-off"
         );
         wp.ruler_drag_release(&mut state.doc);
