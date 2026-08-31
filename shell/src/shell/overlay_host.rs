@@ -44,6 +44,7 @@ pub use crate::shell::peer_sync_overlay::{PeerSyncRequest, PeerSyncSnapshot};
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::quick_settings_vpn::{QuickSettingsVpnPane, VpnPaneOutcome};
+use crate::shell::quick_settings_wifi::{QuickSettingsWifiPane, WifiPaneOutcome};
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{
     Capability, GRANT_ALWAYS, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
@@ -278,6 +279,9 @@ pub struct ShellOverlayHost {
     /// uses [`crate::shell::qs_actions::RealQsActions`]; tests swap in a
     /// recording impl via [`Self::with_qs_actions`].
     qs_actions: Box<dyn crate::shell::qs_actions::QsActions>,
+    /// Wi-Fi network-list layout, painting and join hit-testing. The
+    /// specialised ephemeral password editor remains host-owned.
+    qs_wifi_pane: QuickSettingsWifiPane,
     /// VPN drill-in geometry, shared toggle painting, click routing and OS
     /// dispatch. Chrome remains the source of the profile snapshot.
     qs_vpn_pane: QuickSettingsVpnPane,
@@ -917,6 +921,7 @@ impl ShellOverlayHost {
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
+            qs_wifi_pane: QuickSettingsWifiPane::default(),
             qs_vpn_pane: QuickSettingsVpnPane::default(),
             status_bridge: None,
             session_audio_policy: None,
@@ -5740,7 +5745,12 @@ impl ShellOverlayHost {
             // on the pane can be focused by a click.
             return;
         }
-        if back.contains(p) && !matches!(current_level, crate::shell::quick_settings::QsLevel::Vpn)
+        if back.contains(p)
+            && !matches!(
+                current_level,
+                crate::shell::quick_settings::QsLevel::Wifi
+                    | crate::shell::quick_settings::QsLevel::Vpn
+            )
         {
             if let Some(chrome) = self.chrome.clone() {
                 let mut st = chrome.borrow_mut();
@@ -5750,36 +5760,20 @@ impl ShellOverlayHost {
             return;
         }
         if matches!(current_level, crate::shell::quick_settings::QsLevel::Wifi) {
-            // Mirrors `draw_qs_wifi_list`'s row geometry.
-            let rect = self.quick_settings_rect();
-            let row_h = 56.0_f64;
-            let list_y0 = rect.y0 + 56.0;
-            let nets = self
-                .chrome
-                .as_ref()
-                .map(|c| c.borrow().quick_settings.wifi_networks.clone())
-                .unwrap_or_default();
-            for (i, net) in nets.iter().enumerate() {
-                let row_y = list_y0 + usize_to_f64_lossy(i) * row_h;
-                let row_rect =
-                    Rect::new(rect.x0 + 12.0, row_y, rect.x1 - 12.0, row_y + row_h - 4.0);
-                if row_rect.contains(p) {
-                    let ssid = net.ssid.clone();
-                    // A protected network we're not on gets
-                    // the prompt — NetworkManager might
-                    // already hold a profile, but a
-                    // dismissable prompt beats a silent
-                    // failure if it doesn't.
-                    if net.secure && !net.connected {
-                        self.begin_wifi_password(&ssid);
-                    } else {
-                        crate::shell::qs_actions::log_qs_result(
-                            "connect_wifi",
-                            self.qs_actions.connect_wifi(&ssid, None),
-                        );
-                    }
-                    return;
+            if let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                let outcome = self.qs_wifi_pane.handle_click(
+                    p,
+                    self.quick_settings_rect(),
+                    &mut st.quick_settings,
+                    self.qs_actions.as_ref(),
+                );
+                match outcome {
+                    WifiPaneOutcome::Back => st.quick_settings.pop_level(),
+                    WifiPaneOutcome::Changed => {}
+                    WifiPaneOutcome::None => return,
                 }
+                st.bump();
             }
         } else if matches!(current_level, crate::shell::quick_settings::QsLevel::Vpn) {
             if let Some(chrome) = self.chrome.clone() {
@@ -10208,7 +10202,21 @@ impl ShellOverlayHost {
         match qs.current_level() {
             crate::shell::quick_settings::QsLevel::Wifi
             | crate::shell::quick_settings::QsLevel::WifiDetails(_) => {
-                self.draw_qs_wifi_list(scene, transform, text_renderer, theme, qs);
+                if let Some(prompt) = qs.wifi_password.as_ref() {
+                    self.draw_qs_wifi_password(scene, transform, text_renderer, theme, prompt);
+                } else {
+                    let panel = self.quick_settings_rect();
+                    let cursor = self.last_cursor;
+                    self.qs_wifi_pane.draw(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        panel,
+                        cursor,
+                        &qs.wifi_networks,
+                    );
+                }
                 true
             }
             crate::shell::quick_settings::QsLevel::Bluetooth
@@ -10850,119 +10858,6 @@ impl ShellOverlayHost {
         let cx = card.x1 - 16.0;
         let cy = card.y0 + 22.0;
         Rect::new(cx - 16.0, cy - 16.0, cx + 16.0, cy + 16.0)
-    }
-
-    /// Render the `WiFi` drill-in pane: header + list of `wifi_networks`
-    /// rows (SSID + signal-bars + active-radio dot).
-    fn draw_qs_wifi_list(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        qs: &crate::shell::chrome_state::QuickSettingsState,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.quick_settings_rect();
-
-        // A passphrase prompt takes over the pane rather than pushing a
-        // nav level — the user is still "in Wi-Fi", and a second
-        // back-chevron would mean something different from the first.
-        if let Some(prompt) = qs.wifi_password.as_ref() {
-            self.draw_qs_wifi_password(scene, transform, text_renderer, theme, prompt);
-            return;
-        }
-
-        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Wi-Fi");
-
-        if qs.wifi_networks.is_empty() {
-            self.draw_qs_drill_in_empty(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                "Scanning for networks…",
-            );
-            return;
-        }
-
-        let row_h = 56.0_f64;
-        let list_y0 = rect.y0 + 56.0;
-        for (i, net) in qs.wifi_networks.iter().enumerate() {
-            let row_y = list_y0 + usize_to_f64_lossy(i) * row_h;
-            let row_rect = Rect::new(rect.x0 + 12.0, row_y, rect.x1 - 12.0, row_y + row_h - 4.0);
-            // First row reads as "primary" with a subtle wash; the rest
-            // stay transparent until there's hover tracking.
-            if i == 0 {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.neutral[2].with_alpha_factor(0.50),
-                    None,
-                    &RoundedRect::from_rect(row_rect, 12.0),
-                );
-            }
-
-            let glyph_box = Rect::new(
-                row_rect.x0 + 12.0,
-                row_rect.y0 + (row_rect.height() - 20.0) / 2.0,
-                row_rect.x0 + 12.0 + 20.0,
-                row_rect.y0 + f64::midpoint(row_rect.height(), 20.0),
-            );
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                glyph_box,
-                ui::icons::Icon::Wifi,
-                colors.text_primary,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-
-            let label_x = glyph_box.x1 + 12.0;
-            let label_y = row_rect.y0 + (row_rect.height() - 14.0) / 2.0;
-            text_renderer.draw_text_weighted(
-                scene,
-                &net.ssid,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform.pre_translate((label_x, label_y).into()),
-                None,
-                TextWeight::Medium,
-            );
-
-            // `signal` bars out of 4, growing right→left.
-            let bars_x1 = row_rect.x1 - 36.0;
-            let bars_w = 14.0_f64;
-            let bars_h_max = 12.0_f64;
-            let bars_baseline = row_rect.y0 + row_rect.height() / 2.0 + bars_h_max / 2.0;
-            for b in 0..4u8 {
-                let x = bars_x1 - bars_w + f64::from(b) * 4.0 - 12.0;
-                let h = f64::from(b.saturating_add(1)) * (bars_h_max / 4.0);
-                let bar_rect = Rect::new(x, bars_baseline - h, x + 3.0, bars_baseline);
-                let on = b < net.signal;
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if on {
-                        colors.text_primary.with_alpha_factor(0.85)
-                    } else {
-                        colors.text_primary.with_alpha_factor(0.20)
-                    },
-                    None,
-                    &RoundedRect::from_rect(bar_rect, 1.0),
-                );
-            }
-
-            // Indigo dot for the connected network, standing in for a
-            // check-in-ring until that path lands.
-            if net.connected {
-                let cx = row_rect.x1 - 14.0;
-                let cy = row_rect.y0 + row_rect.height() / 2.0;
-                let dot = vello::kurbo::Circle::new(Point::new(cx, cy), 5.0);
-                scene.fill(Fill::NonZero, transform, colors.accent[5], None, &dot);
-            }
-        }
     }
 
     /// Raise the passphrase prompt for `ssid`.
