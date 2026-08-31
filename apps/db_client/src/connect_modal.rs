@@ -7,6 +7,8 @@
 //! file path; the network engines show host/port/db/user. It is a focused
 //! form widget that paints over a scrim.
 
+use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -15,12 +17,13 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::model::{ConnectionProfile, Engine};
 use crate::theme_ext::ThemeExt;
+use ui::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace};
+use ui::widget::{Button, ButtonFace, TextInput, Widget};
 
 /// Which text field currently has focus.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
     Name,
     Host,
@@ -31,16 +34,28 @@ enum Field {
     FilePath,
 }
 
+/// Existing host context borrowed by the modal's local embedded inputs.
+/// Keeping it together avoids allocating framework state per keystroke.
+struct EditorEvent<'a> {
+    event: &'a WindowEvent,
+    scale_factor: f64,
+    modifiers: Modifiers,
+    state: &'a mut AutoCommit,
+    root: &'a ObjId,
+    node_id: NodeId,
+    taffy: &'a TaffyTree<()>,
+}
+
 pub struct ConnectModal {
     open: bool,
     engine: Engine,
-    name: String,
-    host: String,
-    port: String,
-    database: String,
-    user: String,
-    password: String,
-    file_path: String,
+    name: TextInput,
+    host: TextInput,
+    port: TextInput,
+    database: TextInput,
+    user: TextInput,
+    password: TextInput,
+    file_path: TextInput,
     focus: Option<Field>,
     cursor: Point,
 
@@ -60,16 +75,22 @@ impl Default for ConnectModal {
 
 impl ConnectModal {
     pub fn new() -> Self {
+        let input = |id: &str| {
+            TextInput::local()
+                .with_id(id)
+                .with_font_size(13.0)
+                .with_plain_chrome()
+        };
         Self {
             open: false,
             engine: Engine::Postgres,
-            name: String::new(),
-            host: "localhost".into(),
-            port: "5432".into(),
-            database: String::new(),
-            user: String::new(),
-            password: String::new(),
-            file_path: String::new(),
+            name: input("db_connection_name"),
+            host: input("db_connection_host").with_initial_value("localhost"),
+            port: input("db_connection_port").with_initial_value("5432"),
+            database: input("db_connection_database"),
+            user: input("db_connection_user"),
+            password: input("db_connection_password").with_secret(true),
+            file_path: input("db_connection_file_path"),
             focus: None,
             cursor: Point::ZERO,
             panel: Rect::ZERO,
@@ -87,24 +108,30 @@ impl ConnectModal {
     pub fn open_new(&mut self) {
         self.open = true;
         self.engine = Engine::Postgres;
-        self.name = "New connection".into();
-        self.host = "localhost".into();
-        self.port = "5432".into();
-        self.database = String::new();
-        self.user = String::new();
-        self.password = String::new();
-        self.file_path = String::new();
-        self.focus = Some(Field::Name);
+        self.name.set_text("New connection");
+        self.host.set_text("localhost");
+        self.port.set_text("5432");
+        self.database.set_text("");
+        self.user.set_text("");
+        self.password.set_text("");
+        self.file_path.set_text("");
+        self.focus_field(Some(Field::Name));
     }
 
     fn set_engine(&mut self, e: Engine) {
         self.engine = e;
-        if e != Engine::Sqlite && self.port.is_empty() {
-            self.port = e.default_port().to_string();
+        if e != Engine::Sqlite && self.port.value().is_empty() {
+            self.port.set_text(&e.default_port().to_string());
+        }
+        if self
+            .focus
+            .is_some_and(|f| !self.visible_fields().contains(&f))
+        {
+            self.focus_field(Some(Field::Name));
         }
     }
 
-    fn field_mut(&mut self, f: Field) -> &mut String {
+    fn input_mut(&mut self, f: Field) -> &mut TextInput {
         match f {
             Field::Name => &mut self.name,
             Field::Host => &mut self.host,
@@ -116,36 +143,57 @@ impl ConnectModal {
         }
     }
 
-    fn field_value(&self, f: Field) -> &str {
-        match f {
-            Field::Name => &self.name,
-            Field::Host => &self.host,
-            Field::Port => &self.port,
-            Field::Database => &self.database,
-            Field::User => &self.user,
-            Field::Password => &self.password,
-            Field::FilePath => &self.file_path,
+    fn visible_fields(&self) -> &'static [Field] {
+        const SQLITE: &[Field] = &[Field::Name, Field::FilePath];
+        const NETWORK: &[Field] = &[
+            Field::Name,
+            Field::Host,
+            Field::Port,
+            Field::Database,
+            Field::User,
+            Field::Password,
+        ];
+        if self.engine == Engine::Sqlite {
+            SQLITE
+        } else {
+            NETWORK
+        }
+    }
+
+    fn focus_field(&mut self, focus: Option<Field>) {
+        self.focus = focus;
+        for field in [
+            Field::Name,
+            Field::Host,
+            Field::Port,
+            Field::Database,
+            Field::User,
+            Field::Password,
+            Field::FilePath,
+        ] {
+            Widget::set_focus(self.input_mut(field), focus == Some(field));
         }
     }
 
     fn build_profile(&self) -> ConnectionProfile {
         let mut p = ConnectionProfile::new(
-            if self.name.trim().is_empty() {
+            if self.name.value().trim().is_empty() {
                 "Untitled"
             } else {
-                self.name.trim()
+                self.name.value().trim()
             },
             self.engine,
         );
-        p.host.clone_from(&self.host);
+        p.host = self.host.value().to_string();
         p.port = self
             .port
+            .value()
             .parse()
             .unwrap_or_else(|_| self.engine.default_port());
-        p.database.clone_from(&self.database);
-        p.user.clone_from(&self.user);
-        p.password.clone_from(&self.password);
-        p.file_path.clone_from(&self.file_path);
+        p.database = self.database.value().to_string();
+        p.user = self.user.value().to_string();
+        p.password = self.password.value().to_string();
+        p.file_path = self.file_path.value().to_string();
         p
     }
 
@@ -156,12 +204,30 @@ impl ConnectModal {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
         handled: &mut bool,
         out: &mut Option<ConnectionProfile>,
     ) {
+        let mut editor = EditorEvent {
+            event,
+            scale_factor,
+            modifiers: *modifiers,
+            state,
+            root,
+            node_id,
+            taffy,
+        };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // Every visible input observes pointer movement so a later
+                // press can place its caret at the actual click position.
+                for field in self.visible_fields().iter().copied() {
+                    self.route_to_input(field, &mut editor);
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -172,11 +238,13 @@ impl ConnectModal {
                 let c = self.cursor;
                 if self.cancel_btn.contains(c) {
                     self.open = false;
+                    self.focus_field(None);
                     return;
                 }
                 if self.save_btn.contains(c) {
                     *out = Some(self.build_profile());
                     self.open = false;
+                    self.focus_field(None);
                     return;
                 }
                 for (e, r) in self.engine_btns.clone() {
@@ -185,10 +253,11 @@ impl ConnectModal {
                         return;
                     }
                 }
-                self.focus = None;
+                self.focus_field(None);
                 for (f, r) in self.field_rects.clone() {
                     if r.contains(c) {
-                        self.focus = Some(f);
+                        self.focus_field(Some(f));
+                        self.route_to_focused_input(&mut editor);
                         return;
                     }
                 }
@@ -201,59 +270,64 @@ impl ConnectModal {
                 event:
                     KeyEvent {
                         logical_key,
-                        text,
                         state: ElementState::Pressed,
                         ..
                     },
                 ..
             } => {
                 *handled = true;
-                let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
                 match logical_key {
-                    Key::Named(NamedKey::Escape) => self.open = false,
+                    Key::Named(NamedKey::Escape) => {
+                        self.open = false;
+                        self.focus_field(None);
+                    }
                     Key::Named(NamedKey::Enter) => {
                         *out = Some(self.build_profile());
                         self.open = false;
+                        self.focus_field(None);
                     }
                     Key::Named(NamedKey::Tab) => {
-                        self.focus = Some(self.next_field());
+                        self.focus_field(Some(self.next_field()));
                     }
-                    Key::Named(NamedKey::Backspace) => {
-                        if let Some(f) = self.focus {
-                            self.field_mut(f).pop();
-                        }
-                    }
-                    Key::Named(NamedKey::Space) => {
-                        if let Some(f) = self.focus {
-                            self.field_mut(f).push(' ');
-                        }
-                    }
-                    _ => {
-                        if let (Some(f), Some(t)) = (self.focus, text)
-                            && !ctrl
-                        {
-                            self.field_mut(f).push_str(t.as_str());
-                        }
-                    }
+                    _ => self.route_to_focused_input(&mut editor),
                 }
+            }
+            // IME preedit/commit and accessibility-driven edits must follow
+            // the same shared input path as physical keyboard events.
+            _ if self.focus.is_some() => {
+                *handled = true;
+                self.route_to_focused_input(&mut editor);
             }
             _ => {}
         }
     }
 
+    /// Drive the focused hand-laid field through the toolkit widget event
+    /// path using the host's existing document and layout context. The inputs
+    /// are local-mode, so they borrow that context without writing into it.
+    fn route_to_focused_input(&mut self, event: &mut EditorEvent<'_>) {
+        let Some(field) = self.focus else { return };
+        self.route_to_input(field, event);
+    }
+
+    fn route_to_input(&mut self, field: Field, event: &mut EditorEvent<'_>) {
+        let (mut handled, mut focus_target) = (false, None);
+        Widget::handle_event(
+            self.input_mut(field),
+            event.event,
+            event.scale_factor,
+            &event.modifiers,
+            event.state,
+            event.root,
+            &mut handled,
+            &mut focus_target,
+            event.node_id,
+            event.taffy,
+        );
+    }
+
     fn next_field(&self) -> Field {
-        let order: Vec<Field> = if self.engine == Engine::Sqlite {
-            vec![Field::Name, Field::FilePath]
-        } else {
-            vec![
-                Field::Name,
-                Field::Host,
-                Field::Port,
-                Field::Database,
-                Field::User,
-                Field::Password,
-            ]
-        };
+        let order = self.visible_fields();
         // `order` always has at least one entry (the SQLite and network
         // field sets both start with `Field::Name`), so this only ever
         // falls back on an impossible empty list.
@@ -578,7 +652,7 @@ impl ConnectModal {
     }
 
     fn draw_input(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -606,40 +680,65 @@ impl ConnectModal {
             None,
             &r.to_rounded_rect(6.0),
         );
-        // Password fields render masked; every other field shows its value.
-        let raw = self.field_value(field);
-        let masked;
-        let val: &str = if field == Field::Password {
-            masked = "•".repeat(raw.chars().count());
-            &masked
-        } else {
-            raw
-        };
-        tr.draw_text(
-            scene,
-            val,
-            13.0,
-            theme.text_primary,
-            t * Affine::translate((r.x0 + 10.0, r.y0 + 7.0)),
-            Some((r.width() - 20.0) as f32),
-        );
-        if focused {
-            let (vw, _) = tr.measure(val, 13.0, None);
-            let cx = (r.x0 + 10.0 + f64::from(vw)).min(r.x1 - 6.0);
-            scene.stroke(
-                &Stroke::new(1.5),
-                t,
-                theme.accent_primary,
-                None,
-                &vello::kurbo::Line::new(Point::new(cx, r.y0 + 6.0), Point::new(cx, r.y1 - 6.0)),
-            );
-        }
+        // The shared plain-chrome input paints text, selection and caret. Its
+        // secret mode renders one bullet per character and keeps the value out
+        // of accessibility and IME surrounding-text surfaces. Explicit user
+        // copy/cut still follows the toolkit's normal password-field policy.
+        let inner = Rect::new(r.x0 + 10.0, r.y0, r.x1 - 10.0, r.y1);
+        let input = self.input_mut(field);
+        input.apply_layout_external(inner);
+        Widget::draw(input, scene, t, tr, theme, &PresenceCtx::empty());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::a11y::Role;
+    use winit::event::DeviceId;
+    use winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr};
+
+    fn device_id() -> DeviceId {
+        // Winit exposes no public constructor; events in these tests never
+        // inspect the opaque platform identifier.
+        unsafe { std::mem::zeroed() }
+    }
+
+    fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = key;
+        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = text.map(SmolStr::new);
+        WindowEvent::KeyboardInput {
+            device_id: device_id(),
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    fn send(m: &mut ConnectModal, event: &WindowEvent, modifiers: Modifiers) {
+        let mut handled = false;
+        let mut out = None;
+        let mut state = AutoCommit::new();
+        let mut taffy = TaffyTree::new();
+        let node = taffy.new_leaf(Default::default()).unwrap();
+        m.handle_event(
+            event,
+            1.0,
+            &modifiers,
+            &mut state,
+            &automerge::ROOT,
+            node,
+            &taffy,
+            &mut handled,
+            &mut out,
+        );
+        assert!(handled, "an open modal consumes its editor event");
+        assert!(out.is_none(), "editor event does not submit the form");
+    }
 
     #[test]
     fn open_resets_form_and_focus() {
@@ -653,9 +752,9 @@ mod tests {
     fn build_profile_parses_port() {
         let mut m = ConnectModal::new();
         m.open_new();
-        m.host = "db.example".into();
-        m.port = "6543".into();
-        m.database = "app".into();
+        m.host.set_text("db.example");
+        m.port.set_text("6543");
+        m.database.set_text("app");
         let p = m.build_profile();
         assert_eq!(p.port, 6543);
         assert_eq!(p.host, "db.example");
@@ -669,5 +768,67 @@ mod tests {
         m.focus = Some(Field::FilePath);
         // Only Name + FilePath in the SQLite order, so it wraps to Name.
         assert!(matches!(m.next_field(), Field::Name));
+    }
+
+    #[test]
+    fn shared_input_replaces_a_keyboard_selection() {
+        let mut m = ConnectModal::new();
+        m.open_new();
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        send(
+            &mut m,
+            &key_event(Key::Character(SmolStr::new("a")), Some("a")),
+            ctrl,
+        );
+        assert_eq!(m.name.selection_range_public(), Some((0, 14)));
+
+        send(
+            &mut m,
+            &key_event(Key::Character(SmolStr::new("P")), Some("P")),
+            Modifiers::default(),
+        );
+        assert_eq!(m.name.value(), "P");
+    }
+
+    #[test]
+    fn ime_commit_uses_the_same_focused_input_path() {
+        let mut m = ConnectModal::new();
+        m.open_new();
+        m.name.set_text("");
+        send(
+            &mut m,
+            &WindowEvent::Ime(winit::event::Ime::Commit("接続".into())),
+            Modifiers::default(),
+        );
+        assert_eq!(m.name.value(), "接続");
+    }
+
+    #[test]
+    fn password_is_a_protected_secret_input() {
+        let mut m = ConnectModal::new();
+        m.open_new();
+        m.password.set_text("correct horse");
+        assert!(m.password.is_secret());
+        assert_eq!(
+            Widget::ime_purpose(&m.password),
+            Some(winit::window::ImePurpose::Password)
+        );
+        let node = Widget::accessibility(&m.password).expect("text input accessibility node");
+        assert_eq!(node.role, Role::TextInput);
+        assert!(node.state.protected);
+        assert_eq!(node.value, None, "password never enters the a11y value");
+        assert_eq!(m.build_profile().password, "correct horse");
+    }
+
+    #[test]
+    fn switching_engine_blurs_a_field_that_becomes_hidden() {
+        let mut m = ConnectModal::new();
+        m.open_new();
+        m.focus_field(Some(Field::Password));
+        m.set_engine(Engine::Sqlite);
+        assert_eq!(m.focus, Some(Field::Name));
+        assert!(Widget::is_focused(&m.name));
+        assert!(!Widget::is_focused(&m.password));
+        assert_eq!(m.visible_fields(), &[Field::Name, Field::FilePath]);
     }
 }
