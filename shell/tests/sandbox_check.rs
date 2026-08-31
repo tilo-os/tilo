@@ -50,6 +50,17 @@ mod tests {
 
     #[test]
     fn test_gl_check() {
+        let host_has_render_node = std::fs::read_dir("/dev/dri")
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("renderD"));
+        if !host_has_render_node {
+            eprintln!("skipping: host has no DRM render node to expose to the sandbox");
+            return;
+        }
+
         let mut cmd = Command::new("bwrap");
         cmd.arg("--ro-bind")
             .arg("/usr")
@@ -71,6 +82,15 @@ mod tests {
             .arg("ls /dev/dri");
 
         let output = cmd.output().expect("Failed to execute bwrap");
-        assert!(output.status.success(), "GPU nodes not visible in sandbox");
+        assert!(
+            output.status.success(),
+            "GPU nodes not visible in sandbox: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("renderD"),
+            "sandbox /dev/dri contains no render node: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
 }
