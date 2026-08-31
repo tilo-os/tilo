@@ -17,7 +17,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use qdoc::document::MarkSpan;
 use qdoc::model::Region;
-use qdoc::snapshot::{AttrVal, BlockView, ChangeView, CommentView, NoteView};
+use qdoc::snapshot::{AttrVal, BlockView, NoteView};
 use ui::chrome::{self, LabelCue, ToolbarItem};
 use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
@@ -40,6 +40,10 @@ use crate::outline_pane::{OutlinePalette, OutlinePane};
 #[cfg(test)]
 use crate::recovery_banner::AUTOSAVE_EDIT_THRESHOLD;
 use crate::recovery_banner::{RecoveryBanner, RecoveryDecision, RecoveryPalette};
+use crate::review_overlay::{
+    COMMENT_HIGHLIGHT, DELETION_INK, DELETION_RGB, INSERTION_INK, INSERTION_RGB, ReviewAction,
+    ReviewOverlay,
+};
 #[cfg(test)]
 use crate::ruler::RulerMarker;
 use crate::ruler::{Ruler, RulerColors, RulerEffect, RulerModel};
@@ -92,17 +96,8 @@ enum CtxAction {
         end: usize,
         replacement: String,
     },
-    /// Accept the tracked change with this id (right-clicked inside its range, or
-    /// chosen from a margin card's ✓ affordance).
-    AcceptChange(String),
-    /// Reject the tracked change with this id.
-    RejectChange(String),
-    /// Accept every tracked change in the document.
-    AcceptAllChanges,
-    /// Reject every tracked change in the document.
-    RejectAllChanges,
-    /// Resolve / delete the comment with this id (remove it + its anchoring mark).
-    ResolveComment(String),
+    /// A comment or tracked-change operation contributed by the review overlay.
+    Review(ReviewAction),
 }
 
 // Paper-context colors (the document sheet): document ink assumes a light sheet
@@ -247,48 +242,6 @@ const NOTE_INK: Color = Color::from_rgb8(0x3a, 0x3a, 0x40);
 const NOTE_FONT: f32 = 11.0;
 const NOTE_AREA_GAP: f64 = 10.0;
 
-// --- Markup (comments + tracked changes) rendering ------------------------
-/// Pale-yellow band drawn behind a `comment`-marked body range (semi-transparent
-/// so the text reads clearly through it).
-const COMMENT_HL: Color = Color::from_rgba8(0xff, 0xe5, 0x7a, 0x66);
-/// The little comment indicator tab drawn in the right margin at a comment's
-/// start line, and the annotation card's accent.
-const COMMENT_TAB: Color = Color::from_rgb8(0xe0, 0xa8, 0x10);
-/// Background of the right-margin comment annotation card.
-const COMMENT_CARD_BG: Color = Color::from_rgb8(0xff, 0xf8, 0xdc);
-/// Border of the right-margin comment annotation card.
-const COMMENT_CARD_EDGE: Color = Color::from_rgb8(0xe6, 0xcf, 0x7a);
-/// Author-line text colour in the comment annotation card.
-const COMMENT_AUTHOR_INK: Color = Color::from_rgb8(0x6a, 0x52, 0x00);
-/// Body-text colour in the comment annotation card.
-const COMMENT_BODY_INK: Color = Color::from_rgb8(0x3a, 0x32, 0x14);
-/// Review colour for tracked **insertions** (a green; rendered coloured +
-/// underlined, the standard tracked-insertion style).
-const TRACK_INS: Color = Color::from_rgb8(0x1d, 0x7a, 0x3a);
-/// Review colour for tracked **deletions** (a red; rendered coloured + struck).
-const TRACK_DEL: Color = Color::from_rgb8(0xbf, 0x29, 0x29);
-/// Width of the comment indicator tab in the right margin.
-const COMMENT_TAB_W: f64 = 4.0;
-/// Width of the right-margin annotation card.
-const COMMENT_CARD_W: f64 = 150.0;
-/// Background of a tracked-change review card in the right margin.
-const CHANGE_CARD_BG: Color = Color::from_rgb8(0xf3, 0xf4, 0xf7);
-/// Border of a tracked-change review card.
-const CHANGE_CARD_EDGE: Color = Color::from_rgb8(0xcf, 0xd2, 0xda);
-/// Author/label ink in a tracked-change review card.
-const CHANGE_LABEL_INK: Color = Color::from_rgb8(0x44, 0x46, 0x50);
-/// Accept (✓) affordance button fill — a soft green wash.
-const REVIEW_ACCEPT_BG: Color = Color::from_rgb8(0xe2, 0xf3, 0xe6);
-/// Accept (✓) affordance glyph ink (green).
-const REVIEW_ACCEPT_INK: Color = Color::from_rgb8(0x18, 0x6a, 0x32);
-/// Reject (✗) affordance button fill — a soft red wash.
-const REVIEW_REJECT_BG: Color = Color::from_rgb8(0xf7, 0xe4, 0xe4);
-/// Reject (✗) affordance glyph ink (red).
-const REVIEW_REJECT_INK: Color = Color::from_rgb8(0xa8, 0x24, 0x24);
-/// Side length of a square review affordance button (✓ / ✗ / resolve).
-const REVIEW_BTN: f64 = 18.0;
-/// Width of a tracked-change review card in the right margin.
-const CHANGE_CARD_W: f64 = 132.0;
 // Panel + guide chrome colours are theme-driven — see `ChromeColors`, not new consts.
 /// A small color palette for the style-colour picker.
 const STYLE_PALETTE: [[u8; 3]; 7] = [
@@ -1043,11 +996,6 @@ fn block_runs(block: &BlockView) -> BlockRuns {
     (runs, underlines, deco("strike"))
 }
 
-/// RGB of the tracked-insertion review colour (mirrors [`TRACK_INS`]).
-const TRACK_INS_RGB: [u8; 3] = [0x1d, 0x7a, 0x3a];
-/// RGB of the tracked-deletion review colour (mirrors [`TRACK_DEL`]).
-const TRACK_DEL_RGB: [u8; 3] = [0xbf, 0x29, 0x29];
-
 /// Whether char `i` of a block is covered by a mark named `name` (an `ins`/`del`
 /// tracked-change mark, or a `comment` annotation mark).
 fn char_in_mark(i: usize, marks: &[MarkSpan], name: &str) -> bool {
@@ -1069,9 +1017,9 @@ fn block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRuns {
     // An `ins` run is green, a `del` run red.
     let track_color = |i: usize| -> Option<[u8; 3]> {
         if char_in_mark(i, &block.marks, qdoc::schema::MARK_INS) {
-            Some(TRACK_INS_RGB)
+            Some(INSERTION_RGB)
         } else if char_in_mark(i, &block.marks, qdoc::schema::MARK_DEL) {
-            Some(TRACK_DEL_RGB)
+            Some(DELETION_RGB)
         } else {
             None
         }
@@ -1714,22 +1662,9 @@ pub struct WordProcessorWidget {
     /// Per-row action parallel to `context_menu`'s items (separators map to
     /// `None`). A left-click on a row dispatches by index through this list.
     context_actions: Vec<Option<CtxAction>>,
-    /// Clickable review affordances rendered into the right-margin cards this
-    /// frame: `(screen_rect, action)`. Populated by the comment + tracked-change
-    /// card pass; a left-click that lands on one dispatches the action (accept /
-    /// reject a change, resolve a comment). Cleared + rebuilt every draw.
-    review_hits: Vec<(Rect, CtxAction)>,
-    /// Comments / annotations (materialized from the doc each refresh). Each is
-    /// anchored to a body range via a `comment` mark; rendered as a pale highlight
-    /// band + a right-margin indicator/card. Empty when the doc has no comments.
-    comments: Vec<CommentView>,
-    /// Tracked changes / revision marks (materialized from the doc each refresh).
-    /// Each is anchored to a body range via an `ins`/`del` mark; insertions render
-    /// coloured + underlined, deletions coloured + struck. Empty when none.
-    changes: Vec<ChangeView>,
-    /// Whether comment + tracked-change markup is drawn (default ON, like
-    /// spell-check). View-only — never mutates the document.
-    show_markup: bool,
+    /// Comment/tracked-change visibility, materialized items, card drawing, and
+    /// frame-local action hit targets. Document mutation remains editor policy.
+    review: ReviewOverlay,
     /// Document-outline visibility, drawing, and frame-local hit geometry.
     outline: OutlinePane,
     /// Version-history strip under the canvas: the document's own change graph
@@ -1845,10 +1780,7 @@ impl WordProcessorWidget {
             spell_cache: HashMap::new(),
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
-            review_hits: Vec::new(),
-            comments: Vec::new(),
-            changes: Vec::new(),
-            show_markup: true,
+            review: ReviewOverlay::default(),
             outline: OutlinePane::default(),
             history: crate::history_panel::HistoryPanel::new(),
             // Overwritten at the top of every `draw` from the live theme.
@@ -2124,16 +2056,16 @@ impl WordProcessorWidget {
     /// shows without its highlight band/indicator and tracked-change runs render
     /// as plain text (no review colour / underline / strike).
     pub fn toggle_markup(&mut self) {
-        self.show_markup = !self.show_markup;
-        // Re-shaping depends on `show_markup` (it changes the per-run colours), so
-        // invalidate the layout cache to force every block to re-shape next frame.
+        self.review.toggle();
+        // Shaping depends on review visibility because it changes per-run
+        // colours, so force every block to reshape next frame.
         self.layout_cache.clear();
         self.dirty = true;
     }
 
     /// Whether comment + tracked-change markup is currently drawn.
     pub fn markup_enabled(&self) -> bool {
-        self.show_markup
+        self.review.is_visible()
     }
 
     pub fn model(&self) -> &WordProcessor {
@@ -2530,8 +2462,7 @@ impl WordProcessorWidget {
             self.header = snap.header;
             self.footer = snap.footer;
             self.notes = snap.notes;
-            self.comments = snap.comments;
-            self.changes = snap.changes;
+            self.review.replace(snap.comments, snap.changes);
             // Drop spell-cache entries for blocks that no longer exist so the cache
             // stays bounded; surviving blocks keep their (text-keyed) spans.
             let live: std::collections::HashSet<&str> =
@@ -5010,7 +4941,8 @@ impl WordProcessorWidget {
             let mut row_h = 26.0f64;
             for c in 0..ncols {
                 if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
-                    let (runs, underlines, strikes) = block_runs_markup(cell, self.show_markup);
+                    let (runs, underlines, strikes) =
+                        block_runs_markup(cell, self.review.is_visible());
                     let wrap_w = num::f32_of_f64((col_w - 2.0 * cell_pad).max(24.0));
                     let align = block_align(cell, TextAlign::Left);
                     let key = shape_key(
@@ -5284,7 +5216,7 @@ impl WordProcessorWidget {
         };
         let wrap_w =
             (fg.content_w - num::f32_of_f64(indent) - num::f32_of_f64(float_reserve)).max(40.0);
-        let (runs, underlines, strikes) = block_runs_markup(b, self.show_markup);
+        let (runs, underlines, strikes) = block_runs_markup(b, self.review.is_visible());
         let align = block_align(b, style_align(&st.align));
         let family = parse_font(&st.font);
         // The paragraph's line-spacing multiplier (1.0 = single) scales the
@@ -6105,7 +6037,7 @@ impl WordProcessorWidget {
         // `selection_rects` geometry as the selection highlight, so it tracks
         // wrapping. The comment's start line is recorded for the right-margin
         // indicator/card rendered after the loop. Only when markup is shown.
-        if self.show_markup
+        if self.review.is_visible()
             && let Some(b) = self.blocks.iter().find(|b| b.id == l.id)
         {
             for (bs, be, cid) in block_comment_ranges(b) {
@@ -6117,7 +6049,7 @@ impl WordProcessorWidget {
                         l.text_x + f64::from(rx1),
                         ly + f64::from(ry1),
                     );
-                    scene.fill(Fill::NonZero, fg.ctf, COMMENT_HL, None, &r);
+                    scene.fill(Fill::NonZero, fg.ctf, COMMENT_HIGHLIGHT, None, &r);
                 }
                 // Anchor the marker at the start line's top, and remember
                 // the range's right edge (max rect x1) for the inline tab.
@@ -6150,7 +6082,7 @@ impl WordProcessorWidget {
         change_markers: &mut Vec<(String, f64, f64)>,
     ) {
         let (l, layout, ly) = (item.l, item.layout, item.ly);
-        if self.show_markup
+        if self.review.is_visible()
             && let Some(b) = self.blocks.iter().find(|b| b.id == l.id)
         {
             let (ins_ranges, del_ranges) = block_change_decos(b);
@@ -6163,7 +6095,7 @@ impl WordProcessorWidget {
                         l.text_x + f64::from(rx1),
                         uy + 1.5,
                     );
-                    scene.fill(Fill::NonZero, fg.ctf, TRACK_INS, None, &line);
+                    scene.fill(Fill::NonZero, fg.ctf, INSERTION_INK, None, &line);
                 }
             }
             for &(b0, b1) in &del_ranges {
@@ -6175,7 +6107,7 @@ impl WordProcessorWidget {
                         l.text_x + f64::from(rx1),
                         my + 1.5,
                     );
-                    scene.fill(Fill::NonZero, fg.ctf, TRACK_DEL, None, &line);
+                    scene.fill(Fill::NonZero, fg.ctf, DELETION_INK, None, &line);
                 }
             }
             // Collect a review-card marker per change range (carrying the
@@ -6274,342 +6206,6 @@ impl WordProcessorWidget {
                 page_notes.entry(l.page).or_default().push(num);
             }
         }
-    }
-
-    /// Comment indicators + annotation cards from pass 2's markers: a small
-    /// accent tab at each comment's start line, and an always-visible card
-    /// (author + content) anchored to the canvas so it stays on-screen
-    /// regardless of page width or the styles panel, stacked without overlap.
-    fn draw_comment_cards(
-        &mut self,
-        scene: &mut Scene,
-        fg: &FrameGeometry,
-        text_renderer: &mut TextRenderer,
-        mut comment_markers: Vec<(String, f64, f64)>,
-    ) {
-        if self.show_markup && !comment_markers.is_empty() {
-            comment_markers
-                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            // The card column hugs the right edge of the visible canvas.
-            let card_x = fg.canvas.x1 - COMMENT_CARD_W - 6.0;
-            let mut next_card_y = f64::MIN;
-            for (cid, anchor_y, range_right) in &comment_markers {
-                next_card_y = self.draw_one_comment_card(
-                    scene,
-                    fg,
-                    text_renderer,
-                    card_x,
-                    next_card_y,
-                    *anchor_y,
-                    *range_right,
-                    cid,
-                );
-            }
-        }
-    }
-
-    /// One comment's inline indicator tab + annotation card (author + body +
-    /// a Resolve button), stacked below `next_card_y` (or at `anchor_y`,
-    /// whichever is lower) so cards never overlap. Returns the `y` past this
-    /// card — the next card's floor.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_one_comment_card(
-        &mut self,
-        scene: &mut Scene,
-        fg: &FrameGeometry,
-        text_renderer: &mut TextRenderer,
-        card_x: f64,
-        next_card_y: f64,
-        anchor_y: f64,
-        range_right: f64,
-        cid: &str,
-    ) -> f64 {
-        let Some(cv) = self.comments.iter().find(|c| c.id == cid) else {
-            return next_card_y;
-        };
-        // The little accent tab sits just after the commented text, on its
-        // start line — an always-visible inline indicator.
-        let tab_x = (range_right + 2.0).min(card_x - COMMENT_TAB_W - 2.0);
-        let tab = Rect::new(
-            tab_x,
-            anchor_y + 1.0,
-            tab_x + COMMENT_TAB_W,
-            anchor_y + 18.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            fg.ctf,
-            COMMENT_TAB,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(tab, 1.5),
-        );
-
-        // Author + content (comment bodies are a small block sequence).
-        let comment_label = t("review-comment");
-        let author = if cv.author.is_empty() {
-            comment_label.as_str()
-        } else {
-            cv.author.as_str()
-        };
-        let body: String = {
-            let parts: Vec<&str> = cv
-                .blocks
-                .iter()
-                .map(|b| b.text.as_str())
-                .filter(|t| !t.is_empty())
-                .collect();
-            parts.join(" ")
-        };
-        let inner_w = num::f32_of_f64(COMMENT_CARD_W - 16.0);
-        let body_layout = RichTextLayout::shape(
-            &mut text_renderer.font_system,
-            &[RichSpan::new(&body)],
-            false,
-            11.0,
-            inner_w,
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            1.0,
-        );
-        let body_h = f64::from(body_layout.height());
-        let card_top = anchor_y.max(next_card_y);
-        // Header (author) + body + a footer row carrying the Resolve button.
-        let card_h = 22.0 + body_h + 8.0 + REVIEW_BTN + 6.0;
-        let card = Rect::new(card_x, card_top, card_x + COMMENT_CARD_W, card_top + card_h);
-        scene.fill(
-            Fill::NonZero,
-            fg.ctf,
-            COMMENT_CARD_BG,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(card, 5.0),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            fg.ctf,
-            COMMENT_CARD_EDGE,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(card, 5.0),
-        );
-        // Accent stripe down the card's left edge (ties it to the tab).
-        let stripe = Rect::new(card_x, card_top, card_x + 3.0, card_top + card_h);
-        scene.fill(Fill::NonZero, fg.ctf, COMMENT_TAB, None, &stripe);
-        text_renderer.draw_text(
-            scene,
-            author,
-            11.5,
-            COMMENT_AUTHOR_INK,
-            fg.ctf * Affine::translate((card_x + 9.0, card_top + 5.0)),
-            None,
-        );
-        text_renderer.draw_rich(
-            scene,
-            &body_layout,
-            fg.ctf * Affine::translate((card_x + 9.0, card_top + 20.0)),
-            COMMENT_BODY_INK,
-        );
-        self.draw_comment_resolve_button(scene, fg, text_renderer, card_x, card_top, card_h, cid);
-        card_top + card_h + 6.0
-    }
-
-    /// A comment card's footer: a single "Resolve" pill that removes the
-    /// comment + its mark, registered as a `review_hits` target.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_comment_resolve_button(
-        &mut self,
-        scene: &mut Scene,
-        fg: &FrameGeometry,
-        text_renderer: &mut TextRenderer,
-        card_x: f64,
-        card_top: f64,
-        card_h: f64,
-        cid: &str,
-    ) {
-        let btn_y = card_top + card_h - REVIEW_BTN - 4.0;
-        let resolve = Rect::new(
-            card_x + COMMENT_CARD_W - 64.0,
-            btn_y,
-            card_x + COMMENT_CARD_W - 8.0,
-            btn_y + REVIEW_BTN,
-        );
-        scene.fill(
-            Fill::NonZero,
-            fg.ctf,
-            REVIEW_ACCEPT_BG,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(resolve, 4.0),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            fg.ctf,
-            COMMENT_CARD_EDGE,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(resolve, 4.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            &t("review-resolve"),
-            10.5,
-            REVIEW_ACCEPT_INK,
-            fg.ctf * Affine::translate((resolve.x0 + 5.0, resolve.y0 + 2.5)),
-            None,
-        );
-        self.review_hits
-            .push((resolve, CtxAction::ResolveComment(cid.to_string())));
-    }
-
-    /// Tracked-change review cards from pass 2's markers: a compact
-    /// kind/author heading + Accept/Reject buttons per ins/del range, stacked
-    /// left of the comment column so the two never collide.
-    fn draw_change_cards(
-        &mut self,
-        scene: &mut Scene,
-        fg: &FrameGeometry,
-        text_renderer: &mut TextRenderer,
-        mut change_markers: Vec<(String, f64, f64)>,
-    ) {
-        if self.show_markup && !change_markers.is_empty() {
-            change_markers
-                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            // The change column sits just left of the comment column.
-            let card_x = fg.canvas.x1 - COMMENT_CARD_W - 6.0 - CHANGE_CARD_W - 6.0;
-            let mut next_card_y = f64::MIN;
-            for (cid, anchor_y, _range_right) in &change_markers {
-                next_card_y = self.draw_one_change_card(
-                    scene,
-                    fg,
-                    text_renderer,
-                    card_x,
-                    next_card_y,
-                    *anchor_y,
-                    cid,
-                );
-            }
-        }
-    }
-
-    /// One tracked change's review card: a compact kind/author heading +
-    /// Accept/Reject buttons, stacked below `next_card_y` (or at `anchor_y`,
-    /// whichever is lower) so cards never overlap. Returns the `y` past this
-    /// card — the next card's floor.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_one_change_card(
-        &mut self,
-        scene: &mut Scene,
-        fg: &FrameGeometry,
-        text_renderer: &mut TextRenderer,
-        card_x: f64,
-        next_card_y: f64,
-        anchor_y: f64,
-        cid: &str,
-    ) -> f64 {
-        let Some(cv) = self.changes.iter().find(|c| c.id == cid) else {
-            return next_card_y;
-        };
-        let (label, kind_color) = match cv.kind {
-            qdoc::snapshot::ChangeKind::Ins => (t("review-insertion"), TRACK_INS),
-            qdoc::snapshot::ChangeKind::Del => (t("review-deletion"), TRACK_DEL),
-        };
-        let author = if cv.author.is_empty() {
-            String::new()
-        } else {
-            format!(" · {}", cv.author)
-        };
-        let heading = format!("{label}{author}");
-        let card_top = anchor_y.max(next_card_y);
-        let card_h = 22.0 + REVIEW_BTN + 6.0;
-        let card = Rect::new(card_x, card_top, card_x + CHANGE_CARD_W, card_top + card_h);
-        scene.fill(
-            Fill::NonZero,
-            fg.ctf,
-            CHANGE_CARD_BG,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(card, 5.0),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            fg.ctf,
-            CHANGE_CARD_EDGE,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(card, 5.0),
-        );
-        // Accent stripe in the change's review colour (green ins / red del).
-        let stripe = Rect::new(card_x, card_top, card_x + 3.0, card_top + card_h);
-        scene.fill(Fill::NonZero, fg.ctf, kind_color, None, &stripe);
-        text_renderer.draw_text(
-            scene,
-            &heading,
-            10.5,
-            CHANGE_LABEL_INK,
-            fg.ctf * Affine::translate((card_x + 9.0, card_top + 5.0)),
-            None,
-        );
-        // Accept ✓ / Reject ✗ buttons on the footer row.
-        self.draw_change_accept_reject(scene, fg, text_renderer, card_x, card_top, card_h, cid);
-        card_top + card_h + 6.0
-    }
-
-    /// A change card's footer: Accept ✓ / Reject ✗ buttons, registered as
-    /// `review_hits` targets.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_change_accept_reject(
-        &mut self,
-        scene: &mut Scene,
-        fg: &FrameGeometry,
-        text_renderer: &mut TextRenderer,
-        card_x: f64,
-        card_top: f64,
-        card_h: f64,
-        cid: &str,
-    ) {
-        let btn_y = card_top + card_h - REVIEW_BTN - 4.0;
-        let accept = Rect::new(
-            card_x + 9.0,
-            btn_y,
-            card_x + 9.0 + REVIEW_BTN,
-            btn_y + REVIEW_BTN,
-        );
-        let reject = Rect::new(
-            accept.x1 + 6.0,
-            btn_y,
-            accept.x1 + 6.0 + REVIEW_BTN,
-            btn_y + REVIEW_BTN,
-        );
-        scene.fill(
-            Fill::NonZero,
-            fg.ctf,
-            REVIEW_ACCEPT_BG,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(accept, 4.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            fg.ctf,
-            REVIEW_REJECT_BG,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(reject, 4.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            "✓",
-            12.0,
-            REVIEW_ACCEPT_INK,
-            fg.ctf * Affine::translate((accept.x0 + 4.0, accept.y0 + 1.5)),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            "✗",
-            12.0,
-            REVIEW_REJECT_INK,
-            fg.ctf * Affine::translate((reject.x0 + 4.0, reject.y0 + 1.5)),
-            None,
-        );
-        self.review_hits
-            .push((accept, CtxAction::AcceptChange(cid.to_string())));
-        self.review_hits
-            .push((reject, CtxAction::RejectChange(cid.to_string())));
     }
 
     /// Footnote areas: a thin separator + numbered footnotes at the bottom of
@@ -7270,13 +6866,7 @@ impl WordProcessorWidget {
         // Accept/Reject) are drawn through the zoom transform, so they
         // hit-test in content space too. A hit dispatches + consumes the
         // click before it can start a text selection.
-        if let Some(action) = self
-            .review_hits
-            .iter()
-            .rev()
-            .find(|(r, _)| r.contains(cp))
-            .map(|(_, a)| a.clone())
-        {
+        if let Some(action) = self.review.action_at(cp) {
             self.dispatch_review_action(action, state);
             self.dirty = true;
             *handled = true;
@@ -7841,9 +7431,6 @@ impl Widget for WordProcessorWidget {
 
         let (multi_sel, note_nums, spell_by_block) = self.prepare_pass2_inputs(blocks, &laid, &fg);
 
-        // Review affordances (Resolve/Accept/Reject) live in right-margin cards,
-        // rebuilt each frame; hit rects are in *content* space, like `pointer_to_content`.
-        self.review_hits.clear();
         let markers = self.draw_page_content(
             scene,
             &fg,
@@ -7854,8 +7441,14 @@ impl Widget for WordProcessorWidget {
             &spell_by_block,
             &note_nums,
         );
-        self.draw_comment_cards(scene, &fg, text_renderer, markers.comment_markers);
-        self.draw_change_cards(scene, &fg, text_renderer, markers.change_markers);
+        self.review.draw(
+            scene,
+            text_renderer,
+            fg.canvas,
+            fg.ctf,
+            markers.comment_markers,
+            markers.change_markers,
+        );
         self.draw_footnotes(
             scene,
             &fg,
@@ -9025,7 +8618,7 @@ impl WordProcessorWidget {
     /// All whenever the document has any tracked change. The clicked word
     /// span `[wstart, wend)` (falling back to `raw_click_off` for a
     /// whitespace click) is matched against `block`'s `ins`/`del`/`comment`
-    /// marks. A no-op unless `self.show_markup`.
+    /// marks. A no-op unless the review overlay is visible.
     fn push_review_rows(
         &self,
         menu: &mut ContextMenu,
@@ -9035,7 +8628,7 @@ impl WordProcessorWidget {
         wend: usize,
         raw_click_off: usize,
     ) {
-        if !self.show_markup {
+        if !self.review.is_visible() {
             return;
         }
         let mut review_rows = false;
@@ -9068,22 +8661,28 @@ impl WordProcessorWidget {
                         "review-reject-deletion"
                     };
                     menu.push(MenuItem::action(t(accept_key), || {}));
-                    actions.push(Some(CtxAction::AcceptChange(id.clone())));
+                    actions.push(Some(CtxAction::Review(ReviewAction::AcceptChange(
+                        id.clone(),
+                    ))));
                     menu.push(MenuItem::action(t(reject_key), || {}));
-                    actions.push(Some(CtxAction::RejectChange(id.clone())));
+                    actions.push(Some(CtxAction::Review(ReviewAction::RejectChange(
+                        id.clone(),
+                    ))));
                     review_rows = true;
                 } else if m.name == qdoc::schema::MARK_COMMENT {
                     menu.push(MenuItem::action(t("review-resolve-comment"), || {}));
-                    actions.push(Some(CtxAction::ResolveComment(id.clone())));
+                    actions.push(Some(CtxAction::Review(ReviewAction::ResolveComment(
+                        id.clone(),
+                    ))));
                     review_rows = true;
                 }
             }
         }
-        if !self.changes.is_empty() {
+        if !self.review.changes().is_empty() {
             menu.push(MenuItem::action(t("review-accept-all"), || {}));
-            actions.push(Some(CtxAction::AcceptAllChanges));
+            actions.push(Some(CtxAction::Review(ReviewAction::AcceptAllChanges)));
             menu.push(MenuItem::action(t("review-reject-all"), || {}));
-            actions.push(Some(CtxAction::RejectAllChanges));
+            actions.push(Some(CtxAction::Review(ReviewAction::RejectAllChanges)));
             review_rows = true;
         }
         if review_rows {
@@ -9193,13 +8792,7 @@ impl WordProcessorWidget {
                 self.spell_cache.remove(&block);
                 self.needs_commit = true;
             }
-            action @ (CtxAction::AcceptChange(_)
-            | CtxAction::RejectChange(_)
-            | CtxAction::AcceptAllChanges
-            | CtxAction::RejectAllChanges
-            | CtxAction::ResolveComment(_)) => {
-                self.dispatch_review_action(action, state);
-            }
+            CtxAction::Review(action) => self.dispatch_review_action(action, state),
         }
         self.context_menu.close();
         self.dirty = true;
@@ -9370,15 +8963,13 @@ impl WordProcessorWidget {
     /// button or a context-menu row): accept/reject a change, accept/reject all,
     /// or resolve (delete) a comment. Refreshes the materialized blocks +
     /// comments/changes so the acted-on item disappears, and flags an undo point.
-    fn dispatch_review_action(&mut self, action: CtxAction, state: &mut AutoCommit) {
+    fn dispatch_review_action(&mut self, action: ReviewAction, state: &mut AutoCommit) {
         match action {
-            CtxAction::AcceptChange(id) => self.inner.accept_change(state, &id),
-            CtxAction::RejectChange(id) => self.inner.reject_change(state, &id),
-            CtxAction::AcceptAllChanges => self.inner.accept_all_changes(state),
-            CtxAction::RejectAllChanges => self.inner.reject_all_changes(state),
-            CtxAction::ResolveComment(id) => self.inner.delete_comment(state, &id),
-            // Non-review actions are dispatched by `dispatch_context_action`.
-            _ => return,
+            ReviewAction::AcceptChange(id) => self.inner.accept_change(state, &id),
+            ReviewAction::RejectChange(id) => self.inner.reject_change(state, &id),
+            ReviewAction::AcceptAllChanges => self.inner.accept_all_changes(state),
+            ReviewAction::RejectAllChanges => self.inner.reject_all_changes(state),
+            ReviewAction::ResolveComment(id) => self.inner.delete_comment(state, &id),
         }
         self.refresh_blocks(state);
         // Accepting/rejecting can change body text (an accepted deletion removes
@@ -12562,11 +12153,11 @@ mod tests {
 
         // The comment is materialized and anchored to the body range.
         assert_eq!(
-            wp.comments.len(),
+            wp.review.comments().len(),
             1,
             "the comment is materialized into the widget"
         );
-        assert_eq!(wp.comments[0].author, "Ada");
+        assert_eq!(wp.review.comments()[0].author, "Ada");
 
         // The production helper recovers the commented byte range from the block's
         // `comment` mark (this is exactly what the draw pass calls).
@@ -12579,7 +12170,11 @@ mod tests {
         assert_eq!(ranges.len(), 1, "one comment range over the block");
         let (bs, be, cid) = &ranges[0];
         assert_eq!((*bs, *be), (6, 11), "byte range covers 'world'");
-        assert_eq!(cid, &wp.comments[0].id, "range carries the comment id");
+        assert_eq!(
+            cid,
+            &wp.review.comments()[0].id,
+            "range carries the comment id"
+        );
 
         // The draw pass maps that byte range → on-screen highlight rects via the
         // shaped layout's `selection_rects`. Assert a non-empty rect with width.
@@ -12617,14 +12212,20 @@ mod tests {
         pipeline_draw(&mut wp, &mut state, 1000, 900);
 
         // Both changes materialize with their kinds.
-        assert_eq!(wp.changes.len(), 2, "both tracked changes materialized");
+        assert_eq!(
+            wp.review.changes().len(),
+            2,
+            "both tracked changes materialized"
+        );
         let ins = wp
-            .changes
+            .review
+            .changes()
             .iter()
             .find(|ch| ch.id == ins_id)
             .expect("ins change");
         let del = wp
-            .changes
+            .review
+            .changes()
             .iter()
             .find(|ch| ch.id == del_id)
             .expect("del change");
@@ -12668,20 +12269,20 @@ mod tests {
         assert!(
             runs_on
                 .iter()
-                .any(|r| r.text.contains("keep") && r.color == Some(TRACK_INS_RGB)),
+                .any(|r| r.text.contains("keep") && r.color == Some(INSERTION_RGB)),
             "the inserted run is tinted with the insertion review colour"
         );
         assert!(
             runs_on
                 .iter()
-                .any(|r| r.text.contains("gone") && r.color == Some(TRACK_DEL_RGB)),
+                .any(|r| r.text.contains("gone") && r.color == Some(DELETION_RGB)),
             "the deleted run is tinted with the deletion review colour"
         );
         let (runs_off, _, _) = block_runs_markup(b, false);
         assert!(
             runs_off
                 .iter()
-                .all(|r| r.color != Some(TRACK_INS_RGB) && r.color != Some(TRACK_DEL_RGB)),
+                .all(|r| r.color != Some(INSERTION_RGB) && r.color != Some(DELETION_RGB)),
             "with markup hidden, tracked-change runs render as plain text"
         );
     }
@@ -12726,7 +12327,7 @@ mod tests {
 
         // Accept via the production review-dispatch path (the same call the
         // margin ✓ button + context menu use).
-        wp.dispatch_review_action(CtxAction::AcceptChange(ins_id.clone()), &mut state.doc);
+        wp.dispatch_review_action(ReviewAction::AcceptChange(ins_id.clone()), &mut state.doc);
 
         // After: the text is kept, but the `ins` mark + change record are gone —
         // the run is no longer reported as a tracked change anywhere.
@@ -12780,7 +12381,7 @@ mod tests {
         );
 
         // Accept the deletion: the struck text is removed.
-        wp.dispatch_review_action(CtxAction::AcceptChange(del_id.clone()), &mut state.doc);
+        wp.dispatch_review_action(ReviewAction::AcceptChange(del_id.clone()), &mut state.doc);
 
         let after = snapshot(&state, &c);
         let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
@@ -12814,7 +12415,7 @@ mod tests {
         state.doc.commit();
         pipeline_draw(&mut wp, &mut state, 1000, 900);
 
-        wp.dispatch_review_action(CtxAction::RejectChange(del_id.clone()), &mut state.doc);
+        wp.dispatch_review_action(ReviewAction::RejectChange(del_id.clone()), &mut state.doc);
 
         let after = snapshot(&state, &c);
         let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
@@ -12858,7 +12459,7 @@ mod tests {
         );
 
         // Resolve (delete) via the production review-dispatch path.
-        wp.dispatch_review_action(CtxAction::ResolveComment(cid.clone()), &mut state.doc);
+        wp.dispatch_review_action(ReviewAction::ResolveComment(cid.clone()), &mut state.doc);
 
         // After: gone from `comments`, and the anchoring `comment` mark (the
         // highlight band) is cleared from the block. Body text is untouched.
@@ -12900,7 +12501,7 @@ mod tests {
             "two tracked changes before Accept All"
         );
 
-        wp.dispatch_review_action(CtxAction::AcceptAllChanges, &mut state.doc);
+        wp.dispatch_review_action(ReviewAction::AcceptAllChanges, &mut state.doc);
 
         // Every change is gone; accepting the insertion kept "keep" and accepting
         // the deletion removed "gone".
@@ -12941,21 +12542,22 @@ mod tests {
         state.doc.commit();
         pipeline_draw(&mut wp, &mut state, 1200, 900);
 
-        let has = |pred: &dyn Fn(&CtxAction) -> bool| {
-            wp.review_hits
+        let has = |pred: &dyn Fn(&ReviewAction) -> bool| {
+            wp.review
+                .hits()
                 .iter()
                 .any(|(r, a)| pred(a) && r.width() > 0.0 && r.height() > 0.0)
         };
         assert!(
-            has(&|a| matches!(a, CtxAction::ResolveComment(id) if id == &cid)),
+            has(&|a| matches!(a, ReviewAction::ResolveComment(id) if id == &cid)),
             "a Resolve affordance for the comment"
         );
         assert!(
-            has(&|a| matches!(a, CtxAction::AcceptChange(id) if id == &ins_id)),
+            has(&|a| matches!(a, ReviewAction::AcceptChange(id) if id == &ins_id)),
             "an Accept ✓ affordance for the change"
         );
         assert!(
-            has(&|a| matches!(a, CtxAction::RejectChange(id) if id == &ins_id)),
+            has(&|a| matches!(a, ReviewAction::RejectChange(id) if id == &ins_id)),
             "a Reject ✗ affordance for the change"
         );
     }
@@ -12989,9 +12591,9 @@ mod tests {
         // draw path suppresses tracked-change styling.
         wp.toggle_markup();
         assert!(!wp.markup_enabled(), "toggle flips the flag");
-        let (runs_off, _, _) = block_runs_markup(&b, wp.show_markup);
+        let (runs_off, _, _) = block_runs_markup(&b, wp.review.is_visible());
         assert!(
-            runs_off.iter().all(|r| r.color != Some(TRACK_INS_RGB)),
+            runs_off.iter().all(|r| r.color != Some(INSERTION_RGB)),
             "no review colour is applied while markup is hidden"
         );
     }
@@ -15288,6 +14890,25 @@ mod tests {
             pipeline_draw(&mut wp, &mut state, w, h);
             wp.open_color_picker();
             render_review_png(&mut wp, &mut state, w, h, &dir, "color-picker");
+        }
+
+        // 6. Comment and tracked-change margin cards from the extracted review
+        // component, including its Resolve and Accept/Reject action faces.
+        {
+            let (mut wp, mut state, c, mut ids, bid) =
+                doc_with_paragraph("Keep this passage and review the ending.");
+            {
+                let mut doc = qdoc::DocMut {
+                    doc: &mut state.doc,
+                    c: &c,
+                    ids: &mut ids,
+                };
+                doc.add_comment(&bid, 5, 17, "Ada", "This needs a source.");
+                let change = doc.insert_change(qdoc::ChangeKind::Ins, "Lin", "");
+                doc.add_change_mark(qdoc::ChangeKind::Ins, &bid, 29, 39, &change);
+            }
+            state.doc.commit();
+            render_review_png(&mut wp, &mut state, w, h, &dir, "review-overlay");
         }
     }
 }
