@@ -7,12 +7,11 @@ use std::path::PathBuf;
 use qos_user_identity::{
     DeviceCapabilities, DeviceCert, EnrollmentToken, IdentityPaths, RevocationEntry,
     RevocationReason, decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
-    sign_device_cert, sign_revocation_entry, verify_device_cert, verify_enrollment_token,
+    revocation_signing_digest, verify_device_cert, verify_enrollment_token,
     verify_revocation_entry,
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use ui::widget::identity_flow::IdentityRecord;
 
 const FLEET_SCHEMA_VERSION: u32 = 1;
 
@@ -161,7 +160,12 @@ impl DeviceFleetStore {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        sign_device_cert(&mut cert, &root).map_err(|error| io::Error::other(error.to_string()))?;
+        let digest = qos_user_identity::device_cert_signing_digest(&cert)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        cert.signature = root
+            .sign(&digest)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        verify_device_cert(&cert).map_err(|error| io::Error::other(error.to_string()))?;
         self.insert_certificate(identity_id, cert.clone())?;
         Ok(cert)
     }
@@ -193,8 +197,12 @@ impl DeviceFleetStore {
             reason,
             signature: [0; 64],
         };
-        sign_revocation_entry(&mut entry, &root)
+        let digest = revocation_signing_digest(&entry)
             .map_err(|error| io::Error::other(error.to_string()))?;
+        entry.signature = root
+            .sign(&digest)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        verify_revocation_entry(&entry).map_err(|error| io::Error::other(error.to_string()))?;
         if !fleet.is_revoked(&device_public_key) {
             fleet.revocations.push(entry.clone());
             self.save(&fleet)?;
@@ -247,7 +255,7 @@ impl DeviceFleetStore {
         &self,
         identity_id: &str,
     ) -> io::Result<(
-        ed25519_dalek::SigningKey,
+        runtime_identity::SigningIdentity,
         crate::identity_registry::IdentityProfile,
     )> {
         let store = crate::identity_registry::IdentityRegistryStore::at(&self.identity_dir);
@@ -257,18 +265,15 @@ impl DeviceFleetStore {
             .get(identity_id)
             .cloned()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "identity is not registered"))?;
-        let record = IdentityRecord::from_json_bytes(&fs::read(&profile.record_path)?)
+        let identity = runtime_identity::load_from_path(profile.record_path.clone())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-        let identity = record
-            .into_threshold_identity()
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-        let seed = identity.single_device_seed().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::Unsupported,
-                "root signing requires threshold ceremony",
-            )
-        })?;
-        Ok((ed25519_dalek::SigningKey::from_bytes(&seed), profile))
+        if identity.group_public_key() != profile.user_public_key {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "identity record does not match its registry profile",
+            ));
+        }
+        Ok((identity, profile))
     }
 
     fn save(&self, fleet: &DeviceFleet) -> io::Result<()> {

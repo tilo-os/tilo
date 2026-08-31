@@ -11,7 +11,6 @@ use std::time::Duration;
 use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
 use ed25519_dalek::Signer;
 use runtime_identity::wire::{Handshake, Request, Response};
-use ui::widget::identity_flow::IdentityRecord;
 
 use crate::shell::state::{RoomId, WorkspaceTreeHandle, now_unix};
 
@@ -98,11 +97,7 @@ fn metadata(room: &RoomId) -> Response {
         Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
         Err(error) => return Response::Error(error.to_string()),
     };
-    let bytes = match std::fs::read(&profile.record_path) {
-        Ok(bytes) => bytes,
-        Err(error) => return Response::Error(error.to_string()),
-    };
-    let record = match IdentityRecord::from_json_bytes(&bytes) {
+    let record = match runtime_identity::load_from_path(profile.record_path.clone()) {
         Ok(record) => record,
         Err(error) => return Response::Error(error.to_string()),
     };
@@ -114,16 +109,15 @@ fn metadata(room: &RoomId) -> Response {
         Ok(bytes) => bytes,
         Err(error) => return Response::Error(error.to_string()),
     };
-    let serial = record.threshold_identity;
     Response::Metadata {
-        display_name: record.display_name,
-        avatar_color: record.avatar_color,
-        group_public_key: serial.group_public_key,
+        display_name: record.display_name().to_string(),
+        avatar_color: record.avatar_color(),
+        group_public_key: record.group_public_key(),
         signing_public_key: device.verifying_key().to_bytes(),
         device_certificate: Some(device_certificate),
-        threshold: serial.threshold,
-        total_shares: serial.total_shares,
-        share_index: serial.share_index,
+        threshold: record.threshold(),
+        total_shares: record.total_shares(),
+        share_index: record.share_index(),
     }
 }
 

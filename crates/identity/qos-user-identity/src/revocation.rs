@@ -102,6 +102,11 @@ pub enum RevocationError {
     Canonical(#[from] CanonicalError),
 }
 
+/// Canonical digest a user identity signs to authorise this revocation.
+pub fn revocation_signing_digest(entry: &RevocationEntry) -> Result<[u8; 32], RevocationError> {
+    signing_digest(REVOCATION_PREIMAGE_TAG, &entry.view()).map_err(Into::into)
+}
+
 /// Sign a revocation entry with the user root signing key. Fills
 /// `signature` in place.
 pub fn sign_revocation_entry(
@@ -112,7 +117,7 @@ pub fn sign_revocation_entry(
     if entry.user_public_key != derived {
         return Err(RevocationError::BadSignature);
     }
-    let digest = signing_digest(REVOCATION_PREIMAGE_TAG, &entry.view())?;
+    let digest = revocation_signing_digest(entry)?;
     let sig = root_signing_key.sign(&digest);
     entry.signature = sig.to_bytes();
     Ok(())
@@ -122,7 +127,7 @@ pub fn sign_revocation_entry(
 pub fn verify_revocation_entry(entry: &RevocationEntry) -> Result<(), RevocationError> {
     let vk = ed25519_dalek::VerifyingKey::from_bytes(&entry.user_public_key)
         .map_err(|_| RevocationError::InvalidUserPublicKey)?;
-    let digest = signing_digest(REVOCATION_PREIMAGE_TAG, &entry.view())?;
+    let digest = revocation_signing_digest(entry)?;
     let sig = ed25519_dalek::Signature::from_bytes(&entry.signature);
     vk.verify(&digest, &sig)
         .map_err(|_| RevocationError::BadSignature)?;

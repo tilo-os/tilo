@@ -2098,6 +2098,7 @@ pub fn run() -> ! {
     // table over `ShellNetwork` (the Iroh handle above), since the shell
     // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
     let collab_broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), &peer_sync);
+    let _identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
     // failure only removes the advanced handoff, never core Settings controls.
