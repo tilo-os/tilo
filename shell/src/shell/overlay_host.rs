@@ -36,6 +36,10 @@ use ui::widget::{
 use ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
+use crate::shell::collaborators_overlay::{
+    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay,
+};
+pub use crate::shell::collaborators_overlay::{RosterRow, collaborator_roster_rows};
 use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
 use crate::shell::notification::NotificationStack;
@@ -308,14 +312,9 @@ pub struct ShellOverlayHost {
     /// Whether the sheet was open last frame, to invalidate derived rows
     /// on the rising edge.
     room_activity_was_open: bool,
-    /// Hit rect of the "Room activity" row in the collaborator dropdown.
-    /// Zeroed whenever the dropdown is not painted.
-    collab_activity_row_rect: Rect,
-    /// Hit rects of the Invite/Join buttons in the collaborator dropdown.
-    /// Also zeroed when the local user may not invite, so a button that
-    /// isn't painted can't be clicked.
-    collab_invite_row_rect: Rect,
-    collab_join_row_rect: Rect,
+    /// Collaborator roster popover, including its painted geometry and hit
+    /// targets. The host only applies its semantic actions to chrome state.
+    collaborators_overlay: CollaboratorsOverlay,
     /// Complete wireless projection picker, including controller, editor,
     /// animation, painted geometry, and event routing.
     projection_overlay: ProjectionOverlay,
@@ -741,24 +740,6 @@ pub(crate) const MODAL_OPEN_ANIM_MS: u64 = 220;
 // chrome surfaces are opaque and scrims carry the depth instead.
 // Centralised so `shell_chrome_test` can pin the numeric values.
 
-/// Height of the "Room activity" row at the foot of the collaborator
-/// dropdown, including the separator above it.
-const COLLAB_FOOTER_H: f64 = 40.0;
-/// Height reserved for the broker-unavailable line when the dropdown
-/// also has participants to list beneath it.
-const COLLAB_WARNING_H: f64 = 24.0;
-/// Height of the Invite / Join band above the "Room activity" row —
-/// inviting and joining change who's in the room, so they belong on the
-/// surface that shows it, not only in a palette command.
-const COLLAB_ACTIONS_H: f64 = 40.0;
-
-/// Label for a row whose person has been named but has not arrived.
-const INVITED_TAG: &str = "invited";
-
-/// Alpha of an invited row's dashed seat-ring, in that peer's own
-/// colour, faded so it reads as pending rather than disabled.
-const INVITED_ROW_ALPHA: f32 = 0.55;
-
 /// Alpha of the collaborator and `QuickSettings` popover surfaces.
 /// Opaque, deferring to the toolkit's chrome constant so a popover can't
 /// drift from the bar it hangs off — the pinned Vello has no backdrop
@@ -936,9 +917,7 @@ impl ShellOverlayHost {
             room_activity: crate::shell::room_activity::RoomActivityPane::new(),
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
-            collab_activity_row_rect: Rect::ZERO,
-            collab_invite_row_rect: Rect::ZERO,
-            collab_join_row_rect: Rect::ZERO,
+            collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: ProjectionOverlay::default(),
         }
     }
@@ -3028,13 +3007,13 @@ impl ShellOverlayHost {
     /// frame (not recomputed) — `Rect::ZERO` when closed or not permitted,
     /// so a test click on a missing button fails instead of hitting the origin.
     pub fn collaborators_action_rects_for_tests(&self) -> (Rect, Rect) {
-        (self.collab_invite_row_rect, self.collab_join_row_rect)
+        self.collaborators_overlay.action_rects()
     }
 
     /// The "Room activity" row at the foot of the same dropdown, on the
     /// same terms.
     pub fn collaborators_activity_rect_for_tests(&self) -> Rect {
-        self.collab_activity_row_rect
+        self.collaborators_overlay.activity_rect()
     }
 
     /// Revoke-button rects painted by [`Self::draw_ws_settings`] while
@@ -3968,44 +3947,6 @@ impl ShellOverlayHost {
         self.quick_settings_rect()
     }
 
-    /// Collaborators dropdown rect — anchored to the top-right like quick-
-    /// settings but narrower and taller-when-many-peers. Height is driven by
-    /// the peer count so a roster of 8 doesn't clip.
-    fn collaborators_rect(&self) -> Rect {
-        let popover_w = 260.0_f64;
-        let members = self
-            .chrome
-            .as_ref()
-            .map_or(0, |c| collaborator_roster_rows(&c.borrow().tree()).len());
-        let rows = usize_to_f64_lossy(members.max(1));
-        // Room for the broker warning when there is one *and* rows under
-        // it — with no rows the warning sits in the space the empty-state
-        // line would have used.
-        let warning = self
-            .chrome
-            .as_ref()
-            .is_some_and(|c| c.borrow().collab_unavailable.is_some())
-            && members > 0;
-        let warning_h = if warning { COLLAB_WARNING_H } else { 0.0 };
-        // COLLAB_ACTIONS_H only when this user may actually invite —
-        // reserving it unconditionally would leave empty popover space
-        // for everyone who can't, reading as a control that failed to paint.
-        let actions_h = if self.may_invite_here() {
-            COLLAB_ACTIONS_H
-        } else {
-            0.0
-        };
-        let popover_h: f64 = 48.0 + warning_h + rows * 36.0 + 16.0 + actions_h + COLLAB_FOOTER_H;
-        let x1 = self.rect.x1 - 16.0;
-        let y0 = self.rect.y0 + 48.0;
-        Rect::new(
-            x1 - popover_w,
-            y0,
-            x1,
-            y0 + popover_h.min(420.0 + actions_h + COLLAB_FOOTER_H),
-        )
-    }
-
     /// May the local user invite into the room they're looking at? Asked
     /// through the same policy the palette's `peer.invite` row is filtered
     /// on, not re-decided here — a second opinion is a second security
@@ -4037,36 +3978,6 @@ impl ShellOverlayHost {
         CapabilityVisibility::new(workspace, actor).can_see(
             &ResourceRef::new("actions", "peer.invite"),
             &crate::shell::search::ResourceKind::Action,
-        )
-    }
-
-    /// Rects of the Invite / Join buttons, mirroring what
-    /// [`Self::draw_collaborators_footer`] paints. Both are `Rect::ZERO`
-    /// when this user may not invite, so the band is absent from the
-    /// geometry rather than present and inert.
-    fn collaborators_action_row_rects(&self) -> (Rect, Rect) {
-        if !self.may_invite_here() {
-            return (Rect::ZERO, Rect::ZERO);
-        }
-        let r = self.collaborators_rect();
-        let y0 = r.y1 - COLLAB_FOOTER_H - COLLAB_ACTIONS_H + 6.0;
-        let y1 = y0 + 28.0;
-        let gap = 8.0;
-        let half = (r.width() - 16.0 - gap) / 2.0;
-        let invite = Rect::new(r.x0 + 8.0, y0, r.x0 + 8.0 + half, y1);
-        let join = Rect::new(invite.x1 + gap, y0, r.x1 - 8.0, y1);
-        (invite, join)
-    }
-
-    /// Rect of the "Room activity" row at the foot of the collaborator
-    /// dropdown, mirroring what `draw_collaborators` paints.
-    fn collaborators_activity_row_rect(&self) -> Rect {
-        let r = self.collaborators_rect();
-        Rect::new(
-            r.x0 + 8.0,
-            r.y1 - COLLAB_FOOTER_H + 4.0,
-            r.x1 - 8.0,
-            r.y1 - 8.0,
         )
     }
 
@@ -4510,7 +4421,7 @@ impl ShellOverlayHost {
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
         let f = self.overlay_flags();
         (self.palette_visible && self.palette.get_rect().contains(p))
-            || (f.collaborators && self.collaborators_rect().contains(p))
+            || (f.collaborators && self.collaborators_overlay.contains(p))
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
             || (f.room_activity && self.room_activity.rect().contains(p))
@@ -5643,52 +5554,33 @@ impl ShellOverlayHost {
     /// swallow the click so content beneath doesn't grab it. Reached
     /// only once `flags.collaborators` is true, at which point every
     /// path absorbs the click.
-    fn handle_shell_collaborators_click(&mut self, p: Point, handled: &mut bool) {
-        let invite = self.collab_invite_row_rect;
-        if invite.area() > 0.0 && invite.contains(p) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.push_peer_sync_request(PeerSyncAction::PromptInvite);
-                st.overlays.collaborators = false;
-                st.bump();
+    fn handle_shell_collaborators_click(&self, p: Point, handled: &mut bool) {
+        let hit = self.collaborators_overlay.hit_test(p);
+        if let Some(chrome) = self.chrome.clone() {
+            let mut state = chrome.borrow_mut();
+            match hit {
+                CollaboratorsHit::Invite => {
+                    state.push_peer_sync_request(PeerSyncAction::PromptInvite);
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+                CollaboratorsHit::Join => {
+                    state.push_peer_sync_request(PeerSyncAction::PromptConnect);
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+                CollaboratorsHit::RoomActivity => {
+                    state.overlays.room_activity = true;
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+                CollaboratorsHit::Dismiss => {
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+                CollaboratorsHit::Absorb => {}
             }
-            *handled = true;
-            return;
         }
-        let join = self.collab_join_row_rect;
-        if join.area() > 0.0 && join.contains(p) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.push_peer_sync_request(PeerSyncAction::PromptConnect);
-                st.overlays.collaborators = false;
-                st.bump();
-            }
-            *handled = true;
-            return;
-        }
-        let row = self.collab_activity_row_rect;
-        if row.area() > 0.0 && row.contains(p) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.overlays.room_activity = true;
-                st.overlays.collaborators = false;
-                st.bump();
-            }
-            *handled = true;
-            return;
-        }
-        let co_rect = self.collaborators_rect();
-        if !co_rect.contains(p) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.overlays.collaborators = false;
-                st.bump();
-            }
-            *handled = true;
-            return;
-        }
-        // Inside the dropdown: swallow so the content beneath
-        // doesn't grab it. No per-row actions yet.
         *handled = true;
     }
 
@@ -7382,89 +7274,6 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
     }
 }
 
-/// One row of the collaborators dropdown. People and agents are listed
-/// together — both are in the room — but tagged apart, or the OS would
-/// be reporting a person present when none is.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RosterRow {
-    /// What the row is called.
-    pub label: String,
-    /// Avatar initial.
-    pub initial: char,
-    /// Per-identity avatar colour.
-    pub color: Color,
-    /// True for an agent admitted by capability, false for a person.
-    pub is_agent: bool,
-    /// What this participant may do here, per the room's capability list.
-    /// `None` when the room records nothing — inventing a default would
-    /// state what a person may do on no evidence.
-    pub role: Option<String>,
-    /// Named by the room but not arrived. Drawn dimmed and qualified,
-    /// never as a present participant.
-    pub invited: bool,
-}
-
-/// Rows the collaborators dropdown shows: peers this session knows
-/// about, then agents the active room has admitted. The two come from
-/// different places — a peer is in `tree.collaborators` from the room
-/// document plus actual session presence, while an agent announces
-/// nothing a session could notice, so its only evidence is the
-/// membership capability `Workspace::agent_members` reads. Shared by the
-/// rect math and the paint so the two cannot drift.
-pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Vec<RosterRow> {
-    // Falls back to the tree-level roster only when the workspace has
-    // none — same precedence the top bar and wheel disc apply.
-    let roster: &[crate::shell::state::Collaborator] = match tree.active_workspace() {
-        Some(ws) if !ws.collaborators.is_empty() => &ws.collaborators,
-        _ => &tree.collaborators,
-    };
-    // Settled over the room rather than per row: `roster_colors` honours
-    // an explicit `cursor_color` and moves anyone who would collide, so
-    // a row avatar matches that peer's cursor and top-bar chip.
-    let colors = crate::shell::state::roster_colors(roster);
-    let mut rows: Vec<RosterRow> = roster
-        .iter()
-        .map(|p| {
-            let (r, g, b) = colors
-                .get(&p.id)
-                .copied()
-                .unwrap_or_else(|| ui::presence::user_color(&p.id));
-            RosterRow {
-                initial: roster_initial(&p.name),
-                label: p.name.clone(),
-                color: Color::from_rgb8(r, g, b),
-                is_agent: false,
-                role: p.role_id.clone(),
-                invited: p.invited,
-            }
-        })
-        .collect();
-    if let Some(ws) = tree.active_workspace() {
-        for (agent, role) in ws.agent_members() {
-            // The label is the principal itself — agents have no display
-            // name yet, and this is the string you would revoke.
-            let (r, g, b) = ui::presence::user_color(&agent);
-            rows.push(RosterRow {
-                initial: roster_initial(&agent),
-                label: agent,
-                color: Color::from_rgb8(r, g, b),
-                is_agent: true,
-                // The verb on the admitting capability: an agent's
-                // authority is nothing but that grant.
-                role: Some(crate::shell::state::role_label(role).to_string()),
-                // Admitted by grant, so there is nothing to redeem.
-                invited: false,
-            });
-        }
-    }
-    rows
-}
-
-/// The avatar letter for a roster row.
-fn roster_initial(name: &str) -> char {
-    name.chars().next().map_or('•', |c| c.to_ascii_uppercase())
-}
-
 /// The kind chips a picker opened by "give me a new window" starts lit.
 ///
 /// Both kinds are programs the user can start; they are separate chips
@@ -7903,11 +7712,32 @@ impl ShellOverlayHost {
             .draw(self.rect, scene, transform, text_renderer, theme);
 
         if flags.collaborators {
-            self.draw_collaborators(scene, transform, text_renderer, theme);
+            let (rows, unavailable) = self.chrome.as_ref().map_or_else(
+                || (Vec::new(), None),
+                |chrome| {
+                    let state = chrome.borrow();
+                    (
+                        collaborator_roster_rows(&state.tree()),
+                        state.collab_unavailable.clone(),
+                    )
+                },
+            );
+            let may_invite = self.may_invite_here();
+            self.collaborators_overlay.draw(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &CollaboratorsModel {
+                    host: self.rect,
+                    rows: &rows,
+                    unavailable: unavailable.as_deref(),
+                    may_invite,
+                },
+                self.last_cursor,
+            );
         } else {
-            self.collab_activity_row_rect = Rect::ZERO;
-            self.collab_invite_row_rect = Rect::ZERO;
-            self.collab_join_row_rect = Rect::ZERO;
+            self.collaborators_overlay.clear();
         }
 
         // Above the dropdowns, below the palette (which must stay reachable).
@@ -11245,324 +11075,6 @@ impl ShellOverlayHost {
     }
 
     /// Collaborators dropdown: a peer-roster popover anchored under the
-    /// top-right avatar stack. Each row shows an indigo-filled initial
-    /// circle + the peer's name; empty rosters show a "No peers" hint so
-    /// the dropdown still reads as "here are the people" rather than
-    /// "something broken".
-    fn draw_collaborators(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.collaborators_rect();
-        let card = RoundedRect::from_rect(rect, f64::from(tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            panel_surface(theme, POPOVER_SURFACE_ALPHA),
-            None,
-            &card,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &card,
-        );
-        text_renderer.draw_text(
-            scene,
-            "Collaborators",
-            tokens.typography.scale.lg,
-            colors.text_primary,
-            transform.pre_translate((rect.x0 + 16.0, rect.y0 + 16.0).into()),
-            None,
-        );
-
-        // Avatar colour matches that identity's cursor and top-bar chip.
-        let rows: Vec<RosterRow> = self
-            .chrome
-            .as_ref()
-            .map(|c| collaborator_roster_rows(&c.borrow().tree()))
-            .unwrap_or_default();
-
-        // A broken session says so regardless of roster state — a
-        // populated one can list a member whose capability outlived a
-        // dead broker. Drawn above whatever is listed, never instead of it.
-        let unavailable = self
-            .chrome
-            .as_ref()
-            .and_then(|c| c.borrow().collab_unavailable.clone());
-        if let Some(reason) = &unavailable {
-            text_renderer.draw_text(
-                scene,
-                reason,
-                tokens.typography.scale.sm,
-                colors.semantic.danger,
-                transform.pre_translate((rect.x0 + 16.0, rect.y0 + 56.0).into()),
-                None,
-            );
-        }
-
-        if rows.is_empty() {
-            if unavailable.is_none() {
-                text_renderer.draw_text(
-                    scene,
-                    "No peers connected",
-                    tokens.typography.scale.sm,
-                    colors.text_dim,
-                    transform.pre_translate((rect.x0 + 16.0, rect.y0 + 56.0).into()),
-                    None,
-                );
-            }
-            self.draw_collaborators_footer(scene, transform, text_renderer, theme);
-            return;
-        }
-
-        let list_top = if unavailable.is_some() {
-            rect.y0 + 48.0 + COLLAB_WARNING_H
-        } else {
-            rect.y0 + 48.0
-        };
-        for (i, row) in rows.iter().enumerate() {
-            let row_y = list_top + usize_to_f64_lossy(i) * 36.0;
-            self.draw_collaborators_row(scene, transform, text_renderer, theme, row, row_y);
-        }
-        self.draw_collaborators_footer(scene, transform, text_renderer, theme);
-    }
-
-    /// One roster row: avatar (or the dashed "empty seat" ring for an
-    /// invite), name, optional "agent" tag, and the trailing role/
-    /// "Invited" badge. Split out of [`Self::draw_collaborators`] so the
-    /// list body isn't buried in the popover chrome around it.
-    fn draw_collaborators_row(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        row: &RosterRow,
-        row_y: f64,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.collaborators_rect();
-        let center = Point::new(rect.x0 + 16.0 + 12.0, row_y + 14.0);
-        let avatar_rect = Rect::new(
-            center.x - 11.0,
-            center.y - 11.0,
-            center.x + 11.0,
-            center.y + 11.0,
-        );
-        // Same chip/place/order in every state, so a join reads as
-        // one row filling in, not a reshuffle. An invitation draws
-        // the dashed "empty seat" ring the top bar uses — a faded
-        // filled chip would read as a rendering fault instead.
-        if row.invited {
-            let seat = vello::kurbo::Circle::new(center, 11.0);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
-                transform,
-                row.color.multiply_alpha(INVITED_ROW_ALPHA),
-                None,
-                &seat,
-            );
-            // Their own initial, not a `+` — the seat belongs to a
-            // named person.
-            let initial = row.initial.to_string();
-            let size = 22.0_f32 * 0.4;
-            let (iw, ih) =
-                text_renderer.measure_weighted(&initial, size, None, TextWeight::Semibold);
-            text_renderer.draw_text_weighted(
-                scene,
-                &initial,
-                size,
-                colors.text_dim,
-                transform.pre_translate(
-                    (
-                        center.x - f64::from(iw) / 2.0,
-                        center.y - f64::from(ih) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-                TextWeight::Semibold,
-            );
-        } else {
-            ui::widget::Avatar::draw_at(
-                scene,
-                transform,
-                avatar_rect,
-                &row.initial.to_string(),
-                row.color,
-                theme,
-                text_renderer,
-            );
-        }
-        text_renderer.draw_text(
-            scene,
-            &row.label,
-            tokens.typography.scale.sm,
-            if row.invited {
-                colors.text_dim
-            } else {
-                colors.text_primary
-            },
-            transform.pre_translate((rect.x0 + 44.0, row_y + 7.0).into()),
-            None,
-        );
-        // Suppressed when the label already carries the word, or it
-        // would read "agent agent".
-        if row.is_agent && !row.label.eq_ignore_ascii_case("agent") {
-            text_renderer.draw_text(
-                scene,
-                "agent",
-                tokens.typography.scale.xs,
-                colors.text_dim,
-                transform.pre_translate((rect.x1 - 56.0, row_y + 9.0).into()),
-                None,
-            );
-        }
-        // "Invited" wins over role — role isn't the question for
-        // somebody who isn't here yet.
-        let sub = if row.invited {
-            Some(INVITED_TAG.to_string())
-        } else {
-            row.role.clone()
-        };
-        if let Some(sub) = sub {
-            let (rw, _) = text_renderer.measure_weighted(
-                &sub,
-                tokens.typography.scale.xs,
-                None,
-                TextWeight::Regular,
-            );
-            text_renderer.draw_text(
-                scene,
-                &sub,
-                tokens.typography.scale.xs,
-                colors.text_dim,
-                transform.pre_translate((rect.x1 - 16.0 - f64::from(rw), row_y + 21.0).into()),
-                None,
-            );
-        }
-    }
-
-    /// "Room activity" row at the foot of the collaborator dropdown — the
-    /// visible counterpart to the palette's `Show room activity`, for
-    /// someone who doesn't yet know the command exists.
-    fn draw_collaborators_footer(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-
-        // Invite is filled (the usual reason this surface is opened);
-        // Join is outlined — the other machine's half of the gesture.
-        let (invite, join) = self.collaborators_action_row_rects();
-        self.collab_invite_row_rect = invite;
-        self.collab_join_row_rect = join;
-        if invite.area() > 0.0 {
-            let btn_size = tokens.typography.scale.sm;
-            for (rect, label, filled) in [(invite, "Invite", true), (join, "Join", false)] {
-                let shape = RoundedRect::from_rect(rect, f64::from(tokens.radii.sm));
-                if filled {
-                    scene.fill(Fill::NonZero, transform, colors.accent[5], None, &shape);
-                } else {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        colors.surface_white_5,
-                        None,
-                        &shape,
-                    );
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(1.0),
-                        transform,
-                        colors.border_standard,
-                        None,
-                        &shape,
-                    );
-                }
-                let (tw, th) =
-                    text_renderer.measure_weighted(label, btn_size, None, TextWeight::Medium);
-                text_renderer.draw_text_weighted(
-                    scene,
-                    label,
-                    btn_size,
-                    colors.text_primary,
-                    transform.pre_translate(
-                        (
-                            rect.center().x - f64::from(tw) / 2.0,
-                            rect.center().y - f64::from(th) / 2.0,
-                        )
-                            .into(),
-                    ),
-                    None,
-                    TextWeight::Medium,
-                );
-            }
-        }
-
-        let row = self.collaborators_activity_row_rect();
-        self.collab_activity_row_rect = row;
-        let sep = vello::kurbo::Line::new(
-            Point::new(row.x0, row.y0 - 4.0),
-            Point::new(row.x1, row.y0 - 4.0),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &sep,
-        );
-        let shape = RoundedRect::from_rect(row, f64::from(tokens.radii.sm));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surface_white_5,
-            None,
-            &shape,
-        );
-        let size = tokens.typography.scale.sm;
-        let (_, lh) = text_renderer.measure("Room activity", size, None);
-        text_renderer.draw_text(
-            scene,
-            "Room activity",
-            size,
-            colors.text_primary,
-            transform.pre_translate((row.x0 + 12.0, row.center().y - f64::from(lh) / 2.0).into()),
-            None,
-        );
-        // A right-pointing guillemet reads as "opens a surface" without
-        // reaching for a pictographic emoji.
-        let chevron = "\u{203a}";
-        let (cw, ch) = text_renderer.measure(chevron, size, None);
-        text_renderer.draw_text(
-            scene,
-            chevron,
-            size,
-            colors.text_dim,
-            transform.pre_translate(
-                (
-                    row.x1 - 12.0 - f64::from(cw),
-                    row.center().y - f64::from(ch) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-        );
-    }
-
     /// Slider bar rect for the i-th quick-settings slider (0 = Brightness,
     /// 1 = Volume), with the label baseline `y`, so draw and hit-test
     /// share one source of truth.
@@ -14243,11 +13755,11 @@ mod tests {
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
 
-        let row = h.host.collab_activity_row_rect;
+        let row = h.host.collaborators_overlay.activity_rect();
         assert!(row.area() > 0.0, "the footer row painted a hit target");
         assert_eq!(
             row,
-            h.host.collaborators_activity_row_rect(),
+            h.host.collaborators_overlay.activity_rect(),
             "the cached hit rect is the one that was drawn"
         );
 
@@ -14272,12 +13784,12 @@ mod tests {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
-        assert!(h.host.collab_activity_row_rect.area() > 0.0);
+        assert!(h.host.collaborators_overlay.activity_rect().area() > 0.0);
 
         h.chrome.borrow_mut().overlays.collaborators = false;
         paint(&mut h);
         assert_eq!(
-            h.host.collab_activity_row_rect,
+            h.host.collaborators_overlay.activity_rect(),
             Rect::ZERO,
             "a stale footer rect is a click target the user cannot see"
         );
@@ -14310,7 +13822,7 @@ mod tests {
             invite.x1 <= join.x0,
             "the two buttons do not overlap: {invite:?} / {join:?}"
         );
-        let panel = h.host.collaborators_rect();
+        let panel = h.host.collaborators_overlay.panel_rect();
         for (name, r) in [("Invite", invite), ("Join", join)] {
             assert!(
                 panel.contains(r.center()) && panel.contains(r.origin()),
@@ -14318,7 +13830,7 @@ mod tests {
             );
         }
         assert!(
-            invite.y1 <= h.host.collaborators_activity_row_rect().y0,
+            invite.y1 <= h.host.collaborators_overlay.activity_rect().y0,
             "the actions band sits above the Room activity row rather than over it"
         );
     }
@@ -14424,7 +13936,7 @@ mod tests {
 
     /// A click anywhere inside the popover asks the network for nothing.
     fn assert_no_peer_sync_work_from_a_click_in_the_panel(h: &mut Harness) {
-        let panel = h.host.collaborators_rect();
+        let panel = h.host.collaborators_overlay.panel_rect();
         let mods = Modifiers::default();
         let _ = pump(h, &cursor_moved_at(panel.center()), mods);
         let _ = pump(h, &left_button_pressed(), mods);
