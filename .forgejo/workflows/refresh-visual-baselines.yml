@@ -18,6 +18,11 @@ env:
   SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
   SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
   WGPU_BACKEND: vulkan
+  # Match required checks exactly. Without an adapter selector wgpu chooses
+  # from whatever the particular runner exposes, so a successful refresh can
+  # write baselines that every other runner correctly rejects.
+  VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+  WGPU_ADAPTER_NAME: llvmpipe
 
 jobs:
   refresh:
@@ -36,6 +41,7 @@ jobs:
 
       - name: Prepare headless runtime and compiler cache
         run: |
+          test -r "$VK_DRIVER_FILES"
           mkdir -p /tmp/qos-xdg-runtime
           chmod 700 /tmp/qos-xdg-runtime
           bash tools/ci-sccache.sh prepare

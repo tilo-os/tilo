@@ -25,6 +25,11 @@ env:
   RUSTFLAGS: "-D warnings"
   SCCACHE_S3_KEY_PREFIX: quickdesktop/v1
   WGPU_BACKEND: vulkan
+  # Every runner may expose a different physical adapter. Goldens are rendered
+  # with Mesa's CPU Vulkan driver, so make all headless GPU tests use that same
+  # adapter and fail instead of silently selecting runner hardware.
+  VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+  WGPU_ADAPTER_NAME: llvmpipe
   # Software-Vulkan goldens are intentionally exercised by nightly.yml after
   # its parallel suite has drained. Under the affected-package shards their
   # atomic rasterisation changes with runner load, producing repeatable false
@@ -109,6 +114,7 @@ jobs:
 
       - name: Prepare headless runtime and compiler cache
         run: |
+          test -r "$VK_DRIVER_FILES"
           mkdir -p /tmp/qos-xdg-runtime
           chmod 700 /tmp/qos-xdg-runtime
           bash tools/ci-sccache.sh prepare
