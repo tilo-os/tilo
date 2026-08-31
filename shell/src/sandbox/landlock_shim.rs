@@ -106,29 +106,28 @@ impl ShimArgs {
         let mut saw_separator = false;
         let mut command = Vec::new();
 
-        while i < args.len() {
-            let arg = &args[i];
+        while let Some(arg) = args.get(i) {
             match arg.as_str() {
                 "--" => {
                     saw_separator = true;
-                    command.extend_from_slice(&args[i + 1..]);
+                    command.extend_from_slice(args.get(i.saturating_add(1)..).unwrap_or(&[]));
                     break;
                 }
                 "--net-restricted" => net_restricted = true,
                 "--ro" | "--rw" => {
                     let value = args
-                        .get(i + 1)
+                        .get(i.saturating_add(1))
                         .ok_or_else(|| ShimParseError::DanglingValue(arg.clone()))?;
                     if arg == "--ro" {
                         ro.push(PathBuf::from(value));
                     } else {
                         rw.push(PathBuf::from(value));
                     }
-                    i += 1;
+                    i = i.saturating_add(1);
                 }
                 _ => {}
             }
-            i += 1;
+            i = i.saturating_add(1);
         }
 
         if !saw_separator {
@@ -212,7 +211,7 @@ pub struct FsRule {
 pub fn access_plan(ro: &[PathBuf], rw: &[PathBuf], abi: ABI) -> Vec<FsRule> {
     let read = AccessFs::from_read(abi);
     let all = AccessFs::from_all(abi);
-    let mut plan = Vec::with_capacity(ro.len() + rw.len());
+    let mut plan = Vec::with_capacity(ro.len().saturating_add(rw.len()));
     for p in ro {
         plan.push(FsRule {
             path: p.clone(),

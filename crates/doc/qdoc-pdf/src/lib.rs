@@ -126,9 +126,15 @@ impl Page {
 
 /// The pagination/rendering cursor. Owns the writer (so images can be
 /// added as `XObjects` on demand) and the running list of pages.
+///
+/// `first_page` is split out from `later_pages` (rather than one `Vec`
+/// with a never-empty invariant) so "there is always a current page" is a
+/// fact of the type, not a runtime check [`Layout::cur`] would otherwise
+/// have to assert.
 struct Layout {
     writer: PdfWriter,
-    pages: Vec<Page>,
+    first_page: Page,
+    later_pages: Vec<Page>,
     /// Y cursor on the current page (PDF coords: larger = higher). Text
     /// draws at the baseline, so the cursor tracks the *top* of the next
     /// line and subtracts ascent when placing.
@@ -138,22 +144,21 @@ struct Layout {
 
 impl Layout {
     fn new() -> Self {
-        let mut l = Layout {
+        Layout {
             writer: PdfWriter::new(),
-            pages: Vec::new(),
+            first_page: Page::new(),
+            later_pages: Vec::new(),
             y: CONTENT_TOP,
             next_img: 0,
-        };
-        l.new_page();
-        l
+        }
     }
 
     fn cur(&mut self) -> &mut Page {
-        self.pages.last_mut().expect("always at least one page")
+        self.later_pages.last_mut().unwrap_or(&mut self.first_page)
     }
 
     fn new_page(&mut self) {
-        self.pages.push(Page::new());
+        self.later_pages.push(Page::new());
         self.y = CONTENT_TOP;
     }
 
@@ -217,6 +222,11 @@ fn render_block(layout: &mut Layout, snap: &DocSnapshot, block: &BlockView) {
 /// Heading level (1..=6), defaulting to 1 if absent/out of range.
 fn heading_level(block: &BlockView) -> u8 {
     match block.attrs.get("level") {
+        // Clamped to 1..=6 just above, so this always fits `u8`.
+        #[allow(
+            clippy::cast_sign_loss,
+            reason = "clamped to 1..=6 above, so the value is always positive and fits u8"
+        )]
         Some(AttrVal::Int(n)) => (*n).clamp(1, 6) as u8,
         _ => 1,
     }
@@ -260,7 +270,14 @@ fn render_paragraph(layout: &mut Layout, block: &BlockView) {
 
 fn render_list_item(layout: &mut Layout, block: &BlockView) {
     let level = match block.attrs.get("level") {
-        Some(AttrVal::Int(n)) => (*n).max(0) as f32,
+        // `level` comes from the document; clamp to a depth no real list
+        // nests past, so a corrupt/hostile attribute can't push the
+        // indent (and this cast) to an absurd value.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "clamped to a small range just above; precision loss is impossible in that range"
+        )]
+        Some(AttrVal::Int(n)) => (*n).clamp(0, 20) as f32,
         _ => 0.0,
     };
     let ordered = matches!(block.attrs.get("ordered"), Some(AttrVal::Bool(true)));
@@ -335,6 +352,13 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
             .collect()
     } else if !block.children.is_empty() {
         let cols = match block.attrs.get("cols") {
+            // `.max(1)` already rules out sign loss; an oversized `cols`
+            // just makes `chunks` below yield one chunk, not a bad layout.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "cols only sizes a chunks() call; an oversized value degrades to one chunk, not a hazard"
+            )]
             Some(AttrVal::Int(n)) => (*n).max(1) as usize,
             _ => block.children.len().max(1),
         };
@@ -355,6 +379,13 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
         .max()
         .unwrap_or(1)
         .max(1);
+    // A column count feeding a display-only width ratio; precision loss
+    // is invisible well before a table could plausibly have this many
+    // columns.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "ncols is a column count feeding a display ratio; no real table approaches f32's precision limit"
+    )]
     let col_w = TEXT_W / ncols as f32;
     let row_h = BODY_LEADING + 2.0 * TABLE_PAD;
 
@@ -366,6 +397,13 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
         let bottom = top - row_h;
         // Cell grid + text.
         for (ci, cell) in row.iter().enumerate() {
+            // A column index feeding a display-only x-offset; precision
+            // loss is invisible well before a table could plausibly have
+            // this many columns.
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "ci is a column index feeding a display offset; no real table approaches f32's precision limit"
+            )]
             let x = MARGIN + ci as f32 * col_w;
             layout.cur().ops.push(Op::Rect {
                 x,
@@ -385,6 +423,13 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
         }
         // Outline any missing trailing cells so the grid stays rectangular.
         for ci in row.len()..ncols {
+            // A column index feeding a display-only x-offset; precision
+            // loss is invisible well before a table could plausibly have
+            // this many columns.
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "ci is a column index feeding a display offset; no real table approaches f32's precision limit"
+            )]
             let x = MARGIN + ci as f32 * col_w;
             layout.cur().ops.push(Op::Rect {
                 x,
@@ -420,6 +465,12 @@ fn decode_image(bytes: &[u8]) -> Result<DecodedImage, DocPdfError> {
 
 fn place_image(layout: &mut Layout, img: DecodedImage) {
     // Scale to text width, preserving aspect; cap height to one page's content.
+    // A display-only aspect ratio; no real decoded image dimension
+    // approaches f32's precision limit.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "aspect ratio is display-only; no real image dimension approaches f32's precision limit"
+    )]
     let aspect = img.height as f32 / img.width.max(1) as f32;
     let w = TEXT_W;
     let mut h = w * aspect;
@@ -434,7 +485,8 @@ fn place_image(layout: &mut Layout, img: DecodedImage) {
 
     // Register the XObject in the writer and reference it on this page.
     let name = format!("Im{}", layout.next_img);
-    layout.next_img += 1;
+    // Bounded by the number of images in one document — nowhere near `usize::MAX`.
+    layout.next_img = layout.next_img.saturating_add(1);
     let compressed = pdf::flate(&img.rgb);
     let dict = format!(
         " /Type /XObject /Subtype /Image /Width {} /Height {} \
@@ -604,7 +656,8 @@ fn finish(mut layout: Layout) -> Vec<u8> {
     let pages_obj = layout.writer.reserve();
 
     // Take ownership of the page list so we can borrow the writer mutably.
-    let pages = std::mem::take(&mut layout.pages);
+    let mut pages = vec![std::mem::replace(&mut layout.first_page, Page::new())];
+    pages.append(&mut layout.later_pages);
     let mut page_objs: Vec<ObjId> = Vec::with_capacity(pages.len());
 
     for page in pages {
@@ -617,9 +670,12 @@ fn finish(mut layout: Layout) -> Vec<u8> {
         // Per-page resources: fonts always; XObjects when images were placed.
         let mut xobjects = String::new();
         if !page.images.is_empty() {
+            use std::fmt::Write as _;
             xobjects.push_str(" /XObject << ");
             for (name, obj) in &page.images {
-                xobjects.push_str(&format!("/{} {} 0 R ", name, obj.0));
+                // Writing to a `String` cannot fail; discard the always-`Ok`
+                // result rather than allocating a temporary just to push it.
+                let _ = write!(xobjects, "/{} {} 0 R ", name, obj.0);
             }
             xobjects.push_str(">>");
         }
@@ -627,6 +683,13 @@ fn finish(mut layout: Layout) -> Vec<u8> {
             "<< /Font << /F1 {} 0 R /F2 {} 0 R >>{} >>",
             helv.0, helv_bold.0, xobjects
         );
+        // `PAGE_W`/`PAGE_H` are fixed page-geometry constants (612.0,
+        // 792.0), not derived from any document input, so this truncation
+        // is provably exact.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "PAGE_W/PAGE_H are fixed whole-number constants, not document-derived"
+        )]
         let page_body = format!(
             "<< /Type /Page /Parent {} 0 R /MediaBox [0 0 {} {}] \
              /Resources {} /Contents {} 0 R >>",

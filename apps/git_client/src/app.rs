@@ -887,6 +887,10 @@ impl GitClientApp {
 
     /// Draw the repo name, branch pill and pending-changes/error subtitle,
     /// clamped so a long name ellipsises before the tab group.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
     fn draw_appbar_title(
         &self,
         scene: &mut Scene,
@@ -963,6 +967,10 @@ impl GitClientApp {
 
     /// Draw the tab-group pill background and each tab, recording its hit
     /// rect in `self.tab_rects`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
     fn draw_appbar_tab_group(
         &mut self,
         scene: &mut Scene,
@@ -1623,14 +1631,13 @@ impl GitClientApp {
         let cx = self.rect.x0 + (self.rect.width() - cw) / 2.0;
         let cy = self.rect.y0 + (self.rect.height() * 0.30).max(80.0);
 
-        let y = self.draw_open_intro(scene, tr, t, theme, cx, cw, cy);
+        let y = Self::draw_open_intro(scene, tr, t, theme, cx, cw, cy);
         self.draw_open_path_field(scene, tr, t, theme, presence, cx, cw, y);
     }
 
     /// Draw the branch-glyph mark, title and subtitle above the path field.
     /// Returns the y position the path field should start at.
     fn draw_open_intro(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         t: Affine,
@@ -2651,7 +2658,9 @@ mod tests {
             .unwrap();
         let palette_action = match &spec.input {
             qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("diff-layout is an immediate action"),
+            qos_actions::ActionInput::Prompted { .. } => {
+                panic!("diff-layout is an immediate action")
+            }
         };
 
         // Drive the real app-bar segmented control.

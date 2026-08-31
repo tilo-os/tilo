@@ -303,7 +303,12 @@ fn decode_hex_32(value: &str) -> io::Result<[u8; 32]> {
     }
     let mut out = [0_u8; 32];
     for (index, slot) in out.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+        let start = index.saturating_mul(2);
+        let end = start.saturating_add(2);
+        let chunk = value
+            .get(start..end)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid identity hex"))?;
+        *slot = u8::from_str_radix(chunk, 16)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid identity hex"))?;
     }
     Ok(out)

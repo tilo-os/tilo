@@ -164,7 +164,7 @@ fn build_workspace_filter() -> Result<SeccompFilter, SeccompError> {
 /// explicitly in little-endian keeps this safe Rust and survives any
 /// future struct-shape change in seccompiler without UB.
 fn bpf_program_to_bytes(prog: &BpfProgram) -> Vec<u8> {
-    let mut out = Vec::with_capacity(prog.len() * 8);
+    let mut out = Vec::with_capacity(prog.len().saturating_mul(8));
     for stmt in prog {
         out.extend_from_slice(&stmt.code.to_ne_bytes());
         out.push(stmt.jt);

@@ -26,7 +26,7 @@ fn rss_kb() -> u64 {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     let page_kb = 4; // 4 KiB pages on x86_64
-    pages * page_kb
+    pages.saturating_mul(page_kb)
 }
 
 #[test]

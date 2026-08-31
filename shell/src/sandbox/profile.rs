@@ -371,16 +371,22 @@ impl SandboxProfile {
         // (shim + subcommand + 2 args per ro/rw path + flag + `--`), and
         // the command tail.
         let mut argv: Vec<String> = Vec::with_capacity(
-            self.binds_ro.len() * 3
-                + self.binds_rw.len() * 3
-                + self.env.len() * 3
-                + 8
-                + if landlock_shim.is_some() {
-                    3 + ro_targets.len() * 2 + rw_targets.len() * 2
+            self.binds_ro
+                .len()
+                .saturating_mul(3)
+                .saturating_add(self.binds_rw.len().saturating_mul(3))
+                .saturating_add(self.env.len().saturating_mul(3))
+                .saturating_add(8)
+                .saturating_add(if landlock_shim.is_some() {
+                    ro_targets
+                        .len()
+                        .saturating_mul(2)
+                        .saturating_add(rw_targets.len().saturating_mul(2))
+                        .saturating_add(3)
                 } else {
                     0
-                }
-                + command.len(),
+                })
+                .saturating_add(command.len()),
         );
 
         for (host, sandbox) in self.binds_ro {
