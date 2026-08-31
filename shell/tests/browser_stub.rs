@@ -24,7 +24,7 @@ fn browser_stub_advertises_itself_as_browser_app() {
     assert_eq!(w.app_title(), "Browser");
     match w.app_icon() {
         IconDescriptor::Glyph(g) => assert_eq!(g, "󰖟"),
-        _ => panic!("glyph expected"),
+        IconDescriptor::Named(name) => panic!("glyph expected, got Named({name:?})"),
     }
     assert_eq!(w.permission_hint(), Some(AppKind::Browser));
 }
@@ -39,7 +39,9 @@ fn browser_stub_open_external_invokes_runner_with_url() {
 
     w.open_external("https://example.com");
 
-    let recorded = calls.lock().unwrap();
-    assert_eq!(recorded.as_slice(), &["https://example.com".to_string()]);
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        &["https://example.com".to_string()]
+    );
     assert_eq!(w.last_url(), Some("https://example.com"));
 }

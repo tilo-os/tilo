@@ -2176,7 +2176,7 @@ impl MapsApp {
             clip
         };
 
-        let painted_tiles = self.draw_map_layers(scene, t, tr, theme, pal, proj, clip, map_clip);
+        let painted_tiles = self.draw_map_layers(scene, t, tr, theme, &pal, proj, clip, map_clip);
         self.draw_panel_and_scale(scene, t, tr, theme, overlay, clip, painted_tiles);
         self.draw_chrome(scene, t, tr, theme);
     }
@@ -2195,7 +2195,7 @@ impl MapsApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        pal: MapPalette,
+        pal: &MapPalette,
         proj: Projection,
         clip: Rect,
         map_clip: Rect,
@@ -2211,16 +2211,16 @@ impl MapsApp {
             &mut self.tiles,
             &self.model,
             view_center,
-            &pal,
+            pal,
         );
         if !painted_tiles {
             if self.basemap.is_empty() {
                 // Live first-run / offline gap: no imagery and no vector
                 // cartography yet. Draw a reference grid so the map reads as a
                 // map rather than a black void, with a loading affordance.
-                canvas::draw_grid_substrate(scene, t, clip, &self.model, view_center, &pal);
+                canvas::draw_grid_substrate(scene, t, clip, &self.model, view_center, pal);
             } else {
-                canvas::draw_basemap(scene, t, clip, &proj, &self.basemap, &pal);
+                canvas::draw_basemap(scene, t, clip, &proj, &self.basemap, pal);
             }
         }
         // Traffic overlay: coloured congestion over the roads, under the active
@@ -2228,10 +2228,10 @@ impl MapsApp {
         // nothing here — the honest "No traffic data" pill is drawn with the
         // chrome below.
         if self.map_controls.traffic_enabled() {
-            canvas::draw_traffic(scene, t, &proj, &self.traffic, &pal);
+            canvas::draw_traffic(scene, t, &proj, &self.traffic, pal);
         }
         if let Some(route) = &self.model.route {
-            canvas::draw_route(scene, t, &proj, route, &pal);
+            canvas::draw_route(scene, t, &proj, route, pal);
         }
         // Public-transport itinerary: the selected journey's legs draw on the
         // map (mode-coloured lines + transfer pucks) when Transit is the active
@@ -2239,7 +2239,7 @@ impl MapsApp {
         if self.model.mode.is_transit()
             && let Some(j) = self.model.transit.get(self.model.transit_choice)
         {
-            canvas::draw_transit(scene, t, &proj, j, theme, &pal, clip);
+            canvas::draw_transit(scene, t, &proj, j, theme, pal, clip);
         }
         // Live POI marker layer (Overpass) — our own themed category markers
         // over the basemap, decluttered and under the user's saved/selected
@@ -2254,10 +2254,10 @@ impl MapsApp {
             &visible_pois,
             self.selected_poi.as_deref(),
             theme,
-            &pal,
+            pal,
             map_clip,
         );
-        canvas::draw_markers(scene, t, tr, &proj, &self.model, theme, &pal, map_clip);
+        canvas::draw_markers(scene, t, tr, &proj, &self.model, theme, pal, map_clip);
         painted_tiles
     }
 

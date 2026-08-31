@@ -28,7 +28,6 @@ use winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
-use ui::text_selection::Selection;
 use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonFace, CrossStripDetach, GroupRow, OutputSpan, PROMPT_HEIGHT, PermissionPrompt,
@@ -37,6 +36,10 @@ use ui::widget::{
 use ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
+use crate::shell::collaborators_overlay::{
+    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay,
+};
+pub use crate::shell::collaborators_overlay::{RosterRow, collaborator_roster_rows};
 use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
 use crate::shell::notification::NotificationStack;
@@ -309,14 +312,9 @@ pub struct ShellOverlayHost {
     /// Whether the sheet was open last frame, to invalidate derived rows
     /// on the rising edge.
     room_activity_was_open: bool,
-    /// Hit rect of the "Room activity" row in the collaborator dropdown.
-    /// Zeroed whenever the dropdown is not painted.
-    collab_activity_row_rect: Rect,
-    /// Hit rects of the Invite/Join buttons in the collaborator dropdown.
-    /// Also zeroed when the local user may not invite, so a button that
-    /// isn't painted can't be clicked.
-    collab_invite_row_rect: Rect,
-    collab_join_row_rect: Rect,
+    /// Collaborator roster popover, including its painted geometry and hit
+    /// targets. The host only applies its semantic actions to chrome state.
+    collaborators_overlay: CollaboratorsOverlay,
     /// Complete wireless projection picker, including controller, editor,
     /// animation, painted geometry, and event routing.
     projection_overlay: ProjectionOverlay,
@@ -742,24 +740,6 @@ pub(crate) const MODAL_OPEN_ANIM_MS: u64 = 220;
 // chrome surfaces are opaque and scrims carry the depth instead.
 // Centralised so `shell_chrome_test` can pin the numeric values.
 
-/// Height of the "Room activity" row at the foot of the collaborator
-/// dropdown, including the separator above it.
-const COLLAB_FOOTER_H: f64 = 40.0;
-/// Height reserved for the broker-unavailable line when the dropdown
-/// also has participants to list beneath it.
-const COLLAB_WARNING_H: f64 = 24.0;
-/// Height of the Invite / Join band above the "Room activity" row —
-/// inviting and joining change who's in the room, so they belong on the
-/// surface that shows it, not only in a palette command.
-const COLLAB_ACTIONS_H: f64 = 40.0;
-
-/// Label for a row whose person has been named but has not arrived.
-const INVITED_TAG: &str = "invited";
-
-/// Alpha of an invited row's dashed seat-ring, in that peer's own
-/// colour, faded so it reads as pending rather than disabled.
-const INVITED_ROW_ALPHA: f32 = 0.55;
-
 /// Alpha of the collaborator and `QuickSettings` popover surfaces.
 /// Opaque, deferring to the toolkit's chrome constant so a popover can't
 /// drift from the bar it hangs off — the pinned Vello has no backdrop
@@ -937,9 +917,7 @@ impl ShellOverlayHost {
             room_activity: crate::shell::room_activity::RoomActivityPane::new(),
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
-            collab_activity_row_rect: Rect::ZERO,
-            collab_invite_row_rect: Rect::ZERO,
-            collab_join_row_rect: Rect::ZERO,
+            collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: ProjectionOverlay::default(),
         }
     }
@@ -1371,10 +1349,10 @@ impl ShellOverlayHost {
             match action {
                 PeerSyncAction::IssueInvite => {
                     let request = self.peer_sync_overlay.issue_invite_request();
-                    self.run_peer_sync_request(&request, false);
+                    self.run_peer_sync_request(request, false);
                 }
                 PeerSyncAction::IssueInviteFor { name, copy } => {
-                    self.run_peer_sync_request(&PeerSyncRequest::IssueInviteFor(name), copy);
+                    self.run_peer_sync_request(PeerSyncRequest::IssueInviteFor(name), copy);
                 }
                 PeerSyncAction::PromptInvite => self.peer_sync_overlay.prompt_invite(),
                 PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
@@ -1382,10 +1360,10 @@ impl ShellOverlayHost {
         }
     }
 
-    fn run_peer_sync_request(&mut self, request: &PeerSyncRequest, copy_result: bool) {
+    fn run_peer_sync_request(&mut self, request: PeerSyncRequest, copy_result: bool) {
         let outcome = self.peer_sync_call(request.clone());
         self.peer_sync_overlay
-            .finish_request(request, outcome, copy_result);
+            .finish_request(&request, outcome, copy_result);
     }
 
     /// Route one event to the peer-sync card, returning whether it was
@@ -1405,7 +1383,7 @@ impl ShellOverlayHost {
             .peer_sync_overlay
             .handle_event(event, modifiers, self.last_cursor);
         if let Some(request) = request {
-            self.run_peer_sync_request(&request, copy_result);
+            self.run_peer_sync_request(request, copy_result);
         }
         consumed
     }
@@ -2855,18 +2833,18 @@ impl ShellOverlayHost {
     /// Focuses one window by identity, then pans the strip to it (unlike a
     /// click on the window itself) since the rail addresses windows that may
     /// be off screen.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "st's only use is producing tree via tree_mut(); the write-guard's \
-                  lifetime is tied to st's borrow, so it can't be dropped before tree's \
-                  last use, and the block already ends right there"
-    )]
     pub fn focus_window_on_strip(&mut self, strip: StripId, group: GroupId, tab: u64) -> bool {
         self.focus_window_widget(strip, group, tab);
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
         let mut changed = false;
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "st's only use is producing tree via tree_mut(); the write-guard's \
+                      lifetime is tied to st's borrow, so it can't be dropped before tree's \
+                      last use, and the block already ends right there"
+        )]
         {
             let st = chrome.borrow_mut();
             let mut tree = st.tree_mut();
@@ -3029,13 +3007,13 @@ impl ShellOverlayHost {
     /// frame (not recomputed) — `Rect::ZERO` when closed or not permitted,
     /// so a test click on a missing button fails instead of hitting the origin.
     pub fn collaborators_action_rects_for_tests(&self) -> (Rect, Rect) {
-        (self.collab_invite_row_rect, self.collab_join_row_rect)
+        self.collaborators_overlay.action_rects()
     }
 
     /// The "Room activity" row at the foot of the same dropdown, on the
     /// same terms.
     pub fn collaborators_activity_rect_for_tests(&self) -> Rect {
-        self.collab_activity_row_rect
+        self.collaborators_overlay.activity_rect()
     }
 
     /// Revoke-button rects painted by [`Self::draw_ws_settings`] while
@@ -3170,12 +3148,6 @@ impl ShellOverlayHost {
     /// handler creates a widget-side group with no automerge access.
     /// Without this, [`Self::resync_strips_from_tree`] would see "widget
     /// has X, tree doesn't" and evict the dragged-out group.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "st's only use is producing tree via tree(); the read-guard's lifetime \
-                  is tied to st's borrow, so it can't be dropped before tree's last use, \
-                  and the block already ends right there"
-    )]
     fn harvest_widget_only_groups_into_tree(&self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -3838,13 +3810,6 @@ impl ShellOverlayHost {
     /// the focused one marked, the ones on screen lit. Reads the live
     /// [`GroupRow`] rather than the tree — visibility is a layout question,
     /// and the tree knows only order.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "sid and order are each fully chained from tree (sid resolves the active \
-                  strip, order re-reads that strip's groups); nothing to drop earlier \
-                  without cloning the tree data out for no real gain, and the block already \
-                  ends right after both are computed"
-    )]
     fn strip_rail(&self) -> ui::chrome::shell::StripRail {
         let content = Rect::new(
             self.rect.x0,
@@ -3861,6 +3826,13 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.as_ref() else {
             return empty;
         };
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "sid and order are each fully chained from tree (sid resolves the active \
+                      strip, order re-reads that strip's groups); nothing to drop earlier \
+                      without cloning the tree data out for no real gain, and the block already \
+                      ends right after both are computed"
+        )]
         let (strip_id, order) = {
             let st = chrome.borrow();
             let tree = st.tree();
@@ -3975,44 +3947,6 @@ impl ShellOverlayHost {
         self.quick_settings_rect()
     }
 
-    /// Collaborators dropdown rect — anchored to the top-right like quick-
-    /// settings but narrower and taller-when-many-peers. Height is driven by
-    /// the peer count so a roster of 8 doesn't clip.
-    fn collaborators_rect(&self) -> Rect {
-        let popover_w = 260.0_f64;
-        let members = self
-            .chrome
-            .as_ref()
-            .map_or(0, |c| collaborator_roster_rows(&c.borrow().tree()).len());
-        let rows = usize_to_f64_lossy(members.max(1));
-        // Room for the broker warning when there is one *and* rows under
-        // it — with no rows the warning sits in the space the empty-state
-        // line would have used.
-        let warning = self
-            .chrome
-            .as_ref()
-            .is_some_and(|c| c.borrow().collab_unavailable.is_some())
-            && members > 0;
-        let warning_h = if warning { COLLAB_WARNING_H } else { 0.0 };
-        // COLLAB_ACTIONS_H only when this user may actually invite —
-        // reserving it unconditionally would leave empty popover space
-        // for everyone who can't, reading as a control that failed to paint.
-        let actions_h = if self.may_invite_here() {
-            COLLAB_ACTIONS_H
-        } else {
-            0.0
-        };
-        let popover_h: f64 = 48.0 + warning_h + rows * 36.0 + 16.0 + actions_h + COLLAB_FOOTER_H;
-        let x1 = self.rect.x1 - 16.0;
-        let y0 = self.rect.y0 + 48.0;
-        Rect::new(
-            x1 - popover_w,
-            y0,
-            x1,
-            y0 + popover_h.min(420.0 + actions_h + COLLAB_FOOTER_H),
-        )
-    }
-
     /// May the local user invite into the room they're looking at? Asked
     /// through the same policy the palette's `peer.invite` row is filtered
     /// on, not re-decided here — a second opinion is a second security
@@ -4044,36 +3978,6 @@ impl ShellOverlayHost {
         CapabilityVisibility::new(workspace, actor).can_see(
             &ResourceRef::new("actions", "peer.invite"),
             &crate::shell::search::ResourceKind::Action,
-        )
-    }
-
-    /// Rects of the Invite / Join buttons, mirroring what
-    /// [`Self::draw_collaborators_footer`] paints. Both are `Rect::ZERO`
-    /// when this user may not invite, so the band is absent from the
-    /// geometry rather than present and inert.
-    fn collaborators_action_row_rects(&self) -> (Rect, Rect) {
-        if !self.may_invite_here() {
-            return (Rect::ZERO, Rect::ZERO);
-        }
-        let r = self.collaborators_rect();
-        let y0 = r.y1 - COLLAB_FOOTER_H - COLLAB_ACTIONS_H + 6.0;
-        let y1 = y0 + 28.0;
-        let gap = 8.0;
-        let half = (r.width() - 16.0 - gap) / 2.0;
-        let invite = Rect::new(r.x0 + 8.0, y0, r.x0 + 8.0 + half, y1);
-        let join = Rect::new(invite.x1 + gap, y0, r.x1 - 8.0, y1);
-        (invite, join)
-    }
-
-    /// Rect of the "Room activity" row at the foot of the collaborator
-    /// dropdown, mirroring what `draw_collaborators` paints.
-    fn collaborators_activity_row_rect(&self) -> Rect {
-        let r = self.collaborators_rect();
-        Rect::new(
-            r.x0 + 8.0,
-            r.y1 - COLLAB_FOOTER_H + 4.0,
-            r.x1 - 8.0,
-            r.y1 - 8.0,
         )
     }
 
@@ -4517,7 +4421,7 @@ impl ShellOverlayHost {
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
         let f = self.overlay_flags();
         (self.palette_visible && self.palette.get_rect().contains(p))
-            || (f.collaborators && self.collaborators_rect().contains(p))
+            || (f.collaborators && self.collaborators_overlay.contains(p))
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
             || (f.room_activity && self.room_activity.rect().contains(p))
@@ -4547,10 +4451,10 @@ impl ShellOverlayHost {
             self.rect,
             open,
         );
-        if outcome.close_requested
-            && let Some(chrome) = self.chrome.as_ref()
-        {
-            chrome.borrow_mut().overlays.projection = false;
+        if outcome.close_requested {
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().overlays.projection = false;
+            }
         }
         if outcome.invalidate
             && let Some(chrome) = self.chrome.as_ref()
@@ -4713,7 +4617,7 @@ impl ShellOverlayHost {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         handled: &mut bool,
     ) -> bool {
         if !(self.overlay_flags().room_activity
@@ -4834,7 +4738,7 @@ impl ShellOverlayHost {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -4875,7 +4779,7 @@ impl ShellOverlayHost {
     /// `DroppedFile` carries no coordinate, so route by `last_cursor`
     /// through the same hit-test click-focus uses. A drop over empty
     /// space is a no-op, not dumped into an arbitrary window.
-    fn route_dropped_file_event(&self, event: &WindowEvent, handled: &mut bool) -> bool {
+    fn route_dropped_file_event(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
         let WindowEvent::DroppedFile(path) = event else {
             return false;
         };
@@ -5198,7 +5102,7 @@ impl ShellOverlayHost {
         &mut self,
         s: &str,
         super_down: bool,
-        state: &AutoCommit,
+        state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
     ) -> bool {
@@ -5366,7 +5270,7 @@ impl ShellOverlayHost {
     /// flight consumes character/backspace/enter/navigation/clipboard
     /// keys before anything else gets a chance.
     fn handle_workspace_rename_key(
-        &self,
+        &mut self,
         logical_key: &Key,
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
@@ -5378,51 +5282,29 @@ impl ShellOverlayHost {
         if !is_editing {
             return false;
         }
+        use ui::text_selection::{
+            Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
+            prev_char_boundary, prev_word_boundary,
+        };
         let mods_state = modifiers.state();
         let shift = mods_state.shift_key();
         let ctrl = mods_state.control_key() || mods_state.super_key();
         let mut st = chrome.borrow_mut();
-        if matches!(logical_key, Key::Named(NamedKey::Enter)) {
-            drop(st);
-            chrome.borrow_mut().commit_workspace_name();
-            *handled = true;
-            return true;
-        }
         // Pulled out by value first so it isn't a separate
         // immutable borrow alongside `buf`.
         let mut sel = st.editing_workspace_name_selection;
         let Some(buf) = st.editing_workspace_name.as_mut() else {
             return true;
         };
-        let (consumed, needs_bump) =
-            Self::apply_rename_key(logical_key, ctrl, shift, buf, &mut sel);
-        if consumed {
-            st.editing_workspace_name_selection = sel;
-            if needs_bump {
-                st.bump();
-            }
-            *handled = true;
-            return true;
-        }
-        false
-    }
-
-    /// Applies one non-Enter key to the rename buffer/selection — split
-    /// out of [`Self::handle_workspace_rename_key`] to keep it under the
-    /// line limit. Returns `(consumed, needs_bump)`.
-    fn apply_rename_key(
-        logical_key: &Key,
-        ctrl: bool,
-        shift: bool,
-        buf: &mut String,
-        sel: &mut Selection,
-    ) -> (bool, bool) {
-        use ui::text_selection::{
-            next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary,
-        };
         let mut consumed = true;
         let mut needs_bump = true;
         match logical_key {
+            Key::Named(NamedKey::Enter) => {
+                drop(st);
+                chrome.borrow_mut().commit_workspace_name();
+                *handled = true;
+                return true;
+            }
             Key::Named(NamedKey::ArrowLeft) => {
                 let new_pos = if ctrl {
                     prev_word_boundary(buf, sel.cursor)
@@ -5462,12 +5344,12 @@ impl ShellOverlayHost {
                     if sel.cursor > 0 {
                         let prev = prev_char_boundary(buf, sel.cursor);
                         buf.replace_range(prev..sel.cursor, "");
-                        *sel = Selection::collapsed(prev);
+                        sel = Selection::collapsed(prev);
                     }
                 } else {
                     let r = sel.range();
                     buf.replace_range(r.clone(), "");
-                    *sel = Selection::collapsed(r.start);
+                    sel = Selection::collapsed(r.start);
                 }
             }
             Key::Named(NamedKey::Delete) => {
@@ -5479,17 +5361,53 @@ impl ShellOverlayHost {
                 } else {
                     let r = sel.range();
                     buf.replace_range(r.clone(), "");
-                    *sel = Selection::collapsed(r.start);
+                    sel = Selection::collapsed(r.start);
                 }
             }
             Key::Named(NamedKey::Space) => {
                 let r = sel.range();
                 buf.replace_range(r.clone(), " ");
-                *sel = Selection::collapsed(r.start.saturating_add(1));
+                sel = Selection::collapsed(r.start.saturating_add(1));
             }
-            Key::Character(s) if ctrl => {
-                (consumed, needs_bump) = Self::apply_rename_ctrl_char(s.as_str(), buf, sel);
-            }
+            Key::Character(s) if ctrl => match s.as_str() {
+                "a" | "A" => {
+                    sel.anchor = 0;
+                    sel.cursor = buf.len();
+                    needs_bump = false;
+                }
+                "c" | "C" => {
+                    let r = sel.range();
+                    if let Some(selected) = buf.get(r) {
+                        clipboard_copy(selected);
+                    }
+                    needs_bump = false;
+                }
+                "x" | "X" => {
+                    let r = sel.range();
+                    if r.is_empty() {
+                        needs_bump = false;
+                    } else if let Some(selected) = buf.get(r.clone()) {
+                        clipboard_copy(selected);
+                        buf.replace_range(r.clone(), "");
+                        sel = Selection::collapsed(r.start);
+                    } else {
+                        needs_bump = false;
+                    }
+                }
+                "v" | "V" => {
+                    if let Some(paste) = clipboard_paste() {
+                        let r = sel.range();
+                        buf.replace_range(r.clone(), &paste);
+                        sel = Selection::collapsed(r.start.saturating_add(paste.len()));
+                    } else {
+                        needs_bump = false;
+                    }
+                }
+                _ => {
+                    consumed = false;
+                    needs_bump = false;
+                }
+            },
             Key::Character(s) => {
                 let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
                 if filtered.is_empty() {
@@ -5498,7 +5416,7 @@ impl ShellOverlayHost {
                 } else {
                     let r = sel.range();
                     buf.replace_range(r.clone(), &filtered);
-                    *sel = Selection::collapsed(r.start.saturating_add(filtered.len()));
+                    sel = Selection::collapsed(r.start.saturating_add(filtered.len()));
                 }
             }
             _ => {
@@ -5506,56 +5424,15 @@ impl ShellOverlayHost {
                 needs_bump = false;
             }
         }
-        (consumed, needs_bump)
-    }
-
-    /// The clipboard chords (`Ctrl+A/C/X/V`) for the rename field — split
-    /// out of [`Self::apply_rename_key`] to keep it under the line limit.
-    /// Returns `(consumed, needs_bump)`.
-    fn apply_rename_ctrl_char(s: &str, buf: &mut String, sel: &mut Selection) -> (bool, bool) {
-        use ui::text_selection::{clipboard_copy, clipboard_paste};
-        let mut consumed = true;
-        let mut needs_bump = true;
-        match s {
-            "a" | "A" => {
-                sel.anchor = 0;
-                sel.cursor = buf.len();
-                needs_bump = false;
+        if consumed {
+            st.editing_workspace_name_selection = sel;
+            if needs_bump {
+                st.bump();
             }
-            "c" | "C" => {
-                let r = sel.range();
-                if let Some(selected) = buf.get(r) {
-                    clipboard_copy(selected);
-                }
-                needs_bump = false;
-            }
-            "x" | "X" => {
-                let r = sel.range();
-                if r.is_empty() {
-                    needs_bump = false;
-                } else if let Some(selected) = buf.get(r.clone()) {
-                    clipboard_copy(selected);
-                    buf.replace_range(r.clone(), "");
-                    *sel = Selection::collapsed(r.start);
-                } else {
-                    needs_bump = false;
-                }
-            }
-            "v" | "V" => {
-                if let Some(paste) = clipboard_paste() {
-                    let r = sel.range();
-                    buf.replace_range(r.clone(), &paste);
-                    *sel = Selection::collapsed(r.start.saturating_add(paste.len()));
-                } else {
-                    needs_bump = false;
-                }
-            }
-            _ => {
-                consumed = false;
-                needs_bump = false;
-            }
+            *handled = true;
+            return true;
         }
-        (consumed, needs_bump)
+        false
     }
 
     /// Outside-click close for a popover/modal, swallowing the click so
@@ -5678,51 +5555,32 @@ impl ShellOverlayHost {
     /// only once `flags.collaborators` is true, at which point every
     /// path absorbs the click.
     fn handle_shell_collaborators_click(&self, p: Point, handled: &mut bool) {
-        let invite = self.collab_invite_row_rect;
-        if invite.area() > 0.0 && invite.contains(p) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.push_peer_sync_request(PeerSyncAction::PromptInvite);
-                st.overlays.collaborators = false;
-                st.bump();
+        let hit = self.collaborators_overlay.hit_test(p);
+        if let Some(chrome) = self.chrome.clone() {
+            let mut state = chrome.borrow_mut();
+            match hit {
+                CollaboratorsHit::Invite => {
+                    state.push_peer_sync_request(PeerSyncAction::PromptInvite);
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+                CollaboratorsHit::Join => {
+                    state.push_peer_sync_request(PeerSyncAction::PromptConnect);
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+                CollaboratorsHit::RoomActivity => {
+                    state.overlays.room_activity = true;
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+                CollaboratorsHit::Dismiss => {
+                    state.overlays.collaborators = false;
+                    state.bump();
+                }
+                CollaboratorsHit::Absorb => {}
             }
-            *handled = true;
-            return;
         }
-        let join = self.collab_join_row_rect;
-        if join.area() > 0.0 && join.contains(p) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.push_peer_sync_request(PeerSyncAction::PromptConnect);
-                st.overlays.collaborators = false;
-                st.bump();
-            }
-            *handled = true;
-            return;
-        }
-        let row = self.collab_activity_row_rect;
-        if row.area() > 0.0 && row.contains(p) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.overlays.room_activity = true;
-                st.overlays.collaborators = false;
-                st.bump();
-            }
-            *handled = true;
-            return;
-        }
-        let co_rect = self.collaborators_rect();
-        if !co_rect.contains(p) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.overlays.collaborators = false;
-                st.bump();
-            }
-            *handled = true;
-            return;
-        }
-        // Inside the dropdown: swallow so the content beneath
-        // doesn't grab it. No per-row actions yet.
         *handled = true;
     }
 
@@ -5749,10 +5607,10 @@ impl ShellOverlayHost {
             .map_or(crate::shell::quick_settings::QsLevel::Root, |c| {
                 c.borrow().quick_settings.current_level().clone()
             });
-        if matches!(current_level, crate::shell::quick_settings::QsLevel::Root) {
-            self.handle_shell_quick_settings_root_click(p);
-        } else {
+        if !matches!(current_level, crate::shell::quick_settings::QsLevel::Root) {
             self.handle_shell_quick_settings_drill_in_click(p, &current_level);
+        } else {
+            self.handle_shell_quick_settings_root_click(p);
         }
         *handled = true;
     }
@@ -5856,9 +5714,10 @@ impl ShellOverlayHost {
             current_level,
             crate::shell::quick_settings::QsLevel::Notifications
         ) && self.qs_notification_clear_rect().contains(p)
-            && let Some(chrome) = self.chrome.clone()
         {
-            chrome.borrow_mut().clear_notification_history();
+            if let Some(chrome) = self.chrome.clone() {
+                chrome.borrow_mut().clear_notification_history();
+            }
         }
     }
 
@@ -6086,7 +5945,7 @@ impl ShellOverlayHost {
     /// re-entrant `borrow_mut`.
     #[allow(clippy::too_many_arguments)]
     fn dispatch_quick_settings_toggle_actions(
-        &self,
+        &mut self,
         pending_wifi: Option<bool>,
         pending_bt: Option<bool>,
         pending_wired: Option<bool>,
@@ -6185,7 +6044,7 @@ impl ShellOverlayHost {
     /// choice) in the workspace-settings modal. Split out of
     /// `handle_shell_ws_settings_click`.
     fn handle_shell_ws_settings_default_app_click(
-        &self,
+        &mut self,
         p: Point,
         is_owner: bool,
         handled: &mut bool,
@@ -6237,7 +6096,7 @@ impl ShellOverlayHost {
     /// control, or a revoke button, in the workspace-settings modal.
     /// Split out of `handle_shell_ws_settings_click`.
     fn handle_shell_ws_settings_grant_click(
-        &self,
+        &mut self,
         p: Point,
         is_owner: bool,
         handled: &mut bool,
@@ -6458,7 +6317,7 @@ impl ShellOverlayHost {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -6566,7 +6425,7 @@ impl ShellOverlayHost {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -7059,7 +6918,7 @@ impl Widget for ShellOverlayHost {
         if self.route_qs_slider_drag(event, handled) {
             return;
         }
-        if self.route_room_activity_event(event, scale_factor, *modifiers, handled) {
+        if self.route_room_activity_event(event, scale_factor, modifiers, handled) {
             return;
         }
         if self.route_absorbable_pointer_and_toast_click(event, handled) {
@@ -7068,7 +6927,7 @@ impl Widget for ShellOverlayHost {
         if self.route_permission_prompt_event(
             event,
             scale_factor,
-            *modifiers,
+            modifiers,
             state,
             path,
             handled,
@@ -7107,7 +6966,7 @@ impl Widget for ShellOverlayHost {
         if self.route_palette_event(
             event,
             scale_factor,
-            *modifiers,
+            modifiers,
             state,
             path,
             handled,
@@ -7120,7 +6979,7 @@ impl Widget for ShellOverlayHost {
         self.dispatch_pointer_and_content_event(
             event,
             scale_factor,
-            *modifiers,
+            modifiers,
             state,
             path,
             handled,
@@ -7415,89 +7274,6 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
     }
 }
 
-/// One row of the collaborators dropdown. People and agents are listed
-/// together — both are in the room — but tagged apart, or the OS would
-/// be reporting a person present when none is.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RosterRow {
-    /// What the row is called.
-    pub label: String,
-    /// Avatar initial.
-    pub initial: char,
-    /// Per-identity avatar colour.
-    pub color: Color,
-    /// True for an agent admitted by capability, false for a person.
-    pub is_agent: bool,
-    /// What this participant may do here, per the room's capability list.
-    /// `None` when the room records nothing — inventing a default would
-    /// state what a person may do on no evidence.
-    pub role: Option<String>,
-    /// Named by the room but not arrived. Drawn dimmed and qualified,
-    /// never as a present participant.
-    pub invited: bool,
-}
-
-/// Rows the collaborators dropdown shows: peers this session knows
-/// about, then agents the active room has admitted. The two come from
-/// different places — a peer is in `tree.collaborators` from the room
-/// document plus actual session presence, while an agent announces
-/// nothing a session could notice, so its only evidence is the
-/// membership capability `Workspace::agent_members` reads. Shared by the
-/// rect math and the paint so the two cannot drift.
-pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Vec<RosterRow> {
-    // Falls back to the tree-level roster only when the workspace has
-    // none — same precedence the top bar and wheel disc apply.
-    let roster: &[crate::shell::state::Collaborator] = match tree.active_workspace() {
-        Some(ws) if !ws.collaborators.is_empty() => &ws.collaborators,
-        _ => &tree.collaborators,
-    };
-    // Settled over the room rather than per row: `roster_colors` honours
-    // an explicit `cursor_color` and moves anyone who would collide, so
-    // a row avatar matches that peer's cursor and top-bar chip.
-    let colors = crate::shell::state::roster_colors(roster);
-    let mut rows: Vec<RosterRow> = roster
-        .iter()
-        .map(|p| {
-            let (r, g, b) = colors
-                .get(&p.id)
-                .copied()
-                .unwrap_or_else(|| ui::presence::user_color(&p.id));
-            RosterRow {
-                initial: roster_initial(&p.name),
-                label: p.name.clone(),
-                color: Color::from_rgb8(r, g, b),
-                is_agent: false,
-                role: p.role_id.clone(),
-                invited: p.invited,
-            }
-        })
-        .collect();
-    if let Some(ws) = tree.active_workspace() {
-        for (agent, role) in ws.agent_members() {
-            // The label is the principal itself — agents have no display
-            // name yet, and this is the string you would revoke.
-            let (r, g, b) = ui::presence::user_color(&agent);
-            rows.push(RosterRow {
-                initial: roster_initial(&agent),
-                label: agent,
-                color: Color::from_rgb8(r, g, b),
-                is_agent: true,
-                // The verb on the admitting capability: an agent's
-                // authority is nothing but that grant.
-                role: Some(crate::shell::state::role_label(role).to_string()),
-                // Admitted by grant, so there is nothing to redeem.
-                invited: false,
-            });
-        }
-    }
-    rows
-}
-
-/// The avatar letter for a roster row.
-fn roster_initial(name: &str) -> char {
-    name.chars().next().map_or('•', |c| c.to_ascii_uppercase())
-}
-
 /// The kind chips a picker opened by "give me a new window" starts lit.
 ///
 /// Both kinds are programs the user can start; they are separate chips
@@ -7710,15 +7486,10 @@ impl ShellOverlayHost {
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
         if let Some(prompt) = self.permission_prompt.as_mut() {
-            let bar_top = self.rect.y0 + f64::from(self.sidebar_top_y);
-            let bar_left = self.rect.x0 + f64::from(self.sidebar_top_y);
-            let bar_right = self.rect.x1 - f64::from(self.sidebar_top_y);
-            prompt.set_rect(Rect::new(
-                bar_left,
-                bar_top,
-                bar_right,
-                bar_top + PROMPT_HEIGHT,
-            ));
+            let bar_y0 = self.rect.y0 + f64::from(self.sidebar_top_y);
+            let bar_x0 = self.rect.x0 + f64::from(self.sidebar_top_y);
+            let bar_x1 = self.rect.x1 - f64::from(self.sidebar_top_y);
+            prompt.set_rect(Rect::new(bar_x0, bar_y0, bar_x1, bar_y0 + PROMPT_HEIGHT));
             prompt.draw(scene, transform, text_renderer, theme, presence);
         }
 
@@ -7772,22 +7543,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        self.draw_overview_overlay(scene, transform, text_renderer, theme, flags.overview);
-        self.draw_ws_settings_overlay(scene, transform, text_renderer, theme, flags.ws_settings);
-    }
-
-    /// The room overview panel: a modal over the desk rather than a place
-    /// you travel to, so the desktop stays drawn and the scrim dims it as
-    /// the panel rises — split out of [`Self::draw_overview_and_ws_settings_overlays`].
-    fn draw_overview_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        overview_open: bool,
-    ) {
-        let target = if overview_open { 1.0 } else { 0.0 };
+        let target = if flags.overview { 1.0 } else { 0.0 };
         let t = self.tick_overview_transition(target);
         // The overview is a panel over the desk, not a place you travel
         // to: the desktop stays drawn and the scrim dims it as the panel
@@ -7846,21 +7602,10 @@ impl ShellOverlayHost {
                 scene.pop_layer();
             }
         }
-    }
 
-    /// The workspace-settings sheet. `ws_settings_transition` plays the
-    /// entrance in reverse on close too, so the modal + scrim fade out
-    /// instead of popping — split out of
-    /// [`Self::draw_overview_and_ws_settings_overlays`].
-    fn draw_ws_settings_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        ws_settings_open: bool,
-    ) {
-        if !ws_settings_open {
+        // `ws_settings_transition` plays the entrance in reverse on close
+        // too, so the modal + scrim fade out instead of popping.
+        if !flags.ws_settings {
             // Clear cached rects so a click during the close fade can't
             // flip tabs, same as `add_workspace_rect` above.
             self.ws_settings_tab_pill_rects = [Rect::ZERO; 4];
@@ -7869,9 +7614,9 @@ impl ShellOverlayHost {
             self.grant_composer_rects = None;
             self.member_control_rects.clear();
         }
-        self.ws_settings_was_open = ws_settings_open;
+        self.ws_settings_was_open = flags.ws_settings;
         self.ws_settings_transition.set_open(
-            ws_settings_open,
+            flags.ws_settings,
             if theme.reduce_motion {
                 Duration::ZERO
             } else {
@@ -7967,11 +7712,32 @@ impl ShellOverlayHost {
             .draw(self.rect, scene, transform, text_renderer, theme);
 
         if flags.collaborators {
-            self.draw_collaborators(scene, transform, text_renderer, theme);
+            let (rows, unavailable) = self.chrome.as_ref().map_or_else(
+                || (Vec::new(), None),
+                |chrome| {
+                    let state = chrome.borrow();
+                    (
+                        collaborator_roster_rows(&state.tree()),
+                        state.collab_unavailable.clone(),
+                    )
+                },
+            );
+            let may_invite = self.may_invite_here();
+            self.collaborators_overlay.draw(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &CollaboratorsModel {
+                    host: self.rect,
+                    rows: &rows,
+                    unavailable: unavailable.as_deref(),
+                    may_invite,
+                },
+                self.last_cursor,
+            );
         } else {
-            self.collab_activity_row_rect = Rect::ZERO;
-            self.collab_invite_row_rect = Rect::ZERO;
-            self.collab_join_row_rect = Rect::ZERO;
+            self.collaborators_overlay.clear();
         }
 
         // Above the dropdowns, below the palette (which must stay reachable).
@@ -8505,11 +8271,6 @@ impl ShellOverlayHost {
     /// "Where you are": the current room's face stack, name, "You are
     /// here" chip and access label — or an honest empty state when
     /// nothing is marked current.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct paint input with no natural grouping that \
-                  wouldn't just move the field count into a struct"
-    )]
     fn draw_overview_here_section(
         &self,
         scene: &mut Scene,
@@ -8554,11 +8315,6 @@ impl ShellOverlayHost {
 
     /// The current room's selection highlight, face stack, name, "You
     /// are here" chip and access label.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct paint input with no natural grouping that \
-                  wouldn't just move the field count into a struct"
-    )]
     fn draw_overview_here_room(
         &self,
         scene: &mut Scene,
@@ -8687,11 +8443,6 @@ impl ShellOverlayHost {
 
     /// "What leaves this room": the share list, or an honest zero-state
     /// when nothing in the current room is shared out of it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct paint input with no natural grouping that \
-                  wouldn't just move the field count into a struct"
-    )]
     fn draw_overview_shares_section(
         &self,
         scene: &mut Scene,
@@ -8797,11 +8548,6 @@ impl ShellOverlayHost {
 
     /// One row per share (up to `OVERVIEW_SHARES_MAX_ROWS`), plus an
     /// "and N more" trailer when there are more than that.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct paint input with no natural grouping that \
-                  wouldn't just move the field count into a struct"
-    )]
     fn draw_overview_share_rows(
         scene: &mut Scene,
         transform: Affine,
@@ -8854,11 +8600,6 @@ impl ShellOverlayHost {
     }
 
     /// One "shared out of here" row: an icon, who holds it, and what.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct paint input with no natural grouping that \
-                  wouldn't just move the field count into a struct"
-    )]
     fn draw_overview_share_row(
         scene: &mut Scene,
         transform: Affine,
@@ -9062,11 +8803,6 @@ impl ShellOverlayHost {
         }
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "tree/state feed the per-tab pane bodies and the General tab's tail; \
-                  cloning Workspace to narrow the guard further isn't worth the paint-path allocation"
-    )]
     fn draw_ws_settings(
         &mut self,
         scene: &mut Scene,
@@ -9092,6 +8828,11 @@ impl ShellOverlayHost {
         // and collaborator tile near the end of the function; those need
         // a live `&Workspace`, so cloning it to shrink the guard further
         // would add an allocation to a hot paint path for no real gain.
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "tree/state feed the per-tab pane bodies and the General tab's tail; \
+                      cloning Workspace to narrow the guard further isn't worth the paint-path allocation"
+        )]
         let state = chrome.borrow();
         let tree = state.tree();
 
@@ -9208,19 +8949,19 @@ impl ShellOverlayHost {
         );
     }
 
-    /// The identity card's background, icon mark, close button and
-    /// "CURRENT WORKSPACE" label — split out of
-    /// [`Self::draw_ws_settings_header_text`] to keep it under the line
-    /// limit. Returns `(identity, close)` so the caller can position the
-    /// name/role text against the same rects.
-    fn draw_ws_settings_header_chrome(
+    /// Title plus the "Active workspace: …" line; returns the active
+    /// workspace's name so the General tab's name input can fall back
+    /// to it while nothing is being edited.
+    fn draw_ws_settings_header_text(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-    ) -> (Rect, Rect) {
+        state: &crate::shell::chrome_state::ChromeState,
+        tree: &WorkspaceTree,
+    ) -> String {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let identity = Rect::new(
@@ -9297,35 +9038,10 @@ impl ShellOverlayHost {
             transform.pre_translate((identity.x0 + 76.0, identity.y0 + 12.0).into()),
             None,
         );
-        (identity, close)
-    }
-
-    /// Title plus the "Active workspace: …" line; returns the active
-    /// workspace's name so the General tab's name input can fall back
-    /// to it while nothing is being edited.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct paint input (scene, transform, text, theme, \
-                  rect, chrome state, tree) with no natural grouping that wouldn't just move \
-                  the field count into a struct"
-    )]
-    fn draw_ws_settings_header_text(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        state: &crate::shell::chrome_state::ChromeState,
-        tree: &WorkspaceTree,
-    ) -> String {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let (identity, close) =
-            self.draw_ws_settings_header_chrome(scene, transform, text_renderer, theme, rect);
         let active_name = tree
             .active_workspace()
-            .map_or_else(|| "Workspace".into(), |w| w.name.clone());
+            .map(|w| w.name.clone())
+            .unwrap_or_else(|| "Workspace".into());
         let tsize = tokens.typography.scale.xl;
         let shown_name = text_renderer.elide_to_width(
             &active_name,
@@ -9343,7 +9059,8 @@ impl ShellOverlayHost {
         let active_role = tree
             .active_workspace()
             .and_then(|workspace| workspace.role_of(&state.local_user_id))
-            .map_or("Guest", crate::shell::workspace_settings::role_label);
+            .map(crate::shell::workspace_settings::role_label)
+            .unwrap_or("Guest");
         let label = format!("{active_role} · Settings and policy stay with this workspace");
         text_renderer.draw_text(
             scene,
@@ -9475,11 +9192,6 @@ impl ShellOverlayHost {
     /// so the caller knows to stop. Returns `false` on `General`, whose
     /// clearing happens here too, but whose body the caller continues
     /// painting below.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct paint input with no natural grouping that \
-                  wouldn't just move the field count into a struct"
-    )]
     fn draw_ws_settings_dispatch_tab(
         &mut self,
         scene: &mut Scene,
@@ -9540,11 +9252,6 @@ impl ShellOverlayHost {
     }
 
     /// The Members tab body: roster rows, then the shared close hint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct paint input with no natural grouping that \
-                  wouldn't just move the field count into a struct"
-    )]
     fn draw_ws_settings_members_tab(
         &mut self,
         scene: &mut Scene,
@@ -9581,11 +9288,6 @@ impl ShellOverlayHost {
 
     /// The Permissions tab body: the grant/revoke pane, then the shared
     /// close hint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct paint input with no natural grouping that \
-                  wouldn't just move the field count into a struct"
-    )]
     fn draw_ws_settings_permissions_tab(
         &mut self,
         scene: &mut Scene,
@@ -9629,11 +9331,6 @@ impl ShellOverlayHost {
     }
 
     /// The Apps tab body: default-app rows, then the shared close hint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct paint input with no natural grouping that \
-                  wouldn't just move the field count into a struct"
-    )]
     fn draw_ws_settings_apps_tab(
         &mut self,
         scene: &mut Scene,
@@ -9675,11 +9372,6 @@ impl ShellOverlayHost {
     /// Name input — edits fall through to `editing_workspace_name`.
     /// Returns whether the name is currently being edited, so the
     /// caller's footer hint can match.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct paint input with no natural grouping that \
-                  wouldn't just move the field count into a struct"
-    )]
     fn draw_ws_settings_name_input(
         &self,
         scene: &mut Scene,
@@ -9769,19 +9461,21 @@ impl ShellOverlayHost {
         editing
     }
 
-    /// The sharing card's background, icon mark and title/subtitle text —
-    /// split out of [`Self::draw_ws_settings_invite_link`] to keep it
-    /// under the line limit.
-    fn draw_ws_settings_invite_card_chrome(
+    /// Sharing card with the workspace's stable invitation URI.
+    fn draw_ws_settings_invite_link(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        sharing_card: Rect,
-    ) {
+        rect: Rect,
+        tree: &WorkspaceTree,
+        _body_y: f64,
+    ) -> f64 {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
+        let body = self.ws_settings_body_rect(rect);
+        let sharing_card = Rect::new(body.x0, body.y0 + 128.0, body.x1, body.y0 + 252.0);
         let sharing_rr = RoundedRect::from_rect(sharing_card, f64::from(tokens.radii.lg));
         scene.fill(
             Fill::NonZero,
@@ -9833,35 +9527,6 @@ impl ShellOverlayHost {
             colors.text_dim,
             transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 36.0).into()),
             None,
-        );
-    }
-
-    /// Sharing card with the workspace's stable invitation URI.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct paint input with no natural grouping that \
-                  wouldn't just move the field count into a struct"
-    )]
-    fn draw_ws_settings_invite_link(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        tree: &WorkspaceTree,
-        _body_y: f64,
-    ) -> f64 {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let body = self.ws_settings_body_rect(rect);
-        let sharing_card = Rect::new(body.x0, body.y0 + 128.0, body.x1, body.y0 + 252.0);
-        self.draw_ws_settings_invite_card_chrome(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            sharing_card,
         );
         let invite_y = body.y0 + 202.0;
         let url_pill = Rect::new(
@@ -10750,9 +10415,9 @@ impl ShellOverlayHost {
                 card.y0 + 12.0 + 20.0,
             );
             // Slot 4 (Hotspot) reuses the Wifi glyph, same as the
-            // catch-all for anything past slot 7 (e.g. Mobile data) —
-            // so both fall to the wildcard below rather than repeating it.
+            // catch-all for anything past slot 7 (e.g. Mobile data).
             let icon = match i {
+                0 | 4 => ui::icons::Icon::Wifi,
                 1 => ui::icons::Icon::Bluetooth,
                 2 => ui::icons::Icon::EthernetPort,
                 3 => ui::icons::Icon::WifiOff,
@@ -11410,324 +11075,6 @@ impl ShellOverlayHost {
     }
 
     /// Collaborators dropdown: a peer-roster popover anchored under the
-    /// top-right avatar stack. Each row shows an indigo-filled initial
-    /// circle + the peer's name; empty rosters show a "No peers" hint so
-    /// the dropdown still reads as "here are the people" rather than
-    /// "something broken".
-    fn draw_collaborators(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.collaborators_rect();
-        let card = RoundedRect::from_rect(rect, f64::from(tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            panel_surface(theme, POPOVER_SURFACE_ALPHA),
-            None,
-            &card,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &card,
-        );
-        text_renderer.draw_text(
-            scene,
-            "Collaborators",
-            tokens.typography.scale.lg,
-            colors.text_primary,
-            transform.pre_translate((rect.x0 + 16.0, rect.y0 + 16.0).into()),
-            None,
-        );
-
-        // Avatar colour matches that identity's cursor and top-bar chip.
-        let rows: Vec<RosterRow> = self
-            .chrome
-            .as_ref()
-            .map(|c| collaborator_roster_rows(&c.borrow().tree()))
-            .unwrap_or_default();
-
-        // A broken session says so regardless of roster state — a
-        // populated one can list a member whose capability outlived a
-        // dead broker. Drawn above whatever is listed, never instead of it.
-        let unavailable = self
-            .chrome
-            .as_ref()
-            .and_then(|c| c.borrow().collab_unavailable.clone());
-        if let Some(reason) = &unavailable {
-            text_renderer.draw_text(
-                scene,
-                reason,
-                tokens.typography.scale.sm,
-                colors.semantic.danger,
-                transform.pre_translate((rect.x0 + 16.0, rect.y0 + 56.0).into()),
-                None,
-            );
-        }
-
-        if rows.is_empty() {
-            if unavailable.is_none() {
-                text_renderer.draw_text(
-                    scene,
-                    "No peers connected",
-                    tokens.typography.scale.sm,
-                    colors.text_dim,
-                    transform.pre_translate((rect.x0 + 16.0, rect.y0 + 56.0).into()),
-                    None,
-                );
-            }
-            self.draw_collaborators_footer(scene, transform, text_renderer, theme);
-            return;
-        }
-
-        let list_top = if unavailable.is_some() {
-            rect.y0 + 48.0 + COLLAB_WARNING_H
-        } else {
-            rect.y0 + 48.0
-        };
-        for (i, row) in rows.iter().enumerate() {
-            let row_y = list_top + usize_to_f64_lossy(i) * 36.0;
-            self.draw_collaborators_row(scene, transform, text_renderer, theme, row, row_y);
-        }
-        self.draw_collaborators_footer(scene, transform, text_renderer, theme);
-    }
-
-    /// One roster row: avatar (or the dashed "empty seat" ring for an
-    /// invite), name, optional "agent" tag, and the trailing role/
-    /// "Invited" badge. Split out of [`Self::draw_collaborators`] so the
-    /// list body isn't buried in the popover chrome around it.
-    fn draw_collaborators_row(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        row: &RosterRow,
-        row_y: f64,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let rect = self.collaborators_rect();
-        let center = Point::new(rect.x0 + 16.0 + 12.0, row_y + 14.0);
-        let avatar_rect = Rect::new(
-            center.x - 11.0,
-            center.y - 11.0,
-            center.x + 11.0,
-            center.y + 11.0,
-        );
-        // Same chip/place/order in every state, so a join reads as
-        // one row filling in, not a reshuffle. An invitation draws
-        // the dashed "empty seat" ring the top bar uses — a faded
-        // filled chip would read as a rendering fault instead.
-        if row.invited {
-            let seat = vello::kurbo::Circle::new(center, 11.0);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
-                transform,
-                row.color.multiply_alpha(INVITED_ROW_ALPHA),
-                None,
-                &seat,
-            );
-            // Their own initial, not a `+` — the seat belongs to a
-            // named person.
-            let initial = row.initial.to_string();
-            let size = 22.0_f32 * 0.4;
-            let (iw, ih) =
-                text_renderer.measure_weighted(&initial, size, None, TextWeight::Semibold);
-            text_renderer.draw_text_weighted(
-                scene,
-                &initial,
-                size,
-                colors.text_dim,
-                transform.pre_translate(
-                    (
-                        center.x - f64::from(iw) / 2.0,
-                        center.y - f64::from(ih) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-                TextWeight::Semibold,
-            );
-        } else {
-            ui::widget::Avatar::draw_at(
-                scene,
-                transform,
-                avatar_rect,
-                &row.initial.to_string(),
-                row.color,
-                theme,
-                text_renderer,
-            );
-        }
-        text_renderer.draw_text(
-            scene,
-            &row.label,
-            tokens.typography.scale.sm,
-            if row.invited {
-                colors.text_dim
-            } else {
-                colors.text_primary
-            },
-            transform.pre_translate((rect.x0 + 44.0, row_y + 7.0).into()),
-            None,
-        );
-        // Suppressed when the label already carries the word, or it
-        // would read "agent agent".
-        if row.is_agent && !row.label.eq_ignore_ascii_case("agent") {
-            text_renderer.draw_text(
-                scene,
-                "agent",
-                tokens.typography.scale.xs,
-                colors.text_dim,
-                transform.pre_translate((rect.x1 - 56.0, row_y + 9.0).into()),
-                None,
-            );
-        }
-        // "Invited" wins over role — role isn't the question for
-        // somebody who isn't here yet.
-        let sub = if row.invited {
-            Some(INVITED_TAG.to_string())
-        } else {
-            row.role.clone()
-        };
-        if let Some(sub) = sub {
-            let (rw, _) = text_renderer.measure_weighted(
-                &sub,
-                tokens.typography.scale.xs,
-                None,
-                TextWeight::Regular,
-            );
-            text_renderer.draw_text(
-                scene,
-                &sub,
-                tokens.typography.scale.xs,
-                colors.text_dim,
-                transform.pre_translate((rect.x1 - 16.0 - f64::from(rw), row_y + 21.0).into()),
-                None,
-            );
-        }
-    }
-
-    /// "Room activity" row at the foot of the collaborator dropdown — the
-    /// visible counterpart to the palette's `Show room activity`, for
-    /// someone who doesn't yet know the command exists.
-    fn draw_collaborators_footer(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-
-        // Invite is filled (the usual reason this surface is opened);
-        // Join is outlined — the other machine's half of the gesture.
-        let (invite, join) = self.collaborators_action_row_rects();
-        self.collab_invite_row_rect = invite;
-        self.collab_join_row_rect = join;
-        if invite.area() > 0.0 {
-            let btn_size = tokens.typography.scale.sm;
-            for (rect, label, filled) in [(invite, "Invite", true), (join, "Join", false)] {
-                let shape = RoundedRect::from_rect(rect, f64::from(tokens.radii.sm));
-                if filled {
-                    scene.fill(Fill::NonZero, transform, colors.accent[5], None, &shape);
-                } else {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        colors.surface_white_5,
-                        None,
-                        &shape,
-                    );
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(1.0),
-                        transform,
-                        colors.border_standard,
-                        None,
-                        &shape,
-                    );
-                }
-                let (tw, th) =
-                    text_renderer.measure_weighted(label, btn_size, None, TextWeight::Medium);
-                text_renderer.draw_text_weighted(
-                    scene,
-                    label,
-                    btn_size,
-                    colors.text_primary,
-                    transform.pre_translate(
-                        (
-                            rect.center().x - f64::from(tw) / 2.0,
-                            rect.center().y - f64::from(th) / 2.0,
-                        )
-                            .into(),
-                    ),
-                    None,
-                    TextWeight::Medium,
-                );
-            }
-        }
-
-        let row = self.collaborators_activity_row_rect();
-        self.collab_activity_row_rect = row;
-        let sep = vello::kurbo::Line::new(
-            Point::new(row.x0, row.y0 - 4.0),
-            Point::new(row.x1, row.y0 - 4.0),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &sep,
-        );
-        let shape = RoundedRect::from_rect(row, f64::from(tokens.radii.sm));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surface_white_5,
-            None,
-            &shape,
-        );
-        let size = tokens.typography.scale.sm;
-        let (_, lh) = text_renderer.measure("Room activity", size, None);
-        text_renderer.draw_text(
-            scene,
-            "Room activity",
-            size,
-            colors.text_primary,
-            transform.pre_translate((row.x0 + 12.0, row.center().y - f64::from(lh) / 2.0).into()),
-            None,
-        );
-        // A right-pointing guillemet reads as "opens a surface" without
-        // reaching for a pictographic emoji.
-        let chevron = "\u{203a}";
-        let (cw, ch) = text_renderer.measure(chevron, size, None);
-        text_renderer.draw_text(
-            scene,
-            chevron,
-            size,
-            colors.text_dim,
-            transform.pre_translate(
-                (
-                    row.x1 - 12.0 - f64::from(cw),
-                    row.center().y - f64::from(ch) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-        );
-    }
-
     /// Slider bar rect for the i-th quick-settings slider (0 = Brightness,
     /// 1 = Volume), with the label baseline `y`, so draw and hit-test
     /// share one source of truth.
@@ -13109,12 +12456,6 @@ mod two_workspace_host_tests {
     /// the host's own selection — not through a key the test rebuilt for
     /// itself, which would pass even if the two disagreed.
     #[test]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "c's only use is producing tree via tree(); the read-guard's lifetime \
-                  is tied to c's borrow, so it can't be dropped before tree's last use, \
-                  and the block already ends right there"
-    )]
     fn real_peers_are_picked_up_by_room_and_only_the_active_one() {
         use ui::permissions::UserId;
         let (h, chrome) = host_with_two_workspaces();
@@ -14388,8 +13729,8 @@ mod tests {
         h.host.force_room_activity_settled();
         paint(&mut h);
 
-        let timeline_rect = h.host.room_activity().timeline().rect();
-        assert!(timeline_rect.area() > 0.0);
+        let rows = h.host.room_activity().timeline().rect();
+        assert!(rows.area() > 0.0);
         let row0 = h
             .host
             .room_activity()
@@ -14414,11 +13755,11 @@ mod tests {
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
 
-        let row = h.host.collab_activity_row_rect;
+        let row = h.host.collaborators_overlay.activity_rect();
         assert!(row.area() > 0.0, "the footer row painted a hit target");
         assert_eq!(
             row,
-            h.host.collaborators_activity_row_rect(),
+            h.host.collaborators_overlay.activity_rect(),
             "the cached hit rect is the one that was drawn"
         );
 
@@ -14443,12 +13784,12 @@ mod tests {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
-        assert!(h.host.collab_activity_row_rect.area() > 0.0);
+        assert!(h.host.collaborators_overlay.activity_rect().area() > 0.0);
 
         h.chrome.borrow_mut().overlays.collaborators = false;
         paint(&mut h);
         assert_eq!(
-            h.host.collab_activity_row_rect,
+            h.host.collaborators_overlay.activity_rect(),
             Rect::ZERO,
             "a stale footer rect is a click target the user cannot see"
         );
@@ -14481,7 +13822,7 @@ mod tests {
             invite.x1 <= join.x0,
             "the two buttons do not overlap: {invite:?} / {join:?}"
         );
-        let panel = h.host.collaborators_rect();
+        let panel = h.host.collaborators_overlay.panel_rect();
         for (name, r) in [("Invite", invite), ("Join", join)] {
             assert!(
                 panel.contains(r.center()) && panel.contains(r.origin()),
@@ -14489,7 +13830,7 @@ mod tests {
             );
         }
         assert!(
-            invite.y1 <= h.host.collaborators_activity_row_rect().y0,
+            invite.y1 <= h.host.collaborators_overlay.activity_rect().y0,
             "the actions band sits above the Room activity row rather than over it"
         );
     }
@@ -14595,7 +13936,7 @@ mod tests {
 
     /// A click anywhere inside the popover asks the network for nothing.
     fn assert_no_peer_sync_work_from_a_click_in_the_panel(h: &mut Harness) {
-        let panel = h.host.collaborators_rect();
+        let panel = h.host.collaborators_overlay.panel_rect();
         let mods = Modifiers::default();
         let _ = pump(h, &cursor_moved_at(panel.center()), mods);
         let _ = pump(h, &left_button_pressed(), mods);
@@ -15309,9 +14650,8 @@ mod maximize_harvest_tests {
     use super::*;
     use crate::shell::build_nirios_overlay_host_with_chrome;
     use crate::shell::state::{
-        AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent,
-        WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
-        WorkspaceTree,
+        AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
     };
     use std::collections::HashMap as StdHashMap;
 
@@ -15347,7 +14687,7 @@ mod maximize_harvest_tests {
             name: "Test".into(),
             strips: vec![strip],
             collaborators: vec![],
-            shared_surfaces: SharedSurfaces::default(),
+            shared_surfaces: Default::default(),
         };
         let mut active_strip = StdHashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -15492,9 +14832,8 @@ mod resync_strips_tests {
     use super::*;
     use crate::shell::build_nirios_overlay_host_with_chrome;
     use crate::shell::state::{
-        AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent,
-        WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
-        WorkspaceTree,
+        AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
     };
     use std::collections::HashMap as StdHashMap;
 
@@ -15530,7 +14869,7 @@ mod resync_strips_tests {
             name: "Test".into(),
             strips: vec![strip],
             collaborators: vec![],
-            shared_surfaces: SharedSurfaces::default(),
+            shared_surfaces: Default::default(),
         };
         let mut active_strip = StdHashMap::new();
         active_strip.insert(ws_id, strip_id);

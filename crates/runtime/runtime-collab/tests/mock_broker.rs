@@ -78,17 +78,6 @@ impl presence_handle::Server for FakePresence {
     ) -> Promise<(), capnp::Error> {
         Promise::ok(())
     }
-
-    fn subscribe_remote_cursors(
-        self: Rc<Self>,
-        _params: presence_handle::SubscribeRemoteCursorsParams,
-        _results: presence_handle::SubscribeRemoteCursorsResults,
-    ) -> Promise<(), capnp::Error> {
-        // Not exercised in this test.
-        Promise::err(capnp::Error::unimplemented(
-            "subscribe_remote_cursors".into(),
-        ))
-    }
 }
 
 struct FakeChannel {

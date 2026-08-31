@@ -1440,7 +1440,7 @@ async fn dispatch_sdk_request(
         } => {
             let (ops, exhausted) = match route
                 .channel
-                .fetch_scrollback(before_seq, u32::from(max))
+                .fetch_scrollback_for(artifact.0.as_bytes(), before_seq, u32::from(max))
                 .await
             {
                 Ok(batch) => (
@@ -1698,7 +1698,7 @@ mod tests {
         selection_publishes: Vec<(Vec<u8>, u64, u64)>,
         arrived: Vec<Vec<u8>>,
         left: Vec<Vec<u8>>,
-        scrollback_requests: Vec<(u64, u32)>,
+        scrollback_requests: Vec<(Vec<u8>, u64, u32)>,
     }
 
     /// Shared between the test-thread's tokio `LocalSet` and the caller.
@@ -1818,18 +1818,6 @@ mod tests {
                 r.get_y(),
             ));
             Promise::ok(())
-        }
-
-        fn subscribe_remote_cursors(
-            self: Rc<Self>,
-            _params: presence_handle::SubscribeRemoteCursorsParams,
-            _results: presence_handle::SubscribeRemoteCursorsResults,
-        ) -> Promise<(), capnp::Error> {
-            // Not driven — ui::CollaborationManager only opens
-            // `subscribeAll`.
-            Promise::err(capnp::Error::unimplemented(
-                "subscribe_remote_cursors".into(),
-            ))
         }
 
         fn publish_caret(
@@ -2076,19 +2064,20 @@ mod tests {
             Promise::ok(())
         }
 
-        fn fetch_scrollback(
+        fn fetch_scrollback_for(
             self: Rc<Self>,
-            params: channel_handle::FetchScrollbackParams,
-            mut results: channel_handle::FetchScrollbackResults,
+            params: channel_handle::FetchScrollbackForParams,
+            mut results: channel_handle::FetchScrollbackForResults,
         ) -> Promise<(), capnp::Error> {
             let Ok(p) = params.get() else {
                 return Promise::ok(());
             };
-            self.captures
-                .lock()
-                .unwrap()
-                .scrollback_requests
-                .push((p.get_before_seq(), p.get_max()));
+            self.captures.lock().unwrap().scrollback_requests.push((
+                p.get_artifact_id()
+                    .map_or_else(|_| Vec::new(), |id| id.to_vec()),
+                p.get_before_seq(),
+                p.get_max(),
+            ));
             let seed = self
                 .scrollback_response
                 .borrow()
@@ -2805,8 +2794,8 @@ mod tests {
         assert!(batch.1, "seeded broker reports exhausted");
         assert_eq!(
             captures.lock().unwrap().scrollback_requests,
-            vec![(10, 50)],
-            "before_seq / max round-tripped verbatim",
+            vec![(artifact.0.as_bytes().to_vec(), 10, 50)],
+            "artifact / before_seq / max round-tripped verbatim",
         );
     }
 

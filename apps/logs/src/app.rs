@@ -1924,92 +1924,18 @@ impl Widget for LogsApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        let search_rect = self.regions().search;
-        self.search_input.apply_layout_external(Rect::new(
-            search_rect.x0 + 28.0,
-            search_rect.y0,
-            search_rect.x1 - 8.0,
-            search_rect.y1,
-        ));
-
-        // This field is embedded in a canvas-style parent rather than mounted
-        // as a child node, so the parent explicitly owns focus transfer while
-        // still routing every editing event through the shared text core.
-        let left_press = matches!(
+        if self.route_search_field(
             event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            }
-        );
-        if left_press {
-            if search_rect.contains(self.cursor) {
-                self.search_input.set_focus(true);
-            } else {
-                self.search_input.set_focus(false);
-            }
-        }
-
-        // Preserve Logs' convenient type-to-filter behaviour: a printable key
-        // (or Backspace) transfers focus into the real field before routing,
-        // instead of maintaining a second append/pop editor in the app.
-        let starts_search = matches!(
-            event,
-            WindowEvent::KeyboardInput { event: key, .. }
-                if key.state == ElementState::Pressed
-                    && !modifiers.state().control_key()
-                    && !modifiers.state().super_key()
-                    && (matches!(key.logical_key, Key::Character(_))
-                        || matches!(key.logical_key, Key::Named(NamedKey::Backspace)))
-        );
-        if starts_search && !self.search_input.is_focused() {
-            self.search_input.set_focus(true);
-            self.search_input
-                .set_cursor_pos(self.search_input.value().len());
-        }
-
-        if self.search_input.is_focused()
-            && matches!(
-                event,
-                WindowEvent::KeyboardInput { event: key, .. }
-                    if key.state == ElementState::Pressed
-                        && matches!(key.logical_key, Key::Named(NamedKey::Escape))
-            )
-        {
-            LogsDoc::search_set(doc, root, "");
-            self.search_input.set_text("");
-            self.scroll = 0.0;
-            self.dirty = true;
-            *handled = true;
+            scale_factor,
+            modifiers,
+            doc,
+            root,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
             return;
-        }
-
-        let route_to_search = self.search_input.is_focused()
-            || matches!(event, WindowEvent::CursorMoved { .. })
-            || (left_press && search_rect.contains(self.cursor));
-        if route_to_search {
-            let mut input_handled = false;
-            self.search_input.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                doc,
-                root,
-                &mut input_handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-            if self.search_input.take_dirty().is_some() {
-                self.scroll = 0.0;
-                self.dirty = true;
-                input_handled = true;
-            }
-            if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
-                *handled = true;
-                return;
-            }
         }
 
         match event {
@@ -2047,7 +1973,7 @@ impl Widget for LogsApp {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.on_key(key_event, modifiers, doc, root, handled);
+                self.on_key(key_event, *modifiers, doc, root, handled);
             }
             _ => {}
         }
@@ -2118,6 +2044,117 @@ impl Widget for LogsApp {
 }
 
 impl LogsApp {
+    /// Search-field layout, focus transfer, Escape-to-clear, and routing
+    /// into the shared field (part of [`Widget::handle_event`]). Returns
+    /// whether the caller should return immediately — either because
+    /// Escape cleared the search here, or because the field consumed the
+    /// event.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event's own signature, which it routes"
+    )]
+    fn route_search_field(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let search_rect = self.regions().search;
+        self.search_input.apply_layout_external(Rect::new(
+            search_rect.x0 + 28.0,
+            search_rect.y0,
+            search_rect.x1 - 8.0,
+            search_rect.y1,
+        ));
+
+        // This field is embedded in a canvas-style parent rather than mounted
+        // as a child node, so the parent explicitly owns focus transfer while
+        // still routing every editing event through the shared text core.
+        let left_press = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        );
+        if left_press {
+            if search_rect.contains(self.cursor) {
+                self.search_input.set_focus(true);
+            } else {
+                self.search_input.set_focus(false);
+            }
+        }
+
+        // Preserve Logs' convenient type-to-filter behaviour: a printable key
+        // (or Backspace) transfers focus into the real field before routing,
+        // instead of maintaining a second append/pop editor in the app.
+        let starts_search = matches!(
+            event,
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == ElementState::Pressed
+                    && !modifiers.state().control_key()
+                    && !modifiers.state().super_key()
+                    && (matches!(key.logical_key, Key::Character(_))
+                        || matches!(key.logical_key, Key::Named(NamedKey::Backspace)))
+        );
+        if starts_search && !self.search_input.is_focused() {
+            self.search_input.set_focus(true);
+            self.search_input
+                .set_cursor_pos(self.search_input.value().len());
+        }
+
+        if self.search_input.is_focused()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { event: key, .. }
+                    if key.state == ElementState::Pressed
+                        && matches!(key.logical_key, Key::Named(NamedKey::Escape))
+            )
+        {
+            LogsDoc::search_set(doc, root, "");
+            self.search_input.set_text("");
+            self.scroll = 0.0;
+            self.dirty = true;
+            *handled = true;
+            return true;
+        }
+
+        let route_to_search = self.search_input.is_focused()
+            || matches!(event, WindowEvent::CursorMoved { .. })
+            || (left_press && search_rect.contains(self.cursor));
+        if route_to_search {
+            let mut input_handled = false;
+            self.search_input.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                doc,
+                root,
+                &mut input_handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if self.search_input.take_dirty().is_some() {
+                self.scroll = 0.0;
+                self.dirty = true;
+                input_handled = true;
+            }
+            if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
+                *handled = true;
+                return true;
+            }
+        }
+        false
+    }
+
     /// The dropdown panel's shadow, fill and border.
     fn draw_overlay_panel_bg(scene: &mut Scene, transform: Affine, theme: &Theme, panel: Rect) {
         let c = &theme.tokens.colors;
@@ -2354,7 +2391,7 @@ impl LogsApp {
     fn on_key(
         &mut self,
         key_event: &winit::event::KeyEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         doc: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
