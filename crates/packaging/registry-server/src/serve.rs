@@ -105,6 +105,11 @@ pub async fn handle(
     }
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "matches the Result<_, HandlerError> signature every route handler in the dispatch \
+              match shares; this route just happens to have no fallible step"
+)]
 fn handle_get_registry(state: &AppState) -> Result<Response<Full<Bytes>>, HandlerError> {
     let ident = state.identity();
     let hs = RegistryHandshake::new(

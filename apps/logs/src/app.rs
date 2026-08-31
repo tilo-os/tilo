@@ -1927,7 +1927,7 @@ impl Widget for LogsApp {
         if self.route_search_field(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             doc,
             root,
             handled,
@@ -2057,7 +2057,7 @@ impl LogsApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         doc: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
@@ -2134,7 +2134,7 @@ impl LogsApp {
             self.search_input.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 doc,
                 root,
                 &mut input_handled,

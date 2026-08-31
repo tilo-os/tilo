@@ -108,9 +108,9 @@ fn draw_data_words(tag: vello_encoding::DrawTag) -> Option<usize> {
     Some(match tag {
         DrawTag::COLOR => 1,
         DrawTag::IMAGE => 3,
-        DrawTag::LINEAR_GRADIENT | DrawTag::SWEEP_GRADIENT => 5,
+        // Gradients and blur-rect coincide at 5 words; RADIAL_GRADIENT is the outlier at 7.
+        DrawTag::LINEAR_GRADIENT | DrawTag::SWEEP_GRADIENT | DrawTag::BLUR_RECT => 5,
         DrawTag::RADIAL_GRADIENT => 7,
-        DrawTag::BLUR_RECT => 5,
         DrawTag::BEGIN_CLIP => 2,
         DrawTag::END_CLIP => 0,
         _ => return None,

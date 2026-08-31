@@ -80,7 +80,7 @@ mod identity_fs_tests {
             ) && capability.verb == Verb::Write
         }));
 
-        crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths.clone())
+        crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
             .revoke(
                 &profile.id,
                 device,

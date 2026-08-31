@@ -159,7 +159,9 @@ pub(crate) fn walk_payload<S: BlobStore>(
             .strip_prefix(payload_dir)
             .map_err(|_| {
                 PackError::Io(std::io::Error::other(format!(
-                    "walkdir entry {abs:?} is not under payload_dir {payload_dir:?}"
+                    "walkdir entry {} is not under payload_dir {}",
+                    abs.display(),
+                    payload_dir.display()
                 )))
             })?
             .to_path_buf();

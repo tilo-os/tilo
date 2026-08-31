@@ -77,6 +77,12 @@ impl Default for HtmlOptions {
 /// Render a materialized qdoc snapshot to an HTML string. Always
 /// succeeds: unknown block kinds degrade to a `<p>`, and image blocks
 /// with a missing blob render an empty `<img>` with an `alt` note.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "HtmlOptions is a small public options struct passed by value at every call site \
+              across other crates (the qOS-wide builder-options idiom); switching to a reference \
+              would only move the & to each of those callers for no behavioural gain"
+)]
 pub fn render_html(snap: &DocSnapshot, opts: HtmlOptions) -> String {
     let mut body = String::new();
     render_blocks(&mut body, snap, &snap.blocks, &opts, 0);
@@ -133,8 +139,6 @@ fn render_styles(snap: &DocSnapshot) -> String {
 /// to keep the `<style>` block well-formed.
 fn style_prop_to_css(prop: &str, val: &AttrVal) -> Option<String> {
     let css = match prop {
-        // `name` is metadata, not a visual property.
-        "name" => return None,
         "color" => format!("color: {};", css_value(&attr_as_str(val))),
         "background" | "bg" => format!("background-color: {};", css_value(&attr_as_str(val))),
         "font" | "fontFamily" => format!("font-family: {};", css_font_family(&attr_as_str(val))),
@@ -154,6 +158,7 @@ fn style_prop_to_css(prop: &str, val: &AttrVal) -> Option<String> {
                 return None;
             }
         }
+        // `name` is metadata, not a visual property; anything else is unrecognised.
         _ => return None,
     };
     Some(css)

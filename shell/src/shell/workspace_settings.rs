@@ -444,6 +444,13 @@ fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme
 
 /// A concise explanation and live status at the top of each policy pane.
 /// It gives normal users orientation without hiding the full controls.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one positional argument per painted value, shared across the three panes \
+              that open with this intro card; a context struct would need to be rebuilt \
+              at each call site anyway since scene/text_renderer are reborrowed for more \
+              drawing right after this call"
+)]
 fn draw_pane_intro(
     scene: &mut Scene,
     transform: Affine,
@@ -1819,7 +1826,7 @@ pub fn draw_default_apps_pane(
     scene: &mut Scene,
     transform: Affine,
     pane: Rect,
-    ctx: DefaultAppsCtx<'_>,
+    ctx: &DefaultAppsCtx<'_>,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
@@ -1827,7 +1834,7 @@ pub fn draw_default_apps_pane(
         ws,
         local_user,
         candidates,
-    } = ctx;
+    } = *ctx;
     let resources = candidates
         .iter()
         .flat_map(|candidate| candidate.resources.iter())
@@ -1839,6 +1846,36 @@ pub fn draw_default_apps_pane(
     } else {
         format!("{custom_rules} custom rules")
     };
+    draw_default_apps_header(scene, transform, pane, &status, text_renderer, theme);
+    let can_admin = ws.may_administer(local_user);
+    draw_default_apps_rows(scene, transform, pane, ctx, can_admin, text_renderer, theme);
+    if candidates.iter().all(|a| a.resources.is_empty()) {
+        draw_empty_state(
+            scene,
+            transform,
+            pane,
+            Icon::LayoutGrid,
+            (
+                "No file handlers installed",
+                "Apps appear here after they declare supported file types.",
+            ),
+            text_renderer,
+            theme,
+        );
+    }
+}
+
+/// The intro card, section heading and column labels above the row list —
+/// split out of [`draw_default_apps_pane`] so that function stays readable
+/// as one top-to-bottom pass over the pane.
+fn draw_default_apps_header(
+    scene: &mut Scene,
+    transform: Affine,
+    pane: Rect,
+    status: &str,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
     draw_pane_intro(
         scene,
         transform,
@@ -1846,7 +1883,7 @@ pub fn draw_default_apps_pane(
         Icon::LayoutGrid,
         "Defaults without lock-in",
         "The workspace supplies a baseline; each person can explicitly choose something else.",
-        &status,
+        status,
         text_renderer,
         theme,
     );
@@ -1876,7 +1913,25 @@ pub fn draw_default_apps_pane(
         at(transform, pane.x1 - 194.0, heading_y + 22.0),
         None,
     );
-    let can_admin = ws.may_administer(local_user);
+}
+
+/// One row per resource kind: the workspace's policy cycler and the local
+/// user's own override, split out of [`draw_default_apps_pane`] to keep it
+/// under `too_many_lines`.
+fn draw_default_apps_rows(
+    scene: &mut Scene,
+    transform: Affine,
+    pane: Rect,
+    ctx: &DefaultAppsCtx<'_>,
+    can_admin: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let DefaultAppsCtx {
+        ws,
+        local_user,
+        candidates,
+    } = *ctx;
     for row in default_app_rows(pane, candidates) {
         draw_row_card(scene, transform, row.row_rect, theme);
         let label = row.resource.display_label();
@@ -1923,20 +1978,6 @@ pub fn draw_default_apps_pane(
             row.user_rect,
             choice_label,
             true,
-            text_renderer,
-            theme,
-        );
-    }
-    if candidates.iter().all(|a| a.resources.is_empty()) {
-        draw_empty_state(
-            scene,
-            transform,
-            pane,
-            Icon::LayoutGrid,
-            (
-                "No file handlers installed",
-                "Apps appear here after they declare supported file types.",
-            ),
             text_renderer,
             theme,
         );
@@ -2122,6 +2163,14 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
             + SECTION_HEADER_HEIGHT
             + COMPOSER_HEIGHT,
     );
+    layout_composer_controls(&mut layout, ws, card);
+    layout_capability_rows(&mut layout, ws, pane_rect, card);
+    layout
+}
+
+/// The composer card's subject/choice/expiry/submit controls — split out of
+/// [`permissions_pane_layout`] to keep it under `too_many_lines`.
+fn layout_composer_controls(layout: &mut PermissionsPaneLayout, ws: &Workspace, card: Rect) {
     let inner_x0 = card.x0 + 12.0;
     let inner_x1 = card.x1 - 12.0;
     let controls_y = card.y1 - 12.0 - CONTROL_HEIGHT;
@@ -2168,8 +2217,17 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
         layout.subject_rect = Rect::ZERO;
         layout.submit_rect = Rect::ZERO;
     }
+}
 
-    // ---- Capability rows ------------------------------------------
+/// The capability list below the composer, stopping once a row would run
+/// past the pane — split out of [`permissions_pane_layout`] to keep it
+/// under `too_many_lines`.
+fn layout_capability_rows(
+    layout: &mut PermissionsPaneLayout,
+    ws: &Workspace,
+    pane_rect: Rect,
+    card: Rect,
+) {
     let entries = listed_capabilities(ws);
     let mut cursor_y = card.y1 + 16.0;
     let mut last_kind: Option<SubjectKind> = None;
@@ -2211,7 +2269,6 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
         placed = placed.saturating_add(1);
     }
     layout.overflow = entries.len().saturating_sub(placed);
-    layout
 }
 
 /// Non-owners see the same list and controls, painted disabled, with a

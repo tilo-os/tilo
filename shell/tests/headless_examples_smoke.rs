@@ -40,8 +40,9 @@ fn assert_binary_exists() {
         .join("quick-desktop");
     assert!(
         bin.exists(),
-        "expected compositor binary at {bin:?} — run \
-         `cargo build -p quick-desktop --bin quick-desktop` before this test"
+        "expected compositor binary at {} — run \
+         `cargo build -p quick-desktop --bin quick-desktop` before this test",
+        bin.display()
     );
 }
 

@@ -433,15 +433,14 @@ impl Build<'_> {
             .copied();
         match w.accessibility() {
             Some(access) => {
-                let id = match taffy_id {
-                    Some(t) => SemanticId::widget(t),
+                let id = if let Some(t) = taffy_id {
+                    SemanticId::widget(t)
+                } else {
                     // Rare (never laid out); key under the parent so it
                     // still gets a stable id.
-                    None => {
-                        let root = SemanticId::root();
-                        let parent = parent_children.last().unwrap_or(&root);
-                        SemanticId::synthetic(parent, parent_children.len())
-                    }
+                    let root = SemanticId::root();
+                    let parent = parent_children.last().unwrap_or(&root);
+                    SemanticId::synthetic(parent, parent_children.len())
                 };
 
                 let mut children: Vec<SemanticId> = Vec::new();

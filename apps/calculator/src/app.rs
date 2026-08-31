@@ -934,7 +934,7 @@ impl Widget for CalculatorApp {
                 },
                 ..Default::default()
             })
-            .unwrap_or(NodeId::from(0u64));
+            .unwrap_or_else(|_| NodeId::from(0u64));
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node

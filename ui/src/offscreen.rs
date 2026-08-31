@@ -222,6 +222,12 @@ impl OffscreenRenderer {
         clippy::expect_used,
         reason = "render() is the harness's core primitive, called only from tests/shots; every expect() here guards an environment failure (poisoned lock, missing device, GPU/readback error) with no recoverable fallback — matching render_png's existing panic-on-failure contract below"
     )]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "already as tight as the borrow allows: `handle` below borrows from \
+                  `ctx`, so `ctx` can't drop until the clones are taken, and the block \
+                  already ends (dropping it) right after that"
+    )]
     pub fn render(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
         // The lock only guards host-side DeviceHandle bookkeeping, not
         // rendering — vello's kernels run GPU-side. Clone the cheap,
@@ -229,12 +235,6 @@ impl OffscreenRenderer {
         // immediately, rather than holding the shared context locked for
         // every other `OffscreenRenderer` through the whole render + readback.
         let (device, queue) = {
-            #[allow(
-                clippy::significant_drop_tightening,
-                reason = "already as tight as the borrow allows: `handle` below borrows from \
-                          `ctx`, so `ctx` can't drop until the clones are taken, and the block \
-                          already ends (dropping it) right after that"
-            )]
             let ctx = self.context.lock().expect("shared RenderContext poisoned");
             let handle = ctx
                 .devices

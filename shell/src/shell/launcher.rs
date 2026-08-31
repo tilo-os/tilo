@@ -670,6 +670,12 @@ pub fn resolve_launcher_bin() -> Result<PathBuf, LaunchError> {
 /// (dma-bufs generally can't cross GPUs). `document` rides across as
 /// `--open <path>` but grants nothing on its own — see
 /// [`crate::shell::doc_open`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the flat public convenience signature every non-uri caller (production and \
+              test) already depends on; `build_launch_command_for` is the one that groups \
+              extras into `LaunchExtras`, which this just forwards into with `uri: None`"
+)]
 pub fn build_launch_command(
     app: &InstalledApp,
     launcher_bin: &Path,

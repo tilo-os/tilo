@@ -100,6 +100,7 @@ pub fn text(
 
 /// Size/colour/weight bundle for [`text_clip`], kept together so its
 /// argument count stays within the lint limit without losing a parameter.
+#[derive(Clone, Copy)]
 pub struct TextStyle {
     pub size: f32,
     pub color: Color,
@@ -111,7 +112,7 @@ pub fn text_clip(
     scene: &mut Scene,
     tr: &mut TextRenderer,
     s: &str,
-    style: TextStyle,
+    style: &TextStyle,
     at: Point,
     max_width: f64,
 ) {
@@ -119,7 +120,7 @@ pub fn text_clip(
         size,
         color,
         weight,
-    } = style;
+    } = *style;
     let (w, _) = tr.measure_weighted(s, size, None, weight);
     if f64::from(w) <= max_width {
         tr.draw_text_weighted(

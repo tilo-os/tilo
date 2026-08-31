@@ -312,6 +312,11 @@ impl Harness {
         r
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "st's only use is producing tree via tree(), read from through the function's \
+                  last statement; nothing to drop earlier"
+    )]
     fn active_window(&self) -> (GroupId, u64) {
         let st = self.chrome.borrow();
         let tree = st.tree();

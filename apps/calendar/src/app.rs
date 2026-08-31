@@ -4581,6 +4581,12 @@ impl CalendarApp {
         clippy::too_many_arguments,
         reason = "internal draw-step split of an over-length function"
     )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, f is the form layout, e is the event being \
+                  edited, and c is the theme's colour set — conventional short names for \
+                  this draw step"
+    )]
     fn draw_event_form_calendar(
         &self,
         scene: &mut Scene,
@@ -4643,6 +4649,10 @@ impl CalendarApp {
         clippy::too_many_arguments,
         reason = "internal draw-step split of an over-length function"
     )]
+    #[allow(
+        clippy::similar_names,
+        reason = "rem_label and rem_chip serve distinct purposes"
+    )]
     fn draw_event_form_chips(
         scene: &mut Scene,
         t: Affine,
@@ -4669,19 +4679,11 @@ impl CalendarApp {
             false,
         );
         hits.push((rec_chip, Action::CycleRecurrence));
-        #[allow(
-            clippy::similar_names,
-            reason = "rem_label and rem_chip serve distinct purposes"
-        )]
         let rem_label = match e.reminder_min {
             None => "No reminder".to_string(),
             Some(m) if m >= 60 => format!("⏰ {}h before", m / 60),
             Some(m) => format!("⏰ {m}m before"),
         };
-        #[allow(
-            clippy::similar_names,
-            reason = "rem_label and rem_chip serve distinct purposes"
-        )]
         let rem_chip = chip(
             scene,
             t,
@@ -5998,6 +6000,11 @@ fn min_to_time(min: i64) -> NaiveTime {
     NaiveTime::from_hms_opt((m / 60) as u32, (m % 60) as u32, 0).unwrap()
 }
 
+#[allow(
+    clippy::many_single_char_names,
+    reason = "t is the paint transform, n is the count, and c/s/w/r are the colour set/count \
+              text/badge width/badge rect locals — conventional short names for this draw step"
+)]
 fn draw_count_badge(
     scene: &mut Scene,
     t: Affine,

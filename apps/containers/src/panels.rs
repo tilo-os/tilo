@@ -290,7 +290,7 @@ impl ContainersApp {
                 scene,
                 tr,
                 &self.engine.connection,
-                draw::TextStyle {
+                &draw::TextStyle {
                     size: theme.tokens.typography.scale.xs,
                     color: c.text_dim,
                     weight: TextWeight::Regular,
@@ -715,7 +715,7 @@ impl ContainersApp {
             scene,
             tr,
             &container.name,
-            draw::TextStyle {
+            &draw::TextStyle {
                 size: theme.tokens.typography.scale.base,
                 color: c.text_primary,
                 weight: TextWeight::Semibold,
@@ -778,7 +778,7 @@ impl ContainersApp {
                 scene,
                 tr,
                 &container.image,
-                draw::TextStyle {
+                &draw::TextStyle {
                     size: theme.tokens.typography.scale.sm,
                     color: c.text_dim,
                     weight: TextWeight::Regular,
@@ -800,7 +800,7 @@ impl ContainersApp {
                 scene,
                 tr,
                 &container.status_detail,
-                draw::TextStyle {
+                &draw::TextStyle {
                     size: theme.tokens.typography.scale.xs,
                     color: c.text_dim,
                     weight: TextWeight::Regular,
@@ -1008,7 +1008,7 @@ impl ContainersApp {
             scene,
             tr,
             &container.name,
-            draw::TextStyle {
+            &draw::TextStyle {
                 size: theme.tokens.typography.scale.xl,
                 color: c.text_primary,
                 weight: TextWeight::Bold,
@@ -1020,7 +1020,7 @@ impl ContainersApp {
             scene,
             tr,
             &container.image,
-            draw::TextStyle {
+            &draw::TextStyle {
                 size: theme.tokens.typography.scale.xs,
                 color: c.text_dim,
                 weight: TextWeight::Regular,
@@ -1237,7 +1237,7 @@ impl ContainersApp {
                 scene,
                 tr,
                 line,
-                draw::TextStyle {
+                &draw::TextStyle {
                     size: mono,
                     color,
                     weight: TextWeight::Regular,
@@ -1513,7 +1513,7 @@ impl ContainersApp {
                         scene,
                         tr,
                         k,
-                        draw::TextStyle {
+                        &draw::TextStyle {
                             size: theme.tokens.typography.scale.sm,
                             color: c.text_dim,
                             weight: TextWeight::Regular,
@@ -1531,7 +1531,7 @@ impl ContainersApp {
                         scene,
                         tr,
                         v,
-                        draw::TextStyle {
+                        &draw::TextStyle {
                             size: theme.tokens.typography.scale.sm,
                             color: c.text_primary,
                             weight,
@@ -1798,7 +1798,7 @@ impl ContainersApp {
             scene,
             tr,
             &image.reference(),
-            draw::TextStyle {
+            &draw::TextStyle {
                 size: theme.tokens.typography.scale.base,
                 color: c.text_primary,
                 weight: TextWeight::Semibold,
@@ -2101,7 +2101,7 @@ impl ContainersApp {
             scene,
             tr,
             &v.name,
-            draw::TextStyle {
+            &draw::TextStyle {
                 size: theme.tokens.typography.scale.base,
                 color: c.text_primary,
                 weight: TextWeight::Semibold,
@@ -2113,7 +2113,7 @@ impl ContainersApp {
             scene,
             tr,
             &v.mountpoint,
-            draw::TextStyle {
+            &draw::TextStyle {
                 size: theme.tokens.typography.scale.xs,
                 color: c.text_dim,
                 weight: TextWeight::Regular,
@@ -2221,7 +2221,7 @@ impl ContainersApp {
             scene,
             tr,
             intro,
-            draw::TextStyle {
+            &draw::TextStyle {
                 size: theme.tokens.typography.scale.sm,
                 color: c.text_dim,
                 weight: TextWeight::Regular,
@@ -2314,7 +2314,7 @@ impl ContainersApp {
             scene,
             tr,
             &b.name,
-            draw::TextStyle {
+            &draw::TextStyle {
                 size: theme.tokens.typography.scale.lg,
                 color: c.text_primary,
                 weight: TextWeight::Bold,
@@ -2335,7 +2335,7 @@ impl ContainersApp {
             scene,
             tr,
             &b.image,
-            draw::TextStyle {
+            &draw::TextStyle {
                 size: theme.tokens.typography.scale.xs,
                 color: c.text_dim,
                 weight: TextWeight::Regular,
@@ -2563,7 +2563,7 @@ impl ContainersApp {
                 scene,
                 tr,
                 value,
-                draw::TextStyle {
+                &draw::TextStyle {
                     size: theme.tokens.typography.scale.sm,
                     color: c.text_primary,
                     weight: TextWeight::Regular,
@@ -2739,7 +2739,7 @@ impl ContainersApp {
                     scene,
                     tr,
                     reference,
-                    draw::TextStyle {
+                    &draw::TextStyle {
                         size: theme.tokens.typography.scale.sm,
                         color: c.text_primary,
                         weight: TextWeight::Regular,
@@ -2867,7 +2867,7 @@ impl ContainersApp {
                 scene,
                 tr,
                 line,
-                draw::TextStyle {
+                &draw::TextStyle {
                     size: mono,
                     color: c.text_dim,
                     weight: TextWeight::Regular,
@@ -2961,7 +2961,7 @@ impl ContainersApp {
             scene,
             tr,
             &toast.message,
-            draw::TextStyle {
+            &draw::TextStyle {
                 size: theme.tokens.typography.scale.sm,
                 color: c.text_primary,
                 weight: TextWeight::Medium,
@@ -3136,7 +3136,7 @@ impl ContainersApp {
             Hit::PullImage(reference) => self.start_pull(&reference),
             Hit::PullTyped => self.apply_hit_pull_typed(doc),
             Hit::TagImage(reference) => self.apply_hit_tag_image(reference),
-            Hit::InspectImage(reference) => self.apply_hit_inspect_image(reference),
+            Hit::InspectImage(reference) => self.apply_hit_inspect_image(&reference),
             Hit::CreateVolume => {
                 self.prompt = Some(crate::app::Prompt {
                     kind: PromptKind::NewVolume,
@@ -3257,9 +3257,9 @@ impl ContainersApp {
         });
     }
 
-    fn apply_hit_inspect_image(&mut self, reference: String) {
+    fn apply_hit_inspect_image(&mut self, reference: &str) {
         if self.live {
-            let json = crate::podman::inspect_image(&reference);
+            let json = crate::podman::inspect_image(reference);
             let n = json.lines().count();
             self.show_toast(format!("Inspected {reference} ({n} lines)"), false);
         } else {

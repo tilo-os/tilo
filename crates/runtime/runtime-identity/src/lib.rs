@@ -940,6 +940,12 @@ impl SigningIdentity {
     /// Ask the workspace identity broker to sign one named app action. The
     /// shell binds the package and workspace before the app inherits this
     /// connection, then evaluates the exact action capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::ConnectionFailed`] if signing through the
+    /// action broker fails, or whatever [`Self::sign`] can return when this
+    /// identity has no action broker connection.
     pub fn sign_for(&self, action: &str, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
         match &self.source {
             SigningSource::ActionBroker(stream) => sign_via_action_broker(stream, action, message),
@@ -954,11 +960,7 @@ impl SigningIdentity {
                 io::ErrorKind::Unsupported,
                 "threshold signing requires the multi-device orchestrator",
             )),
-            SigningSource::Broker(_) => Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "refusing to chain identity brokers",
-            )),
-            SigningSource::ActionBroker(_) => Err(io::Error::new(
+            SigningSource::Broker(_) | SigningSource::ActionBroker(_) => Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "refusing to chain identity brokers",
             )),

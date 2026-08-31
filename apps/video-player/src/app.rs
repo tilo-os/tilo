@@ -118,8 +118,8 @@ impl PlayerApp {
     /// Open a filesystem `path` immediately (used by `--open PATH` and the
     /// portal outcome). Autoplays.
     #[must_use]
-    pub fn with_open_path(mut self, path: PathBuf) -> Self {
-        self.open_path(&path);
+    pub fn with_open_path(mut self, path: &Path) -> Self {
+        self.open_path(path);
         self
     }
 

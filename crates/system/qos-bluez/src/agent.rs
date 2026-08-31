@@ -207,6 +207,11 @@ impl PairingAgent {
     }
 
     /// Legacy pairing: show a PIN for the user to type on the other device.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "device's ObjectPath type and by-value form are dictated by the org.bluez.Agent1 \
+                  D-Bus method signature this interface implements"
+    )]
     fn display_pin_code(&self, device: ObjectPath<'_>, pincode: String) {
         self.notify(&device, PairingPrompt::DisplayPinCode { pin: pincode });
     }
@@ -223,6 +228,11 @@ impl PairingAgent {
 
     /// Show a passkey for the user to type on the other device. `entered` is how many digits
     /// the remote has acknowledged so far, so the prompt can show progress.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "device's ObjectPath type and by-value form are dictated by the org.bluez.Agent1 \
+                  D-Bus method signature this interface implements"
+    )]
     fn display_passkey(&self, device: ObjectPath<'_>, passkey: u32, entered: u16) {
         self.notify(&device, PairingPrompt::DisplayPasskey { passkey, entered });
     }

@@ -258,7 +258,7 @@ impl CommandPalette {
     pub fn handle_key(
         &mut self,
         event: &WindowEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut automerge::AutoCommit,
     ) -> bool {
         if !self.shared.is_open() {
@@ -274,7 +274,7 @@ impl CommandPalette {
             &mut self.shared,
             event,
             1.0,
-            modifiers,
+            &modifiers,
             state,
             &automerge::ROOT,
             &mut handled,
