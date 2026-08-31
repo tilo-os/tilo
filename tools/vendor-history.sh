@@ -7,7 +7,7 @@ repo_root=$(git rev-parse --show-toplevel)
 
 vello_branch=vendor-upstream/vello-0.9
 vello_base=f21d2c703175f5387315506865343c52f69b5b39
-vello_tip=cc8bb71173fc746f340aa36f0da580b7a8f95b1c
+vello_tip=108405981ee51fd9b2c3ee7ef9c3b8b1c6a9d223
 
 winit_branch=vendor-upstream/winit-0.30.13
 winit_base=967e2ec045e9485c10cfbd2323a4ede1a3751845
