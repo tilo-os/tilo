@@ -7097,6 +7097,12 @@ impl WordProcessorWidget {
         true
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the guards are already split into handle_key_press_guards; what is \
+                  left is one match whose arms are the key dispatch table, and a table \
+                  reads better whole than cut in half"
+    )]
     fn handle_key_press(
         &mut self,
         state: &mut AutoCommit,
