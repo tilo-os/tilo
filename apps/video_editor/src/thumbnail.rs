@@ -348,7 +348,7 @@ impl Default for ThumbnailCache {
 /// A source is written off after this many consecutive failed decodes. One
 /// bad seek near a damaged GOP should not condemn a whole clip; a file that
 /// answers nothing anywhere is not decodable.
-const FAILURES_BEFORE_GIVING_UP: u32 = 3;
+pub(crate) const FAILURES_BEFORE_GIVING_UP: u32 = 3;
 
 impl ThumbnailCache {
     pub fn new() -> Self {

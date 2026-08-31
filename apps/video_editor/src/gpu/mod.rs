@@ -1624,6 +1624,101 @@ mod tests {
         );
     }
 
+    /// A file the decoder can never read is given up on, rather than retried
+    /// for the life of the editor.
+    ///
+    /// The media bin holds whatever the project says it holds. Import refuses
+    /// a non-media file and says why, but that guard runs only at import: a
+    /// document persisted before it existed, or one replicated from a peer,
+    /// carries its items straight past it. Such an item reached the decoder on
+    /// every frame, each attempt paying the full frame timeout, so an editor
+    /// holding one stalled on a fixed cadence indefinitely — which is exactly
+    /// what a user reported as a "pseudo video" sitting in the clips.
+    ///
+    /// The fixture is an HTML page named `.mp4`, the real shape of the report:
+    /// a saved web page whose extension says video. It is deliberately *not*
+    /// checked through `probe`, because probing is the guard that already
+    /// works — this asserts the decode path gives up on its own.
+    #[test]
+    #[serial_test::serial(video_editor_gst)]
+    fn a_file_that_never_decodes_is_given_up_on() {
+        use crate::model::{MediaItem, MediaKind, Track, TrackKind};
+
+        // A unique name under the OS temp dir rather than a `tempfile`
+        // dependency the crate does not otherwise carry; removed at the end.
+        let path = std::env::temp_dir().join(format!("qos-ve-notmedia-{}.mp4", Uuid::new_v4()));
+        std::fs::write(
+            &path,
+            b"<!DOCTYPE html>\n<html><head><title>Not a video</title></head>\
+              <body><p>A saved web page.</p></body></html>\n",
+        )
+        .expect("write the fixture");
+
+        let mut p = Project::new("salvage");
+        p.width = 192;
+        p.height = 108;
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "holiday.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 10.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            path: path.to_string_lossy().into_owned(),
+            hydration: crate::media::Hydration::Local,
+            ..Default::default()
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            ..Default::default()
+        });
+        let cid = p.add_clip(tid, mid, 0.0).unwrap();
+        p.clip_mut(cid).unwrap().out_point = 10.0;
+
+        let (w, h) = (192u32, 108u32);
+        let mut c = compositor();
+        // A short timeout so the give-up threshold is reached in test time
+        // rather than in the production frame budget; the policy under test
+        // is the count, not the wait.
+        let mut sources = MediaFrameSource::new(&p, Fetch::Responsive)
+            .with_timeout(std::time::Duration::from_millis(50));
+
+        // Ask past the threshold, then keep asking.
+        let rounds = crate::thumbnail::FAILURES_BEFORE_GIVING_UP + 3;
+        for i in 0..rounds {
+            let _ = c.frame(&p, f64::from(i) * 0.5, w, h, &mut sources);
+        }
+
+        assert!(
+            sources.is_undecodable(mid),
+            "a source that answered nothing every time was still being treated as decodable",
+        );
+
+        // The real claim: it stopped *asking*. Written off but still opening a
+        // pipeline every frame would leave the stall exactly as it was, and
+        // `is_undecodable` alone cannot tell the two apart.
+        let settled = sources.decode_attempts();
+        for i in 0..5 {
+            let _ = c.frame(&p, f64::from(i) * 0.5, w, h, &mut sources);
+        }
+        assert_eq!(
+            sources.decode_attempts(),
+            settled,
+            "the editor kept re-opening a pipeline for a file it had already given up on",
+        );
+        assert!(
+            !sources.served_real_picture(),
+            "nothing decoded, so no real picture can have been served",
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
     /// The compositor painting a real hardware-decoded frame.
     ///
     /// This is the whole point of the media seam: a decoder emits NV12, the
