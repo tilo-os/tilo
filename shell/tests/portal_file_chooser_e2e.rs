@@ -87,7 +87,7 @@ fn key_press(ch: char) -> winit::event::WindowEvent {
 fn dispatch(host: &mut ShellOverlayHost, event: &winit::event::WindowEvent) {
     use ui::Widget;
     let mut tree = taffy::TaffyTree::<()>::new();
-    let node = tree.new_leaf(Default::default()).unwrap();
+    let node = tree.new_leaf(taffy::Style::default()).unwrap();
     let mut handled = false;
     let mut focus_target = None;
     let mut doc = automerge::AutoCommit::new();
@@ -219,6 +219,11 @@ fn context(
     }
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "ShellOverlayHost and the generic FnMut closure aren't Send; every call site \
+              awaits this in place on the test's own task, never spawning it"
+)]
 async fn pump_until(
     host: &mut ShellOverlayHost,
     what: &str,
@@ -237,6 +242,11 @@ async fn pump_until(
 /// Await a spawned portal call while still turning the pump — the pump is
 /// what answers the call, so awaiting one without running the other
 /// deadlocks.
+#[allow(
+    clippy::future_not_send,
+    reason = "ShellOverlayHost isn't Send; every call site awaits this in place on the \
+              test's own task, never spawning it"
+)]
 async fn await_response(
     host: &mut ShellOverlayHost,
     what: &str,
@@ -349,19 +359,21 @@ async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
 
     // And the grant that was recorded names that file — not "/".
     let tree = grants.tree_handle();
-    let guard = tree.read();
-    let paths: Vec<PathBuf> = guard
-        .workspaces
-        .iter()
-        .find(|w| w.id == ws)
-        .expect("workspace")
-        .app_capabilities(APP)
-        .into_iter()
-        .filter_map(|c| match Capability::from_capability(c) {
-            Some(Capability::Filesystem { path, .. }) => Some(path),
-            _ => None,
-        })
-        .collect();
+    let paths: Vec<PathBuf> = {
+        let guard = tree.read();
+        guard
+            .workspaces
+            .iter()
+            .find(|w| w.id == ws)
+            .expect("workspace")
+            .app_capabilities(APP)
+            .into_iter()
+            .filter_map(|c| match Capability::from_capability(c) {
+                Some(Capability::Filesystem { path, .. }) => Some(path),
+                _ => None,
+            })
+            .collect()
+    };
     assert!(
         paths.contains(&target),
         "the picked file must be granted; got {paths:?}"
@@ -464,19 +476,21 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
     // The grant is writable, and it covers the file — so the next save
     // does not ask again.
     let tree = grants.tree_handle();
-    let guard = tree.read();
-    let writable = guard
-        .workspaces
-        .iter()
-        .find(|w| w.id == ws)
-        .expect("workspace")
-        .app_capabilities(APP)
-        .into_iter()
-        .filter_map(|c| match Capability::from_capability(c) {
-            Some(Capability::Filesystem { path, mode, .. }) if path == handed => Some(mode),
-            _ => None,
-        })
-        .any(|m| matches!(m, FsMode::ReadWrite));
+    let writable = {
+        let guard = tree.read();
+        guard
+            .workspaces
+            .iter()
+            .find(|w| w.id == ws)
+            .expect("workspace")
+            .app_capabilities(APP)
+            .into_iter()
+            .filter_map(|c| match Capability::from_capability(c) {
+                Some(Capability::Filesystem { path, mode, .. }) if path == handed => Some(mode),
+                _ => None,
+            })
+            .any(|m| matches!(m, FsMode::ReadWrite))
+    };
     assert!(
         writable,
         "a Save must grant write access to the chosen file, or the app's \

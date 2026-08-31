@@ -134,6 +134,11 @@ pub fn register(registry: &mut ActionRegistry) {
 /// fields, which `serde_json` cannot fail to serialize — see
 /// [`crate::actions::immediate_choice`] for the same contract on the palette
 /// side.
+///
+/// # Panics
+///
+/// Never in practice: every [`DiffmergeAction`] field is a plain
+/// `String`/`usize`/enum, which `serde_json` cannot fail to serialize.
 #[allow(
     clippy::expect_used,
     reason = "DiffmergeAction's fields are always JSON-serializable; see doc comment"

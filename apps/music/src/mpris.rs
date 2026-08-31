@@ -366,6 +366,13 @@ mod imp {
     }
 
     #[interface(name = "org.mpris.MediaPlayer2.Player")]
+    #[allow(
+        clippy::used_underscore_binding,
+        reason = "zbus's #[interface] macro re-binds set_position's _track_id and open_uri's \
+                  _uri by their literal names in generated dispatch code, which trips the lint \
+                  even though neither method body reads them; dropping the underscore would \
+                  instead warn as an unused variable"
+    )]
     impl PlayerIface {
         fn play(&self) {
             let _ = self.cmd.send(MprisCommand::Play);
@@ -388,23 +395,13 @@ mod imp {
         fn seek(&self, offset: i64) {
             let _ = self.cmd.send(MprisCommand::Seek(offset));
         }
-        #[allow(
-            clippy::used_underscore_binding,
-            reason = "zbus's #[interface] macro re-binds this parameter by its literal name in \
-                      generated dispatch code, which trips the lint even though this method \
-                      body never reads it; dropping the underscore would instead warn as an \
-                      unused variable here"
-        )]
         fn set_position(&self, _track_id: ObjectPath<'_>, position: i64) {
             let _ = self.cmd.send(MprisCommand::SetPosition(position));
         }
         #[allow(
             clippy::unused_self,
-            clippy::used_underscore_binding,
             reason = "zbus's #[interface] macro requires &self even though there's no \
-                      external-URI enqueue surface yet, and re-binds `_uri` by name in \
-                      generated dispatch code, which trips used_underscore_binding even though \
-                      this body never reads it"
+                      external-URI enqueue surface yet"
         )]
         fn open_uri(&self, _uri: String) {
             // No external-URI enqueue surface yet.
@@ -519,6 +516,13 @@ mod imp {
     /// `old` and `new`, then store `new` as the served snapshot. Position is
     /// intentionally excluded (MPRIS clients poll it); a large jump additionally
     /// fires `Seeked`.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard must stay held across the snap write and every conditional \
+                  *_changed() emission below so they observe one consistent snapshot; \
+                  it's already scoped to a block and dropped before the unrelated \
+                  `seeked` check that follows"
+    )]
     pub(super) async fn apply_update(
         connection: &zbus::Connection,
         old: &PlayerSnapshot,
@@ -530,13 +534,6 @@ mod imp {
             .await?;
         let ctxt = iref.signal_context().clone();
         {
-            #[allow(
-                clippy::significant_drop_tightening,
-                reason = "the guard must stay held across the snap write and every conditional \
-                          *_changed() emission below so they observe one consistent snapshot; \
-                          it's already scoped to this block and dropped before the unrelated \
-                          `seeked` check that follows"
-            )]
             let mut guard = iref.get_mut().await;
             guard.snap = new.clone();
             if old.status != new.status {

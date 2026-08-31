@@ -229,11 +229,13 @@ pub fn run_udisks(call: &UdisksCall) -> Result<String, String> {
 ///
 /// Returns an error if the device cannot be opened or read.
 pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
+    const BLOCK: usize = 1 << 20;
+    const TARGET: usize = 64 << 20;
+    const SEEKS: u32 = 100;
+
     let path = format!("/dev/{dev_leaf}");
     let mut f = File::open(&path).map_err(|e| format!("open {path}: {e}"))?;
 
-    const BLOCK: usize = 1 << 20;
-    const TARGET: usize = 64 << 20;
     let mut buf = vec![0u8; BLOCK];
     let start = Instant::now();
     let mut total = 0usize;
@@ -251,8 +253,7 @@ pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
     let size = f.seek(SeekFrom::End(0)).unwrap_or(0).max(BLOCK as u64);
     let mut small = vec![0u8; 4096];
     let mut rng: u64 = 0x9e37_79b9_7f4a_7c15;
-    const SEEKS: u32 = 100;
-    let sstart = Instant::now();
+    let seek_start = Instant::now();
     for _ in 0..SEEKS {
         rng = rng
             .wrapping_mul(6_364_136_223_846_793_005)
@@ -261,7 +262,7 @@ pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
         let _ = f.seek(SeekFrom::Start(off));
         let _ = f.read(&mut small);
     }
-    let avg_ms = sstart.elapsed().as_secs_f64() * 1000.0 / f64::from(SEEKS);
+    let avg_ms = seek_start.elapsed().as_secs_f64() * 1000.0 / f64::from(SEEKS);
 
     Ok(format!(
         "{path}: {mbs:.0} MB/s sequential read · {avg_ms:.2} ms avg seek"

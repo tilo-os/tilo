@@ -133,10 +133,12 @@ mod tests {
         for y in 0..h {
             for x in 0..w {
                 out.push(
-                    u8::try_from(x.saturating_mul(255).saturating_div(w.max(1))).unwrap_or(255),
+                    u8::try_from(x.saturating_mul(255).checked_div(w.max(1)).unwrap_or(0))
+                        .unwrap_or(255),
                 );
                 out.push(
-                    u8::try_from(y.saturating_mul(255).saturating_div(h.max(1))).unwrap_or(255),
+                    u8::try_from(y.saturating_mul(255).checked_div(h.max(1)).unwrap_or(0))
+                        .unwrap_or(255),
                 );
                 out.push(128);
                 out.push(255);

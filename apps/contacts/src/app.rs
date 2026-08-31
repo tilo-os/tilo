@@ -3257,6 +3257,12 @@ fn draw_chevron(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme, left: b
     icon.draw(scene, t, rect, theme.tokens.colors.text_primary);
 }
 
+#[allow(
+    clippy::many_single_char_names,
+    reason = "t is the paint transform, c is the theme's colour set, and w/h/r are the \
+              toast's measured width/height/rect — conventional short names for this \
+              draw step"
+)]
 fn draw_toast(
     scene: &mut Scene,
     t: Affine,
@@ -3451,7 +3457,7 @@ impl Widget for ContactsApp {
         if self.handle_event_modals(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -3464,7 +3470,7 @@ impl Widget for ContactsApp {
         if self.handle_event_dispatch(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -3478,7 +3484,7 @@ impl Widget for ContactsApp {
         self.forward_event_to_inputs(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -3607,7 +3613,7 @@ impl ContactsApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -3672,7 +3678,7 @@ impl ContactsApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -3788,7 +3794,7 @@ impl ContactsApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -3800,7 +3806,7 @@ impl ContactsApp {
         self.search.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             handled,
@@ -3814,7 +3820,7 @@ impl ContactsApp {
                 f.ti.handle_event(
                     event,
                     scale_factor,
-                    modifiers,
+                    &modifiers,
                     state,
                     path,
                     handled,
@@ -3837,7 +3843,7 @@ impl ContactsApp {
         handled: &mut bool,
         node_id: NodeId,
         taffy: &TaffyTree<()>,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         path: &ObjId,
     ) {
         let p = self.last_mouse;
@@ -4334,7 +4340,7 @@ impl ContactsApp {
         path: &ObjId,
         node_id: NodeId,
         taffy: &TaffyTree<()>,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
     ) {
         // Reconstruct a press event at the current cursor and route it so
         // the focused input places its caret precisely.
@@ -4347,7 +4353,7 @@ impl ContactsApp {
         let mut sink = None;
         if self.search.is_focused() {
             self.search.handle_event(
-                &press, 1.0, modifiers, state, path, &mut h, &mut sink, node_id, taffy,
+                &press, 1.0, &modifiers, state, path, &mut h, &mut sink, node_id, taffy,
             );
         }
         if let Some(form) = &mut self.form {
@@ -4355,7 +4361,7 @@ impl ContactsApp {
                 if f.ti.is_focused() {
                     let mut s2 = None;
                     f.ti.handle_event(
-                        &press, 1.0, modifiers, state, path, &mut h, &mut s2, node_id, taffy,
+                        &press, 1.0, &modifiers, state, path, &mut h, &mut s2, node_id, taffy,
                     );
                 }
             }
@@ -4696,7 +4702,7 @@ impl ContactsApp {
         handled: &mut bool,
         node_id: NodeId,
         taffy: &TaffyTree<()>,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         scale_factor: f64,
         full_event: &WindowEvent,
     ) {
@@ -4835,7 +4841,7 @@ impl ContactsApp {
         &mut self,
         ke: &KeyEvent,
         state: &mut AutoCommit,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
     ) -> bool {
         match &ke.logical_key {
             Key::Named(NamedKey::Tab) => {

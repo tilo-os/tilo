@@ -120,6 +120,11 @@ pub enum ProvisioningError {
 /// Host-side contract: provision a Pipewire stream the frontend can
 /// attach to. Synchronous because the Pipewire C API is; production runs this from a tokio-blocking task or the compositor thread.
 pub trait ScreenCastStreamProvisioner: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns `Err` when the Pipewire daemon can't be reached, stream
+    /// setup fails mid-handshake, or the `pipewire` feature isn't
+    /// compiled in ([`ProvisioningError::NotImplemented`]).
     fn provision_stream(
         &self,
         req: &PipewireStreamRequest,
@@ -132,6 +137,12 @@ pub trait ScreenCastStreamProvisioner: Send + Sync {
     /// by [`Self::provision_stream`]. The real provisioner scopes it to the
     /// compositor's own connection; the mock returns a real but inert OS fd
     /// so the D-Bus fd-passing path is exercised without a daemon.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the Pipewire daemon can't be reached or the
+    /// `pipewire` feature isn't compiled in
+    /// ([`ProvisioningError::NotImplemented`]).
     fn open_remote_fd(&self) -> Result<std::os::fd::OwnedFd, ProvisioningError>;
 }
 
@@ -146,6 +157,10 @@ impl ScreenCastStreamProvisionerHandle {
         Self { inner }
     }
 
+    /// # Errors
+    ///
+    /// Returns `Err` under the same conditions as the wrapped
+    /// [`ScreenCastStreamProvisioner::provision_stream`] implementation.
     pub fn provision(
         &self,
         req: &PipewireStreamRequest,
@@ -154,6 +169,11 @@ impl ScreenCastStreamProvisionerHandle {
     }
 
     /// Open a `PipeWire` remote fd for `ScreenCast.OpenPipeWireRemote`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` under the same conditions as the wrapped
+    /// [`ScreenCastStreamProvisioner::open_remote_fd`] implementation.
     pub fn open_remote_fd(&self) -> Result<std::os::fd::OwnedFd, ProvisioningError> {
         self.inner.open_remote_fd()
     }

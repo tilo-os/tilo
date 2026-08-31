@@ -12,6 +12,7 @@ pub trait ColorCompat {
     fn a(&self) -> u8;
 
     /// Old peniko had `with_alpha_factor`; 0.6's `multiply_alpha` has the same semantics.
+    #[must_use]
     fn with_alpha_factor(self, factor: f32) -> Self;
 }
 

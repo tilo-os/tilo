@@ -694,7 +694,7 @@ mod tests {
         let expires = InviteExpiry::OneHour.resolve(now);
         assert_eq!(
             expires.duration_since(now).unwrap(),
-            Duration::from_hours(1)
+            Duration::from_secs(3600)
         );
     }
 }

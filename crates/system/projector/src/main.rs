@@ -784,7 +784,7 @@ fn adapt_capture_profile(
             .checked_mul(u64::from(height))
             .and_then(|value| value.checked_mul(u64::from(fps)));
         let bitrate_kbps = pixels_per_second
-            .map_or(u64::from(maximum.bitrate_kbps), |value| value / 12_000)
+            .map_or_else(|| u64::from(maximum.bitrate_kbps), |value| value / 12_000)
             .clamp(2_500, u64::from(maximum.bitrate_kbps));
         CaptureProfile::new(
             width,
@@ -1289,7 +1289,7 @@ fn run_adaptive_feedback_loop(
 /// the receiver sees a first frame quickly, before the feedback loop has any
 /// throughput data to adapt from.
 fn initial_capture_profile(
-    stream_policy: &DisplayStreamPolicy,
+    stream_policy: DisplayStreamPolicy,
     maximum_profile: CaptureProfile,
 ) -> CaptureProfile {
     if stream_policy.adaptive {
@@ -1322,7 +1322,7 @@ fn run_cast_session(args: &[String]) -> Result<(), String> {
     let paths = SessionPaths::resolve()?;
     paths.clear_markers();
     let mut maximum_profile = stream_policy.ceiling(None);
-    let initial_profile = initial_capture_profile(&stream_policy, maximum_profile);
+    let initial_profile = initial_capture_profile(stream_policy, maximum_profile);
     publish_capture_profile(&paths, initial_profile)?;
     fs::write(&paths.pid, std::process::id().to_string())
         .map_err(|error| format!("cannot record projection session: {error}"))?;
@@ -1347,7 +1347,7 @@ fn run_cast_session(args: &[String]) -> Result<(), String> {
     let (device, connected, fault_rx) = connect_cast_device(protocol, address, port, name)?;
     maximum_profile = stream_policy.ceiling(connected.receiver_resolution);
     let local_addr = connected.local_addr;
-    let initial_profile = initial_capture_profile(&stream_policy, maximum_profile);
+    let initial_profile = initial_capture_profile(stream_policy, maximum_profile);
     publish_capture_profile(&paths, initial_profile)?;
 
     let playlist_deadline = Instant::now()
@@ -1587,12 +1587,12 @@ mod tests {
         clippy::unused_self,
         reason = "zbus::interface dispatches by instance method, even for a stateless mock reply"
     )]
+    #[allow(
+        clippy::used_underscore_binding,
+        reason = "zbus::interface's generated dispatcher binds start_find's _options parameter by name even though the mock ignores it"
+    )]
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Device.WifiP2P")]
     impl SimulatedP2pDevice {
-        #[allow(
-            clippy::used_underscore_binding,
-            reason = "zbus::interface's generated dispatcher binds this parameter by name even though the mock ignores it"
-        )]
         fn start_find(&self, _options: HashMap<String, OwnedValue>) {}
 
         fn stop_find(&self) {}

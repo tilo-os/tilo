@@ -83,7 +83,7 @@ impl NumberControls {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &mut self,
-        field: NumberField,
+        field: &NumberField,
         value: f64,
         rect: Rect,
         scene: &mut Scene,
@@ -94,7 +94,7 @@ impl NumberControls {
         let index = self
             .controls
             .iter()
-            .position(|control| control.field == field)
+            .position(|control| control.field == *field)
             .unwrap_or_else(|| {
                 self.controls.push(NumberControl {
                     input: field.input(value),
@@ -127,7 +127,7 @@ impl NumberControls {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         node_id: NodeId,
@@ -141,7 +141,7 @@ impl NumberControls {
             control.input.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 root,
                 &mut local_handled,
@@ -262,7 +262,7 @@ impl NoteComposer {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         node_id: NodeId,
@@ -279,7 +279,7 @@ impl NoteComposer {
         self.input.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             root,
             handled,
@@ -522,7 +522,7 @@ mod tests {
         let (changed, submitted) = composer.handle_event(
             &key(Key::Character("world".into())),
             1.0,
-            &modifiers,
+            modifiers,
             &mut doc,
             &root,
             NodeId::new(0),
@@ -534,7 +534,7 @@ mod tests {
         let (_, submitted) = composer.handle_event(
             &key(Key::Named(NamedKey::Enter)),
             1.0,
-            &modifiers,
+            modifiers,
             &mut doc,
             &root,
             NodeId::new(0),

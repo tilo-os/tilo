@@ -54,7 +54,7 @@ const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 820);
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.video-editor", video_editor::app_root)
+        &LaunchSpec::new("dev.qos.video-editor", video_editor::app_root)
             .shot_handler(shot_handler)
             .allowed_flags(&["--empty", "--narrow"])
             .allowed_options(&["--import"])

@@ -8447,7 +8447,7 @@ impl Widget for WordProcessorWidget {
             let effect = self.find.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                *modifiers,
                 state,
                 path,
                 &mut find_handled,

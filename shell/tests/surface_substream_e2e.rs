@@ -63,7 +63,7 @@ fn substream_carries_frames_gossip_carries_announcements() {
     const W: u32 = 128;
     const H: u32 = 128;
     let session =
-        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg()).expect("session");
+        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, &cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
 
     match session.stream_start_msg() {
@@ -107,7 +107,9 @@ fn substream_carries_frames_gossip_carries_announcements() {
     for (i, ev) in events.iter().enumerate() {
         match ev {
             ReceiverEvent::Frame(f) => assert_eq!(f.sequence, i as u64),
-            other => panic!("expected Frame, got {other:?}"),
+            other @ ReceiverEvent::SequenceGap { .. } => {
+                panic!("expected Frame, got {other:?}")
+            }
         }
     }
 
@@ -129,7 +131,7 @@ fn stalled_viewer_drops_old_frames_via_bounded_queue() {
     const W: u32 = 64;
     const H: u32 = 64;
     let session =
-        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg()).expect("session");
+        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, &cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
 
     // Deposit + encode 6 frames without polling — cap is 3, so 3 drops expected.
@@ -157,7 +159,7 @@ fn per_subscriber_independent_backpressure() {
     const W: u32 = 64;
     const H: u32 = 64;
     let session =
-        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg()).expect("session");
+        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, &cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
     session.add_viewer(VIEWER_B, false);
 
@@ -184,7 +186,7 @@ fn per_subscriber_independent_backpressure() {
 fn drop_viewer_closes_substream_subscription() {
     const W: u32 = 32;
     const H: u32 = 32;
-    let session = SharedFlatpakSession::start(HOST, "x", SURFACE, W, H, cfg()).expect("session");
+    let session = SharedFlatpakSession::start(HOST, "x", SURFACE, W, H, &cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
     session.deposit_captured_rgba(gradient(W, H));
     session.encode_next_frame(Instant::now());

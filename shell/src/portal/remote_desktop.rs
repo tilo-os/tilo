@@ -200,18 +200,18 @@ impl RemoteDesktopBackend {
 impl RemoteDesktopBackend {
     /// Device types the seat can be driven with.
     #[zbus(property)]
-    async fn available_device_types(&self) -> u32 {
+    fn available_device_types(&self) -> u32 {
         device_type::ALL
     }
 
     /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise `PascalCase` it to `Version`).
     #[zbus(property, name = "version")]
-    async fn version(&self) -> u32 {
+    fn version(&self) -> u32 {
         REMOTE_DESKTOP_VERSION
     }
 
     /// `CreateSession` — register the session.
-    async fn create_session(
+    fn create_session(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
         _handle: ObjectPath<'_>,
@@ -280,6 +280,10 @@ impl RemoteDesktopBackend {
     }
 
     /// `Start` — commit the session. Returns the granted `devices` bitmask.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.RemoteDesktop.Start D-Bus signature"
+    )]
     async fn start(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
@@ -341,7 +345,7 @@ impl RemoteDesktopBackend {
     }
 
     /// Relative pointer motion.
-    async fn notify_pointer_motion(
+    fn notify_pointer_motion(
         &self,
         session_handle: ObjectPath<'_>,
         _options: HashMap<String, OwnedValue>,
@@ -356,7 +360,7 @@ impl RemoteDesktopBackend {
     }
 
     /// Absolute pointer motion, relative to a stream node.
-    async fn notify_pointer_motion_absolute(
+    fn notify_pointer_motion_absolute(
         &self,
         session_handle: ObjectPath<'_>,
         _options: HashMap<String, OwnedValue>,
@@ -372,7 +376,7 @@ impl RemoteDesktopBackend {
     }
 
     /// Pointer button (evdev code + state).
-    async fn notify_pointer_button(
+    fn notify_pointer_button(
         &self,
         session_handle: ObjectPath<'_>,
         _options: HashMap<String, OwnedValue>,
@@ -390,7 +394,7 @@ impl RemoteDesktopBackend {
     }
 
     /// Smooth scroll.
-    async fn notify_pointer_axis(
+    fn notify_pointer_axis(
         &self,
         session_handle: ObjectPath<'_>,
         _options: HashMap<String, OwnedValue>,
@@ -405,7 +409,7 @@ impl RemoteDesktopBackend {
     }
 
     /// Discrete scroll (`axis` 0 vertical, 1 horizontal).
-    async fn notify_pointer_axis_discrete(
+    fn notify_pointer_axis_discrete(
         &self,
         session_handle: ObjectPath<'_>,
         _options: HashMap<String, OwnedValue>,
@@ -420,7 +424,7 @@ impl RemoteDesktopBackend {
     }
 
     /// Key press/release by evdev keycode.
-    async fn notify_keyboard_keycode(
+    fn notify_keyboard_keycode(
         &self,
         session_handle: ObjectPath<'_>,
         _options: HashMap<String, OwnedValue>,
@@ -438,7 +442,7 @@ impl RemoteDesktopBackend {
     }
 
     /// Key press/release by keysym.
-    async fn notify_keyboard_keysym(
+    fn notify_keyboard_keysym(
         &self,
         session_handle: ObjectPath<'_>,
         _options: HashMap<String, OwnedValue>,

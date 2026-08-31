@@ -16,8 +16,8 @@
 //! descriptions do get info).
 //!
 //! Per-surface attach is double-buffered per spec (pending on
-//! `set_image_description`, applied on `wl_surface.commit`); the pending
-//! + current values live in `SurfaceData::data_map` under
+//! `set_image_description`, applied on `wl_surface.commit`); the
+//! pending and current values live in `SurfaceData::data_map` under
 //! [`ColorManagementSurfaceData`], flipped by the commit hook in
 //! [`crate::compositor::state::State`].
 
@@ -204,15 +204,38 @@ impl ParametricBuilder {
     /// Assemble the pieces into a settled image description. Returns
     /// `None` when the required-field set is incomplete.
     fn build(&self) -> Option<ImageDescriptionData> {
-        let inner = self.inner.lock().ok()?;
+        // Copy the (Copy-typed) fields out under the lock, then release it —
+        // everything below reads only these local copies, not `inner`.
+        let (
+            primaries_named,
+            primaries_custom,
+            tf_named,
+            tf_power_eexp,
+            mastering_primaries,
+            mastering_luminance,
+            max_cll,
+            max_fall,
+        ) = {
+            let inner = self.inner.lock().ok()?;
+            (
+                inner.primaries_named,
+                inner.primaries_custom,
+                inner.tf_named,
+                inner.tf_power_eexp,
+                inner.mastering_primaries,
+                inner.mastering_luminance,
+                inner.max_cll,
+                inner.max_fall,
+            )
+        };
         // Required: primaries + transfer.
-        let primaries = match (inner.primaries_named, inner.primaries_custom) {
-            (Some(p), _) => primaries_named_to_color(p)?,
+        let primaries = match (primaries_named, primaries_custom) {
+            (Some(p), _) => primaries_named_to_color(p),
             (None, Some(c)) => guess_primaries_from_custom(c),
             (None, None) => return None,
         };
-        let transfer = match (inner.tf_named, inner.tf_power_eexp) {
-            (Some(t), _) => transfer_named_to_color(t)?,
+        let transfer = match (tf_named, tf_power_eexp) {
+            (Some(t), _) => transfer_named_to_color(t),
             (None, Some(exp)) => match exp {
                 // Common named power curves.
                 22_000 => TransferCharacteristics::Bt709,
@@ -239,7 +262,7 @@ impl ParametricBuilder {
 
         // Optional HDR10 metadata from mastering primaries + luminances.
         let hdr = if transfer.is_hdr() {
-            let mastering = inner.mastering_primaries.map_or_else(
+            let mastering = mastering_primaries.map_or_else(
                 MasteringDisplayColorVolume::hdr10_reference,
                 |m| MasteringDisplayColorVolume {
                     display_primaries: [
@@ -248,17 +271,15 @@ impl ParametricBuilder {
                         (chrom_micro_to_st2086(m.b.0), chrom_micro_to_st2086(m.b.1)),
                     ],
                     white_point: (chrom_micro_to_st2086(m.w.0), chrom_micro_to_st2086(m.w.1)),
-                    max_display_mastering_luminance: inner
-                        .mastering_luminance
+                    max_display_mastering_luminance: mastering_luminance
                         .map_or(10_000_000, |(_, max)| max.saturating_mul(10_000)),
-                    min_display_mastering_luminance: inner
-                        .mastering_luminance
+                    min_display_mastering_luminance: mastering_luminance
                         .map_or(500, |(min, _)| min),
                 },
             );
             let light = ContentLightLevel {
-                max_content_light_level: inner.max_cll.map_or(0, clamp_to_u16),
-                max_frame_average_light_level: inner.max_fall.map_or(0, clamp_to_u16),
+                max_content_light_level: max_cll.map_or(0, clamp_to_u16),
+                max_frame_average_light_level: max_fall.map_or(0, clamp_to_u16),
             };
             Some(Hdr10Metadata { mastering, light })
         } else {
@@ -290,27 +311,25 @@ fn clamp_to_u16(v: u32) -> u16 {
     v.min(u32::from(u16::MAX)) as u16
 }
 
-fn primaries_named_to_color(p: Primaries) -> Option<ColorPrimaries> {
+fn primaries_named_to_color(p: Primaries) -> ColorPrimaries {
     match p {
-        Primaries::Srgb => Some(ColorPrimaries::Bt709),
-        Primaries::Bt2020 => Some(ColorPrimaries::Bt2020),
-        Primaries::DisplayP3 => Some(ColorPrimaries::DisplayP3),
+        Primaries::Srgb => ColorPrimaries::Bt709,
+        Primaries::Bt2020 => ColorPrimaries::Bt2020,
+        Primaries::DisplayP3 => ColorPrimaries::DisplayP3,
         // Unsupported / uncommon primaries — treat as unspecified so
         // the encoder falls back to BT.709 defaults rather than
         // crashing.
-        _ => Some(ColorPrimaries::Unspecified),
+        _ => ColorPrimaries::Unspecified,
     }
 }
 
-fn transfer_named_to_color(t: TransferFunction) -> Option<TransferCharacteristics> {
+fn transfer_named_to_color(t: TransferFunction) -> TransferCharacteristics {
     match t {
-        TransferFunction::Bt1886 => Some(TransferCharacteristics::Bt709),
-        TransferFunction::Gamma22 => Some(TransferCharacteristics::Bt709),
-        TransferFunction::St2084Pq => Some(TransferCharacteristics::SmpteSt2084),
-        TransferFunction::Hlg => Some(TransferCharacteristics::AribStdB67),
-        TransferFunction::Srgb => Some(TransferCharacteristics::Srgb),
-        TransferFunction::ExtSrgb => Some(TransferCharacteristics::Srgb),
-        _ => Some(TransferCharacteristics::Unspecified),
+        TransferFunction::Bt1886 | TransferFunction::Gamma22 => TransferCharacteristics::Bt709,
+        TransferFunction::St2084Pq => TransferCharacteristics::SmpteSt2084,
+        TransferFunction::Hlg => TransferCharacteristics::AribStdB67,
+        TransferFunction::Srgb | TransferFunction::ExtSrgb => TransferCharacteristics::Srgb,
+        _ => TransferCharacteristics::Unspecified,
     }
 }
 
@@ -646,13 +665,14 @@ where
                     states
                         .data_map
                         .insert_if_missing_threadsafe(ColorManagementSurfaceData::default);
-                    // `insert_if_missing_threadsafe` just above guarantees this is
-                    // present; `unwrap_or_else` (not `.expect()`) keeps that an
-                    // explicit, named panic rather than a bare assertion.
-                    let d = states
-                        .data_map
-                        .get::<ColorManagementSurfaceData>()
-                        .unwrap_or_else(|| panic!("ColorManagementSurfaceData missing after insert_if_missing_threadsafe"));
+                    // `insert_if_missing_threadsafe` just above should guarantee this
+                    // is present; if it's somehow missing, treat it as "already
+                    // taken" so the client sees a protocol error rather than the
+                    // compositor panicking (this process runs with `panic = "abort"`,
+                    // so a panic here would kill every other client's session too).
+                    let Some(d) = states.data_map.get::<ColorManagementSurfaceData>() else {
+                        return true;
+                    };
                     let mut inner = match d.inner.lock() {
                         Ok(g) => g,
                         // Poisoned mutex — treat as "already taken" so
@@ -698,7 +718,6 @@ where
                     "image_description references are unsupported".into(),
                 );
             }
-            wp_color_manager_v1::Request::Destroy => {}
             _ => {}
         }
     }
@@ -933,7 +952,6 @@ where
         _data_init: &mut DataInit<'_, D>,
     ) {
         match request {
-            wp_image_description_v1::Request::Destroy => {}
             wp_image_description_v1::Request::GetInformation { information } => {
                 // Parametric descriptions from our creator DO NOT
                 // permit get_information per spec (see the request's
@@ -1055,7 +1073,6 @@ where
         data_init: &mut DataInit<'_, D>,
     ) {
         match request {
-            wp_color_management_surface_feedback_v1::Request::Destroy => {}
             wp_color_management_surface_feedback_v1::Request::GetPreferred {
                 image_description,
             }
@@ -1093,7 +1110,6 @@ where
         data_init: &mut DataInit<'_, D>,
     ) {
         match request {
-            wp_color_management_output_v1::Request::Destroy => {}
             wp_color_management_output_v1::Request::GetImageDescription { image_description } => {
                 let desc = data.snapshot();
                 let identity_hi = desc.identity_hi();

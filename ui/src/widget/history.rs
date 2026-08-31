@@ -381,7 +381,7 @@ mod tests {
             "just now"
         );
         assert_eq!(
-            format_relative_time(base, base + Duration::from_mins(2)),
+            format_relative_time(base, base + Duration::from_secs(120)),
             "2 min ago"
         );
         assert_eq!(
@@ -389,7 +389,7 @@ mod tests {
             "2 h ago"
         );
         assert_eq!(
-            format_relative_time(base, base + Duration::from_secs(3 * 86_400)),
+            format_relative_time(base, base + Duration::from_secs(259200)),
             "3 d ago"
         );
     }

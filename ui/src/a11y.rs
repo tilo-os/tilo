@@ -131,7 +131,6 @@ impl AccessState {
     }
 
     #[must_use]
-
     pub fn focused(mut self, v: bool) -> Self {
         self.focused = v;
         self
@@ -279,7 +278,6 @@ impl AccessNode {
     }
 
     #[must_use]
-
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
@@ -293,21 +291,18 @@ impl AccessNode {
     }
 
     #[must_use]
-
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
 
     #[must_use]
-
     pub fn with_value(mut self, value: impl Into<String>) -> Self {
         self.value = Some(value.into());
         self
     }
 
     #[must_use]
-
     pub fn with_optional_value(mut self, value: Option<String>) -> Self {
         self.value = value;
         self
@@ -323,14 +318,12 @@ impl AccessNode {
     }
 
     #[must_use]
-
     pub fn with_state(mut self, state: AccessState) -> Self {
         self.state = state;
         self
     }
 
     #[must_use]
-
     pub fn with_live(mut self, politeness: Politeness) -> Self {
         self.live = Some(politeness);
         self
@@ -345,14 +338,12 @@ impl AccessNode {
     }
 
     #[must_use]
-
     pub fn with_level(mut self, level: usize) -> Self {
         self.level = Some(level);
         self
     }
 
     #[must_use]
-
     pub fn with_children(mut self, children: Vec<AccessNode>) -> Self {
         self.children = children;
         self

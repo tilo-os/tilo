@@ -1492,6 +1492,7 @@ struct ScrollMetrics {
 // ====================================================================
 
 /// Icon/label/style bundle for [`CameraApp::ctrl_pill`].
+#[derive(Clone, Copy)]
 struct PillContent<'a> {
     icon: Option<&'a str>,
     label: &'a str,
@@ -2594,6 +2595,7 @@ fn code_icon(kind: &CodeKind) -> &'static str {
 // ====================================================================
 
 /// Layout + selection bundle for [`CameraApp::draw_gallery_grid`].
+#[derive(Clone, Copy)]
 struct GalleryGridCtx<'a> {
     grid: Rect,
     filtered: &'a [Capture],

@@ -184,9 +184,10 @@ mod tests {
     fn nearest_upscale(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
         let mut out = vec![0u8; dw.saturating_mul(dh).saturating_mul(4) as usize];
         for y in 0..dh {
-            let sy = (y.saturating_mul(sh) / dh).min(sh.saturating_sub(1));
+            let sy = (y.saturating_mul(sh).checked_div(dh).unwrap_or(0)).min(sh.saturating_sub(1));
             for x in 0..dw {
-                let sx = (x.saturating_mul(sw) / dw).min(sw.saturating_sub(1));
+                let sx =
+                    (x.saturating_mul(sw).checked_div(dw).unwrap_or(0)).min(sw.saturating_sub(1));
                 let si = sy.saturating_mul(sw).saturating_add(sx).saturating_mul(4) as usize;
                 let di = y.saturating_mul(dw).saturating_add(x).saturating_mul(4) as usize;
                 out[di..di.saturating_add(4)].copy_from_slice(&src[si..si.saturating_add(4)]);

@@ -108,8 +108,7 @@ fn draw_data_words(tag: vello_encoding::DrawTag) -> Option<usize> {
     Some(match tag {
         DrawTag::COLOR => 1,
         DrawTag::IMAGE => 3,
-        DrawTag::LINEAR_GRADIENT => 5,
-        DrawTag::SWEEP_GRADIENT => 5,
+        DrawTag::LINEAR_GRADIENT | DrawTag::SWEEP_GRADIENT => 5,
         DrawTag::RADIAL_GRADIENT => 7,
         DrawTag::BLUR_RECT => 5,
         DrawTag::BEGIN_CLIP => 2,
@@ -1089,6 +1088,8 @@ fn topbar_system_monitor_ram_label_takes_the_themes_info_colour() {
 /// always draws it. Renders with no cursor, then at y=200.
 #[test]
 fn maximized_chrome_hides_when_cursor_below_y_80() {
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{Modifiers, WindowEvent};
     let theme = Theme::dark();
 
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
@@ -1152,8 +1153,6 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
     let fills_no_cursor = collect_solid_colors(&scene_no_cursor).len();
 
     // y=200 is well below the y<=80 reveal band; chrome should still hide.
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{Modifiers, WindowEvent};
     let cursor_event = WindowEvent::CursorMoved {
         device_id: unsafe { std::mem::zeroed() },
         position: PhysicalPosition::new(480.0, 200.0),
@@ -1673,8 +1672,8 @@ fn two_peers_arriving_off_the_wire_paint_two_avatars_on_the_bar() {
 }
 
 /// The cluster renders through the shared `ui::Avatar`: 5 peers -> 3 chips
-/// + a "+2" overflow, each chip in its own cursor hue rather than one flat
-/// accent. Asserts all three hues plus non-empty glyph runs.
+/// plus a "+2" overflow, each chip in its own cursor hue rather than one
+/// flat accent. Asserts all three hues plus non-empty glyph runs.
 #[test]
 fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
     use shell::shell::state::{Collaborator, Workspace, WorkspaceId, WorkspaceTree};
@@ -1691,8 +1690,8 @@ fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
     let mut tree = WorkspaceTree {
         workspaces: vec![ws],
         active: ws_id,
-        active_strip: Default::default(),
-        active_group: Default::default(),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
         collaborators: vec![],
         ..Default::default()
     };

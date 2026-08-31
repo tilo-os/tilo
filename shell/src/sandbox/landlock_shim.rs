@@ -98,6 +98,12 @@ impl ShimArgs {
     /// Unknown flags before `--` are ignored (forward-compat: a newer
     /// compositor may emit flags an older shim doesn't grok — better to
     /// drop the extra rule than refuse the launch).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when a `--ro`/`--rw` flag has no path following it,
+    /// no `--` separator is present, or `--` is present but no command
+    /// follows it.
     pub fn parse(args: &[String]) -> Result<ShimArgs, ShimParseError> {
         let mut ro = Vec::new();
         let mut rw = Vec::new();
@@ -182,7 +188,7 @@ impl LandlockOutcome {
 /// Map the crate's `RulesetStatus` to our log-friendly outcome. Split out
 /// (and `pub(crate)`) so it is unit-testable without touching the kernel —
 /// the `RulesetStatus` variants are constructible directly.
-pub(crate) fn outcome_from_status(status: RulesetStatus) -> LandlockOutcome {
+pub(crate) fn outcome_from_status(status: &RulesetStatus) -> LandlockOutcome {
     match status {
         RulesetStatus::FullyEnforced => LandlockOutcome::FullyEnforced,
         RulesetStatus::PartiallyEnforced => LandlockOutcome::PartiallyEnforced,
@@ -274,7 +280,7 @@ fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, RulesetError
 /// logging.
 pub fn apply(args: &ShimArgs) -> LandlockOutcome {
     match build_and_restrict(args) {
-        Ok(status) => outcome_from_status(status.ruleset),
+        Ok(status) => outcome_from_status(&status.ruleset),
         Err(e) => {
             tracing::warn!("landlock: failed to build/apply ruleset: {e}");
             LandlockOutcome::Errored
@@ -284,6 +290,11 @@ pub fn apply(args: &ShimArgs) -> LandlockOutcome {
 
 /// Entry point for the `shell __sandbox-exec …` hidden subcommand. `args`
 /// is the slice after the `__sandbox-exec` token itself.
+#[allow(
+    clippy::exit,
+    reason = "this *is* the process — a malformed shim invocation has no caller \
+              to propagate a Result to, only an exit code for bwrap to observe"
+)]
 pub fn run_sandbox_exec(args: &[String]) -> ! {
     let parsed = match ShimArgs::parse(args) {
         Ok(p) => p,
@@ -317,6 +328,11 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
 
 /// `execvp` the real command, replacing the process image. Only returns
 /// (via `exit`) on failure.
+#[allow(
+    clippy::exit,
+    reason = "this *is* the process — execvp replaces the image on success, \
+              and on failure there is no caller left to propagate a Result to"
+)]
 fn exec_real_command(command: &[String]) -> ! {
     // `ShimArgs::parse` guarantees a non-empty command, but guard anyway.
     let Some(program) = command.first() else {
@@ -443,25 +459,25 @@ mod tests {
         let plan = access_plan(&ro, &rw, abi);
         assert_eq!(plan.len(), 2);
 
-        let ro_rule = plan.iter().find(|r| r.path == *"/usr").unwrap();
-        assert_eq!(ro_rule.access, AccessFs::from_read(abi));
+        let readonly_rule = plan.iter().find(|r| r.path == *"/usr").unwrap();
+        assert_eq!(readonly_rule.access, AccessFs::from_read(abi));
         assert!(
-            !ro_rule.access.contains(AccessFs::WriteFile),
+            !readonly_rule.access.contains(AccessFs::WriteFile),
             "read-only rule must not grant WriteFile"
         );
 
-        let rw_rule = plan.iter().find(|r| r.path == *"/work").unwrap();
-        assert_eq!(rw_rule.access, AccessFs::from_all(abi));
+        let readwrite_rule = plan.iter().find(|r| r.path == *"/work").unwrap();
+        assert_eq!(readwrite_rule.access, AccessFs::from_all(abi));
         assert!(
-            rw_rule.access.contains(AccessFs::WriteFile),
+            readwrite_rule.access.contains(AccessFs::WriteFile),
             "read-write rule must grant WriteFile"
         );
         assert!(
-            rw_rule.access.contains(AccessFs::MakeReg),
+            readwrite_rule.access.contains(AccessFs::MakeReg),
             "read-write rule must grant create (MakeReg)"
         );
         assert!(
-            rw_rule.access.contains(ro_rule.access),
+            readwrite_rule.access.contains(readonly_rule.access),
             "read-write access must be a superset of read-only access"
         );
     }
@@ -515,15 +531,15 @@ mod tests {
     #[test]
     fn outcome_mapping_covers_all_ruleset_statuses() {
         assert_eq!(
-            outcome_from_status(RulesetStatus::FullyEnforced),
+            outcome_from_status(&RulesetStatus::FullyEnforced),
             LandlockOutcome::FullyEnforced
         );
         assert_eq!(
-            outcome_from_status(RulesetStatus::PartiallyEnforced),
+            outcome_from_status(&RulesetStatus::PartiallyEnforced),
             LandlockOutcome::PartiallyEnforced
         );
         assert_eq!(
-            outcome_from_status(RulesetStatus::NotEnforced),
+            outcome_from_status(&RulesetStatus::NotEnforced),
             LandlockOutcome::NotEnforced
         );
     }

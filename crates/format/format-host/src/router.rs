@@ -96,16 +96,23 @@ impl Router {
     /// when the caller passes a `hint`. Ties broken by package-id sort order
     /// for determinism.
     pub fn best_for_mime(&self, mime: &str) -> Option<ActiveProvider> {
-        let g = self.providers.read();
-        let mut candidates: Vec<&ActiveProvider> =
-            g.values().filter(|p| p.entry.mime == mime).collect();
+        // Clone matches out while the guard is live, then drop it before
+        // sorting the (now independent) owned candidates — the lock isn't
+        // needed past this.
+        let mut candidates: Vec<ActiveProvider> = self
+            .providers
+            .read()
+            .values()
+            .filter(|p| p.entry.mime == mime)
+            .cloned()
+            .collect();
         candidates.sort_by(|a, b| {
             b.entry
                 .tier
                 .cmp(&a.entry.tier)
                 .then_with(|| a.entry.package.cmp(&b.entry.package))
         });
-        candidates.first().map(|p| (*p).clone())
+        candidates.into_iter().next()
     }
 
     /// `detect()`: try the hinted MIME first; if no provider matches, ask each

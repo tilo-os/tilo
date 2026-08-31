@@ -1,11 +1,10 @@
 //! Four execution modes for the `shots` binary:
-//!   - `offscreen`  — wgpu adapter, no window; captures PNGs.
-//!   - `headless`   — no GPU; dumps state JSON.
-//!   - `recording`  — wgpu adapter, no window; encodes a scenario to
-//!                    a raw H.264 NALU stream (Annex-B), suitable for
-//!                    ffplay / mpv / vlc.
-//!   - `window`     — real winit window; pre-rolls a scenario then
-//!                    yields control to the live event loop.
+//!   - `offscreen` — wgpu adapter, no window; captures PNGs.
+//!   - `headless` — no GPU; dumps state JSON.
+//!   - `recording` — wgpu adapter, no window; encodes a scenario to a raw
+//!     H.264 NALU stream (Annex-B), suitable for ffplay / mpv / vlc.
+//!   - `window` — real winit window; pre-rolls a scenario then yields
+//!     control to the live event loop.
 
 use std::path::Path;
 
@@ -125,11 +124,8 @@ pub mod offscreen {
     ///
     /// # Errors
     ///
-    /// Returns an error if the output directory cannot be created.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a scene named in `scenes` fails its own setup.
+    /// Returns an error if the output directory cannot be created, or if a
+    /// scene named in `scenes` fails its own setup.
     pub fn run_scenes(scenes: &[String], dir: &Path, viewport: (u32, u32)) -> Result<(), String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("create offscreen output dir '{}': {e}", dir.display()))?;
@@ -146,7 +142,7 @@ pub mod offscreen {
             let mut driver = ShellDriver::new(viewport);
             driver
                 .scene_setup(name)
-                .unwrap_or_else(|e| panic!("scene_setup({name}) failed: {e}"));
+                .map_err(|e| format!("scene_setup({name}) failed: {e}"))?;
             let scene = driver.paint_settled();
             let path = dir.join(format!("{name}.png"));
             renderer.render_png(&scene, Color::TRANSPARENT, &path);
@@ -392,7 +388,9 @@ pub mod window {
             let mut sink = NullSink;
             scenario::run(&mut driver, scenario, &mut sink);
             let chrome = driver.chrome();
-            if let Err(e) = persist::save_tree_to(&chrome.tree(), &path) {
+            let saved = persist::save_tree_to(&chrome.tree(), &path);
+            drop(chrome);
+            if let Err(e) = saved {
                 eprintln!("shots: pre-roll persist failed: {e}");
             }
         }
@@ -483,7 +481,9 @@ mod tests {
         assert_eq!(frame.height, 96);
         let pixels = match &frame.pixels {
             shell::network::DecodedPixels::Rgba8(bytes) => bytes,
-            other => panic!("SDR H.264 decoder should yield RGBA pixels, got {other:?}"),
+            other @ shell::network::DecodedPixels::P010 { .. } => {
+                panic!("SDR H.264 decoder should yield RGBA pixels, got {other:?}")
+            }
         };
         let first_r = pixels[0];
         // If every pixel's R channel equals the first byte, the frame is

@@ -40,6 +40,12 @@ pub const LEGACY_PEER_KEY_PATH: &str = "/var/lib/qos-fs/peer-key";
 
 /// Load the device key, creating it only when the path is genuinely absent.
 /// Malformed, unreadable or over-permissive files are never replaced.
+///
+/// # Errors
+///
+/// Returns an error if the key file exists but is malformed or unreadable,
+/// if migrating a legacy libp2p key fails, or if creating a fresh key or its
+/// parent directory fails.
 pub fn load_or_create_keypair(path: &std::path::Path) -> std::io::Result<iroh::SecretKey> {
     load_or_create_keypair_with_legacy(path, std::path::Path::new(LEGACY_PEER_KEY_PATH))
 }
@@ -136,8 +142,8 @@ fn seed_from_libp2p_protobuf(bytes: &[u8]) -> Option<[u8; 32]> {
 /// Convert an Ed25519 libp2p `PeerId` to the Iroh endpoint that uses the same
 /// public key. Only inline-public-key `PeerIds` are accepted.
 pub fn endpoint_from_legacy_peer_id(text: &str) -> Option<iroh::EndpointId> {
-    let bytes = bs58::decode(text).into_vec().ok()?;
     const PREFIX: &[u8] = &[0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
+    let bytes = bs58::decode(text).into_vec().ok()?;
     if bytes.len() != PREFIX.len().saturating_add(32) || !bytes.starts_with(PREFIX) {
         return None;
     }

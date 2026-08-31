@@ -237,7 +237,7 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
 
 /// The scalar SMART fields read directly off the smartctl JSON (part of
 /// [`parse_smart`]): overall-passed, temperature, power-on hours, power
-/// cycles, and NVMe percentage-used.
+/// cycles, and `NVMe` percentage-used.
 #[allow(
     clippy::type_complexity,
     reason = "five independently-optional scalars from one JSON document; a struct would just rename the same five fields"
@@ -330,7 +330,7 @@ fn parse_ata_attrs(json: &Value) -> (Vec<SmartAttr>, Option<i64>) {
     (attrs, reallocated)
 }
 
-/// Synthetic attribute rows derived from the NVMe health log, appended to
+/// Synthetic attribute rows derived from the `NVMe` health log, appended to
 /// `attrs` (part of [`parse_smart`]).
 fn append_nvme_attrs(json: &Value, pct_used: Option<i64>, attrs: &mut Vec<SmartAttr>) {
     let Some(log) = json.pointer("/nvme_smart_health_information_log") else {

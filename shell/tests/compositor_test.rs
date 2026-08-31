@@ -44,19 +44,16 @@ fn dump_has_foreign_app_id(dump_path: &std::path::Path, app_id: &str) -> Option<
     let root: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let workspaces = root.get("workspaces")?.as_array()?;
     for ws in workspaces {
-        let strips = match ws.get("strips").and_then(|s| s.as_array()) {
-            Some(s) => s,
-            None => continue,
+        let Some(strips) = ws.get("strips").and_then(|s| s.as_array()) else {
+            continue;
         };
         for strip in strips {
-            let groups = match strip.get("window_groups").and_then(|g| g.as_array()) {
-                Some(g) => g,
-                None => continue,
+            let Some(groups) = strip.get("window_groups").and_then(|g| g.as_array()) else {
+                continue;
             };
             for group in groups {
-                let tabs = match group.get("tabs").and_then(|t| t.as_array()) {
-                    Some(t) => t,
-                    None => continue,
+                let Some(tabs) = group.get("tabs").and_then(|t| t.as_array()) else {
+                    continue;
                 };
                 for tab in tabs {
                     // Tab.tile is serialized as externally-tagged enum:
@@ -139,11 +136,12 @@ fn spawn_compositor(dump_path: &std::path::Path) -> (std::process::Child, String
                     return (child, name);
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     let _ = child.kill();
+    let _ = child.wait();
     panic!("compositor never printed `nirios compositor listening on …` within 8s");
 }
 

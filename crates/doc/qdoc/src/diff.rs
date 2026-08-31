@@ -704,7 +704,7 @@ pub fn diff_workbooks(old: &WorkbookSnapshot, new: &WorkbookSnapshot) -> SheetDi
                 for c in &change.cells {
                     match c.op {
                         CellOp::Added => {
-                            summary.cells_added = summary.cells_added.saturating_add(1)
+                            summary.cells_added = summary.cells_added.saturating_add(1);
                         }
                         CellOp::Removed => {
                             summary.cells_removed = summary.cells_removed.saturating_add(1);

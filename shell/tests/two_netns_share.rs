@@ -112,6 +112,10 @@ struct HostInputRecorder {
 }
 
 impl RemoteInputSink for HostInputRecorder {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "masked against u64::MAX just above, so this always fits"
+    )]
     fn apply(&mut self, _peer: PeerId, _surface: SurfaceId, _event: InputEvent) {
         let ts_ns = (self.origin.elapsed().as_nanos() & u128::from(u64::MAX)) as u64;
         self.received_ns.lock().expect("host input log").push(ts_ns);
@@ -125,7 +129,7 @@ impl RemoteInputSink for HostInputRecorder {
 fn run_host_thread(
     host_session: &SharedFlatpakSession,
     host_stop: &AtomicBool,
-    input_sock_host: UdpSocket,
+    input_sock_host: &UdpSocket,
     video_addr: std::net::SocketAddr,
     host_input_ts_c: Arc<std::sync::Mutex<Vec<u64>>>,
 ) {
@@ -179,8 +183,12 @@ fn run_host_thread(
 /// video socket, re-frame, decode, count frames and measure latency,
 /// sending input packets back on `input_addr`. Split out to keep that test
 /// short.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "masked against u64::MAX just above, so this always fits"
+)]
 fn run_viewer_thread(
-    video_sock_viewer: UdpSocket,
+    video_sock_viewer: &UdpSocket,
     viewer_stop: &AtomicBool,
     recv_count: &AtomicU32,
     origin: Instant,
@@ -196,7 +204,9 @@ fn run_viewer_thread(
     let mut latency_samples: Vec<u64> = Vec::new();
     let mut recv_buf = [0u8; 2048];
 
-    let mut next_input_at = Instant::now() + Duration::from_millis(200);
+    let mut next_input_at = Instant::now()
+        .checked_add(Duration::from_millis(200))
+        .expect("200ms from now must not overflow Instant");
     let mut input_count = 0u32;
 
     while !viewer_stop.load(Ordering::Acquire) {
@@ -204,9 +214,8 @@ fn run_viewer_thread(
             rx.push_bytes(&recv_buf[..n]);
         }
 
-        let events = match rx.drain() {
-            Ok(e) => e,
-            Err(_) => continue,
+        let Ok(events) = rx.drain() else {
+            continue;
         };
         for ev in events {
             if let ReceiverEvent::Frame(frame) = ev {
@@ -231,8 +240,10 @@ fn run_viewer_thread(
             };
             let bytes = serde_json::to_vec(&ev).expect("input serde");
             let _ = input_send.send_to(&bytes, input_addr);
-            input_count += 1;
-            next_input_at = now + Duration::from_millis(200);
+            input_count = input_count.saturating_add(1);
+            next_input_at = now
+                .checked_add(Duration::from_millis(200))
+                .expect("200ms from now must not overflow Instant");
         }
 
         thread::sleep(Duration::from_millis(5));
@@ -261,7 +272,7 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
         SURFACE,
         FRAME_W,
         FRAME_H,
-        cfg(),
+        &cfg(),
     )
     .expect("session");
     session.add_viewer(VIEWER_PEER, false);
@@ -280,7 +291,7 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
         run_host_thread(
             &host_session,
             &host_stop,
-            input_sock_host,
+            &input_sock_host,
             video_addr,
             host_input_ts_c,
         );
@@ -293,7 +304,7 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
     let origin = session.origin();
     let viewer_thread = thread::spawn(move || {
         run_viewer_thread(
-            video_sock_viewer,
+            &video_sock_viewer,
             &viewer_stop,
             &recv_count,
             origin,
@@ -358,7 +369,7 @@ fn netns_host_process() {
         SURFACE,
         FRAME_W,
         FRAME_H,
-        cfg(),
+        &cfg(),
     )
     .expect("session");
     session.add_viewer(VIEWER_PEER, false);
@@ -466,7 +477,7 @@ fn udp_smoke_frame_round_trips_via_framer_and_decoder() {
     let addr = viewer_sock.local_addr().expect("addr");
     let sender_sock = UdpSocket::bind("127.0.0.1:0").expect("sender sock");
 
-    let session = SharedFlatpakSession::start(HOST_PEER, "app", SURFACE, FRAME_W, FRAME_H, cfg())
+    let session = SharedFlatpakSession::start(HOST_PEER, "app", SURFACE, FRAME_W, FRAME_H, &cfg())
         .expect("session");
     session.add_viewer(VIEWER_PEER, false);
     session.deposit_captured_rgba(gradient());
@@ -506,9 +517,9 @@ fn udp_smoke_frame_round_trips_via_framer_and_decoder() {
     assert_eq!(received.payload, frame.payload);
 
     let mut decoder = H264Decoder::new();
-    let decoded = decoder
+    let decoded_frame = decoder
         .decode(&received.payload)
         .expect("decode UDP-transported NALUs");
-    assert_eq!(decoded.width, FRAME_W);
-    assert_eq!(decoded.height, FRAME_H);
+    assert_eq!(decoded_frame.width, FRAME_W);
+    assert_eq!(decoded_frame.height, FRAME_H);
 }

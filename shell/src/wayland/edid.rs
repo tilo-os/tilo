@@ -304,8 +304,10 @@ fn parse_hdr_static_metadata_block(body: &[u8], info: &mut HdrDisplayInfo) {
         // 1_000_000 — well under u32::MAX.
         #[allow(
             clippy::cast_possible_truncation,
-            reason = "min_cd_m2 <= 100.0 (see above), so the *10_000.0 product tops out at \
-                      1_000_000 — well under u32::MAX"
+            clippy::cast_sign_loss,
+            reason = "min_cd_m2 is a product/quotient of non-negative factors (see above), so \
+                      it and the *10_000.0 product are never negative, and the product tops out \
+                      at 1_000_000 — well under u32::MAX"
         )]
         let micro = (min_cd_m2 * 10_000.0).round() as u32;
         info.min_luminance_micro_cd_m2 = micro;

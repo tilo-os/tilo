@@ -220,7 +220,7 @@ impl EventPopovers {
         edit: &mut Option<PopoverEdit>,
     ) {
         match kind {
-            PopoverKind::None => {}
+            PopoverKind::None | PopoverKind::Calendar => {}
             PopoverKind::StartDate | PopoverKind::EndDate => {
                 let before = self.date_picker.selected();
                 self.date_picker.handle_event(
@@ -270,7 +270,6 @@ impl EventPopovers {
                     *handled = true;
                 }
             }
-            PopoverKind::Calendar => {}
         }
     }
 
@@ -290,13 +289,12 @@ impl EventPopovers {
             .find(|(rect, _)| rect.contains(pointer))
             .map(|(_, hit)| hit.clone());
         match hit {
-            Some(Hit::Dismiss) => self.close(),
+            Some(Hit::Dismiss) | None => self.close(),
             Some(Hit::Guard) => {}
             Some(Hit::Calendar(target)) => {
                 *edit = Some(PopoverEdit::Calendar(target));
                 self.close();
             }
-            None => self.close(),
         }
         *handled = true;
     }

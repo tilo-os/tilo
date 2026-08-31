@@ -2427,6 +2427,8 @@ mod tests {
     fn comment_roundtrips_through_odt() {
         use crate::document::MarkValue;
         use crate::schema::MARK_COMMENT;
+        // (author, body text, (range start, range end)) per comment, for a stable equality check.
+        type CommentSummary = (String, String, Option<(usize, usize)>);
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "please fix this word now");
@@ -2490,8 +2492,6 @@ mod tests {
         let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
         OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
-        // (author, body text, (range start, range end)) per comment, for a stable equality check.
-        type CommentSummary = (String, String, Option<(usize, usize)>);
         let authors_texts = |snap: &DocSnapshot| {
             let mut v: Vec<CommentSummary> = snap
                 .comments

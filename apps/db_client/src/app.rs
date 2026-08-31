@@ -614,7 +614,7 @@ impl Widget for DbClientApp {
                 self.on_cursor_moved(position.x, position.y, scale_factor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.on_mouse_wheel(delta, modifiers, handled);
+                self.on_mouse_wheel(delta, *modifiers, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -632,7 +632,7 @@ impl Widget for DbClientApp {
                     },
                 ..
             } => {
-                self.on_key_pressed(logical_key, modifiers, handled);
+                self.on_key_pressed(logical_key, *modifiers, handled);
             }
             _ => {}
         }
@@ -801,7 +801,7 @@ impl DbClientApp {
     fn on_mouse_wheel(
         &mut self,
         delta: &MouseScrollDelta,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         handled: &mut bool,
     ) {
         let (dx_px, dy) = match delta {
@@ -847,7 +847,7 @@ impl DbClientApp {
         }
     }
 
-    fn on_key_pressed(&mut self, logical_key: &Key, modifiers: &Modifiers, handled: &mut bool) {
+    fn on_key_pressed(&mut self, logical_key: &Key, modifiers: Modifiers, handled: &mut bool) {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         // Global shortcut: Ctrl+Enter runs regardless of focus.
         if ctrl {

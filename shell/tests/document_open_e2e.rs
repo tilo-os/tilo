@@ -104,13 +104,13 @@ impl Session {
         host: &mut ShellOverlayHost,
         layout: &Layout,
         modifiers: ModifiersState,
-        event: WindowEvent,
+        event: &WindowEvent,
     ) {
         let modifiers = Modifiers::from(modifiers);
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         host.handle_event(
-            &event,
+            event,
             1.0,
             &modifiers,
             &mut self.doc,
@@ -129,8 +129,8 @@ impl Session {
         modifiers: ModifiersState,
         key: Key,
     ) {
-        let event = key_press_event(key);
-        self.dispatch(host, layout, modifiers, event);
+        let event = key_press_event(&key);
+        self.dispatch(host, layout, modifiers, &event);
     }
 
     fn type_str(&mut self, host: &mut ShellOverlayHost, layout: &Layout, s: &str) {
@@ -148,7 +148,7 @@ impl Session {
 /// winit 0.30 exposes no `KeyEvent` constructor (`platform_specific` is
 /// `pub(crate)`), so zero-init and overwrite the fields the shell reads —
 /// as `e2e_shell_flows.rs::escape_event` does.
-fn key_press_event(key: Key) -> WindowEvent {
+fn key_press_event(key: &Key) -> WindowEvent {
     // SAFETY: every public field of `KeyEvent` has a valid all-zero bit
     // pattern (`Option` → `None`, the enums' first variants, `bool` →
     // `false`) and the fields the shell reads are overwritten below.
@@ -158,7 +158,7 @@ fn key_press_event(key: Key) -> WindowEvent {
     ev.location = KeyLocation::Standard;
     ev.state = ElementState::Pressed;
     ev.repeat = false;
-    ev.text = if let Key::Character(s) = &key {
+    ev.text = if let Key::Character(s) = key {
         Some(s.clone())
     } else {
         None
@@ -419,7 +419,7 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
         &mut host,
         &layout,
         ModifiersState::empty(),
-        WindowEvent::CursorMoved {
+        &WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: winit::dpi::PhysicalPosition::new(over.x, over.y),
         },
@@ -428,7 +428,7 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
         &mut host,
         &layout,
         ModifiersState::empty(),
-        WindowEvent::DroppedFile(doc_path.clone()),
+        &WindowEvent::DroppedFile(doc_path.clone()),
     );
 
     let commands = launched_commands(&log, 1);

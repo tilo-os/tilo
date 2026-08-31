@@ -202,7 +202,6 @@ impl PairingPromptView {
 fn accept_label(prompt: &PairingPrompt) -> &'static str {
     match prompt {
         PairingPrompt::ConfirmPasskey { .. } => "They match",
-        PairingPrompt::RequestPasskey | PairingPrompt::RequestPinCode => "Pair",
         PairingPrompt::AuthorizeService { .. } => "Allow",
         _ => "Pair",
     }

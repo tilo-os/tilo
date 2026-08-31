@@ -688,7 +688,7 @@ impl ChatApp {
                         == Some(ch.id.as_str())
                 })
                 .map_or(0.0, |s| s.dx());
-            y = self.draw_channel_row(scene, tf, tr, theme, side, &ch, y, swipe_dx, hits);
+            y = self.draw_channel_row(scene, tf, tr, theme, side, ch, y, swipe_dx, hits);
 
             // Voice presence: list connected members under a voice channel.
             if ch.kind == ChannelKind::Voice {
