@@ -61,6 +61,7 @@ pub fn main() {
                 "--traffic",
                 "--offline",
                 "--menu",
+                "--attribution",
             ])
             .allowed_options(&["--panel"])
             .configure_app(|app| maps::actions::register(app.action_registry_mut())),
@@ -115,6 +116,9 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     }
     if args.has("--menu") {
         app.set_demo_overflow();
+    }
+    if args.has("--attribution") {
+        app.set_demo_attribution();
     }
     Ok(Box::new(app))
 }
