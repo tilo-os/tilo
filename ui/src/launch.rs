@@ -22,6 +22,7 @@ type ViewportFactory = fn(&LaunchArgs) -> (u32, u32);
 type ConfigureApp = fn(&mut App);
 type OpenState = fn(&'static str) -> (State, crate::persist::Autosave);
 type OpenStateWithArgs = fn(&'static str, &LaunchArgs) -> (State, crate::persist::Autosave);
+type LiveHandler = fn(&LaunchArgs) -> Result<(), LaunchError>;
 
 /// Parsed common launch arguments. Extra flags are retained for an app's
 /// screenshot factory after being explicitly allow-listed by [`LaunchSpec`].
@@ -65,6 +66,7 @@ pub struct LaunchSpec {
     shot_handler: Option<ShotHandler>,
     shot_viewport: ViewportFactory,
     configure_app: Option<ConfigureApp>,
+    live_handler: Option<LiveHandler>,
     open_state: OpenState,
     open_state_with_args: Option<OpenStateWithArgs>,
     allowed_flags: &'static [&'static str],
@@ -85,6 +87,7 @@ impl LaunchSpec {
             shot_handler: None,
             shot_viewport: |_| DEFAULT_VIEWPORT,
             configure_app: None,
+            live_handler: None,
             open_state: crate::persist::open,
             open_state_with_args: None,
             allowed_flags: &[],
@@ -107,6 +110,7 @@ impl LaunchSpec {
             shot_handler: None,
             shot_viewport: |_| DEFAULT_VIEWPORT,
             configure_app: None,
+            live_handler: None,
             open_state: crate::persist::open,
             open_state_with_args: None,
             allowed_flags: &[],
@@ -153,6 +157,17 @@ impl LaunchSpec {
     #[must_use]
     pub fn configure_app(mut self, configure: ConfigureApp) -> Self {
         self.configure_app = Some(configure);
+        self
+    }
+
+    /// Delegate windowed startup after standard argument parsing and after the
+    /// screenshot/headless modes have been dispatched. This is for apps whose
+    /// live [`App`] needs non-capturable setup such as an event-loop proxy or a
+    /// coordinated file-backed state/root pair. Prefer [`Self::configure_app`]
+    /// when ordinary `App::run` is sufficient.
+    #[must_use]
+    pub fn live_handler(mut self, handler: LiveHandler) -> Self {
+        self.live_handler = Some(handler);
         self
     }
 
@@ -348,6 +363,10 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         std::process::exit(headless::run(headless, spec.live_root(&args)?, spec.app_id));
     }
 
+    if let Some(handler) = spec.live_handler {
+        return handler(&args);
+    }
+
     let (state, autosave) = spec.open_state_with_args.map_or_else(
         || (spec.open_state)(spec.app_id),
         |open| open(spec.app_id, &args),
@@ -532,6 +551,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static CUSTOM_SHOT_RAN: AtomicBool = AtomicBool::new(false);
+    static CUSTOM_LIVE_RAN: AtomicBool = AtomicBool::new(false);
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
@@ -728,9 +748,31 @@ mod tests {
     #[test]
     fn custom_shot_pipeline_uses_standard_mode_dispatch() {
         CUSTOM_SHOT_RAN.store(false, Ordering::SeqCst);
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root).shot_handler(custom_shot);
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+            .shot_handler(custom_shot)
+            .live_handler(unexpected_live);
         run_with_args(&spec, &strings(&["app", "--shots", "/tmp/custom.png"])).unwrap();
         assert!(CUSTOM_SHOT_RAN.load(Ordering::SeqCst));
+    }
+
+    fn unexpected_live(_args: &LaunchArgs) -> Result<(), LaunchError> {
+        panic!("screenshot dispatch reached the live handler")
+    }
+
+    fn custom_live(args: &LaunchArgs) -> Result<(), LaunchError> {
+        if !args.positionals().is_empty() {
+            return Err(LaunchError::Operation("unexpected positional".into()));
+        }
+        CUSTOM_LIVE_RAN.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    #[test]
+    fn custom_live_pipeline_runs_after_standard_mode_dispatch() {
+        CUSTOM_LIVE_RAN.store(false, Ordering::SeqCst);
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root).live_handler(custom_live);
+        run_with_args(&spec, &strings(&["app"])).unwrap();
+        assert!(CUSTOM_LIVE_RAN.load(Ordering::SeqCst));
     }
 
     fn custom_open_state(app_id: &'static str) -> (State, crate::persist::Autosave) {
