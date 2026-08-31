@@ -634,6 +634,27 @@ pub fn plan_layers(project: &Project, playhead: f64) -> Vec<Layer> {
     out
 }
 
+/// The clip a transition on `c` dissolves *from*, if there is one.
+///
+/// A transition is a property of the incoming clip's head, so the outgoing
+/// side is whatever sits immediately before it — but only if it actually
+/// reaches the cut. Taking the previous clip unconditionally meant a clip
+/// preceded by a **gap** composited that earlier clip's last frame at full
+/// alpha underneath it: footage the timeline shows ending seconds ago,
+/// reappearing under a dissolve it has nothing to do with.
+///
+/// Abutting is compared with a tolerance rather than exactly, because clip
+/// edges are seconds in floating point and a trim that lands a frame short
+/// should still dissolve.
+fn outgoing_neighbour<'a>(clips: &[&'a Clip], i: usize) -> Option<&'a Clip> {
+    let c = clips.get(i)?;
+    let prev = clips.get(i.checked_sub(1)?)?;
+    // Half a frame at 30fps: closer than a person can place an edge, and far
+    // enough that a real gap never passes.
+    const ABUT_EPSILON: f64 = 1.0 / 60.0;
+    (prev.end() >= c.start - ABUT_EPSILON).then_some(*prev)
+}
+
 fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Layer>) {
     let clips = project.clips_on(track.id);
     // A predecessor drawn *by* a transition must not also be drawn as an
@@ -641,8 +662,11 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
     // strength by its own A side.
     let mut claimed: Vec<ClipId> = Vec::new();
     for (i, c) in clips.iter().enumerate() {
-        if i > 0 && c.covers(playhead) && active_transition(c, playhead).is_some() {
-            claimed.push(clips[i - 1].id);
+        if c.covers(playhead)
+            && active_transition(c, playhead).is_some()
+            && let Some(prev) = outgoing_neighbour(&clips, i)
+        {
+            claimed.push(prev.id);
         }
     }
 
@@ -675,7 +699,7 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
         let mk = |alpha: f64, wipe: Option<Wipe>| {
             layer_at(c, playhead, t_in, alpha, wipe, alpha_src, title.clone())
         };
-        let prev = i.checked_sub(1).map(|j| clips[j]);
+        let prev = outgoing_neighbour(&clips, i);
         let Some((kind, t)) = active_transition(c, playhead) else {
             out.push(mk(base, None));
             continue;
@@ -734,6 +758,69 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
 mod tests {
     use super::*;
     use crate::doc::sample_project;
+
+    /// A clip separated by a gap is not dragged into the next clip's
+    /// dissolve.
+    ///
+    /// The A side used to be `clips[i - 1]` unconditionally. With a gap
+    /// before the incoming clip, that composited the earlier clip's frozen
+    /// last frame at full alpha underneath it — footage the timeline shows
+    /// as having ended seconds ago, reappearing under an unrelated
+    /// transition.
+    #[test]
+    fn a_gap_before_a_dissolve_leaves_the_earlier_clip_out_of_it() {
+        use crate::model::{MediaItem, MediaKind, Project, Track, TrackKind, Transition};
+
+        let mut p = Project::new("gap");
+        let media = uuid::Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: media,
+            name: "m.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 60.0,
+            ..Default::default()
+        });
+        let track = uuid::Uuid::new_v4();
+        p.tracks.push(Track {
+            id: track,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            ..Default::default()
+        });
+
+        let early = p.add_clip(track, media, 0.0).unwrap();
+        p.clip_mut(early).unwrap().out_point = 4.0;
+
+        // A deliberate gap: the next clip starts well after the first ends.
+        let late = p.add_clip(track, media, 20.0).unwrap();
+        {
+            let c = p.clip_mut(late).unwrap();
+            c.out_point = 10.0;
+            c.transition = Transition::CrossDissolve;
+            c.transition_duration = 1.0;
+        }
+
+        // Just inside the incoming clip's transition window.
+        let layers = plan_layers(&p, 20.3);
+        assert!(
+            layers.iter().any(|l| l.clip == late),
+            "the incoming clip should be on screen: {layers:?}",
+        );
+        assert!(
+            layers.iter().all(|l| l.clip != early),
+            "a clip that ended at 4s must not be composited under a dissolve at 20s: {layers:?}",
+        );
+
+        // And the abutting case still dissolves, so the guard did not simply
+        // switch transitions off.
+        p.clip_mut(late).unwrap().start = 4.0;
+        let layers = plan_layers(&p, 4.3);
+        assert!(
+            layers.iter().any(|l| l.clip == early),
+            "an abutting predecessor is still the A side of the dissolve: {layers:?}",
+        );
+    }
 
     #[test]
     fn empty_when_no_clip_covers_playhead() {
