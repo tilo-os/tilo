@@ -486,7 +486,7 @@ async fn run(
                     peer: crate::network::behaviour::peer_liveness_handle(&endpoint.id()),
                     ts: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_millis() as u64),
+                        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
                 };
                 if let Ok(bytes) = postcard::to_allocvec(&msg) {
                     for topic in topics.values() {

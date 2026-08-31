@@ -458,7 +458,10 @@ fn render_inline(
         }
         if let Some(note_id) = run.note_reference {
             if let Some(note) = notes.get(note_id) {
-                *note_ctr += 1;
+                // A per-document note counter; bounded by how many notes
+                // one document has, nowhere near `usize::MAX` (or the
+                // note-counter's actual integer type's max).
+                *note_ctr = note_ctr.saturating_add(1);
                 out.push_str(&super::notes::render_inline_note(note, *note_ctr));
             }
             continue;
@@ -1225,13 +1228,14 @@ mod tests {
             .collect()
     }
 
-    /// Normalize a region's blocks to `(text, marks-with-values)`, dropping the volatile per-import block id so two independent imports compare equal.
-    fn norm_region(
-        blocks: &[crate::snapshot::BlockView],
-    ) -> Vec<(
+    /// One block's `(text, marks-with-values)`, marks as `(start, end, name, value)`.
+    type NormalizedRegionBlock = (
         String,
         Vec<(usize, usize, String, crate::document::MarkValue)>,
-    )> {
+    );
+
+    /// Normalize a region's blocks to `(text, marks-with-values)`, dropping the volatile per-import block id so two independent imports compare equal.
+    fn norm_region(blocks: &[crate::snapshot::BlockView]) -> Vec<NormalizedRegionBlock> {
         blocks
             .iter()
             .map(|b| {

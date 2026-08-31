@@ -8,7 +8,10 @@
 /// Deterministic 16-bit peer salt from the durable iroh endpoint key.
 pub fn peer_salt_from_keypair(key: &iroh::SecretKey) -> u16 {
     let h = fnv1a_64(key.public().as_bytes());
-    (h as u16) ^ ((h >> 16) as u16) ^ ((h >> 32) as u16) ^ ((h >> 48) as u16)
+    ((h & 0xFFFF) as u16)
+        ^ (((h >> 16) & 0xFFFF) as u16)
+        ^ (((h >> 32) & 0xFFFF) as u16)
+        ^ (((h >> 48) & 0xFFFF) as u16)
 }
 
 /// Fold an authenticated endpoint id to the numeric liveness handle carried
@@ -118,10 +121,10 @@ fn migrate_protobuf_key(path: &std::path::Path) -> std::io::Result<ed25519_dalek
 /// Keeping this tiny decoder local avoids retaining libp2p just for migration.
 fn seed_from_libp2p_protobuf(bytes: &[u8]) -> Option<[u8; 32]> {
     const HEADER: &[u8] = &[0x08, 0x01, 0x12, 0x40];
-    if bytes.len() != HEADER.len() + 64 || !bytes.starts_with(HEADER) {
+    if bytes.len() != HEADER.len().saturating_add(64) || !bytes.starts_with(HEADER) {
         return None;
     }
-    let keypair: [u8; 64] = bytes[HEADER.len()..].try_into().ok()?;
+    let keypair: [u8; 64] = bytes.get(HEADER.len()..)?.try_into().ok()?;
     let seed: [u8; 32] = keypair[..32].try_into().ok()?;
     let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
     if signing.verifying_key().to_bytes() != keypair[32..] {
@@ -135,10 +138,10 @@ fn seed_from_libp2p_protobuf(bytes: &[u8]) -> Option<[u8; 32]> {
 pub fn endpoint_from_legacy_peer_id(text: &str) -> Option<iroh::EndpointId> {
     let bytes = bs58::decode(text).into_vec().ok()?;
     const PREFIX: &[u8] = &[0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
-    if bytes.len() != PREFIX.len() + 32 || !bytes.starts_with(PREFIX) {
+    if bytes.len() != PREFIX.len().saturating_add(32) || !bytes.starts_with(PREFIX) {
         return None;
     }
-    let public: [u8; 32] = bytes[PREFIX.len()..].try_into().ok()?;
+    let public: [u8; 32] = bytes.get(PREFIX.len()..)?.try_into().ok()?;
     iroh::EndpointId::from_bytes(&public).ok()
 }
 

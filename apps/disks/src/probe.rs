@@ -198,119 +198,9 @@ fn smart_for(name: &str, kind: DriveKind) -> Option<SmartInfo> {
 /// the result is an honest `Unknown` with a `detail` saying *why*, rather
 /// than the misleading "device exposes no SMART".
 pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
-    let passed = json
-        .pointer("/smart_status/passed")
-        .and_then(serde_json::Value::as_bool);
-    let temp = json
-        .pointer("/temperature/current")
-        .and_then(serde_json::Value::as_i64);
-    let poh = json
-        .pointer("/power_on_time/hours")
-        .and_then(serde_json::Value::as_i64);
-    let cycles = json
-        .pointer("/power_cycle_count")
-        .and_then(serde_json::Value::as_i64);
-    let pct_used = json
-        .pointer("/nvme_smart_health_information_log/percentage_used")
-        .and_then(serde_json::Value::as_i64);
-
-    let mut attrs = Vec::new();
-    let mut reallocated = None;
-
-    // ATA attribute table.
-    if let Some(table) = json
-        .pointer("/ata_smart_attributes/table")
-        .and_then(|v| v.as_array())
-    {
-        for a in table {
-            let id = a.get("id").and_then(serde_json::Value::as_u64).unwrap_or(0) as u16;
-            let aname = a
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .replace('_', " ");
-            let raw = a
-                .pointer("/raw/string")
-                .and_then(|v| v.as_str())
-                .map(std::string::ToString::to_string)
-                .or_else(|| {
-                    a.pointer("/raw/value")
-                        .and_then(serde_json::Value::as_i64)
-                        .map(|n| n.to_string())
-                })
-                .unwrap_or_default();
-            let when_failed = a.get("when_failed").and_then(|v| v.as_str()).unwrap_or("-");
-            let sev = if when_failed != "-" && !when_failed.is_empty() {
-                AttrSeverity::Crit
-            } else if (id == 5 || id == 197)
-                && raw
-                    .split_whitespace()
-                    .next()
-                    .and_then(|s| s.parse::<i64>().ok())
-                    .unwrap_or(0)
-                    > 0
-            {
-                AttrSeverity::Warn
-            } else {
-                AttrSeverity::Ok
-            };
-            if id == 5 {
-                reallocated = raw
-                    .split_whitespace()
-                    .next()
-                    .and_then(|s| s.parse::<i64>().ok());
-            }
-            attrs.push(SmartAttr {
-                id,
-                name: aname,
-                value: raw,
-                severity: sev,
-            });
-        }
-    }
-
-    // NVMe health log → a few synthetic attribute rows.
-    if let Some(log) = json.pointer("/nvme_smart_health_information_log") {
-        if let Some(spare) = log
-            .get("available_spare")
-            .and_then(serde_json::Value::as_i64)
-        {
-            attrs.push(SmartAttr {
-                id: 5,
-                name: "Available Spare".into(),
-                value: format!("{spare} %"),
-                severity: if spare < 10 {
-                    AttrSeverity::Warn
-                } else {
-                    AttrSeverity::Ok
-                },
-            });
-        }
-        if let Some(pu) = pct_used {
-            attrs.push(SmartAttr {
-                id: 9,
-                name: "Percentage Used".into(),
-                value: format!("{pu} %"),
-                severity: if pu > 90 {
-                    AttrSeverity::Warn
-                } else {
-                    AttrSeverity::Ok
-                },
-            });
-        }
-        if let Some(me) = log.get("media_errors").and_then(serde_json::Value::as_i64) {
-            attrs.push(SmartAttr {
-                id: 1,
-                name: "Media Errors".into(),
-                value: me.to_string(),
-                severity: if me > 0 {
-                    AttrSeverity::Warn
-                } else {
-                    AttrSeverity::Ok
-                },
-            });
-        }
-    }
+    let (passed, temp, poh, cycles, pct_used) = smart_scalars(json);
+    let (mut attrs, reallocated) = parse_ata_attrs(json);
+    append_nvme_attrs(json, pct_used, &mut attrs);
 
     let written_gb = json
         .pointer("/nvme_smart_health_information_log/data_units_written")
@@ -318,17 +208,7 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
         // NVMe data units are 512000-byte blocks → GB.
         .map(|u| u * 512_000 / 1_000_000_000);
 
-    let status = match passed {
-        Some(true) => {
-            if attrs.iter().any(|a| a.severity != AttrSeverity::Ok) {
-                SmartStatus::Warning
-            } else {
-                SmartStatus::Passed
-            }
-        }
-        Some(false) => SmartStatus::Failing,
-        None => SmartStatus::Unknown,
-    };
+    let status = smart_status_of(passed, &attrs);
 
     // No usable telemetry at all → explain why, distinguishing a hard access
     // error (needs privilege / unsupported bridge) from a device that simply
@@ -352,6 +232,164 @@ pub fn parse_smart(json: &Value, kind: DriveKind) -> SmartInfo {
         written_gb,
         attrs,
         detail: None,
+    }
+}
+
+/// The scalar SMART fields read directly off the smartctl JSON (part of
+/// [`parse_smart`]): overall-passed, temperature, power-on hours, power
+/// cycles, and NVMe percentage-used.
+#[allow(
+    clippy::type_complexity,
+    reason = "five independently-optional scalars from one JSON document; a struct would just rename the same five fields"
+)]
+fn smart_scalars(
+    json: &Value,
+) -> (
+    Option<bool>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+) {
+    let passed = json
+        .pointer("/smart_status/passed")
+        .and_then(serde_json::Value::as_bool);
+    let temp = json
+        .pointer("/temperature/current")
+        .and_then(serde_json::Value::as_i64);
+    let poh = json
+        .pointer("/power_on_time/hours")
+        .and_then(serde_json::Value::as_i64);
+    let cycles = json
+        .pointer("/power_cycle_count")
+        .and_then(serde_json::Value::as_i64);
+    let pct_used = json
+        .pointer("/nvme_smart_health_information_log/percentage_used")
+        .and_then(serde_json::Value::as_i64);
+    (passed, temp, poh, cycles, pct_used)
+}
+
+/// The ATA SMART attribute table, if present (part of [`parse_smart`]).
+/// Returns the parsed attribute rows and the reallocated-sectors count
+/// (attribute 5's raw value), which the caller also surfaces as its own
+/// field.
+fn parse_ata_attrs(json: &Value) -> (Vec<SmartAttr>, Option<i64>) {
+    let mut attrs = Vec::new();
+    let mut reallocated = None;
+    let Some(table) = json
+        .pointer("/ata_smart_attributes/table")
+        .and_then(|v| v.as_array())
+    else {
+        return (attrs, reallocated);
+    };
+    for a in table {
+        let id = a.get("id").and_then(serde_json::Value::as_u64).unwrap_or(0) as u16;
+        let aname = a
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .replace('_', " ");
+        let raw = a
+            .pointer("/raw/string")
+            .and_then(|v| v.as_str())
+            .map(std::string::ToString::to_string)
+            .or_else(|| {
+                a.pointer("/raw/value")
+                    .and_then(serde_json::Value::as_i64)
+                    .map(|n| n.to_string())
+            })
+            .unwrap_or_default();
+        let when_failed = a.get("when_failed").and_then(|v| v.as_str()).unwrap_or("-");
+        let sev = if when_failed != "-" && !when_failed.is_empty() {
+            AttrSeverity::Crit
+        } else if (id == 5 || id == 197)
+            && raw
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0)
+                > 0
+        {
+            AttrSeverity::Warn
+        } else {
+            AttrSeverity::Ok
+        };
+        if id == 5 {
+            reallocated = raw
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<i64>().ok());
+        }
+        attrs.push(SmartAttr {
+            id,
+            name: aname,
+            value: raw,
+            severity: sev,
+        });
+    }
+    (attrs, reallocated)
+}
+
+/// Synthetic attribute rows derived from the NVMe health log, appended to
+/// `attrs` (part of [`parse_smart`]).
+fn append_nvme_attrs(json: &Value, pct_used: Option<i64>, attrs: &mut Vec<SmartAttr>) {
+    let Some(log) = json.pointer("/nvme_smart_health_information_log") else {
+        return;
+    };
+    if let Some(spare) = log
+        .get("available_spare")
+        .and_then(serde_json::Value::as_i64)
+    {
+        attrs.push(SmartAttr {
+            id: 5,
+            name: "Available Spare".into(),
+            value: format!("{spare} %"),
+            severity: if spare < 10 {
+                AttrSeverity::Warn
+            } else {
+                AttrSeverity::Ok
+            },
+        });
+    }
+    if let Some(pu) = pct_used {
+        attrs.push(SmartAttr {
+            id: 9,
+            name: "Percentage Used".into(),
+            value: format!("{pu} %"),
+            severity: if pu > 90 {
+                AttrSeverity::Warn
+            } else {
+                AttrSeverity::Ok
+            },
+        });
+    }
+    if let Some(me) = log.get("media_errors").and_then(serde_json::Value::as_i64) {
+        attrs.push(SmartAttr {
+            id: 1,
+            name: "Media Errors".into(),
+            value: me.to_string(),
+            severity: if me > 0 {
+                AttrSeverity::Warn
+            } else {
+                AttrSeverity::Ok
+            },
+        });
+    }
+}
+
+/// Roll the parsed attributes + the top-level `passed` verdict into one
+/// [`SmartStatus`] (part of [`parse_smart`]).
+fn smart_status_of(passed: Option<bool>, attrs: &[SmartAttr]) -> SmartStatus {
+    match passed {
+        Some(true) => {
+            if attrs.iter().any(|a| a.severity != AttrSeverity::Ok) {
+                SmartStatus::Warning
+            } else {
+                SmartStatus::Passed
+            }
+        }
+        Some(false) => SmartStatus::Failing,
+        None => SmartStatus::Unknown,
     }
 }
 
@@ -411,12 +449,12 @@ mod tests {
             "blockdevices": [
                 {
                     "name": "nvme0n1", "model": "WD SN560  ", "serial": "23352V ",
-                    "size": 1024209543168u64, "type": "disk", "rota": false,
+                    "size": 1_024_209_543_168u64, "type": "disk", "rota": false,
                     "tran": "nvme", "rm": false,
                     "children": [
-                        { "name": "nvme0n1p1", "size": 629145600u64, "type": "part",
+                        { "name": "nvme0n1p1", "size": 629_145_600u64, "type": "part",
                           "fstype": "vfat", "label": "EFI", "mountpoint": "/boot/efi",
-                          "fsused": 13754368u64, "uuid": "BDDD-7686" }
+                          "fsused": 13_754_368u64, "uuid": "BDDD-7686" }
                     ]
                 }
             ]
@@ -431,7 +469,7 @@ mod tests {
         assert_eq!(d.serial.as_deref(), Some("23352V"));
         assert_eq!(d.partitions.len(), 1);
         assert_eq!(d.partitions[0].fstype.as_deref(), Some("vfat"));
-        assert_eq!(d.partitions[0].used, Some(13754368));
+        assert_eq!(d.partitions[0].used, Some(13_754_368));
     }
 
     #[test]
@@ -439,12 +477,12 @@ mod tests {
         // A multi-device btrfs member: fsused (whole-pool) > this partition.
         let j = json!({
             "blockdevices": [{
-                "name": "nvme1n1", "size": 2000398934016u64, "type": "disk",
+                "name": "nvme1n1", "size": 2_000_398_934_016u64, "type": "disk",
                 "rota": false, "tran": "nvme", "rm": false,
                 "children": [{
-                    "name": "nvme1n1p3", "size": 1998694907904u64, "type": "part",
+                    "name": "nvme1n1p3", "size": 1_998_694_907_904u64, "type": "part",
                     "fstype": "btrfs", "label": "pool", "mountpoint": "/var/home",
-                    "fsused": 2623247085568u64, "uuid": "2f0d"
+                    "fsused": 2_623_247_085_568u64, "uuid": "2f0d"
                 }]
             }]
         });
@@ -463,7 +501,7 @@ mod tests {
         let j = json!({
             "blockdevices": [{
                 "name": "zram0", "model": null, "serial": null,
-                "size": 16402874368u64, "type": "disk", "rota": false,
+                "size": 16_402_874_368u64, "type": "disk", "rota": false,
                 "tran": null, "rm": false, "mountpoint": "[SWAP]"
             }]
         });
@@ -481,10 +519,10 @@ mod tests {
         // spanning the device, not as a blank/unallocated disk.
         let j = json!({
             "blockdevices": [{
-                "name": "sdc", "model": "SanDisk Ultra", "size": 30752000000u64,
+                "name": "sdc", "model": "SanDisk Ultra", "size": 30_752_000_000u64,
                 "type": "disk", "rota": false, "tran": "usb", "rm": true,
                 "fstype": "exfat", "label": "ULTRA", "mountpoint": "/run/media/u/ULTRA",
-                "fsused": 8240000000u64, "uuid": "64ED-1A2B"
+                "fsused": 8_240_000_000u64, "uuid": "64ED-1A2B"
             }]
         });
         let d = &parse_lsblk(&j)[0];
@@ -541,7 +579,7 @@ mod tests {
                 "percentage_used": 3,
                 "available_spare": 100,
                 "media_errors": 0,
-                "data_units_written": 94000000u64
+                "data_units_written": 94_000_000u64
             }
         });
         let s = parse_smart(&j, DriveKind::Nvme);

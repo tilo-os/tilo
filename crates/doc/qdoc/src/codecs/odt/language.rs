@@ -116,7 +116,9 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
 
     // Case 2: an `<office:styles>` section exists — inject right after its open tag (default styles conventionally lead the section).
     if let Some(open_end) = open_tag_end(&s, "<office:styles") {
-        let mut out = String::with_capacity(s.len() + elem.len());
+        // A capacity hint only; bounded by the styles.xml + injected-element
+        // sizes, nowhere near `usize::MAX`.
+        let mut out = String::with_capacity(s.len().saturating_add(elem.len()));
         out.push_str(s.get(..open_end).unwrap_or_default());
         out.push_str(&elem);
         out.push_str(s.get(open_end..).unwrap_or_default());
@@ -124,7 +126,9 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
     }
     // Case 2b: a self-closing `<office:styles/>` — expand it to a paired element.
     if let Some((sc_start, sc_end)) = self_closing_span(&s, "<office:styles") {
-        let mut out = String::with_capacity(s.len() + elem.len());
+        // A capacity hint only; bounded by the styles.xml + injected-element
+        // sizes, nowhere near `usize::MAX`.
+        let mut out = String::with_capacity(s.len().saturating_add(elem.len()));
         out.push_str(s.get(..sc_start).unwrap_or_default());
         out.push_str("<office:styles>");
         out.push_str(&elem);
@@ -140,7 +144,9 @@ fn splice_default_language(styles_xml: &[u8], lang: &str, country: Option<&str>)
         .or_else(|| s.find("<office:master-styles"))
         .or_else(|| s.rfind("</office:document-styles>"));
     if let Some(pos) = at {
-        let mut out = String::with_capacity(s.len() + section.len());
+        // A capacity hint only; bounded by the styles.xml + injected-section
+        // sizes, nowhere near `usize::MAX`.
+        let mut out = String::with_capacity(s.len().saturating_add(section.len()));
         out.push_str(s.get(..pos).unwrap_or_default());
         out.push_str(&section);
         out.push_str(s.get(pos..).unwrap_or_default());

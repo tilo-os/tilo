@@ -56,6 +56,11 @@ const STYLES_XML_OPEN: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone
 /// Which fixed-name parts a preserved `.docx` already declared, so export only injects a
 /// content-type override / relationship for parts it's newly adding.
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent 'was this fixed-name part already present' flag, \
+              set by name in copy_preserved_parts, never positionally"
+)]
 struct PartFlags {
     had_content_types: bool,
     had_root_rels: bool,
@@ -107,6 +112,11 @@ fn copy_preserved_parts(
 }
 
 /// Which optional parts this export is newly wiring up (synthesised but not already declared).
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent 'is this optional part newly wired up' flag, \
+              set by name where it's decided, never positionally"
+)]
 struct Wireups {
     has_lists: bool,
     has_styles: bool,

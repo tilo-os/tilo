@@ -505,7 +505,14 @@ fn draw_pane_intro(
         title,
         tokens.typography.scale.sm,
         colors.text_primary,
-        transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 12.0)),
+        {
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
+            )]
+            let title_transform = transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 12.0));
+            title_transform
+        },
         None,
     );
     let detail_max = (rect.width() - 62.0 - 124.0).max(80.0);
@@ -520,7 +527,14 @@ fn draw_pane_intro(
         &shown,
         tokens.typography.scale.xs,
         colors.text_dim,
-        transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 35.0)),
+        {
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
+            )]
+            let detail_transform = transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 35.0));
+            detail_transform
+        },
         None,
     );
     draw_pill(

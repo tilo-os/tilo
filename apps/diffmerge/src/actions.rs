@@ -50,7 +50,11 @@ impl HunkChoice {
 
     /// Parse a stored resolutions-map tag back into a choice. An unknown tag is
     /// `None`, so a malformed persisted value is ignored rather than panicking.
-    pub fn from_str(s: &str) -> Option<Self> {
+    ///
+    /// Named `from_tag` rather than `from_str` so it isn't confused for
+    /// [`std::str::FromStr::from_str`] — that trait returns `Result`, not the
+    /// deliberate `Option` this "ignore, don't panic" contract needs.
+    pub fn from_tag(s: &str) -> Option<Self> {
         match s {
             "ours" => Some(HunkChoice::Ours),
             "theirs" => Some(HunkChoice::Theirs),
@@ -125,6 +129,15 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`DiffmergeAction`] into the wire form the palette and the on-panel
 /// chips both dispatch. This is the single point that turns Diff's actions into
 /// replayable envelopes.
+///
+/// Every [`DiffmergeAction`] variant carries only plain `String`/`usize`/enum
+/// fields, which `serde_json` cannot fail to serialize — see
+/// [`crate::actions::immediate_choice`] for the same contract on the palette
+/// side.
+#[allow(
+    clippy::expect_used,
+    reason = "DiffmergeAction's fields are always JSON-serializable; see doc comment"
+)]
 pub fn encode(action: &DiffmergeAction) -> EncodedAction {
     EncodedAction::encode(DIFFMERGE_ACTION_TYPE, action)
         .expect("DiffmergeAction is always serializable")
@@ -214,6 +227,13 @@ pub struct MergeResourceCtx {
     pub model: MergeModel,
 }
 
+/// Same non-fallible-in-practice contract as [`encode`]: `provide_resources`
+/// returns a plain `Vec<Resource>` (the [`qos_actions::ResourceProvider`]
+/// trait shape), so there is no `Result` to propagate an encode failure into.
+#[allow(
+    clippy::expect_used,
+    reason = "DiffmergeAction's fields are always JSON-serializable; see encode's doc comment"
+)]
 fn immediate_choice(
     model: &MergeModel,
     hunk: usize,
@@ -376,14 +396,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 

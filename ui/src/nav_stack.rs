@@ -22,25 +22,28 @@ pub enum NavAction {
 /// A generic navigation history. `T` names a view (an app's route/screen
 /// descriptor); the stack owns the ordered history with the current view last.
 ///
-/// Invariant: the stack is never empty once seeded — [`NavStack::new`] takes a
-/// root view, and [`NavStack::back`] never pops below it.
+/// `root` is split out from `rest` (rather than one `Vec` with a
+/// never-empty invariant) so "the stack is never empty" is a fact of the
+/// type, not a runtime check [`NavStack::current`] would otherwise have to
+/// assert.
 #[derive(Clone, Debug)]
 pub struct NavStack<T> {
-    entries: Vec<T>,
+    root: T,
+    rest: Vec<T>,
 }
 
 impl<T: Clone + PartialEq> NavStack<T> {
     /// A stack rooted at `root` (the first, un-poppable view).
     pub fn new(root: T) -> Self {
         Self {
-            entries: vec![root],
+            root,
+            rest: Vec::new(),
         }
     }
 
-    /// The view currently on screen (the top of the stack). Never `None` — the
-    /// stack is seeded with a root and never emptied.
+    /// The view currently on screen (the top of the stack).
     pub fn current(&self) -> &T {
-        self.entries.last().expect("nav stack is never empty")
+        self.rest.last().unwrap_or(&self.root)
     }
 
     /// Push `view` as the new current view. A push equal to the current view is
@@ -48,7 +51,7 @@ impl<T: Clone + PartialEq> NavStack<T> {
     /// repeated identical navigations don't stack up and Back stays meaningful.
     pub fn push(&mut self, view: T) {
         if self.current() != &view {
-            self.entries.push(view);
+            self.rest.push(view);
         }
     }
 
@@ -56,25 +59,25 @@ impl<T: Clone + PartialEq> NavStack<T> {
     /// view mutates into a variant of itself (e.g. a query refining) that a
     /// Back should skip over rather than replay.
     pub fn replace_current(&mut self, view: T) {
-        if let Some(last) = self.entries.last_mut() {
+        if let Some(last) = self.rest.last_mut() {
             *last = view;
         } else {
-            self.entries.push(view);
+            self.root = view;
         }
     }
 
     pub fn can_go_back(&self) -> bool {
-        self.entries.len() > 1
+        !self.rest.is_empty()
     }
 
     /// Pop the current view and return a reference to the view now on screen,
     /// or `None` when already at the root (nothing to pop).
     pub fn back(&mut self) -> Option<&T> {
-        if self.entries.len() > 1 {
-            self.entries.pop();
-            Some(self.current())
-        } else {
+        if self.rest.is_empty() {
             None
+        } else {
+            self.rest.pop();
+            Some(self.current())
         }
     }
 
@@ -87,12 +90,14 @@ impl<T: Clone + PartialEq> NavStack<T> {
 
     /// Number of views in the history (>= 1).
     pub fn depth(&self) -> usize {
-        self.entries.len()
+        // `root` plus whatever `rest` holds; bounded by however many views
+        // an app ever pushed, nowhere near `usize::MAX`.
+        self.rest.len().saturating_add(1)
     }
 
     pub fn reset(&mut self, root: T) {
-        self.entries.clear();
-        self.entries.push(root);
+        self.rest.clear();
+        self.root = root;
     }
 }
 

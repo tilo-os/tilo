@@ -20,20 +20,14 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-#[test]
-fn test_click_interaction_in_sandbox() {
-    // 1. Build
-    let _ = std::process::Command::new("cargo")
-        .arg("build")
-        .arg("--bin")
-        .arg("click_test_client")
-        .status();
-
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let (started_tx, started_rx) = std::sync::mpsc::channel();
-    let (input_tx, mut input_tx_rx) = mpsc::unbounded_channel();
-
-    // 2. Start Server
+/// Run the headless `WaylandServer` on a background thread until it's 20s
+/// old, forwarding queued `input_tx_rx` events into it each tick. Split out
+/// of [`test_click_interaction_in_sandbox`] to keep that test short.
+fn spawn_wayland_server(
+    tx: mpsc::UnboundedSender<WaylandEvent>,
+    started_tx: std::sync::mpsc::Sender<String>,
+    mut input_tx_rx: mpsc::UnboundedReceiver<WaylandInput>,
+) {
     thread::spawn(move || {
         let mut event_loop = EventLoop::<WaylandServer>::try_new().unwrap();
         let mut display = Display::<WaylandServer>::new().unwrap();
@@ -62,7 +56,8 @@ fn test_click_interaction_in_sandbox() {
             .expect("Failed to insert socket into loop");
 
         started_tx.send(env_name).unwrap();
-        let mut server_state = WaylandServer::new(&display.handle(), tx);
+        let mut server_state =
+            WaylandServer::new(&display.handle(), tx).expect("WaylandServer::new");
 
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(20) {
@@ -77,6 +72,59 @@ fn test_click_interaction_in_sandbox() {
             thread::sleep(Duration::from_millis(5));
         }
     });
+}
+
+/// Poll `rx` until a `click-test` window has announced a surface id (via
+/// `NewWindow` or, failing that, its first `Frame`), or `timeout` passes.
+/// Split out of [`test_click_interaction_in_sandbox`] to keep that test
+/// short.
+fn wait_for_ready_surface(
+    rx: &mut mpsc::UnboundedReceiver<WaylandEvent>,
+    timeout: Duration,
+) -> Option<u32> {
+    let mut captured_surface_id = None;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
+    while Instant::now() < deadline {
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                WaylandEvent::NewWindow {
+                    surface_id, app_id, ..
+                } if app_id == "click-test" => {
+                    captured_surface_id = Some(surface_id);
+                }
+                WaylandEvent::Frame {
+                    surface_id, app_id, ..
+                } if app_id == "click-test" && captured_surface_id.is_none() => {
+                    captured_surface_id = Some(surface_id);
+                }
+                _ => {}
+            }
+        }
+        if captured_surface_id.is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    captured_surface_id
+}
+
+#[test]
+fn test_click_interaction_in_sandbox() {
+    // 1. Build
+    let _ = std::process::Command::new("cargo")
+        .arg("build")
+        .arg("--bin")
+        .arg("click_test_client")
+        .status();
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (input_tx, input_tx_rx) = mpsc::unbounded_channel();
+
+    // 2. Start Server
+    spawn_wayland_server(tx, started_tx, input_tx_rx);
 
     let socket_name = started_rx
         .recv_timeout(Duration::from_secs(5))
@@ -102,30 +150,8 @@ fn test_click_interaction_in_sandbox() {
         .expect("Failed to spawn client");
 
     // 4. Wait for Window/Frame
-    let mut captured_surface_id = None;
-    let timeout = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < timeout {
-        while let Ok(event) = rx.try_recv() {
-            match event {
-                WaylandEvent::NewWindow {
-                    surface_id, app_id, ..
-                } if app_id == "click-test" => {
-                    captured_surface_id = Some(surface_id);
-                }
-                WaylandEvent::Frame {
-                    surface_id, app_id, ..
-                } if app_id == "click-test" && captured_surface_id.is_none() => {
-                    captured_surface_id = Some(surface_id);
-                }
-                _ => {}
-            }
-        }
-        if captured_surface_id.is_some() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    let surface_id = captured_surface_id.expect("Test client did not become ready");
+    let surface_id = wait_for_ready_surface(&mut rx, Duration::from_secs(10))
+        .expect("Test client did not become ready");
 
     // 5. Send Input
     let test_x = 123.0;

@@ -198,7 +198,10 @@ impl ScreenCastStreamProvisioner for MockScreenCastProvisioner {
             s.push(req.clone());
         }
         let node_id = {
-            let mut n = self.next_node.lock().unwrap();
+            let mut n = self
+                .next_node
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let id = *n;
             *n = n.wrapping_add(1);
             id
