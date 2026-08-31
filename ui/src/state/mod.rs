@@ -650,7 +650,10 @@ pub fn write_patches(
     // so nested child patches target the new object.
     let mut remap: HashMap<ObjId, ObjId> = HashMap::new();
     for patch in patches {
-        let target = remap.get(&patch.obj).cloned().unwrap_or_else(|| patch.obj.clone());
+        let target = remap
+            .get(&patch.obj)
+            .cloned()
+            .unwrap_or_else(|| patch.obj.clone());
         match patch.action {
             PatchAction::PutMap { key, value, .. } => match value.0 {
                 Value::Scalar(s) => {
