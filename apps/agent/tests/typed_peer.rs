@@ -119,6 +119,10 @@ pub fn recv(peer: &mut TypedPeer) -> Option<CollabEvent> {
 ///
 /// Panics if the typed collaboration service cannot bind `path`.
 pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
-    shell::shell::collab_broker::spawn_native(path.to_path_buf(), &None)
-        .expect("bind the typed collaboration service")
+    shell::shell::collab_broker::spawn_native(
+        path.to_path_buf(),
+        &None,
+        shell::shell::state::WorkspaceTree::default().shared(),
+    )
+    .expect("bind the typed collaboration service")
 }
