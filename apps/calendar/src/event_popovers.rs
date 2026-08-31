@@ -19,7 +19,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{DatePicker, TimePicker};
 
-use crate::app::{CalTarget, draw_check, fill_round, stroke_round};
+use crate::app::{CalTarget, draw_check};
+use crate::draw_util::{fill_round, stroke_round};
 use crate::model::Event;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

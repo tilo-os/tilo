@@ -12045,7 +12045,9 @@ dependencies = [
  "capnp",
  "capnp-rpc",
  "capnpc",
+ "postcard",
  "runtime-portal",
+ "serde",
  "tokio",
  "tokio-util",
 ]
