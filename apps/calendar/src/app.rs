@@ -38,7 +38,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, Scrollable, TextInput};
+use ui::widget::{BlockEditor, TextInput};
 
 use crate::account::AccountStore;
 use crate::agenda::{AgendaAction, AgendaView};
@@ -51,6 +51,11 @@ use crate::event_popovers::{
 use crate::ics;
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
 use crate::sidebar::{Action as SidebarAction, Mode as SidebarMode, Sidebar};
+#[cfg(test)]
+use crate::timeline_viewport::TIMELINE_MIN_HOUR_H;
+use crate::timeline_viewport::{
+    TIMELINE_ALLDAY_H, TIMELINE_HEAD_H, TimelineGeom, TimelineViewport,
+};
 
 /// Placeholder shown in the empty title field of a new event.
 const TITLE_PLACEHOLDER: &str = "New event";
@@ -67,16 +72,6 @@ const TOPBAR_H: f64 = 60.0;
 const DETAIL_PAD: f64 = 22.0;
 const NOTES_TOP_OFFSET: f64 = 296.0;
 
-/// The week/day timelines span the full 24 hours and scroll vertically. Each
-/// hour keeps a legible **minimum** height; on a window too short to fit all
-/// 24 hours at that minimum the body scrolls (reusing the shared
-/// [`Scrollable`] primitive) rather than squashing the slots. On a tall window
-/// the hours grow to fill the viewport and nothing scrolls.
-const TIMELINE_MIN_HOUR_H: f64 = 44.0;
-/// Height of the fixed (non-scrolling) day-header strip above the hour grid.
-const TIMELINE_HEAD_H: f64 = 56.0;
-/// Height of the fixed all-day event strip below the day headers.
-const TIMELINE_ALLDAY_H: f64 = 26.0;
 /// Hour the timeline first scrolls to when the day doesn't fit — the start of a
 /// typical work day, rather than opening at midnight.
 const TIMELINE_INITIAL_HOUR: f64 = 7.0;
@@ -226,37 +221,6 @@ struct FormRects {
     /// Y offset (from the detail rect top) at which the NOTES section starts.
     notes_top: f64,
 }
-
-/// Fixed geometry of a week/day timeline, derived purely from the view's
-/// allocated `area`. Shared by the draw pass, the scroll driver, hit-testing
-/// and the drag handlers so they never disagree about where an hour sits.
-///
-/// The hour grid is a **content** surface `content_h` tall (24 × `hour_h`) that
-/// scrolls inside the `[body_top, body_bottom]` viewport; the day headers and
-/// all-day strip above it stay fixed. A content-space y (`0` at 00:00) maps to
-/// the screen via `body_top + y - scroll_offset`.
-#[derive(Clone, Copy, Debug)]
-struct TimelineGeom {
-    gutter: f64,
-    body_top: f64,
-    body_bottom: f64,
-    hour_h: f64,
-    content_h: f64,
-    /// Right edge of the day columns. When the day overflows and the scrollbar
-    /// shows, this stops short of the viewport edge so the bar sits in its own
-    /// lane rather than over the last column.
-    grid_right: f64,
-}
-
-impl TimelineGeom {
-    /// The scrolling body viewport rect for the given horizontal span.
-    fn body(&self, x0: f64, x1: f64) -> Rect {
-        Rect::new(x0, self.body_top, x1, self.body_bottom)
-    }
-}
-
-/// Right-edge lane (logical px) kept clear for the timeline's overlay scrollbar.
-const TIMELINE_BAR_LANE: f64 = 12.0;
 
 /// An in-progress pointer drag on the week/day timeline. Both variants use the
 /// shared drag-start threshold ([`DRAG_START_THRESHOLD_PX`]): a press that never
@@ -412,20 +376,12 @@ pub struct CalendarApp {
     /// (the timeline is painted imperatively, not through a child widget), it
     /// still reuses the shared [`Scrollable`] for offset clamping, wheel /
     /// keyboard / momentum, and the overlay bar.
-    timeline_scroll: Scrollable,
+    timeline: TimelineViewport,
     /// Vertical scroll of the agenda list, so a short window pages through the
     /// upcoming days instead of clipping them.
     /// Self-contained upcoming-list view: scroll state, input, drawing and row
     /// actions live together instead of leaking into the root widget.
     agenda: AgendaView,
-    /// Whether the timeline scroll has been seeded to the work-day yet. Seeded
-    /// once, the first time the day is too tall to fit, so it opens around
-    /// [`TIMELINE_INITIAL_HOUR`] rather than at midnight.
-    timeline_scroll_seeded: bool,
-    /// Shots-only: pin the timeline scroll to a specific hour (e.g. `0.0` for
-    /// the top of the day, `24.0` for the bottom) so a screenshot can prove the
-    /// full 24h is reachable. `None` in the live app.
-    shots_scroll_hour: Option<f64>,
     /// An in-progress drag on the week/day timeline (create or move).
     timeline_drag: Option<TimelineDrag>,
 
@@ -543,10 +499,8 @@ impl CalendarApp {
             last_mouse: Point::ZERO,
             status: None,
             dirty: true,
-            timeline_scroll: Scrollable::new_vertical().always_visible(),
+            timeline: TimelineViewport::new(),
             agenda: AgendaView::new(),
-            timeline_scroll_seeded: false,
-            shots_scroll_hour: None,
             timeline_drag: None,
             sync_rx: None,
             syncing: false,
@@ -566,7 +520,7 @@ impl CalendarApp {
     /// Pin the week/day timeline scroll to `hour` for a screenshot (`0.0` = top
     /// of the day, `24.0` = clamped to the bottom). Proves the full 24h scrolls.
     pub fn shots_scroll_timeline(&mut self, hour: f64) {
-        self.shots_scroll_hour = Some(hour);
+        self.timeline.pin_hour(hour);
         self.dirty = true;
     }
 
@@ -1387,21 +1341,17 @@ impl CalendarApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) -> bool {
-        let mut handled = false;
-        let mut ft = *focus_target;
-        self.timeline_scroll.handle_event(
+        let handled = self.timeline.handle_event(
             event,
             scale_factor,
-            &modifiers,
+            modifiers,
             state,
             path,
-            &mut handled,
-            &mut ft,
+            focus_target,
             node_id,
             taffy,
         );
         if handled {
-            *focus_target = ft;
             self.dirty = true;
         }
         handled
@@ -1452,7 +1402,7 @@ impl CalendarApp {
 
         let area = self.view_rect();
         let days = self.timeline_days();
-        let g = Self::timeline_geom(area);
+        let g = TimelineViewport::geometry(area);
         let body = g.body(area.x0, area.x1);
 
         match event {
@@ -1609,7 +1559,7 @@ impl CalendarApp {
     ) -> bool {
         let p = self.last_mouse;
         // A scrollbar thumb drag owns every move until release.
-        if self.timeline_scroll.wants_pointer_capture() {
+        if self.timeline.wants_pointer_capture() {
             return self.forward_to_scroll(
                 event,
                 scale_factor,
@@ -1683,7 +1633,7 @@ impl CalendarApp {
         }
         // Grab an existing block to move it, else carve a new event.
         if let Some((id, s, en)) = self.timeline_event_at(area, days, p) {
-            let press_min = self.timeline_minute_at(&g, p.y);
+            let press_min = self.timeline.minute_at(g, p.y);
             self.timeline_drag = Some(TimelineDrag::Move {
                 id,
                 origin: p,
@@ -1698,7 +1648,7 @@ impl CalendarApp {
         // Empty grid (in a day column, not the hour gutter) → carve a new
         // event by dragging.
         if p.x >= area.x0 + g.gutter {
-            let col = Self::timeline_col_at(area, days.len(), &g, p.x);
+            let col = TimelineViewport::column_at(area, days.len(), g, p.x);
             self.timeline_drag = Some(TimelineDrag::Create {
                 day: days[col],
                 origin: p,
@@ -1729,7 +1679,7 @@ impl CalendarApp {
         taffy: &TaffyTree<()>,
     ) -> bool {
         let p = self.last_mouse;
-        if self.timeline_scroll.wants_pointer_capture() {
+        if self.timeline.wants_pointer_capture() {
             return self.forward_to_scroll(
                 event,
                 scale_factor,
@@ -2253,36 +2203,18 @@ impl CalendarApp {
         }
     }
 
-    /// Point the timeline [`Scrollable`] at the current week/day geometry:
-    /// viewport rect + full-24h content height, seeding the initial work-day
-    /// scroll the first time the day is too tall to fit. Called from `relayout`.
+    /// Point the timeline viewport at its new geometry, seeding the initial
+    /// work-day scroll the first time the full day does not fit.
     fn update_timeline_scroll(&mut self) {
         let area = self.view_rect();
-        let g = Self::timeline_geom(area);
-        self.timeline_scroll
-            .set_viewport_rect(g.body(area.x0, area.x1));
-        self.timeline_scroll
-            .set_content_size(area.width() as f32, g.content_h as f32);
-        // Shots-only override: pin the scroll to a chosen hour so a screenshot
-        // can prove the full 24h is reachable (top/bottom of the day).
-        if let Some(hour) = self.shots_scroll_hour {
-            self.timeline_scroll.set_offset_y((hour * g.hour_h) as f32);
-            return;
-        }
-        if !self.timeline_scroll_seeded && self.timeline_scroll.vertical_overflows() {
-            // Open around the work day — or the current time when today is on
-            // screen — rather than at midnight.
-            let days = self.timeline_days();
-            let focus_hour = if days.contains(&self.today) {
-                let now = Local::now().naive_local();
-                (f64::from(now.hour()) + f64::from(now.minute()) / 60.0 - 1.0).max(0.0)
-            } else {
-                TIMELINE_INITIAL_HOUR
-            };
-            self.timeline_scroll
-                .set_offset_y((focus_hour * g.hour_h) as f32);
-            self.timeline_scroll_seeded = true;
-        }
+        let days = self.timeline_days();
+        let focus_hour = if days.contains(&self.today) {
+            let now = Local::now().naive_local();
+            (f64::from(now.hour()) + f64::from(now.minute()) / 60.0 - 1.0).max(0.0)
+        } else {
+            TIMELINE_INITIAL_HOUR
+        };
+        self.timeline.layout(area, focus_hour);
     }
 
     /// Geometry of the centered modal editor card, sized to a comfortable
@@ -3602,73 +3534,6 @@ impl CalendarApp {
         }
     }
 
-    /// Fixed geometry of the week/day timeline for the given view `area`. Pure
-    /// function of `area` so draw, scroll, hit-testing and drag all agree.
-    fn timeline_geom(area: Rect) -> TimelineGeom {
-        let body_top = area.y0 + TIMELINE_HEAD_H + TIMELINE_ALLDAY_H;
-        let body_bottom = (area.y1 - 8.0).max(body_top + 40.0);
-        let viewport_h = (body_bottom - body_top).max(40.0);
-        // Every hour keeps at least the legible minimum; when the viewport can
-        // fit all 24 at that minimum the hours grow to fill it (no scroll),
-        // otherwise the body scrolls the full day.
-        let hour_h = (viewport_h / 24.0).max(TIMELINE_MIN_HOUR_H);
-        let content_h = hour_h * 24.0;
-        // Reserve the scrollbar lane only when the day actually overflows.
-        let grid_right = if content_h > viewport_h + 0.5 {
-            area.x1 - TIMELINE_BAR_LANE
-        } else {
-            area.x1
-        };
-        TimelineGeom {
-            gutter: 56.0,
-            body_top,
-            body_bottom,
-            hour_h,
-            content_h,
-            grid_right,
-        }
-    }
-
-    /// Width of one day column in the timeline.
-    fn timeline_col_w(area: Rect, days_len: usize, g: &TimelineGeom) -> f64 {
-        ((g.grid_right - (area.x0 + g.gutter)) / days_len.max(1) as f64).max(1.0)
-    }
-
-    /// Column index for a screen x, clamped into the grid.
-    fn timeline_col_at(area: Rect, days_len: usize, g: &TimelineGeom, x: f64) -> usize {
-        let grid_x0 = area.x0 + g.gutter;
-        let col_w = Self::timeline_col_w(area, days_len, g);
-        (((x - grid_x0) / col_w).floor() as i64).clamp(0, days_len as i64 - 1) as usize
-    }
-
-    /// Minute-of-day (0..=1440) for a screen y, honouring the scroll offset and
-    /// clamped to the content — so a drag past the body edge still resolves.
-    fn timeline_minute_at(&self, g: &TimelineGeom, y: f64) -> i64 {
-        let offset = f64::from(self.timeline_scroll.offset_y());
-        let content_y = (y - g.body_top + offset).clamp(0.0, g.content_h);
-        (((content_y / g.hour_h) * 60.0).round() as i64).clamp(0, 24 * 60)
-    }
-
-    /// Screen rect for an event block on column `col` spanning `[start_min,
-    /// end_min]` minutes-of-day, at the current scroll offset.
-    fn timeline_block_rect(
-        &self,
-        area: Rect,
-        days_len: usize,
-        g: &TimelineGeom,
-        col: usize,
-        start_min: i64,
-        end_min: i64,
-    ) -> Rect {
-        let col_w = Self::timeline_col_w(area, days_len, g);
-        let grid_x0 = area.x0 + g.gutter;
-        let x0 = grid_x0 + col_w * col as f64;
-        let offset = f64::from(self.timeline_scroll.offset_y());
-        let top = g.body_top + (start_min as f64 / 60.0) * g.hour_h - offset;
-        let bottom = g.body_top + (end_min as f64 / 60.0) * g.hour_h - offset;
-        Rect::new(x0 + 3.0, top, x0 + col_w - 3.0, bottom.max(top + 16.0))
-    }
-
     /// The timed event whose block contains `p`, with its minute-of-day span —
     /// the grab target for a move drag. All-day events (which live in the fixed
     /// header strip, not the scrolling grid) are excluded.
@@ -3678,12 +3543,12 @@ impl CalendarApp {
         days: &[NaiveDate],
         p: Point,
     ) -> Option<(Id, i64, i64)> {
-        let g = Self::timeline_geom(area);
+        let g = TimelineViewport::geometry(area);
         let grid_x0 = area.x0 + g.gutter;
         if p.x < grid_x0 || p.x > area.x1 {
             return None;
         }
-        let col = Self::timeline_col_at(area, days.len(), &g, p.x);
+        let col = TimelineViewport::column_at(area, days.len(), g, p.x);
         let day = days[col];
         let spans: Vec<(Id, i64, i64)> = self
             .visible_events_on(day)
@@ -3698,7 +3563,8 @@ impl CalendarApp {
         // Reverse so the topmost (last-drawn) block wins, matching the hit-map.
         for (id, s, en) in spans.into_iter().rev() {
             if self
-                .timeline_block_rect(area, days.len(), &g, col, s, en)
+                .timeline
+                .block_rect(area, days.len(), g, col, s, en)
                 .contains(p)
             {
                 return Some((id, s, en));
@@ -3724,9 +3590,9 @@ impl CalendarApp {
         else {
             return None;
         };
-        let g = Self::timeline_geom(area);
-        let a = snap_minute(self.timeline_minute_at(&g, origin.y));
-        let b = snap_minute(self.timeline_minute_at(&g, current.y));
+        let g = TimelineViewport::geometry(area);
+        let a = snap_minute(self.timeline.minute_at(g, origin.y));
+        let b = snap_minute(self.timeline.minute_at(g, current.y));
         let (s, mut e) = (a.min(b), a.max(b));
         if e - s < TIMELINE_SNAP_MIN {
             e = (s + TIMELINE_SNAP_MIN).min(24 * 60);
@@ -3753,9 +3619,9 @@ impl CalendarApp {
         else {
             return None;
         };
-        let g = Self::timeline_geom(area);
-        let col = Self::timeline_col_at(area, days.len(), &g, current.x);
-        let cursor_min = self.timeline_minute_at(&g, current.y);
+        let g = TimelineViewport::geometry(area);
+        let col = TimelineViewport::column_at(area, days.len(), g, current.x);
+        let cursor_min = self.timeline.minute_at(g, current.y);
         let start = snap_minute(cursor_min - grab_off_min).clamp(0, (24 * 60 - dur_min).max(0));
         Some((days[col], start, *dur_min, *id))
     }
@@ -3773,9 +3639,9 @@ impl CalendarApp {
         let mut hits = Vec::new();
         fill_rect(scene, t, c.surfaces.base, area);
 
-        let g = Self::timeline_geom(area);
+        let g = TimelineViewport::geometry(area);
         let grid_x0 = area.x0 + g.gutter;
-        let col_w = Self::timeline_col_w(area, days.len(), &g);
+        let col_w = TimelineViewport::column_width(area, days.len(), g);
 
         // Day headers + all-day strip — fixed; they do not scroll with the grid.
         self.draw_timeline_headers(scene, t, tr, theme, area, days, grid_x0, col_w, &mut hits);
@@ -3808,7 +3674,7 @@ impl CalendarApp {
         scene.pop_layer();
 
         // Shared overlay scrollbar composited on top of the clipped body.
-        self.timeline_scroll.draw_bar_overlay(scene, t, theme);
+        self.timeline.draw(scene, t, theme);
 
         hits
     }
@@ -3910,7 +3776,7 @@ impl CalendarApp {
         col_w: f64,
     ) {
         let c = &theme.tokens.colors;
-        let offset = f64::from(self.timeline_scroll.offset_y());
+        let offset = f64::from(self.timeline.offset_y());
         // content minute-of-day → screen y.
         let y_at = |min: f64| g.body_top + (min / 60.0) * g.hour_h - offset;
         let body = g.body(area.x0, area.x1);
@@ -4023,7 +3889,9 @@ impl CalendarApp {
                 let s_min = i64::from(start.hour()) * 60 + i64::from(start.minute());
                 let e_min = (i64::from(end.hour()) * 60 + i64::from(end.minute()))
                     .max(s_min + TIMELINE_SNAP_MIN);
-                let block = self.timeline_block_rect(area, days.len(), g, i, s_min, e_min);
+                let block = self
+                    .timeline
+                    .block_rect(area, days.len(), *g, i, s_min, e_min);
                 let col = color.color(theme);
                 fill_round(scene, t, col.with_alpha(0.22), block, 6.0);
                 fill_round(
@@ -4140,7 +4008,7 @@ impl CalendarApp {
                 )
             }
         };
-        let block = self.timeline_block_rect(area, days.len(), g, col, s, e);
+        let block = self.timeline.block_rect(area, days.len(), *g, col, s, e);
         fill_round(scene, t, fill, block, 6.0);
         stroke_round(scene, t, stroke, block, 6.0, 1.5);
         scene.push_layer(
@@ -5667,7 +5535,7 @@ impl Widget for CalendarApp {
             || self.notes_editor.needs_redraw()
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()
-            || self.timeline_scroll.needs_redraw()
+            || self.timeline.needs_redraw()
             || self.agenda.needs_redraw()
     }
 
@@ -5676,7 +5544,7 @@ impl Widget for CalendarApp {
         self.notes_editor.mark_drawn();
         self.title_input.mark_drawn();
         self.location_input.mark_drawn();
-        self.timeline_scroll.mark_drawn();
+        self.timeline.mark_drawn();
         self.agenda.mark_drawn();
     }
 
@@ -5695,9 +5563,7 @@ impl Widget for CalendarApp {
         // so its result is drained in `sync` the moment it arrives, without
         // waiting for an unrelated input event — and while a scroll container is
         // still settling momentum / fading its bar.
-        self.syncing
-            || self.timeline_scroll.needs_animation_frame()
-            || self.agenda.needs_animation_frame()
+        self.syncing || self.timeline.needs_animation_frame() || self.agenda.needs_animation_frame()
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -5705,7 +5571,7 @@ impl Widget for CalendarApp {
             || self.notes_editor.needs_redraw()
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()
-            || self.timeline_scroll.is_layout_dirty()
+            || self.timeline.is_layout_dirty()
             || self.agenda.is_layout_dirty()
     }
 
@@ -7263,7 +7129,7 @@ mod tests {
         h.app.view = View::Week;
         h.relayout();
 
-        let g = CalendarApp::timeline_geom(h.app.view_rect());
+        let g = TimelineViewport::geometry(h.app.view_rect());
         assert!(
             (g.hour_h - TIMELINE_MIN_HOUR_H).abs() < 0.001,
             "a short window pins the hour height to the legible minimum, got {}",
@@ -7275,7 +7141,7 @@ mod tests {
             g.content_h
         );
         assert!(
-            h.app.timeline_scroll.vertical_overflows(),
+            h.app.timeline.vertical_overflows(),
             "the full day is taller than the viewport, so it scrolls"
         );
         let vp = (g.body_bottom - g.body_top) as f32;
@@ -7289,14 +7155,14 @@ mod tests {
         tall.app.shots_show_calendar();
         tall.app.view = View::Week;
         tall.relayout();
-        let gt = CalendarApp::timeline_geom(tall.app.view_rect());
+        let gt = TimelineViewport::geometry(tall.app.view_rect());
         assert!(
             gt.hour_h > TIMELINE_MIN_HOUR_H,
             "a tall window grows the hours to fill the space, got {}",
             gt.hour_h
         );
         assert!(
-            !tall.app.timeline_scroll.vertical_overflows(),
+            !tall.app.timeline.vertical_overflows(),
             "the whole day fits, so nothing scrolls"
         );
     }
@@ -7308,17 +7174,17 @@ mod tests {
         h.app.view = View::Week;
         h.relayout();
         // Pin the scroll to the top so an early, empty slot is on screen.
-        h.app.timeline_scroll.set_offset_y(0.0);
+        h.app.timeline.set_offset_y(0.0);
         h.relayout();
 
         let area = h.app.view_rect();
-        let g = CalendarApp::timeline_geom(area);
+        let g = TimelineViewport::geometry(area);
         let days = h.app.timeline_days();
         let col = 0usize;
         let grid_x0 = area.x0 + g.gutter;
-        let col_w = CalendarApp::timeline_col_w(area, days.len(), &g);
+        let col_w = TimelineViewport::column_width(area, days.len(), g);
         let x = grid_x0 + col_w * col as f64 + col_w * 0.5;
-        let offset = f64::from(h.app.timeline_scroll.offset_y());
+        let offset = f64::from(h.app.timeline.offset_y());
         let y_at = |hour: f64| g.body_top + hour * g.hour_h - offset;
 
         let ids_before: HashSet<Id> = h.app.model.events.iter().map(|e| e.id).collect();
@@ -7381,7 +7247,7 @@ mod tests {
         assert_eq!(start0.time(), min_to_time(11 * 60));
 
         let area = h.app.view_rect();
-        let g = CalendarApp::timeline_geom(area);
+        let g = TimelineViewport::geometry(area);
         let days = h.app.timeline_days();
         let col = days
             .iter()
@@ -7389,7 +7255,8 @@ mod tests {
             .expect("today is in the week");
         let block = h
             .app
-            .timeline_block_rect(area, days.len(), &g, col, 11 * 60, 12 * 60);
+            .timeline
+            .block_rect(area, days.len(), g, col, 11 * 60, 12 * 60);
         let x = block.center().x;
         // Grab near the block top and drag down two hours.
         let from = Point::new(x, block.y0 + 3.0);
