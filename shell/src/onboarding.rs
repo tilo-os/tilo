@@ -27,6 +27,8 @@ use std::path::{Path, PathBuf};
 pub enum Screen {
     /// What an identity is and what it signs for.
     Intro,
+    /// Import an existing identity record instead of minting a new one.
+    Connect,
     /// The consequence of losing the device, and the acknowledgement.
     NoRecovery,
     /// The minted key: fingerprint and path.
@@ -142,6 +144,13 @@ impl Onboarding {
         }
     }
 
+    /// Choose the connect-existing branch from the intro screen.
+    pub fn begin_connect(&mut self) {
+        if self.screen == Screen::Intro {
+            self.screen = Screen::Connect;
+        }
+    }
+
     /// Toggle the acknowledgement — reversible: unticking must lose the ability to proceed again, or the gate is decorative.
     pub fn set_acknowledged(&mut self, value: bool) {
         self.acknowledged = value;
@@ -164,6 +173,16 @@ impl Onboarding {
             return false;
         }
         self.minted = Some(minted);
+        self.screen = Screen::Done;
+        true
+    }
+
+    /// Finish after an existing identity was validated and imported.
+    pub fn complete_connected(&mut self, identity: MintedIdentity) -> bool {
+        if self.screen != Screen::Connect {
+            return false;
+        }
+        self.minted = Some(identity);
         self.screen = Screen::Done;
         true
     }

@@ -59,7 +59,6 @@ desktop-entry = { package = "qos-desktop-entry", path = "../../system/desktop-en
 runtime-identity = { path = "../../runtime/runtime-identity" }
 
 [dev-dependencies]
-tempfile.workspace = true
 # `HOME` / `XDG_CONFIG_HOME` are process-wide, so the tests that set them
 # have to be serialised against each other across modules. Same pattern
 # (and same crate) the shell uses for its static-state tests.

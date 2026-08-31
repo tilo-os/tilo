@@ -1358,11 +1358,7 @@ pub fn set_member_role(
             edit.revoked.push(id);
         }
     }
-    let cap = CapOverride::membership(
-        Subject::person(member.clone()),
-        ws.id.raw().to_string(),
-        verb,
-    );
+    let cap = CapOverride::membership(Subject::person(member.clone()), ws.room.to_string(), verb);
     if let Some(id) = ws.grant_as(actor, cap) {
         edit.granted.push(id);
     }

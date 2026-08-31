@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent};
 use crate::network::behaviour::load_or_create_keypair;
+use crate::network::identity::PeerIdentityStore;
 use crate::network::invite::accept_invite_into;
 use crate::network::protocol::NeighbourMsg;
 use crate::network::replica::WorkspaceTreeReplica;
@@ -135,6 +136,11 @@ pub struct ShellNetwork {
     /// When [`Self::kick_periodic_sync`] last asked. `None` until the
     /// first tick, so the first frame after startup kicks a round.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
+    /// Verified transport-device chains received on workspace topics.
+    peer_identities: PeerIdentityStore,
+    /// Production is fail-closed until a peer presents `IdentityHello`.
+    /// The in-process test bridge disables this because it has no Iroh actor.
+    require_peer_identity: bool,
     /// Names this machine has promised to whoever redeems the invite it
     /// last minted for a room, keyed by that room — held here rather
     /// than in the token because the token is a bearer credential that
@@ -143,6 +149,10 @@ pub struct ShellNetwork {
     /// [`Self::name_invitee_on_arrival`] writes it once the invitee's
     /// `PeerId` is known.
     pending_invitees: Mutex<std::collections::HashMap<crate::shell::state::RoomId, String>>,
+    /// Invite redemptions awaiting a certificate-bearing person principal.
+    /// Unlike the display-name map, unnamed invites also enter this table.
+    pending_identity_admissions:
+        Mutex<std::collections::HashMap<crate::shell::state::RoomId, String>>,
     /// Inbound presence updates pushed by [`Self::tick`], drained by the
     /// shell's frame-tick into `PresenceCtx::remote_cursors`.
     inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
@@ -408,7 +418,10 @@ impl ShellNetwork {
             listen_addrs,
             host_addrs: Mutex::new(host_addrs),
             last_sync_kick: Mutex::new(None),
+            peer_identities: PeerIdentityStore::new(),
+            require_peer_identity: true,
             pending_invitees: Mutex::new(std::collections::HashMap::new()),
+            pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
@@ -1018,11 +1031,13 @@ impl ShellNetwork {
                 .lock()
                 .map(|hosts| hosts.clone())
                 .unwrap_or_default();
-            let token = crate::network::invite::make_invite_token_with_hosts(
+            let device_cert = selected_device_cert(ws.room, &self.keypair)?;
+            let token = crate::network::invite::make_invite_token_with_identity(
                 &self.keypair,
                 &ws,
                 &addr,
                 &hosts,
+                Some(device_cert),
                 expiry_seconds_from_now,
             )
             .map_err(|e| e.to_string())?;
@@ -1035,7 +1050,7 @@ impl ShellNetwork {
         // can't be forged. Best-effort: a non-administering machine has
         // the write refused and stays an id rather than failing the invite.
         if let Ok(replica) = self.replica.lock() {
-            let me = crate::shell::state::local_user_id();
+            let me = crate::shell::state::local_user_id_for_room(&room);
             let peer = self.local_peer_id.to_string();
             replica.tree.write().name_peer(room, &me, &peer, &me);
         }
@@ -1043,10 +1058,14 @@ impl ShellNetwork {
 
         // And park the invitee's name against the room, for
         // `name_invitee_on_arrival` to write when they turn up.
-        if let Some(invitee) = invitee.map(str::trim).filter(|n| !n.is_empty())
+        let invitee = invitee.map(str::trim).filter(|name| !name.is_empty());
+        if let Some(invitee) = invitee
             && let Ok(mut pending) = self.pending_invitees.lock()
         {
             pending.insert(room, invitee.to_string());
+        }
+        if let Ok(mut pending) = self.pending_identity_admissions.lock() {
+            pending.insert(room, invitee.unwrap_or("Member").to_string());
         }
         Ok(token)
     }
@@ -1479,6 +1498,191 @@ impl ShellNetwork {
             let _ = self.publish_message(out_msg);
         }
     }
+
+    fn accept_identity_hello(
+        &self,
+        workspace_topic: u64,
+        origin: &crate::shell::state::PeerOrigin,
+        peer: &iroh::EndpointId,
+        cert: &qos_user_identity::DeviceCert,
+        revocations: &[qos_user_identity::RevocationEntry],
+    ) {
+        if cert.device_public_key != *peer.as_bytes() || revocations.len() > 4096 {
+            tracing::warn!(peer = %peer, "rejecting invalid peer identity handshake");
+            self.peer_identities.remove(origin);
+            return;
+        }
+        let mut list = qos_user_identity::RevocationList::new();
+        for entry in revocations {
+            if entry.user_public_key != cert.user_public_key || list.insert(entry.clone()).is_err()
+            {
+                tracing::warn!(peer = %peer, "rejecting peer identity with invalid revocation set");
+                self.peer_identities.remove(origin);
+                return;
+            }
+        }
+        self.peer_identities
+            .set_revocations(cert.user_public_key, list);
+        let was_known = self.peer_identities.get(origin).is_some();
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+            .unwrap_or(u64::MAX);
+        if self
+            .peer_identities
+            .insert(origin.clone(), cert.clone(), now_ns)
+            .is_err()
+            || self.peer_identities.is_revoked(
+                &cert.user_public_key,
+                &cert.device_public_key,
+                now_ns,
+            )
+        {
+            tracing::warn!(peer = %peer, "rejecting expired, invalid, or revoked peer device");
+            self.peer_identities.remove(origin);
+            return;
+        }
+        self.admit_invited_identity(workspace_topic, peer, cert);
+        // The initial SyncReq can race ahead of the periodic identity hello
+        // and is intentionally dropped. Re-kick anti-entropy after trust is
+        // established so joining never waits for another topology event.
+        if !was_known {
+            self.publish_sync_requests();
+        }
+    }
+
+    fn admit_invited_identity(
+        &self,
+        workspace_topic: u64,
+        peer: &iroh::EndpointId,
+        cert: &qos_user_identity::DeviceCert,
+    ) {
+        let room = self.replica.lock().ok().and_then(|replica| {
+            replica
+                .tree
+                .read()
+                .rooms()
+                .into_iter()
+                .find(|room| room_topic_id(*room) == workspace_topic)
+        });
+        let Some(room) = room else { return };
+        let name = self
+            .pending_identity_admissions
+            .lock()
+            .ok()
+            .and_then(|pending| pending.get(&room).cloned());
+        let Some(name) = name else { return };
+        let person = match collab_types::caps::Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
+        ) {
+            collab_types::caps::Principal::Person(person) => person,
+            _ => return,
+        };
+        let Ok(replica) = self.replica.lock() else {
+            return;
+        };
+        let mut tree = replica.tree.write();
+        let local = crate::shell::state::local_user_id_for_room(&room);
+        let granted = {
+            let Some(workspace) = tree
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room == room)
+            else {
+                return;
+            };
+            let room_scope = workspace.room.to_string();
+            workspace
+                .grant_as(
+                    &local,
+                    crate::shell::state::CapOverride::membership(
+                        crate::shell::state::Subject::person(person.clone()),
+                        room_scope,
+                        crate::shell::state::Verb::Write,
+                    ),
+                )
+                .is_some()
+        };
+        if !granted {
+            return;
+        }
+        let session = crate::network::behaviour::peer_liveness_handle(peer);
+        tree.admit_collaborator_in_room(
+            room,
+            crate::shell::state::Collaborator::new(person, name.clone()).with_session(session),
+        );
+        let _ = tree.name_peer(room, &local, &peer.to_string(), &name);
+        tree.flush_to_disk();
+        drop(tree);
+        if let Ok(mut pending) = self.pending_identity_admissions.lock() {
+            pending.remove(&room);
+        }
+    }
+
+    fn peer_may_write_app(
+        &self,
+        origin: &crate::shell::state::PeerOrigin,
+        cluster_id: &str,
+        app_id: &str,
+    ) -> bool {
+        let Some(identity) = self.peer_identities.get(origin) else {
+            return false;
+        };
+        let person = match collab_types::caps::Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(identity.user_pubkey),
+        ) {
+            collab_types::caps::Principal::Person(person) => person,
+            _ => return false,
+        };
+        let Some(room) = RoomId::parse(cluster_id) else {
+            return false;
+        };
+        let Ok(replica) = self.replica.lock() else {
+            return false;
+        };
+        let tree = replica.tree.read();
+        let Some(workspace) = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+        else {
+            return false;
+        };
+        let actor = workspace.actor_for_person(&person);
+        workspace.allows(
+            &actor,
+            &crate::shell::state::ResourceRef::App(app_id.to_string()),
+            crate::shell::state::Verb::Write,
+        )
+    }
+}
+
+fn selected_device_cert(
+    room: RoomId,
+    keypair: &iroh::SecretKey,
+) -> Result<qos_user_identity::DeviceCert, String> {
+    let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "no identity is selected for this workspace".to_string())?;
+    let paths = crate::firstboot::collaboration_identity_paths();
+    let cert = qos_user_identity::persist::read_device_cert(
+        &paths.device_cert_for_user(&profile.user_public_key),
+    )
+    .map_err(|error| error.to_string())?;
+    qos_user_identity::verify_device_cert(&cert).map_err(|error| error.to_string())?;
+    if cert.user_public_key != profile.user_public_key
+        || cert.device_public_key != *keypair.public().as_bytes()
+    {
+        return Err("workspace identity certificate does not match this device".into());
+    }
+    if crate::device_fleet::DeviceFleetStore::from_env()
+        .and_then(|store| store.load(&profile.id))
+        .is_ok_and(|fleet| fleet.is_revoked(&cert.device_public_key))
+    {
+        return Err("this device has been revoked for the workspace identity".into());
+    }
+    Ok(cert)
 }
 
 fn host_identity_for_key(
@@ -1496,9 +1700,49 @@ fn host_identity_for_key(
         tracing::warn!("ignoring invalid collaboration device certificate");
         return None;
     }
+    let mut workspace_device_certs = std::collections::HashMap::new();
+    let mut workspace_revocations = std::collections::HashMap::new();
+    if let Ok(store) = crate::identity_registry::IdentityRegistryStore::from_env()
+        && let Ok(registry) = store.migrate_legacy_primary()
+    {
+        for (room, identity_id) in &registry.workspace_identities {
+            let Some(profile) = registry.identities.get(identity_id) else {
+                continue;
+            };
+            let Some(room) = RoomId::parse(room) else {
+                continue;
+            };
+            let cert_path = paths.device_cert_for_user(&profile.user_public_key);
+            let Ok(cert) = qos_user_identity::persist::read_device_cert(&cert_path) else {
+                tracing::warn!(
+                    room = %room,
+                    identity = %identity_id,
+                    "workspace identity has no device certificate"
+                );
+                continue;
+            };
+            if qos_user_identity::verify_device_cert(&cert).is_ok()
+                && cert.user_public_key == profile.user_public_key
+                && cert.device_public_key == *keypair.public().as_bytes()
+                && !crate::device_fleet::DeviceFleetStore::from_env()
+                    .and_then(|store| store.load(identity_id))
+                    .is_ok_and(|fleet| fleet.is_revoked(&cert.device_public_key))
+            {
+                workspace_device_certs.insert(room_topic_id(room), cert);
+                if let Ok(fleet) = crate::device_fleet::DeviceFleetStore::from_env()
+                    .and_then(|store| store.load(identity_id))
+                {
+                    workspace_revocations.insert(room_topic_id(room), fleet.revocations);
+                }
+            }
+        }
+    }
     Some(HostIdentity {
         device_cert,
         device_signing_key: ed25519_dalek::SigningKey::from_bytes(&keypair.to_bytes()),
+        workspace_device_certs,
+        workspace_revocations,
+        identity_paths: Some(paths),
     })
 }
 
@@ -1539,7 +1783,10 @@ pub(crate) fn shell_network_for_test(
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
         host_addrs: Mutex::new(Vec::new()),
         last_sync_kick: Mutex::new(None),
+        peer_identities: PeerIdentityStore::new(),
+        require_peer_identity: false,
         pending_invitees: Mutex::new(std::collections::HashMap::new()),
+        pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
@@ -1555,6 +1802,84 @@ pub(crate) fn shell_network_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial(identity_env)]
+    fn identity_hello_redeems_invite_as_editor_and_revocation_removes_trust() {
+        use qos_user_identity::{
+            DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
+            sign_revocation_entry,
+        };
+
+        let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+        let device = iroh::SecretKey::from_bytes(&[62; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: *device.public().as_bytes(),
+            device_label: "Guest laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).expect("certificate");
+
+        let room = RoomId::new();
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(17),
+            "Shared",
+        );
+        workspace.room = room;
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (net, _commands) = shell_network_for_test(tree.shared(), 99);
+        net.pending_identity_admissions
+            .lock()
+            .expect("pending")
+            .insert(room, "Ada".into());
+
+        let origin = crate::shell::state::PeerOrigin::peer(&device.public());
+        net.accept_identity_hello(room_topic_id(room), &origin, &device.public(), &cert, &[]);
+        let person = match collab_types::caps::Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
+        ) {
+            collab_types::caps::Principal::Person(person) => person,
+            _ => unreachable!(),
+        };
+        let replica = net.replica.lock().expect("replica");
+        let tree = replica.tree.read();
+        let joined = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room == room)
+            .expect("workspace");
+        assert_eq!(
+            joined.role_of(&person),
+            Some(crate::shell::state::CapRole::Editor)
+        );
+        drop(tree);
+        drop(replica);
+        assert!(net.peer_may_write_app(&origin, &room.to_string(), "dev.qos.notes"));
+
+        let mut revoked = RevocationEntry {
+            user_public_key: cert.user_public_key,
+            revoked_device_public_key: cert.device_public_key,
+            revoked_at_ns: 1,
+            reason: RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut revoked, &root).expect("revocation");
+        net.accept_identity_hello(
+            room_topic_id(room),
+            &origin,
+            &device.public(),
+            &cert,
+            &[revoked],
+        );
+        assert!(net.peer_identities.get(&origin).is_none());
+        assert!(!net.peer_may_write_app(&origin, &room.to_string(), "dev.qos.notes"));
+    }
 
     #[test]
     fn shell_network_spawns_with_default_keypair() {
@@ -1748,12 +2073,12 @@ mod tests {
     }
 
     /// Build the inbound event a LAN peer's app-CRDT publish arrives as.
-    fn app_crdt_event(cluster_id: &str, from_peer_hash: u64) -> NetEvent {
+    fn app_crdt_event(cluster_id: &str, from_peer_hash: u64, peer: iroh::PublicKey) -> NetEvent {
         NetEvent::Msg {
             ws: RoomId::parse(cluster_id)
                 .filter(|room| !room.is_nil())
                 .map_or(DEFAULT_WS_TOPIC, room_topic_id),
-            peer: iroh::SecretKey::generate().public(),
+            peer,
             msg: NeighbourMsg::AppCrdtIncremental {
                 peer: from_peer_hash,
                 app_id: "dev.qos.notes".to_string(),
@@ -1773,14 +2098,54 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let local = tree.append_empty_workspace("Mine");
         let our_room = tree.room_of(local).expect("a minted room");
+        tree.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == local)
+            .expect("workspace")
+            .set_owner(crate::shell::state::local_user_id_for_room(&our_room));
         let handle = tree.shared();
         let (net, _cmd_rx) = shell_network_for_test(handle, 0xAAAAu64);
+
+        // Plain legacy app deltas are accepted only after the sender has
+        // proven an identity->device chain and received membership. Keep the
+        // routing assertion's positive control authenticated like production.
+        let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
+        let device = iroh::SecretKey::from_bytes(&[72; 32]);
+        let mut cert = qos_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: *device.public().as_bytes(),
+            device_label: "Peer laptop".into(),
+            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        qos_user_identity::sign_device_cert(&mut cert, &root).expect("device certificate");
+        net.pending_identity_admissions
+            .lock()
+            .expect("pending admission")
+            .insert(our_room, "Peer".into());
+        net.event_tx
+            .try_send(NetEvent::Msg {
+                ws: room_topic_id(our_room),
+                peer: device.public(),
+                msg: NeighbourMsg::IdentityHello {
+                    cert: Box::new(cert),
+                    revocations: Vec::new(),
+                },
+            })
+            .expect("queue identity proof");
+        net.tick();
 
         let stranger_room = crate::shell::state::RoomId::new();
         assert_ne!(stranger_room, our_room);
 
         net.event_tx
-            .try_send(app_crdt_event(&stranger_room.to_string(), 0xBBBBu64))
+            .try_send(app_crdt_event(
+                &stranger_room.to_string(),
+                0xBBBBu64,
+                device.public(),
+            ))
             .expect("queue the stranger's publish");
         net.tick();
         assert!(
@@ -1789,7 +2154,7 @@ mod tests {
         );
 
         net.event_tx
-            .try_send(app_crdt_event("not-a-room", 0xBBBBu64))
+            .try_send(app_crdt_event("not-a-room", 0xBBBBu64, device.public()))
             .expect("queue the malformed publish");
         net.tick();
         assert!(
@@ -1798,7 +2163,11 @@ mod tests {
         );
 
         net.event_tx
-            .try_send(app_crdt_event(&our_room.to_string(), 0xBBBBu64))
+            .try_send(app_crdt_event(
+                &our_room.to_string(),
+                0xBBBBu64,
+                device.public(),
+            ))
             .expect("queue the member's publish");
         net.tick();
         let delivered = net.inbound_app_crdt_handle().lock().unwrap().len();
