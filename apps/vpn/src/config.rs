@@ -4,7 +4,7 @@
 //!
 //! 1. Parsing a `WireGuard` `.conf` or `OpenVPN` `.ovpn` file into a
 //!    [`Connection`] (used by the import flow).
-//! 2. Building the exact NetworkManager action shown to the user before a
+//! 2. Building the exact `NetworkManager` action shown to the user before a
 //!    connection changes. Execution accepts only that narrow vocabulary;
 //!    the network is never touched without consent or in screenshot tests.
 
@@ -23,10 +23,10 @@ pub fn parse_config(name: &str, kind: ConnKind, text: &str) -> Connection {
 
 /// Detect the protocol from a file name extension.
 pub fn kind_from_filename(name: &str) -> Option<ConnKind> {
-    let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".conf") {
+    let ext = std::path::Path::new(name).extension()?.to_str()?;
+    if ext.eq_ignore_ascii_case("conf") {
         Some(ConnKind::WireGuard)
-    } else if lower.ends_with(".ovpn") {
+    } else if ext.eq_ignore_ascii_case("ovpn") {
         Some(ConnKind::OpenVpn)
     } else {
         None
@@ -133,7 +133,10 @@ fn parse_openvpn(name: &str, text: &str) -> Connection {
 fn strip_comment(line: &str) -> &str {
     // WireGuard uses '#', OpenVPN uses '#' and ';'.
     let cut = line.find(['#', ';']).unwrap_or(line.len());
-    &line[..cut]
+    // `find` on a `char` needle always returns a byte offset on a UTF-8
+    // boundary, so this is unreachable in practice — `.get()` documents
+    // that instead of slicing directly.
+    line.get(..cut).unwrap_or(line)
 }
 
 fn split_kv(line: &str) -> Option<(String, String)> {
@@ -268,7 +271,11 @@ pub fn iface_name(conn: &Connection) -> String {
     }
     let s = sanitize_iface(&conn.name);
     if s.is_empty() {
-        format!("qvpn{}", &conn.id.simple().to_string()[..4])
+        // A UUID's `simple()` form is 32 lowercase hex digits — always at
+        // least 4 ASCII bytes — so this is unreachable in practice;
+        // `.get()` documents that instead of slicing directly.
+        let hex = conn.id.simple().to_string();
+        format!("qvpn{}", hex.get(..4).unwrap_or(&hex))
     } else {
         s
     }
@@ -324,8 +331,14 @@ pub fn tor_plan(enable: bool) -> CommandPlan {
 /// reached on the `--shots` path. Returns the captured status text.
 ///
 /// Only a deliberately small command vocabulary is accepted. VPN changes
-/// are delegated to the shared NetworkManager boundary; this function is
+/// are delegated to the shared `NetworkManager` boundary; this function is
 /// not an arbitrary process launcher.
+///
+/// # Errors
+/// Returns `Err` when execution is disabled in the current process (e.g.
+/// tests, unless `QOS_VPN_ALLOW_EXEC` opts in), when `plan` isn't the
+/// narrow `nmcli connection up|down <name>` vocabulary this function
+/// accepts, or when the underlying `NetworkManager` call fails.
 pub fn execute(plan: &CommandPlan) -> Result<String, String> {
     if !exec_allowed() {
         return Err(format!(
@@ -334,11 +347,11 @@ pub fn execute(plan: &CommandPlan) -> Result<String, String> {
         ));
     }
     if plan.program == "nmcli"
-        && plan.args.len() == 3
-        && plan.args[0] == "connection"
-        && matches!(plan.args[1].as_str(), "up" | "down")
+        && let [action, up_down, name] = plan.args.as_slice()
+        && action == "connection"
+        && matches!(up_down.as_str(), "up" | "down")
     {
-        os_actions::set_vpn_connection(&plan.args[2], plan.args[1] == "up")?;
+        os_actions::set_vpn_connection(name, up_down == "up")?;
         return Ok(String::new());
     }
     Err(format!("unsupported privileged action: {}", plan.display()))

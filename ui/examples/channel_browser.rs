@@ -35,7 +35,9 @@ fn ch(
         space_name: space.into(),
         space_color_hue: hue,
         name: name.into(),
-        last_activity: SystemTime::now() - Duration::from_secs(minutes_ago * 60),
+        last_activity: SystemTime::now()
+            .checked_sub(Duration::from_secs(minutes_ago.saturating_mul(60)))
+            .unwrap_or_else(SystemTime::now),
         unread_count: unread,
         is_pinned: pinned,
         role_label: role.map(str::to_string),

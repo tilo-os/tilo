@@ -170,6 +170,15 @@ impl FsClient {
     }
 
     /// Open a file; `path` is workspace-relative, a leading `/` is tolerated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::Capnp`] if `path` doesn't exist, the server
+    /// rejects the request, or the connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn open(&self, path: &str, mode: OpenMode) -> Result<FileHandle, NotAvailable> {
         let mut req = self.inner.open_request();
         {
@@ -186,6 +195,16 @@ impl FsClient {
 
     /// List a directory. Snapshot semantics: the vec is the entries at the
     /// moment of the call — re-list or (once available) watch for changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::Capnp`] if `path` isn't a directory, an
+    /// entry's name isn't valid UTF-8, or the connection drops before a
+    /// reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn list(&self, path: &str) -> Result<Vec<DirEntry>, NotAvailable> {
         let mut req = self.inner.list_request();
         req.get().set_path(path);
@@ -206,6 +225,15 @@ impl FsClient {
     }
 
     /// Stat a single path; a missing path surfaces as [`NotAvailable::Capnp`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::Capnp`] if `path` doesn't exist or the
+    /// connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn stat(&self, path: &str) -> Result<Metadata, NotAvailable> {
         let mut req = self.inner.stat_request();
         req.get().set_path(path);
@@ -214,6 +242,16 @@ impl FsClient {
     }
 
     /// Create a directory (with intermediate mkdirs); idempotent if it already exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::Capnp`] if the server rejects the request
+    /// (e.g. a path component exists and isn't a directory) or the
+    /// connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn mkdir(&self, path: &str) -> Result<(), NotAvailable> {
         let mut req = self.inner.mkdir_request();
         req.get().set_path(path);
@@ -222,6 +260,16 @@ impl FsClient {
     }
 
     /// Remove a file (unlink) or an empty directory (rmdir).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::Capnp`] if `path` doesn't exist, a directory
+    /// at `path` isn't empty, or the connection drops before a reply
+    /// arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn remove(&self, path: &str) -> Result<(), NotAvailable> {
         let mut req = self.inner.remove_request();
         req.get().set_path(path);
@@ -238,6 +286,15 @@ pub struct FileHandle {
 
 impl FileHandle {
     /// Read up to `max_len` bytes at `offset`; the server caps it at [`MAX_READ_CHUNK`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::Capnp`] if the handle is no longer valid or
+    /// the connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn read_at(&self, offset: u64, max_len: u32) -> Result<Vec<u8>, NotAvailable> {
         let mut req = self.inner.read_request();
         {
@@ -251,6 +308,15 @@ impl FileHandle {
 
     /// Read the whole file in [`MAX_READ_CHUNK`]-sized reads until EOF; for
     /// large files prefer [`Self::read_at`] streamed to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::Capnp`] if any underlying [`Self::read_at`]
+    /// call fails.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn read_all(&self) -> Result<Vec<u8>, NotAvailable> {
         let mut buf = Vec::new();
         let mut offset: u64 = 0;
@@ -259,12 +325,21 @@ impl FileHandle {
             if chunk.is_empty() {
                 return Ok(buf);
             }
-            offset += chunk.len() as u64;
+            offset = offset.saturating_add(chunk.len() as u64);
             buf.extend_from_slice(&chunk);
         }
     }
 
     /// Write `bytes` at `offset`; returns the bytes written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::Capnp`] if the handle isn't writable or the
+    /// connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn write_at(&self, offset: u64, bytes: &[u8]) -> Result<u32, NotAvailable> {
         let mut req = self.inner.write_request();
         {
@@ -277,6 +352,15 @@ impl FileHandle {
     }
 
     /// Persist any buffered writes. Idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::Capnp`] if the server rejects the flush or
+    /// the connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn flush(&self) -> Result<(), NotAvailable> {
         let req = self.inner.flush_request();
         req.send().promise.await?;
@@ -284,6 +368,15 @@ impl FileHandle {
     }
 
     /// Stat this open handle — cheaper than [`FsClient::stat`] when you already have it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::Capnp`] if the handle is no longer valid or
+    /// the connection drops before a reply arrives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc's Rc-based client is inherently !Send; callers run inside a single-threaded LocalSet, per this crate's module docs"
+    )]
     pub async fn metadata(&self) -> Result<Metadata, NotAvailable> {
         let req = self.inner.metadata_request();
         let reply = req.send().promise.await?;

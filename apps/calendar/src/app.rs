@@ -1481,34 +1481,16 @@ impl CalendarApp {
         // Agenda: scroll only (no drag). A press that misses the bar falls
         // through so the row hit-map still opens the event/task.
         if matches!(self.view, View::Agenda) {
-            if matches!(
+            return self.handle_agenda_timeline_input(
                 event,
-                WindowEvent::MouseWheel { .. }
-                    | WindowEvent::CursorMoved { .. }
-                    | WindowEvent::MouseInput {
-                        button: MouseButton::Left,
-                        ..
-                    }
-            ) {
-                let p = self.last_mouse;
-                if self.agenda.wants_pointer_capture() || self.view_rect().contains(p) {
-                    let handled = self.agenda.handle_event(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    );
-                    if handled {
-                        self.dirty = true;
-                    }
-                    return handled;
-                }
-            }
-            return false;
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            );
         }
 
         if !matches!(self.view, View::Week | View::Day) {
@@ -1519,71 +1501,94 @@ impl CalendarApp {
         let days = self.timeline_days();
         let g = self.timeline_geom(area);
         let body = g.body(area.x0, area.x1);
-        let p = self.last_mouse;
 
         match event {
-            WindowEvent::MouseWheel { .. } => {
-                if area.contains(p) {
-                    return self.forward_to_scroll(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    );
-                }
-                false
-            }
-            WindowEvent::CursorMoved { .. } => {
-                // A scrollbar thumb drag owns every move until release.
-                if self.timeline_scroll.wants_pointer_capture() {
-                    return self.forward_to_scroll(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    );
-                }
-                // A live calendar drag updates its target.
-                if self.timeline_drag.is_some() {
-                    self.update_timeline_drag();
-                    self.dirty = true;
-                    return true;
-                }
-                // Otherwise let the bar track hover near the edge (never consumes).
-                if area.contains(p) {
-                    self.forward_to_scroll(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    );
-                }
-                false
-            }
+            WindowEvent::MouseWheel { .. } => self.handle_timeline_wheel(
+                area,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            ),
+            WindowEvent::CursorMoved { .. } => self.handle_timeline_cursor_moved(
+                area,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            ),
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                // Presses outside the scrolling grid (headers, gutter top) fall
-                // through to the normal hit-map path.
-                if !body.contains(p) {
-                    return false;
+            } => self.handle_timeline_press(
+                area,
+                &days,
+                g,
+                body,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            ),
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => self.handle_timeline_release(
+                area,
+                &days,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            ),
+            _ => false,
+        }
+    }
+
+    /// The Agenda view's timeline input: scroll only, no drag. Split out of
+    /// `handle_timeline_input` to keep it within the line-count lint.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_agenda_timeline_input(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if matches!(
+            event,
+            WindowEvent::MouseWheel { .. }
+                | WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput {
+                    button: MouseButton::Left,
+                    ..
                 }
-                // Offer the press to the scrollbar first.
-                if self.forward_to_scroll(
+        ) {
+            let p = self.last_mouse;
+            if self.agenda.wants_pointer_capture() || self.view_rect().contains(p) {
+                let handled = self.agenda.handle_event(
                     event,
                     scale_factor,
                     modifiers,
@@ -1592,69 +1597,208 @@ impl CalendarApp {
                     focus_target,
                     node_id,
                     taffy,
-                ) {
-                    return true;
-                }
-                // Grab an existing block to move it, else carve a new event.
-                if let Some((id, s, en)) = self.timeline_event_at(area, &days, p) {
-                    let press_min = self.timeline_minute_at(&g, p.y);
-                    self.timeline_drag = Some(TimelineDrag::Move {
-                        id,
-                        origin: p,
-                        current: p,
-                        grab_off_min: (press_min - s).clamp(0, en - s),
-                        dur_min: (en - s).max(TIMELINE_SNAP_MIN),
-                        active: false,
-                    });
+                );
+                if handled {
                     self.dirty = true;
-                    return true;
                 }
-                // Empty grid (in a day column, not the hour gutter) → carve a
-                // new event by dragging.
-                if p.x >= area.x0 + g.gutter {
-                    let col = self.timeline_col_at(area, days.len(), &g, p.x);
-                    self.timeline_drag = Some(TimelineDrag::Create {
-                        day: days[col],
-                        origin: p,
-                        current: p,
-                        active: false,
-                    });
-                    self.dirty = true;
-                    return true;
-                }
-                false
+                return handled;
             }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if self.timeline_scroll.wants_pointer_capture() {
-                    return self.forward_to_scroll(
-                        event,
-                        scale_factor,
-                        modifiers,
-                        state,
-                        path,
-                        focus_target,
-                        node_id,
-                        taffy,
-                    );
-                }
-                if let Some(drag) = self.timeline_drag.take() {
-                    if drag.is_active() {
-                        self.commit_timeline_drag(drag, area, &days, state);
-                    } else if let Some(a) = self.hit_action_at(p) {
-                        // A press that never dragged is a plain click.
-                        self.apply_action(a, state);
-                    }
-                    self.dirty = true;
-                    return true;
-                }
-                false
-            }
-            _ => false,
         }
+        false
+    }
+
+    /// `MouseWheel` over the week/day timeline. Split out of
+    /// `handle_timeline_input` to keep it within the line-count lint.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_timeline_wheel(
+        &mut self,
+        area: Rect,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let p = self.last_mouse;
+        if area.contains(p) {
+            return self.forward_to_scroll(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            );
+        }
+        false
+    }
+
+    /// `CursorMoved` over the week/day timeline: scrollbar drag, live
+    /// calendar drag, or bar-hover tracking. Split out of
+    /// `handle_timeline_input` to keep it within the line-count lint.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_timeline_cursor_moved(
+        &mut self,
+        area: Rect,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let p = self.last_mouse;
+        // A scrollbar thumb drag owns every move until release.
+        if self.timeline_scroll.wants_pointer_capture() {
+            return self.forward_to_scroll(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            );
+        }
+        // A live calendar drag updates its target.
+        if self.timeline_drag.is_some() {
+            self.update_timeline_drag();
+            self.dirty = true;
+            return true;
+        }
+        // Otherwise let the bar track hover near the edge (never consumes).
+        if area.contains(p) {
+            self.forward_to_scroll(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            );
+        }
+        false
+    }
+
+    /// A left press on the week/day timeline: scrollbar, grab-to-move an
+    /// existing block, or carve a new event. Split out of
+    /// `handle_timeline_input` to keep it within the line-count lint.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_timeline_press(
+        &mut self,
+        area: Rect,
+        days: &[NaiveDate],
+        g: TimelineGeom,
+        body: Rect,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let p = self.last_mouse;
+        // Presses outside the scrolling grid (headers, gutter top) fall
+        // through to the normal hit-map path.
+        if !body.contains(p) {
+            return false;
+        }
+        // Offer the press to the scrollbar first.
+        if self.forward_to_scroll(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            return true;
+        }
+        // Grab an existing block to move it, else carve a new event.
+        if let Some((id, s, en)) = self.timeline_event_at(area, days, p) {
+            let press_min = self.timeline_minute_at(&g, p.y);
+            self.timeline_drag = Some(TimelineDrag::Move {
+                id,
+                origin: p,
+                current: p,
+                grab_off_min: (press_min - s).clamp(0, en - s),
+                dur_min: (en - s).max(TIMELINE_SNAP_MIN),
+                active: false,
+            });
+            self.dirty = true;
+            return true;
+        }
+        // Empty grid (in a day column, not the hour gutter) → carve a new
+        // event by dragging.
+        if p.x >= area.x0 + g.gutter {
+            let col = self.timeline_col_at(area, days.len(), &g, p.x);
+            self.timeline_drag = Some(TimelineDrag::Create {
+                day: days[col],
+                origin: p,
+                current: p,
+                active: false,
+            });
+            self.dirty = true;
+            return true;
+        }
+        false
+    }
+
+    /// A left release on the week/day timeline: scrollbar, drag commit, or a
+    /// plain click. Split out of `handle_timeline_input` to keep it within
+    /// the line-count lint.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_timeline_release(
+        &mut self,
+        area: Rect,
+        days: &[NaiveDate],
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let p = self.last_mouse;
+        if self.timeline_scroll.wants_pointer_capture() {
+            return self.forward_to_scroll(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            );
+        }
+        if let Some(drag) = self.timeline_drag.take() {
+            if drag.is_active() {
+                self.commit_timeline_drag(drag, area, days, state);
+            } else if let Some(a) = self.hit_action_at(p) {
+                // A press that never dragged is a plain click.
+                self.apply_action(a, state);
+            }
+            self.dirty = true;
+            return true;
+        }
+        false
     }
 
     /// Advance a pending timeline drag to the latest pointer position, promoting

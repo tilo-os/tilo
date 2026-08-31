@@ -12,6 +12,13 @@ use std::path::Path;
 pub const DEFAULT_STORAGE_SOCKET: &str = "/run/qos/fs-storage.sock";
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 
+// Five independent on/off facts about a synced file (not a mode select), and
+// this struct mirrors the storage daemon's wire protocol verbatim — grouping
+// them into a bitflag-style type would just move the sprawl into callers.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "wire-protocol struct: each bool is an independent daemon-reported fact, not a state machine"
+)]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SyncedFileState {
     pub workspace: String,
@@ -91,25 +98,43 @@ pub struct StorageClient {
 }
 
 impl StorageClient {
+    /// # Errors
+    ///
+    /// Returns an [`std::io::Error`] if the Unix socket at `path` doesn't
+    /// exist or refuses the connection.
     pub fn connect(path: impl AsRef<Path>) -> std::io::Result<Self> {
         Ok(Self {
             stream: UnixStream::connect(path)?,
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an [`std::io::Error`] if the socket write/read fails, the
+    /// daemon reports [`StorageResponse::Error`], or it replies with a
+    /// response other than [`StorageResponse::Snapshot`].
     pub fn snapshot(&mut self) -> std::io::Result<SyncStorageSnapshot> {
         match self.request(&StorageRequest::Snapshot)? {
             StorageResponse::Snapshot(snapshot) => Ok(snapshot),
             StorageResponse::Error(error) => Err(std::io::Error::other(error)),
-            _ => Err(std::io::Error::other("unexpected storage response")),
+            StorageResponse::Evicted(_) => {
+                Err(std::io::Error::other("unexpected storage response"))
+            }
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an [`std::io::Error`] if the socket write/read fails, the
+    /// daemon reports [`StorageResponse::Error`], or it replies with a
+    /// response other than [`StorageResponse::Evicted`].
     pub fn evict(&mut self, selected: Vec<EvictionSelection>) -> std::io::Result<EvictionReport> {
         match self.request(&StorageRequest::Evict { selected })? {
             StorageResponse::Evicted(report) => Ok(report),
             StorageResponse::Error(error) => Err(std::io::Error::other(error)),
-            _ => Err(std::io::Error::other("unexpected storage response")),
+            StorageResponse::Snapshot(_) => {
+                Err(std::io::Error::other("unexpected storage response"))
+            }
         }
     }
 
@@ -119,15 +144,30 @@ impl StorageClient {
     }
 }
 
+/// # Errors
+///
+/// Returns an [`std::io::Error`] if `value` fails to serialize, the encoded
+/// frame exceeds [`MAX_FRAME`], or the write to `writer` fails.
 pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> std::io::Result<()> {
     let bytes = postcard::to_allocvec(value).map_err(std::io::Error::other)?;
     if bytes.len() > MAX_FRAME {
         return Err(std::io::Error::other("storage frame too large"));
     }
-    writer.write_all(&(bytes.len() as u32).to_le_bytes())?;
+    // Bounded by the MAX_FRAME check above (16 MiB), well under u32::MAX.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "bytes.len() is checked <= MAX_FRAME (16 MiB) just above"
+    )]
+    let len = bytes.len() as u32;
+    writer.write_all(&len.to_le_bytes())?;
     writer.write_all(&bytes)
 }
 
+/// # Errors
+///
+/// Returns an [`std::io::Error`] if the read from `reader` fails, the
+/// encoded frame length exceeds [`MAX_FRAME`], or the bytes fail to
+/// deserialize as `T`.
 pub fn read_frame<R: Read, T: for<'de> Deserialize<'de>>(reader: &mut R) -> std::io::Result<T> {
     let mut len = [0u8; 4];
     reader.read_exact(&mut len)?;

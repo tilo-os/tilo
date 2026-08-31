@@ -29,6 +29,13 @@ use threshold_identity::{
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
+// `_a`/`_b` names two independent DKG devices — the clearest available
+// convention for a 2-device protocol test, used the same way across
+// every multi-device test in this crate.
+#[allow(
+    clippy::similar_names,
+    reason = "_a/_b device-pair naming is deliberate and used throughout this crate's multi-device tests"
+)]
 fn dkg_two() -> (ThresholdIdentity, ThresholdIdentity) {
     let mut rng_a = ChaCha20Rng::from_seed([31u8; 32]);
     let mut rng_b = ChaCha20Rng::from_seed([32u8; 32]);
@@ -108,6 +115,12 @@ fn threshold_sig_verifies_over_channel_event_genesis() {
     }
 }
 
+// `owner_sk`/`owner_pk` follows this crate's established signing-key /
+// public-key naming convention; see the reason on `dkg_two`.
+#[allow(
+    clippy::similar_names,
+    reason = "the _sk/_pk keypair naming convention is deliberate and used throughout this crate's tests"
+)]
 #[test]
 fn threshold_signed_op_passes_inbound_validator() {
     // The grand-finale test: build a SignedOp signed via threshold, run

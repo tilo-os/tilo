@@ -55,16 +55,19 @@ impl Resource {
         }
     }
 
+    #[must_use]
     pub fn with_action(mut self, action: ActionSpec) -> Self {
         self.actions.push(action);
         self
     }
 
+    #[must_use]
     pub fn with_child(mut self, child: Resource) -> Self {
         self.children.push(child);
         self
     }
 
+    #[must_use]
     pub fn with_children(mut self, children: impl IntoIterator<Item = Resource>) -> Self {
         self.children.extend(children);
         self
@@ -120,6 +123,10 @@ pub struct ActionSpec {
 impl ActionSpec {
     /// An action that fires immediately. `type_id` must match the app's
     /// registry registration for `A`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::Encode`] if `action` fails to serialize.
     pub fn immediate<A>(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -182,6 +189,7 @@ impl ActionSpec {
         spec
     }
 
+    #[must_use]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self

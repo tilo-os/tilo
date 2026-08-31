@@ -470,7 +470,7 @@ pub fn serialize_inline(text: &InlineText) -> String {
 /// Empty input → a single empty paragraph.
 pub fn parse(md: &str) -> Vec<BlockSpec> {
     let mut blocks = Vec::new();
-    let mut lines = md.split('\n').peekable();
+    let mut lines = md.split('\n');
     while let Some(line) = lines.next() {
         if line.is_empty() {
             continue;
@@ -482,7 +482,7 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
                 Some(rest.to_string())
             };
             let mut body: Vec<&str> = Vec::new();
-            while let Some(next) = lines.next() {
+            for next in lines.by_ref() {
                 if next == "```" {
                     break;
                 }
@@ -1024,14 +1024,14 @@ Last paragraph.
 
     #[test]
     fn tex_and_typst_formula_fences_round_trip_as_editable_source() {
-        let source = r#"```tex
+        let source = r"```tex
 \frac{x^2+1}{\sqrt{y}}
 ```
 
 ```typst visual
 sum_(i=1)^n frac(1, i^2)
 ```
-"#;
+";
         let specs = parse(source);
         assert_eq!(specs.len(), 2);
         assert!(matches!(

@@ -59,6 +59,7 @@
 //! asks a permission question and nothing in it can widen one.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 use serde_json::{Value, json};
 
@@ -137,144 +138,162 @@ pub struct Answer {
 // The definitions
 // ---------------------------------------------------------------------------
 
+/// The [`LIST_APPLICATIONS`] tool definition.
+fn list_applications_definition() -> Value {
+    json!({
+        "name": LIST_APPLICATIONS,
+        "description":
+            "Every application in this room. Says which are open and which are not, \
+             and how many operations each is exporting right now. An application \
+             exporting nothing has nothing open in it yet — opening it onto \
+             something is an ordinary step, and what it does is put that \
+             application's own operations on the list. Call this first when the \
+             request might involve an application you have not seen.",
+        "input_schema": { "type": "object", "properties": {}, "additionalProperties": false }
+    })
+}
+
+/// The [`LIST_OPERATIONS`] tool definition.
+fn list_operations_definition() -> Value {
+    json!({
+        "name": LIST_OPERATIONS,
+        "description":
+            "What can be done in this room, right now. Every filter is optional and \
+             they combine; with none of them you get everything, capped. Use `kind` \
+             to ask what may be done to a kind of thing in any application at all \
+             (`files.entry`, `word_processor.section`), `resource` for one named \
+             thing, `application` for one application, and `search` to match the \
+             applications' own words. The ids that come back are the only ones \
+             `plan` will accept.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "application": {
+                    "type": "string",
+                    "description": "One application's namespace, as `list_applications` gives it."
+                },
+                "resource": {
+                    "type": "string",
+                    "description": "One resource id, for everything that may be done to that one thing."
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "A resource kind, for everything that may be done to that kind of thing in any application."
+                },
+                "search": {
+                    "type": "string",
+                    "description": "Words to match against the applications' own labels and descriptions."
+                }
+            },
+            "additionalProperties": false
+        }
+    })
+}
+
+/// The [`DESCRIBE_OPERATION`] tool definition.
+fn describe_operation_definition() -> Value {
+    json!({
+        "name": DESCRIBE_OPERATION,
+        "description":
+            "One operation in full: what the application says it does, what it does \
+             it to, whether performing it needs an argument, and — when it does — \
+             the application's own prompt for that argument and its own example of \
+             one. Also what the publishing resource says about itself, which is \
+             where an application states a fact it has no operation to hang on. \
+             Call this before planning any operation that takes an argument — the \
+             example and the facts are what make the value computable rather than \
+             guessed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "description": "The id of an operation a listing returned."
+                }
+            },
+            "required": ["operation"],
+            "additionalProperties": false
+        }
+    })
+}
+
+/// The [`PLAN`] tool definition. Rebuilt from `revealed` on every turn, which
+/// is what makes "pick from what a tool returned" a property of the request
+/// rather than an instruction in a prompt.
+fn plan_definition(revealed: &Revealed, most_steps: usize) -> Value {
+    json!({
+        "name": PLAN,
+        "description": format!(
+            "The answer. The operations to perform, in the order the request asks \
+             for them — one for a request that asks for one thing, which is most of \
+             them, and at most {most_steps}. Call this exactly once, when you know \
+             what to do. Every `operation` must be an id a listing actually \
+             returned; nothing else can be named here."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "operation": {
+                                "type": "string",
+                                "enum": revealed.ids(),
+                                "description": format!(
+                                    "The operation to perform, or {:?} for a step whose \
+                                     operation cannot be named yet because the application \
+                                     that would export it is not open — that step is asked \
+                                     again after the open, against what that application \
+                                     then publishes.",
+                                    plan::NOTHING_FITS
+                                )
+                            },
+                            "argument": {
+                                "anyOf": [{ "type": "string" }, { "type": "null" }],
+                                "description":
+                                    "The value this operation collects, in the form its own \
+                                     prompt asks for — see `describe_operation`, which gives \
+                                     you that prompt, the application's own example of a \
+                                     value, and what the application says about the thing \
+                                     being acted on. The example is the shape, not the \
+                                     answer. Null for an operation that takes nothing, and \
+                                     null for one that takes what an earlier step produced: \
+                                     that is content, it is filled in from what actually \
+                                     happened, and nothing you could write would name real \
+                                     bytes."
+                            }
+                        },
+                        "required": ["operation", "argument"],
+                        "additionalProperties": false
+                    }
+                },
+                "why": { "type": "string", "description": "One short clause." },
+                "then": {
+                    "anyOf": [{ "type": "string" }, { "type": "null" }],
+                    "description":
+                        "What the request still asks for that nothing you were shown can \
+                         express yet, in the request's own words — the rest of the \
+                         sentence, after the steps you named. Use it when opening an \
+                         application is what would put the needed operation on the list, \
+                         since that operation cannot be named until it is open. Null when \
+                         the steps you named already do all of it."
+                }
+            },
+            "required": ["steps", "why", "then"],
+            "additionalProperties": false
+        }
+    })
+}
+
 /// The tools as the API is told about them.
-///
-/// [`PLAN`]'s enum is rebuilt from `revealed` on every turn, which is what
-/// makes "pick from what a tool returned" a property of the request rather
-/// than an instruction in a prompt.
 pub fn definitions(revealed: &Revealed, most_steps: usize) -> Value {
     json!([
-        {
-            "name": LIST_APPLICATIONS,
-            "description":
-                "Every application in this room. Says which are open and which are not, \
-                 and how many operations each is exporting right now. An application \
-                 exporting nothing has nothing open in it yet — opening it onto \
-                 something is an ordinary step, and what it does is put that \
-                 application's own operations on the list. Call this first when the \
-                 request might involve an application you have not seen.",
-            "input_schema": { "type": "object", "properties": {}, "additionalProperties": false }
-        },
-        {
-            "name": LIST_OPERATIONS,
-            "description":
-                "What can be done in this room, right now. Every filter is optional and \
-                 they combine; with none of them you get everything, capped. Use `kind` \
-                 to ask what may be done to a kind of thing in any application at all \
-                 (`files.entry`, `word_processor.section`), `resource` for one named \
-                 thing, `application` for one application, and `search` to match the \
-                 applications' own words. The ids that come back are the only ones \
-                 `plan` will accept.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "application": {
-                        "type": "string",
-                        "description": "One application's namespace, as `list_applications` gives it."
-                    },
-                    "resource": {
-                        "type": "string",
-                        "description": "One resource id, for everything that may be done to that one thing."
-                    },
-                    "kind": {
-                        "type": "string",
-                        "description": "A resource kind, for everything that may be done to that kind of thing in any application."
-                    },
-                    "search": {
-                        "type": "string",
-                        "description": "Words to match against the applications' own labels and descriptions."
-                    }
-                },
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": DESCRIBE_OPERATION,
-            "description":
-                "One operation in full: what the application says it does, what it does \
-                 it to, whether performing it needs an argument, and — when it does — \
-                 the application's own prompt for that argument and its own example of \
-                 one. Also what the publishing resource says about itself, which is \
-                 where an application states a fact it has no operation to hang on. \
-                 Call this before planning any operation that takes an argument — the \
-                 example and the facts are what make the value computable rather than \
-                 guessed.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "operation": {
-                        "type": "string",
-                        "description": "The id of an operation a listing returned."
-                    }
-                },
-                "required": ["operation"],
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": PLAN,
-            "description": format!(
-                "The answer. The operations to perform, in the order the request asks \
-                 for them — one for a request that asks for one thing, which is most of \
-                 them, and at most {most_steps}. Call this exactly once, when you know \
-                 what to do. Every `operation` must be an id a listing actually \
-                 returned; nothing else can be named here."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "steps": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "operation": {
-                                    "type": "string",
-                                    "enum": revealed.ids(),
-                                    "description": format!(
-                                        "The operation to perform, or {:?} for a step whose \
-                                         operation cannot be named yet because the application \
-                                         that would export it is not open — that step is asked \
-                                         again after the open, against what that application \
-                                         then publishes.",
-                                        plan::NOTHING_FITS
-                                    )
-                                },
-                                "argument": {
-                                    "anyOf": [{ "type": "string" }, { "type": "null" }],
-                                    "description":
-                                        "The value this operation collects, in the form its own \
-                                         prompt asks for — see `describe_operation`, which gives \
-                                         you that prompt, the application's own example of a \
-                                         value, and what the application says about the thing \
-                                         being acted on. The example is the shape, not the \
-                                         answer. Null for an operation that takes nothing, and \
-                                         null for one that takes what an earlier step produced: \
-                                         that is content, it is filled in from what actually \
-                                         happened, and nothing you could write would name real \
-                                         bytes."
-                                }
-                            },
-                            "required": ["operation", "argument"],
-                            "additionalProperties": false
-                        }
-                    },
-                    "why": { "type": "string", "description": "One short clause." },
-                    "then": {
-                        "anyOf": [{ "type": "string" }, { "type": "null" }],
-                        "description":
-                            "What the request still asks for that nothing you were shown can \
-                             express yet, in the request's own words — the rest of the \
-                             sentence, after the steps you named. Use it when opening an \
-                             application is what would put the needed operation on the list, \
-                             since that operation cannot be named until it is open. Null when \
-                             the steps you named already do all of it."
-                    }
-                },
-                "required": ["steps", "why", "then"],
-                "additionalProperties": false
-            }
-        }
+        list_applications_definition(),
+        list_operations_definition(),
+        describe_operation_definition(),
+        plan_definition(revealed, most_steps),
     ])
 }
 
@@ -326,17 +345,19 @@ fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
             .iter()
             .find(|o| o.app == contract.namespace && surface::opens(o.address()).is_some());
 
-        s.push_str(&format!("{} ({})", contract.title, contract.namespace));
+        let _ = write!(s, "{} ({})", contract.title, contract.namespace);
         s.push_str(if open { " — open" } else { " — not open" });
-        s.push_str(&format!(
+        let _ = write!(
+            s,
             ", exporting {count} operation{}",
             if count == 1 { "" } else { "s" }
-        ));
+        );
         if count > 0 {
-            s.push_str(&format!(
+            let _ = write!(
+                s,
                 "; ask `{LIST_OPERATIONS}` with application=\"{}\" for them",
                 contract.namespace
-            ));
+            );
         }
         match opener {
             Some(o) => {
@@ -349,10 +370,11 @@ fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
                 } else {
                     ". None of what it can do is here to be named yet"
                 });
-                s.push_str(&format!(
+                let _ = write!(
+                    s,
                     " — opening it is what puts its operations on the list: `{}`",
                     o.id()
-                ));
+                );
                 if o.wants_content() {
                     s.push_str(
                         ", which opens onto the content this room already denotes. Leave \
@@ -434,22 +456,26 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
     for o in matching.iter().take(MOST_LISTED) {
         let r = o.address().resource.as_str();
         if last != Some(r) {
-            s.push_str(&format!(
-                "\n{} — {} ({})\n",
+            let _ = writeln!(
+                s,
+                "\n{} — {} ({})",
                 r, o.descriptor.resource_label, o.descriptor.resource_kind
-            ));
+            );
             last = Some(r);
         }
         revealed.reveal(o.id());
-        s.push_str(&format!("  {} — {}", o.id(), o.descriptor.action_label));
+        let _ = write!(s, "  {} — {}", o.id(), o.descriptor.action_label);
         match &o.descriptor.input {
             qos_actions::InputSpec::Text {
                 collects: qos_actions::Collects::Words,
                 prompt,
                 ..
-            } => s.push_str(&format!(
-                "; takes an argument: {prompt} (ask `{DESCRIBE_OPERATION}` for its shape)"
-            )),
+            } => {
+                let _ = write!(
+                    s,
+                    "; takes an argument: {prompt} (ask `{DESCRIBE_OPERATION}` for its shape)"
+                );
+            }
             qos_actions::InputSpec::Text {
                 collects: qos_actions::Collects::Content,
                 ..
@@ -460,11 +486,12 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
     }
     let rest = matching.len().saturating_sub(MOST_LISTED);
     if rest > 0 {
-        s.push_str(&format!(
+        let _ = write!(
+            s,
             "\n… and {rest} more not listed. Ask again with a narrower \
              application=, kind=, resource= or search= to reach them — they are \
              not out of reach, only out of this reply.\n"
-        ));
+        );
     }
     s
 }
@@ -486,7 +513,7 @@ fn describe(input: &Value, catalogue: &Catalogue) -> String {
         d.action_label, d.resource_label, d.resource_kind, offer.app
     );
     if let Some(description) = &d.description {
-        s.push_str(&format!("  the application says: {description}\n"));
+        let _ = writeln!(s, "  the application says: {description}");
     }
     match &d.input {
         qos_actions::InputSpec::None => {
@@ -497,11 +524,9 @@ fn describe(input: &Value, catalogue: &Catalogue) -> String {
             placeholder,
             collects: qos_actions::Collects::Words,
         } => {
-            s.push_str(&format!("  argument: required — {prompt}\n"));
+            let _ = writeln!(s, "  argument: required — {prompt}");
             if !placeholder.is_empty() {
-                s.push_str(&format!(
-                    "  the application's own example of one: {placeholder}\n"
-                ));
+                let _ = writeln!(s, "  the application's own example of one: {placeholder}");
             }
             s.push_str(
                 "  Put the value in this step's `argument`, in exactly that form. The \
@@ -514,11 +539,12 @@ fn describe(input: &Value, catalogue: &Catalogue) -> String {
             collects: qos_actions::Collects::Content,
             ..
         } => {
-            s.push_str(&format!(
+            let _ = writeln!(
+                s,
                 "  argument: content, not words — {prompt}. Leave it null: it is \
                  whatever the step before this one produced, filled in from what \
-                 actually happened. Nothing you could write would name real bytes.\n"
-            ));
+                 actually happened. Nothing you could write would name real bytes."
+            );
         }
     }
     // What the resource says about itself. An application with a fact and no
@@ -526,7 +552,7 @@ fn describe(input: &Value, catalogue: &Catalogue) -> String {
     // nothing, and a flat survey walks straight past it.
     if let Some(facts) = catalogue.about(&d.address.resource) {
         for note in &facts.notes {
-            s.push_str(&format!("  about {}: {note}\n", facts.label));
+            let _ = writeln!(s, "  about {}: {note}", facts.label);
         }
     }
     s
@@ -539,6 +565,13 @@ fn describe(input: &Value, catalogue: &Catalogue) -> String {
 /// Read a [`PLAN`] call's input into the answer the gate checks.
 ///
 /// `Err` names what was wrong with it, in words that go in a log line.
+///
+/// # Errors
+///
+/// Returns an error when `input` has no `steps` array, when a step names no
+/// `operation`, when an `operation` is not one a listing in this
+/// conversation actually returned, when `steps` leaves nothing to do, or
+/// when it names more operations than `most_steps` allows.
 pub fn read_plan(input: &Value, revealed: &Revealed, most_steps: usize) -> Result<Answer, String> {
     let steps = input
         .get("steps")

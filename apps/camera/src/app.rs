@@ -412,7 +412,7 @@ impl CameraApp {
             | Action::ToggleGeotag
             | Action::ToggleHdr
             | Action::CycleDefaultFacing) => {
-                self.apply_settings_toggle(settings_action, doc, root);
+                self.apply_settings_toggle(&settings_action, doc, root);
             }
         }
     }
@@ -550,7 +550,7 @@ impl CameraApp {
         }
     }
 
-    fn apply_settings_toggle(&mut self, action: Action, doc: &mut AutoCommit, root: &ObjId) {
+    fn apply_settings_toggle(&mut self, action: &Action, doc: &mut AutoCommit, root: &ObjId) {
         match action {
             Action::CycleResolution => {
                 self.settings.resolution = cycle(&Resolution::ALL, self.settings.resolution);
@@ -558,7 +558,7 @@ impl CameraApp {
             Action::CycleFormat => {
                 self.settings.photo_format = cycle(&PhotoFormat::ALL, self.settings.photo_format);
             }
-            Action::SetTimer(tm) => self.settings.timer = tm,
+            Action::SetTimer(tm) => self.settings.timer = *tm,
             Action::ToggleGrid => self.settings.grid = !self.settings.grid,
             Action::ToggleLevel => self.settings.level = !self.settings.level,
             Action::ToggleMirror => self.settings.mirror_front = !self.settings.mirror_front,
@@ -1145,6 +1145,7 @@ impl Widget for CameraApp {
 // ====================================================================
 
 /// Icon/title/subtitle/style bundle for [`CameraApp::draw_empty_state`].
+#[derive(Clone, Copy)]
 struct EmptyStateContent<'a> {
     icon: &'a str,
     title: &'a str,
@@ -1312,14 +1313,14 @@ impl CameraApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         area: Rect,
-        content: EmptyStateContent,
+        content: &EmptyStateContent<'_>,
     ) -> Rect {
         let EmptyStateContent {
             icon,
             title,
             subtitle,
             glass,
-        } = content;
+        } = *content;
         let c = &theme.tokens.colors;
         // Bounded card, centred in `area`: wide enough to read as a panel,
         // capped so it never stretches edge-to-edge on ultra-wide windows.
@@ -1383,7 +1384,7 @@ impl CameraApp {
             tr,
             theme,
             rect,
-            EmptyStateContent {
+            &EmptyStateContent {
                 icon: "camera",
                 title: "No camera connected",
                 subtitle: Some(subtitle),
@@ -1478,6 +1479,7 @@ impl CameraApp {
 }
 
 /// Scroll position/extent bundle for [`CameraApp::draw_scrollbar`].
+#[derive(Clone, Copy)]
 struct ScrollMetrics {
     scroll: f64,
     max_scroll: f64,
@@ -2702,7 +2704,7 @@ impl CameraApp {
             tr,
             theme,
             area,
-            EmptyStateContent {
+            &EmptyStateContent {
                 icon: "gallery",
                 title: msg,
                 subtitle: sub,

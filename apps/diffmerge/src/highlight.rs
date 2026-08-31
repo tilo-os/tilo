@@ -53,20 +53,20 @@ const KEYWORDS: &[&str] = &[
 ];
 
 /// Classify one line into a sequence of spans covering every character.
+///
+/// Operates on a `Vec<char>` view of the line (not raw byte offsets), so
+/// every span boundary this returns is a char index, safe to use with
+/// `chars().collect()` on the same line — see [`segments`].
 pub fn classify(line: &str) -> Vec<Span> {
     let chars: Vec<char> = line.chars().collect();
     let n = chars.len();
     let mut spans: Vec<Span> = Vec::new();
     let mut i = 0;
 
-    while i < n {
-        let c = chars[i];
-
+    while let Some(&c) = chars.get(i) {
         // Line comments: // … or # … (toml/python/shell) or ; … (ini)
-        if (c == '/' && i + 1 < n && chars[i + 1] == '/')
-            || c == '#'
-            || (c == '-' && i + 1 < n && chars[i + 1] == '-')
-        {
+        let next = chars.get(i + 1).copied();
+        if (c == '/' && next == Some('/')) || c == '#' || (c == '-' && next == Some('-')) {
             // `--` only as a comment when it starts a token boundary; cheap
             // heuristic — treat the rest of the line as a comment.
             spans.push(Span {
@@ -82,12 +82,12 @@ pub fn classify(line: &str) -> Vec<Span> {
             let quote = c;
             let start = i;
             i += 1;
-            while i < n {
-                if chars[i] == '\\' && i + 1 < n {
+            while let Some(&cur) = chars.get(i) {
+                if cur == '\\' && chars.get(i + 1).is_some() {
                     i += 2;
                     continue;
                 }
-                if chars[i] == quote {
+                if cur == quote {
                     i += 1;
                     break;
                 }
@@ -104,7 +104,10 @@ pub fn classify(line: &str) -> Vec<Span> {
         // Numbers.
         if c.is_ascii_digit() {
             let start = i;
-            while i < n && (chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_')
+            while chars
+                .get(i)
+                .copied()
+                .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_')
             {
                 i += 1;
             }
@@ -119,10 +122,14 @@ pub fn classify(line: &str) -> Vec<Span> {
         // Identifiers / keywords.
         if c.is_alphabetic() || c == '_' {
             let start = i;
-            while i < n && (chars[i].is_alphanumeric() || chars[i] == '_') {
+            while chars
+                .get(i)
+                .copied()
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+            {
                 i += 1;
             }
-            let word: String = chars[start..i].iter().collect();
+            let word: String = chars.get(start..i).unwrap_or(&[]).iter().collect();
             let class = if KEYWORDS.contains(&word.as_str()) {
                 TokenClass::Keyword
             } else {
@@ -139,7 +146,7 @@ pub fn classify(line: &str) -> Vec<Span> {
         // Whitespace stays plain.
         if c.is_whitespace() {
             let start = i;
-            while i < n && chars[i].is_whitespace() {
+            while chars.get(i).copied().is_some_and(char::is_whitespace) {
                 i += 1;
             }
             spans.push(Span {
@@ -152,13 +159,9 @@ pub fn classify(line: &str) -> Vec<Span> {
 
         // Punctuation run.
         let start = i;
-        while i < n
-            && !chars[i].is_alphanumeric()
-            && chars[i] != '_'
-            && !chars[i].is_whitespace()
-            && chars[i] != '"'
-            && chars[i] != '\''
-        {
+        while chars.get(i).copied().is_some_and(|ch| {
+            !ch.is_alphanumeric() && ch != '_' && !ch.is_whitespace() && ch != '"' && ch != '\''
+        }) {
             i += 1;
         }
         spans.push(Span {
@@ -177,7 +180,8 @@ pub fn segments(line: &str, theme: &Theme) -> Vec<(String, Color)> {
     classify(line)
         .into_iter()
         .map(|s| {
-            let text: String = chars[s.start..s.end.min(chars.len())].iter().collect();
+            let end = s.end.min(chars.len());
+            let text: String = chars.get(s.start..end).unwrap_or(&[]).iter().collect();
             (text, s.class.color(theme))
         })
         .collect()

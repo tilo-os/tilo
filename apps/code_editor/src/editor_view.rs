@@ -713,7 +713,7 @@ impl EditorView {
         // Process carets bottom-to-top so a splice doesn't shift the indices
         // of carets we haven't handled yet.
         let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
-        order.sort_by(|(_, a), (_, b)| (b.line, b.col).cmp(&(a.line, a.col)));
+        order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
         for (i, _) in order {
             self.apply_insert_at(doc, &text, i, s);
         }
@@ -759,7 +759,7 @@ impl EditorView {
             return;
         };
         let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
-        order.sort_by(|(_, a), (_, b)| (b.line, b.col).cmp(&(a.line, a.col)));
+        order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
         for (i, caret) in order {
             if let Some((s, e)) = caret.selection() {
                 let s_idx = self.char_index(s.0, s.1);
@@ -801,7 +801,7 @@ impl EditorView {
             return;
         };
         let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
-        order.sort_by(|(_, a), (_, b)| (b.line, b.col).cmp(&(a.line, a.col)));
+        order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
         for (i, caret) in order {
             if let Some((s, e)) = caret.selection() {
                 let s_idx = self.char_index(s.0, s.1);
@@ -1132,7 +1132,7 @@ impl EditorView {
         };
         let (a, b) = self.primary_line_range();
         let non_blank: Vec<usize> = (a..=b)
-            .filter(|&l| !self.lines.get(l).map_or(true, |s| s.trim().is_empty()))
+            .filter(|&l| !self.lines.get(l).is_none_or(|s| s.trim().is_empty()))
             .collect();
         if non_blank.is_empty() {
             return;
@@ -1191,7 +1191,7 @@ impl EditorView {
         let (a, b) = self.primary_line_range();
         let pad = " ".repeat(self.indent_width);
         for l in (a..=b).rev() {
-            if self.lines.get(l).map_or(true, |s| s.is_empty()) {
+            if self.lines.get(l).is_none_or(String::is_empty) {
                 continue;
             }
             let at = self.line_start_index(l);
@@ -1634,11 +1634,11 @@ impl EditorView {
         caret_x: f64,
         caret_top: f64,
     ) {
+        const ROW_H: f64 = 20.0;
         if !self.completion_active() {
             return;
         }
         let c = &theme.tokens.colors;
-        const ROW_H: f64 = 20.0;
         let max_rows = 8usize;
         let total = self.completions.len();
         let shown = total.min(max_rows);
@@ -1734,6 +1734,10 @@ impl EditorView {
     /// Draw the hover tooltip: a small box near the caret with the server's
     /// text, preferring above the caret and dropping below when there's no
     /// room. No-op when there is no hover text to show.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a draw pass threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
+    )]
     fn draw_hover_tooltip(
         &self,
         scene: &mut Scene,
@@ -2363,10 +2367,8 @@ impl Widget for EditorView {
             WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(*delta, handled),
             WindowEvent::KeyboardInput {
                 event: key_event, ..
-            } => {
-                if key_event.state == ElementState::Pressed {
-                    self.handle_key_press(key_event, mods, state, handled);
-                }
+            } if key_event.state == ElementState::Pressed => {
+                self.handle_key_press(key_event, mods, state, handled);
             }
             _ => {}
         }

@@ -138,151 +138,30 @@ impl AgendaView {
             }
             drew_any = true;
 
-            if y + 24.0 > area.y0 && y < area.y1 {
-                let heading_color = if day == today {
-                    colors.accent[5]
-                } else {
-                    colors.neutral[8]
-                };
-                text.draw_text(
-                    scene,
-                    &date::relative_label(day, today),
-                    15.0,
-                    heading_color,
-                    transform * Affine::translate((x0, y)),
-                    None,
-                );
-                text.draw_text(
-                    scene,
-                    &date::fmt_day_long(day),
-                    12.0,
-                    colors.text_dim,
-                    transform * Affine::translate((x0 + 120.0, y + 2.0)),
-                    None,
-                );
-            }
+            draw_day_heading(scene, transform, text, theme, area, x0, y, day, today);
             y += 26.0;
 
             for event in events {
-                let row = Rect::new(x0, y, area.x1 - 24.0, y + 30.0);
-                if row.y1 > area.y0 && row.y0 < area.y1 {
-                    if row.contains(pointer) {
-                        fill_round(scene, transform, colors.surface_white_5, row, 6.0);
-                    }
-                    fill_round(
-                        scene,
-                        transform,
-                        event.color.color(theme),
-                        Rect::new(row.x0, row.y0 + 4.0, row.x0 + 4.0, row.y1 - 4.0),
-                        2.0,
-                    );
-                    let time = if event.all_day {
-                        "All day".to_string()
-                    } else {
-                        date::fmt_time(&event.start)
-                    };
-                    text.draw_text(
-                        scene,
-                        &time,
-                        12.0,
-                        colors.text_dim,
-                        transform * Affine::translate((row.x0 + 16.0, y + 7.0)),
-                        None,
-                    );
-                    let title_max = if show_location && !event.location.is_empty() {
-                        row.width() - 220.0
-                    } else {
-                        row.width() - 104.0
-                    };
-                    text.draw_text(
-                        scene,
-                        &event.title,
-                        13.0,
-                        colors.neutral[9],
-                        transform * Affine::translate((row.x0 + 90.0, y + 7.0)),
-                        Some(title_max.max(40.0) as f32),
-                    );
-                    if show_location && !event.location.is_empty() {
-                        text.draw_text(
-                            scene,
-                            &event.location,
-                            12.0,
-                            colors.text_dim,
-                            transform * Affine::translate((row.x1 - 130.0, y + 7.0)),
-                            Some(126.0),
-                        );
-                    }
-                    if let Some(hit) = clamp_hit(row, area) {
-                        hits.push((hit, AgendaAction::OpenEvent(event.id)));
-                    }
-                }
+                draw_event_row(
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    area,
+                    x0,
+                    y,
+                    show_location,
+                    pointer,
+                    event,
+                    &mut hits,
+                );
                 y += 32.0;
             }
 
             for task in tasks {
-                let row = Rect::new(x0, y, area.x1 - 24.0, y + 30.0);
-                if row.y1 > area.y0 && row.y0 < area.y1 {
-                    if row.contains(pointer) {
-                        fill_round(scene, transform, colors.surface_white_5, row, 6.0);
-                    }
-                    if let Some(hit) = clamp_hit(row, area) {
-                        hits.push((hit, AgendaAction::OpenTask(task.id)));
-                    }
-                    let checkbox = Rect::new(
-                        row.x0 + 8.0,
-                        row.center().y - 8.0,
-                        row.x0 + 24.0,
-                        row.center().y + 8.0,
-                    );
-                    draw_checkbox(scene, transform, theme, checkbox, task.done);
-                    let label_color = if task.done {
-                        colors.text_dim
-                    } else {
-                        colors.neutral[9]
-                    };
-                    let label_x0 = row.x0 + 34.0;
-                    text.draw_text(
-                        scene,
-                        &task.title,
-                        13.0,
-                        label_color,
-                        transform * Affine::translate((label_x0, y + 7.0)),
-                        Some((row.width() - 160.0).max(40.0) as f32),
-                    );
-                    let label_width = f64::from(text.measure(&task.title, 13.0, None).0);
-                    if task.done {
-                        stroke_line(
-                            scene,
-                            transform,
-                            colors.text_dim,
-                            Point::new(label_x0, row.center().y),
-                            Point::new(
-                                (label_x0 + label_width).min(row.x1 - 120.0),
-                                row.center().y,
-                            ),
-                            1.0,
-                        );
-                    }
-                    let complete = Rect::new(
-                        row.x0,
-                        row.y0,
-                        (label_x0 + label_width.min(row.width() - 160.0) + 8.0).min(row.x1 - 40.0),
-                        row.y1,
-                    );
-                    if let Some(hit) = clamp_hit(complete, area) {
-                        hits.push((hit, AgendaAction::ToggleTask(task.id)));
-                    }
-                    if task.priority != Priority::None {
-                        text.draw_text(
-                            scene,
-                            task.priority.flag(),
-                            11.0,
-                            task.priority.color(theme),
-                            transform * Affine::translate((row.x1 - 30.0, y + 7.0)),
-                            None,
-                        );
-                    }
-                }
+                draw_task_row(
+                    scene, transform, text, theme, area, x0, y, pointer, task, &mut hits,
+                );
                 y += 32.0;
             }
             y += 12.0;
@@ -319,6 +198,198 @@ impl AgendaView {
 
     pub(crate) fn is_layout_dirty(&self) -> bool {
         self.scroll.is_layout_dirty()
+    }
+}
+
+/// Draw one day's two-line heading (relative label + long date) at `y`,
+/// clipped to `area`. Split out of `AgendaView::draw` to keep it within the
+/// line-count lint.
+#[allow(clippy::too_many_arguments)]
+fn draw_day_heading(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    area: Rect,
+    x0: f64,
+    y: f64,
+    day: NaiveDate,
+    today: NaiveDate,
+) {
+    let colors = &theme.tokens.colors;
+    if y + 24.0 > area.y0 && y < area.y1 {
+        let heading_color = if day == today {
+            colors.accent[5]
+        } else {
+            colors.neutral[8]
+        };
+        text.draw_text(
+            scene,
+            &date::relative_label(day, today),
+            15.0,
+            heading_color,
+            transform * Affine::translate((x0, y)),
+            None,
+        );
+        text.draw_text(
+            scene,
+            &date::fmt_day_long(day),
+            12.0,
+            colors.text_dim,
+            transform * Affine::translate((x0 + 120.0, y + 2.0)),
+            None,
+        );
+    }
+}
+
+/// Draw one event row at `y`, pushing its hit-rect into `hits` when the row
+/// is on screen. Split out of `AgendaView::draw` to keep it within the
+/// line-count lint.
+#[allow(clippy::too_many_arguments)]
+fn draw_event_row(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    area: Rect,
+    x0: f64,
+    y: f64,
+    show_location: bool,
+    pointer: Point,
+    event: &crate::model::Event,
+    hits: &mut Vec<(Rect, AgendaAction)>,
+) {
+    let colors = &theme.tokens.colors;
+    let row = Rect::new(x0, y, area.x1 - 24.0, y + 30.0);
+    if row.y1 > area.y0 && row.y0 < area.y1 {
+        if row.contains(pointer) {
+            fill_round(scene, transform, colors.surface_white_5, row, 6.0);
+        }
+        fill_round(
+            scene,
+            transform,
+            event.color.color(theme),
+            Rect::new(row.x0, row.y0 + 4.0, row.x0 + 4.0, row.y1 - 4.0),
+            2.0,
+        );
+        let time = if event.all_day {
+            "All day".to_string()
+        } else {
+            date::fmt_time(&event.start)
+        };
+        text.draw_text(
+            scene,
+            &time,
+            12.0,
+            colors.text_dim,
+            transform * Affine::translate((row.x0 + 16.0, y + 7.0)),
+            None,
+        );
+        let title_max = if show_location && !event.location.is_empty() {
+            row.width() - 220.0
+        } else {
+            row.width() - 104.0
+        };
+        text.draw_text(
+            scene,
+            &event.title,
+            13.0,
+            colors.neutral[9],
+            transform * Affine::translate((row.x0 + 90.0, y + 7.0)),
+            Some(title_max.max(40.0) as f32),
+        );
+        if show_location && !event.location.is_empty() {
+            text.draw_text(
+                scene,
+                &event.location,
+                12.0,
+                colors.text_dim,
+                transform * Affine::translate((row.x1 - 130.0, y + 7.0)),
+                Some(126.0),
+            );
+        }
+        if let Some(hit) = clamp_hit(row, area) {
+            hits.push((hit, AgendaAction::OpenEvent(event.id)));
+        }
+    }
+}
+
+/// Draw one task row at `y`, pushing its open- and toggle-hit rects into
+/// `hits` when the row is on screen. Split out of `AgendaView::draw` to keep
+/// it within the line-count lint.
+#[allow(clippy::too_many_arguments)]
+fn draw_task_row(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    area: Rect,
+    x0: f64,
+    y: f64,
+    pointer: Point,
+    task: &crate::model::Task,
+    hits: &mut Vec<(Rect, AgendaAction)>,
+) {
+    let colors = &theme.tokens.colors;
+    let row = Rect::new(x0, y, area.x1 - 24.0, y + 30.0);
+    if row.y1 > area.y0 && row.y0 < area.y1 {
+        if row.contains(pointer) {
+            fill_round(scene, transform, colors.surface_white_5, row, 6.0);
+        }
+        if let Some(hit) = clamp_hit(row, area) {
+            hits.push((hit, AgendaAction::OpenTask(task.id)));
+        }
+        let checkbox = Rect::new(
+            row.x0 + 8.0,
+            row.center().y - 8.0,
+            row.x0 + 24.0,
+            row.center().y + 8.0,
+        );
+        draw_checkbox(scene, transform, theme, checkbox, task.done);
+        let label_color = if task.done {
+            colors.text_dim
+        } else {
+            colors.neutral[9]
+        };
+        let label_x0 = row.x0 + 34.0;
+        text.draw_text(
+            scene,
+            &task.title,
+            13.0,
+            label_color,
+            transform * Affine::translate((label_x0, y + 7.0)),
+            Some((row.width() - 160.0).max(40.0) as f32),
+        );
+        let label_width = f64::from(text.measure(&task.title, 13.0, None).0);
+        if task.done {
+            stroke_line(
+                scene,
+                transform,
+                colors.text_dim,
+                Point::new(label_x0, row.center().y),
+                Point::new((label_x0 + label_width).min(row.x1 - 120.0), row.center().y),
+                1.0,
+            );
+        }
+        let complete = Rect::new(
+            row.x0,
+            row.y0,
+            (label_x0 + label_width.min(row.width() - 160.0) + 8.0).min(row.x1 - 40.0),
+            row.y1,
+        );
+        if let Some(hit) = clamp_hit(complete, area) {
+            hits.push((hit, AgendaAction::ToggleTask(task.id)));
+        }
+        if task.priority != Priority::None {
+            text.draw_text(
+                scene,
+                task.priority.flag(),
+                11.0,
+                task.priority.color(theme),
+                transform * Affine::translate((row.x1 - 30.0, y + 7.0)),
+                None,
+            );
+        }
     }
 }
 

@@ -83,24 +83,34 @@ impl ShimArgs {
     /// `[--ro <p>]* [--rw <p>]* [--net-restricted] [--no-landlock]
     ///  [--net-gate <sock> --net-gate-port <n>] -- <cmd> [args]`.
     /// Unknown flags before `--` are silently skipped (forward-compat).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShimParseError::DanglingValue`] when a flag that takes a
+    /// path/port argument is the last token (or its port value fails to
+    /// parse), [`ShimParseError::MissingSeparator`] when there is no `--`,
+    /// and [`ShimParseError::EmptyCommand`] when `--` is the last token.
     pub fn parse(args: &[String]) -> Result<ShimArgs, ShimParseError> {
         let mut parsed = ShimArgs::default();
-        let mut i = 0;
+        let mut i: usize = 0;
         let mut saw_separator = false;
 
         while i < args.len() {
-            let arg = &args[i];
+            let Some(arg) = args.get(i) else { break };
             match arg.as_str() {
                 "--" => {
                     saw_separator = true;
-                    parsed.command.extend_from_slice(&args[i + 1..]);
+                    let rest_start = i.saturating_add(1);
+                    parsed
+                        .command
+                        .extend_from_slice(args.get(rest_start..).unwrap_or(&[]));
                     break;
                 }
                 "--net-restricted" => parsed.net_restricted = true,
                 "--no-landlock" => parsed.no_landlock = true,
                 "--ro" | "--rw" | "--net-gate" | "--net-gate-port" => {
                     let value = args
-                        .get(i + 1)
+                        .get(i.saturating_add(1))
                         .ok_or_else(|| ShimParseError::DanglingValue(arg.clone()))?;
                     match arg.as_str() {
                         "--ro" => parsed.ro.push(PathBuf::from(value)),
@@ -117,11 +127,11 @@ impl ShimArgs {
                             );
                         }
                     }
-                    i += 1;
+                    i = i.saturating_add(1);
                 }
                 _ => {}
             }
-            i += 1;
+            i = i.saturating_add(1);
         }
 
         if !saw_separator {
@@ -138,7 +148,7 @@ impl ShimArgs {
 pub fn access_plan(ro: &[PathBuf], rw: &[PathBuf], abi: ABI) -> Vec<FsRule> {
     let read = AccessFs::from_read(abi);
     let all = AccessFs::from_all(abi);
-    let mut plan = Vec::with_capacity(ro.len() + rw.len());
+    let mut plan = Vec::with_capacity(ro.len().saturating_add(rw.len()));
     for p in ro {
         plan.push(FsRule {
             path: p.clone(),
@@ -154,7 +164,7 @@ pub fn access_plan(ro: &[PathBuf], rw: &[PathBuf], abi: ABI) -> Vec<FsRule> {
     plan
 }
 
-pub(crate) fn outcome_from_status(status: RulesetStatus) -> LandlockOutcome {
+pub(crate) fn outcome_from_status(status: &RulesetStatus) -> LandlockOutcome {
     match status {
         RulesetStatus::FullyEnforced => LandlockOutcome::FullyEnforced,
         RulesetStatus::PartiallyEnforced => LandlockOutcome::PartiallyEnforced,
@@ -209,7 +219,7 @@ pub fn apply(args: &ShimArgs) -> LandlockOutcome {
         return LandlockOutcome::NotEnforced;
     }
     match build_and_restrict(args) {
-        Ok(status) => outcome_from_status(status.ruleset),
+        Ok(status) => outcome_from_status(&status.ruleset),
         Err(e) => {
             eprintln!("qos-sandbox-exec: failed to build/apply ruleset: {e}");
             LandlockOutcome::Errored
@@ -232,6 +242,13 @@ pub fn apply(args: &ShimArgs) -> LandlockOutcome {
 /// The child dies with the sandbox: `--unshare-all` includes a PID
 /// namespace, so when the app (PID 1) exits the kernel tears the
 /// namespace down and takes the relay with it.
+#[allow(
+    clippy::exit,
+    reason = "the forked child (pid == 0 branch) must terminate itself \
+              directly — it must never fall through to Rust cleanup/atexit \
+              paths meant for the parent, nor return into the parent's \
+              control flow"
+)]
 fn spawn_relay(gate: &std::path::Path, port: u16) {
     // SAFETY: `fork` in a single-threaded process. The shim has not
     // started any threads at this point — it is straight-line argv
@@ -261,7 +278,15 @@ fn spawn_relay(gate: &std::path::Path, port: u16) {
 /// Entry point for `qos-launcher __sandbox-exec ...`. Diverges:
 /// either `execvp`s the real command or exits non-zero.
 ///
-/// `args` is the slice AFTER the subcommand token.
+/// `args` is the slice AFTER the subcommand token. Never returns: diverges
+/// by `exec`ing the real command or calling [`std::process::exit`] on a
+/// parse failure or `execvp` failure.
+#[allow(
+    clippy::exit,
+    reason = "this function's contract is to diverge: either exec the real \
+              command or terminate the process. There is no caller to \
+              return an error to"
+)]
 pub fn run_sandbox_exec(args: &[String]) -> ! {
     let parsed = match ShimArgs::parse(args) {
         Ok(p) => p,
@@ -290,15 +315,19 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
     exec_real_command(&parsed.command)
 }
 
+#[allow(
+    clippy::exit,
+    reason = "this function's contract is to diverge: either exec the real \
+              command or terminate the process. There is no caller to \
+              return an error to"
+)]
 fn exec_real_command(command: &[String]) -> ! {
     let Some(program) = command.first() else {
         eprintln!("qos-sandbox-exec: empty command");
         std::process::exit(2);
     };
 
-    let cprogram = if let Ok(c) = CString::new(program.as_bytes()) {
-        c
-    } else {
+    let Ok(cprogram) = CString::new(program.as_bytes()) else {
         eprintln!("qos-sandbox-exec: program path contains an interior NUL");
         std::process::exit(2);
     };
@@ -314,16 +343,16 @@ fn exec_real_command(command: &[String]) -> ! {
         std::process::exit(2);
     };
 
-    let cargv: Vec<*const libc::c_char> = cargs
+    let argv_ptrs: Vec<*const libc::c_char> = cargs
         .iter()
         .map(|c| c.as_ptr())
         .chain(std::iter::once(std::ptr::null()))
         .collect();
 
-    // SAFETY: cprogram + cargv are valid null-terminated strings; cargv
+    // SAFETY: cprogram + argv_ptrs are valid null-terminated strings; argv_ptrs
     // is null-terminated. execvp either replaces the image or returns -1.
     unsafe {
-        libc::execvp(cprogram.as_ptr(), cargv.as_ptr());
+        libc::execvp(cprogram.as_ptr(), argv_ptrs.as_ptr());
     }
     let err = std::io::Error::last_os_error();
     eprintln!("qos-sandbox-exec: execvp {program:?} failed: {err}");

@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..MountOptions::default()
     };
 
-    let mount = Mount::spawn(&collection, store, &cli.mount, options)?;
+    let mount = Mount::spawn(&collection, store, &cli.mount, &options)?;
     eprintln!(
         "mounted {} entries at {} — Ctrl-C to unmount",
         collection.entries.len(),

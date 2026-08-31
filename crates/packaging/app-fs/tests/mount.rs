@@ -158,7 +158,7 @@ fn mount_and_read_single_file() {
         &collection,
         store,
         mountpoint.path(),
-        MountOptions::default(),
+        &MountOptions::default(),
     ) {
         Ok(m) => m,
         Err(e) => {

@@ -99,6 +99,7 @@ impl RegistryEntry {
     /// `signature_hex` — for preparing an entry to sign or re-signing
     /// after a moderator edit. Verification uses [`signing_message`]
     /// directly and doesn't need this.
+    #[must_use]
     pub fn without_signature(mut self) -> Self {
         self.signature_hex.clear();
         self
@@ -108,6 +109,21 @@ impl RegistryEntry {
 /// Standalone form of [`RegistryEntry::signing_message`], as a free
 /// function so verifier code can compute the digest without
 /// constructing/mutating an entry.
+///
+/// # Panics
+///
+/// Panics if `postcard::to_stdvec` fails to encode `payload`. In
+/// practice this is unreachable: every field is either an owned
+/// `String`/`Vec`/`Option` with the standard derived `Serialize` impl
+/// (no custom impl that can error) or a `u64`, and postcard only
+/// errors on a `Serialize` impl returning an error or a sequence
+/// length that overflows its varint encoding — neither can happen here.
+#[allow(
+    clippy::expect_used,
+    reason = "postcard::to_stdvec cannot fail for this owned, derive(Serialize) payload — see \
+              the # Panics note above; propagating a phantom Result would push an unreachable \
+              error case onto every signer/verifier in this crate for no real safety gain"
+)]
 pub fn entry_signing_message(entry: &RegistryEntry) -> [u8; 32] {
     let payload = EntrySigningPayload {
         package_id: &entry.package_id,
@@ -131,6 +147,17 @@ pub fn entry_signing_message(entry: &RegistryEntry) -> [u8; 32] {
 
 /// Domain-separated index signing message, exposed for federation
 /// clients snapshotting registry state for the owner to sign.
+///
+/// # Panics
+///
+/// Panics if `postcard::to_stdvec` fails to encode `index_manifest`.
+/// Unreachable for any `T` built from owned, derive(Serialize) data —
+/// see [`entry_signing_message`]'s `# Panics` note for why.
+#[allow(
+    clippy::expect_used,
+    reason = "postcard::to_stdvec cannot fail for a derive(Serialize) manifest — see the \
+              # Panics note above; propagating a phantom Result buys no real safety here"
+)]
 pub fn index_signing_message<T: Serialize>(index_manifest: &T) -> [u8; 32] {
     let body = postcard::to_stdvec(index_manifest).expect("postcard encode index manifest");
     let mut hasher = blake3::Hasher::new();
@@ -200,22 +227,22 @@ mod tests {
         let base_msg = base.signing_message();
 
         {
-            let mut alt = base.clone();
+            let mut alt = sample_entry();
             alt.package_id = "dev.qos.other".into();
             assert_ne!(alt.signing_message(), base_msg);
         }
         {
-            let mut alt = base.clone();
+            let mut alt = sample_entry();
             alt.versions[0].qpkg_root_hash_hex = "ff".repeat(32);
             assert_ne!(alt.signing_message(), base_msg);
         }
         {
-            let mut alt = base.clone();
+            let mut alt = sample_entry();
             alt.updated_at_unix += 1;
             assert_ne!(alt.signing_message(), base_msg);
         }
         {
-            let mut alt = base.clone();
+            let mut alt = sample_entry();
             alt.categories.push("Extra".into());
             assert_ne!(alt.signing_message(), base_msg);
         }

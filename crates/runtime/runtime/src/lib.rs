@@ -72,13 +72,16 @@ mod tests {
     /// sub-crate renames a public type this stops compiling.
     #[test]
     fn re_exports_resolve() {
-        let _fd_name: fn(&str) -> Option<std::os::fd::RawFd> = portal::service_fd;
+        // Bare `_` (not `_name`): the binding is never read, only its
+        // type — the point of each line is that it fails to compile if a
+        // sub-crate's signature drifts.
+        let _: fn(&str) -> Option<std::os::fd::RawFd> = portal::service_fd;
 
-        let _collab_try: fn() -> Result<collab::CollabClient, NotAvailable> = collab::try_connect;
+        let _: fn() -> Result<collab::CollabClient, NotAvailable> = collab::try_connect;
 
-        let _fs_try: fn() -> Result<fs::FsClient, NotAvailable> = fs::try_connect;
+        let _: fn() -> Result<fs::FsClient, NotAvailable> = fs::try_connect;
 
-        let _id_load: fn() -> Result<identity::SigningIdentity, NotAvailable> = identity::load;
+        let _: fn() -> Result<identity::SigningIdentity, NotAvailable> = identity::load;
     }
 
     /// End-to-end: with no env vars set, every service reports unavailable

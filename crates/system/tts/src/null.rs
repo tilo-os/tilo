@@ -90,7 +90,7 @@ impl Speaker for NullSpeaker {
     }
 
     fn stop(&mut self) {
-        self.stops += 1;
+        self.stops = self.stops.saturating_add(1);
         self.speaking = false;
     }
 

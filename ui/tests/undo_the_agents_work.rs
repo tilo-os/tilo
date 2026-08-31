@@ -442,7 +442,7 @@ fn crop(doc: &AutoCommit) -> (i64, i64) {
     let read = |k: &str| match doc.get(&img, k) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
             ScalarValue::Int(n) => *n,
-            ScalarValue::Uint(n) => *n as i64,
+            ScalarValue::Uint(n) => i64::try_from(*n).unwrap_or(-1),
             _ => -1,
         },
         _ => -1,

@@ -73,12 +73,12 @@ fn byte_at(text: &str, n: usize) -> Option<usize> {
     if n == 0 {
         return Some(0);
     }
-    let mut seen = 0usize;
+    let mut seen: usize = 0;
     for (i, _) in text.char_indices() {
         if seen == n {
             return Some(i);
         }
-        seen += 1;
+        seen = seen.saturating_add(1);
     }
     (seen == n).then_some(text.len())
 }

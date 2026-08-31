@@ -19,6 +19,7 @@
 )]
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -73,11 +74,15 @@ impl DiscoverySink {
 
     fn insert(&self, device: DeviceInfo) {
         let key = discovery_key(&device);
-        self.devices
-            .lock()
-            .expect("discovery lock")
-            .insert(key, device);
-        if let Some(tx) = self.changed.lock().expect("signal lock").as_ref() {
+        let Ok(mut devices) = self.devices.lock() else {
+            return;
+        };
+        devices.insert(key, device);
+        drop(devices);
+        let Ok(changed) = self.changed.lock() else {
+            return;
+        };
+        if let Some(tx) = changed.as_ref() {
             let _ = tx.send(());
         }
     }
@@ -89,10 +94,10 @@ impl DeviceDiscovererEventHandler for DiscoverySink {
     }
 
     fn device_removed(&self, device_name: String) {
-        self.devices
-            .lock()
-            .expect("discovery lock")
-            .retain(|_, device| device.name != device_name);
+        let Ok(mut devices) = self.devices.lock() else {
+            return;
+        };
+        devices.retain(|_, device| device.name != device_name);
     }
 
     fn device_changed(&self, device_info: DeviceInfo) {
@@ -113,18 +118,17 @@ fn discovery_key(info: &DeviceInfo) -> String {
         .txt_records
         .get("id")
         .or_else(|| info.txt_records.get("deviceid"))
-        .map(String::as_str)
-        .unwrap_or(&info.name);
+        .map_or(info.name.as_str(), String::as_str);
     format!("{}:{receiver_id}", kind.label())
 }
 
 fn into_projection_device(info: DeviceInfo) -> ProjectionDevice {
     let protocol = protocol(&info);
     let addresses: Vec<String> = info.addresses.iter().map(url_format_ip_addr).collect();
-    let detail = addresses
-        .first()
-        .map(|address| format!("{address}:{}", info.port))
-        .unwrap_or_else(|| "Local network".to_owned());
+    let detail = addresses.first().map_or_else(
+        || "Local network".to_owned(),
+        |address| format!("{address}:{}", info.port),
+    );
     ProjectionDevice {
         id: discovery_key(&info),
         name: info.name,
@@ -143,12 +147,12 @@ fn airplay_projection_device(info: &mdns_sd::ResolvedService) -> ProjectionDevic
     let name = info
         .get_fullname()
         .strip_suffix(&format!(".{AIRPLAY_SERVICE}"))
-        .unwrap_or(info.get_fullname())
+        .unwrap_or_else(|| info.get_fullname())
         .to_owned();
     let receiver_id = info
         .get_property_val_str("deviceid")
         .or_else(|| info.get_property_val_str("pi"))
-        .unwrap_or(info.get_fullname());
+        .unwrap_or_else(|| info.get_fullname());
     let mut addresses: Vec<String> = info
         .get_addresses()
         .iter()
@@ -158,10 +162,10 @@ fn airplay_projection_device(info: &mdns_sd::ResolvedService) -> ProjectionDevic
         })
         .collect();
     addresses.sort();
-    let endpoint = addresses
-        .first()
-        .map(|address| format!("{address}:{}", info.get_port()))
-        .unwrap_or_else(|| "Local network".to_owned());
+    let endpoint = addresses.first().map_or_else(
+        || "Local network".to_owned(),
+        |address| format!("{address}:{}", info.get_port()),
+    );
     let detail = info
         .get_property_val_str("model")
         .map(|model| format!("{model} · {endpoint}"))
@@ -258,17 +262,15 @@ async fn discover_miracast_on_connection(
 }
 
 fn discover_miracast(timeout: Duration) -> Vec<ProjectionDevice> {
-    let runtime = match tokio::runtime::Builder::new_current_thread()
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-    {
-        Ok(runtime) => runtime,
-        Err(_) => return Vec::new(),
+    else {
+        return Vec::new();
     };
     runtime.block_on(async {
-        let connection = match zbus::Connection::system().await {
-            Ok(connection) => connection,
-            Err(_) => return Vec::new(),
+        let Ok(connection) = zbus::Connection::system().await else {
+            return Vec::new();
         };
         discover_miracast_on_connection(&connection, timeout)
             .await
@@ -296,7 +298,9 @@ fn discover(timeout: Duration) -> Result<Vec<ProjectionDevice>, String> {
     // Give both service browsers the full bounded collection window. The two
     // protocols have independent mDNS streams, so returning on the first quiet
     // gap can consistently lose whichever browser resolves second.
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| "requested discovery timeout is too large".to_owned())?;
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if matches!(
@@ -323,14 +327,14 @@ fn discover(timeout: Duration) -> Result<Vec<ProjectionDevice>, String> {
     let mut devices: Vec<_> = sink
         .devices
         .lock()
-        .expect("discovery lock")
+        .map_err(|_| "projection discovery cache was poisoned".to_owned())?
         .values()
         .cloned()
         .map(into_projection_device)
         .collect();
     devices.extend(airplay.into_values());
     devices.extend(miracast.join().unwrap_or_default());
-    devices.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    devices.sort_by_key(|device| device.name.to_lowercase());
     Ok(devices)
 }
 
@@ -389,10 +393,13 @@ impl SessionPaths {
         if let Ok(entries) = fs::read_dir(&self.root) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                let is_segment = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("segment-") && name.ends_with(".ts"));
+                let is_segment =
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| {
+                            name.starts_with("segment-")
+                                && Path::new(name).extension() == Some(OsStr::new("ts"))
+                        });
                 if is_segment {
                     let _ = fs::remove_file(path);
                 }
@@ -469,7 +476,7 @@ impl HlsPipeline {
         Ok(Self { child, input })
     }
 
-    fn push(&mut self, packet: VideoPacket) -> Result<(), String> {
+    fn push(&mut self, packet: &VideoPacket) -> Result<(), String> {
         self.input
             .write_all(&packet.annex_b)
             .map_err(|error| format!("HLS pipeline stopped accepting video: {error}"))
@@ -484,8 +491,8 @@ impl Drop for HlsPipeline {
 }
 
 fn video_ingest_loop(
-    paths: SessionPaths,
-    stop: Arc<AtomicBool>,
+    paths: &SessionPaths,
+    stop: &Arc<AtomicBool>,
     audio: bool,
 ) -> Result<(), String> {
     let listener = UnixListener::bind(&paths.video_socket)
@@ -495,14 +502,14 @@ fn video_ingest_loop(
     listener
         .set_nonblocking(true)
         .map_err(|error| format!("cannot configure compositor video socket: {error}"))?;
-    let mut pipeline = HlsPipeline::start(&paths, audio)?;
+    let mut pipeline = HlsPipeline::start(paths, audio)?;
     while !stop.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((mut stream, _)) => {
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
                 while !stop.load(Ordering::Acquire) {
                     match VideoPacket::read_from(&mut stream) {
-                        Ok(packet) => pipeline.push(packet)?,
+                        Ok(packet) => pipeline.push(&packet)?,
                         Err(error)
                             if matches!(
                                 error.kind(),
@@ -541,7 +548,7 @@ impl MediaTelemetry {
     }
 
     fn elapsed_millis(&self) -> u64 {
-        self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 }
 
@@ -557,7 +564,10 @@ fn serve_file(mut stream: TcpStream, root: &Path, token: &str, telemetry: &Media
     let Ok(read) = stream.read(&mut request) else {
         return;
     };
-    let first_line = String::from_utf8_lossy(&request[..read]);
+    let Some(bytes) = request.get(..read) else {
+        return;
+    };
+    let first_line = String::from_utf8_lossy(bytes);
     let resource = first_line
         .lines()
         .next()
@@ -567,11 +577,10 @@ fn serve_file(mut stream: TcpStream, root: &Path, token: &str, telemetry: &Media
         .and_then(|path| path.strip_prefix('/'))
         .filter(|path| {
             *path == "live.m3u8"
-                || (path.starts_with("segment-")
-                    && path.ends_with(".ts")
-                    && path[8..path.len() - 3]
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit()))
+                || path.strip_prefix("segment-").is_some_and(|rest| {
+                    rest.strip_suffix(".ts")
+                        .is_some_and(|digits| digits.bytes().all(|byte| byte.is_ascii_digit()))
+                })
         });
     let Some(resource) = resource else {
         let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
@@ -580,7 +589,7 @@ fn serve_file(mut stream: TcpStream, root: &Path, token: &str, telemetry: &Media
     let path = root.join(resource);
     match fs::read(&path) {
         Ok(body) => {
-            let content_type = if resource.ends_with(".m3u8") {
+            let content_type = if Path::new(resource).extension() == Some(OsStr::new("m3u8")) {
                 "application/vnd.apple.mpegurl"
             } else {
                 "video/mp2t"
@@ -596,10 +605,7 @@ fn serve_file(mut stream: TcpStream, root: &Path, token: &str, telemetry: &Media
                 .bytes
                 .fetch_add(body.len() as u64, Ordering::Relaxed);
             telemetry.service_us.fetch_add(
-                request_started
-                    .elapsed()
-                    .as_micros()
-                    .min(u128::from(u64::MAX)) as u64,
+                u64::try_from(request_started.elapsed().as_micros()).unwrap_or(u64::MAX),
                 Ordering::Relaxed,
             );
             telemetry
@@ -639,7 +645,7 @@ fn start_http_server(
             while !stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, peer)) if peer.ip() == receiver => {
-                        serve_file(stream, &root, &token, &telemetry)
+                        serve_file(stream, &root, &token, &telemetry);
                     }
                     Ok((mut stream, _)) => {
                         let _ = stream
@@ -657,9 +663,15 @@ fn start_http_server(
 }
 
 fn random_media_token() -> String {
+    use std::fmt::Write as _;
+
     let mut bytes = [0u8; 24];
     OsRng.fill_bytes(&mut bytes);
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    let mut token = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        let _ = write!(token, "{byte:02x}");
+    }
+    token
 }
 
 struct SessionEvents {
@@ -674,7 +686,12 @@ struct ConnectedSession {
 
 impl SessionEvents {
     fn report(&self, result: Result<ConnectedSession, String>) {
-        if let Some(tx) = self.connected.lock().expect("session event lock").take() {
+        let Ok(mut connected) = self.connected.lock() else {
+            return;
+        };
+        let sender = connected.take();
+        drop(connected);
+        if let Some(tx) = sender {
             let _ = tx.send(result);
         }
     }
@@ -743,6 +760,19 @@ fn cast_load(
         .map_err(|error| format!("receiver rejected the screen stream: {error}"))
 }
 
+/// Scales a capture dimension by `numerator/denominator`, falling back to
+/// `fallback` if the multiplication would overflow `u32` or `denominator` is
+/// zero. `value` ultimately traces back to a receiver-advertised display
+/// capability, so it is untrusted magnitude data; a fallback to an
+/// already-known-safe bound is the correct response to a malformed
+/// advertisement, not a wraparound or panic.
+fn scaled_dimension(value: u32, numerator: u32, denominator: u32, fallback: u32) -> u32 {
+    value
+        .checked_mul(numerator)
+        .and_then(|scaled| scaled.checked_div(denominator))
+        .unwrap_or(fallback)
+}
+
 fn adapt_capture_profile(
     current: CaptureProfile,
     maximum: CaptureProfile,
@@ -750,27 +780,43 @@ fn adapt_capture_profile(
     average_service_us: u64,
 ) -> CaptureProfile {
     let profile_for = |width: u32, height: u32, fps: u32| {
-        let pixels_per_second = u64::from(width) * u64::from(height) * u64::from(fps);
+        let pixels_per_second = u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|value| value.checked_mul(u64::from(fps)));
+        let bitrate_kbps = pixels_per_second
+            .map_or(u64::from(maximum.bitrate_kbps), |value| value / 12_000)
+            .clamp(2_500, u64::from(maximum.bitrate_kbps));
         CaptureProfile::new(
             width,
             height,
             fps,
-            (pixels_per_second / 12_000).clamp(2_500, u64::from(maximum.bitrate_kbps)) as u32,
+            u32::try_from(bitrate_kbps).unwrap_or(maximum.bitrate_kbps),
         )
     };
-    let required = u64::from(current.bitrate_kbps) * 1_000;
-    if (delivered_bits_per_second > 0 && delivered_bits_per_second < required * 5 / 4)
+    // `current.bitrate_kbps` is always clamped to at most 40_000 by every
+    // constructor of `CaptureProfile` (see `DisplayStreamPolicy::ceiling` and
+    // `profile_for` above), so these thresholds cannot realistically
+    // overflow; `saturating_mul` is used only to avoid a bare arithmetic
+    // operator, not because saturation is expected to occur.
+    let required = u64::from(current.bitrate_kbps).saturating_mul(1_000);
+    let shrink_threshold = required.saturating_mul(5) / 4;
+    let grow_threshold = required.saturating_mul(2);
+    if (delivered_bits_per_second > 0 && delivered_bits_per_second < shrink_threshold)
         || average_service_us > 250_000
     {
-        let width = (current.max_width * 3 / 4).max(640) & !1;
-        let height = (current.max_height * 3 / 4).max(360) & !1;
+        let width = scaled_dimension(current.max_width, 3, 4, maximum.max_width).max(640) & !1;
+        let height = scaled_dimension(current.max_height, 3, 4, maximum.max_height).max(360) & !1;
         profile_for(width, height, current.fps)
-    } else if delivered_bits_per_second > required * 2
+    } else if delivered_bits_per_second > grow_threshold
         && average_service_us < 100_000
         && current != maximum
     {
-        let width = (current.max_width * 4 / 3).min(maximum.max_width) & !1;
-        let height = (current.max_height * 4 / 3).min(maximum.max_height) & !1;
+        let width = scaled_dimension(current.max_width, 4, 3, maximum.max_width)
+            .min(maximum.max_width)
+            & !1;
+        let height = scaled_dimension(current.max_height, 4, 3, maximum.max_height)
+            .min(maximum.max_height)
+            & !1;
         profile_for(width, height, maximum.fps)
     } else {
         current
@@ -836,7 +882,7 @@ fn run_airplay_session(args: &[String]) -> Result<(), String> {
     fs::write(&paths.pid, std::process::id().to_string())
         .map_err(|error| format!("cannot record AirPlay session: {error}"))?;
     let credentials = airplay_credentials_path()?;
-    let command_args = airplay_command_args(address, port, audio, stream_policy, &credentials);
+    let command_args = airplay_command_args(&address, port, audio, stream_policy, &credentials);
     let pairing_credential = std::env::var("QOS_PROJECTION_CREDENTIAL")
         .ok()
         .filter(|value| !value.is_empty());
@@ -874,7 +920,7 @@ fn airplay_credentials_path_from(
 }
 
 fn airplay_command_args(
-    address: String,
+    address: &str,
     port: u16,
     audio: bool,
     stream_policy: DisplayStreamPolicy,
@@ -1066,12 +1112,24 @@ fn run_external_process(
 }
 
 fn terminate_process_group(child: &mut Child) {
-    let group = -(child.id() as i32);
+    // A pid this large would mean the OS process-ID space is not what this
+    // code understands; there is nothing safe to signal, so give up cleanly
+    // rather than let the cast wrap into an unrelated process group.
+    let Ok(pid) = i32::try_from(child.id()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return;
+    };
+    let group = pid.saturating_neg();
     // SAFETY: `process_group(0)` above made the child's PID its process-group
     // ID. A negative target confines SIGTERM to that group and never targets
     // the compositor or the caller's process group.
     let _ = unsafe { libc::kill(group, libc::SIGTERM) };
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(1)) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return;
+    };
     while Instant::now() < deadline {
         if child.try_wait().ok().flatten().is_some() {
             return;
@@ -1082,55 +1140,26 @@ fn terminate_process_group(child: &mut Child) {
     let _ = child.wait();
 }
 
-fn run_cast_session(args: &[String]) -> Result<(), String> {
-    let protocol_arg = value_after(args, "--protocol").ok_or("missing --protocol")?;
-    let protocol = parse_cast_protocol(&protocol_arg)?;
-    let address_arg = value_after(args, "--address").ok_or("missing --address")?;
-    let address: std::net::IpAddr = address_arg
-        .trim_matches(['[', ']'])
-        .parse()
-        .map_err(|error| format!("invalid receiver address: {error}"))?;
-    let port = value_after(args, "--port")
-        .ok_or("missing --port")?
-        .parse::<u16>()
-        .map_err(|_| "invalid --port".to_owned())?;
-    let name = value_after(args, "--device").unwrap_or_else(|| "Wireless display".to_owned());
-    let audio = args.iter().any(|arg| arg == "--audio");
-    let stream_policy = parse_stream_policy(args)?;
-    let paths = SessionPaths::resolve()?;
-    paths.clear_markers();
-    let mut maximum_profile = stream_policy.ceiling(None);
-    let initial_profile = if stream_policy.adaptive {
-        CaptureProfile::new(
-            maximum_profile.max_width.min(1280),
-            maximum_profile.max_height.min(720),
-            maximum_profile.fps,
-            maximum_profile.bitrate_kbps.min(6_000),
-        )
-    } else {
-        maximum_profile
-    };
-    publish_capture_profile(&paths, initial_profile)?;
-    fs::write(&paths.pid, std::process::id().to_string())
-        .map_err(|error| format!("cannot record projection session: {error}"))?;
-
-    let stop = Arc::new(AtomicBool::new(false));
-    let video_paths = paths.clone();
-    let video_stop = stop.clone();
-    let video_thread = std::thread::Builder::new()
-        .name("qos-projection-video".to_owned())
-        .spawn(move || video_ingest_loop(video_paths, video_stop, audio))
-        .map_err(|error| format!("cannot start projection video ingest: {error}"))?;
-    let media_token = random_media_token();
-    let telemetry = Arc::new(MediaTelemetry::new());
-    let (http_port, http_thread) = start_http_server(
-        paths.root.clone(),
-        stop.clone(),
-        address,
-        media_token.clone(),
-        telemetry.clone(),
-    )?;
-
+/// Opens the receiver connection for a cast session and waits for the
+/// receiver's `Connected` event.
+///
+/// # Errors
+///
+/// Returns an error if the Cast context or connection cannot be started, or
+/// if the receiver does not accept the connection within 8 seconds.
+fn connect_cast_device(
+    protocol: ProtocolType,
+    address: std::net::IpAddr,
+    port: u16,
+    name: String,
+) -> Result<
+    (
+        Arc<dyn fcast_sender_sdk::device::CastingDevice>,
+        ConnectedSession,
+        mpsc::Receiver<String>,
+    ),
+    String,
+> {
     let context = fcast_sender_sdk::context::CastContext::new()
         .map_err(|error| format!("cannot initialise Cast session: {error}"))?;
     let info = DeviceInfo {
@@ -1160,9 +1189,109 @@ fn run_cast_session(args: &[String]) -> Result<(), String> {
     let connected = connected_rx
         .recv_timeout(Duration::from_secs(8))
         .map_err(|_| "receiver did not accept the connection in time".to_owned())??;
-    maximum_profile = stream_policy.ceiling(connected.receiver_resolution);
-    let local_addr = connected.local_addr;
-    let initial_profile = if stream_policy.adaptive {
+    Ok((device, connected, fault_rx))
+}
+
+/// The pieces of a running cast session the adaptive feedback loop needs to
+/// read but does not own.
+struct CastFeedbackContext<'a> {
+    paths: &'a SessionPaths,
+    device: &'a Arc<dyn fcast_sender_sdk::device::CastingDevice>,
+    url: &'a str,
+    telemetry: &'a MediaTelemetry,
+    fault_rx: &'a mpsc::Receiver<String>,
+}
+
+/// Watches receiver telemetry until `ctx.paths.stop` appears, reloading the
+/// receiver after a stall and (when `adaptive`) publishing a new capture
+/// profile every 3 seconds.
+///
+/// # Errors
+///
+/// Returns an error if the receiver stops fetching the stream after three
+/// recovery attempts, if reloading the stream on the receiver fails, or if
+/// publishing a new capture profile fails.
+fn run_adaptive_feedback_loop(
+    ctx: &CastFeedbackContext<'_>,
+    adaptive: bool,
+    maximum_profile: CaptureProfile,
+    initial_profile: CaptureProfile,
+) -> Result<(), String> {
+    let mut last_feedback = Instant::now();
+    let mut last_bytes = 0;
+    let mut last_feedback_requests = 0;
+    let mut last_service_us = 0;
+    let mut last_seen_requests = 0;
+    let mut current_profile = initial_profile;
+    let mut recovery_attempts = 0u8;
+    while !ctx.paths.stop.exists() {
+        std::thread::sleep(Duration::from_millis(100));
+        let requests = ctx.telemetry.requests.load(Ordering::Acquire);
+        let now_ms = ctx.telemetry.elapsed_millis();
+        let last_request_ms = ctx.telemetry.last_request_ms.load(Ordering::Acquire);
+        let receiver_stalled = requests > 0 && now_ms.saturating_sub(last_request_ms) > 6_000;
+        let receiver_fault = ctx.fault_rx.try_recv().is_ok();
+        if receiver_stalled || receiver_fault {
+            if recovery_attempts >= 3 {
+                return Err(
+                    "receiver stopped fetching the stream after three recovery attempts".to_owned(),
+                );
+            }
+            cast_load(ctx.device, ctx.url)?;
+            recovery_attempts = recovery_attempts.saturating_add(1);
+        } else if requests > last_seen_requests {
+            recovery_attempts = 0;
+        }
+        if adaptive && last_feedback.elapsed() >= Duration::from_secs(3) {
+            let bytes = ctx.telemetry.bytes.load(Ordering::Relaxed);
+            let request_count = ctx.telemetry.requests.load(Ordering::Relaxed);
+            let service_us = ctx.telemetry.service_us.load(Ordering::Relaxed);
+            let elapsed = last_feedback.elapsed().as_secs_f64().max(0.001);
+            // `as` between float and integer types saturates per Rust's
+            // language semantics (never UB). This is an approximate bitrate
+            // estimate feeding the adaptive-streaming heuristic, not a value
+            // used to size or index memory, so the precision trade-off is
+            // intentional.
+            #[allow(
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "approximate telemetry conversion; `as` saturates by language definition"
+            )]
+            let delivered_bps = ((bytes.saturating_sub(last_bytes) as f64 * 8.0) / elapsed) as u64;
+            let request_delta = request_count.saturating_sub(last_feedback_requests).max(1);
+            let average_service_us = service_us
+                .saturating_sub(last_service_us)
+                .checked_div(request_delta)
+                .unwrap_or(0);
+            let next = adapt_capture_profile(
+                current_profile,
+                maximum_profile,
+                delivered_bps,
+                average_service_us,
+            );
+            if next != current_profile {
+                publish_capture_profile(ctx.paths, next)?;
+                current_profile = next;
+            }
+            last_bytes = bytes;
+            last_feedback_requests = request_count;
+            last_service_us = service_us;
+            last_feedback = Instant::now();
+        }
+        last_seen_requests = requests;
+    }
+    Ok(())
+}
+
+/// The profile to start capturing at: below `maximum_profile.ceiling()`, so
+/// the receiver sees a first frame quickly, before the feedback loop has any
+/// throughput data to adapt from.
+fn initial_capture_profile(
+    stream_policy: &DisplayStreamPolicy,
+    maximum_profile: CaptureProfile,
+) -> CaptureProfile {
+    if stream_policy.adaptive {
         CaptureProfile::new(
             maximum_profile.max_width.min(1280),
             maximum_profile.max_height.min(720),
@@ -1171,10 +1300,58 @@ fn run_cast_session(args: &[String]) -> Result<(), String> {
         )
     } else {
         maximum_profile
-    };
+    }
+}
+
+fn run_cast_session(args: &[String]) -> Result<(), String> {
+    let protocol_arg = value_after(args, "--protocol").ok_or("missing --protocol")?;
+    let protocol = parse_cast_protocol(&protocol_arg)?;
+    let address_arg = value_after(args, "--address").ok_or("missing --address")?;
+    let address: std::net::IpAddr = address_arg
+        .trim_matches(['[', ']'])
+        .parse()
+        .map_err(|error| format!("invalid receiver address: {error}"))?;
+    let port = value_after(args, "--port")
+        .ok_or("missing --port")?
+        .parse::<u16>()
+        .map_err(|_| "invalid --port".to_owned())?;
+    let name = value_after(args, "--device").unwrap_or_else(|| "Wireless display".to_owned());
+    let audio = args.iter().any(|arg| arg == "--audio");
+    let stream_policy = parse_stream_policy(args)?;
+    let paths = SessionPaths::resolve()?;
+    paths.clear_markers();
+    let mut maximum_profile = stream_policy.ceiling(None);
+    let initial_profile = initial_capture_profile(&stream_policy, maximum_profile);
+    publish_capture_profile(&paths, initial_profile)?;
+    fs::write(&paths.pid, std::process::id().to_string())
+        .map_err(|error| format!("cannot record projection session: {error}"))?;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let video_paths = paths.clone();
+    let video_stop = stop.clone();
+    let video_thread = std::thread::Builder::new()
+        .name("qos-projection-video".to_owned())
+        .spawn(move || video_ingest_loop(&video_paths, &video_stop, audio))
+        .map_err(|error| format!("cannot start projection video ingest: {error}"))?;
+    let media_token = random_media_token();
+    let telemetry = Arc::new(MediaTelemetry::new());
+    let (http_port, http_thread) = start_http_server(
+        paths.root.clone(),
+        stop.clone(),
+        address,
+        media_token.clone(),
+        telemetry.clone(),
+    )?;
+
+    let (device, connected, fault_rx) = connect_cast_device(protocol, address, port, name)?;
+    maximum_profile = stream_policy.ceiling(connected.receiver_resolution);
+    let local_addr = connected.local_addr;
+    let initial_profile = initial_capture_profile(&stream_policy, maximum_profile);
     publish_capture_profile(&paths, initial_profile)?;
 
-    let playlist_deadline = Instant::now() + Duration::from_secs(8);
+    let playlist_deadline = Instant::now()
+        .checked_add(Duration::from_secs(8))
+        .ok_or_else(|| "system clock cannot represent the playlist deadline".to_owned())?;
     while !paths.playlist.exists() && Instant::now() < playlist_deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -1189,57 +1366,20 @@ fn run_cast_session(args: &[String]) -> Result<(), String> {
     fs::write(&paths.ready, b"ready")
         .map_err(|error| format!("cannot publish projection readiness: {error}"))?;
 
-    let mut last_feedback = Instant::now();
-    let mut last_bytes = 0;
-    let mut last_feedback_requests = 0;
-    let mut last_service_us = 0;
-    let mut last_seen_requests = 0;
-    let mut current_profile = initial_profile;
-    let mut recovery_attempts = 0u8;
-    while !paths.stop.exists() {
-        std::thread::sleep(Duration::from_millis(100));
-        let requests = telemetry.requests.load(Ordering::Acquire);
-        let now_ms = telemetry.elapsed_millis();
-        let last_request_ms = telemetry.last_request_ms.load(Ordering::Acquire);
-        let receiver_stalled = requests > 0 && now_ms.saturating_sub(last_request_ms) > 6_000;
-        let receiver_fault = fault_rx.try_recv().is_ok();
-        if receiver_stalled || receiver_fault {
-            if recovery_attempts >= 3 {
-                return Err(
-                    "receiver stopped fetching the stream after three recovery attempts".to_owned(),
-                );
-            }
-            cast_load(&device, &url)?;
-            recovery_attempts += 1;
-        } else if requests > last_seen_requests {
-            recovery_attempts = 0;
-        }
-        if stream_policy.adaptive && last_feedback.elapsed() >= Duration::from_secs(3) {
-            let bytes = telemetry.bytes.load(Ordering::Relaxed);
-            let request_count = telemetry.requests.load(Ordering::Relaxed);
-            let service_us = telemetry.service_us.load(Ordering::Relaxed);
-            let elapsed = last_feedback.elapsed().as_secs_f64().max(0.001);
-            let delivered_bps =
-                (((bytes.saturating_sub(last_bytes)) as f64 * 8.0) / elapsed) as u64;
-            let request_delta = request_count.saturating_sub(last_feedback_requests).max(1);
-            let average_service_us = service_us.saturating_sub(last_service_us) / request_delta;
-            let next = adapt_capture_profile(
-                current_profile,
-                maximum_profile,
-                delivered_bps,
-                average_service_us,
-            );
-            if next != current_profile {
-                publish_capture_profile(&paths, next)?;
-                current_profile = next;
-            }
-            last_bytes = bytes;
-            last_feedback_requests = request_count;
-            last_service_us = service_us;
-            last_feedback = Instant::now();
-        }
-        last_seen_requests = requests;
-    }
+    let feedback_ctx = CastFeedbackContext {
+        paths: &paths,
+        device: &device,
+        url: &url,
+        telemetry: &telemetry,
+        fault_rx: &fault_rx,
+    };
+    run_adaptive_feedback_loop(
+        &feedback_ctx,
+        stream_policy.adaptive,
+        maximum_profile,
+        initial_profile,
+    )?;
+
     let _ = device.stop_playback();
     let _ = device.disconnect();
     stop.store(true, Ordering::Release);
@@ -1266,7 +1406,7 @@ fn connect_command(args: &[String]) -> Result<(), String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("cannot resolve qos-projector executable: {error}"))?;
     let mut child_args = vec![session_command.to_owned()];
-    child_args.extend_from_slice(&args[1..]);
+    child_args.extend_from_slice(args.get(1..).unwrap_or(&[]));
     let mut child = Command::new(executable)
         .args(child_args)
         .stdin(Stdio::null())
@@ -1274,7 +1414,9 @@ fn connect_command(args: &[String]) -> Result<(), String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("cannot start projection session: {error}"))?;
-    let deadline = Instant::now() + SESSION_READY_TIMEOUT;
+    let deadline = Instant::now()
+        .checked_add(SESSION_READY_TIMEOUT)
+        .ok_or_else(|| "system clock cannot represent the session-ready deadline".to_owned())?;
     while Instant::now() < deadline {
         if paths.ready.exists() {
             return Ok(());
@@ -1295,12 +1437,13 @@ fn connect_command(args: &[String]) -> Result<(), String> {
     // Give the worker a chance to terminate its transport child as well. This
     // matters for AirPlay, whose sender is a separate statically-linked helper.
     let _ = fs::write(&paths.stop, b"stop");
-    let cleanup_deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < cleanup_deadline {
-        if child.try_wait().ok().flatten().is_some() {
-            break;
+    if let Some(cleanup_deadline) = Instant::now().checked_add(Duration::from_secs(2)) {
+        while Instant::now() < cleanup_deadline {
+            if child.try_wait().ok().flatten().is_some() {
+                break;
+            }
+            std::thread::sleep(SESSION_POLL_INTERVAL);
         }
-        std::thread::sleep(SESSION_POLL_INTERVAL);
     }
     let _ = child.kill();
     Err("projection session did not become ready in time".to_owned())
@@ -1314,7 +1457,9 @@ fn disconnect_command() -> Result<(), String> {
     }
     fs::write(&paths.stop, b"stop")
         .map_err(|error| format!("cannot stop projection session: {error}"))?;
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(3))
+        .ok_or_else(|| "system clock cannot represent the disconnect deadline".to_owned())?;
     while paths.pid.exists() && Instant::now() < deadline {
         std::thread::sleep(SESSION_POLL_INTERVAL);
     }
@@ -1325,9 +1470,10 @@ fn disconnect_command() -> Result<(), String> {
 }
 
 fn value_after(args: &[String], flag: &str) -> Option<String> {
-    args.windows(2)
-        .find(|pair| pair[0] == flag)
-        .map(|pair| pair[1].clone())
+    args.windows(2).find_map(|pair| match pair {
+        [name, value] if name == flag => Some(value.clone()),
+        _ => None,
+    })
 }
 
 fn run(args: &[String]) -> Result<(), String> {
@@ -1409,6 +1555,10 @@ mod tests {
 
     struct SimulatedNetworkManager;
 
+    #[allow(
+        clippy::unused_self,
+        reason = "zbus::interface dispatches by instance method, even for a stateless mock reply"
+    )]
     #[zbus::interface(name = "org.freedesktop.NetworkManager")]
     impl SimulatedNetworkManager {
         fn get_devices(&self) -> Vec<OwnedObjectPath> {
@@ -1418,6 +1568,10 @@ mod tests {
 
     struct SimulatedDevice;
 
+    #[allow(
+        clippy::unused_self,
+        reason = "zbus::interface dispatches by instance method, even for a stateless mock reply"
+    )]
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Device")]
     impl SimulatedDevice {
         #[zbus(property)]
@@ -1428,8 +1582,16 @@ mod tests {
 
     struct SimulatedP2pDevice;
 
+    #[allow(
+        clippy::unused_self,
+        reason = "zbus::interface dispatches by instance method, even for a stateless mock reply"
+    )]
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Device.WifiP2P")]
     impl SimulatedP2pDevice {
+        #[allow(
+            clippy::used_underscore_binding,
+            reason = "zbus::interface's generated dispatcher binds this parameter by name even though the mock ignores it"
+        )]
         fn start_find(&self, _options: HashMap<String, OwnedValue>) {}
 
         fn stop_find(&self) {}
@@ -1442,25 +1604,29 @@ mod tests {
 
     struct SimulatedMiracastPeer;
 
+    #[allow(
+        clippy::unused_self,
+        reason = "zbus::interface dispatches by instance method, even for a stateless mock reply"
+    )]
     #[zbus::interface(name = "org.freedesktop.NetworkManager.WifiP2PPeer")]
     impl SimulatedMiracastPeer {
         #[zbus(property)]
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "Conference display"
         }
 
         #[zbus(property)]
-        fn hw_address(&self) -> &str {
+        fn hw_address(&self) -> &'static str {
             "02:00:00:00:00:09"
         }
 
         #[zbus(property)]
-        fn manufacturer(&self) -> &str {
+        fn manufacturer(&self) -> &'static str {
             "qOS Labs"
         }
 
         #[zbus(property)]
-        fn model(&self) -> &str {
+        fn model(&self) -> &'static str {
             "WFD Simulator"
         }
 
@@ -1553,8 +1719,10 @@ mod tests {
     }
 
     fn write_fcast_packet(stream: &mut TcpStream, opcode: u8, body: &[u8]) {
+        let body_len = u32::try_from(body.len()).unwrap_or(u32::MAX);
+        let size = body_len.checked_add(1).unwrap_or(u32::MAX);
         stream
-            .write_all(&((body.len() as u32 + 1).to_le_bytes()))
+            .write_all(&size.to_le_bytes())
             .expect("write FCast size");
         stream.write_all(&[opcode]).expect("write FCast opcode");
         stream.write_all(body).expect("write FCast body");
@@ -1741,12 +1909,13 @@ mod tests {
             .expect("H.264 encoder");
         let mut rgba = vec![0u8; 64 * 64 * 4];
         for frame_index in 0..75u64 {
+            let luma = u8::try_from(frame_index).unwrap_or(u8::MAX);
             for pixel in rgba.chunks_exact_mut(4) {
-                pixel.copy_from_slice(&[frame_index as u8, 96, 180, 255]);
+                pixel.copy_from_slice(&[luma, 96, 180, 255]);
             }
             let annex_b = encoder.encode(&rgba).expect("encode projection frame");
             pipeline
-                .push(VideoPacket {
+                .push(&VideoPacket {
                     width: 64,
                     height: 64,
                     presentation_time_us: frame_index * 33_333,
@@ -1885,7 +2054,7 @@ mod tests {
     #[test]
     fn external_sender_arguments_select_portal_capture_audio_and_exact_receiver() {
         let airplay = airplay_command_args(
-            "[2001:db8::7]".to_owned(),
+            "[2001:db8::7]",
             7000,
             false,
             DisplayStreamPolicy {

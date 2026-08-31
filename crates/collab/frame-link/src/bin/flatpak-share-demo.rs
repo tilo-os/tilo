@@ -252,6 +252,11 @@ where
         let mut inner = lock_profile(&self.inner);
         inner.entered_at.insert(id.into_u64(), Instant::now());
     }
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard is already taken as late as possible (after `dur`/`name` are \
+                  resolved) and holds only the in-place read-modify-write it protects"
+    )]
     fn on_exit(&self, id: &span::Id, ctx: Context<'_, S>) {
         let now = Instant::now();
         let key = id.into_u64();
@@ -534,6 +539,11 @@ fn blit_row(
 /// Blend `color` into the RGBA pixel at byte offset `i` in `buf` by
 /// `alpha` (`1.0` fully replaces, matching a plain overwrite for the
 /// common opaque-write case). No-op if `i..i+4` is out of range for `buf`.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "r/g/b/a are the conventional RGBA channel names and i is a conventional byte \
+              offset; spelling them out would read worse, not better"
+)]
 fn write_pixel(buf: &mut [u8], i: usize, color: (u8, u8, u8), alpha: f32) {
     let Some(px) = buf.get_mut(i..i.saturating_add(4)) else {
         return;
@@ -761,10 +771,9 @@ impl CompositeRenderer {
             for x in [src_w.saturating_sub(1), src_w] {
                 if let Some(i) =
                     pixel_offset_usize(x, y.saturating_add(y0), self.canvas_w, self.canvas_h)
+                    && let Some(px) = self.out.get_mut(i..i.saturating_add(4))
                 {
-                    if let Some(px) = self.out.get_mut(i..i.saturating_add(4)) {
-                        px.fill(0);
-                    }
+                    px.fill(0);
                 }
             }
         }
@@ -970,16 +979,16 @@ fn split_annex_b(nalus: &[u8]) -> Vec<Vec<u8>> {
     for w in starts.windows(2) {
         // `windows(2)` always yields a length-2 slice; the pattern match
         // (rather than `w[0]`/`w[1]`) expresses that to the compiler too.
-        if let [a, b] = w {
-            if let Some(chunk) = nalus.get(*a..*b) {
-                out.push(chunk.to_vec());
-            }
-        }
-    }
-    if let Some(&last) = starts.last() {
-        if let Some(chunk) = nalus.get(last..) {
+        if let [a, b] = w
+            && let Some(chunk) = nalus.get(*a..*b)
+        {
             out.push(chunk.to_vec());
         }
+    }
+    if let Some(&last) = starts.last()
+        && let Some(chunk) = nalus.get(last..)
+    {
+        out.push(chunk.to_vec());
     }
     // If we found no start codes, the whole slice is one blob.
     if out.is_empty() && !nalus.is_empty() {
@@ -1289,7 +1298,12 @@ fn main() -> Result<(), String> {
     let (mut pipeline, mut muxer) = Pipeline::new(&args)?;
 
     for i in 0..total_frames {
-        let t_ms = u64::from(i).saturating_mul(1000) / u64::from(args.fps);
+        // Same "validated in `parse_args` but not visible to clippy here" case
+        // as `frame_interval` above — fall back to 0 rather than a division panic.
+        let t_ms = u64::from(i)
+            .saturating_mul(1000)
+            .checked_div(u64::from(args.fps))
+            .unwrap_or(0);
         let elapsed_this_frame = pipeline.process_frame(t_ms, i)?;
 
         // Real-time-ish: rest of the frame interval budget goes to sleep so

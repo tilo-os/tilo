@@ -113,9 +113,10 @@ impl ViewDoc {
     fn view_map(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "view") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&ROOT, "view", ObjType::Map)
-                .expect("put_object view never fails"),
+            // `put_object` on root only errs if root itself were deleted,
+            // which can't happen; falling back to root keeps this from
+            // panicking mid-collaboration if that assumption is ever wrong.
+            _ => doc.put_object(&ROOT, "view", ObjType::Map).unwrap_or(ROOT),
         }
     }
 
@@ -137,9 +138,11 @@ impl ViewDoc {
     fn text_obj(doc: &mut AutoCommit, map: &ObjId, key: &str) -> ObjId {
         match doc.get(map, key) {
             Ok(Some((Value::Object(ObjType::Text), id))) => id,
+            // See `view_map`: fall back to the parent map rather than panic
+            // on the practically-unreachable error path.
             _ => doc
                 .put_object(map, key, ObjType::Text)
-                .expect("put_object text never fails"),
+                .unwrap_or_else(|_| map.clone()),
         }
     }
 
@@ -199,9 +202,9 @@ impl ViewDoc {
         let m = Self::view_map(doc);
         match doc.get(&m, "create") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&m, "create", ObjType::Map)
-                .expect("put_object create never fails"),
+            // See `view_map`: fall back to the parent map rather than panic
+            // on the practically-unreachable error path.
+            _ => doc.put_object(&m, "create", ObjType::Map).unwrap_or(m),
         }
     }
 

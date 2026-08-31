@@ -27,7 +27,9 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 
 fn t(secs: u64) -> SystemTime {
-    SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(secs))
+        .unwrap()
 }
 
 /// Build + sign a role attestation. The trust root (`issuer`) signs
@@ -35,7 +37,7 @@ fn t(secs: u64) -> SystemTime {
 #[allow(clippy::too_many_arguments)]
 fn make_role_attestation(
     issuer_sk: &SigningKey,
-    issuer_pk: Ed25519PublicKey,
+    issuer_pub: Ed25519PublicKey,
     subject: Ed25519PublicKey,
     channel: ChannelId,
     role: Role,
@@ -45,7 +47,7 @@ fn make_role_attestation(
 ) -> RoleAttestation {
     let mut att = Attestation {
         id: AttestationId::new(),
-        issued_by: issuer_pk,
+        issued_by: issuer_pub,
         subject,
         claims,
         valid_from,
@@ -67,9 +69,9 @@ fn make_role_attestation(
 #[allow(dead_code)]
 struct Fixture {
     owner_sk: SigningKey,
-    owner_pk: Ed25519PublicKey,
+    owner_pub: Ed25519PublicKey,
     author_sk: SigningKey,
-    author_pk: Ed25519PublicKey,
+    author_pub: Ed25519PublicKey,
     artifact: ArtifactId,
     channel: ChannelId,
     attestation_id: AttestationId,
@@ -77,15 +79,15 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    let (owner_sk, owner_pk) = generate_keypair();
-    let (author_sk, author_pk) = generate_keypair();
+    let (owner_sk, owner_pub) = generate_keypair();
+    let (author_sk, author_pub) = generate_keypair();
     let channel = ChannelId::new();
     let artifact = ArtifactId::new();
 
     let ra = make_role_attestation(
         &owner_sk,
-        owner_pk,
-        author_pk,
+        owner_pub,
+        author_pub,
         channel,
         Role::Editor,
         t(0),
@@ -95,15 +97,15 @@ fn fixture() -> Fixture {
     let attestation_id = ra.attestation.id;
 
     let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pk);
+    state.authorised_signers.push(owner_pub);
     state.artifacts.insert(artifact, ArtifactKind::Note);
     state.register_attestation(ra);
 
     Fixture {
         owner_sk,
-        owner_pk,
+        owner_pub,
         author_sk,
-        author_pk,
+        author_pub,
         artifact,
         channel,
         attestation_id,
@@ -115,7 +117,7 @@ fn build_op(f: &Fixture, op_class: OpClass, timestamp: SystemTime, seq: u64) -> 
     let mut op = SignedOp::new_unsigned(
         b"payload".to_vec(),
         f.artifact,
-        f.author_pk,
+        f.author_pub,
         f.attestation_id,
         op_class,
         timestamp,
@@ -135,7 +137,7 @@ fn happy_path_all_eight_pass() {
     assert!(r.is_ok(), "expected Ok, got {r:?}");
     // Seq map updated.
     assert_eq!(
-        f.state.last_seq_per_author.get(&f.author_pk).copied(),
+        f.state.last_seq_per_author.get(&f.author_pub).copied(),
         Some(1)
     );
 }
@@ -145,13 +147,13 @@ fn happy_path_with_clearance_gate() {
     let mut f = fixture();
     // Stamp a ClearedAt(Confidential) identity attestation issued by a
     // trust root the channel accepts.
-    let (org_sk, org_pk) = generate_keypair();
-    f.state.accepted_trust_roots.push(org_pk);
+    let (org_sk, org_pub) = generate_keypair();
+    f.state.accepted_trust_roots.push(org_pub);
     let cleared = {
         let mut a = Attestation {
             id: AttestationId::new(),
-            issued_by: org_pk,
-            subject: f.author_pk,
+            issued_by: org_pub,
+            subject: f.author_pub,
             claims: vec![Claim::ClearedAt(Clearance::CONFIDENTIAL)],
             valid_from: t(0),
             valid_until: t(100_000),
@@ -163,7 +165,7 @@ fn happy_path_with_clearance_gate() {
     };
     f.state
         .identity_attestations
-        .entry(f.author_pk)
+        .entry(f.author_pub)
         .or_default()
         .push(cleared);
     // Set the artifact's classification to Internal (lower than the
@@ -184,7 +186,7 @@ fn step1_unknown_attestation_id() {
     let mut op = SignedOp::new_unsigned(
         b"x".to_vec(),
         f.artifact,
-        f.author_pk,
+        f.author_pub,
         AttestationId::new(), // unknown to the validator
         OpClass::Splice,
         t(10),
@@ -203,12 +205,12 @@ fn step1_unknown_attestation_id() {
 fn step2_attestation_issuer_not_in_authorised_signers() {
     let mut f = fixture();
     // Wipe the channel's authorised signers — the stored attestation was
-    // issued by `owner_pk`, which no longer qualifies.
+    // issued by `owner_pub`, which no longer qualifies.
     f.state.authorised_signers.clear();
     let op = build_op(&f, OpClass::Splice, t(10), 1);
     match validate_inbound_op(&op, &mut f.state) {
         Err(ValidationError::UnauthorisedAttestation(k)) => {
-            assert_eq!(k, f.owner_pk);
+            assert_eq!(k, f.owner_pub);
         }
         other => panic!("expected UnauthorisedAttestation, got {other:?}"),
     }
@@ -260,11 +262,11 @@ fn step4_author_does_not_match_subject() {
     let mut f = fixture();
     // Forge an op whose author is *not* the attestation's subject; sign
     // with a matching key to get past the step-3 signature check.
-    let (forger_sk, forger_pk) = generate_keypair();
+    let (forger_sk, forger_pub) = generate_keypair();
     let mut op = SignedOp::new_unsigned(
         b"x".to_vec(),
         f.artifact,
-        forger_pk,
+        forger_pub,
         f.attestation_id,
         OpClass::Splice,
         t(10),
@@ -282,15 +284,15 @@ fn step4_author_does_not_match_subject() {
 #[test]
 fn step5_commenter_cannot_splice() {
     // Re-issue the attestation as Commenter, then try to splice.
-    let (owner_sk, owner_pk) = generate_keypair();
-    let (author_sk, author_pk) = generate_keypair();
+    let (owner_sk, owner_pub) = generate_keypair();
+    let (author_sk, author_pub) = generate_keypair();
     let channel = ChannelId::new();
     let artifact = ArtifactId::new();
 
     let ra = make_role_attestation(
         &owner_sk,
-        owner_pk,
-        author_pk,
+        owner_pub,
+        author_pub,
         channel,
         Role::Commenter,
         t(0),
@@ -299,14 +301,14 @@ fn step5_commenter_cannot_splice() {
     );
     let attestation_id = ra.attestation.id;
     let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pk);
+    state.authorised_signers.push(owner_pub);
     state.artifacts.insert(artifact, ArtifactKind::Note);
     state.register_attestation(ra);
 
     let mut op = SignedOp::new_unsigned(
         b"x".to_vec(),
         artifact,
-        author_pk,
+        author_pub,
         attestation_id,
         OpClass::Splice, // commenter can't splice
         t(10),
@@ -325,7 +327,7 @@ fn step5_unknown_artifact() {
     let mut op = SignedOp::new_unsigned(
         b"x".to_vec(),
         ArtifactId::new(), // not registered with the channel
-        f.author_pk,
+        f.author_pub,
         f.attestation_id,
         OpClass::Splice,
         t(10),
@@ -354,15 +356,15 @@ fn step6_op_after_valid_until() {
 #[test]
 fn step6_op_before_valid_from() {
     // Use a fresh fixture and bump valid_from to a non-zero value.
-    let (owner_sk, owner_pk) = generate_keypair();
-    let (author_sk, author_pk) = generate_keypair();
+    let (owner_sk, owner_pub) = generate_keypair();
+    let (author_sk, author_pub) = generate_keypair();
     let channel = ChannelId::new();
     let artifact = ArtifactId::new();
 
     let ra = make_role_attestation(
         &owner_sk,
-        owner_pk,
-        author_pk,
+        owner_pub,
+        author_pub,
         channel,
         Role::Editor,
         t(100),
@@ -371,14 +373,14 @@ fn step6_op_before_valid_from() {
     );
     let attestation_id = ra.attestation.id;
     let mut state = ChannelState::default();
-    state.authorised_signers.push(owner_pk);
+    state.authorised_signers.push(owner_pub);
     state.artifacts.insert(artifact, ArtifactKind::Note);
     state.register_attestation(ra);
 
     let mut op = SignedOp::new_unsigned(
         b"x".to_vec(),
         artifact,
-        author_pk,
+        author_pub,
         attestation_id,
         OpClass::Splice,
         t(50), // before valid_from
@@ -444,12 +446,12 @@ fn step8_insufficient_clearance_no_claim_at_all() {
 fn step8_insufficient_clearance_too_low() {
     let mut f = fixture();
     // Give the author Internal but require Confidential.
-    let (org_sk, org_pk) = generate_keypair();
-    f.state.accepted_trust_roots.push(org_pk);
+    let (org_sk, org_pub) = generate_keypair();
+    f.state.accepted_trust_roots.push(org_pub);
     let mut a = Attestation {
         id: AttestationId::new(),
-        issued_by: org_pk,
-        subject: f.author_pk,
+        issued_by: org_pub,
+        subject: f.author_pub,
         claims: vec![Claim::ClearedAt(Clearance::INTERNAL)],
         valid_from: t(0),
         valid_until: t(100_000),
@@ -459,7 +461,7 @@ fn step8_insufficient_clearance_too_low() {
     a.signature = sign_event(&sb, &org_sk).unwrap();
     f.state
         .identity_attestations
-        .entry(f.author_pk)
+        .entry(f.author_pub)
         .or_default()
         .push(a);
 
@@ -482,11 +484,11 @@ fn step8_untrusted_clearance_issuer() {
     let mut f = fixture();
     // Give the author a Confidential clearance issued by a key the
     // channel does NOT accept as a trust root.
-    let (rogue_sk, rogue_pk) = generate_keypair();
+    let (rogue_sk, rogue_pub) = generate_keypair();
     let mut a = Attestation {
         id: AttestationId::new(),
-        issued_by: rogue_pk,
-        subject: f.author_pk,
+        issued_by: rogue_pub,
+        subject: f.author_pub,
         claims: vec![Claim::ClearedAt(Clearance::CONFIDENTIAL)],
         valid_from: t(0),
         valid_until: t(100_000),
@@ -496,7 +498,7 @@ fn step8_untrusted_clearance_issuer() {
     a.signature = sign_event(&sb, &rogue_sk).unwrap();
     f.state
         .identity_attestations
-        .entry(f.author_pk)
+        .entry(f.author_pub)
         .or_default()
         .push(a);
     f.state
@@ -507,7 +509,7 @@ fn step8_untrusted_clearance_issuer() {
     let op = build_op(&f, OpClass::Splice, t(10), 1);
     match validate_inbound_op(&op, &mut f.state) {
         Err(ValidationError::UntrustedClearanceIssuer { issuer }) => {
-            assert_eq!(issuer, rogue_pk);
+            assert_eq!(issuer, rogue_pub);
         }
         other => panic!("expected UntrustedClearanceIssuer, got {other:?}"),
     }
@@ -538,12 +540,12 @@ fn step8_effective_clearance_takes_max() {
         .artifact_classifications
         .insert(f.artifact, Clearance::RESTRICTED);
 
-    let (org_sk, org_pk) = generate_keypair();
-    f.state.accepted_trust_roots.push(org_pk);
+    let (org_sk, org_pub) = generate_keypair();
+    f.state.accepted_trust_roots.push(org_pub);
     let mut a = Attestation {
         id: AttestationId::new(),
-        issued_by: org_pk,
-        subject: f.author_pk,
+        issued_by: org_pub,
+        subject: f.author_pub,
         claims: vec![Claim::ClearedAt(Clearance::CONFIDENTIAL)],
         valid_from: t(0),
         valid_until: t(100_000),
@@ -553,7 +555,7 @@ fn step8_effective_clearance_takes_max() {
     a.signature = sign_event(&sb, &org_sk).unwrap();
     f.state
         .identity_attestations
-        .entry(f.author_pk)
+        .entry(f.author_pub)
         .or_default()
         .push(a);
 
@@ -577,7 +579,7 @@ fn replay_slot_does_not_bump_on_failure() {
     op.signature = Signature::from_bytes([0xff; 64]);
     let r = validate_inbound_op(&op, &mut f.state);
     assert!(r.is_err());
-    assert!(!f.state.last_seq_per_author.contains_key(&f.author_pk));
+    assert!(!f.state.last_seq_per_author.contains_key(&f.author_pub));
 }
 
 #[test]
@@ -586,7 +588,7 @@ fn replay_slot_bumps_on_success() {
     let op = build_op(&f, OpClass::Splice, t(10), 42);
     assert!(validate_inbound_op(&op, &mut f.state).is_ok());
     assert_eq!(
-        f.state.last_seq_per_author.get(&f.author_pk).copied(),
+        f.state.last_seq_per_author.get(&f.author_pub).copied(),
         Some(42)
     );
 }

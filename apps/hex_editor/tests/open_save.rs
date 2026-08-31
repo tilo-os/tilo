@@ -94,7 +94,7 @@ fn edit_then_save_writes_back_to_disk() {
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT;
     let (taffy, node) = dummy_layout();
-    let none = Modifiers::default();
+    let no_mods = Modifiers::default();
     let ctrl = Modifiers::from(ModifiersState::CONTROL);
 
     view.sync(&mut doc, &root); // seed the doc from the opened buffer
@@ -106,7 +106,7 @@ fn edit_then_save_writes_back_to_disk() {
         view.handle_event(
             &key_press(Key::Character(ch.into())),
             1.0,
-            &none,
+            &no_mods,
             &mut doc,
             &root,
             &mut handled,
@@ -165,7 +165,7 @@ fn keystroke_dispatches_the_same_action_the_palette_does() {
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT;
     let (taffy, node) = dummy_layout();
-    let none = Modifiers::default();
+    let no_mods = Modifiers::default();
 
     view.sync(&mut doc, &root); // seed the shared document from the buffer
 
@@ -175,7 +175,7 @@ fn keystroke_dispatches_the_same_action_the_palette_does() {
     view.handle_event(
         &key_press(Key::Character("a".into())),
         1.0,
-        &none,
+        &no_mods,
         &mut doc,
         &root,
         &mut handled,

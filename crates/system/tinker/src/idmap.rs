@@ -84,6 +84,15 @@ pub fn reexec_mapped() -> anyhow::Error {
 }
 
 /// Re-execute into the mapping if not already inside it.
+///
+/// # Errors
+///
+/// Returns `Ok(())` at once when already inside the mapping. Otherwise this
+/// calls [`reexec_mapped`]: on success the process image is replaced and
+/// this never returns to its caller at all; it returns an error only when
+/// that re-exec itself fails — its own executable path can't be found, or
+/// `unshare(1)` fails (no unprivileged user namespaces, or no subordinate
+/// id range in `/etc/subuid`).
 pub fn ensure_mapped() -> anyhow::Result<()> {
     if inside_mapping() {
         return Ok(());
@@ -109,7 +118,7 @@ mod tests {
         let path = f.path().to_str().unwrap();
         assert_eq!(
             subordinate_range(path, "quinten", 1000),
-            Some((524288, 65536))
+            Some((524_288, 65_536))
         );
         assert_eq!(subordinate_range(path, "nobody", 65534), None);
     }
@@ -119,7 +128,7 @@ mod tests {
         let f = subuid_file("1000:524288:65536\n");
         assert_eq!(
             subordinate_range(f.path().to_str().unwrap(), "someone", 1000),
-            Some((524288, 65536))
+            Some((524_288, 65_536))
         );
     }
 

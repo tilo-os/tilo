@@ -1294,6 +1294,12 @@ fn avg_us(samples: &[u128]) -> u128 {
     }
 }
 
+/// One measured pass of [`run_bench_scroll`]'s inner `run_pass` closure: the
+/// per-frame sync/compute/apply/draw timing series (µs) and whether the pass
+/// used the scroll fast path.
+type ScrollBenchPass =
+    Result<(Vec<u128>, Vec<u128>, Vec<u128>, Vec<u128>, bool), Box<dyn std::error::Error>>;
+
 /// `--bench-scroll [frames] [--watch]`: measure the per-frame main-thread cost
 /// of scrolling either a large Home grid or the watch page (full-bleed player +
 /// a long comment list), in two modes, and report the numbers.
@@ -1372,10 +1378,7 @@ fn run_bench_scroll(
     // One measured pass. `force_compute` = the pre-fix baseline (always re-solve
     // taffy every frame). `false` = the scroll fast path (apply_layout only when
     // nothing needs re-measuring). Returns (compute[], apply[], draw[]) in µs.
-    let run_pass = |force_compute: bool| -> Result<
-        (Vec<u128>, Vec<u128>, Vec<u128>, Vec<u128>, bool),
-        Box<dyn std::error::Error>,
-    > {
+    let run_pass = |force_compute: bool| -> ScrollBenchPass {
         let theme = Theme::dark();
         let presence = PresenceCtx::empty();
         let permission = PermissionContext::permissive();

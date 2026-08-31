@@ -1644,7 +1644,7 @@ impl MusicApp {
                 track,
                 in_playlist,
                 queue_index,
-            } => self.open_track_menu(track, in_playlist, queue_index),
+            } => self.open_track_menu(track, in_playlist.as_deref(), queue_index),
             Action::OpenAddToPlaylist(track) => self.open_add_to_playlist_menu(&track),
             Action::FocusSearch => self.on_focus_search(),
             Action::ToggleQueue => self.on_toggle_queue(),
@@ -2178,7 +2178,7 @@ impl MusicApp {
     /// Persist a live track (and its artist/album) into the document when it is
     /// actually played, so it joins the user's library permanently and syncs
     /// across devices. No-op for sample tracks.
-    fn persist_live_track(&mut self, track_id: &str, state: &mut AutoCommit) {
+    fn persist_live_track(&self, track_id: &str, state: &mut AutoCommit) {
         if !is_live_track(track_id) {
             return;
         }
@@ -3148,13 +3148,13 @@ impl MusicApp {
     fn open_track_menu(
         &mut self,
         track: String,
-        in_playlist: Option<String>,
+        in_playlist: Option<&str>,
         queue_index: Option<usize>,
     ) {
         self.context = ContextMenu::new();
         self.menu_actions.clear();
         self.ctx_track = Some(track.clone());
-        self.ctx_in_playlist.clone_from(&in_playlist);
+        self.ctx_in_playlist = in_playlist.map(ToString::to_string);
         self.ctx_queue_index = queue_index;
 
         let liked = self.lib.is_liked(&track);
@@ -3176,11 +3176,11 @@ impl MusicApp {
             "Add to playlist\u{2026}",
             Action::OpenAddToPlaylist(track.clone()),
         );
-        if let Some(pl) = &in_playlist {
+        if let Some(pl) = in_playlist {
             self.push_menu(
                 "Remove from this playlist",
                 Action::RemoveFromPlaylist {
-                    playlist: pl.clone(),
+                    playlist: pl.to_string(),
                     track: track.clone(),
                 },
             );
@@ -4706,9 +4706,31 @@ mod tests {
     #[test]
     #[ignore = "queries third-party music services; nightly runs it explicitly"]
     fn live_search_and_stream_resolve_through_the_app() {
-        use std::time::Duration;
         let (mut app, mut doc) = app_with_doc();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+
+        let first = live_search_top_result(&mut app);
+        let url = live_play_and_resolve_stream(&mut app, &mut doc, &first);
+
+        // …and, when this build can actually reach a sound sink, prove the real
+        // stream *renders* — decoded PCM buffers reach a real audio sink and the
+        // transport advances off the stream clock. This is the end-to-end "a real
+        // YouTube track plays sound" proof: the engine stages the resolved
+        // (rangeable) source to a temp file with bounded reqwest ranges and plays
+        // that.
+        #[cfg(feature = "audio")]
+        live_audio_render_proof(&mut app, &url);
+        #[cfg(not(feature = "audio"))]
+        let _ = url;
+    }
+
+    /// Submit a real YouTube-Music search, pump the worker until real hits
+    /// land, and confirm the top hit is a real, injected, streamable library
+    /// track. Returns its id. Part of
+    /// [`live_search_and_stream_resolve_through_the_app`].
+    #[cfg(feature = "live")]
+    fn live_search_top_result(app: &mut MusicApp) -> String {
+        use std::time::Duration;
 
         // Submit a real search (spawns the worker + sends the request).
         app.search_input.set_text("aurora runaway");
@@ -4744,16 +4766,29 @@ mod tests {
             app.lib.track(&first).is_some(),
             "live track merged into the library"
         );
+        first
+    }
+
+    /// Play `first` and pump the worker until the app resolves + loads a
+    /// real rangeable audio URL into the engine. Returns the loaded URL.
+    /// Part of [`live_search_and_stream_resolve_through_the_app`].
+    #[cfg(feature = "live")]
+    fn live_play_and_resolve_stream(
+        app: &mut MusicApp,
+        doc: &mut AutoCommit,
+        first: &str,
+    ) -> String {
+        use std::time::Duration;
 
         // Play it → the app requests a stream resolution on the worker.
         app.dispatch(
             Action::Play {
-                queue: vec![first.clone()],
+                queue: vec![first.to_string()],
                 index: 0,
             },
-            &mut doc,
+            doc,
         );
-        assert_eq!(app.pb.current.as_deref(), Some(first.as_str()));
+        assert_eq!(app.pb.current.as_deref(), Some(first));
         assert!(
             app.resolve_in_flight >= 1,
             "play requested a stream resolve"
@@ -4786,14 +4821,17 @@ mod tests {
             is_streamable(&url),
             "resolved a rangeable, itag-bearing audio URL: {url}"
         );
+        url
+    }
 
-        // …and, when this build can actually reach a sound sink, prove the real
-        // stream *renders* — decoded PCM buffers reach a real audio sink and the
-        // transport advances off the stream clock. This is the end-to-end "a real
-        // YouTube track plays sound" proof: the engine stages the resolved
-        // (rangeable) source to a temp file with bounded reqwest ranges and plays
-        // that.
-        #[cfg(feature = "audio")]
+    /// When this build can reach a real sound sink, prove the resolved
+    /// stream actually renders: decoded PCM buffers reach a real audio sink
+    /// and the transport advances off the stream clock. Part of
+    /// [`live_search_and_stream_resolve_through_the_app`].
+    #[cfg(all(feature = "live", feature = "audio"))]
+    fn live_audio_render_proof(app: &mut MusicApp, url: &str) {
+        use std::time::Duration;
+
         if audio_server_present() && decode_plugins_present() {
             // Drive the real frame loop until decoded PCM reaches the sink *and*
             // the transport clock has advanced off it (both prove genuine, not

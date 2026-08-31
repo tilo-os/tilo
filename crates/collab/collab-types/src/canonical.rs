@@ -44,6 +44,10 @@ pub enum CanonicalError {
 /// Returns `Err(CanonicalError::Serialize)` only if the value's
 /// `Serialize` impl errors — effectively infallible here, but not
 /// unwrapped so callers can propagate a future fallible impl.
+///
+/// # Errors
+///
+/// Returns [`CanonicalError::Serialize`] if `value`'s `Serialize` impl fails.
 pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, CanonicalError> {
     postcard::to_allocvec(value).map_err(|e| CanonicalError::Serialize(e.to_string()))
 }
@@ -56,6 +60,11 @@ pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, CanonicalErro
 /// The exact-length check is critical for signature integrity: a signed
 /// envelope is "the bytes I sign over" — accepting trailing bytes would
 /// let unsigned-but-present data slip past the validator unnoticed.
+///
+/// # Errors
+///
+/// Returns [`CanonicalError::Deserialize`] if `bytes` fails to decode as
+/// `T`, or if any bytes remain after a successful decode.
 pub fn from_canonical_bytes<T>(bytes: &[u8]) -> Result<T, CanonicalError>
 where
     T: for<'de> serde::Deserialize<'de>,

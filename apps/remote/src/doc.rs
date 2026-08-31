@@ -38,6 +38,16 @@ pub struct RemoteDoc;
 
 impl RemoteDoc {
     /// Get-or-create the top-level `connections` Map.
+    ///
+    /// # Panics
+    /// Never in practice: `put_object` on `ROOT` only fails for an invalid or
+    /// deleted parent object, and `ROOT` is permanent for the life of the doc.
+    #[allow(
+        clippy::expect_used,
+        reason = "ROOT is Automerge's permanent, undeletable root Map, so \
+                  put_object on it cannot fail short of a corrupted document \
+                  — there is no meaningful ObjId to fall back to"
+    )]
     pub fn connections_map(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "connections") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -48,6 +58,12 @@ impl RemoteDoc {
     }
 
     /// Get-or-create the per-connection Map for `id`.
+    #[allow(
+        clippy::expect_used,
+        reason = "conns is a Map this call itself just fetched-or-created via \
+                  connections_map, so put_object on it cannot fail short of a \
+                  corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     fn ensure_conn(doc: &mut AutoCommit, id: ConnectionId) -> ObjId {
         let conns = Self::connections_map(doc);
         let key = id.to_string();
@@ -62,6 +78,16 @@ impl RemoteDoc {
     /// Insert or update a connection. The name is stored as a `Text`
     /// object so concurrent renames merge; the rest are plain scalars
     /// (last-writer-wins is fine for host/port/flags).
+    ///
+    /// # Panics
+    /// Never in practice: `conn` was just fetched-or-created above, so
+    /// `put_object` on it only fails for an already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "conn is a Map this call itself just fetched-or-created via \
+                  ensure_conn, so put_object on it cannot fail short of a \
+                  corrupted document — there is no meaningful ObjId to fall back to"
+    )]
     pub fn upsert(doc: &mut AutoCommit, c: &Connection) {
         let conn = Self::ensure_conn(doc, c.id);
 
@@ -94,6 +120,16 @@ impl RemoteDoc {
     /// Rename a connection, splicing only the changed run of the collaborative
     /// `name` [`Text`](ObjType::Text) so concurrent renames merge. No-op if the
     /// connection isn't in the document — a rename can't conjure a machine.
+    ///
+    /// # Panics
+    /// Never in practice: `conn` was just looked up above, so `put_object` on
+    /// it only fails for an already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "conn is a Map this call itself just looked up above, so \
+                  put_object on it cannot fail short of a corrupted document \
+                  — there is no meaningful ObjId to fall back to"
+    )]
     pub fn rename(doc: &mut AutoCommit, id: ConnectionId, name: &str) {
         let conns = Self::connections_map(doc);
         let Ok(Some((Value::Object(ObjType::Map), conn))) =
@@ -125,9 +161,8 @@ impl RemoteDoc {
 
     /// Read every connection out of the document.
     pub fn list(doc: &AutoCommit) -> Vec<Connection> {
-        let conns = match doc.get(&ROOT, "connections") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::Map), conns))) = doc.get(&ROOT, "connections") else {
+            return Vec::new();
         };
 
         let mut out = Vec::new();

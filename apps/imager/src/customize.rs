@@ -254,6 +254,7 @@ impl CustomizePanel {
 
     // ---- drawing ----------------------------------------------------------
 
+    #[allow(clippy::too_many_arguments)]
     fn txt(
         tr: &mut TextRenderer,
         scene: &mut Scene,
@@ -317,6 +318,7 @@ impl CustomizePanel {
     }
 
     /// Draw + hit-forward one text field (box + label + the shared input glyphs).
+    #[allow(clippy::too_many_arguments)]
     fn draw_field(
         &mut self,
         scene: &mut Scene,
@@ -361,6 +363,7 @@ impl CustomizePanel {
         Widget::draw(input, scene, t, tr, theme, presence);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_toggle(
         &self,
         scene: &mut Scene,
@@ -447,10 +450,36 @@ impl CustomizePanel {
         profile: &InstallProfile,
         target_removable: bool,
     ) {
-        let c = &theme.tokens.colors;
         let g = Self::geom(content);
+        self.draw_identity_fields(scene, tr, theme, t, presence, content.x0, &g);
+        self.draw_region_and_options(
+            scene,
+            tr,
+            theme,
+            t,
+            presence,
+            content.x0,
+            &g,
+            profile,
+            target_removable,
+        );
+        self.draw_export_button(scene, tr, theme, t, &g);
+    }
 
-        Self::section_label(tr, scene, theme, "IDENTITY", content.x0, g.identity_label_y);
+    /// The IDENTITY section: heading + the hostname/full-name/username/
+    /// password/timezone fields.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_identity_fields(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        presence: &PresenceCtx,
+        label_x: f64,
+        g: &CzGeom,
+    ) {
+        Self::section_label(tr, scene, theme, "IDENTITY", label_x, g.identity_label_y);
         self.draw_field(
             scene,
             tr,
@@ -501,13 +530,29 @@ impl CustomizePanel {
             g.timezone,
             "Time zone",
         );
+    }
 
+    /// The REGION & OPTIONS section: heading + the keyboard field and the
+    /// autologin/encrypt/persist toggles.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_region_and_options(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        presence: &PresenceCtx,
+        label_x: f64,
+        g: &CzGeom,
+        profile: &InstallProfile,
+        target_removable: bool,
+    ) {
         Self::section_label(
             tr,
             scene,
             theme,
             "REGION & OPTIONS",
-            content.x0,
+            label_x,
             g.region_label_y,
         );
         self.draw_field(
@@ -553,8 +598,18 @@ impl CustomizePanel {
                 persist,
             );
         }
+    }
 
-        // Export config (secondary affordance).
+    /// The "Export unattended config" secondary affordance.
+    fn draw_export_button(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        g: &CzGeom,
+    ) {
+        let c = &theme.tokens.colors;
         let hov = g.export.contains(self.last_mouse);
         Self::fill_rr(
             scene,
@@ -605,152 +660,218 @@ impl CustomizePanel {
     ) -> CzResponse {
         let g = Self::geom(content);
         match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale, position.y / scale);
-                // Forward to a focused field so drag-selection tracks the pointer.
-                if let Some(f) = self.focused {
-                    let inner = Rect::new(
-                        g.field(f).x0 + 12.0,
-                        g.field(f).y0,
-                        g.field(f).x1 - 12.0,
-                        g.field(f).y1,
-                    );
-                    let input = self.input(f);
-                    input.apply_layout_external(inner);
-                    let (mut h, mut ft) = (false, None);
-                    input.handle_event(
-                        event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
-                    );
-                }
-                CzResponse {
-                    handled: false,
-                    export_requested: false,
-                }
-            }
+            WindowEvent::CursorMoved { position, .. } => self.handle_cursor_moved(
+                event, position.x, position.y, scale, modifiers, doc, path, &g, node_id, taffy,
+            ),
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                let p = self.last_mouse;
-                // A field: focus it and forward the press for caret placement.
-                for f in CzField::ALL {
-                    if g.field(f).contains(p) {
-                        self.focus_field(
-                            f,
-                            g.field(f),
-                            event,
-                            scale,
-                            modifiers,
-                            doc,
-                            path,
-                            node_id,
-                            taffy,
-                        );
-                        return CzResponse {
-                            handled: true,
-                            export_requested: false,
-                        };
-                    }
-                }
-                // A toggle.
-                if g.autologin.contains(p) {
-                    self.dispatch(
-                        doc,
-                        host,
-                        ImagerAction::SetAutologin {
-                            on: !profile.user.autologin,
-                        },
-                    );
-                    return CzResponse {
-                        handled: true,
-                        export_requested: false,
-                    };
-                }
-                if g.encrypt.contains(p) {
-                    self.dispatch(
-                        doc,
-                        host,
-                        ImagerAction::SetEncrypt {
-                            on: !profile.encrypt,
-                        },
-                    );
-                    return CzResponse {
-                        handled: true,
-                        export_requested: false,
-                    };
-                }
-                if Self::persist_visible(target_removable) && g.persist.contains(p) {
-                    let next = toggled_install_mode(profile.mode);
-                    self.dispatch(
-                        doc,
-                        host,
-                        ImagerAction::SetInstallMode {
-                            mode: next.key().to_string(),
-                        },
-                    );
-                    return CzResponse {
-                        handled: true,
-                        export_requested: false,
-                    };
-                }
-                if g.export.contains(p) {
-                    return CzResponse {
-                        handled: true,
-                        export_requested: true,
-                    };
-                }
-                // A click elsewhere drops field focus.
-                self.blur();
-                CzResponse {
-                    handled: false,
-                    export_requested: false,
-                }
-            }
+            } => self.handle_left_click(
+                event,
+                scale,
+                modifiers,
+                doc,
+                path,
+                host,
+                profile,
+                target_removable,
+                &g,
+                node_id,
+                taffy,
+            ),
             WindowEvent::KeyboardInput { event: key_ev, .. }
                 if key_ev.state == ElementState::Pressed =>
             {
-                let Some(f) = self.focused else {
-                    return CzResponse {
-                        handled: false,
-                        export_requested: false,
-                    };
-                };
-                if let Key::Named(NamedKey::Enter | NamedKey::Escape) = &key_ev.logical_key {
-                    self.blur();
-                    CzResponse {
-                        handled: true,
-                        export_requested: false,
-                    }
-                } else {
-                    // Route the keystroke to the focused input, then dispatch
-                    // the field's absolute-set action with its fresh value.
-                    let field_rect = g.field(f);
-                    let inner = Rect::new(
-                        field_rect.x0 + 12.0,
-                        field_rect.y0,
-                        field_rect.x1 - 12.0,
-                        field_rect.y1,
-                    );
-                    let input = self.input(f);
-                    input.set_focus(true);
-                    input.apply_layout_external(inner);
-                    let (mut h, mut ft) = (false, None);
-                    input.handle_event(
-                        event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
-                    );
-                    let value = self.input(f).value().to_string();
-                    self.dispatch(doc, host, Self::field_action(f, value));
-                    CzResponse {
-                        handled: true,
-                        export_requested: false,
-                    }
-                }
+                self.handle_key_event(
+                    event, key_ev, scale, modifiers, doc, path, host, &g, node_id, taffy,
+                )
             }
             _ => CzResponse {
                 handled: false,
                 export_requested: false,
             },
+        }
+    }
+
+    /// Track the pointer and forward it to a focused field so drag-selection
+    /// tracks along.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_cursor_moved(
+        &mut self,
+        event: &WindowEvent,
+        px: f64,
+        py: f64,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        path: &automerge::ObjId,
+        g: &CzGeom,
+        node_id: taffy::NodeId,
+        taffy: &taffy::TaffyTree<()>,
+    ) -> CzResponse {
+        self.last_mouse = Point::new(px / scale, py / scale);
+        if let Some(f) = self.focused {
+            let inner = Rect::new(
+                g.field(f).x0 + 12.0,
+                g.field(f).y0,
+                g.field(f).x1 - 12.0,
+                g.field(f).y1,
+            );
+            let input = self.input(f);
+            input.apply_layout_external(inner);
+            let (mut h, mut ft) = (false, None);
+            input.handle_event(
+                event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+            );
+        }
+        CzResponse {
+            handled: false,
+            export_requested: false,
+        }
+    }
+
+    /// A left click: focus a field and forward the press for caret placement,
+    /// dispatch a toggle, request export, or (on empty space) drop focus.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_left_click(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        path: &automerge::ObjId,
+        host: &mut ui::ActionHost,
+        profile: &InstallProfile,
+        target_removable: bool,
+        g: &CzGeom,
+        node_id: taffy::NodeId,
+        taffy: &taffy::TaffyTree<()>,
+    ) -> CzResponse {
+        let p = self.last_mouse;
+        for f in CzField::ALL {
+            if g.field(f).contains(p) {
+                self.focus_field(
+                    f,
+                    g.field(f),
+                    event,
+                    scale,
+                    *modifiers,
+                    doc,
+                    path,
+                    node_id,
+                    taffy,
+                );
+                return CzResponse {
+                    handled: true,
+                    export_requested: false,
+                };
+            }
+        }
+        if g.autologin.contains(p) {
+            Self::dispatch(
+                doc,
+                host,
+                &ImagerAction::SetAutologin {
+                    on: !profile.user.autologin,
+                },
+            );
+            return CzResponse {
+                handled: true,
+                export_requested: false,
+            };
+        }
+        if g.encrypt.contains(p) {
+            Self::dispatch(
+                doc,
+                host,
+                &ImagerAction::SetEncrypt {
+                    on: !profile.encrypt,
+                },
+            );
+            return CzResponse {
+                handled: true,
+                export_requested: false,
+            };
+        }
+        if Self::persist_visible(target_removable) && g.persist.contains(p) {
+            let next = toggled_install_mode(profile.mode);
+            Self::dispatch(
+                doc,
+                host,
+                &ImagerAction::SetInstallMode {
+                    mode: next.key().to_string(),
+                },
+            );
+            return CzResponse {
+                handled: true,
+                export_requested: false,
+            };
+        }
+        if g.export.contains(p) {
+            return CzResponse {
+                handled: true,
+                export_requested: true,
+            };
+        }
+        // A click elsewhere drops field focus.
+        self.blur();
+        CzResponse {
+            handled: false,
+            export_requested: false,
+        }
+    }
+
+    /// A key press while a field is focused: Enter/Escape blur it, anything
+    /// else routes to the input and dispatches its fresh value.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_key_event(
+        &mut self,
+        event: &WindowEvent,
+        key_ev: &winit::event::KeyEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        path: &automerge::ObjId,
+        host: &mut ui::ActionHost,
+        g: &CzGeom,
+        node_id: taffy::NodeId,
+        taffy: &taffy::TaffyTree<()>,
+    ) -> CzResponse {
+        let Some(f) = self.focused else {
+            return CzResponse {
+                handled: false,
+                export_requested: false,
+            };
+        };
+        if let Key::Named(NamedKey::Enter | NamedKey::Escape) = &key_ev.logical_key {
+            self.blur();
+            return CzResponse {
+                handled: true,
+                export_requested: false,
+            };
+        }
+        // Route the keystroke to the focused input, then dispatch the field's
+        // absolute-set action with its fresh value.
+        let field_rect = g.field(f);
+        let inner = Rect::new(
+            field_rect.x0 + 12.0,
+            field_rect.y0,
+            field_rect.x1 - 12.0,
+            field_rect.y1,
+        );
+        let input = self.input(f);
+        input.set_focus(true);
+        input.apply_layout_external(inner);
+        let (mut h, mut ft) = (false, None);
+        input.handle_event(
+            event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+        );
+        let value = self.input(f).value().to_string();
+        Self::dispatch(doc, host, &Self::field_action(f, value));
+        CzResponse {
+            handled: true,
+            export_requested: false,
         }
     }
 
@@ -761,7 +882,7 @@ impl CustomizePanel {
         field_rect: Rect,
         event: &WindowEvent,
         scale: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &automerge::ObjId,
         node_id: taffy::NodeId,
@@ -780,7 +901,7 @@ impl CustomizePanel {
         input.apply_layout_external(inner);
         let (mut h, mut ft) = (false, None);
         input.handle_event(
-            event, scale, modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+            event, scale, &modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
         );
     }
 
@@ -790,8 +911,8 @@ impl CustomizePanel {
         }
     }
 
-    fn dispatch(&mut self, doc: &mut AutoCommit, host: &mut ui::ActionHost, action: ImagerAction) {
-        host.dispatch(doc, IMAGER_ACTION_TYPE, &action);
+    fn dispatch(doc: &mut AutoCommit, host: &mut ui::ActionHost, action: &ImagerAction) {
+        host.dispatch(doc, IMAGER_ACTION_TYPE, action);
     }
 
     /// The password field itself, for the never-leak-the-secret a11y test.

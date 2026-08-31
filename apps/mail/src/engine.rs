@@ -193,22 +193,14 @@ pub fn spawn() -> (Sender<EngineRequest>, Receiver<EngineEvent>) {
 /// feature).
 ///
 /// # Panics
-/// Panics if the OS refuses to start the engine thread (e.g. resource
-/// exhaustion). Returning the channel pair without a live worker would
-/// leave every mail request queued and silently unanswered, so this is
-/// deliberately fatal at construction time rather than a mail app that
-/// looks alive and never syncs.
+/// Panics if the OS refuses to spawn the engine worker thread (e.g. resource
+/// exhaustion). Returning the channel pair without a live worker would leave
+/// every mail request queued and silently unanswered, and there is no
+/// degraded mode to fall back to, so this is deliberately fatal at
+/// construction time rather than a mail app that looks alive and never syncs.
 #[allow(
     clippy::expect_used,
-    reason = "without the worker thread every request queues unanswered forever; failing loudly at startup beats a mail app that silently never syncs"
-)]
-/// # Panics
-/// Panics if the OS refuses to spawn the worker thread (e.g. the process is
-/// out of threads/memory) — the app cannot function without its engine
-/// worker, so this is treated the same as failing to start at all.
-#[allow(
-    clippy::expect_used,
-    reason = "a thread-spawn failure here means the app can't run its engine worker at all; there is no degraded mode to fall back to, so aborting at startup is the correct behaviour"
+    reason = "without the worker thread every request queues unanswered forever, and there is no degraded mode to fall back to; failing loudly at startup beats a mail app that silently never syncs"
 )]
 pub fn spawn_with(
     mut backend: Box<dyn MailEngine>,

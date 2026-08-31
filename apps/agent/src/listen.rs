@@ -311,13 +311,13 @@ pub fn record_of<'a>(messages: &'a [Message], me: &str, parent: &str) -> Option<
 ///
 /// `now` and every `ts` are epoch seconds. `handled` is what
 /// [`answered`] found, plus anything the caller knows it has in flight.
-pub fn next_summons(
+pub fn next_summons<S: std::hash::BuildHasher>(
     messages: &[Message],
     me: &str,
     name: &str,
     last: Option<&LastAction>,
     now: i64,
-    handled: &HashSet<String>,
+    handled: &HashSet<String, S>,
 ) -> Option<Summons> {
     let mut ordered: Vec<&Message> = messages.iter().collect();
     ordered.sort_by_key(|m| m.ts);

@@ -175,6 +175,14 @@ enum Bg {
     Pull(StreamMsg),
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, orthogonal flag (live engine vs. \
+              sample data, one-shot demo seeding, and separate open/dirty \
+              states for unrelated overlays); they aren't a state machine, \
+              and grouping them would mean churning every field access across \
+              this widget and panels.rs for no behavioural gain"
+)]
 pub struct ContainersApp {
     /// The live (or sample) engine projection.
     pub(crate) engine: Engine,
@@ -440,7 +448,7 @@ impl ContainersApp {
                 let args = podman::pull_args(&reference);
                 std::thread::spawn(move || {
                     let (ptx, prx) = std::sync::mpsc::channel();
-                    let worker = std::thread::spawn(move || podman::stream_command(&args, ptx));
+                    let worker = std::thread::spawn(move || podman::stream_command(&args, &ptx));
                     while let Ok(msg) = prx.recv() {
                         let last = matches!(msg, StreamMsg::Done | StreamMsg::Failed(_));
                         if tx.send(Bg::Pull(msg)).is_err() || last {
@@ -659,18 +667,22 @@ impl ContainersApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         doc: &mut AutoCommit,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) {
         let mut dummy_taffy: TaffyTree<()> = TaffyTree::new();
-        let dummy_node = dummy_taffy.new_leaf(Style::default()).unwrap();
+        // A single-leaf throwaway tree; this can't realistically fail, but
+        // skip the forward rather than panic if it ever does.
+        let Ok(dummy_node) = dummy_taffy.new_leaf(Style::default()) else {
+            return;
+        };
         let mut ignored = false;
         self.search_field.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             doc,
             path,
             &mut ignored,
@@ -795,7 +807,7 @@ impl ContainersApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
@@ -829,7 +841,7 @@ impl ContainersApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
@@ -926,18 +938,20 @@ fn layout_dialog<C: Widget + 'static>(dialog: &mut ModalDialog<C>, rect: Rect) {
     let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
         std::collections::HashMap::new();
     let node = dialog.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(rect.width() as f32),
-                    height: Dimension::length(rect.height() as f32),
-                },
-                ..Default::default()
+    // A single-child throwaway tree; this can't realistically fail, but skip
+    // the layout pass rather than panic if it ever does.
+    let Ok(root) = taffy.new_with_children(
+        Style {
+            size: Size {
+                width: Dimension::length(rect.width() as f32),
+                height: Dimension::length(rect.height() as f32),
             },
-            &[node],
-        )
-        .unwrap();
+            ..Default::default()
+        },
+        &[node],
+    ) else {
+        return;
+    };
     let _ = taffy.compute_layout(
         root,
         Size {
@@ -954,18 +968,22 @@ fn route_event_into<C: Widget + 'static>(
     dialog: &mut ModalDialog<C>,
     event: &WindowEvent,
     scale_factor: f64,
-    modifiers: &winit::event::Modifiers,
+    modifiers: winit::event::Modifiers,
     doc: &mut AutoCommit,
     handled: &mut bool,
 ) {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let node = taffy.new_leaf(Style::default()).unwrap();
+    // A single-leaf throwaway tree; this can't realistically fail, but skip
+    // the forward rather than panic if it ever does.
+    let Ok(node) = taffy.new_leaf(Style::default()) else {
+        return;
+    };
     let mut focus_target = None;
     let root = automerge::ROOT;
     dialog.handle_event(
         event,
         scale_factor,
-        modifiers,
+        &modifiers,
         doc,
         &root,
         handled,
@@ -1110,21 +1128,26 @@ impl Widget for ContainersApp {
     ) -> NodeId {
         // The widget self-lays-out in apply_layout/draw, so it only needs a
         // single full-bleed leaf node.
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = match taffy.new_leaf(Style {
+            size: Size {
+                width: percent(1.0_f32),
+                height: percent(1.0_f32),
+            },
+            ..Default::default()
+        }) {
+            Ok(node) => node,
+            // `new_leaf` only errs when the tree is at capacity; degrade to
+            // an inert node rather than aborting the whole session.
+            Err(_) => NodeId::from(0u64),
+        };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -1234,7 +1257,7 @@ impl Widget for ContainersApp {
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
         doc: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
         _node_id: NodeId,
@@ -1245,24 +1268,27 @@ impl Widget for ContainersApp {
         // Escape (or clicking away) closes it.
         if self.palette_open {
             let mut dummy_taffy: TaffyTree<()> = TaffyTree::new();
-            let dummy_node = dummy_taffy.new_leaf(Style::default()).unwrap();
-            self.palette.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                doc,
-                _path,
-                handled,
-                focus_target,
-                dummy_node,
-                &dummy_taffy,
-            );
-            if let Some(outcome) = self.palette.take_outcome() {
-                ViewDoc::set_selected(doc, Some(&outcome.id));
-                self.palette.close();
-            }
-            if !self.palette.is_open() {
-                self.palette_open = false;
+            // A single-leaf throwaway tree; this can't realistically fail,
+            // but skip the forward rather than panic if it ever does.
+            if let Ok(dummy_node) = dummy_taffy.new_leaf(Style::default()) {
+                self.palette.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    doc,
+                    path,
+                    handled,
+                    focus_target,
+                    dummy_node,
+                    &dummy_taffy,
+                );
+                if let Some(outcome) = self.palette.take_outcome() {
+                    ViewDoc::set_selected(doc, Some(&outcome.id));
+                    self.palette.close();
+                }
+                if !self.palette.is_open() {
+                    self.palette_open = false;
+                }
             }
             *handled = true;
             self.refresh_view(doc);
@@ -1288,12 +1314,12 @@ impl Widget for ContainersApp {
         // the shared ModalDialog captures every event (typing, clicks, Esc)
         // and nothing leaks to the app behind the scrim.
         if self.confirm.is_some() {
-            self.route_confirm_event(event, scale_factor, modifiers, doc, handled);
+            self.route_confirm_event(event, scale_factor, *modifiers, doc, handled);
             self.refresh_view(doc);
             return;
         }
         if self.prompt.is_some() {
-            self.route_prompt_event(event, scale_factor, modifiers, doc, handled);
+            self.route_prompt_event(event, scale_factor, *modifiers, doc, handled);
             self.refresh_view(doc);
             return;
         }
@@ -1302,7 +1328,7 @@ impl Widget for ContainersApp {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 // Keep the launcher's pointer position current for its click test.
-                self.route_to_launcher(event, scale_factor, modifiers, doc, _path, focus_target);
+                self.route_to_launcher(event, scale_factor, *modifiers, doc, path, focus_target);
                 // Hover changes button shading — request a redraw.
                 *handled = true;
             }
@@ -1326,7 +1352,7 @@ impl Widget for ContainersApp {
             } => {
                 // A click on the search launcher opens the palette instead of
                 // running a list hit.
-                self.route_to_launcher(event, scale_factor, modifiers, doc, _path, focus_target);
+                self.route_to_launcher(event, scale_factor, *modifiers, doc, path, focus_target);
                 if self.search_field.take_palette_request() {
                     self.open_container_palette();
                     *handled = true;
@@ -1337,7 +1363,7 @@ impl Widget for ContainersApp {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                self.on_key(doc, key_event, modifiers, handled);
+                self.on_key(doc, key_event, *modifiers, handled);
             }
             _ => {}
         }
@@ -1396,7 +1422,9 @@ impl ContainersApp {
     pub(crate) fn refresh_view(&mut self, doc: &mut AutoCommit) {
         let mut create: [String; CreateField::COUNT] = Default::default();
         for field in CreateField::ALL {
-            create[field.index()] = ViewDoc::create_field(doc, field);
+            if let Some(slot) = create.get_mut(field.index()) {
+                *slot = ViewDoc::create_field(doc, field);
+            }
         }
         self.view = ViewState {
             section: ViewDoc::section(doc),
@@ -1628,9 +1656,7 @@ mod palette_launcher_tests {
         app.confirm = Some(Confirm {
             name: reference.clone(),
             verb: "Remove image".into(),
-            target: ConfirmTarget::Image {
-                reference: reference,
-            },
+            target: ConfirmTarget::Image { reference },
         });
         // A cursor move builds + lays out the dialog so its primary rect resolves.
         dispatch(

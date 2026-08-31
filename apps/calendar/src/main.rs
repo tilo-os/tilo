@@ -1,20 +1,18 @@
 //! Calendar — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default               — run the live winit event loop via `ui::App`
-//!                             (loads the user's persisted calendar; no sample
-//!                             content).
-//!   * `--shots PATH`        — render one offscreen frame of the fully-populated
-//!                             demo build to a PNG and exit. Shot-only flags:
-//!       * `--viewport WxH`   pick the viewport (drives the responsive layout).
-//!       * `--view V`         month | week | day | agenda.
-//!       * `--screen S`       calendar | detail (which pane to show).
-//!       * `--flap`           open the overlay sidebar (narrow only).
-//!       * `--collapse`       collapse the persistent sidebar (wide only).
+//!   * default — run the live winit event loop via `ui::App` (loads the
+//!     user's persisted calendar; no sample content).
+//!   * `--shots PATH` — render one offscreen frame of the fully-populated
+//!     demo build to a PNG and exit. Shot-only flags:
+//!       * `--viewport WxH` pick the viewport (drives the responsive layout).
+//!       * `--view V` month | week | day | agenda.
+//!       * `--screen S` calendar | detail (which pane to show).
+//!       * `--flap` open the overlay sidebar (narrow only).
+//!       * `--collapse` collapse the persistent sidebar (wide only).
 //!       * `--resize-from WxH` lay the SAME instance out at this size first,
-//!                             then render at `--viewport`. Proves the layout
-//!                             reflows on a live resize (rather than caching the
-//!                             first frame's breakpoint).
+//!         then render at `--viewport`. Proves the layout reflows on a live
+//!         resize (rather than caching the first frame's breakpoint).
 //!   * `--shots-narrow PATH` — legacy alias: renders at the narrow viewport.
 //!
 //! The offscreen pass is identical to the live app's frame cycle — only the
@@ -67,6 +65,14 @@ const WIDE_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// Below the breakpoint → narrow single-pane.
 const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 900);
 
+/// Entry point: dispatches to the offscreen `--shots`/`--shots-narrow`
+/// renderer, the headless `--headless-drive` driver, or the live windowed
+/// event loop.
+///
+/// # Errors
+/// Returns an error when a `--shots`/`--shots-narrow` pass fails to lay out
+/// or render the offscreen frame (a taffy layout error, or an I/O failure
+/// writing the PNG).
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 

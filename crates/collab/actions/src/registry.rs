@@ -46,6 +46,12 @@ impl ActionRegistry {
     }
 
     /// Reconstruct a live action from its encoded form.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionError::UnknownType`] if no decoder is registered
+    /// for `encoded.type_id`, or [`ActionError::Decode`] if the payload
+    /// fails to deserialize into the registered type.
     pub fn decode(&self, encoded: &EncodedAction) -> Result<Box<dyn Action>, ActionError> {
         let decoder = self
             .decoders

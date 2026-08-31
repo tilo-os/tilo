@@ -579,9 +579,8 @@ mod tests {
         longer.push('!');
         SlidesDoc::write_text(&mut doc, &obj, "notes", &longer);
         let grew = doc.save().len() - before;
-        let tid = match doc.get(&obj, "notes") {
-            Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            _ => panic!("notes text missing"),
+        let Ok(Some((Value::Object(ObjType::Text), tid))) = doc.get(&obj, "notes") else {
+            panic!("notes text missing")
         };
         assert_eq!(doc.text(&tid).unwrap(), longer, "value round-trips");
         assert!(grew < 40, "one-char text edit grew doc by {grew} bytes");

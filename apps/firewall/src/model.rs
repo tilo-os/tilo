@@ -229,6 +229,7 @@ pub struct Rule {
 }
 
 impl Rule {
+    #[must_use]
     pub fn new(matcher: Matcher, action: Action, source: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -263,6 +264,7 @@ pub struct Zone {
 }
 
 impl Zone {
+    #[must_use]
     pub fn new(kind: ZoneKind, target: Target) -> Self {
         Self {
             kind,

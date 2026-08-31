@@ -77,6 +77,11 @@ impl Store {
     /// `QOS_TINKER_ROOT` overrides, which is what the tests and the demo script
     /// use. Otherwise layers live under the user's data directory: per-user, on
     /// writable storage, and outside any path the OS image owns.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `QOS_TINKER_ROOT` is unset and neither
+    /// `XDG_DATA_HOME` nor `HOME` can be resolved.
     pub fn user() -> Result<Self> {
         if let Some(explicit) = std::env::var_os("QOS_TINKER_ROOT") {
             return Ok(Store::at(PathBuf::from(explicit)));
@@ -122,6 +127,12 @@ impl Store {
     }
 
     /// Create a layer. Fails rather than clobbering an existing one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `name` fails [`validate_name`], a layer by that
+    /// name already exists, any `stacked_on` parent does not exist, or the
+    /// layer's directories or metadata can't be written.
     pub fn create(
         &self,
         name: &str,
@@ -153,6 +164,10 @@ impl Store {
         Ok(layer)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `layer` can't be serialised to TOML or its
+    /// metadata file can't be written.
     pub fn write_meta(&self, layer: &Layer) -> Result<()> {
         let text = toml::to_string_pretty(layer).context("serialising layer metadata")?;
         std::fs::write(self.meta_path(&layer.name), text)
@@ -160,6 +175,10 @@ impl Store {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if no layer named `name` exists, or its metadata
+    /// file is not valid TOML for [`Layer`].
     pub fn load(&self, name: &str) -> Result<Layer> {
         let path = self.meta_path(name);
         let text = std::fs::read_to_string(&path)
@@ -168,6 +187,11 @@ impl Store {
             .with_context(|| format!("layer metadata at {} is unreadable", path.display()))
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the layers directory exists but can't be read.
+    /// An individual layer whose metadata fails to load is skipped rather
+    /// than failing the whole listing.
     pub fn list(&self) -> Result<Vec<Layer>> {
         let mut out = Vec::new();
         let rd = match std::fs::read_dir(self.layers_dir()) {
@@ -190,6 +214,12 @@ impl Store {
     /// This is the retroactive decision the ephemeral-on-disk design exists to
     /// allow. Promoting an already-kept layer is not an error; it just updates
     /// the note, so `tinker keep` is safe to type twice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `name` does not exist, `new_name` fails
+    /// [`validate_name`] or is already taken, or the rename or the rewritten
+    /// metadata can't be written.
     pub fn promote(&self, name: &str, new_name: Option<&str>, note: Option<&str>) -> Result<Layer> {
         let mut layer = self.load(name)?;
         if let Some(new) = new_name.filter(|n| *n != name) {
@@ -227,6 +257,10 @@ impl Store {
     }
 
     /// Layers that would dangle if `name` were removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the layers directory exists but can't be read.
     pub fn dependents(&self, name: &str) -> Result<Vec<String>> {
         Ok(self
             .list()?
@@ -242,6 +276,11 @@ impl Store {
     /// out from under a stack would silently change what the upper layers see.
     /// The layer's files can belong to subordinate ids, so this must run inside
     /// the layer id mapping — see [`crate::idmap`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if another layer still depends on `name`, no layer
+    /// named `name` exists, or its directory can't be removed.
     pub fn discard(&self, name: &str) -> Result<()> {
         let dependents = self.dependents(name)?;
         if !dependents.is_empty() {
@@ -270,6 +309,11 @@ impl Store {
     /// Removing a whiteout un-deletes; removing a copied-up file reverts it.
     /// Either way the base is untouched, which is what makes selective revert
     /// safe to offer at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `logical` contains a `..` component, the layer
+    /// never changed that path, or removing it fails.
     pub fn revert_path(&self, name: &str, logical: &Path) -> Result<()> {
         let rel = logical.strip_prefix("/").unwrap_or(logical);
         if rel

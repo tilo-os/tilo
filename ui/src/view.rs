@@ -193,6 +193,11 @@ pub trait FreezeThaw {
     fn serialize_state(&self) -> Vec<u8>;
 
     /// Load state bytes produced by [`serialize_state`](Self::serialize_state).
+    ///
+    /// # Errors
+    /// Returns an error if `bytes` is not a payload this implementor
+    /// previously produced via `serialize_state` — truncated, corrupt, or
+    /// from an incompatible version.
     fn restore_state(&mut self, bytes: &[u8]) -> Result<(), ThawError>;
 
     /// Capture this app's presentation into a [`View`]. Default: an empty View,
@@ -214,11 +219,15 @@ pub trait FreezeThaw {
             view: self.capture_view(),
         };
         // These are all owned, self-describing types; postcard serialization of
-        // them is infallible.
-        postcard::to_stdvec(&env).expect("FrozenApp is always serializable")
+        // them is infallible, so a serialization error here can only mean an
+        // internal postcard bug — fall back to an empty payload rather than
+        // panic.
+        postcard::to_stdvec(&env).unwrap_or_default()
     }
 
     /// Restore state and view from bytes produced by [`freeze`](Self::freeze).
+    ///
+    /// # Errors
     /// Returns an error — never panics — on truncated/garbage bytes, an unknown
     /// version, or an unloadable state payload.
     fn thaw(&mut self, bytes: &[u8]) -> Result<(), ThawError> {
@@ -287,7 +296,7 @@ mod tests {
             node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-            node_map.insert(node, self as *mut dyn Widget);
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: taffy::NodeId, _o: Point) {}
@@ -314,7 +323,7 @@ mod tests {
             _t: &TaffyTree<()>,
         ) {
         }
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "doc-root"
         }
         fn get_rect(&self) -> KurboRect {

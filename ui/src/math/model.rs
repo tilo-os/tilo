@@ -142,17 +142,13 @@ pub fn child_row(node: &Node, slot: Slot) -> Option<&Row> {
         (Node::Frac { num, .. }, Slot::Num) => Some(num),
         (Node::Frac { den, .. }, Slot::Den) => Some(den),
         (Node::Sup { exp }, Slot::Exp) => Some(exp),
-        (Node::Sub { sub }, Slot::Sub) | (Node::SubSup { sub, .. }, Slot::Sub) => Some(sub),
+        (Node::Sub { sub } | Node::SubSup { sub, .. }, Slot::Sub) => Some(sub),
         (Node::SubSup { sup, .. }, Slot::Sup) => Some(sup),
         (Node::Sqrt { radicand, .. }, Slot::Radicand) => Some(radicand),
         (Node::Sqrt { index: Some(i), .. }, Slot::Index) => Some(i),
-        (Node::Paren { body }, Slot::Body) | (Node::Delimited { body, .. }, Slot::Body) => {
-            Some(body)
-        }
+        (Node::Paren { body } | Node::Delimited { body, .. }, Slot::Body) => Some(body),
         (Node::Func { arg, .. }, Slot::Arg) => Some(arg),
-        (Node::Accent { base, .. }, Slot::Base) | (Node::UnderOver { base, .. }, Slot::Base) => {
-            Some(base)
-        }
+        (Node::Accent { base, .. } | Node::UnderOver { base, .. }, Slot::Base) => Some(base),
         (
             Node::UnderOver {
                 under: Some(row), ..
@@ -177,17 +173,13 @@ pub fn child_row_mut(node: &mut Node, slot: Slot) -> Option<&mut Row> {
         (Node::Frac { num, .. }, Slot::Num) => Some(num),
         (Node::Frac { den, .. }, Slot::Den) => Some(den),
         (Node::Sup { exp }, Slot::Exp) => Some(exp),
-        (Node::Sub { sub }, Slot::Sub) | (Node::SubSup { sub, .. }, Slot::Sub) => Some(sub),
+        (Node::Sub { sub } | Node::SubSup { sub, .. }, Slot::Sub) => Some(sub),
         (Node::SubSup { sup, .. }, Slot::Sup) => Some(sup),
         (Node::Sqrt { radicand, .. }, Slot::Radicand) => Some(radicand),
         (Node::Sqrt { index: Some(i), .. }, Slot::Index) => Some(i),
-        (Node::Paren { body }, Slot::Body) | (Node::Delimited { body, .. }, Slot::Body) => {
-            Some(body)
-        }
+        (Node::Paren { body } | Node::Delimited { body, .. }, Slot::Body) => Some(body),
         (Node::Func { arg, .. }, Slot::Arg) => Some(arg),
-        (Node::Accent { base, .. }, Slot::Base) | (Node::UnderOver { base, .. }, Slot::Base) => {
-            Some(base)
-        }
+        (Node::Accent { base, .. } | Node::UnderOver { base, .. }, Slot::Base) => Some(base),
         (
             Node::UnderOver {
                 under: Some(row), ..

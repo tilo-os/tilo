@@ -676,9 +676,7 @@ pub fn decode_polyline(s: &str, precision: u32) -> Vec<LatLon> {
         let mut shift = 0u32;
         let mut result = 0i64;
         loop {
-            let Some(&byte) = bytes.get(*i) else {
-                return None;
-            };
+            let &byte = bytes.get(*i)?;
             let b = i64::from(byte) - 63;
             *i += 1;
             result |= (b & 0x1f) << shift;

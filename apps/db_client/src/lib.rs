@@ -9,13 +9,13 @@
 //! Layers:
 //! - [`model`]        — connection profiles, schema types, query results.
 //! - [`engine`]       — the `SQLite` driver, the [`engine::LiveEngine`] enum that
-//!                      unifies all three engines, and [`engine::open_engine`].
+//!   unifies all three engines, and [`engine::open_engine`].
 //! - [`engine_pg`]    — the `PostgreSQL` driver: introspection + query execution.
 //! - [`engine_mysql`] — the MySQL/MariaDB driver: introspection + execution.
 //! - [`worker`]    — the background thread that owns the live engine and runs
-//!                   every blocking connect/introspect/query off the UI thread.
+//!   every blocking connect/introspect/query off the UI thread.
 //! - [`actions`]   — the [`actions::DbAction`] CRUD of the saved-connection list,
-//!                   routed through [`ui::ActionHost`] (collaborative doc state).
+//!   routed through [`ui::ActionHost`] (collaborative doc state).
 //! - [`sample`]    — the bundled offline sample database.
 //! - [`session`]   — runtime view state (connections, schema, results).
 //! - [`doc`]       — the CRDT-backed SQL buffer + saved-connection list.

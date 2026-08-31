@@ -24,7 +24,9 @@ fn now_secs() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
+        // `i64::MAX` seconds since the epoch is ~292 billion years out —
+        // the fallback exists only so this can't panic, not because it fires.
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 /// Build an envelope for `action` at the doc's current heads, without
@@ -135,6 +137,12 @@ fn abort_pinned_change(doc: &mut Doc, prev_actor: automerge::ActorId) {
 /// Apply `action` to the local replica and return its replayable
 /// envelope. `encoded` is the serialized form carried to peers — must
 /// encode the *same* action.
+///
+/// # Errors
+///
+/// Returns whatever [`Action::apply`](crate::action::Action::apply) returns
+/// for `action` — typically [`ActionError::Automerge`] for a document
+/// write failure, or [`ActionError::Refused`] if the app declined the action.
 pub fn apply_local(
     doc: &mut Doc,
     action: &dyn Action,
@@ -147,6 +155,10 @@ pub fn apply_local(
 /// Automerge change commits under *their* actor so the room's history
 /// names them the way it names a typing person. `None` keeps the
 /// [`ActionId`]-derived actor, as before.
+///
+/// # Errors
+///
+/// See [`apply_local`].
 pub fn apply_local_by(
     doc: &mut Doc,
     action: &dyn Action,
@@ -161,6 +173,12 @@ pub fn apply_local_by(
 /// Replay an envelope received from a peer: decode its action via
 /// `registry` and apply under the envelope's pinned actor + timestamp.
 /// Applied at the envelope's `base_heads`, this reproduces the identical document.
+///
+/// # Errors
+///
+/// Returns [`ActionError::UnknownType`] or [`ActionError::Decode`] if
+/// `registry` can't decode `env.action`, or any error [`apply_local`]
+/// documents once decoding succeeds.
 pub fn replay(
     doc: &mut Doc,
     env: &ActionEnvelope,
@@ -234,6 +252,10 @@ impl Dispatched {
 /// [`HostDecision::NoHostFallbackLocal`]. The envelope's id/timestamp are
 /// fixed *before* submission, so a host and the local fallback execute
 /// the byte-identical change.
+///
+/// # Errors
+///
+/// See [`apply_local`].
 pub fn dispatch(
     doc: &mut Doc,
     action: &dyn Action,
@@ -246,6 +268,10 @@ pub fn dispatch(
 /// [`dispatch`], attributing the resulting change to `actor` — the
 /// executor owns the commit boundary, so it's the only place that
 /// chooses which actor a change commits under, rather than each app remembering.
+///
+/// # Errors
+///
+/// See [`apply_local`].
 pub fn dispatch_by(
     doc: &mut Doc,
     action: &dyn Action,

@@ -809,17 +809,17 @@ pub fn sample_releases() -> Vec<QosRelease> {
 pub fn sample_source() -> Source {
     // `sample_releases()` always returns at least one entry; the fallback
     // below only matters if that ever changes.
-    sample_releases()
-        .first()
-        .map(QosRelease::to_source)
-        .unwrap_or_else(|| Source {
+    sample_releases().first().map_or_else(
+        || Source {
             kind: SourceKind::QosImage,
             path: String::new(),
             name: String::new(),
             size: 0,
             label: String::new(),
             installable: false,
-        })
+        },
+        QosRelease::to_source,
+    )
 }
 
 /// Recent-source history shown in the source picker.

@@ -571,8 +571,10 @@ mod tests {
     #[test]
     fn literal_modes_and_regex_are_owned_by_the_component() {
         let blocks = [block("Hello hello HELLO category cat a1 b22")];
-        let mut bar = FindBar::default();
-        bar.query = "hello".to_string();
+        let mut bar = FindBar {
+            query: "hello".to_string(),
+            ..Default::default()
+        };
         bar.recompute(&blocks);
         assert_eq!(bar.matches.len(), 3);
         bar.apply(Action::ToggleCase, &blocks);
@@ -598,8 +600,10 @@ mod tests {
     #[test]
     fn navigation_wraps_and_close_drops_stale_hits() {
         let blocks = [block("one one")];
-        let mut bar = FindBar::default();
-        bar.query = "one".to_string();
+        let mut bar = FindBar {
+            query: "one".to_string(),
+            ..Default::default()
+        };
         bar.open(None, &blocks);
         assert_eq!(bar.jump(-1), FindEffect::SelectActive);
         assert_eq!(bar.index, 1);
@@ -614,8 +618,10 @@ mod tests {
     #[test]
     fn drawn_button_geometry_drives_click_navigation() {
         let blocks = [block("one one")];
-        let mut bar = FindBar::default();
-        bar.query = "one".to_string();
+        let mut bar = FindBar {
+            query: "one".to_string(),
+            ..Default::default()
+        };
         bar.open(None, &blocks);
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();

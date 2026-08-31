@@ -290,7 +290,7 @@ fn apply_set_mark(
     region: Region,
     spans: &[Span],
     name: &str,
-    value: &Option<MarkVal>,
+    value: Option<&MarkVal>,
     also_clear: &[String],
 ) {
     let c = dm.c;
@@ -341,7 +341,7 @@ fn apply_named_style(
     dm: &mut DocMut,
     blocks: &[String],
     style: &str,
-    kind: &Option<String>,
+    kind: Option<&String>,
     level: Option<i64>,
     ordered: Option<bool>,
 ) {
@@ -501,7 +501,14 @@ impl Action for WordProcessorAction {
                 name,
                 value,
                 also_clear,
-            } => apply_set_mark(&mut dm, region.to_region(), spans, name, value, also_clear),
+            } => apply_set_mark(
+                &mut dm,
+                region.to_region(),
+                spans,
+                name,
+                value.as_ref(),
+                also_clear,
+            ),
 
             WordProcessorAction::SetParagraphStyle {
                 blocks,
@@ -516,7 +523,7 @@ impl Action for WordProcessorAction {
                 kind,
                 level,
                 ordered,
-            } => apply_named_style(&mut dm, blocks, style, kind, *level, *ordered),
+            } => apply_named_style(&mut dm, blocks, style, kind.as_ref(), *level, *ordered),
 
             WordProcessorAction::SetBlockAttr {
                 region,

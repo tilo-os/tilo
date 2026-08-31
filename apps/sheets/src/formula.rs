@@ -148,7 +148,7 @@ fn median(sample: &mut [f64]) -> Option<f64> {
     sample.sort_by(f64::total_cmp);
     let mid = sample.len() / 2;
     let hi = *sample.get(mid)?;
-    if sample.len() % 2 != 0 {
+    if !sample.len().is_multiple_of(2) {
         return Some(hi);
     }
     let lo = *mid.checked_sub(1).and_then(|i| sample.get(i))?;
@@ -1040,84 +1040,11 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
     /// IF/IFS/SWITCH and the boolean connectives.
     fn eval_logical(&mut self, name: &str, args: &[Expr]) -> Option<CellValue> {
         let value = match name {
-            "IF" => {
-                let (Some(cond_expr), Some(then_expr)) = (args.first(), args.get(1)) else {
-                    return Some(CellValue::Error(FormulaError::Error));
-                };
-                let cond = self.eval_expr(cond_expr);
-                if cond.is_error() {
-                    return Some(cond);
-                }
-                if cond_truthy(&cond) {
-                    self.eval_expr(then_expr)
-                } else if let Some(else_expr) = args.get(2) {
-                    self.eval_expr(else_expr)
-                } else {
-                    CellValue::Bool(false)
-                }
-            }
-            "IFS" => {
-                let mut chosen = CellValue::Error(FormulaError::Na);
-                for pair in args.chunks_exact(2) {
-                    let (Some(cond_expr), Some(then_expr)) = (pair.first(), pair.get(1)) else {
-                        continue;
-                    };
-                    let cond = self.eval_expr(cond_expr);
-                    if cond.is_error() {
-                        return Some(cond);
-                    }
-                    if cond_truthy(&cond) {
-                        chosen = self.eval_expr(then_expr);
-                        break;
-                    }
-                }
-                chosen
-            }
-            "IFERROR" => {
-                let (Some(probe), Some(fallback)) = (args.first(), args.get(1)) else {
-                    return Some(CellValue::Error(FormulaError::Error));
-                };
-                let v = self.eval_expr(probe);
-                if v.is_error() {
-                    self.eval_expr(fallback)
-                } else {
-                    v
-                }
-            }
-            "IFNA" => {
-                let (Some(probe), Some(fallback)) = (args.first(), args.get(1)) else {
-                    return Some(CellValue::Error(FormulaError::Error));
-                };
-                let v = self.eval_expr(probe);
-                if matches!(&v, CellValue::Error(FormulaError::Na)) {
-                    self.eval_expr(fallback)
-                } else {
-                    v
-                }
-            }
-            "SWITCH" => {
-                let Some((target_expr, rest)) = args.split_first() else {
-                    return Some(CellValue::Error(FormulaError::Error));
-                };
-                let target = self.eval_expr(target_expr);
-                let mut cases = rest.chunks_exact(2);
-                let mut chosen: Option<&Expr> = None;
-                for pair in cases.by_ref() {
-                    let (Some(case_expr), Some(value_expr)) = (pair.first(), pair.get(1)) else {
-                        continue;
-                    };
-                    let case = self.eval_expr(case_expr);
-                    if values_equal(&case, &target) {
-                        chosen = Some(value_expr);
-                        break;
-                    }
-                }
-                // A lone trailing argument is the default.
-                match chosen.or_else(|| cases.remainder().first()) {
-                    Some(e) => self.eval_expr(e),
-                    None => CellValue::Error(FormulaError::Na),
-                }
-            }
+            "IF" => self.eval_if(args),
+            "IFS" => self.eval_ifs(args),
+            "IFERROR" => self.eval_iferror(args),
+            "IFNA" => self.eval_ifna(args),
+            "SWITCH" => self.eval_switch(args),
             "TRUE" => CellValue::Bool(true),
             "FALSE" => CellValue::Bool(false),
             "XOR" => match self.flatten_bools(args) {
@@ -1132,18 +1059,103 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 Ok(bs) => CellValue::Bool(bs.into_iter().any(|b| b)),
                 Err(e) => e,
             },
-            "NOT" => {
-                let [only] = args else {
-                    return Some(CellValue::Error(FormulaError::Error));
-                };
-                match self.eval_expr(only).as_number() {
-                    Some(n) => CellValue::Bool(n == 0.0),
-                    None => CellValue::Error(FormulaError::Value),
-                }
-            }
+            "NOT" => self.eval_not(args),
             _ => return None,
         };
         Some(value)
+    }
+
+    fn eval_if(&mut self, args: &[Expr]) -> CellValue {
+        let (Some(cond_expr), Some(then_expr)) = (args.first(), args.get(1)) else {
+            return CellValue::Error(FormulaError::Error);
+        };
+        let cond = self.eval_expr(cond_expr);
+        if cond.is_error() {
+            return cond;
+        }
+        if cond_truthy(&cond) {
+            self.eval_expr(then_expr)
+        } else if let Some(else_expr) = args.get(2) {
+            self.eval_expr(else_expr)
+        } else {
+            CellValue::Bool(false)
+        }
+    }
+
+    fn eval_ifs(&mut self, args: &[Expr]) -> CellValue {
+        let mut chosen = CellValue::Error(FormulaError::Na);
+        for pair in args.chunks_exact(2) {
+            let (Some(cond_expr), Some(then_expr)) = (pair.first(), pair.get(1)) else {
+                continue;
+            };
+            let cond = self.eval_expr(cond_expr);
+            if cond.is_error() {
+                return cond;
+            }
+            if cond_truthy(&cond) {
+                chosen = self.eval_expr(then_expr);
+                break;
+            }
+        }
+        chosen
+    }
+
+    fn eval_iferror(&mut self, args: &[Expr]) -> CellValue {
+        let (Some(probe), Some(fallback)) = (args.first(), args.get(1)) else {
+            return CellValue::Error(FormulaError::Error);
+        };
+        let v = self.eval_expr(probe);
+        if v.is_error() {
+            self.eval_expr(fallback)
+        } else {
+            v
+        }
+    }
+
+    fn eval_ifna(&mut self, args: &[Expr]) -> CellValue {
+        let (Some(probe), Some(fallback)) = (args.first(), args.get(1)) else {
+            return CellValue::Error(FormulaError::Error);
+        };
+        let v = self.eval_expr(probe);
+        if matches!(&v, CellValue::Error(FormulaError::Na)) {
+            self.eval_expr(fallback)
+        } else {
+            v
+        }
+    }
+
+    fn eval_switch(&mut self, args: &[Expr]) -> CellValue {
+        let Some((target_expr, rest)) = args.split_first() else {
+            return CellValue::Error(FormulaError::Error);
+        };
+        let target = self.eval_expr(target_expr);
+        let mut cases = rest.chunks_exact(2);
+        let mut chosen: Option<&Expr> = None;
+        for pair in cases.by_ref() {
+            let (Some(case_expr), Some(value_expr)) = (pair.first(), pair.get(1)) else {
+                continue;
+            };
+            let case = self.eval_expr(case_expr);
+            if values_equal(&case, &target) {
+                chosen = Some(value_expr);
+                break;
+            }
+        }
+        // A lone trailing argument is the default.
+        match chosen.or_else(|| cases.remainder().first()) {
+            Some(e) => self.eval_expr(e),
+            None => CellValue::Error(FormulaError::Na),
+        }
+    }
+
+    fn eval_not(&mut self, args: &[Expr]) -> CellValue {
+        let [only] = args else {
+            return CellValue::Error(FormulaError::Error);
+        };
+        match self.eval_expr(only).as_number() {
+            Some(n) => CellValue::Bool(n == 0.0),
+            None => CellValue::Error(FormulaError::Value),
+        }
     }
 
     /// The scalar maths functions.
@@ -1151,7 +1163,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         let value = match name {
             "ABS" => self.unary_num(args, f64::abs),
             "SQRT" => self.unary_num(args, f64::sqrt),
-            "INT" => self.unary_num(args, f64::floor),
+            "INT" | "FLOOR" => self.unary_num(args, f64::floor),
             "SIGN" => self.unary_num(args, f64::signum),
             "EXP" => self.unary_num(args, f64::exp),
             "LN" => self.unary_num(args, f64::ln),
@@ -1182,7 +1194,6 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 }
             }),
             "POWER" => self.binary_num(args, |a, b| Some(a.powf(b))),
-            "FLOOR" => self.unary_num(args, f64::floor),
             "CEILING" => self.unary_num(args, f64::ceil),
             _ => return None,
         };
@@ -1422,21 +1433,21 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         }
     }
 
-    fn binary_num(&mut self, args: &[Expr], f: impl Fn(f64, f64) -> Option<f64>) -> CellValue {
+    fn binary_num(&mut self, args: &[Expr], op: impl Fn(f64, f64) -> Option<f64>) -> CellValue {
         let [left, right] = args else {
             return CellValue::Error(FormulaError::Error);
         };
-        let a = self.eval_expr(left);
-        let b = self.eval_expr(right);
-        if a.is_error() {
-            return a;
+        let lv = self.eval_expr(left);
+        let rv = self.eval_expr(right);
+        if lv.is_error() {
+            return lv;
         }
-        if b.is_error() {
-            return b;
+        if rv.is_error() {
+            return rv;
         }
-        match (a.as_number(), b.as_number()) {
-            (Some(x), Some(y)) => match f(x, y) {
-                Some(r) => CellValue::Number(r),
+        match (lv.as_number(), rv.as_number()) {
+            (Some(ln), Some(rn)) => match op(ln, rn) {
+                Some(result) => CellValue::Number(result),
                 None => CellValue::Error(FormulaError::Div0),
             },
             _ => CellValue::Error(FormulaError::Value),
@@ -2386,11 +2397,10 @@ fn unit_of_format(fmt: CellFormat) -> Unit {
 /// Recursively determine an expression's unit.
 fn unit_of<S: BuildHasher>(expr: &Expr, formats: &HashMap<Addr, CellFormat, S>) -> Unit {
     match expr {
-        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) => Unit::Scalar,
+        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Range(_, _) => Unit::Scalar,
         Expr::Ref(addr) => formats
             .get(addr)
             .map_or(Unit::Scalar, |f| unit_of_format(*f)),
-        Expr::Range(_, _) => Unit::Scalar,
         Expr::Unary(_, inner) => unit_of(inner, formats),
         Expr::Binary(op, l, r) => {
             let lu = unit_of(l, formats);
@@ -2450,10 +2460,8 @@ fn unit_of_call<S: BuildHasher>(
             for a in args {
                 for u in arg_units(a, formats) {
                     acc = Some(match acc {
-                        None => u,
-                        Some(prev) if prev == u => prev,
-                        Some(Unit::Scalar) => u,
-                        Some(prev) if u == Unit::Scalar => prev,
+                        None | Some(Unit::Scalar) => u,
+                        Some(prev) if prev == u || u == Unit::Scalar => prev,
                         Some(_) => Unit::Mixed,
                     });
                 }

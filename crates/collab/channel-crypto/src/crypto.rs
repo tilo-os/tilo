@@ -56,6 +56,12 @@ impl MemberKey {
     /// Mint fresh key material for a member with the given display name.
     /// The name is opaque to MLS (rendered verbatim in Welcome/KeyPackage);
     /// accepts `AsRef<[u8]>` since non-textual identifiers are also valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OpenMls`] if generating the Ed25519 signature
+    /// keypair fails, or [`Error::Storage`] if persisting its secret half
+    /// into the provider's storage fails.
     pub fn generate(name: impl AsRef<[u8]>) -> Result<Self> {
         let provider = OpenMlsRustCrypto::default();
         let signer = SignatureKeyPair::new(SignatureScheme::ED25519).map_err(Error::openmls)?;
@@ -102,6 +108,10 @@ impl MemberKey {
     /// twice violates MLS (last-resort key packages aren't enabled here).
     /// Returns the openmls type directly since callers ship it straight to
     /// a Welcome issuer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OpenMls`] if building the key package fails.
     pub fn fresh_key_package(&self) -> Result<KeyPackage> {
         let bundle = KeyPackage::builder()
             .build(
@@ -119,18 +129,20 @@ impl std::fmt::Debug for MemberKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never print the signing key, HPKE storage, or provider internals —
         // the name + signer's public half are enough to disambiguate in logs.
+        // `.get()` (rather than indexing) covers the case where a future
+        // ciphersuite change shrinks the public key below 4 bytes.
+        let pk = self.signer.public();
+        let mut prefix = String::with_capacity(10);
+        for b in pk.get(..4).unwrap_or(pk) {
+            use std::fmt::Write as _;
+            let _ = write!(prefix, "{b:02x}");
+        }
+        prefix.push_str("..");
         f.debug_struct("MemberKey")
             .field("name", &String::from_utf8_lossy(&self.name))
-            .field(
-                "signature_public_key",
-                &format!(
-                    "{:02x}{:02x}{:02x}{:02x}..",
-                    self.signer.public()[0],
-                    self.signer.public()[1],
-                    self.signer.public()[2],
-                    self.signer.public()[3],
-                ),
-            )
-            .finish()
+            .field("signature_public_key", &prefix)
+            // `signer` (secret material) and `provider` (storage/crypto
+            // internals) are deliberately never shown — see above.
+            .finish_non_exhaustive()
     }
 }

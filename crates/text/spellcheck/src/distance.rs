@@ -45,11 +45,10 @@ pub fn damerau_levenshtein_within(a: &str, b: &str, max: usize) -> Option<usize>
 
     for i in 1..=la {
         // `i` ranges over 1..=la, so `i - 1` always lands inside `a_chars`; the
-        // `.get()` and `else` branch exist to satisfy the indexing lint, not
-        // because this can actually miss.
-        let Some(a_char) = a_chars.get(i.saturating_sub(1)).copied() else {
-            return None;
-        };
+        // `.get()` exists to satisfy the indexing lint, not because this can
+        // actually miss — `?` and the surrounding `Option<usize>` return type
+        // give the same "return None" behaviour as the old `let...else`.
+        let a_char = a_chars.get(i.saturating_sub(1)).copied()?;
 
         if let Some(cell) = curr.get_mut(0) {
             *cell = i;
@@ -57,9 +56,7 @@ pub fn damerau_levenshtein_within(a: &str, b: &str, max: usize) -> Option<usize>
         let mut row_min = i;
 
         for j in 1..=lb {
-            let Some(b_char) = b_chars.get(j.saturating_sub(1)).copied() else {
-                return None;
-            };
+            let b_char = b_chars.get(j.saturating_sub(1)).copied()?;
             let cost = usize::from(a_char != b_char);
 
             let deletion = prev.get(j).copied().unwrap_or(usize::MAX).saturating_add(1);
@@ -76,20 +73,21 @@ pub fn damerau_levenshtein_within(a: &str, b: &str, max: usize) -> Option<usize>
             let mut best = deletion.min(insertion).min(substitution);
 
             // Transposition of two adjacent characters.
-            if i > 1 && j > 1 {
-                if let (Some(&b_prev), Some(&a_prev)) = (
+            if i > 1
+                && j > 1
+                && let (Some(&b_prev), Some(&a_prev)) = (
                     b_chars.get(j.saturating_sub(2)),
                     a_chars.get(i.saturating_sub(2)),
-                ) {
-                    if a_char == b_prev && a_prev == b_char {
-                        let transpose = prev_prev
-                            .get(j.saturating_sub(2))
-                            .copied()
-                            .unwrap_or(usize::MAX)
-                            .saturating_add(1);
-                        best = best.min(transpose);
-                    }
-                }
+                )
+                && a_char == b_prev
+                && a_prev == b_char
+            {
+                let transpose = prev_prev
+                    .get(j.saturating_sub(2))
+                    .copied()
+                    .unwrap_or(usize::MAX)
+                    .saturating_add(1);
+                best = best.min(transpose);
             }
 
             if let Some(cell) = curr.get_mut(j) {
@@ -190,20 +188,21 @@ pub(crate) fn weighted_edit_cost(a: &str, b: &str, max: usize) -> f64 {
                 + cost;
             let mut best = deletion.min(insertion).min(substitution);
 
-            if i > 1 && j > 1 {
-                if let (Some(&b_prev), Some(&a_prev)) = (
+            if i > 1
+                && j > 1
+                && let (Some(&b_prev), Some(&a_prev)) = (
                     b_chars.get(j.saturating_sub(2)),
                     a_chars.get(i.saturating_sub(2)),
-                ) {
-                    if a_char == b_prev && a_prev == b_char {
-                        let transpose = prev_prev
-                            .get(j.saturating_sub(2))
-                            .copied()
-                            .unwrap_or(f64::INFINITY)
-                            + TRANSPOSE_COST;
-                        best = best.min(transpose);
-                    }
-                }
+                )
+                && a_char == b_prev
+                && a_prev == b_char
+            {
+                let transpose = prev_prev
+                    .get(j.saturating_sub(2))
+                    .copied()
+                    .unwrap_or(f64::INFINITY)
+                    + TRANSPOSE_COST;
+                best = best.min(transpose);
             }
 
             if let Some(cell) = curr.get_mut(j) {

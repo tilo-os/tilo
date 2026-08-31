@@ -79,9 +79,10 @@ pub struct StorageSnapshot {
 
 impl StorageSnapshot {
     pub fn totals(&self) -> BTreeMap<StorageCategory, u64> {
-        let mut out = BTreeMap::new();
+        let mut out: BTreeMap<StorageCategory, u64> = BTreeMap::new();
         for entry in &self.entries {
-            *out.entry(entry.category).or_default() += entry.bytes;
+            let slot = out.entry(entry.category).or_default();
+            *slot = slot.saturating_add(entry.bytes);
         }
         out
     }
@@ -172,7 +173,7 @@ fn scan_room_apps(snapshot: &mut StorageSnapshot, root: Option<&Path>) {
         for app in apps.flatten() {
             let (bytes, files) = measure(&app.path());
             let owner = app.file_name().to_string_lossy().into_owned();
-            let entry = totals.entry(owner).or_insert((0, 0, app.path()));
+            let entry = totals.entry(owner).or_insert_with(|| (0, 0, app.path()));
             entry.0 = entry.0.saturating_add(bytes);
             entry.1 = entry.1.saturating_add(files);
         }
@@ -254,6 +255,12 @@ pub enum CleanupError {
     },
 }
 
+/// # Errors
+///
+/// Returns [`CleanupError::Unavailable`] if `cache_root` can't be stat'd or
+/// canonicalized, [`CleanupError::UnsafeRoot`] if it is not a plain
+/// directory, or [`CleanupError::Io`] if listing its children or stat'ing
+/// one fails.
 pub fn preview_cache_cleanup(cache_root: &Path) -> Result<CleanupPreview, CleanupError> {
     let root_meta = std::fs::symlink_metadata(cache_root).map_err(|_| CleanupError::Unavailable)?;
     if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
@@ -290,7 +297,9 @@ pub fn preview_cache_cleanup(cache_root: &Path) -> Result<CleanupPreview, Cleanu
             kind,
             device: meta.dev(),
             inode: meta.ino(),
-            modified_ns: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
+            modified_ns: i128::from(meta.mtime())
+                .saturating_mul(1_000_000_000)
+                .saturating_add(i128::from(meta.mtime_nsec())),
         });
     }
     items.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.path.cmp(&b.path)));
@@ -302,6 +311,13 @@ pub fn preview_cache_cleanup(cache_root: &Path) -> Result<CleanupPreview, Cleanu
     })
 }
 
+/// # Errors
+///
+/// Returns [`CleanupError::UnsafeRoot`] if the cache root moved since the
+/// preview, [`CleanupError::Escaped`] if a selected item is no longer a
+/// direct child of it, [`CleanupError::Changed`] if a selected item's
+/// identity or mtime no longer matches the preview, or [`CleanupError::Io`]
+/// if removing it fails.
 pub fn apply_cleanup(
     preview: &CleanupPreview,
     selected: &[usize],
@@ -326,7 +342,9 @@ pub fn apply_cleanup(
         }
         let meta = std::fs::symlink_metadata(&item.path)
             .map_err(|_| CleanupError::Changed(item.path.clone()))?;
-        let modified_ns = i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec());
+        let modified_ns = i128::from(meta.mtime())
+            .saturating_mul(1_000_000_000)
+            .saturating_add(i128::from(meta.mtime_nsec()));
         if meta.dev() != item.device
             || meta.ino() != item.inode
             || modified_ns != item.modified_ns
@@ -343,7 +361,7 @@ pub fn apply_cleanup(
             path: item.path.clone(),
             source: e,
         })?;
-        report.removed += 1;
+        report.removed = report.removed.saturating_add(1);
         report.freed_bytes = report.freed_bytes.saturating_add(item.bytes);
     }
     Ok(report)

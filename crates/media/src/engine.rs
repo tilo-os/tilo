@@ -35,7 +35,8 @@ const SYNTH_H: u32 = 270;
 /// pinned `Instant` base keeps it cheap and immune to wall-clock jumps.
 fn mono_now_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
-    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+    let elapsed_ms = START.get_or_init(Instant::now).elapsed().as_millis();
+    u64::try_from(elapsed_ms).unwrap_or(u64::MAX)
 }
 
 /// A collaborative, source-agnostic media engine. Construct with [`Self::new`],
@@ -113,12 +114,12 @@ impl MediaEngine {
     /// duration surfaces on the next [`Self::poll`] as
     /// [`MediaEvent::DurationKnown`].
     pub fn open(&mut self, source: Source) {
-        self.source = Some(source.clone());
         match &mut self.backend {
             Backend::Synth(s) => s.open(&source, self.volume),
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.open(&source, self.volume),
         }
+        self.source = Some(source);
     }
 
     /// Start (or resume) playback.
@@ -283,6 +284,13 @@ impl Default for MediaEngine {
 // Synthesized fallback backend
 // =====================================================================
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "opened/playing/ended/announced_duration are independent flags on \
+              distinct concerns (source loaded, transport running, stream \
+              finished, one-shot event emitted), not a state machine that would \
+              collapse into an enum"
+)]
 struct SynthState {
     /// Whether a source has been opened. Until it has, the backend produces no
     /// frame at all so a freshly launched player shows a clean empty surface
@@ -343,7 +351,9 @@ impl SynthState {
         self.prefetch = match source.open_reader() {
             Ok(reader) => {
                 let total = source.byte_len();
-                Some(Prefetcher::spawn(reader, total, 256 * 1024, 64 * 1024).progress())
+                Prefetcher::spawn(reader, total, 256 * 1024, 64 * 1024)
+                    .ok()
+                    .map(|p| p.progress())
             }
             Err(_) => None,
         };
@@ -426,10 +436,25 @@ impl SynthState {
     /// drifting hue gradient with diagonal content stripes and a bright scan
     /// bar at the playhead fraction, so a capture unmistakably shows a moving
     /// picture and the correct progress.
+    #[allow(
+        clippy::many_single_char_names,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        clippy::arithmetic_side_effects,
+        reason = "pixel maths for the synthesized test pattern: x/y/w/h/r/g/b are \
+                  conventional single-letter names for this domain; scan_x is \
+                  bounded to 0..w by frac's 0.0..=1.0 clamp; position/duration \
+                  are millisecond counts far inside f64's exact-integer range for \
+                  any real playback session; and the RGB channel casts \
+                  intentionally wrap mod 256 to produce the cyclic hue-drift the \
+                  doc comment above describes, not a truncation bug"
+    )]
     fn render_frame(&mut self) {
         let w = SYNTH_W as usize;
         let h = SYNTH_H as usize;
-        let mut rgba = vec![0u8; w * h * 4];
+        let row_bytes = w.saturating_mul(4);
+        let mut rgba = vec![0u8; row_bytes.saturating_mul(h)];
         let frac = if self.duration > 0 {
             (self.position as f64 / self.duration as f64).clamp(0.0, 1.0)
         } else {
@@ -437,29 +462,32 @@ impl SynthState {
         };
         let scan_x = (frac * (w as f64 - 1.0)) as usize;
         let hue_shift = (self.position / 40) as usize;
-        for y in 0..h {
-            for x in 0..w {
-                let i = (y * w + x) * 4;
+        for (y, row) in rgba.chunks_exact_mut(row_bytes).enumerate() {
+            for (x, px) in row.chunks_exact_mut(4).enumerate() {
+                let Ok(px): Result<&mut [u8; 4], _> = px.try_into() else {
+                    continue;
+                };
                 // Base gradient: x drives red/green, y drives blue; hue_shift
                 // slides it so the pattern visibly animates over time.
-                let r = (((x + hue_shift) * 255) / w) as u8;
-                let g = ((y * 255) / h) as u8;
-                let b = (((x + y + hue_shift) * 255) / (w + h)) as u8;
+                let r = ((x.wrapping_add(hue_shift).wrapping_mul(255)) / w) as u8;
+                let g = ((y.wrapping_mul(255)) / h) as u8;
+                let b = ((x.wrapping_add(y).wrapping_add(hue_shift).wrapping_mul(255))
+                    / w.wrapping_add(h)) as u8;
                 // Diagonal content stripes for texture.
-                let stripe = if ((x + y + hue_shift) / 24).is_multiple_of(2) {
-                    24
+                let stripe = if (x.wrapping_add(y).wrapping_add(hue_shift) / 24).is_multiple_of(2) {
+                    24u8
                 } else {
-                    0
+                    0u8
                 };
-                rgba[i] = r.saturating_add(stripe);
-                rgba[i + 1] = g;
-                rgba[i + 2] = b;
-                rgba[i + 3] = 255;
+                px[0] = r.wrapping_add(stripe);
+                px[1] = g;
+                px[2] = b;
+                px[3] = 255;
                 // Bright scan bar at the playhead.
                 if x.abs_diff(scan_x) <= 1 {
-                    rgba[i] = 255;
-                    rgba[i + 1] = 255;
-                    rgba[i + 2] = 255;
+                    px[0] = 255;
+                    px[1] = 255;
+                    px[2] = 255;
                 }
             }
         }
@@ -573,14 +601,14 @@ mod gst_backend {
             self.playing
         }
 
-        pub fn seek(&mut self, ms: u64) {
+        pub fn seek(&self, ms: u64) {
             let _ = self.playbin.seek_simple(
                 gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
                 gst::ClockTime::from_mseconds(ms),
             );
         }
 
-        pub fn set_volume(&mut self, v: f32) {
+        pub fn set_volume(&self, v: f32) {
             self.playbin.set_property("volume", f64::from(v));
         }
 
@@ -623,7 +651,7 @@ mod gst_backend {
                 use gst::MessageView;
                 match msg.view() {
                     MessageView::Buffering(b) => {
-                        let pct = b.percent().clamp(0, 100) as u8;
+                        let pct = u8::try_from(b.percent().clamp(0, 100)).unwrap_or(100);
                         self.buffering = pct;
                         if self.last_buffering != Some(pct) {
                             self.last_buffering = Some(pct);
@@ -678,16 +706,17 @@ mod gst_backend {
 
         let w = info.width() as usize;
         let h = info.height() as usize;
-        let stride = info.stride()[0] as usize;
+        let stride = usize::try_from(*info.stride().first()?).ok()?;
         let data = frame.plane_data(0).ok()?;
-        let row = w * 4;
-        if stride < row || data.len() < stride * h {
+        let row = w.checked_mul(4)?;
+        if stride < row || data.len() < stride.checked_mul(h)? {
             return None;
         }
-        let mut rgba = Vec::with_capacity(row * h);
+        let mut rgba = Vec::with_capacity(row.checked_mul(h)?);
         for y in 0..h {
-            let start = y * stride;
-            rgba.extend_from_slice(&data[start..start + row]);
+            let start = y.checked_mul(stride)?;
+            let end = start.checked_add(row)?;
+            rgba.extend_from_slice(data.get(start..end)?);
         }
         Some(VideoFrame::new(info.width(), info.height(), rgba, pts_ms))
     }

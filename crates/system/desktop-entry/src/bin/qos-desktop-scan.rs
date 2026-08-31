@@ -10,10 +10,20 @@
 use std::process::ExitCode;
 
 use desktop_entry::launch::{LaunchEnv, plan};
-use desktop_entry::scan::{CURRENT_DESKTOP, application_dirs, scan_dirs};
+use desktop_entry::scan::{CURRENT_DESKTOP, Scan, application_dirs, scan_dirs};
 
-fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+/// What `parse_args` found: either the flags to run with, or an outcome
+/// (help printed, a usage error) that ends the program right away.
+enum Args {
+    Run {
+        show_exec: bool,
+        filter: Option<String>,
+        plan_id: Option<String>,
+    },
+    Exit(ExitCode),
+}
+
+fn parse_args(args: &[String]) -> Args {
     let mut show_exec = false;
     let mut filter: Option<String> = None;
     let mut plan_id: Option<String> = None;
@@ -24,55 +34,84 @@ fn main() -> ExitCode {
             "--exec" => show_exec = true,
             "--plan" => {
                 if let Some(id) = it.next() {
-                    plan_id = Some(id.clone())
+                    plan_id = Some(id.clone());
                 } else {
                     eprintln!("--plan needs a desktop-file id");
-                    return ExitCode::from(2);
+                    return Args::Exit(ExitCode::from(2));
                 }
             }
             "-h" | "--help" => {
                 print_help();
-                return ExitCode::SUCCESS;
+                return Args::Exit(ExitCode::SUCCESS);
             }
             other if other.starts_with('-') => {
                 eprintln!("unknown flag {other}");
                 print_help();
-                return ExitCode::from(2);
+                return Args::Exit(ExitCode::from(2));
             }
             other => filter = Some(other.to_lowercase()),
         }
     }
+    Args::Run {
+        show_exec,
+        filter,
+        plan_id,
+    }
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (show_exec, filter, plan_id) = match parse_args(&args) {
+        Args::Run {
+            show_exec,
+            filter,
+            plan_id,
+        } => (show_exec, filter, plan_id),
+        Args::Exit(code) => return code,
+    };
 
     let dirs = application_dirs();
     let scan = scan_dirs(&dirs, &[CURRENT_DESKTOP.to_string()]);
 
     if let Some(id) = plan_id {
-        let Some(entry) = scan.find(&id) else {
-            eprintln!("no entry with desktop-file id {id}");
-            return ExitCode::from(1);
-        };
-        match plan(entry, &LaunchEnv::default()) {
-            Ok(launch) => {
-                println!("id        : {}", launch.desktop_id);
-                println!("name      : {}", launch.display_name);
-                println!("source    : {}", launch.source.label());
-                println!("confined  : {}", launch.is_confined());
-                println!("program   : {}", launch.program.display());
-                println!("args      : {:?}", launch.args);
-                println!("windows   : {:?}", launch.window_identities);
-                println!("env       :");
-                for (k, v) in &launch.env {
-                    println!("  {k}={v}");
-                }
-                return ExitCode::SUCCESS;
-            }
-            Err(e) => {
-                eprintln!("cannot launch {id}: {e}");
-                return ExitCode::from(1);
-            }
-        }
+        return print_plan(&scan, &id);
     }
 
+    print_listing(&scan, show_exec, filter.as_deref());
+    ExitCode::SUCCESS
+}
+
+/// The `--plan <id>` output: the exact argv and environment a launch would use.
+fn print_plan(scan: &Scan, id: &str) -> ExitCode {
+    let Some(entry) = scan.find(id) else {
+        eprintln!("no entry with desktop-file id {id}");
+        return ExitCode::from(1);
+    };
+    match plan(entry, &LaunchEnv::default()) {
+        Ok(launch) => {
+            println!("id        : {}", launch.desktop_id);
+            println!("name      : {}", launch.display_name);
+            println!("source    : {}", launch.source.label());
+            println!("confined  : {}", launch.is_confined());
+            println!("program   : {}", launch.program.display());
+            println!("args      : {:?}", launch.args);
+            println!("windows   : {:?}", launch.window_identities);
+            println!("env       :");
+            for (k, v) in &launch.env {
+                println!("  {k}={v}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("cannot launch {id}: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// The default output: the search path, every launchable entry (optionally filtered), and the
+/// decline counts.
+fn print_listing(scan: &Scan, show_exec: bool, filter: Option<&str>) {
     println!("search path (precedence order):");
     for dir in &scan.dirs {
         let exists = if dir.is_dir() { "" } else { "   (absent)" };
@@ -83,7 +122,7 @@ fn main() -> ExitCode {
     let shown: Vec<_> = scan
         .entries
         .iter()
-        .filter(|e| match &filter {
+        .filter(|e| match filter {
             None => true,
             Some(needle) => {
                 e.name.to_lowercase().contains(needle) || e.id.to_lowercase().contains(needle)
@@ -109,7 +148,7 @@ fn main() -> ExitCode {
     }
 
     println!();
-    match &filter {
+    match filter {
         Some(needle) => println!(
             "{} launchable application(s) matching {needle:?}, out of {}",
             shown.len(),
@@ -132,7 +171,6 @@ fn main() -> ExitCode {
         s.unparseable,
         s.files_seen,
     );
-    ExitCode::SUCCESS
 }
 
 fn print_help() {

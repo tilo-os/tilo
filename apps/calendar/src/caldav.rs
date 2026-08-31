@@ -266,8 +266,11 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
     use crate::model::Recurrence;
     use chrono::{Duration, NaiveDateTime, NaiveTime};
 
+    // Every call below passes a literal, always-valid (h, m) pair; the
+    // fallback to midnight only matters if that ever stops being true, and
+    // even then a wrong sample time beats panicking the whole sync.
     let at = |date: NaiveDate, h: u32, m: u32| -> NaiveDateTime {
-        date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap())
+        date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap_or(NaiveTime::MIN))
     };
     let d = |delta: i64| today + Duration::days(delta);
 
@@ -454,13 +457,12 @@ mod live {
     pub fn push_all_live(
         jobs: &[(CalDavConfig, RemoteCalendar, super::Event)],
     ) -> Vec<crate::model::Id> {
-        let client = match reqwest::blocking::Client::builder()
+        let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
             .user_agent("qOS-Calendar/0.1")
             .build()
-        {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
+        else {
+            return Vec::new();
         };
         let mut pushed = Vec::new();
         for (config, cal, event) in jobs {
@@ -487,13 +489,12 @@ mod live {
     pub fn delete_all_live(
         jobs: &[(CalDavConfig, RemoteCalendar, crate::model::Id)],
     ) -> Vec<crate::model::Id> {
-        let client = match reqwest::blocking::Client::builder()
+        let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
             .user_agent("qOS-Calendar/0.1")
             .build()
-        {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
+        else {
+            return Vec::new();
         };
         let mut deleted = Vec::new();
         for (config, cal, uid) in jobs {

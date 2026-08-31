@@ -128,6 +128,17 @@ pub(super) struct TrackColumns {
     pub dur: f64,
 }
 
+/// Per-row boolean state for [`MusicApp::draw_track_row_content`]: whether
+/// this row is the current track, hovered, has room for the album column,
+/// and shows a numbered (vs. blank) leading index column.
+#[derive(Clone, Copy)]
+struct TrackRowFlags {
+    is_current: bool,
+    hovered: bool,
+    show_album: bool,
+    number_col: bool,
+}
+
 pub(super) fn track_row_columns(left: f64, right: f64, number_col: bool) -> TrackColumns {
     let dur = right - 56.0;
     let dl = right - 96.0;
@@ -1895,7 +1906,7 @@ impl MusicApp {
             self.draw_home_section_tile_art(
                 scene, t, tr, c, item, cx, cy, card_w, card_h, art_rect, &track_ids, &mut ti,
             );
-            self.draw_home_section_tile_labels(scene, t, tr, c, item, cx, cy, card_w);
+            Self::draw_home_section_tile_labels(scene, t, tr, c, item, cx, cy, card_w);
         }
         let rows = section.items.len().div_ceil(cols).max(1);
         y + rows as f64 * (card_h + gap)
@@ -1976,7 +1987,6 @@ impl MusicApp {
     /// Title + subtitle beneath a Home tile (centred for artists, left-aligned
     /// otherwise).
     fn draw_home_section_tile_labels(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -2423,8 +2433,25 @@ impl MusicApp {
             }
             if rr.y1 >= body.y0 && rr.y0 <= body.y1 {
                 self.draw_track_row_content(
-                    scene, t, tr, c, y, row_h, left, right, i, row_count, tk, is_current, hovered,
-                    show_album, number_col, playlist, &cols,
+                    scene,
+                    t,
+                    tr,
+                    c,
+                    y,
+                    row_h,
+                    left,
+                    right,
+                    i,
+                    row_count,
+                    tk,
+                    TrackRowFlags {
+                        is_current,
+                        hovered,
+                        show_album,
+                        number_col,
+                    },
+                    playlist,
+                    &cols,
                 );
             }
             y += row_h;
@@ -2448,13 +2475,16 @@ impl MusicApp {
         i: usize,
         row_count: usize,
         tk: &TrackDisp,
-        is_current: bool,
-        hovered: bool,
-        show_album: bool,
-        number_col: bool,
+        flags: TrackRowFlags,
         playlist: Option<&str>,
         cols: &TrackColumns,
     ) {
+        let TrackRowFlags {
+            is_current,
+            hovered,
+            show_album,
+            number_col,
+        } = flags;
         let (text_x, album_x, dl_x, dur_x, like_x) =
             (cols.text, cols.album, cols.dl, cols.dur, cols.like);
         self.draw_track_row_index(
@@ -2859,7 +2889,7 @@ impl MusicApp {
     /// The cover/avatar, kind label, title and subtitle. Returns the x the
     /// action-button row starts at.
     fn draw_detail_header_art_and_text(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -3551,7 +3581,7 @@ impl MusicApp {
 
         y = self.draw_artist_detail_discography(scene, t, tr, c, body, y, page);
         y = self.draw_artist_detail_related(scene, t, tr, c, body, y, page);
-        self.draw_artist_detail_bio(scene, t, tr, c, body, y, page)
+        Self::draw_artist_detail_bio(scene, t, tr, c, body, y, page)
     }
 
     /// Discography, sectioned by release type. Full albums first, then the
@@ -3644,7 +3674,6 @@ impl MusicApp {
     /// wraps manually to show the whole bio across several lines), capped at
     /// a readable number of lines, with an optional Wikipedia link.
     fn draw_artist_detail_bio(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -4112,7 +4141,7 @@ impl MusicApp {
     /// The "Now playing" card above the up-next list. Returns the y below it
     /// (unchanged if nothing is playing).
     fn draw_queue_now_playing(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -4603,7 +4632,7 @@ impl MusicApp {
             .clone()
             .and_then(|id| self.gather_tracks(&[id]).into_iter().next());
         let Some(tk) = cur else {
-            self.draw_lyrics_no_track(scene, t, tr, c, body);
+            Self::draw_lyrics_no_track(scene, t, tr, c, body);
             return bottom;
         };
 
@@ -4625,7 +4654,6 @@ impl MusicApp {
 
     /// "Play a track to see its lyrics." — no track is playing at all.
     fn draw_lyrics_no_track(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -4659,7 +4687,7 @@ impl MusicApp {
         body: Rect,
         top: f64,
     ) {
-        if !(self.lyrics_synced && !self.lyrics.is_empty()) {
+        if !self.lyrics_synced || self.lyrics.is_empty() {
             return;
         }
         let pad = 28.0;
@@ -4693,7 +4721,7 @@ impl MusicApp {
     /// centred column with the track title top-left. Returns the lyrics
     /// column region.
     fn draw_lyrics_now_playing(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,

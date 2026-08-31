@@ -65,10 +65,151 @@ async fn recv_delta(client: &RelayClient, what: &str) -> Vec<u8> {
             .unwrap_or_else(|| panic!("{what}: channel closed"));
         match env {
             Envelope::Delta { delta, .. } => return delta,
-            Envelope::Ready { .. } | Envelope::Pong => continue,
+            Envelope::Ready { .. } | Envelope::Pong => {}
             other => panic!("{what}: unexpected envelope {other:?}"),
         }
     }
+}
+
+/// Connect A and B to the relay at `addr`, subscribe both to `ws`, and
+/// drain their initial `Ready(ws, 0)` acks (nothing queued yet).
+async fn connect_and_subscribe(
+    addr: iroh_base::EndpointAddr,
+    user: &TestUser,
+    a: &crate::common::TestDevice,
+    b: &crate::common::TestDevice,
+    ws: u64,
+) -> (RelayClient, RelayClient) {
+    let ep_a = client_endpoint().await;
+    let a_client = RelayClient::connect(
+        ep_a,
+        addr.clone(),
+        user.user_pk,
+        a.cert.clone(),
+        a.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .expect("A connect");
+    let ep_b = client_endpoint().await;
+    let b_client = RelayClient::connect(
+        ep_b,
+        addr,
+        user.user_pk,
+        b.cert.clone(),
+        b.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .expect("B connect");
+
+    a_client
+        .send(Envelope::Subscribe { workspace_id: ws })
+        .unwrap();
+    b_client
+        .send(Envelope::Subscribe { workspace_id: ws })
+        .unwrap();
+    // Drain both Ready(ws, 0) acks (nothing queued yet).
+    for (cli, who) in [(&a_client, "A"), (&b_client, "B")] {
+        let env = tokio::time::timeout(Duration::from_secs(2), cli.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{who} Ready timeout"))
+            .expect("Ready channel closed");
+        assert!(
+            matches!(
+                env,
+                Envelope::Ready {
+                    workspace_id: w,
+                    pending_deltas: 0
+                } if w == ws
+            ),
+            "{who} expected Ready(WS,0), got {env:?}"
+        );
+    }
+    (a_client, b_client)
+}
+
+/// Unsubscribe B, then round-trip a Ping/Pong. The host processes a
+/// peer's stream in order, so receiving Pong proves the preceding
+/// Unsubscribe was fully applied — B is no longer a subscriber, so
+/// the next delta is guaranteed to be store-and-forwarded rather
+/// than racing a half-torn-down live channel.
+async fn take_b_offline(b_client: &RelayClient, ws: u64) {
+    b_client
+        .send(Envelope::Unsubscribe { workspace_id: ws })
+        .unwrap();
+    b_client.send(Envelope::Ping).unwrap();
+    let mut saw_pong = false;
+    for _ in 0..10 {
+        match tokio::time::timeout(Duration::from_secs(2), b_client.recv()).await {
+            Ok(Some(Envelope::Pong)) => {
+                saw_pong = true;
+                break;
+            }
+            Ok(Some(_)) => {}
+            _ => break,
+        }
+    }
+    assert!(saw_pong, "expected Pong confirming Unsubscribe was applied");
+}
+
+/// Reconnect B, subscribe, and let the flushed queued delta bring it back
+/// in sync with A — including the convergence assertions.
+async fn reconnect_b_and_catch_up(
+    addr: iroh_base::EndpointAddr,
+    user: &TestUser,
+    b: &crate::common::TestDevice,
+    ws: u64,
+    doc_a: &mut AutoCommit,
+    doc_b: &mut AutoCommit,
+) {
+    let ep_b2 = client_endpoint().await;
+    let b2 = RelayClient::connect(
+        ep_b2,
+        addr,
+        user.user_pk,
+        b.cert.clone(),
+        b.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .expect("B reconnect");
+    b2.send(Envelope::Subscribe { workspace_id: ws }).unwrap();
+
+    // The queued delta is flushed on subscribe; apply it to B's doc.
+    let got2 = recv_delta(&b2, "B catch-up delta").await;
+    doc_b.load_incremental(&got2).expect("B applies d2");
+
+    assert_eq!(read_str(doc_b, "title").as_deref(), Some("hello from A"));
+    assert_eq!(read_str(doc_b, "body").as_deref(), Some("second edit"));
+    assert_eq!(
+        doc_a.get_heads(),
+        doc_b.get_heads(),
+        "B must fully converge with A after catching up offline edits"
+    );
+}
+
+/// Number of `.delta` files currently queued in `dir`.
+fn count_delta_files(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |rd| {
+        rd.flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
+            .count()
+    })
+}
+
+/// Poll `pending_dir` until at least one `.delta` file is queued (or the
+/// retry budget runs out — the caller's own assertion reports that).
+async fn wait_for_queued_delta(pending_dir: &std::path::Path) -> usize {
+    let mut queued = 0;
+    for _ in 0..40 {
+        queued = count_delta_files(pending_dir);
+        if queued >= 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    queued
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -90,53 +231,8 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     .await;
     let addr = host.relay.node_addr();
 
-    // Both devices dial the host and subscribe.
-    let ep_a = client_endpoint().await;
-    let a_client = RelayClient::connect(
-        ep_a,
-        addr.clone(),
-        user.user_pk,
-        a.cert.clone(),
-        a.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .expect("A connect");
-    let ep_b = client_endpoint().await;
-    let b_client = RelayClient::connect(
-        ep_b,
-        addr.clone(),
-        user.user_pk,
-        b.cert.clone(),
-        b.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .expect("B connect");
-
-    a_client
-        .send(Envelope::Subscribe { workspace_id: WS })
-        .unwrap();
-    b_client
-        .send(Envelope::Subscribe { workspace_id: WS })
-        .unwrap();
-    // Drain both Ready(WS, 0) acks (nothing queued yet).
-    for (cli, who) in [(&a_client, "A"), (&b_client, "B")] {
-        let env = tokio::time::timeout(Duration::from_secs(2), cli.recv())
-            .await
-            .unwrap_or_else(|_| panic!("{who} Ready timeout"))
-            .expect("Ready channel closed");
-        assert!(
-            matches!(
-                env,
-                Envelope::Ready {
-                    workspace_id: WS,
-                    pending_deltas: 0
-                }
-            ),
-            "{who} expected Ready(WS,0), got {env:?}"
-        );
-    }
+    // Both devices dial the host, subscribe, and drain their initial Ready acks.
+    let (a_client, b_client) = connect_and_subscribe(addr.clone(), &user, &a, &b, WS).await;
 
     // ---- Live edit: A mutates its CRDT and publishes the delta. ----
     let mut doc_a = AutoCommit::new();
@@ -169,27 +265,7 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
     assert!(ghost.is_err(), "author must not receive its own delta");
 
     // ---- Take B offline, deterministically. ----
-    // Unsubscribe, then round-trip a Ping/Pong. The host processes a
-    // peer's stream in order, so receiving Pong proves the preceding
-    // Unsubscribe was fully applied — B is no longer a subscriber, so
-    // the next delta is guaranteed to be store-and-forwarded rather
-    // than racing a half-torn-down live channel.
-    b_client
-        .send(Envelope::Unsubscribe { workspace_id: WS })
-        .unwrap();
-    b_client.send(Envelope::Ping).unwrap();
-    let mut saw_pong = false;
-    for _ in 0..10 {
-        match tokio::time::timeout(Duration::from_secs(2), b_client.recv()).await {
-            Ok(Some(Envelope::Pong)) => {
-                saw_pong = true;
-                break;
-            }
-            Ok(Some(_)) => continue,
-            _ => break,
-        }
-    }
-    assert!(saw_pong, "expected Pong confirming Unsubscribe was applied");
+    take_b_offline(&b_client, WS).await;
     drop(b_client); // B's device is now fully offline.
 
     // ---- Offline edit: A edits again; delta must persist for B. ----
@@ -214,55 +290,18 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
         .join(WS.to_string())
         .join("pending")
         .join(&b_hex);
-    let count = |dir: &std::path::Path| {
-        std::fs::read_dir(dir).map_or(0, |rd| {
-            rd.flatten()
-                .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-                .count()
-        })
-    };
-    let mut queued = 0;
-    for _ in 0..40 {
-        queued = count(&pending_dir);
-        if queued >= 1 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    let queued = wait_for_queued_delta(&pending_dir).await;
     assert_eq!(
         queued, 1,
         "A's offline edit must be store-and-forwarded to disk for B"
     );
 
     // ---- B reconnects and catches up. ----
-    let ep_b2 = client_endpoint().await;
-    let b2 = RelayClient::connect(
-        ep_b2,
-        addr,
-        user.user_pk,
-        b.cert.clone(),
-        b.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .expect("B reconnect");
-    b2.send(Envelope::Subscribe { workspace_id: WS }).unwrap();
-
-    // The queued delta is flushed on subscribe; apply it to B's doc.
-    let got2 = recv_delta(&b2, "B catch-up delta").await;
-    doc_b.load_incremental(&got2).expect("B applies d2");
-
-    assert_eq!(read_str(&doc_b, "title").as_deref(), Some("hello from A"));
-    assert_eq!(read_str(&doc_b, "body").as_deref(), Some("second edit"));
-    assert_eq!(
-        doc_a.get_heads(),
-        doc_b.get_heads(),
-        "B must fully converge with A after catching up offline edits"
-    );
+    reconnect_b_and_catch_up(addr, &user, &b, WS, &mut doc_a, &mut doc_b).await;
 
     // Queue drains after delivery.
     assert_eq!(
-        count(&pending_dir),
+        count_delta_files(&pending_dir),
         0,
         "pending queue drains after B catches up"
     );

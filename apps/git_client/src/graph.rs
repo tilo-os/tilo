@@ -56,8 +56,8 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
     let mut edges: Vec<GraphEdge> = Vec::new();
     let mut max_lanes = 0usize;
 
-    for row in 0..commits.len() {
-        let id = commits[row].id.clone();
+    for (row, commit) in commits.iter_mut().enumerate() {
+        let id = commit.id.clone();
 
         // Find the lane reserved for this commit, if any.
         let mut my_lane = lanes.iter().position(|l| l.as_deref() == Some(id.as_str()));
@@ -71,13 +71,21 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
             lanes.push(None);
             lanes.len() - 1
         };
-        lane_of[row] = my_lane;
-        commits[row].lane = my_lane;
+        // `row` is the loop's own enumeration index, always in bounds for a
+        // vec sized to `commits.len()` above.
+        if let Some(slot) = lane_of.get_mut(row) {
+            *slot = my_lane;
+        }
+        commit.lane = my_lane;
         // This commit now occupies the lane; clear any further reservation
         // for itself (it's been consumed) before assigning parents.
-        lanes[my_lane] = None;
+        // `my_lane` came either from `position()` (bounded by construction)
+        // or from a fresh `push`, so it is always a valid index here.
+        if let Some(slot) = lanes.get_mut(my_lane) {
+            *slot = None;
+        }
 
-        let parents = commits[row].parents.clone();
+        let parents = commit.parents.clone();
         // Assign each parent to a lane. The first parent inherits this
         // commit's lane (keeps mainline straight); additional parents
         // (merges) branch off into the first free / new lane.
@@ -95,14 +103,14 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
             let to_lane = if let Some(l) = existing {
                 l
             } else if pi == 0 {
-                // First parent: keep our column.
-                lanes
-                    .get_mut(my_lane)
-                    .map(|slot| *slot = Some(parent.clone()));
+                // First parent: keep our column, growing the lane vec first
+                // if this is a fresh lane that hasn't been indexed into yet.
                 if my_lane >= lanes.len() {
                     lanes.resize(my_lane + 1, None);
                 }
-                lanes[my_lane] = Some(parent.clone());
+                if let Some(slot) = lanes.get_mut(my_lane) {
+                    *slot = Some(parent.clone());
+                }
                 my_lane
             } else {
                 // Merge parent: allocate a fresh lane.
@@ -113,7 +121,11 @@ pub fn layout(commits: &mut [Commit]) -> GraphLayout {
                     lanes.push(None);
                     lanes.len() - 1
                 };
-                lanes[l] = Some(parent.clone());
+                // `l` came either from `position()` or from a fresh `push`
+                // above, so it is always a valid index here.
+                if let Some(slot) = lanes.get_mut(l) {
+                    *slot = Some(parent.clone());
+                }
                 l
             };
 

@@ -68,6 +68,11 @@ fn app_whose_log_reader_left(role: &str, test_name: &str) -> ExitStatus {
 /// child. It never returns in the child — the write either kills it or
 /// `exit(0)` does — the caller's `return` on `true` is only a guard
 /// against that changing.
+#[allow(
+    clippy::exit,
+    reason = "the child process communicates whether the write killed it purely via exit code; \
+              this is the reproduction's whole point"
+)]
 fn played_child_role(role: &str, write: impl FnOnce()) -> bool {
     if std::env::var(ROLE).as_deref() != Ok(role) {
         return false;
@@ -155,6 +160,8 @@ fn with_stderr_pointed_at<R>(writer_fd: i32, body: impl FnOnce() -> R) -> R {
 
 #[test]
 fn diag_writes_the_line_when_stderr_works() {
+    use std::io::Read;
+
     let _guard = STDERR_SLOT
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -165,7 +172,6 @@ fn diag_writes_the_line_when_stderr_works() {
     });
     drop(writer);
 
-    use std::io::Read;
     let mut buf = [0u8; 256];
     let n = reader.read(&mut buf).expect("read the diagnostic back");
     assert_eq!(&buf[..n], b"[app] recv CRDTUpdate 64B\n");
@@ -177,6 +183,8 @@ fn diag_writes_the_line_when_stderr_works() {
 /// the other way an application loses the reader of its stderr.
 #[test]
 fn a_diagnostic_line_reaches_the_pipe_whole() {
+    use std::io::Read;
+
     let _guard = STDERR_SLOT
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -190,7 +198,6 @@ fn a_diagnostic_line_reaches_the_pipe_whole() {
     });
     unsafe { libc::close(writer_fd) };
 
-    use std::io::Read;
     let mut buf = [0u8; 256];
     let n = reader.read(&mut buf).expect("read the diagnostic back");
     let text = std::str::from_utf8(&buf[..n]).expect("the line is valid UTF-8");

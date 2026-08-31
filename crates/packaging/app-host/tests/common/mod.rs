@@ -91,9 +91,12 @@ pub fn write_app_payload_with_bulk(dir: &std::path::Path, bulk_kib: usize) -> st
     // Make the payload measurably-sized without stalling on IO —
     // fill a single "data" blob deterministically. Content is
     // non-repeating (so blob-store dedup can't skip the bytes).
-    let mut bulk = Vec::with_capacity(bulk_kib * 1024);
-    for i in 0..bulk_kib * 1024 {
-        bulk.push((i as u8).wrapping_mul(31));
+    let bulk_bytes = bulk_kib.saturating_mul(1024);
+    let mut bulk = Vec::with_capacity(bulk_bytes);
+    for i in 0..bulk_bytes {
+        // `i % 256` is always in 0..256, so this never falls back.
+        let low_byte = u8::try_from(i % 256).unwrap_or(0);
+        bulk.push(low_byte.wrapping_mul(31));
     }
     std::fs::write(dir.join("share/data.bin"), bulk)?;
     Ok(())

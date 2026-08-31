@@ -143,8 +143,10 @@ mod tests {
 
     #[test]
     fn lid_close_follows_policy() {
-        let mut p = PowerPolicy::default();
-        p.lid_close_action = PowerAction::Suspend;
+        let mut p = PowerPolicy {
+            lid_close_action: PowerAction::Suspend,
+            ..Default::default()
+        };
         assert_eq!(p.on_lid(true), Some(PowerAction::Suspend));
         p.lid_close_action = PowerAction::Lock;
         assert_eq!(p.on_lid(true), Some(PowerAction::Lock));
@@ -154,8 +156,10 @@ mod tests {
 
     #[test]
     fn power_key_follows_policy() {
-        let mut p = PowerPolicy::default();
-        p.power_key_action = PowerAction::Lock;
+        let mut p = PowerPolicy {
+            power_key_action: PowerAction::Lock,
+            ..Default::default()
+        };
         assert_eq!(p.on_power_key(), Some(PowerAction::Lock));
         p.power_key_action = PowerAction::Ignore;
         assert_eq!(p.on_power_key(), None);

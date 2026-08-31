@@ -56,17 +56,28 @@ impl PairingTranscript {
     /// SHA-512 for simplicity — the FROST cipher suite already pulls it in).
     /// UIs typically display the first 6 hex chars as a "fingerprint" the
     /// human cross-confirms with their other device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `self` cannot be canonically encoded
+    /// (effectively unreachable).
     pub fn compute_hash(&self) -> Result<[u8; 32], ThresholdError> {
-        // Canonicalise via postcard for byte-level determinism across machines.
-        let bytes = canonical_bytes(self)?;
         // Hash via sha2 (already a transitive dep).
         use sha2::Digest;
+
+        // Canonicalise via postcard for byte-level determinism across machines.
+        let bytes = canonical_bytes(self)?;
         let mut hasher = sha2::Sha512::new();
         hasher.update(b"qos-threshold-identity:pairing-transcript:v1");
         hasher.update(bytes);
         let full = hasher.finalize();
+        // SHA-512 output is always 64 bytes, so this never actually misses —
+        // `.get()` avoids trusting that rather than indexing blindly.
+        let head = full.get(..32).ok_or_else(|| {
+            ThresholdError::FrostInternal("SHA-512 output shorter than 32 bytes".to_string())
+        })?;
         let mut out = [0u8; 32];
-        out.copy_from_slice(&full[..32]);
+        out.copy_from_slice(head);
         Ok(out)
     }
 }
@@ -117,8 +128,8 @@ mod tests {
             from_share_index: 1,
             package_bytes: vec![1, 2, 3],
         };
-        let t1 = PairingTranscript::new(111111, vec![a.clone()]);
-        let t2 = PairingTranscript::new(222222, vec![a]);
+        let t1 = PairingTranscript::new(111_111, vec![a.clone()]);
+        let t2 = PairingTranscript::new(222_222, vec![a]);
         assert_ne!(t1.compute_hash().unwrap(), t2.compute_hash().unwrap());
     }
 }

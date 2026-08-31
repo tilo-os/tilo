@@ -138,8 +138,7 @@ pub fn role_permits(role: Role, _kind: ArtifactKind, op: OpClass) -> bool {
             OpClass::Govern | OpClass::Compaction | OpClass::Redact => false,
         },
         Role::Commenter => matches!(op, OpClass::Comment),
-        Role::Viewer => false,
-        Role::Denied => false,
+        Role::Viewer | Role::Denied => false,
     }
 }
 

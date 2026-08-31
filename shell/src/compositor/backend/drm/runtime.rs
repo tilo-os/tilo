@@ -801,10 +801,60 @@ impl DrmDispatchState {
     /// nested dev window's. Extracted from [`DrmRuntime::new`] for the same
     /// reason as [`Self::handle_session_event`]; this one dwarfed the rest
     /// of the constructor at ~160 lines on its own.
+    /// Handle one libinput event: pointer, keyboard, gestures and touch all
+    /// come through here, translated into winit-shaped `WindowEvent`s the
+    /// chrome handles — a bare-TTY keystroke takes the same path as a
+    /// nested dev window's. Extracted from [`DrmRuntime::new`] for the same
+    /// reason as [`Self::handle_session_event`]; this one dwarfed the rest
+    /// of the constructor at ~160 lines on its own.
     fn handle_libinput_event(&mut self, event: InputEvent<LibinputInputBackend>) {
         match event {
-            // A device appearing is the only moment libinput will
-            // accept its configuration (at startup and on real hot-plug) — the arm that makes persisted input settings reach the hardware at all.
+            InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } => {
+                self.handle_libinput_device_event(event);
+            }
+            InputEvent::PointerMotionAbsolute { .. }
+            | InputEvent::PointerMotion { .. }
+            | InputEvent::PointerButton { .. }
+            | InputEvent::PointerAxis { .. } => {
+                self.handle_libinput_pointer_event(event);
+            }
+            // Keyboard: run the libinput keycode through xkb to get a
+            // logical key + text, then enqueue a winit-shaped
+            // `KeyboardInput` (plus `ModifiersChanged` on a modifier flip)
+            // — the same wire the winit backend feeds, so `dispatch_event` handles DRM keystrokes identically to hosted-mode ones.
+            InputEvent::Keyboard { event } => {
+                let pressed = matches!(event.state(), KeyState::Pressed);
+                self.handle_keyboard_key(event.key_code(), pressed);
+            }
+            InputEvent::GestureSwipeBegin { .. }
+            | InputEvent::GestureSwipeUpdate { .. }
+            | InputEvent::GestureSwipeEnd { .. }
+            | InputEvent::GesturePinchBegin { .. }
+            | InputEvent::GesturePinchUpdate { .. }
+            | InputEvent::GesturePinchEnd { .. }
+            | InputEvent::GestureHoldBegin { .. }
+            | InputEvent::GestureHoldEnd { .. } => {
+                self.handle_libinput_gesture_event(event);
+            }
+            InputEvent::TouchDown { .. }
+            | InputEvent::TouchMotion { .. }
+            | InputEvent::TouchUp { .. }
+            | InputEvent::TouchCancel { .. }
+            | InputEvent::TouchFrame { .. } => {
+                self.handle_libinput_touch_event(event);
+            }
+            // Switches (lid, tablet mode) and tablet-tool events are handled elsewhere or not at all; unlike the gestures above they were never advertised to clients, so dropping them promises nothing undelivered.
+            _ => {}
+        }
+    }
+
+    /// `InputEvent::DeviceAdded`/`DeviceRemoved` half of
+    /// [`Self::handle_libinput_event`] — split out to keep that dispatcher
+    /// short. A device appearing is the only moment libinput will accept
+    /// its configuration (at startup and on real hot-plug) — the arm that
+    /// makes persisted input settings reach the hardware at all.
+    fn handle_libinput_device_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        match event {
             InputEvent::DeviceAdded { mut device } => {
                 self.configure_device(&mut device);
                 self.devices.push(device);
@@ -813,7 +863,15 @@ impl DrmDispatchState {
                 tracing::info!(device = device.name(), "DRM input: device removed");
                 self.devices.retain(|d| *d != device);
             }
-            // Absolute motion (usb-tablet/touch): map normalized coords through the output size to a pixel position.
+            _ => {}
+        }
+    }
+
+    /// `InputEvent::PointerMotionAbsolute`/`PointerMotion`/`PointerButton`/
+    /// `PointerAxis` half of [`Self::handle_libinput_event`] — split out to
+    /// keep that dispatcher short.
+    fn handle_libinput_pointer_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        match event {
             InputEvent::PointerMotionAbsolute { event } => {
                 let (w, h) = self.output_size;
                 let x = event.x_transformed(w.max(1));
@@ -853,16 +911,14 @@ impl DrmDispatchState {
                     self.push(BackendEvent::Input(mouse_wheel_event(dx, dy)));
                 }
             }
-            // Keyboard: run the libinput keycode through xkb to get a
-            // logical key + text, then enqueue a winit-shaped
-            // `KeyboardInput` (plus `ModifiersChanged` on a modifier flip)
-            // — the same wire the winit backend feeds, so `dispatch_event` handles DRM keystrokes identically to hosted-mode ones.
-            InputEvent::Keyboard { event } => {
-                let pressed = matches!(event.state(), KeyState::Pressed);
-                self.handle_keyboard_key(event.key_code(), pressed);
-            }
+            _ => {}
+        }
+    }
 
-            // ---- touchpad gestures ----
+    /// The touchpad-gesture arms of [`Self::handle_libinput_event`] — split
+    /// out to keep that dispatcher short.
+    fn handle_libinput_gesture_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        match event {
             InputEvent::GestureSwipeBegin { event } => {
                 self.handle_gesture(GestureEvent::SwipeBegin {
                     fingers: event.fingers(),
@@ -907,13 +963,18 @@ impl DrmDispatchState {
                     cancelled: event.cancelled(),
                 });
             }
+            _ => {}
+        }
+    }
 
-            // touchscreen
-            //
-            // Each touch point is delivered twice: once as a `wl_touch`
-            // event for real multi-touch clients, and once as pointer
-            // motion + a left click so the shell chrome (driven by the
-            // winit event stream, no touch path) responds like a click. Without the second half, a touchscreen can operate apps but not the desktop.
+    /// The touchscreen arms of [`Self::handle_libinput_event`] — split out
+    /// to keep that dispatcher short. Each touch point is delivered twice:
+    /// once as a `wl_touch` event for real multi-touch clients, and once as
+    /// pointer motion + a left click so the shell chrome (driven by the
+    /// winit event stream, no touch path) responds like a click. Without the
+    /// second half, a touchscreen can operate apps but not the desktop.
+    fn handle_libinput_touch_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        match event {
             InputEvent::TouchDown { event } => {
                 let (x, y) = touch_position(self, &event);
                 self.pointer = (x, y);
@@ -960,8 +1021,6 @@ impl DrmDispatchState {
             InputEvent::TouchFrame { .. } => {
                 self.push(BackendEvent::Touch(QosTouchEvent::Frame));
             }
-
-            // Switches (lid, tablet mode) and tablet-tool events are handled elsewhere or not at all; unlike the gestures above they were never advertised to clients, so dropping them promises nothing undelivered.
             _ => {}
         }
     }
@@ -1454,7 +1513,7 @@ impl DrmRuntime {
     /// Advance one display request before the KMS re-probe consumes its
     /// effective configuration. Validation uses the compositor-published
     /// descriptor set, never values supplied by Settings.
-    fn reconcile_display_transaction(&mut self) {
+    fn reconcile_display_transaction(&self) {
         use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
 
         let Some(mut transaction) = DisplayTransaction::load() else {
@@ -1869,7 +1928,7 @@ where
             path,
             OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
         )
-        .map_err(|e| format!("session.open({path:?}): errno={:?}", e.as_errno()))?;
+        .map_err(|e| format!("session.open({}): errno={:?}", path.display(), e.as_errno()))?;
     let device_fd = DrmDeviceFd::new(DeviceFd::from(fd));
     let dev_id_raw: u64 = device_fd.dev_id().map_err(|e| format!("dev_id: {e}"))?;
 

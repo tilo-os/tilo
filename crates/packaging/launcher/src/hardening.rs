@@ -133,7 +133,7 @@ fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
     subdirs.reverse();
     subdirs
         .into_iter()
-        .find_map(|sub| search_for(&sub, name, depth - 1))
+        .find_map(|sub| search_for(&sub, name, depth.saturating_sub(1)))
 }
 
 /// Decide the hardening for a package, reading the image's policy list.

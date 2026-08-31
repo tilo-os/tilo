@@ -477,7 +477,11 @@ fn dispatch_bench_event(
         // Alternate scroll direction every ~50 events so we
         // exercise both clamp-eats-it (at the edges) and
         // dirty-signal-fires paths.
-        let dy = if (i / 50) % 2 == 0 { -3.0 } else { 3.0 };
+        let dy = if (i / 50).is_multiple_of(2) {
+            -3.0
+        } else {
+            3.0
+        };
         dispatch(state, doc, &make_wheel(dy));
     } else if frozen {
         // Identical no-op event — see comment above.

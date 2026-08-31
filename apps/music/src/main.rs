@@ -306,6 +306,8 @@ fn probe_album(backend: &impl music::backend::MusicBackend, top: &music::backend
 /// Range-GET the resolved stream URL to prove it serves real media bytes.
 #[cfg(feature = "live")]
 fn verify_stream_http(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+
     println!("\n== independent HTTP verification (Range GET first 64 KiB) ==");
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
@@ -333,7 +335,6 @@ fn verify_stream_http(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(cr) = content_range {
         println!("   Content-Range: {cr}");
     }
-    use std::fmt::Write as _;
     let sig = bytes.iter().take(12).fold(String::new(), |mut acc, b| {
         let _ = write!(acc, "{b:02x} ");
         acc

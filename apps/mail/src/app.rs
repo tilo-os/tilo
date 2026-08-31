@@ -1658,6 +1658,10 @@ impl MailApp {
     /// and each [`TextInput`]'s own drawing). Part of [`Self::draw_setup`];
     /// returns the bottom edge of the SMTP-host row, which the footer's
     /// autoconfig hint sits just below.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct piece of already-computed layout/state the fields draw with; bundling them into a context struct would just move the same count into a field list"
+    )]
     fn draw_setup_fields(
         &mut self,
         scene: &mut Scene,
@@ -1751,6 +1755,21 @@ impl MailApp {
         lx: f64,
         last_mouse: Point,
     ) {
+        self.draw_setup_auth_pills(scene, t, tr, theme, lx, last_mouse);
+        self.draw_setup_oauth_button(scene, t, tr, theme, last_mouse);
+    }
+
+    /// The sign-in method pills (Password / OAuth) and their "Sign-in"
+    /// label. Part of [`Self::draw_setup_auth_method`].
+    fn draw_setup_auth_pills(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        lx: f64,
+        last_mouse: Point,
+    ) {
         let c = &theme.tokens.colors;
         // Sign-in method pills + label.
         for (rect, hit) in &self.overlay_hits {
@@ -1810,7 +1829,20 @@ impl MailApp {
                 TextWeight::Medium,
             );
         }
+    }
 
+    /// The OAuth sign-in button shown in place of the password field, with
+    /// its client-id availability note. Part of
+    /// [`Self::draw_setup_auth_method`].
+    fn draw_setup_oauth_button(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        last_mouse: Point,
+    ) {
+        let c = &theme.tokens.colors;
         // OAuth sign-in button (shown in place of the password field).
         for (rect, hit) in &self.overlay_hits {
             if !matches!(hit, OverlayHit::OAuthSignIn) {
@@ -1920,9 +1952,22 @@ impl MailApp {
         last_mouse: Point,
         smtp_row_bottom: f64,
     ) {
+        self.draw_setup_autoconfig_hint(scene, t, tr, theme, lx, smtp_row_bottom);
+        self.draw_setup_footer_buttons(scene, t, tr, theme, last_mouse);
+    }
+
+    /// The autoconfig hint / validation message between the server rows and
+    /// the button row. Part of [`Self::draw_setup_footer`].
+    fn draw_setup_autoconfig_hint(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        lx: f64,
+        smtp_row_bottom: f64,
+    ) {
         let c = &theme.tokens.colors;
-        // Autoconfig hint + validation message, between the server rows and the
-        // button row.
         let hint_y = smtp_row_bottom + 18.0;
         if let Some(msg) = &self.setup_error {
             Icon::Ban.draw(
@@ -1955,7 +2000,19 @@ impl MailApp {
                 None,
             );
         }
+    }
 
+    /// The Save / Cancel / Remove buttons at the bottom of the setup sheet.
+    /// Part of [`Self::draw_setup_footer`].
+    fn draw_setup_footer_buttons(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        last_mouse: Point,
+    ) {
+        let c = &theme.tokens.colors;
         // Save / Cancel.
         for (rect, hit) in &self.overlay_hits {
             match hit {
@@ -2391,7 +2448,7 @@ impl MailApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         node_id: NodeId,
@@ -2399,7 +2456,7 @@ impl MailApp {
     ) -> bool {
         let (consumed, action) =
             self.compose
-                .handle_event(event, scale_factor, modifiers, state, path, node_id, taffy);
+                .handle_event(event, scale_factor, &modifiers, state, path, node_id, taffy);
         match action {
             ComposeAction::Send => self.send_compose(state),
             ComposeAction::SaveDraft => self.save_compose_draft(state),
@@ -2661,7 +2718,7 @@ impl Widget for MailApp {
             && self.handle_compose_modal(
                 event,
                 scale_factor,
-                modifiers,
+                *modifiers,
                 state,
                 path,
                 node_id,

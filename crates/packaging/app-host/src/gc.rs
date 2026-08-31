@@ -52,6 +52,12 @@ impl GcReport {
 /// - `max_bytes == 0` → GC is disabled; returns `GcReport::empty()`.
 /// - The store's `Pinned` entries are never touched. If Pinned bytes
 ///   alone exceed `max_bytes` we return whatever we already freed.
+///
+/// # Errors
+///
+/// Returns an error if reading the store's total size or a candidate's
+/// registry state fails, or if removing a candidate fails for a reason
+/// other than it already being pinned or already gone.
 pub fn sweep(store: &Store, max_bytes: u64) -> Result<GcReport, StoreError> {
     if max_bytes == 0 {
         return Ok(GcReport::empty());
@@ -87,7 +93,7 @@ pub fn sweep(store: &Store, max_bytes: u64) -> Result<GcReport, StoreError> {
             // Pinned by the time we try to evict it. Just skip and
             // move on to the next candidate — do NOT surface this as
             // an error.
-            Err(StoreError::PinnedRemove(_) | StoreError::Unknown(_)) => continue,
+            Err(StoreError::PinnedRemove(_) | StoreError::Unknown(_)) => {}
             Err(other) => return Err(other),
         }
     }

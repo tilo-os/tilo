@@ -148,16 +148,16 @@ impl BackupsDoc {
         let d = RetentionPolicy::default();
         RetentionPolicy {
             hourly: Self::get_int(doc, root, "ret_hourly")
-                .unwrap_or(i64::from(d.hourly))
+                .unwrap_or_else(|| i64::from(d.hourly))
                 .max(0) as u32,
             daily: Self::get_int(doc, root, "ret_daily")
-                .unwrap_or(i64::from(d.daily))
+                .unwrap_or_else(|| i64::from(d.daily))
                 .max(0) as u32,
             weekly: Self::get_int(doc, root, "ret_weekly")
-                .unwrap_or(i64::from(d.weekly))
+                .unwrap_or_else(|| i64::from(d.weekly))
                 .max(0) as u32,
             monthly: Self::get_int(doc, root, "ret_monthly")
-                .unwrap_or(i64::from(d.monthly))
+                .unwrap_or_else(|| i64::from(d.monthly))
                 .max(0) as u32,
         }
     }

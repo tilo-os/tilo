@@ -300,7 +300,7 @@ impl SearchRegistry {
     /// Fan out `needle` to every provider whose id passes the scope
     /// filter. `wanted_kinds` filters results by kind; empty means "any
     /// kind" so a naive caller can just pass `&[]`.
-    pub fn query(&self, args: QueryArgs<'_>) -> Vec<SearchResult> {
+    pub fn query(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
         let QueryArgs {
             needle,
             scope,
@@ -309,7 +309,7 @@ impl SearchRegistry {
             chrome,
             doc,
             doc_root,
-        } = args;
+        } = *args;
         let effective_wanted: Vec<ResourceKind> = if wanted_kinds.is_empty() {
             self.registered_kinds()
         } else {
@@ -389,7 +389,7 @@ impl SearchRegistry {
     /// push a correctly-ranked app off the bottom. A lone group is exempt
     /// — narrowing to one kind means "show me all of these".
     pub fn query_grouped(&self, args: QueryArgs<'_>, row_budget: usize) -> Vec<KindGroup> {
-        let ranked = self.query(args);
+        let ranked = self.query(&args);
         let mut groups: Vec<KindGroup> = Vec::new();
         for r in ranked {
             match groups.last_mut() {
@@ -530,7 +530,7 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(QueryArgs {
+        let out = reg.query(&QueryArgs {
             needle: "x",
             scope: SearchScope::All,
             active_provider_id: None,
@@ -565,7 +565,7 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(QueryArgs {
+        let out = reg.query(&QueryArgs {
             needle: "x",
             scope: SearchScope::All,
             active_provider_id: None,
@@ -594,7 +594,7 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(QueryArgs {
+        let out = reg.query(&QueryArgs {
             needle: "x",
             scope: SearchScope::ActiveApp,
             active_provider_id: Some("notes"),
@@ -621,7 +621,7 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(QueryArgs {
+        let out = reg.query(&QueryArgs {
             needle: "x",
             scope: SearchScope::All,
             active_provider_id: None,
@@ -662,7 +662,7 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(QueryArgs {
+        let out = reg.query(&QueryArgs {
             needle: "calculator",
             scope: SearchScope::Workspace,
             active_provider_id: None,
@@ -728,7 +728,7 @@ mod tests {
             }));
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
-            let out = reg.query(QueryArgs {
+            let out = reg.query(&QueryArgs {
                 needle,
                 scope: SearchScope::Workspace,
                 active_provider_id: None,
@@ -777,7 +777,7 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(QueryArgs {
+        let out = reg.query(&QueryArgs {
             needle: "workspace",
             scope: SearchScope::Workspace,
             active_provider_id: None,
@@ -830,7 +830,7 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(QueryArgs {
+        let out = reg.query(&QueryArgs {
             needle: "a",
             scope: SearchScope::Workspace,
             active_provider_id: None,
@@ -900,7 +900,7 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(QueryArgs {
+        let out = reg.query(&QueryArgs {
             needle: "notes",
             scope: SearchScope::Workspace,
             active_provider_id: None,
@@ -959,7 +959,7 @@ mod tests {
             SearchScope::Workspace,
             SearchScope::ActiveApp,
         ] {
-            let out = reg.query(QueryArgs {
+            let out = reg.query(&QueryArgs {
                 needle: "calculator",
                 scope,
                 active_provider_id: None,
@@ -1078,7 +1078,7 @@ mod tests {
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
-        let out = reg.query(QueryArgs {
+        let out = reg.query(&QueryArgs {
             needle: "rs",
             scope: SearchScope::Workspace,
             active_provider_id: None,

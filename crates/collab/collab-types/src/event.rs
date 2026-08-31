@@ -161,6 +161,12 @@ impl ChannelEvent {
     /// `signature`. `RoleAttestation` signs over the embedded `Attestation`'s
     /// own `signing_bytes`, so the validator can re-verify both the outer
     /// event signature and the inner attestation signature independently.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if canonicalising the variant's view
+    /// fails (for `AttestationIssued`, this includes the embedded
+    /// attestation's own `signing_bytes`).
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         match self {
             ChannelEvent::Genesis {
@@ -170,145 +176,38 @@ impl ChannelEvent {
                 owner,
                 created_at,
                 signature: _,
-            } => {
-                #[derive(Serialize)]
-                struct View<'a> {
-                    tag: u8,
-                    channel_id: &'a ChannelId,
-                    space: &'a SpaceId,
-                    name: &'a str,
-                    owner: &'a Ed25519PublicKey,
-                    created_at: &'a SystemTime,
-                }
-                canonical_bytes(&View {
-                    tag: 0,
-                    channel_id,
-                    space,
-                    name,
-                    owner,
-                    created_at,
-                })
-            }
-            ChannelEvent::AttestationIssued(ra) => {
-                #[derive(Serialize)]
-                struct View<'a> {
-                    tag: u8,
-                    channel: &'a ChannelId,
-                    role: &'a Role,
-                    attestation_signing_bytes: Vec<u8>,
-                }
-                let inner = ra.attestation.signing_bytes()?;
-                canonical_bytes(&View {
-                    tag: 1,
-                    channel: &ra.channel,
-                    role: &ra.role,
-                    attestation_signing_bytes: inner,
-                })
-            }
+            } => genesis_signing_bytes(channel_id, space, name, owner, created_at),
+            ChannelEvent::AttestationIssued(ra) => attestation_issued_signing_bytes(ra),
             ChannelEvent::AttestationRevoked {
                 attestation,
                 signed_by,
                 signature: _,
-            } => {
-                #[derive(Serialize)]
-                struct View<'a> {
-                    tag: u8,
-                    attestation: &'a AttestationId,
-                    signed_by: &'a Ed25519PublicKey,
-                }
-                canonical_bytes(&View {
-                    tag: 2,
-                    attestation,
-                    signed_by,
-                })
-            }
+            } => attestation_revoked_signing_bytes(attestation, signed_by),
             ChannelEvent::OwnershipTransfer {
                 new_owner,
                 signed_by,
                 signature: _,
-            } => {
-                #[derive(Serialize)]
-                struct View<'a> {
-                    tag: u8,
-                    new_owner: &'a Ed25519PublicKey,
-                    signed_by: &'a Ed25519PublicKey,
-                }
-                canonical_bytes(&View {
-                    tag: 3,
-                    new_owner,
-                    signed_by,
-                })
-            }
+            } => ownership_transfer_signing_bytes(new_owner, signed_by),
             ChannelEvent::Rename {
                 new_name,
                 signed_by,
                 signature: _,
-            } => {
-                #[derive(Serialize)]
-                struct View<'a> {
-                    tag: u8,
-                    new_name: &'a str,
-                    signed_by: &'a Ed25519PublicKey,
-                }
-                canonical_bytes(&View {
-                    tag: 4,
-                    new_name,
-                    signed_by,
-                })
-            }
+            } => rename_signing_bytes(new_name, signed_by),
             ChannelEvent::SettingsUpdate {
                 delta,
                 signed_by,
                 signature: _,
-            } => {
-                #[derive(Serialize)]
-                struct View<'a> {
-                    tag: u8,
-                    delta: &'a ChannelSettingsDelta,
-                    signed_by: &'a Ed25519PublicKey,
-                }
-                canonical_bytes(&View {
-                    tag: 5,
-                    delta,
-                    signed_by,
-                })
-            }
+            } => settings_update_signing_bytes(delta, signed_by),
             ChannelEvent::MemberAdded {
                 welcome,
                 signed_by,
                 signature: _,
-            } => {
-                #[derive(Serialize)]
-                struct View<'a> {
-                    tag: u8,
-                    #[serde(with = "serde_bytes")]
-                    welcome: &'a [u8],
-                    signed_by: &'a Ed25519PublicKey,
-                }
-                canonical_bytes(&View {
-                    tag: 6,
-                    welcome,
-                    signed_by,
-                })
-            }
+            } => member_added_signing_bytes(welcome, signed_by),
             ChannelEvent::MemberRemoved {
                 removal,
                 signed_by,
                 signature: _,
-            } => {
-                #[derive(Serialize)]
-                struct View<'a> {
-                    tag: u8,
-                    #[serde(with = "serde_bytes")]
-                    removal: &'a [u8],
-                    signed_by: &'a Ed25519PublicKey,
-                }
-                canonical_bytes(&View {
-                    tag: 7,
-                    removal,
-                    signed_by,
-                })
-            }
+            } => member_removed_signing_bytes(removal, signed_by),
         }
     }
 
@@ -319,28 +218,185 @@ impl ChannelEvent {
         match self {
             ChannelEvent::Genesis { owner, .. } => *owner,
             ChannelEvent::AttestationIssued(ra) => ra.attestation.issued_by,
-            ChannelEvent::AttestationRevoked { signed_by, .. } => *signed_by,
-            ChannelEvent::OwnershipTransfer { signed_by, .. } => *signed_by,
-            ChannelEvent::Rename { signed_by, .. } => *signed_by,
-            ChannelEvent::SettingsUpdate { signed_by, .. } => *signed_by,
-            ChannelEvent::MemberAdded { signed_by, .. } => *signed_by,
-            ChannelEvent::MemberRemoved { signed_by, .. } => *signed_by,
+            ChannelEvent::AttestationRevoked { signed_by, .. }
+            | ChannelEvent::OwnershipTransfer { signed_by, .. }
+            | ChannelEvent::Rename { signed_by, .. }
+            | ChannelEvent::SettingsUpdate { signed_by, .. }
+            | ChannelEvent::MemberAdded { signed_by, .. }
+            | ChannelEvent::MemberRemoved { signed_by, .. } => *signed_by,
         }
     }
 
     /// The signature carried by this event variant.
     pub fn signature(&self) -> &Signature {
         match self {
-            ChannelEvent::Genesis { signature, .. } => signature,
+            ChannelEvent::Genesis { signature, .. }
+            | ChannelEvent::AttestationRevoked { signature, .. }
+            | ChannelEvent::OwnershipTransfer { signature, .. }
+            | ChannelEvent::Rename { signature, .. }
+            | ChannelEvent::SettingsUpdate { signature, .. }
+            | ChannelEvent::MemberAdded { signature, .. }
+            | ChannelEvent::MemberRemoved { signature, .. } => signature,
             ChannelEvent::AttestationIssued(ra) => &ra.attestation.signature,
-            ChannelEvent::AttestationRevoked { signature, .. } => signature,
-            ChannelEvent::OwnershipTransfer { signature, .. } => signature,
-            ChannelEvent::Rename { signature, .. } => signature,
-            ChannelEvent::SettingsUpdate { signature, .. } => signature,
-            ChannelEvent::MemberAdded { signature, .. } => signature,
-            ChannelEvent::MemberRemoved { signature, .. } => signature,
         }
     }
+}
+
+/// `Genesis`'s signing view (tag 0).
+fn genesis_signing_bytes(
+    channel_id: &ChannelId,
+    space: &SpaceId,
+    name: &str,
+    owner: &Ed25519PublicKey,
+    created_at: &SystemTime,
+) -> Result<Vec<u8>, CanonicalError> {
+    #[derive(Serialize)]
+    struct View<'a> {
+        tag: u8,
+        channel_id: &'a ChannelId,
+        space: &'a SpaceId,
+        name: &'a str,
+        owner: &'a Ed25519PublicKey,
+        created_at: &'a SystemTime,
+    }
+    canonical_bytes(&View {
+        tag: 0,
+        channel_id,
+        space,
+        name,
+        owner,
+        created_at,
+    })
+}
+
+/// `AttestationIssued`'s signing view (tag 1) — folds in the embedded
+/// attestation's own `signing_bytes` so both signatures are independently
+/// re-verifiable.
+fn attestation_issued_signing_bytes(ra: &RoleAttestation) -> Result<Vec<u8>, CanonicalError> {
+    #[derive(Serialize)]
+    struct View<'a> {
+        tag: u8,
+        channel: &'a ChannelId,
+        role: &'a Role,
+        attestation_signing_bytes: Vec<u8>,
+    }
+    let inner = ra.attestation.signing_bytes()?;
+    canonical_bytes(&View {
+        tag: 1,
+        channel: &ra.channel,
+        role: &ra.role,
+        attestation_signing_bytes: inner,
+    })
+}
+
+/// `AttestationRevoked`'s signing view (tag 2).
+fn attestation_revoked_signing_bytes(
+    attestation: &AttestationId,
+    signed_by: &Ed25519PublicKey,
+) -> Result<Vec<u8>, CanonicalError> {
+    #[derive(Serialize)]
+    struct View<'a> {
+        tag: u8,
+        attestation: &'a AttestationId,
+        signed_by: &'a Ed25519PublicKey,
+    }
+    canonical_bytes(&View {
+        tag: 2,
+        attestation,
+        signed_by,
+    })
+}
+
+/// `OwnershipTransfer`'s signing view (tag 3).
+fn ownership_transfer_signing_bytes(
+    new_owner: &Ed25519PublicKey,
+    signed_by: &Ed25519PublicKey,
+) -> Result<Vec<u8>, CanonicalError> {
+    #[derive(Serialize)]
+    struct View<'a> {
+        tag: u8,
+        new_owner: &'a Ed25519PublicKey,
+        signed_by: &'a Ed25519PublicKey,
+    }
+    canonical_bytes(&View {
+        tag: 3,
+        new_owner,
+        signed_by,
+    })
+}
+
+/// `Rename`'s signing view (tag 4).
+fn rename_signing_bytes(
+    new_name: &str,
+    signed_by: &Ed25519PublicKey,
+) -> Result<Vec<u8>, CanonicalError> {
+    #[derive(Serialize)]
+    struct View<'a> {
+        tag: u8,
+        new_name: &'a str,
+        signed_by: &'a Ed25519PublicKey,
+    }
+    canonical_bytes(&View {
+        tag: 4,
+        new_name,
+        signed_by,
+    })
+}
+
+/// `SettingsUpdate`'s signing view (tag 5).
+fn settings_update_signing_bytes(
+    delta: &ChannelSettingsDelta,
+    signed_by: &Ed25519PublicKey,
+) -> Result<Vec<u8>, CanonicalError> {
+    #[derive(Serialize)]
+    struct View<'a> {
+        tag: u8,
+        delta: &'a ChannelSettingsDelta,
+        signed_by: &'a Ed25519PublicKey,
+    }
+    canonical_bytes(&View {
+        tag: 5,
+        delta,
+        signed_by,
+    })
+}
+
+/// `MemberAdded`'s signing view (tag 6).
+fn member_added_signing_bytes(
+    welcome: &[u8],
+    signed_by: &Ed25519PublicKey,
+) -> Result<Vec<u8>, CanonicalError> {
+    #[derive(Serialize)]
+    struct View<'a> {
+        tag: u8,
+        #[serde(with = "serde_bytes")]
+        welcome: &'a [u8],
+        signed_by: &'a Ed25519PublicKey,
+    }
+    canonical_bytes(&View {
+        tag: 6,
+        welcome,
+        signed_by,
+    })
+}
+
+/// `MemberRemoved`'s signing view (tag 7).
+fn member_removed_signing_bytes(
+    removal: &[u8],
+    signed_by: &Ed25519PublicKey,
+) -> Result<Vec<u8>, CanonicalError> {
+    #[derive(Serialize)]
+    struct View<'a> {
+        tag: u8,
+        #[serde(with = "serde_bytes")]
+        removal: &'a [u8],
+        signed_by: &'a Ed25519PublicKey,
+    }
+    canonical_bytes(&View {
+        tag: 7,
+        removal,
+        signed_by,
+    })
 }
 
 #[cfg(test)]

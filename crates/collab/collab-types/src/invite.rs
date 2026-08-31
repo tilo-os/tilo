@@ -160,6 +160,11 @@ impl InviteToken {
 
     /// Verify this token's own signature against its declared `issuer`. Does
     /// not check the chain, narrowing, or expiry — see [`verify_chain`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InviteError::BadSignature`] if `signature` does not verify
+    /// against `issuer` over this token's canonical view.
     pub fn verify_signature(&self) -> Result<(), InviteError> {
         verify_event(&self.view(), &self.signature, &self.issuer).map_err(InviteError::BadSignature)
     }
@@ -167,6 +172,10 @@ impl InviteToken {
     /// (Re)sign this token in place with `sk`. Used by [`mint_root`] /
     /// [`attenuate`]; exposed so tests can prove [`verify_chain`] rejects a
     /// *validly-signed* widening, not merely a broken signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if canonicalising this token's view fails.
     pub fn sign_with(&mut self, sk: &ed25519_dalek::SigningKey) -> Result<(), CanonicalError> {
         self.signature = sign_event(&self.view(), sk)?;
         Ok(())
@@ -238,6 +247,11 @@ fn check_narrows(spec: &InviteSpec, parent: &InviteToken) -> Result<(), InviteEr
 /// Mint a **root** invite, signed by a workspace root authority. The
 /// signer must be a key the eventual verifier lists in its accepted root
 /// authorities. `parent` is `None`.
+///
+/// # Errors
+///
+/// Returns [`InviteError::Canonical`] if canonicalising the token's signed
+/// view fails.
 pub fn mint_root(
     spec: InviteSpec,
     authority_sk: &ed25519_dalek::SigningKey,
@@ -263,6 +277,12 @@ pub fn mint_root(
 /// widening ([`InviteError::Widens`]) or a non-holder signer
 /// ([`InviteError::NotHolder`]). The child links via the parent's
 /// signature so the chain is tamper-evident.
+///
+/// # Errors
+///
+/// Returns [`InviteError::NotHolder`] if `delegator_sk` doesn't derive
+/// `parent.subject`, [`InviteError::Widens`] if `spec` grants more than
+/// `parent`, or [`InviteError::Canonical`] if signing fails.
 pub fn attenuate(
     parent: &InviteToken,
     spec: InviteSpec,
@@ -295,6 +315,15 @@ pub fn attenuate(
 ///
 /// Returns the effective granted [`InviteToken`] (the last, tightest
 /// link) on success.
+///
+/// # Errors
+///
+/// Returns [`InviteError::BrokenChain`] if `chain` is empty or mis-linked,
+/// [`InviteError::UntrustedRoot`] if the root's issuer isn't in
+/// `root_authorities`, [`InviteError::BadSignature`] if any link's
+/// signature fails to verify, [`InviteError::Widens`] if a child grants
+/// more than its parent, or [`InviteError::Expired`] if any link has
+/// expired by `now`.
 pub fn verify_chain<'a>(
     chain: &'a [InviteToken],
     now: SystemTime,
@@ -316,10 +345,7 @@ pub fn verify_chain<'a>(
         return Err(InviteError::Expired);
     }
 
-    for i in 1..chain.len() {
-        let parent = &chain[i - 1];
-        let token = &chain[i];
-
+    for (parent, token) in chain.iter().zip(chain.iter().skip(1)) {
         // The delegator (this token's issuer) must be the parent's holder.
         if token.issuer != parent.subject {
             return Err(InviteError::BrokenChain(
@@ -351,5 +377,6 @@ pub fn verify_chain<'a>(
         }
     }
 
-    Ok(&chain[chain.len() - 1])
+    // `chain` was already confirmed non-empty above, so this always succeeds.
+    chain.last().ok_or(InviteError::BrokenChain("empty chain"))
 }

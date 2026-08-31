@@ -103,6 +103,9 @@ impl FeedsDoc {
 
     // --- writers ---------------------------------------------------------
 
+    /// # Panics
+    /// Panics if creating the folder's Automerge map object fails — not
+    /// expected under normal operation (see the `expect_used` allow below).
     #[allow(
         clippy::expect_used,
         reason = "creating a root-level Automerge map object cannot fail under \
@@ -123,6 +126,9 @@ impl FeedsDoc {
         ui::doc::put_if_changed(doc, &obj, "collapsed", f.collapsed);
     }
 
+    /// # Panics
+    /// Panics if creating the feed's Automerge map object fails — not
+    /// expected under normal operation (see the `expect_used` allow below).
     #[allow(
         clippy::expect_used,
         reason = "creating a root-level Automerge map object cannot fail under \
@@ -151,6 +157,9 @@ impl FeedsDoc {
         ui::doc::put_if_changed(doc, &obj, "kind", Self::kind_str(f.kind));
     }
 
+    /// # Panics
+    /// Panics if creating the article's Automerge map object fails — not
+    /// expected under normal operation (see the `expect_used` allow below).
     #[allow(
         clippy::expect_used,
         reason = "creating a root-level Automerge map object cannot fail under \

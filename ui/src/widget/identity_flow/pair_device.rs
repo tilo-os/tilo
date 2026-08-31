@@ -280,7 +280,7 @@ impl PairDeviceScreen {
                         ..
                     },
                 ..
-            } => self.handle_key_press(logical_key, text, handled),
+            } => self.handle_key_press(logical_key, text.as_ref(), handled),
             _ => ScreenOutcome::Stay,
         }
     }
@@ -326,7 +326,7 @@ impl PairDeviceScreen {
     fn handle_key_press(
         &mut self,
         logical_key: &Key,
-        text: &Option<SmolStr>,
+        text: Option<&SmolStr>,
         handled: &mut bool,
     ) -> ScreenOutcome {
         if self.payload_focus {

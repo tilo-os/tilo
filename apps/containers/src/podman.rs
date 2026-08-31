@@ -176,7 +176,7 @@ fn list_containers() -> Option<Vec<Container>> {
         return None;
     }
     let entries: Vec<PsEntry> = serde_json::from_slice(&out.stdout).ok()?;
-    let stats = collect_stats();
+    let stats_by_id = collect_stats();
     let mut containers: Vec<Container> = entries
         .into_iter()
         .map(|e| {
@@ -200,7 +200,7 @@ fn list_containers() -> Option<Vec<Container>> {
                     },
                 })
                 .collect();
-            let stat = stats
+            let stat = stats_by_id
                 .iter()
                 .find(|(cid, _)| e.id.starts_with(cid.as_str()) || cid.starts_with(&e.id))
                 .map(|(_, s)| *s)
@@ -295,13 +295,20 @@ fn parse_size(s: &str) -> u64 {
         .take_while(|c| c.is_ascii_digit() || *c == '.')
         .collect();
     let value: f64 = digits.parse().unwrap_or(0.0);
-    let unit: String = s[digits.len()..].trim().to_ascii_lowercase();
+    // `digits` was built from single-byte ASCII chars of `s`, so its byte
+    // length always lands on a char boundary in `s` — `.get()` never misses,
+    // it's just the panic-safe spelling of the slice.
+    let unit: String = s
+        .get(digits.len()..)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     let mult = match unit.as_str() {
-        "b" | "" => 1.0,
         "kb" | "kib" => 1024.0,
         "mb" | "mib" => 1024.0 * 1024.0,
         "gb" | "gib" => 1024.0 * 1024.0 * 1024.0,
         "tb" | "tib" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        // "b"/"" (bytes, no unit) and any unrecognised unit both mean "no scaling".
         _ => 1.0,
     };
     (value * mult) as u64
@@ -445,14 +452,15 @@ fn list_distroboxes() -> Vec<DistroBox> {
     // distrobox list is a `|`-delimited table: ID | NAME | STATUS | IMAGE
     for line in text.lines().skip(1) {
         let cols: Vec<&str> = line.split('|').map(str::trim).collect();
-        if cols.len() < 4 {
+        let (Some(name), Some(status_raw), Some(image)) = (cols.get(1), cols.get(2), cols.get(3))
+        else {
             continue;
-        }
+        };
         boxes.push(DistroBox {
-            name: cols[1].to_string(),
-            image: cols[3].to_string(),
-            status: ContainerStatus::parse(cols[2]),
-            status_detail: cols[2].to_string(),
+            name: (*name).to_string(),
+            image: (*image).to_string(),
+            status: ContainerStatus::parse(status_raw),
+            status_detail: (*status_raw).to_string(),
         });
     }
     boxes
@@ -463,6 +471,12 @@ fn list_distroboxes() -> Vec<DistroBox> {
 /// Run a lifecycle verb against a container by id. Returns the command's
 /// stderr on failure (for surfacing a toast); `Ok(())` on success or when no
 /// engine is present (the live UI re-probes after, which reflects reality).
+///
+/// # Errors
+///
+/// Returns `Err` with the command's stderr when podman is reachable but the
+/// verb itself fails — e.g. stopping or removing a container that no longer
+/// exists, or removing one still running without going through `Stop` first.
 pub fn run_action(action: Action, container_id: &str) -> Result<(), String> {
     if !engine_available() {
         return Ok(());
@@ -585,6 +599,12 @@ impl ImageAction {
 
 /// Remove a local image by id or reference. `force` removes even when a
 /// stopped container references it. Returns stderr on failure.
+///
+/// # Errors
+///
+/// Returns `Err` with the command's stderr when `podman rmi` fails — e.g.
+/// the image is still referenced by a container and `force` is `false`, or
+/// `reference` doesn't resolve to a local image.
 pub fn remove_image(reference: &str, force: bool) -> Result<(), String> {
     if !engine_available() {
         return Ok(());
@@ -599,6 +619,11 @@ pub fn remove_image(reference: &str, force: bool) -> Result<(), String> {
 }
 
 /// Tag an existing image with a new reference. Returns stderr on failure.
+///
+/// # Errors
+///
+/// Returns `Err` with the command's stderr when `podman tag` fails — e.g.
+/// `source` doesn't resolve to a local image.
 pub fn tag_image(source: &str, new_tag: &str) -> Result<(), String> {
     if !engine_available() {
         return Ok(());
@@ -628,6 +653,11 @@ pub fn inspect_image(reference: &str) -> String {
 // =====================================================================
 
 /// Create a named volume. Returns stderr on failure.
+///
+/// # Errors
+///
+/// Returns `Err` with the command's stderr when `podman volume create`
+/// fails — e.g. a volume with that name already exists.
 pub fn create_volume(name: &str) -> Result<(), String> {
     if !engine_available() {
         return Ok(());
@@ -639,6 +669,11 @@ pub fn create_volume(name: &str) -> Result<(), String> {
 
 /// Remove a named volume. `force` removes even when in use. Returns stderr
 /// on failure.
+///
+/// # Errors
+///
+/// Returns `Err` with the command's stderr when `podman volume rm` fails —
+/// e.g. the volume is still in use by a container and `force` is `false`.
 pub fn remove_volume(name: &str, force: bool) -> Result<(), String> {
     if !engine_available() {
         return Ok(());
@@ -669,7 +704,7 @@ pub enum StreamMsg {
 /// `tx`, finishing with [`StreamMsg::Done`] or [`StreamMsg::Failed`]. Runs
 /// to completion on the calling thread — callers spawn it in a worker so the
 /// UI thread never blocks. No-op-success offline.
-pub fn stream_command(args: &[String], tx: Sender<StreamMsg>) {
+pub fn stream_command(args: &[String], tx: &Sender<StreamMsg>) {
     if !engine_available() {
         let _ = tx.send(StreamMsg::Done);
         return;

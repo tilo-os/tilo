@@ -39,7 +39,7 @@ fn manifest_roundtrip() {
             .first()
             .unwrap()
             .byte_range,
-        Some((0, 0x300000))
+        Some((0, 0x30_0000))
     );
     let svc = m.sandbox.services.get("collab").unwrap();
     assert_eq!(svc.requirement, Requirement::Required);

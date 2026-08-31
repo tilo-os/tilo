@@ -43,7 +43,8 @@ use crate::chart;
 use crate::icon;
 use crate::interaction::{ContextMenu, EntryAction, PointerPress, SWIPE_COMMIT_DX};
 use crate::model::{
-    AirQuality, DayForecast, LocationId, SavedLocation, WeatherModel, WeatherSnapshot,
+    AirQuality, CurrentConditions, DayForecast, LocationId, SavedLocation, WeatherModel,
+    WeatherSnapshot,
 };
 use crate::net::{Request, Response};
 use crate::units::{self, Units};
@@ -93,7 +94,7 @@ struct Hotspot {
     action: OverAction,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum OverAction {
     SelectLocation(usize),
     MenuItem(usize, EntryAction),
@@ -104,6 +105,14 @@ enum OverAction {
 }
 
 /// All mutable weather state shared by the two panes and the root widget.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, orthogonal flag (a geocode request in flight, the \
+              detail pane reserving space for the Back affordance, the collapse chip offered \
+              this frame, a queued collapse toggle, and a pending CRDT write); they aren't a \
+              state machine, and grouping them would mean churning every field access across \
+              this widget and its panes for no behavioural gain"
+)]
 pub struct Core {
     pub model: WeatherModel,
     /// Display units — read from the shared Settings store (`region`), never
@@ -521,7 +530,7 @@ impl Core {
     /// (so arrowing to the second "Paris" adds the right one); a bare typed
     /// query (Enter with no highlight) falls back to the top match. Returns
     /// true when a place was actually added.
-    fn commit_search_pick(&mut self, value: String) -> bool {
+    fn commit_search_pick(&mut self, value: &str) -> bool {
         let picked = self
             .search_results
             .iter()
@@ -537,9 +546,16 @@ impl Core {
             return true;
         }
         // Enter while still loading: arm an immediate geocode so the field
-        // resolves to real matches rather than doing nothing.
+        // resolves to real matches rather than doing nothing. If the clock's
+        // too young for the debounce to backdate (never in practice outside
+        // a fresh boot), just start the debounce fresh from now instead of
+        // panicking.
         if !self.search_query.trim().is_empty() {
-            self.pending_query_at = Some(Instant::now().checked_sub(GEOCODE_DEBOUNCE).unwrap());
+            self.pending_query_at = Some(
+                Instant::now()
+                    .checked_sub(GEOCODE_DEBOUNCE)
+                    .unwrap_or_else(Instant::now),
+            );
         }
         false
     }
@@ -614,15 +630,35 @@ impl Core {
         // Solid surface — this is a content panel, not a floating drawer.
         scene.fill(Fill::NonZero, t, c.surfaces.base, None, &rect);
 
-        let x = rect.x0 + RP;
-        let w = (rect.width() - 2.0 * RP).max(80.0);
+        let left = rect.x0 + RP;
+        let width = (rect.width() - 2.0 * RP).max(80.0);
+        let list_top = self.draw_overview_search(scene, t, tr, theme, left, width, &mut hot);
+        self.draw_overview_list(rect, scene, t, tr, theme, left, width, list_top, &mut hot);
+        self.over_hotspots = hot;
+    }
 
-        // The compositor owns the window title / chrome, so this panel opens
-        // straight into its content: the search field, then the saved places.
-        // No self-drawn app-name header.
-        let sy = rect.y0 + 16.0;
+    /// The collapse chip (side-by-side only) + the shared search field. No
+    /// self-drawn app-name header — the compositor owns window chrome, so
+    /// this panel opens straight into its content. Returns the y the saved-
+    /// place list starts at.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus left/width/hot identify where to paint and where to record hit regions — a context struct would ripple across every draw_* method here, out of scope for this split"
+    )]
+    fn draw_overview_search(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        left: f64,
+        width: f64,
+        hot: &mut Vec<Hotspot>,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let sy = self.over_rect.y0 + 16.0;
         let sh = 38.0;
-        let mut field_w = w;
+        let mut field_w = width;
 
         // Collapse chip (side-by-side only) — tucks the list into a rail so
         // the forecast can use the full width. It sits at the search field's
@@ -630,7 +666,7 @@ impl Core {
         if self.overview_collapsible {
             let cb = 30.0;
             let cy = sy + (sh - cb) / 2.0;
-            let chip = Rect::new(x + w - cb, cy, x + w, cy + cb);
+            let chip = Rect::new(left + width - cb, cy, left + width, cy + cb);
             let hovered = chip.contains(self.last_mouse);
             let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
             scene.fill(
@@ -650,13 +686,13 @@ impl Core {
                 rect: chip,
                 action: OverAction::ToggleCollapse,
             });
-            field_w = (w - cb - 10.0).max(80.0);
+            field_w = (width - cb - 10.0).max(80.0);
         }
 
         // Search field — the shared Autocomplete (a real text field, its
         // suggestion overlay floats last). No hand-rolled buffer / caret / hit
         // rect here; the widget owns selection, clipboard, IME and theming.
-        let field_rect = Rect::new(x, sy, x + field_w, sy + sh);
+        let field_rect = Rect::new(left, sy, left + field_w, sy + sh);
         self.search_field_rect = field_rect;
         self.search.apply_layout_external(field_rect);
         let presence = PresenceCtx::empty();
@@ -666,22 +702,44 @@ impl Core {
         // matches render as a floating dropdown over it (drawn last), so the
         // list never jumps around while typing.
         let mut y = sy + sh + 16.0;
-
         text_left(
             scene,
             tr,
             "SAVED PLACES",
-            x,
+            left,
             y,
             10.0,
             TextWeight::Semibold,
             c.text_dim,
         );
         y += 22.0;
+        y
+    }
+
+    /// The scrolling chip list below the search field, its empty state, the
+    /// delete drop zone while reordering, the scroll indicator, and finally
+    /// the context menu + suggestion overlay (which must paint last so they
+    /// sit above the chips).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/left/width/list_top/hot identify where to paint and where to record hit regions — a context struct would ripple across every draw_* method here, out of scope for this split"
+    )]
+    fn draw_overview_list(
+        &mut self,
+        rect: Rect,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        left: f64,
+        width: f64,
+        list_top: f64,
+        hot: &mut Vec<Hotspot>,
+    ) {
+        let c = &theme.tokens.colors;
 
         // The chip list scrolls within the region below the header. While a
         // reorder is in flight the foot shows the Delete drop zone.
-        let list_top = y;
         let reorder = self.is_reorder_active();
         let list_bottom = if reorder {
             rect.y1 - 96.0 - 2.0 * RP
@@ -689,8 +747,8 @@ impl Core {
             rect.y1 - RP
         };
         let view_h = (list_bottom - list_top).max(0.0);
-        let n = self.model.locations.len();
-        let content_h = n as f64 * (CHIP_H + CHIP_GAP);
+        let count = self.model.locations.len();
+        let content_h = count as f64 * (CHIP_H + CHIP_GAP);
         self.over_max_scroll = (content_h - view_h).max(0.0);
         self.over_scroll = self.over_scroll.clamp(0.0, self.over_max_scroll);
         self.over_list_top = list_top - self.over_scroll;
@@ -703,7 +761,7 @@ impl Core {
         // Clip the scrolling list to its region.
         let clip = Rect::new(rect.x0, list_top - 2.0, rect.x1, list_bottom + 2.0);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
-        self.draw_chips(scene, t, tr, theme, x, w, &mut hot);
+        self.draw_chips(scene, t, tr, theme, left, width, hot);
         scene.pop_layer();
 
         if self.model.locations.is_empty() {
@@ -711,7 +769,7 @@ impl Core {
                 scene,
                 tr,
                 "No places yet — search above",
-                x,
+                left,
                 list_top + 8.0,
                 13.0,
                 TextWeight::Regular,
@@ -726,7 +784,7 @@ impl Core {
 
         // Scroll indicator.
         if self.over_max_scroll > 1.0 {
-            let tx = rect.x1 - 6.0;
+            let track_x = rect.x1 - 6.0;
             let track_h = list_bottom - list_top;
             let thumb_h = (track_h * (view_h / content_h)).clamp(24.0, track_h);
             let thumb_y =
@@ -736,28 +794,27 @@ impl Core {
                 t,
                 c.neutral[2].with_alpha_factor(0.6),
                 None,
-                &RoundedRect::new(tx, list_top, tx + 3.0, list_bottom, 1.5),
+                &RoundedRect::new(track_x, list_top, track_x + 3.0, list_bottom, 1.5),
             );
             scene.fill(
                 Fill::NonZero,
                 t,
                 c.text_dim.with_alpha_factor(0.7),
                 None,
-                &RoundedRect::new(tx, thumb_y, tx + 3.0, thumb_y + thumb_h, 1.5),
+                &RoundedRect::new(track_x, thumb_y, track_x + 3.0, thumb_y + thumb_h, 1.5),
             );
         }
 
         // Context menu paints last so it sits above the chips.
         if self.menu.is_some() {
-            self.draw_context_menu(scene, t, tr, theme, &mut hot);
+            self.draw_context_menu(scene, t, tr, theme, hot);
         }
 
         // The shared suggestion overlay floats over the list, topmost.
         if self.search.is_editing() {
+            let presence = PresenceCtx::empty();
             self.search.draw_overlay(scene, t, tr, theme, &presence);
         }
-
-        self.over_hotspots = hot;
     }
 
     /// The collapsed **rail**: a slim, glanceable column of the saved cities
@@ -778,6 +835,23 @@ impl Core {
         // The rail has no search field; drop any stale rect so a press can't
         // land on a phantom field from the previous (wide) layout.
         self.search_field_rect = Rect::ZERO;
+
+        let list_top = self.draw_rail_header(scene, t, theme, rect, &mut hot);
+        self.draw_rail_list(scene, t, tr, theme, rect, list_top, &mut hot);
+        self.over_hotspots = hot;
+    }
+
+    /// The rail's expand chip + the separator beneath it. Returns the y the
+    /// scrolling city column starts at.
+    fn draw_rail_header(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        rect: Rect,
+        hot: &mut Vec<Hotspot>,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
         let cx = f64::midpoint(rect.x0, rect.x1);
 
         // Expand chip.
@@ -817,97 +891,46 @@ impl Core {
             None,
             &Rect::new(rect.x0 + 10.0, sep_y, rect.x1 - 10.0, sep_y + 1.0),
         );
+        sep_y + 12.0
+    }
 
-        // Scrolling city column.
-        let list_top = sep_y + 12.0;
+    /// The scrolling city column: one slot per saved place (icon + temp),
+    /// the selection/hover highlight, and the scroll indicator.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/list_top/hot identify where to paint and where to record hit regions — a context struct would ripple across every draw_* method here, out of scope for this split"
+    )]
+    fn draw_rail_list(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        list_top: f64,
+        hot: &mut Vec<Hotspot>,
+    ) {
+        let c = &theme.tokens.colors;
+        let cx = f64::midpoint(rect.x0, rect.x1);
         let list_bottom = rect.y1 - 10.0;
         let view_h = (list_bottom - list_top).max(0.0);
-        let n = self.model.locations.len();
-        let content_h = n as f64 * RAIL_SLOT_H;
+        let count = self.model.locations.len();
+        let content_h = count as f64 * RAIL_SLOT_H;
         self.over_max_scroll = (content_h - view_h).max(0.0);
         self.over_scroll = self.over_scroll.clamp(0.0, self.over_max_scroll);
-        let top = list_top - self.over_scroll;
-        self.over_list_top = top;
+        let scrolled_top = list_top - self.over_scroll;
+        self.over_list_top = scrolled_top;
 
         let clip = Rect::new(rect.x0, list_top - 2.0, rect.x1, list_bottom + 2.0);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
         for (i, loc) in self.model.locations.iter().enumerate() {
-            let sy = top + i as f64 * RAIL_SLOT_H;
-            let slot = Rect::new(
-                rect.x0 + 6.0,
-                sy + 4.0,
-                rect.x1 - 6.0,
-                sy + RAIL_SLOT_H - 6.0,
-            );
-            let selected = i == self.model.selected;
-            let hov = slot.contains(self.last_mouse);
-            if selected {
-                let bg = lerp_color(c.surfaces.base, self.accent(theme), 0.18);
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    bg,
-                    None,
-                    &RoundedRect::from_rect(slot, 8.0),
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    self.accent(theme),
-                    None,
-                    &RoundedRect::new(slot.x0, slot.y0 + 6.0, slot.x0 + 3.0, slot.y1 - 6.0, 1.5),
-                );
-            } else if hov {
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    c.neutral[2],
-                    None,
-                    &RoundedRect::from_rect(slot, 8.0),
-                );
-            }
-            if let Some(snap) = self.model.snapshot_for(loc.id) {
-                let sky = Sky::from_code(snap.current.weather_code);
-                icon::draw_icon(
-                    scene,
-                    t,
-                    sky,
-                    snap.current.is_day,
-                    Rect::new(cx - 15.0, slot.y0 + 4.0, cx + 15.0, slot.y0 + 34.0),
-                    theme,
-                );
-                let temp = snap.temp_in(snap.current.temperature, self.units).round() as i64;
-                text_center(
-                    scene,
-                    tr,
-                    &format!("{temp}°"),
-                    cx,
-                    slot.y1 - 18.0,
-                    14.0,
-                    TextWeight::Bold,
-                    c.text_primary,
-                );
-            } else {
-                text_center(
-                    scene,
-                    tr,
-                    "—",
-                    cx,
-                    slot.y0 + 14.0,
-                    15.0,
-                    TextWeight::Regular,
-                    c.text_dim,
-                );
-            }
-            hot.push(Hotspot {
-                rect: slot,
-                action: OverAction::SelectLocation(i),
-            });
+            let sy = scrolled_top + i as f64 * RAIL_SLOT_H;
+            self.draw_rail_slot(scene, t, tr, theme, rect, cx, sy, i, loc, hot);
         }
         scene.pop_layer();
 
         if self.over_max_scroll > 1.0 {
-            let tx = rect.x1 - 4.0;
+            let track_x = rect.x1 - 4.0;
             let track_h = list_bottom - list_top;
             let thumb_h = (track_h * (view_h / content_h)).clamp(20.0, track_h);
             let thumb_y =
@@ -917,11 +940,102 @@ impl Core {
                 t,
                 c.text_dim.with_alpha_factor(0.6),
                 None,
-                &RoundedRect::new(tx, thumb_y, tx + 2.5, thumb_y + thumb_h, 1.25),
+                &RoundedRect::new(track_x, thumb_y, track_x + 2.5, thumb_y + thumb_h, 1.25),
             );
         }
+    }
 
-        self.over_hotspots = hot;
+    /// One rail slot: the selection/hover highlight, the condition icon
+    /// (or a dash before the first fetch), the rounded temperature, and its
+    /// hit region.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/cx/sy/i/loc/hot identify where and what to paint and where to record the hit region — a context struct would ripple across every draw_* method here, out of scope for this split"
+    )]
+    fn draw_rail_slot(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        cx: f64,
+        sy: f64,
+        i: usize,
+        loc: &SavedLocation,
+        hot: &mut Vec<Hotspot>,
+    ) {
+        let c = &theme.tokens.colors;
+        let slot = Rect::new(
+            rect.x0 + 6.0,
+            sy + 4.0,
+            rect.x1 - 6.0,
+            sy + RAIL_SLOT_H - 6.0,
+        );
+        let selected = i == self.model.selected;
+        let hov = slot.contains(self.last_mouse);
+        if selected {
+            let bg = lerp_color(c.surfaces.base, self.accent(theme), 0.18);
+            scene.fill(
+                Fill::NonZero,
+                t,
+                bg,
+                None,
+                &RoundedRect::from_rect(slot, 8.0),
+            );
+            scene.fill(
+                Fill::NonZero,
+                t,
+                self.accent(theme),
+                None,
+                &RoundedRect::new(slot.x0, slot.y0 + 6.0, slot.x0 + 3.0, slot.y1 - 6.0, 1.5),
+            );
+        } else if hov {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                c.neutral[2],
+                None,
+                &RoundedRect::from_rect(slot, 8.0),
+            );
+        }
+        if let Some(snap) = self.model.snapshot_for(loc.id) {
+            let sky = Sky::from_code(snap.current.weather_code);
+            icon::draw_icon(
+                scene,
+                t,
+                sky,
+                snap.current.is_day,
+                Rect::new(cx - 15.0, slot.y0 + 4.0, cx + 15.0, slot.y0 + 34.0),
+                theme,
+            );
+            let temp = snap.temp_in(snap.current.temperature, self.units).round() as i64;
+            text_center(
+                scene,
+                tr,
+                &format!("{temp}°"),
+                cx,
+                slot.y1 - 18.0,
+                14.0,
+                TextWeight::Bold,
+                c.text_primary,
+            );
+        } else {
+            text_center(
+                scene,
+                tr,
+                "—",
+                cx,
+                slot.y0 + 14.0,
+                15.0,
+                TextWeight::Regular,
+                c.text_dim,
+            );
+        }
+        hot.push(Hotspot {
+            rect: slot,
+            action: OverAction::SelectLocation(i),
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -965,7 +1079,7 @@ impl Core {
             let chip = Rect::new(x, y, x + w, y + CHIP_H);
             let swipe_dx = self.swipe_dx_for(i);
             if swipe_dx > 0.0 {
-                self.draw_swipe_backing(scene, t, theme, chip);
+                Self::draw_swipe_backing(scene, t, theme, chip);
             }
             let chip_t = t * Affine::translate((-swipe_dx, 0.0));
             self.draw_chip(scene, chip_t, tr, theme, chip, loc, i, units);
@@ -1109,7 +1223,7 @@ impl Core {
         }
     }
 
-    fn draw_swipe_backing(&self, scene: &mut Scene, t: Affine, theme: &Theme, chip: Rect) {
+    fn draw_swipe_backing(scene: &mut Scene, t: Affine, theme: &Theme, chip: Rect) {
         let c = &theme.tokens.colors;
         let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, t, c.semantic.danger, None, &shape);
@@ -1311,7 +1425,10 @@ impl Core {
     }
 
     /// Handle an event routed to the overview pane. Returns true if consumed.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event across this crate's app.rs/panes.rs — bundling it into a context struct would ripple across every event-routing method here, out of scope for this split"
+    )]
     pub fn handle_overview_event(
         &mut self,
         event: &WindowEvent,
@@ -1323,11 +1440,51 @@ impl Core {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) -> bool {
-        use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
-        use winit::keyboard::{Key, NamedKey};
-
         // Keep the shared field placed so its overlay hit-tests correctly.
         self.search.apply_layout_external(self.search_field_rect);
+
+        if let Some(consumed) = self.route_overview_search_field(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            return consumed;
+        }
+
+        let (handled, changed) = self.dispatch_overview_event(event, scale_factor);
+        if changed {
+            self.pending_doc_write = true;
+        }
+        handled
+    }
+
+    /// The search field's first refusal: a press over the field begins an
+    /// edit, and while editing the shared Autocomplete owns typing and
+    /// arrow/Enter/Esc navigation of the geocoded matches. Returns
+    /// `Some(consumed)` when the field fully handled the event (the caller
+    /// should return immediately), or `None` to fall through to the list's
+    /// own gesture handling.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event across this crate's app.rs/panes.rs — bundling it into a context struct would ripple across every event-routing method here, out of scope for this split"
+    )]
+    fn route_overview_search_field(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> Option<bool> {
+        use winit::event::{ElementState, MouseButton};
 
         // A press over the field while not editing begins an edit.
         if let WindowEvent::MouseInput {
@@ -1339,181 +1496,87 @@ impl Core {
             && self.search_field_rect.contains(self.last_mouse)
         {
             self.begin_search();
-            return true;
+            return Some(true);
         }
 
-        // While editing, the shared Autocomplete owns typing + arrow/Enter/Esc
-        // navigation of the geocoded matches.
-        if self.search.is_editing() {
-            let before = self.search.text().to_string();
-            let mut ac_handled = false;
-            self.search.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                &mut ac_handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-            match self.search.take_outcome() {
-                AutocompleteOutcome::Accepted(value) => {
-                    if self.commit_search_pick(value) {
-                        self.end_search();
-                    } else {
-                        // Nothing to pick yet (Enter while loading): keep the
-                        // edit open and show the honest loading state.
-                        self.search.open();
-                        self.sync_search_view();
-                    }
-                    return true;
-                }
-                AutocompleteOutcome::Cancelled => {
-                    // A click-outside cancel is not consumed — fall through so
-                    // the same press can still engage a chip beneath the field.
+        if !self.search.is_editing() {
+            return None;
+        }
+
+        let before = self.search.text().to_string();
+        let mut ac_handled = false;
+        self.search.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            &mut ac_handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+        match self.search.take_outcome() {
+            AutocompleteOutcome::Accepted(value) => {
+                if self.commit_search_pick(&value) {
                     self.end_search();
+                } else {
+                    // Nothing to pick yet (Enter while loading): keep the
+                    // edit open and show the honest loading state.
+                    self.search.open();
+                    self.sync_search_view();
                 }
-                AutocompleteOutcome::None => {}
+                return Some(true);
             }
-            let after = self.search.text().to_string();
-            let text_changed = after != before;
-            if text_changed {
-                self.on_query_changed(&after);
+            AutocompleteOutcome::Cancelled => {
+                // A click-outside cancel is not consumed — fall through so
+                // the same press can still engage a chip beneath the field.
+                self.end_search();
             }
-            // Consume anything the field acted on — a handled key/click or a
-            // text edit — so a keystroke never leaks past the focused field.
-            if ac_handled || text_changed {
-                return true;
-            }
+            AutocompleteOutcome::None => {}
         }
+        let after = self.search.text().to_string();
+        let text_changed = after != before;
+        if text_changed {
+            self.on_query_changed(&after);
+        }
+        // Consume anything the field acted on — a handled key/click or a
+        // text edit — so a keystroke never leaks past the focused field.
+        if ac_handled || text_changed {
+            Some(true)
+        } else {
+            None
+        }
+    }
 
-        let mut handled = false;
-        let mut changed = false;
+    /// The list's own gesture handling once the search field has declined
+    /// the event. Returns `(handled, changed)`.
+    fn dispatch_overview_event(&mut self, event: &WindowEvent, scale_factor: f64) -> (bool, bool) {
+        use winit::event::{ElementState, KeyEvent, MouseButton};
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
-                if let Some(press) = self.press.as_mut() {
-                    press.update(self.last_mouse);
-                }
-                // Drive the reusable reorder model only while the gesture is a
-                // vertical reorder. A horizontal delete-swipe drops any pending
-                // drag so the two gestures never fight for the same pointer.
-                if let Some(press) = self.press {
-                    if press.is_reorder() {
-                        let metrics = self.list_metrics();
-                        if !self.reorder.is_pending() {
-                            // Lazily arm the drag the moment it classifies as a
-                            // reorder, grabbing the chip at the press point.
-                            let grab = press.origin.y - metrics.slot_lead(press.index);
-                            let id = self.model.locations[press.index].id;
-                            self.reorder.begin(id, press.index, grab, press.origin);
-                        }
-                        self.reorder.pointer_moved(self.last_mouse, &metrics);
-                    } else if press.is_swipe() {
-                        self.reorder.cancel();
-                    }
-                }
+                self.handle_overview_cursor_moved(*position, scale_factor);
+                (false, false)
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.over_rect.contains(self.last_mouse) && self.over_max_scroll > 0.0 {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                        MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
-                    };
-                    self.over_scroll = (self.over_scroll - dy).clamp(0.0, self.over_max_scroll);
-                    handled = true;
-                }
+                (self.handle_overview_wheel(*delta, scale_factor), false)
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } => {
-                if let Some(idx) = self.chip_at(self.last_mouse) {
-                    self.menu = Some(ContextMenu::for_entry(idx, self.last_mouse));
-                    handled = true;
-                } else if self.menu.is_some() {
-                    self.menu = None;
-                    handled = true;
-                }
-            }
+            } => (self.handle_overview_right_click(), false),
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if self.menu.is_some() {
-                    let hit = self
-                        .over_hotspots
-                        .iter()
-                        .rev()
-                        .find(|h| {
-                            matches!(h.action, OverAction::MenuItem(..))
-                                && h.rect.contains(self.last_mouse)
-                        })
-                        .map(|h| h.action.clone());
-                    if let Some(action) = hit {
-                        changed = self.apply_over_action(action);
-                    } else {
-                        self.menu = None;
-                    }
-                    handled = true;
-                } else {
-                    let hit = self
-                        .over_hotspots
-                        .iter()
-                        .rev()
-                        .find(|h| h.rect.contains(self.last_mouse))
-                        .map(|h| h.action.clone());
-                    match hit {
-                        Some(OverAction::PressChip(i)) => {
-                            self.press = Some(PointerPress::new(i, self.last_mouse));
-                            self.reorder.cancel();
-                            handled = true;
-                        }
-                        Some(action) => {
-                            changed = self.apply_over_action(action);
-                            handled = true;
-                        }
-                        // A press on empty list space (the search field's own
-                        // click-outside blur is handled by the Autocomplete
-                        // routing above).
-                        None => {}
-                    }
-                }
-            }
+            } => self.handle_overview_left_press(),
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if let Some(press) = self.press.take() {
-                    handled = true;
-                    if press.is_reorder() {
-                        if self.delete_zone_rect().contains(self.last_mouse) {
-                            // Drop onto the trash: abandon the reorder, delete.
-                            self.reorder.cancel();
-                            changed = self.apply_entry_action(press.index, EntryAction::Delete);
-                        } else if let Some((from, to)) = self.reorder.commit() {
-                            // Commit the live insertion the controller tracked.
-                            changed = self.model.move_location(from, to);
-                        } else {
-                            // Dropped in place (or never activated): no change.
-                            self.reorder.cancel();
-                        }
-                    } else if press.is_swipe() {
-                        if press.swipe_dx() >= SWIPE_COMMIT_DX {
-                            changed =
-                                self.apply_entry_action(press.index, EntryAction::swipe_left());
-                        }
-                    } else {
-                        changed = self.apply_over_action(OverAction::SelectLocation(press.index));
-                    }
-                }
-            }
+            } => self.handle_overview_left_release(),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -1522,61 +1585,191 @@ impl Core {
                         ..
                     },
                 ..
-            } => {
-                // Typing / arrow / Enter / Esc while the search field is
-                // focused is owned by the shared Autocomplete above; this arm
-                // only runs when the list itself has focus.
-                match logical_key {
-                    Key::Named(NamedKey::Escape) => {
-                        // Escape abandons an in-flight reorder, snapping the
-                        // list back to its original order (the model was
-                        // never touched — the drag is purely visual until
-                        // drop).
-                        if self.reorder.cancel() {
-                            self.press = None;
-                            handled = true;
-                        } else if self.menu.is_some() {
-                            self.menu = None;
-                            handled = true;
-                        }
-                    }
-                    // Arrow up/down move the highlighted city; the detail
-                    // pane follows the selection live (side-by-side) and a
-                    // fresh forecast is fetched for it.
-                    Key::Named(NamedKey::ArrowDown) => {
-                        self.menu = None;
-                        changed = self.move_selection(1);
-                        handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        self.menu = None;
-                        changed = self.move_selection(-1);
-                        handled = true;
-                    }
-                    // Enter opens the forecast for the highlighted city —
-                    // the only way to reach the detail by keyboard in the
-                    // narrow push layout, where it isn't shown yet.
-                    Key::Named(NamedKey::Enter) => {
-                        if self.model.selected_location().is_some() {
-                            self.refresh_selected();
-                            self.nav_request = Some(NavIntent::ShowDetail);
-                            handled = true;
-                        }
-                    }
-                    Key::Character(ch) if ch.as_str() == "/" => {
-                        self.begin_search();
-                        handled = true;
-                    }
-                    _ => {}
+            } => self.handle_overview_key(logical_key),
+            _ => (false, false),
+        }
+    }
+
+    fn handle_overview_cursor_moved(
+        &mut self,
+        position: winit::dpi::PhysicalPosition<f64>,
+        scale_factor: f64,
+    ) {
+        self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        if let Some(press) = self.press.as_mut() {
+            press.update(self.last_mouse);
+        }
+        // Drive the reusable reorder model only while the gesture is a
+        // vertical reorder. A horizontal delete-swipe drops any pending
+        // drag so the two gestures never fight for the same pointer.
+        if let Some(press) = self.press {
+            if press.is_reorder() {
+                let metrics = self.list_metrics();
+                if !self.reorder.is_pending()
+                    && let Some(loc) = self.model.locations.get(press.index)
+                {
+                    // Lazily arm the drag the moment it classifies as a
+                    // reorder, grabbing the chip at the press point.
+                    let grab = press.origin.y - metrics.slot_lead(press.index);
+                    self.reorder.begin(loc.id, press.index, grab, press.origin);
                 }
+                self.reorder.pointer_moved(self.last_mouse, &metrics);
+            } else if press.is_swipe() {
+                self.reorder.cancel();
+            }
+        }
+    }
+
+    fn handle_overview_wheel(
+        &mut self,
+        delta: winit::event::MouseScrollDelta,
+        scale_factor: f64,
+    ) -> bool {
+        use winit::event::MouseScrollDelta;
+        if self.over_rect.contains(self.last_mouse) && self.over_max_scroll > 0.0 {
+            let dy = match delta {
+                MouseScrollDelta::LineDelta(_, y) => f64::from(y) * 48.0,
+                MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+            };
+            self.over_scroll = (self.over_scroll - dy).clamp(0.0, self.over_max_scroll);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn handle_overview_right_click(&mut self) -> bool {
+        if let Some(idx) = self.chip_at(self.last_mouse) {
+            self.menu = Some(ContextMenu::for_entry(idx, self.last_mouse));
+            true
+        } else if self.menu.is_some() {
+            self.menu = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn handle_overview_left_press(&mut self) -> (bool, bool) {
+        let mut changed = false;
+        if self.menu.is_some() {
+            let hit = self
+                .over_hotspots
+                .iter()
+                .rev()
+                .find(|h| {
+                    matches!(h.action, OverAction::MenuItem(..)) && h.rect.contains(self.last_mouse)
+                })
+                .map(|h| h.action);
+            if let Some(action) = hit {
+                changed = self.apply_over_action(action);
+            } else {
+                self.menu = None;
+            }
+            (true, changed)
+        } else {
+            let hit = self
+                .over_hotspots
+                .iter()
+                .rev()
+                .find(|h| h.rect.contains(self.last_mouse))
+                .map(|h| h.action);
+            match hit {
+                Some(OverAction::PressChip(i)) => {
+                    self.press = Some(PointerPress::new(i, self.last_mouse));
+                    self.reorder.cancel();
+                    (true, changed)
+                }
+                Some(action) => {
+                    changed = self.apply_over_action(action);
+                    (true, changed)
+                }
+                // A press on empty list space (the search field's own
+                // click-outside blur is handled by the Autocomplete
+                // routing above).
+                None => (false, changed),
+            }
+        }
+    }
+
+    fn handle_overview_left_release(&mut self) -> (bool, bool) {
+        let mut changed = false;
+        let Some(press) = self.press.take() else {
+            return (false, changed);
+        };
+        if press.is_reorder() {
+            if self.delete_zone_rect().contains(self.last_mouse) {
+                // Drop onto the trash: abandon the reorder, delete.
+                self.reorder.cancel();
+                changed = self.apply_entry_action(press.index, EntryAction::Delete);
+            } else if let Some((from, to)) = self.reorder.commit() {
+                // Commit the live insertion the controller tracked.
+                changed = self.model.move_location(from, to);
+            } else {
+                // Dropped in place (or never activated): no change.
+                self.reorder.cancel();
+            }
+        } else if press.is_swipe() {
+            if press.swipe_dx() >= SWIPE_COMMIT_DX {
+                changed = self.apply_entry_action(press.index, EntryAction::swipe_left());
+            }
+        } else {
+            changed = self.apply_over_action(OverAction::SelectLocation(press.index));
+        }
+        (true, changed)
+    }
+
+    /// Typing / arrow / Enter / Esc while the search field is focused is
+    /// owned by the shared Autocomplete in [`Self::route_overview_search_field`];
+    /// this only runs when the list itself has focus.
+    fn handle_overview_key(&mut self, logical_key: &winit::keyboard::Key) -> (bool, bool) {
+        use winit::keyboard::{Key, NamedKey};
+
+        let mut handled = false;
+        let mut changed = false;
+        match logical_key {
+            Key::Named(NamedKey::Escape) => {
+                // Escape abandons an in-flight reorder, snapping the list
+                // back to its original order (the model was never touched —
+                // the drag is purely visual until drop).
+                if self.reorder.cancel() {
+                    self.press = None;
+                    handled = true;
+                } else if self.menu.is_some() {
+                    self.menu = None;
+                    handled = true;
+                }
+            }
+            // Arrow up/down move the highlighted city; the detail pane
+            // follows the selection live (side-by-side) and a fresh
+            // forecast is fetched for it.
+            Key::Named(NamedKey::ArrowDown) => {
+                self.menu = None;
+                changed = self.move_selection(1);
+                handled = true;
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.menu = None;
+                changed = self.move_selection(-1);
+                handled = true;
+            }
+            // Enter opens the forecast for the highlighted city — the only
+            // way to reach the detail by keyboard in the narrow push
+            // layout, where it isn't shown yet.
+            Key::Named(NamedKey::Enter) => {
+                if self.model.selected_location().is_some() {
+                    self.refresh_selected();
+                    self.nav_request = Some(NavIntent::ShowDetail);
+                    handled = true;
+                }
+            }
+            Key::Character(ch) if ch.as_str() == "/" => {
+                self.begin_search();
+                handled = true;
             }
             _ => {}
         }
-
-        if changed {
-            self.pending_doc_write = true;
-        }
-        handled
+        (handled, changed)
     }
 
     // =================================================================
@@ -1592,75 +1785,158 @@ impl Core {
         theme: &Theme,
     ) {
         self.detail_rect = rect;
-        let c = &theme.tokens.colors;
         self.draw_sky_background(scene, t, theme, rect);
 
+        let Some(loc) = self.model.selected_location().cloned() else {
+            self.draw_detail_zero_state(rect, scene, t, tr, theme);
+            return;
+        };
+        let snap_opt = self.model.selected_snapshot().cloned();
+        let hy = self.draw_detail_header(rect, scene, t, tr, theme, &loc, snap_opt.as_ref());
+
+        let c = &theme.tokens.colors;
+        let mx = rect.x0 + PAD;
+        let right = rect.x1 - PAD;
+        let body_top = hy + 74.0;
+        scene.fill(
+            Fill::NonZero,
+            t,
+            c.border_standard.with_alpha_factor(0.6),
+            None,
+            &Rect::new(mx, body_top - 10.0, right, body_top - 9.0),
+        );
+
+        let Some(snap) = snap_opt else {
+            self.max_scroll = 0.0;
+            text_left(
+                scene,
+                tr,
+                "Fetching current conditions…",
+                mx,
+                body_top + 24.0,
+                15.0,
+                TextWeight::Medium,
+                c.text_dim,
+            );
+            return;
+        };
+
+        let mw = (rect.width() - 2.0 * PAD).max(140.0);
+        let layout = DetailBodyLayout::measure(mw, &snap);
+        let view_h = (rect.y1 - PAD) - body_top;
+        self.max_scroll = (layout.body_h - view_h).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll);
+
+        let clip = Rect::new(rect.x0, body_top - 8.0, rect.x1, rect.y1);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+        let mut y = body_top - self.scroll;
+        y = self.draw_detail_hero(rect, scene, t, tr, theme, y, &snap);
+        y = self.draw_detail_tiles(rect, scene, t, tr, theme, y, &snap, &layout);
+        y = self.draw_detail_hourly(rect, scene, t, tr, theme, y, &snap);
+        y = self.draw_detail_days(rect, scene, t, tr, theme, y, &snap, &layout);
+        self.draw_detail_air_quality_section(rect, scene, t, tr, theme, y, &layout);
+        scene.pop_layer();
+
+        self.draw_detail_footer(
+            rect,
+            scene,
+            t,
+            tr,
+            theme,
+            mx,
+            body_top,
+            view_h,
+            layout.body_h,
+        );
+    }
+
+    /// Composed zero-state: a friendly weather glyph over an inviting
+    /// prompt, centred in the detail pane — never a bare label on a big
+    /// empty gradient (HIG §7). The copy differs by whether the user has
+    /// any saved places: a fresh vault points at the search; an existing
+    /// roster asks them to pick a city.
+    fn draw_detail_zero_state(
+        &mut self,
+        rect: Rect,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
+        let cx = rect.center().x;
+        let anchor = rect.y0 + rect.height() * 0.34;
+        let glyph = 92.0;
+        icon::draw_icon(
+            scene,
+            t,
+            Sky::PartlyCloudy,
+            true,
+            Rect::new(cx - glyph / 2.0, anchor, cx + glyph / 2.0, anchor + glyph),
+            theme,
+        );
+        let (headline, sub) = if self.model.locations.is_empty() {
+            (
+                "No cities yet",
+                "Search for a city to see its current conditions and 7-day forecast.",
+            )
+        } else {
+            (
+                "Pick a city",
+                "Choose a saved place on the left to see its forecast.",
+            )
+        };
+        text_center(
+            scene,
+            tr,
+            headline,
+            cx,
+            anchor + glyph + 20.0,
+            22.0,
+            TextWeight::Bold,
+            c.text_primary,
+        );
+        text_center(
+            scene,
+            tr,
+            sub,
+            cx,
+            anchor + glyph + 54.0,
+            14.0,
+            TextWeight::Regular,
+            c.text_dim,
+        );
+        self.refresh_btn = Rect::ZERO;
+        self.max_scroll = 0.0;
+    }
+
+    /// Place name/subtitle, the refresh button, and (once a snapshot has
+    /// landed) its fetch date/local time. Returns the y the divider under
+    /// the header sits at.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/loc/snap identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
+    )]
+    fn draw_detail_header(
+        &mut self,
+        rect: Rect,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        loc: &SavedLocation,
+        snap: Option<&WeatherSnapshot>,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
         let top_pad = if self.detail_reserve_back {
             PAD + BACK_RESERVE
         } else {
             PAD
         };
         let mx = rect.x0 + PAD;
-        let mw = (rect.width() - 2.0 * PAD).max(140.0);
         let right = rect.x1 - PAD;
-        let accent = self.accent(theme);
-
-        let Some(loc) = self.model.selected_location().cloned() else {
-            // Composed zero-state: a friendly weather glyph over an inviting
-            // prompt, centred in the detail pane — never a bare label on a big
-            // empty gradient (HIG §7). The copy differs by whether the user has
-            // any saved places: a fresh vault points at the search; an existing
-            // roster asks them to pick a city.
-            let cx = rect.center().x;
-            let anchor = rect.y0 + rect.height() * 0.34;
-            let glyph = 92.0;
-            icon::draw_icon(
-                scene,
-                t,
-                Sky::PartlyCloudy,
-                true,
-                Rect::new(cx - glyph / 2.0, anchor, cx + glyph / 2.0, anchor + glyph),
-                theme,
-            );
-            let (headline, sub) = if self.model.locations.is_empty() {
-                (
-                    "No cities yet",
-                    "Search for a city to see its current conditions and 7-day forecast.",
-                )
-            } else {
-                (
-                    "Pick a city",
-                    "Choose a saved place on the left to see its forecast.",
-                )
-            };
-            text_center(
-                scene,
-                tr,
-                headline,
-                cx,
-                anchor + glyph + 20.0,
-                22.0,
-                TextWeight::Bold,
-                c.text_primary,
-            );
-            text_center(
-                scene,
-                tr,
-                sub,
-                cx,
-                anchor + glyph + 54.0,
-                14.0,
-                TextWeight::Regular,
-                c.text_dim,
-            );
-            self.refresh_btn = Rect::ZERO;
-            self.max_scroll = 0.0;
-            return;
-        };
-        let snap_opt = self.model.selected_snapshot().cloned();
-
-        // ---- Pinned header ----
         let hy = rect.y0 + top_pad;
+
         text_left(
             scene,
             tr,
@@ -1702,7 +1978,7 @@ impl Core {
         Icon::Refresh.draw(scene, t, refresh.inset(-8.0), c.text_primary);
         self.refresh_btn = refresh;
 
-        if let Some(snap) = &snap_opt {
+        if let Some(snap) = snap {
             let cur = &snap.current;
             let date_str = fmt_date(&cur.time);
             text_right(
@@ -1727,67 +2003,28 @@ impl Core {
                 c.text_dim,
             );
         }
+        hy
+    }
 
-        let body_top = hy + 74.0;
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c.border_standard.with_alpha_factor(0.6),
-            None,
-            &Rect::new(mx, body_top - 10.0, right, body_top - 9.0),
-        );
-
-        let Some(snap) = snap_opt else {
-            self.max_scroll = 0.0;
-            text_left(
-                scene,
-                tr,
-                "Fetching current conditions…",
-                mx,
-                body_top + 24.0,
-                15.0,
-                TextWeight::Medium,
-                c.text_dim,
-            );
-            return;
-        };
+    /// The hero card: condition glyph, big temperature, condition label,
+    /// "feels like", and the sunrise/sunset arc (or a compact fallback on a
+    /// narrow pane). Returns the y cursor for the next section.
+    fn draw_detail_hero(
+        &mut self,
+        rect: Rect,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        y: f64,
+        snap: &WeatherSnapshot,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let mx = rect.x0 + PAD;
+        let mw = (rect.width() - 2.0 * PAD).max(140.0);
         let units = self.units;
         let cur = &snap.current;
 
-        // ---- Measure the scrollable body ----
-        let gap = 12.0;
-        let n_tiles = 5usize;
-        let cols = balanced_tile_columns(mw, n_tiles);
-        let tile_rows = n_tiles.div_ceil(cols);
-        let tiles_block_h = tile_rows as f64 * TILE_H + (tile_rows as f64 - 1.0) * gap;
-        let n_days = snap.daily.len().max(1);
-        let days_block_h = 40.0 + n_days as f64 * DAY_ROW_H + 12.0;
-        // Air-quality block: header + AQI hero + a row (or two) of pollutant
-        // tiles. Reserved whether or not a reading is available yet, so the
-        // scroll geometry stays stable while it loads.
-        let aq = self.model.selected_air_quality().cloned();
-        let aq_cols = if mw >= 560.0 { 4 } else { 2 };
-        let aq_rows = 4usize.div_ceil(aq_cols);
-        let aq_tiles_h = aq_rows as f64 * AQ_TILE_H + (aq_rows as f64 - 1.0) * gap;
-        let aq_block_h = 40.0 + 64.0 + 12.0 + aq_tiles_h + 14.0;
-        let body_h = HERO_H
-            + SECTION_GAP
-            + tiles_block_h
-            + SECTION_GAP
-            + HOURLY_CARD_H
-            + SECTION_GAP
-            + days_block_h
-            + SECTION_GAP
-            + aq_block_h;
-        let view_h = (rect.y1 - PAD) - body_top;
-        self.max_scroll = (body_h - view_h).max(0.0);
-        self.scroll = self.scroll.clamp(0.0, self.max_scroll);
-
-        let clip = Rect::new(rect.x0, body_top - 8.0, rect.x1, rect.y1);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
-        let mut y = body_top - self.scroll;
-
-        // ---- Hero card ----
         let hero = Rect::new(mx, y, mx + mw, y + HERO_H);
         card(scene, t, hero, theme);
         let sky = Sky::from_code(cur.weather_code);
@@ -1851,73 +2088,119 @@ impl Core {
         );
 
         if let Some(today) = snap.daily.first() {
-            let sr = hhmm(&today.sunrise);
-            let ss = hhmm(&today.sunset);
-            if mw >= 560.0 {
-                self.draw_sun_arc(
-                    scene,
-                    t,
-                    tr,
-                    theme,
-                    Rect::new(
-                        hero.x1 - 226.0,
-                        hero.y0 + 22.0,
-                        hero.x1 - 22.0,
-                        hero.y0 + HERO_H - 22.0,
-                    ),
-                    &cur.time,
-                    &sr,
-                    &ss,
-                    cur.is_day,
-                );
-            } else {
-                let sx = hero.x1 - 18.0;
-                text_right(
-                    scene,
-                    tr,
-                    "Sunrise",
-                    sx,
-                    hero.y0 + HERO_H - 60.0,
-                    10.0,
-                    TextWeight::Semibold,
-                    c.text_dim,
-                );
-                text_right(
-                    scene,
-                    tr,
-                    &sr,
-                    sx,
-                    hero.y0 + HERO_H - 46.0,
-                    14.0,
-                    TextWeight::Medium,
-                    c.text_primary,
-                );
-                text_right(
-                    scene,
-                    tr,
-                    "Sunset",
-                    sx,
-                    hero.y0 + HERO_H - 26.0,
-                    10.0,
-                    TextWeight::Semibold,
-                    c.text_dim,
-                );
-                text_right(
-                    scene,
-                    tr,
-                    &ss,
-                    sx,
-                    hero.y0 + HERO_H - 12.0,
-                    14.0,
-                    TextWeight::Medium,
-                    c.text_primary,
-                );
-            }
+            self.draw_hero_sun(scene, t, tr, theme, hero, mw, cur, today);
         }
 
-        y += HERO_H + SECTION_GAP;
+        y + HERO_H + SECTION_GAP
+    }
 
-        // ---- Metric tiles ----
+    /// The sunrise/sunset arc on a wide pane, or the compact Sunrise/Sunset
+    /// label fallback on a narrow one.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus hero/mw/cur/today identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
+    )]
+    fn draw_hero_sun(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hero: Rect,
+        mw: f64,
+        cur: &CurrentConditions,
+        today: &DayForecast,
+    ) {
+        let c = &theme.tokens.colors;
+        let sr = hhmm(&today.sunrise);
+        let ss = hhmm(&today.sunset);
+        if mw >= 560.0 {
+            Self::draw_sun_arc(
+                scene,
+                t,
+                tr,
+                theme,
+                Rect::new(
+                    hero.x1 - 226.0,
+                    hero.y0 + 22.0,
+                    hero.x1 - 22.0,
+                    hero.y0 + HERO_H - 22.0,
+                ),
+                &cur.time,
+                &sr,
+                &ss,
+                cur.is_day,
+            );
+        } else {
+            let sx = hero.x1 - 18.0;
+            text_right(
+                scene,
+                tr,
+                "Sunrise",
+                sx,
+                hero.y0 + HERO_H - 60.0,
+                10.0,
+                TextWeight::Semibold,
+                c.text_dim,
+            );
+            text_right(
+                scene,
+                tr,
+                &sr,
+                sx,
+                hero.y0 + HERO_H - 46.0,
+                14.0,
+                TextWeight::Medium,
+                c.text_primary,
+            );
+            text_right(
+                scene,
+                tr,
+                "Sunset",
+                sx,
+                hero.y0 + HERO_H - 26.0,
+                10.0,
+                TextWeight::Semibold,
+                c.text_dim,
+            );
+            text_right(
+                scene,
+                tr,
+                &ss,
+                sx,
+                hero.y0 + HERO_H - 12.0,
+                14.0,
+                TextWeight::Medium,
+                c.text_primary,
+            );
+        }
+    }
+
+    /// The metric-tile grid (wind/humidity/precip/pressure/UV). Returns the
+    /// y cursor for the next section.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/y/snap/layout identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
+    )]
+    fn draw_detail_tiles(
+        &self,
+        rect: Rect,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        y: f64,
+        snap: &WeatherSnapshot,
+        layout: &DetailBodyLayout,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let mx = rect.x0 + PAD;
+        let mw = (rect.width() - 2.0 * PAD).max(140.0);
+        let units = self.units;
+        let cur = &snap.current;
+        let gap = layout.gap;
+        let cols = layout.tile_cols;
+
         let wind = snap.wind_in(cur.wind_speed, units).round() as i64;
         let tiles: [(&str, String, String); 5] = [
             (
@@ -1995,9 +2278,27 @@ impl Core {
             );
         }
 
-        y += tiles_block_h + SECTION_GAP;
+        y + layout.tiles_block_h + SECTION_GAP
+    }
 
-        // ---- Hourly strip (24 fixed-width columns; scrolls horizontally) ----
+    /// The 24-hour scrollable strip card. Returns the y cursor for the
+    /// next section.
+    fn draw_detail_hourly(
+        &mut self,
+        rect: Rect,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        y: f64,
+        snap: &WeatherSnapshot,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let mx = rect.x0 + PAD;
+        let mw = (rect.width() - 2.0 * PAD).max(140.0);
+        let units = self.units;
+        let accent = self.accent(theme);
+
         let hcard = Rect::new(mx, y, mx + mw, y + HOURLY_CARD_H);
         card(scene, t, hcard, theme);
         text_left(
@@ -2066,7 +2367,23 @@ impl Core {
             "°",
         );
 
-        // Shared horizontal scrollbar when the strip overflows the band.
+        self.draw_hourly_scrollbar(scene, t, theme, hcard, band, content_w);
+
+        y + HOURLY_CARD_H + SECTION_GAP
+    }
+
+    /// The shared horizontal scrollbar for the hourly strip, shown only
+    /// when the 24 columns overflow the band.
+    fn draw_hourly_scrollbar(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        hcard: Rect,
+        band: Rect,
+        content_w: f64,
+    ) {
+        let c = &theme.tokens.colors;
         let hmetrics = ScrollMetrics::new(content_w, band.width(), self.hourly_scroll_x);
         let track = Rect::new(band.x0, hcard.y1 - 12.0, band.x1, hcard.y1 - 6.0);
         self.hourly_track = track;
@@ -2093,11 +2410,31 @@ impl Core {
                 &RoundedRect::from_rect(thumb, 3.0),
             );
         }
+    }
 
-        y += HOURLY_CARD_H + SECTION_GAP;
+    /// The 7-day forecast card: header + one row per day. Returns the y
+    /// cursor for the next section.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/y/snap/layout identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
+    )]
+    fn draw_detail_days(
+        &self,
+        rect: Rect,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        y: f64,
+        snap: &WeatherSnapshot,
+        layout: &DetailBodyLayout,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let mx = rect.x0 + PAD;
+        let mw = (rect.width() - 2.0 * PAD).max(140.0);
+        let units = self.units;
 
-        // ---- 7-day forecast ----
-        let dcard = Rect::new(mx, y, mx + mw, y + days_block_h);
+        let dcard = Rect::new(mx, y, mx + mw, y + layout.days_block_h);
         card(scene, t, dcard, theme);
         text_left(
             scene,
@@ -2120,184 +2457,263 @@ impl Core {
             wmin -= 1.0;
         }
 
-        let inner_l = dcard.x0 + 18.0;
-        let inner_r = dcard.x1 - 16.0;
-        let dw = inner_r - inner_l;
-        let hi_w = 42.0;
-        let bar_w = (dw * 0.22).clamp(56.0, 120.0);
-        let bar_x1 = inner_r - hi_w;
-        let bar_x0 = bar_x1 - bar_w;
-        let lo_x = bar_x0 - 10.0;
-        let precip_right = lo_x - 44.0;
-        let precip_left = precip_right - 46.0;
-        let show_precip = dw >= 300.0;
-        let icon_l_x = inner_l + 92.0;
-        let icon_r_x = icon_l_x + 28.0;
-        let cond_x = icon_r_x + 10.0;
-        // Per-day extras (UV-index max + wind max) get a fixed-width column to
-        // the left of the precip/lo cluster, shown only when the row is wide
-        // enough to fit them without crowding the condition text.
-        let extras_w = 132.0;
-        let extras_right = if show_precip {
-            precip_left - 14.0
-        } else {
-            lo_x - 52.0
-        };
-        let extras_x = extras_right - extras_w;
-        let show_extras = (extras_x - cond_x) >= 118.0;
-        let cond_limit = if show_extras {
-            extras_x - 12.0
-        } else if show_precip {
-            precip_left - 10.0
-        } else {
-            lo_x - 44.0
-        };
-        let show_cond = (cond_limit - cond_x) >= 96.0;
-
+        let geo = DayRowGeometry::new(dcard);
         let rows_top = dcard.y0 + 40.0;
         for (i, d) in snap.daily.iter().enumerate() {
             let ry = rows_top + i as f64 * DAY_ROW_H;
-            let cy = ry + DAY_ROW_H / 2.0;
-            if i > 0 {
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    c.border_standard.with_alpha_factor(0.5),
-                    None,
-                    &Rect::new(inner_l, ry, inner_r, ry + 1.0),
-                );
-            }
-            let day_label = match i {
-                0 => "Today".to_string(),
-                1 => "Tomorrow".to_string(),
-                _ => weekday(&d.date),
-            };
-            text_left(
-                scene,
-                tr,
-                &day_label,
-                inner_l,
-                cy - 8.0,
-                14.0,
-                TextWeight::Medium,
-                c.text_primary,
-            );
-            let dsky = Sky::from_code(d.weather_code);
-            icon::draw_icon(
-                scene,
-                t,
-                dsky,
-                true,
-                Rect::new(icon_l_x, cy - 14.0, icon_r_x, cy + 14.0),
-                theme,
-            );
-            if show_cond {
-                text_left(
-                    scene,
-                    tr,
-                    Sky::label(d.weather_code),
-                    cond_x,
-                    cy - 7.0,
-                    13.0,
-                    TextWeight::Regular,
-                    c.text_dim,
-                );
-            }
-            if show_extras {
-                let (uv_label, wind_label) = day_extra_labels(d, &snap, units);
-                // UV dot tinted by severity so the number reads at a glance.
-                let uv_dot = if d.uv_index_max < 3.0 {
-                    c.semantic.info
-                } else if d.uv_index_max < 8.0 {
-                    c.semantic.warning
-                } else {
-                    c.semantic.danger
-                };
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    uv_dot,
-                    None,
-                    &Circle::new(Point::new(extras_x + 4.0, cy), 3.0),
-                );
-                text_left(
-                    scene,
-                    tr,
-                    &uv_label,
-                    extras_x + 12.0,
-                    cy - 7.0,
-                    12.0,
-                    TextWeight::Medium,
-                    c.text_dim,
-                );
-                text_right(
-                    scene,
-                    tr,
-                    &wind_label,
-                    extras_right,
-                    cy - 7.0,
-                    12.0,
-                    TextWeight::Regular,
-                    c.text_dim,
-                );
-            }
-            if show_precip {
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    c.semantic.info,
-                    None,
-                    &Circle::new(Point::new(precip_left, cy), 3.0),
-                );
-                text_left(
-                    scene,
-                    tr,
-                    &format!("{}%", d.precip_probability.round() as i64),
-                    precip_left + 8.0,
-                    cy - 7.0,
-                    12.0,
-                    TextWeight::Medium,
-                    c.semantic.info,
-                );
-            }
-            let lo = snap.temp_in(d.temp_min, units).round() as i64;
-            let hi = snap.temp_in(d.temp_max, units).round() as i64;
-            text_right(
-                scene,
-                tr,
-                &format!("{lo}°"),
-                lo_x,
-                cy - 8.0,
-                14.0,
-                TextWeight::Medium,
-                c.text_dim,
-            );
-            let track = RoundedRect::new(bar_x0, cy - 3.0, bar_x1, cy + 3.0, 3.0);
-            scene.fill(Fill::NonZero, t, c.neutral[2], None, &track);
-            let f0 = ((d.temp_min - wmin) / (wmax - wmin)).clamp(0.0, 1.0);
-            let f1 = ((d.temp_max - wmin) / (wmax - wmin)).clamp(0.0, 1.0);
-            let seg_x0 = bar_x0 + f0 * (bar_x1 - bar_x0);
-            let seg_x1 = bar_x0 + f1 * (bar_x1 - bar_x0);
-            let seg = RoundedRect::new(seg_x0, cy - 3.0, seg_x1.max(seg_x0 + 4.0), cy + 3.0, 3.0);
-            let grad = Gradient::new_linear(Point::new(bar_x0, cy), Point::new(bar_x1, cy))
-                .with_stops([(0.0_f32, c.semantic.info), (1.0_f32, c.semantic.warning)]);
-            scene.fill(Fill::NonZero, t, &Brush::Gradient(grad), None, &seg);
-            text_left(
-                scene,
-                tr,
-                &format!("{hi}°"),
-                bar_x1 + 8.0,
-                cy - 8.0,
-                14.0,
-                TextWeight::Semibold,
-                c.text_primary,
-            );
+            Self::draw_day_row(scene, t, tr, theme, &geo, i, d, ry, snap, units, wmin, wmax);
         }
 
-        y += days_block_h + SECTION_GAP;
+        y + layout.days_block_h + SECTION_GAP
+    }
 
-        // ---- Air quality ----
-        let acard = Rect::new(mx, y, mx + mw, y + aq_block_h);
+    /// One row of the 7-day forecast: day label, condition icon (+ label
+    /// when there's room), UV/wind extras (when there's room), precip
+    /// probability (when there's room), and the lo/hi temperature bar.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one drawing pass over a single day row, needing scene/t/theme/tr (the universal draw-context) plus geo/i/d/ry/snap/units/wmin/wmax — splitting further would just thread the same values through more calls"
+    )]
+    fn draw_day_row(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        geo: &DayRowGeometry,
+        i: usize,
+        d: &DayForecast,
+        ry: f64,
+        snap: &WeatherSnapshot,
+        units: Units,
+        wmin: f64,
+        wmax: f64,
+    ) {
+        let cy = ry + DAY_ROW_H / 2.0;
+        Self::draw_day_row_label(scene, t, tr, theme, geo, i, d, ry, cy);
+        if geo.show_extras {
+            Self::draw_day_row_extras(scene, t, tr, theme, geo, d, snap, units, cy);
+        }
+        Self::draw_day_row_temps(scene, t, tr, theme, geo, d, snap, units, cy, wmin, wmax);
+    }
+
+    /// The row divider, the "Today"/"Tomorrow"/weekday label, the condition
+    /// icon, and (when there's room) the condition text.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one drawing pass over a single day row's leading label cluster, needing scene/t/theme/tr (the universal draw-context) plus geo/i/d/ry/cy — splitting further would just thread the same values through more calls"
+    )]
+    fn draw_day_row_label(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        geo: &DayRowGeometry,
+        i: usize,
+        d: &DayForecast,
+        ry: f64,
+        cy: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        if i > 0 {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                c.border_standard.with_alpha_factor(0.5),
+                None,
+                &Rect::new(geo.inner_l, ry, geo.inner_r, ry + 1.0),
+            );
+        }
+        let day_label = match i {
+            0 => "Today".to_string(),
+            1 => "Tomorrow".to_string(),
+            _ => weekday(&d.date),
+        };
+        text_left(
+            scene,
+            tr,
+            &day_label,
+            geo.inner_l,
+            cy - 8.0,
+            14.0,
+            TextWeight::Medium,
+            c.text_primary,
+        );
+        let dsky = Sky::from_code(d.weather_code);
+        icon::draw_icon(
+            scene,
+            t,
+            dsky,
+            true,
+            Rect::new(geo.icon_x0, cy - 14.0, geo.icon_x1, cy + 14.0),
+            theme,
+        );
+        if geo.show_cond {
+            text_left(
+                scene,
+                tr,
+                Sky::label(d.weather_code),
+                geo.cond_x,
+                cy - 7.0,
+                13.0,
+                TextWeight::Regular,
+                c.text_dim,
+            );
+        }
+    }
+
+    /// The UV-index and wind-max extras column, shown only when the row is
+    /// wide enough to fit them without crowding the condition text.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one drawing pass over a single day row's extras column, needing scene/t/theme/tr (the universal draw-context) plus geo/d/snap/units/cy — splitting further would just thread the same values through more calls"
+    )]
+    fn draw_day_row_extras(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        geo: &DayRowGeometry,
+        d: &DayForecast,
+        snap: &WeatherSnapshot,
+        units: Units,
+        cy: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let (uv_label, wind_label) = day_extra_labels(d, snap, units);
+        // UV dot tinted by severity so the number reads at a glance.
+        let uv_dot = if d.uv_index_max < 3.0 {
+            c.semantic.info
+        } else if d.uv_index_max < 8.0 {
+            c.semantic.warning
+        } else {
+            c.semantic.danger
+        };
+        scene.fill(
+            Fill::NonZero,
+            t,
+            uv_dot,
+            None,
+            &Circle::new(Point::new(geo.extras_x + 4.0, cy), 3.0),
+        );
+        text_left(
+            scene,
+            tr,
+            &uv_label,
+            geo.extras_x + 12.0,
+            cy - 7.0,
+            12.0,
+            TextWeight::Medium,
+            c.text_dim,
+        );
+        text_right(
+            scene,
+            tr,
+            &wind_label,
+            geo.extras_right,
+            cy - 7.0,
+            12.0,
+            TextWeight::Regular,
+            c.text_dim,
+        );
+    }
+
+    /// The precip-probability read-out (when there's room) and the lo/hi
+    /// temperature bar.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one drawing pass over a single day row's precip + temperature bar, needing scene/t/theme/tr (the universal draw-context) plus geo/d/snap/units/cy/wmin/wmax — splitting further would just thread the same values through more calls"
+    )]
+    fn draw_day_row_temps(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        geo: &DayRowGeometry,
+        d: &DayForecast,
+        snap: &WeatherSnapshot,
+        units: Units,
+        cy: f64,
+        wmin: f64,
+        wmax: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        if geo.show_precip {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                c.semantic.info,
+                None,
+                &Circle::new(Point::new(geo.precip_left, cy), 3.0),
+            );
+            text_left(
+                scene,
+                tr,
+                &format!("{}%", d.precip_probability.round() as i64),
+                geo.precip_left + 8.0,
+                cy - 7.0,
+                12.0,
+                TextWeight::Medium,
+                c.semantic.info,
+            );
+        }
+        let lo = snap.temp_in(d.temp_min, units).round() as i64;
+        let hi = snap.temp_in(d.temp_max, units).round() as i64;
+        text_right(
+            scene,
+            tr,
+            &format!("{lo}°"),
+            geo.lo_x,
+            cy - 8.0,
+            14.0,
+            TextWeight::Medium,
+            c.text_dim,
+        );
+        let track = RoundedRect::new(geo.bar_x0, cy - 3.0, geo.bar_x1, cy + 3.0, 3.0);
+        scene.fill(Fill::NonZero, t, c.neutral[2], None, &track);
+        let f0 = ((d.temp_min - wmin) / (wmax - wmin)).clamp(0.0, 1.0);
+        let f1 = ((d.temp_max - wmin) / (wmax - wmin)).clamp(0.0, 1.0);
+        let seg_x0 = geo.bar_x0 + f0 * (geo.bar_x1 - geo.bar_x0);
+        let seg_x1 = geo.bar_x0 + f1 * (geo.bar_x1 - geo.bar_x0);
+        let seg = RoundedRect::new(seg_x0, cy - 3.0, seg_x1.max(seg_x0 + 4.0), cy + 3.0, 3.0);
+        let grad = Gradient::new_linear(Point::new(geo.bar_x0, cy), Point::new(geo.bar_x1, cy))
+            .with_stops([(0.0_f32, c.semantic.info), (1.0_f32, c.semantic.warning)]);
+        scene.fill(Fill::NonZero, t, &Brush::Gradient(grad), None, &seg);
+        text_left(
+            scene,
+            tr,
+            &format!("{hi}°"),
+            geo.bar_x1 + 8.0,
+            cy - 8.0,
+            14.0,
+            TextWeight::Semibold,
+            c.text_primary,
+        );
+    }
+
+    /// The air-quality card: header + the AQI hero and pollutant tiles.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/y/layout identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
+    )]
+    fn draw_detail_air_quality_section(
+        &self,
+        rect: Rect,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        y: f64,
+        layout: &DetailBodyLayout,
+    ) {
+        let c = &theme.tokens.colors;
+        let mx = rect.x0 + PAD;
+        let mw = (rect.width() - 2.0 * PAD).max(140.0);
+        // Air-quality block: header + AQI hero + a row (or two) of pollutant
+        // tiles. Reserved whether or not a reading is available yet, so the
+        // scroll geometry stays stable while it loads.
+        let aq = self.model.selected_air_quality().cloned();
+
+        let acard = Rect::new(mx, y, mx + mw, y + layout.aq_block_h);
         card(scene, t, acard, theme);
         text_left(
             scene,
@@ -2309,11 +2725,36 @@ impl Core {
             TextWeight::Semibold,
             c.text_primary,
         );
-        self.draw_air_quality(scene, t, tr, theme, acard, aq.as_ref(), aq_cols, gap);
+        self.draw_air_quality(
+            scene,
+            t,
+            tr,
+            theme,
+            acard,
+            aq.as_ref(),
+            layout.aq_cols,
+            layout.gap,
+        );
+    }
 
-        scene.pop_layer();
-
-        // Status line + scroll indicator.
+    /// The status line + the body's vertical scroll indicator.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/mx/body_top/view_h/body_h identify the scroll geometry — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
+    )]
+    fn draw_detail_footer(
+        &self,
+        rect: Rect,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        mx: f64,
+        body_top: f64,
+        view_h: f64,
+        body_h: f64,
+    ) {
+        let c = &theme.tokens.colors;
         if !self.status.is_empty() {
             text_left(
                 scene,
@@ -2368,7 +2809,6 @@ impl Core {
 
     #[allow(clippy::too_many_arguments)]
     fn draw_sun_arc(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -2518,6 +2958,22 @@ impl Core {
         // AQI hero: a severity-tinted chip with the big index number, the band
         // word, and a caption naming the scale.
         let hero = Rect::new(ix, hero_top, area.x1 - 16.0, hero_top + 64.0);
+        Self::draw_aqi_hero(scene, t, tr, theme, hero, aq);
+        Self::draw_aq_tiles(scene, t, tr, theme, ix, iw, hero, aq, cols, gap);
+    }
+
+    /// The AQI hero: a severity-tinted chip with the big index number, the
+    /// band word and a caption naming the scale (European AQI when
+    /// available, else a rough US-AQI fallback).
+    fn draw_aqi_hero(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hero: Rect,
+        aq: &AirQuality,
+    ) {
+        let c = &theme.tokens.colors;
         if let Some(aqi) = aq.european_aqi {
             let sev = aqi_band_color(aqi, theme);
             let chip = RoundedRect::from_rect(
@@ -2586,8 +3042,26 @@ impl Core {
                 sev,
             );
         }
+    }
 
-        // Key pollutant tiles (µg/m³).
+    /// The key pollutant tiles (µg/m³) below the AQI hero.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus ix/iw/hero/aq/cols/gap identify what's being painted — a context struct would ripple across every draw_* method here, out of scope for this split"
+    )]
+    fn draw_aq_tiles(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        ix: f64,
+        iw: f64,
+        hero: Rect,
+        aq: &AirQuality,
+        cols: usize,
+        gap: f64,
+    ) {
+        let c = &theme.tokens.colors;
         let tiles: [(&str, Option<f64>); 4] = [
             ("PM2.5", aq.pm2_5),
             ("PM10", aq.pm10),
@@ -2762,7 +3236,9 @@ impl Core {
             return;
         }
         let from = 1.min(self.model.locations.len() - 1);
-        let id = self.model.locations[from].id;
+        let Some(id) = self.model.locations.get(from).map(|loc| loc.id) else {
+            return;
+        };
         let start = Point::new(200.0, 232.0);
         let target = Point::new(200.0, start.y + 2.4 * (CHIP_H + CHIP_GAP));
         // Grab the chip at its vertical centre so the ghost sits on the cursor.
@@ -2920,6 +3396,130 @@ impl Core {
 // =====================================================================
 // Free drawing helpers
 // =====================================================================
+
+/// Precomputed section heights for [`Core::draw_detail`]'s scrollable body,
+/// measured once per frame so every section (and the scroll geometry) agree
+/// on where it starts.
+struct DetailBodyLayout {
+    gap: f64,
+    tile_cols: usize,
+    tiles_block_h: f64,
+    days_block_h: f64,
+    aq_cols: usize,
+    aq_block_h: f64,
+    body_h: f64,
+}
+
+impl DetailBodyLayout {
+    fn measure(mw: f64, snap: &WeatherSnapshot) -> Self {
+        let gap = 12.0;
+        let n_tiles = 5usize;
+        let tile_cols = balanced_tile_columns(mw, n_tiles);
+        let tile_rows = n_tiles.div_ceil(tile_cols);
+        let tiles_block_h = tile_rows as f64 * TILE_H + (tile_rows as f64 - 1.0) * gap;
+        let n_days = snap.daily.len().max(1);
+        let days_block_h = 40.0 + n_days as f64 * DAY_ROW_H + 12.0;
+        // Air-quality block: header + AQI hero + a row (or two) of pollutant
+        // tiles. Reserved whether or not a reading is available yet, so the
+        // scroll geometry stays stable while it loads.
+        let aq_cols = if mw >= 560.0 { 4 } else { 2 };
+        let aq_rows = 4usize.div_ceil(aq_cols);
+        let aq_tiles_h = aq_rows as f64 * AQ_TILE_H + (aq_rows as f64 - 1.0) * gap;
+        let aq_block_h = 40.0 + 64.0 + 12.0 + aq_tiles_h + 14.0;
+        let body_h = HERO_H
+            + SECTION_GAP
+            + tiles_block_h
+            + SECTION_GAP
+            + HOURLY_CARD_H
+            + SECTION_GAP
+            + days_block_h
+            + SECTION_GAP
+            + aq_block_h;
+        Self {
+            gap,
+            tile_cols,
+            tiles_block_h,
+            days_block_h,
+            aq_cols,
+            aq_block_h,
+            body_h,
+        }
+    }
+}
+
+/// Precomputed x-geometry for one row of the 7-day forecast card, shared by
+/// every row so they align pixel-for-pixel and agree on which optional
+/// columns (condition label, UV/wind extras, precip) fit.
+struct DayRowGeometry {
+    inner_l: f64,
+    inner_r: f64,
+    icon_x0: f64,
+    icon_x1: f64,
+    cond_x: f64,
+    bar_x0: f64,
+    bar_x1: f64,
+    lo_x: f64,
+    precip_left: f64,
+    extras_x: f64,
+    extras_right: f64,
+    show_precip: bool,
+    show_extras: bool,
+    show_cond: bool,
+}
+
+impl DayRowGeometry {
+    fn new(dcard: Rect) -> Self {
+        let inner_l = dcard.x0 + 18.0;
+        let inner_r = dcard.x1 - 16.0;
+        let dw = inner_r - inner_l;
+        let hi_w = 42.0;
+        let bar_w = (dw * 0.22).clamp(56.0, 120.0);
+        let bar_x1 = inner_r - hi_w;
+        let bar_x0 = bar_x1 - bar_w;
+        let lo_x = bar_x0 - 10.0;
+        let precip_right = lo_x - 44.0;
+        let precip_left = precip_right - 46.0;
+        let show_precip = dw >= 300.0;
+        let icon_x0 = inner_l + 92.0;
+        let icon_x1 = icon_x0 + 28.0;
+        let cond_x = icon_x1 + 10.0;
+        // Per-day extras (UV-index max + wind max) get a fixed-width column to
+        // the left of the precip/lo cluster, shown only when the row is wide
+        // enough to fit them without crowding the condition text.
+        let extras_w = 132.0;
+        let extras_right = if show_precip {
+            precip_left - 14.0
+        } else {
+            lo_x - 52.0
+        };
+        let extras_x = extras_right - extras_w;
+        let show_extras = (extras_x - cond_x) >= 118.0;
+        let cond_limit = if show_extras {
+            extras_x - 12.0
+        } else if show_precip {
+            precip_left - 10.0
+        } else {
+            lo_x - 44.0
+        };
+        let show_cond = (cond_limit - cond_x) >= 96.0;
+        Self {
+            inner_l,
+            inner_r,
+            icon_x0,
+            icon_x1,
+            cond_x,
+            bar_x0,
+            bar_x1,
+            lo_x,
+            precip_left,
+            extras_x,
+            extras_right,
+            show_precip,
+            show_extras,
+            show_cond,
+        }
+    }
+}
 
 fn tile_columns(mw: f64) -> usize {
     let gap = 12.0;

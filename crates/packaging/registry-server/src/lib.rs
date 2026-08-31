@@ -52,6 +52,11 @@ pub use storage::{ServerIdentity, Storage, StorageError};
 ///
 /// Returns `Ok(bound_addr)` — useful when the caller passed
 /// `0.0.0.0:0` for tests and needs to know the ephemeral port.
+///
+/// # Errors
+///
+/// Returns an error if `addr` can't be bound, or if reading the bound
+/// local address back from the listener fails.
 pub async fn bind_and_run(addr: SocketAddr, state: AppState) -> std::io::Result<SocketAddr> {
     let listener = TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
@@ -82,11 +87,14 @@ pub async fn bind_and_run(addr: SocketAddr, state: AppState) -> std::io::Result<
 /// Same as [`bind_and_run`] but blocks the current tokio task
 /// on a ctrl-c so callers embedding the server can await
 /// shutdown.
+///
+/// # Errors
+///
+/// Returns an error if [`bind_and_run`] fails, or if installing the
+/// ctrl-c signal handler fails.
 pub async fn run_server(addr: SocketAddr, state: AppState) -> std::io::Result<()> {
     let _bound = bind_and_run(addr, state).await?;
-    tokio::signal::ctrl_c()
-        .await
-        .expect("install ctrl_c handler");
+    tokio::signal::ctrl_c().await?;
     info!("shutdown signal received — exiting");
     Ok(())
 }

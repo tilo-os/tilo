@@ -881,7 +881,7 @@ mod tests {
             _t: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            self.builds.set(self.builds.get() + 1);
+            self.builds.set(self.builds.get().saturating_add(1));
             let n = taffy.leaf_node(Style {
                 size: Size {
                     width: Dimension::percent(1.0),

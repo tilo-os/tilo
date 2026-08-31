@@ -49,6 +49,16 @@ fn stroke(scene: &mut Scene, t: Affine, color: Color, w: f64, path: &BezPath) {
     );
 }
 
+/// Shared centre + half-extent geometry for one icon draw, threaded through
+/// the per-glyph draw helpers below so each keeps a 6-argument signature
+/// instead of carrying `cx`/`cy`/`half` separately. Part of [`draw`].
+#[derive(Clone, Copy)]
+struct IconGeom {
+    cx: f64,
+    cy: f64,
+    half: f64,
+}
+
 /// Draw `icon` centred at `center` within a `size`×`size` box.
 pub fn draw(scene: &mut Scene, t: Affine, icon: Icon, center: Point, size: f64, color: Color) {
     let s = size;
@@ -56,41 +66,34 @@ pub fn draw(scene: &mut Scene, t: Affine, icon: Icon, center: Point, size: f64, 
     let cx = center.x;
     let cy = center.y;
     let lw = (s * 0.11).max(1.4);
+    let geo = IconGeom { cx, cy, half };
 
     match icon {
         Icon::Play | Icon::Pause | Icon::Next | Icon::Prev => {
-            draw_transport(scene, t, icon, color, cx, cy, half, s);
+            draw_transport(scene, t, icon, color, geo, s);
         }
-        Icon::Home | Icon::Search => draw_nav(scene, t, icon, color, cx, cy, half, lw),
+        Icon::Home | Icon::Search => draw_nav(scene, t, icon, color, geo, lw),
         Icon::Songs | Icon::Queue | Icon::Albums | Icon::Disc | Icon::Artists | Icon::Playlist => {
-            draw_library(scene, t, icon, color, cx, cy, half, lw);
+            draw_library(scene, t, icon, color, geo, lw);
         }
         Icon::Download | Icon::Downloaded => {
-            draw_download(scene, t, icon, color, cx, cy, half, lw);
+            draw_download(scene, t, icon, color, geo, lw);
         }
         Icon::Shuffle | Icon::Repeat | Icon::RepeatOne => {
-            draw_shuffle_repeat(scene, t, icon, color, cx, cy, half, lw);
+            draw_shuffle_repeat(scene, t, icon, color, geo, lw);
         }
         Icon::Heart | Icon::HeartFilled | Icon::VolumeHigh | Icon::VolumeMute => {
-            draw_heart_volume(scene, t, icon, color, cx, cy, half, lw);
+            draw_heart_volume(scene, t, icon, color, geo, lw);
         }
         Icon::Plus | Icon::ChevronLeft | Icon::Note => {
-            draw_misc(scene, t, icon, color, cx, cy, half, lw);
+            draw_misc(scene, t, icon, color, geo, lw);
         }
     }
 }
 
 /// Play, Pause, Next, Prev.
-fn draw_transport(
-    scene: &mut Scene,
-    t: Affine,
-    icon: Icon,
-    color: Color,
-    cx: f64,
-    cy: f64,
-    half: f64,
-    s: f64,
-) {
+fn draw_transport(scene: &mut Scene, t: Affine, icon: Icon, color: Color, geo: IconGeom, s: f64) {
+    let IconGeom { cx, cy, half } = geo;
     match icon {
         Icon::Play => {
             let mut p = BezPath::new();
@@ -140,16 +143,8 @@ fn draw_transport(
 }
 
 /// Home, Search.
-fn draw_nav(
-    scene: &mut Scene,
-    t: Affine,
-    icon: Icon,
-    color: Color,
-    cx: f64,
-    cy: f64,
-    half: f64,
-    lw: f64,
-) {
+fn draw_nav(scene: &mut Scene, t: Affine, icon: Icon, color: Color, geo: IconGeom, lw: f64) {
+    let IconGeom { cx, cy, half } = geo;
     if icon == Icon::Home {
         let mut roof = BezPath::new();
         roof.move_to((cx - half * 0.8, cy - half * 0.05));
@@ -183,16 +178,8 @@ fn draw_nav(
 }
 
 /// Songs, Queue, Albums, Disc, Artists, Playlist.
-fn draw_library(
-    scene: &mut Scene,
-    t: Affine,
-    icon: Icon,
-    color: Color,
-    cx: f64,
-    cy: f64,
-    half: f64,
-    lw: f64,
-) {
+fn draw_library(scene: &mut Scene, t: Affine, icon: Icon, color: Color, geo: IconGeom, lw: f64) {
+    let IconGeom { cx, cy, half } = geo;
     match icon {
         Icon::Songs | Icon::Queue => {
             for (i, frac) in [(-0.6f64), 0.0, 0.6].iter().enumerate() {
@@ -257,16 +244,8 @@ fn draw_library(
 }
 
 /// Download, Downloaded.
-fn draw_download(
-    scene: &mut Scene,
-    t: Affine,
-    icon: Icon,
-    color: Color,
-    cx: f64,
-    cy: f64,
-    half: f64,
-    lw: f64,
-) {
+fn draw_download(scene: &mut Scene, t: Affine, icon: Icon, color: Color, geo: IconGeom, lw: f64) {
+    let IconGeom { cx, cy, half } = geo;
     let arrow = Line::new((cx, cy - half * 0.7), (cx, cy + half * 0.2));
     scene.stroke(
         &Stroke::new(lw).with_caps(vello::kurbo::Cap::Round),
@@ -304,11 +283,10 @@ fn draw_shuffle_repeat(
     t: Affine,
     icon: Icon,
     color: Color,
-    cx: f64,
-    cy: f64,
-    half: f64,
+    geo: IconGeom,
     lw: f64,
 ) {
+    let IconGeom { cx, cy, half } = geo;
     if icon == Icon::Shuffle {
         for sign in [-1.0f64, 1.0] {
             let mut p = BezPath::new();
@@ -374,11 +352,10 @@ fn draw_heart_volume(
     t: Affine,
     icon: Icon,
     color: Color,
-    cx: f64,
-    cy: f64,
-    half: f64,
+    geo: IconGeom,
     lw: f64,
 ) {
+    let IconGeom { cx, cy, half } = geo;
     if icon == Icon::Heart || icon == Icon::HeartFilled {
         let mut p = BezPath::new();
         p.move_to((cx, cy + half * 0.6));
@@ -442,16 +419,8 @@ fn draw_heart_volume(
 }
 
 /// Plus, `ChevronLeft`, Note.
-fn draw_misc(
-    scene: &mut Scene,
-    t: Affine,
-    icon: Icon,
-    color: Color,
-    cx: f64,
-    cy: f64,
-    half: f64,
-    lw: f64,
-) {
+fn draw_misc(scene: &mut Scene, t: Affine, icon: Icon, color: Color, geo: IconGeom, lw: f64) {
+    let IconGeom { cx, cy, half } = geo;
     match icon {
         Icon::Plus => {
             let hl = Line::new((cx - half * 0.7, cy), (cx + half * 0.7, cy));

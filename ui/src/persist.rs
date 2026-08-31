@@ -78,7 +78,7 @@ pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, Autosave) {
             Ok(false) => {}
             Err(e) => tracing::error!(error = %e, "legacy app state could not be imported"),
         }
-        finish(store)
+        Ok(finish(store))
     };
     attempt().unwrap_or_else(|e| {
         tracing::error!(error = %e, "app state unavailable; running without persistence");
@@ -87,11 +87,17 @@ pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, Autosave) {
 }
 
 /// [`open`] without the swallow-and-log fallback.
+///
+/// # Errors
+///
+/// Returns [`StoreError`] when the state directory can't be opened (a
+/// read-only home, a missing `HOME`, or a document a newer build wrote in
+/// an incompatible layout).
 pub fn try_open(manifest_id: &str) -> Result<(State, Autosave), StoreError> {
-    finish(DocStore::open_with_manifest_id(manifest_id)?)
+    Ok(finish(DocStore::open_with_manifest_id(manifest_id)?))
 }
 
-fn finish(mut store: DocStore) -> Result<(State, Autosave), StoreError> {
+fn finish(mut store: DocStore) -> (State, Autosave) {
     let mut doc = store.load_or_new();
     // A document written by a newer build is not opened, and the empty
     // stand-in must never reach disk — with autosave on, the first edit
@@ -107,11 +113,11 @@ fn finish(mut store: DocStore) -> Result<(State, Autosave), StoreError> {
         );
         eprintln!("qos: {reason}");
         eprintln!("qos: this session starts empty and will NOT be saved.");
-        return Ok((State::from_doc(doc), Autosave::disabled(reason)));
+        return (State::from_doc(doc), Autosave::disabled(reason));
     }
     let mut autosave = Autosave::spawn(store, DEFAULT_DEBOUNCE);
     autosave.seed(&mut doc);
-    Ok((State::from_doc(doc), autosave))
+    (State::from_doc(doc), autosave)
 }
 
 /// The degraded path: an empty document and a writer that is honest about
@@ -127,8 +133,14 @@ fn in_memory_fallback() -> (State, Autosave) {
 
 /// Convenience for tests and tools: same as [`open`] but for an explicit
 /// package id rather than `QOS_PACKAGE_ID`.
+///
+/// # Errors
+///
+/// Returns [`StoreError`] when the state directory can't be opened (a
+/// read-only home, a missing `HOME`, or a document a newer build wrote in
+/// an incompatible layout).
 pub fn open_for(package_id: &str) -> Result<(State, Autosave), StoreError> {
-    finish(DocStore::open_for(package_id)?)
+    Ok(finish(DocStore::open_for(package_id)?))
 }
 
 /// The debounce window [`open`] uses. Re-exported so an app that wants a

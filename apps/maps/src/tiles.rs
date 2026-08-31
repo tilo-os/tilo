@@ -911,12 +911,12 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
         .ok_or_else(|| "png output buffer size unavailable".to_string())?;
     let mut buf = vec![0u8; buf_size];
     let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
-    let (w, h) = (info.width, info.height);
+    let (width, height) = (info.width, info.height);
     buf.truncate(info.buffer_size());
     let rgba = match info.color_type {
         png::ColorType::Rgba => buf,
         png::ColorType::Rgb => {
-            let mut out = Vec::with_capacity((w * h * 4) as usize);
+            let mut out = Vec::with_capacity((width * height * 4) as usize);
             for px in buf.chunks_exact(3) {
                 let [r, g, b] = px else { continue };
                 out.extend_from_slice(&[*r, *g, *b, 255]);
@@ -924,14 +924,14 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
             out
         }
         png::ColorType::Grayscale => {
-            let mut out = Vec::with_capacity((w * h * 4) as usize);
+            let mut out = Vec::with_capacity((width * height * 4) as usize);
             for &g in &buf {
                 out.extend_from_slice(&[g, g, g, 255]);
             }
             out
         }
         png::ColorType::GrayscaleAlpha => {
-            let mut out = Vec::with_capacity((w * h * 4) as usize);
+            let mut out = Vec::with_capacity((width * height * 4) as usize);
             for px in buf.chunks_exact(2) {
                 let [luma, alpha] = px else { continue };
                 out.extend_from_slice(&[*luma, *luma, *luma, *alpha]);
@@ -940,7 +940,7 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
         }
         png::ColorType::Indexed => return Err("indexed PNG unsupported".into()),
     };
-    Ok((rgba, w, h))
+    Ok((rgba, width, height))
 }
 
 /// Default on-disk cache root. Honours `XDG_CACHE_HOME`, falling back to the

@@ -37,6 +37,13 @@ pub const ATTESTATION_DOMAIN: &[u8] = b"qos-pkg-attest-v1\0";
 
 /// Compute the preimage the attestor signs: `DOMAIN ||
 /// payload_root_hash || publisher_pubkey` (see module docs).
+#[allow(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "every index and length here is a compile-time constant \
+              (ATTESTATION_DOMAIN.len() plus two fixed 32-byte fields \
+              summing to the 82-byte output), not data-dependent"
+)]
 pub fn attestation_preimage(payload_root_hash: &BlobHash, publisher_pubkey: &[u8; 32]) -> [u8; 82] {
     // 18 (domain) + 32 (payload root) + 32 (pubkey) = 82.
     let mut out = [0u8; 82];
@@ -63,6 +70,11 @@ pub enum AttestorScope {
 
 impl AttestorScope {
     /// Parse the scope string in the TOML config.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::BadScope`] if `raw` is not `"all"`, a
+    /// non-empty `"mime:<list>"`, or a non-empty `"prefix:<list>"`.
     pub fn parse(raw: &str) -> Result<Self, TrustLoadError> {
         let raw = raw.trim();
         if raw == "all" {
@@ -118,6 +130,12 @@ pub struct TrustedAttestor {
 
 impl TrustedAttestor {
     /// Parse the hex pubkey into raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::BadHex`] if `pubkey_hex` is not valid hex,
+    /// or [`TrustLoadError::BadPubkeyLength`] if it doesn't decode to
+    /// exactly 32 bytes.
     pub fn pubkey_bytes(&self) -> Result<[u8; 32], TrustLoadError> {
         parse_pubkey_hex(&self.pubkey_hex)
     }
@@ -173,16 +191,31 @@ impl TrustedAttestors {
     }
 
     /// Decode from TOML source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::Parse`] if `s` is not valid TOML for this
+    /// shape.
     pub fn from_toml_str(s: &str) -> Result<Self, TrustLoadError> {
         toml::from_str(s).map_err(|e| TrustLoadError::Parse(e.to_string()))
     }
 
     /// Encode to TOML source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::Encode`] if serialisation fails.
     pub fn to_toml_string(&self) -> Result<String, TrustLoadError> {
         toml::to_string(self).map_err(|e| TrustLoadError::Encode(e.to_string()))
     }
 
     /// Load from disk; returns an empty registry if the file doesn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::Io`] if the file exists but can't be read
+    /// or isn't valid UTF-8, or [`TrustLoadError::Parse`] if it isn't valid
+    /// TOML for this shape.
     pub fn load(path: &Path) -> Result<Self, TrustLoadError> {
         if !path.exists() {
             return Ok(Self::empty());
@@ -193,6 +226,12 @@ impl TrustedAttestors {
     }
 
     /// Atomic-rename-based save.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::Io`] if the parent directory can't be
+    /// created or the write fails, or [`TrustLoadError::Encode`] if
+    /// serialisation fails.
     pub fn save(&self, path: &Path) -> Result<(), TrustLoadError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| TrustLoadError::Io(e.to_string()))?;
@@ -225,6 +264,12 @@ pub struct RevokedKey {
 
 impl RevokedKey {
     /// Parse the hex pubkey into raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::BadHex`] if `pubkey_hex` is not valid hex,
+    /// or [`TrustLoadError::BadPubkeyLength`] if it doesn't decode to
+    /// exactly 32 bytes.
     pub fn pubkey_bytes(&self) -> Result<[u8; 32], TrustLoadError> {
         parse_pubkey_hex(&self.pubkey_hex)
     }
@@ -244,16 +289,31 @@ impl RevocationList {
     }
 
     /// Decode from TOML.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::Parse`] if `s` is not valid TOML for this
+    /// shape.
     pub fn from_toml_str(s: &str) -> Result<Self, TrustLoadError> {
         toml::from_str(s).map_err(|e| TrustLoadError::Parse(e.to_string()))
     }
 
     /// Encode to TOML.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::Encode`] if serialisation fails.
     pub fn to_toml_string(&self) -> Result<String, TrustLoadError> {
         toml::to_string(self).map_err(|e| TrustLoadError::Encode(e.to_string()))
     }
 
     /// Load from disk; returns an empty list if the file doesn't exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::Io`] if the file exists but can't be read
+    /// or isn't valid UTF-8, or [`TrustLoadError::Parse`] if it isn't valid
+    /// TOML for this shape.
     pub fn load(path: &Path) -> Result<Self, TrustLoadError> {
         if !path.exists() {
             return Ok(Self::empty());
@@ -264,6 +324,12 @@ impl RevocationList {
     }
 
     /// Atomic-rename-based save.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustLoadError::Io`] if the parent directory can't be
+    /// created or the write fails, or [`TrustLoadError::Encode`] if
+    /// serialisation fails.
     pub fn save(&self, path: &Path) -> Result<(), TrustLoadError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| TrustLoadError::Io(e.to_string()))?;

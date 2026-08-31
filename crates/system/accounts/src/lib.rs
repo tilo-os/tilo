@@ -203,12 +203,22 @@ impl AccountStore {
     }
 
     /// Persist the store to the default location.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no config directory is available, or
+    /// [`AccountStore::save_in`] fails.
     pub fn save(&self) -> std::io::Result<()> {
         let root = config_root().ok_or_else(|| std::io::Error::other("no config dir"))?;
         self.save_in(&root)
     }
 
     /// Persist the store under an explicit config root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store's directory can't be created or the
+    /// file can't be written.
     pub fn save_in(&self, config_root: &Path) -> std::io::Result<()> {
         let path = store_path_in(config_root);
         if let Some(parent) = path.parent() {

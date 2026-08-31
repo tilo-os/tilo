@@ -38,14 +38,24 @@ impl AccountSyncReporter {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if no config directory is available, the status
+    /// lock can't be acquired, or the updated status can't be saved.
     pub fn started(&self) -> std::io::Result<()> {
         self.transition(AccountSyncHealth::Syncing, false, Some("Syncing"))
     }
 
+    /// # Errors
+    ///
+    /// See [`AccountSyncReporter::started`].
     pub fn succeeded(&self) -> std::io::Result<()> {
         self.transition(AccountSyncHealth::Healthy, true, Some("Up to date"))
     }
 
+    /// # Errors
+    ///
+    /// See [`AccountSyncReporter::started`].
     pub fn offline(&self) -> std::io::Result<()> {
         self.transition(
             AccountSyncHealth::Offline,
@@ -54,6 +64,9 @@ impl AccountSyncReporter {
         )
     }
 
+    /// # Errors
+    ///
+    /// See [`AccountSyncReporter::started`].
     pub fn needs_authentication(&self) -> std::io::Result<()> {
         self.transition(
             AccountSyncHealth::NeedsAuthentication,
@@ -64,6 +77,10 @@ impl AccountSyncReporter {
 
     /// Raw protocol/transport errors deliberately are not accepted here: they
     /// commonly contain credential-bearing URLs or response bodies.
+    ///
+    /// # Errors
+    ///
+    /// See [`AccountSyncReporter::started`].
     pub fn failed(&self) -> std::io::Result<()> {
         self.transition(AccountSyncHealth::Error, false, Some("Sync failed"))
     }
@@ -85,7 +102,9 @@ impl AccountSyncReporter {
             .and_then(|status| status.last_success_unix);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_secs() as i64);
+            .map_or(0, |duration| {
+                i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+            });
         store.report(
             &self.id,
             AccountSyncStatus::sanitized(
@@ -98,6 +117,10 @@ impl AccountSyncReporter {
         store.save_in_unlocked(root)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if no config directory is available, the status
+    /// lock can't be acquired, or the updated store can't be saved.
     pub fn remove(&self) -> std::io::Result<()> {
         let root = self
             .config_root
@@ -122,6 +145,9 @@ impl StatusLock {
             .read(true)
             .write(true)
             .create(true)
+            // This file holds no content, only the flock itself; state that
+            // explicitly rather than leaving `create`'s truncation implicit.
+            .truncate(false)
             .mode(0o600)
             .open(path)?;
         // SAFETY: flock only observes the valid fd owned by `file`; the file
@@ -214,11 +240,19 @@ impl AccountSyncStatusStore {
         self.statuses.remove(id.as_str());
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if no config directory is available, or
+    /// [`AccountSyncStatusStore::save_in`] fails.
     pub fn save(&self) -> std::io::Result<()> {
         let root = crate::config_root().ok_or_else(|| std::io::Error::other("no config dir"))?;
         self.save_in(&root)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the status lock can't be acquired, `self` can't
+    /// be serialised, or the file can't be written.
     pub fn save_in(&self, config_root: &Path) -> std::io::Result<()> {
         let _lock = StatusLock::acquire(config_root)?;
         self.save_in_unlocked(config_root)

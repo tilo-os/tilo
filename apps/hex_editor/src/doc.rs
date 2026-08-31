@@ -36,13 +36,13 @@ impl HexDoc {
         matches!(doc.get(&ROOT, "bytes"), Ok(Some((Value::Scalar(_), _))))
     }
 
-    /// Get-or-create the `meta` map.
-    fn meta_map(doc: &mut AutoCommit) -> ObjId {
+    /// Get-or-create the `meta` map. `None` only if `put_object` on the root
+    /// itself fails, which does not happen in practice; callers treat that
+    /// the same as any other best-effort meta write.
+    fn meta_map(doc: &mut AutoCommit) -> Option<ObjId> {
         match doc.get(&ROOT, "meta") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&ROOT, "meta", ObjType::Map)
-                .expect("put_object meta on root never fails"),
+            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+            _ => doc.put_object(&ROOT, "meta", ObjType::Map).ok(),
         }
     }
 
@@ -68,7 +68,9 @@ impl HexDoc {
     /// action model — it is a plain register write that round-trips a reopened
     /// document to where the user was.
     pub fn write_meta(doc: &mut AutoCommit, model: &HexModel) {
-        let meta = Self::meta_map(doc);
+        let Some(meta) = Self::meta_map(doc) else {
+            return;
+        };
         let _ = doc.put(&meta, "cursor", model.cursor() as i64);
         let _ = doc.put(&meta, "bytes_per_row", model.bytes_per_row() as i64);
         let _ = doc.put(
@@ -101,9 +103,8 @@ impl HexDoc {
     }
 
     fn read_meta_int(doc: &AutoCommit, key: &str) -> Option<i64> {
-        let meta = match doc.get(&ROOT, "meta") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::Map), meta))) = doc.get(&ROOT, "meta") else {
+            return None;
         };
         match doc.get(&meta, key) {
             Ok(Some((Value::Scalar(v), _))) => v.to_i64(),
@@ -112,9 +113,8 @@ impl HexDoc {
     }
 
     fn read_meta_str(doc: &AutoCommit, key: &str) -> Option<String> {
-        let meta = match doc.get(&ROOT, "meta") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::Map), meta))) = doc.get(&ROOT, "meta") else {
+            return None;
         };
         match doc.get(&meta, key) {
             Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {

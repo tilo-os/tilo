@@ -36,12 +36,20 @@ fn arg(name: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
     args.iter()
         .position(|a| a == name)
-        .and_then(|i| args.get(i + 1))
+        .and_then(|i| i.checked_add(1))
+        .and_then(|i| args.get(i))
         .cloned()
 }
 
 fn main() {
-    let config_dir = PathBuf::from(arg("--config-dir").expect("--config-dir is required"));
+    if let Err(e) = run() {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), String> {
+    let config_dir = PathBuf::from(arg("--config-dir").ok_or("--config-dir is required")?);
     let package_id = arg("--package-id").unwrap_or_else(|| "dev.qos.sheets".to_string());
     let name = arg("--name").unwrap_or_else(|| "Sheets".to_string());
     // The payload binary the packaged app runs. `/bin/true` proves the
@@ -60,7 +68,8 @@ fn main() {
         &payload_bin,
         arg("--manifest").map(PathBuf::from).as_deref(),
         &identity,
-    );
+    )
+    .map_err(|e| e.to_string())?;
     match &authored.source {
         authoring::ManifestSource::Package(path) => {
             println!("publishing the package manifest at {}", path.display());
@@ -81,8 +90,11 @@ fn main() {
         qpkg.truncate(advertised_len / 2);
     }
 
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-    let port = listener.local_addr().unwrap().port();
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("bind loopback: {e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("read the bound loopback address: {e}"))?
+        .port();
     let base_url = format!("http://127.0.0.1:{port}");
 
     let key = SigningKey::from_bytes(&[23u8; 32]);
@@ -108,16 +120,20 @@ fn main() {
         signature_hex: String::new(),
     };
     sign_entry(&mut entry, &key);
-    let entries_json = serde_json::to_string(&vec![entry]).expect("encode entries");
+    let entries_json =
+        serde_json::to_string(&vec![entry]).map_err(|e| format!("encode entries: {e}"))?;
 
-    std::fs::create_dir_all(&config_dir).expect("create config dir");
+    std::fs::create_dir_all(&config_dir).map_err(|e| format!("create config dir: {e}"))?;
     std::fs::write(
         config_dir.join("registries.toml"),
         format!("[[registry]]\nname = \"local test\"\nbase_url = \"{base_url}\"\n"),
     )
-    .expect("write registries.toml");
+    .map_err(|e| format!("write registries.toml: {e}"))?;
 
-    println!("registry {base_url} serving {package_id} ({name}) — config in {config_dir:?}");
+    println!(
+        "registry {base_url} serving {package_id} ({name}) — config in {}",
+        config_dir.display()
+    );
     // Flush so a harness waiting on stdout sees it immediately.
     let _ = std::io::stdout().flush();
 
@@ -127,6 +143,7 @@ fn main() {
         let Ok(stream) = stream else { continue };
         serve_one(stream, &entries, &bytes, delay_ms);
     }
+    Ok(())
 }
 
 fn serve_one(mut stream: TcpStream, entries: &str, qpkg: &[u8], delay_ms: u64) {
@@ -148,16 +165,19 @@ fn serve_one(mut stream: TcpStream, entries: &str, qpkg: &[u8], delay_ms: u64) {
         }
     }
     let path = request_line.split_whitespace().nth(1).unwrap_or("/");
+    let is_qpkg = std::path::Path::new(path)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("qpkg"));
     let (status, ctype, body): (&str, &str, Vec<u8>) = if path.starts_with("/entries") {
         ("200 OK", "application/json", entries.as_bytes().to_vec())
-    } else if path.ends_with(".qpkg") {
+    } else if is_qpkg {
         ("200 OK", "application/octet-stream", qpkg.to_vec())
     } else {
         ("404 Not Found", "text/plain", b"no".to_vec())
     };
     // Only the package download is slowed; the catalogue listing stays
     // fast so the palette still fills in while you type.
-    if delay_ms > 0 && path.ends_with(".qpkg") {
+    if delay_ms > 0 && is_qpkg {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
     }
     eprintln!("[registry] {path} -> {status}");
