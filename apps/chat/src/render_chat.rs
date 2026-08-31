@@ -209,10 +209,6 @@ pub(crate) fn draw_avatar(
     }
 }
 
-fn char_to_byte(s: &str, ci: usize) -> usize {
-    s.char_indices().nth(ci).map_or_else(|| s.len(), |(b, _)| b)
-}
-
 /// Human label for a presence state, shown under a member in the roster.
 fn presence_label(p: Presence) -> &'static str {
     match p {
@@ -296,11 +292,12 @@ impl ChatApp {
 
     // ------------------------------------------------------------- sidebar
     pub(crate) fn draw_sidebar(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
@@ -308,7 +305,7 @@ impl ChatApp {
         fill_rect(scene, tf, side, c.surfaces.raised);
 
         let header = self.draw_sidebar_header(scene, tf, tr, theme, side, hits);
-        self.draw_sidebar_tree(scene, tf, tr, theme, side, header, hits);
+        self.draw_sidebar_tree(scene, tf, tr, theme, presence, side, header, hits);
         self.draw_sidebar_identity_bar(scene, tf, tr, theme, side, hits);
     }
 
@@ -414,11 +411,12 @@ impl ChatApp {
         reason = "draw-context bundle, not real parameter coupling"
     )]
     fn draw_sidebar_tree(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         side: Rect,
         header: Rect,
         hits: &mut Vec<(Rect, Hit)>,
@@ -428,9 +426,10 @@ impl ChatApp {
         let body_bottom = side.y1 - 60.0;
 
         // Uncategorised channels (category id "").
-        y = self.draw_channel_group(scene, tf, tr, theme, side, None, y, hits);
+        y = self.draw_channel_group(scene, tf, tr, theme, presence, side, None, y, hits);
 
-        for cat in self.ws_categories() {
+        let categories: Vec<_> = self.ws_categories().into_iter().cloned().collect();
+        for cat in categories {
             if y > body_bottom {
                 break;
             }
@@ -449,21 +448,19 @@ impl ChatApp {
             );
             // Inline rename for a category, else its name.
             let renaming_cat =
-                matches!(&self.rename, Some((MenuTarget::Category(id), _)) if id == &cat.id);
+                matches!(&self.rename, Some(MenuTarget::Category(id)) if id == &cat.id);
             if renaming_cat {
-                if let Some((_, txt)) = &self.rename {
-                    Self::draw_inline_rename(
-                        scene,
-                        tf,
-                        tr,
-                        theme,
-                        hrow.x0 + 18.0,
-                        y + 4.0,
-                        side.x1 - 60.0,
-                        txt,
-                        hits,
-                    );
-                }
+                self.draw_inline_rename(
+                    scene,
+                    tf,
+                    tr,
+                    theme,
+                    presence,
+                    hrow.x0 + 18.0,
+                    y + 4.0,
+                    hrow.width() - 60.0,
+                    hits,
+                );
             } else {
                 let name = truncate_to(tr, &cat.name.to_uppercase(), 10.5, hrow.width() - 60.0);
                 text(
@@ -493,11 +490,23 @@ impl ChatApp {
             // Caret + name toggles collapse; right-click (resolved against the
             // toggle / "+" hit in `on_right_click`) opens the category menu.
             let toggle = Rect::new(hrow.x0, y, plus.x0, y + 24.0);
-            ChatApp::push_hit(hits, toggle, Hit::CategoryToggle(cat.id.clone()));
+            if !renaming_cat {
+                ChatApp::push_hit(hits, toggle, Hit::CategoryToggle(cat.id.clone()));
+            }
             y += 26.0;
 
             if !cat.collapsed {
-                y = self.draw_channel_group(scene, tf, tr, theme, side, Some(&cat.id), y, hits);
+                y = self.draw_channel_group(
+                    scene,
+                    tf,
+                    tr,
+                    theme,
+                    presence,
+                    side,
+                    Some(&cat.id),
+                    y,
+                    hits,
+                );
             }
             y += 6.0;
         }
@@ -664,31 +673,35 @@ impl ChatApp {
     /// each voice channel — Discord-style.
     #[allow(clippy::too_many_arguments)]
     fn draw_channel_group(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         side: Rect,
         category: Option<&str>,
         mut y: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
         let cat_key = category.unwrap_or("");
-        let channels = self.category_channels(cat_key);
+        let channels: Vec<_> = self
+            .category_channels(cat_key)
+            .into_iter()
+            .cloned()
+            .collect();
         // Index for swipe parity: position among all ws_channels.
-        let ws_channels = self.ws_channels();
-        for ch in channels {
+        let ws_channel_ids: Vec<_> = self.ws_channels().iter().map(|c| c.id.clone()).collect();
+        for ch in &channels {
             // Swipe offset: shift this row left while it's being swiped, and
             // reveal a red delete affordance behind it.
             let swipe_dx = self
                 .swipe
                 .filter(|s| {
-                    ws_channels.get(s.channel_index).map(|cc| cc.id.as_str())
-                        == Some(ch.id.as_str())
+                    ws_channel_ids.get(s.channel_index).map(String::as_str) == Some(ch.id.as_str())
                 })
                 .map_or(0.0, |s| s.dx());
-            y = self.draw_channel_row(scene, tf, tr, theme, side, ch, y, swipe_dx, hits);
+            y = self.draw_channel_row(scene, tf, tr, theme, presence, side, ch, y, swipe_dx, hits);
 
             // Voice presence: list connected members under a voice channel.
             if ch.kind == ChannelKind::Voice {
@@ -706,11 +719,12 @@ impl ChatApp {
         reason = "draw-context bundle, not real parameter coupling"
     )]
     fn draw_channel_row(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         side: Rect,
         ch: &crate::model::Channel,
         y: f64,
@@ -734,7 +748,7 @@ impl ChatApp {
 
         Self::draw_channel_row_swipe_delete(scene, tf, tr, theme, &ctx, swipe_dx);
         Self::draw_channel_row_glyph(scene, tf, tr, theme, &ctx);
-        self.draw_channel_row_label(scene, tf, tr, theme, &ctx, hits);
+        self.draw_channel_row_label(scene, tf, tr, theme, presence, &ctx, hits);
         self.draw_channel_row_status(scene, tf, tr, theme, &ctx);
 
         // Click joins/opens; right-click (resolved against this row's
@@ -744,7 +758,10 @@ impl ChatApp {
         } else {
             Hit::Channel(ch.id.clone())
         };
-        ChatApp::push_hit(hits, row, click_hit);
+        let renaming = matches!(&self.rename, Some(MenuTarget::Channel(id)) if id == &ch.id);
+        if !renaming {
+            ChatApp::push_hit(hits, row, click_hit);
+        }
         y + 34.0
     }
 
@@ -816,32 +833,31 @@ impl ChatApp {
 
     /// The channel's inline rename editor when it is the rename target,
     /// otherwise its (possibly truncated) name.
+    #[allow(clippy::too_many_arguments)]
     fn draw_channel_row_label(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         ctx: &ChannelRowCtx<'_>,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let renaming =
-            matches!(&self.rename, Some((MenuTarget::Channel(id), _)) if id == &ctx.ch.id);
+        let renaming = matches!(&self.rename, Some(MenuTarget::Channel(id)) if id == &ctx.ch.id);
         if renaming {
-            if let Some((_, txt)) = &self.rename {
-                Self::draw_inline_rename(
-                    scene,
-                    tf,
-                    tr,
-                    theme,
-                    ctx.row.x0 + 32.0,
-                    ctx.y + 6.0,
-                    ctx.row.width() - 80.0,
-                    txt,
-                    hits,
-                );
-            }
+            self.draw_inline_rename(
+                scene,
+                tf,
+                tr,
+                theme,
+                presence,
+                ctx.row.x0 + 32.0,
+                ctx.y + 6.0,
+                ctx.row.width() - 80.0,
+                hits,
+            );
             return;
         }
         let name_col = if ctx.is_active || ctx.ch.unread > 0 {
@@ -995,40 +1011,26 @@ impl ChatApp {
     /// text + a caret), recording a confirm hit on it.
     #[allow(clippy::too_many_arguments)]
     fn draw_inline_rename(
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         x: f64,
         y: f64,
         w: f64,
-        value: &str,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
         let box_r = Rect::new(x - 4.0, y - 3.0, x + w, y + 19.0);
         fill_round(scene, tf, box_r, 5.0, c.neutral[2]);
         stroke_round(scene, tf, box_r, 5.0, c.border_focus, 1.4);
-        let (tw, _) = text(
-            scene,
-            tr,
-            tf,
-            value,
-            13.0,
-            c.text_primary,
-            x,
-            y,
-            TextWeight::Regular,
-            Some((w - 8.0) as f32),
-        );
-        let caret = Rect::new(
-            x + f64::from(tw) + 1.0,
-            y,
-            x + f64::from(tw) + 2.4,
-            y + 16.0,
-        );
-        fill_rect(scene, tf, caret, c.border_focus);
-        ChatApp::push_hit(hits, box_r, Hit::RenameConfirm);
+        self.rename_input
+            .apply_layout_external(Rect::new(x, y, x + w - 8.0, y + 16.0));
+        self.rename_input.set_focus(true);
+        self.rename_input.draw(scene, tf, tr, theme, presence);
+        ChatApp::push_hit(hits, box_r, Hit::FocusRename);
     }
 
     // -------------------------------------------------------------- header
@@ -1316,12 +1318,14 @@ impl ChatApp {
     }
 
     // ------------------------------------------------------------ messages
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_messages(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         area: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
@@ -1351,7 +1355,9 @@ impl ChatApp {
         let mut y = self.draw_messages_date_divider(scene, tf, tr, theme, area, y, divider_h);
 
         for rm in &rows {
-            self.draw_row(scene, tf, tr, theme, rm, area, text_x, text_w, &mut y, hits);
+            self.draw_row(
+                scene, tf, tr, theme, presence, rm, area, text_x, text_w, &mut y, hits,
+            );
         }
     }
 
@@ -1500,12 +1506,11 @@ impl ChatApp {
         show_header: bool,
         text_w: f32,
     ) -> RowM {
-        let editing = self.editing.as_ref().is_some_and(|(id, _)| id == &m.id);
+        let editing = self.editing.as_ref() == Some(&m.id);
         // The editor measures its live working text so the timeline reflows as
         // you type; a static message measures its stored body.
         let body_h = if editing {
-            let t = self.editing.as_ref().map_or("", |(_, t)| t.as_str());
-            f64::from(tr.measure(t, 15.0, Some(text_w)).1).max(19.0)
+            f64::from(tr.measure(self.edit_input.value(), 15.0, Some(text_w)).1).max(19.0)
         } else if m.text.is_empty() {
             0.0
         } else if m.mentions.is_empty() {
@@ -1556,11 +1561,12 @@ impl ChatApp {
         reason = "draw-context bundle, not real parameter coupling"
     )]
     fn draw_row(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         rm: &RowM,
         area: Rect,
         text_x: f64,
@@ -1568,7 +1574,7 @@ impl ChatApp {
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let Some(m) = self.message(&rm.idx_id) else {
+        let Some(m) = self.message(&rm.idx_id).cloned() else {
             return;
         };
         let top_gap = if rm.show_header { 14.0 } else { 3.0 };
@@ -1578,7 +1584,7 @@ impl ChatApp {
         let content_top = *y;
 
         if rm.show_header {
-            self.draw_row_header(scene, tf, tr, theme, area, text_x, m, y);
+            self.draw_row_header(scene, tf, tr, theme, area, text_x, &m, y);
         }
 
         self.draw_row_body(
@@ -1586,8 +1592,9 @@ impl ChatApp {
             tf,
             tr,
             theme,
+            presence,
             rm,
-            m,
+            &m,
             area,
             text_x,
             text_w,
@@ -1595,7 +1602,7 @@ impl ChatApp {
             y,
             hits,
         );
-        self.draw_row_footer(scene, tf, tr, theme, rm, m, text_x, text_w, y, hits);
+        self.draw_row_footer(scene, tf, tr, theme, rm, &m, text_x, text_w, y, hits);
     }
 
     /// A message group's header: avatar, author name (in their palette
@@ -1666,11 +1673,12 @@ impl ChatApp {
         reason = "draw-context bundle, not real parameter coupling"
     )]
     fn draw_row_body(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         rm: &RowM,
         m: &Message,
         area: Rect,
@@ -1682,7 +1690,7 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         if rm.editing {
-            self.draw_message_editor(scene, tf, tr, theme, text_x, text_w, rm, y, hits);
+            self.draw_message_editor(scene, tf, tr, theme, presence, text_x, text_w, rm, y, hits);
             return;
         }
         if !m.text.is_empty() {
@@ -1793,11 +1801,12 @@ impl ChatApp {
     /// height stays exact as the text grows.
     #[allow(clippy::too_many_arguments)]
     fn draw_message_editor(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         text_x: f64,
         text_w: f32,
         rm: &RowM,
@@ -1805,7 +1814,6 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let editing_text = self.editing.as_ref().map_or("", |(_, t)| t.as_str());
         let box_h = rm.body_h + EDIT_BOX_PAD;
         let er = Rect::new(
             text_x - 8.0,
@@ -1815,41 +1823,16 @@ impl ChatApp {
         );
         fill_round(scene, tf, er, 10.0, c.neutral[2]);
         stroke_round(scene, tf, er, 10.0, c.border_focus, 1.6);
-        if editing_text.is_empty() {
-            label(
-                scene,
-                tr,
-                tf,
-                "Edit message…",
-                15.0,
-                c.text_dim,
-                text_x,
-                *y + 8.0,
-            );
-        } else {
-            text(
-                scene,
-                tr,
-                tf,
-                editing_text,
-                15.0,
-                c.text_primary,
-                text_x,
-                *y + 8.0,
-                TextWeight::Regular,
-                Some(text_w),
-            );
-        }
-        let caret_byte = char_to_byte(editing_text, self.caret);
-        let prefix = editing_text.get(..caret_byte).unwrap_or(editing_text);
-        let cx =
-            (text_x + f64::from(tr.measure(prefix, 15.0, None).0)).min(text_x + f64::from(text_w));
-        fill_rect(
-            scene,
-            tf,
-            Rect::new(cx, *y + 8.0, cx + 1.6, *y + 27.0),
-            c.border_focus,
-        );
+        self.edit_input.set_placeholder("Edit message…");
+        self.edit_input.apply_layout_external(Rect::new(
+            text_x - 10.0,
+            *y,
+            text_x + f64::from(text_w) + 10.0,
+            *y + box_h,
+        ));
+        self.edit_input.set_focus(true);
+        self.edit_input.draw(scene, tf, tr, theme, presence);
+        ChatApp::push_hit(hits, er, Hit::FocusEdit);
         *y += box_h;
 
         // Controls row: keyboard hint on the left, Cancel + Save on the right.
