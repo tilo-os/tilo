@@ -28,7 +28,36 @@ fn fc(path: &str, area: ChangeArea, kind: ChangeKind, add: u32, del: u32) -> Fil
 /// Build the full sample model, with the graph lanes already assigned and a
 /// map of per-file diffs for the changed files.
 pub fn model() -> (RepoModel, DiffMap) {
-    let staged = vec![
+    let staged = sample_staged_changes();
+    let unstaged = sample_unstaged_changes();
+    let untracked = sample_untracked_changes();
+    let diffs = sample_diffs();
+
+    let mut commits = commit_history();
+    let layout = graph::layout(&mut commits);
+
+    let model = RepoModel {
+        name: "renderer".into(),
+        head: "main".into(),
+        workdir: "/var/workspace/renderer".into(),
+        staged,
+        unstaged,
+        untracked,
+        commits,
+        branches: sample_branches(),
+        tags: sample_tags(),
+        stashes: sample_stashes(),
+        remotes: sample_remotes(),
+        graph_width: layout.lanes,
+        author_name: "Quinten".into(),
+        author_email: "quinten@daskju.com".into(),
+    };
+
+    (model, diffs)
+}
+
+fn sample_staged_changes() -> Vec<FileChange> {
+    vec![
         fc(
             "src/render/scene.rs",
             ChangeArea::Staged,
@@ -54,8 +83,11 @@ pub fn model() -> (RepoModel, DiffMap) {
             r.old_path = Some("src/gpu/adapter.rs".to_string());
             r
         },
-    ];
-    let unstaged = vec![
+    ]
+}
+
+fn sample_unstaged_changes() -> Vec<FileChange> {
+    vec![
         fc(
             "src/app.rs",
             ChangeArea::Unstaged,
@@ -77,8 +109,11 @@ pub fn model() -> (RepoModel, DiffMap) {
             0,
             41,
         ),
-    ];
-    let untracked = vec![
+    ]
+}
+
+fn sample_untracked_changes() -> Vec<FileChange> {
+    vec![
         fc(
             "docs/rendering.md",
             ChangeArea::Untracked,
@@ -93,10 +128,12 @@ pub fn model() -> (RepoModel, DiffMap) {
             37,
             0,
         ),
-    ];
+    ]
+}
 
-    // Staged files carry a HEAD→index diff; unstaged / untracked files carry a
-    // worktree diff — key each on its side so selection resolves the right one.
+/// Staged files carry a HEAD→index diff; unstaged / untracked files carry a
+/// worktree diff — key each on its side so selection resolves the right one.
+fn sample_diffs() -> DiffMap {
     let mut diffs: DiffMap = DiffMap::new();
     diffs.insert(DiffKey::staged("src/render/scene.rs"), diff_scene());
     diffs.insert(DiffKey::staged("src/render/pipeline.rs"), diff_pipeline());
@@ -109,11 +146,11 @@ pub fn model() -> (RepoModel, DiffMap) {
         DiffKey::worktree("src/render/shaders/blur.wgsl"),
         diff_untracked_wgsl(),
     );
+    diffs
+}
 
-    let mut commits = commit_history();
-    let layout = graph::layout(&mut commits);
-
-    let branches = vec![
+fn sample_branches() -> Vec<Branch> {
+    vec![
         Branch {
             name: "main".into(),
             is_head: true,
@@ -159,9 +196,11 @@ pub fn model() -> (RepoModel, DiffMap) {
             behind: 0,
             tip: "3a2b1c0".into(),
         },
-    ];
+    ]
+}
 
-    let tags = vec![
+fn sample_tags() -> Vec<Tag> {
+    vec![
         Tag {
             name: "v0.4.0".into(),
             target: "7d6e5f4".into(),
@@ -177,9 +216,11 @@ pub fn model() -> (RepoModel, DiffMap) {
             target: "8a9b0c1".into(),
             message: None,
         },
-    ];
+    ]
+}
 
-    let stashes = vec![
+fn sample_stashes() -> Vec<Stash> {
+    vec![
         Stash {
             index: 0,
             message: "WIP on main: experiment with msaa".into(),
@@ -190,9 +231,11 @@ pub fn model() -> (RepoModel, DiffMap) {
             message: "WIP on feature/wgpu-pipeline: bind group cache".into(),
             branch: "feature/wgpu-pipeline".into(),
         },
-    ];
+    ]
+}
 
-    let remotes = vec![
+fn sample_remotes() -> Vec<Remote> {
+    vec![
         Remote {
             name: "origin".into(),
             url: "git@code.podesta.ai:qos/renderer.git".into(),
@@ -201,26 +244,7 @@ pub fn model() -> (RepoModel, DiffMap) {
             name: "upstream".into(),
             url: "https://github.com/linebender/vello.git".into(),
         },
-    ];
-
-    let model = RepoModel {
-        name: "renderer".into(),
-        head: "main".into(),
-        workdir: "/var/workspace/renderer".into(),
-        staged,
-        unstaged,
-        untracked,
-        commits,
-        branches,
-        tags,
-        stashes,
-        remotes,
-        graph_width: layout.lanes,
-        author_name: "Quinten".into(),
-        author_email: "quinten@daskju.com".into(),
-    };
-
-    (model, diffs)
+    ]
 }
 
 fn rl(name: &str, kind: RefKind) -> RefLabel {
@@ -231,9 +255,16 @@ fn rl(name: &str, kind: RefKind) -> RefLabel {
 }
 
 fn commit_history() -> Vec<Commit> {
-    // Newest-first. ids are short hex-ish strings; parents reference ids.
-    // Structure: a merge of feature/wgpu-pipeline into main, a parallel
-    // fix branch, and a shared root — enough to exercise 3 lanes.
+    let mut commits = commit_history_recent();
+    commits.extend(commit_history_older());
+    commits
+}
+
+/// The four most recent commits: the wgpu-pipeline merge, its two-lane
+/// history, and the shared root they both branch from (part of
+/// [`commit_history`]). Newest-first; ids are short hex-ish strings and
+/// `parents` reference ids — structured to exercise 3 graph lanes.
+fn commit_history_recent() -> Vec<Commit> {
     vec![
         Commit {
             id: "a1b2c3d".into(),
@@ -289,6 +320,14 @@ fn commit_history() -> Vec<Commit> {
             lane: 1,
             files: vec![],
         },
+    ]
+}
+
+/// The four older commits: the 0.4.0 release, the scene-leak fix branch,
+/// the text-shaping hotfix, and the initial skeleton (part of
+/// [`commit_history`]).
+fn commit_history_older() -> Vec<Commit> {
+    vec![
         Commit {
             id: "7d6e5f4".into(),
             summary: "Release 0.4.0 — vello migration".into(),
@@ -298,14 +337,19 @@ fn commit_history() -> Vec<Commit> {
             when: "2 days ago".into(),
             time: 1_719_570_000,
             parents: vec!["5c4b3a2".into()],
-            refs: vec![rl("origin/main", RefKind::RemoteBranch), rl("v0.4.0", RefKind::Tag)],
+            refs: vec![
+                rl("origin/main", RefKind::RemoteBranch),
+                rl("v0.4.0", RefKind::Tag),
+            ],
             lane: 0,
             files: vec![],
         },
         Commit {
             id: "5c4b3a2".into(),
             summary: "Fix scene memory leak on resize".into(),
-            body: "The encoded scene wasn't reset between frames when the\nsurface was reconfigured.".into(),
+            body:
+                "The encoded scene wasn't reset between frames when the\nsurface was reconfigured."
+                    .into(),
             author_name: "Priya N.".into(),
             author_email: "priya@example.com".into(),
             when: "3 days ago".into(),

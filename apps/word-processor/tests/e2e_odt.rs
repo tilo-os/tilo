@@ -3,6 +3,16 @@
 //! This exercises the whole stack — file bytes ↔ ODF codec ↔ canonical CRDT ↔
 //! the editing model — the way the integrated OS app does.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::path::{Path, PathBuf};
 
 use ui::Widget;

@@ -14,6 +14,16 @@
 //! `XDG_CONFIG_HOME` / `XDG_DATA_HOME` pointed at per-test
 //! tempdirs so the tests never touch the developer's real config.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -125,15 +135,16 @@ fn build_qpkg(
     publisher_sk: &SigningKey,
     payload_dir: &Path,
 ) {
-    let mut store = MemoryBlobStore::new();
-    let identity = SigningIdentity::from_signing_key(publisher_sk.clone());
-    let id = pack(payload_dir, manifest, &identity, &mut store).expect("pack");
-
     #[derive(Serialize)]
     struct QpkgHeader {
         package_id: String,
         format: u32,
     }
+
+    let mut store = MemoryBlobStore::new();
+    let identity = SigningIdentity::from_signing_key(publisher_sk.clone());
+    let id = pack(payload_dir, manifest, &identity, &mut store).expect("pack");
+
     let header = QpkgHeader {
         package_id: id.to_string(),
         format: 1,

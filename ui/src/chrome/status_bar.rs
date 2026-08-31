@@ -10,6 +10,17 @@ use vello::peniko::{Color, Fill};
 /// Standard status-bar height.
 pub const STATUS_BAR_HEIGHT: f64 = 28.0;
 
+/// `kurbo::Affine` composition is plain f64 matrix math with no panic
+/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
+              or overflows, unlike integer +/-/*"
+)]
+fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
+    transform * Affine::translate((dx, dy))
+}
+
 /// Draw a themed status bar in `rect` with `left`/`right`-aligned text.
 pub fn draw(
     scene: &mut Scene,
@@ -42,7 +53,7 @@ pub fn draw(
         left,
         13.0,
         muted,
-        transform * Affine::translate((rect.x0 + 18.0, ty)),
+        translated(transform, rect.x0 + 18.0, ty),
         None,
     );
     let (rw, _) = tr.measure(right, 13.0, None);
@@ -51,7 +62,7 @@ pub fn draw(
         right,
         13.0,
         muted,
-        transform * Affine::translate((rect.x1 - 18.0 - f64::from(rw), ty)),
+        translated(transform, rect.x1 - 18.0 - f64::from(rw), ty),
         None,
     );
 }

@@ -65,7 +65,7 @@ enum HostedResponse {
 /// The proxy is moved into the thread; cloning is cheap (it's `Arc`-
 /// backed internally).
 pub fn spawn(socket_path: PathBuf, proxy: EventLoopProxy<UserEvent>) {
-    thread::Builder::new()
+    let spawned = thread::Builder::new()
         .name("qos-hosted-test-control".to_string())
         .spawn(move || {
             // Scrub a stale socket from a previous run. Same logic as
@@ -75,27 +75,36 @@ pub fn spawn(socket_path: PathBuf, proxy: EventLoopProxy<UserEvent>) {
                 Ok(l) => l,
                 Err(e) => {
                     eprintln!(
-                        "hosted-test-control: bind {socket_path:?} failed: {e}; \
-                         continuing without socket"
+                        "hosted-test-control: bind {} failed: {e}; \
+                         continuing without socket",
+                        socket_path.display()
                     );
                     return;
                 }
             };
-            eprintln!("hosted-test-control: listening on {socket_path:?}");
+            eprintln!(
+                "hosted-test-control: listening on {}",
+                socket_path.display()
+            );
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
                 handle_client(stream, &proxy);
             }
             // Cleanup if the listener loop ever exits (e.g. via close).
             let _ = std::fs::remove_file(&socket_path);
-        })
-        .expect("spawn hosted-test-control listener");
+        });
+    // A failure here just means test-control never comes up; the shell must still boot for a
+    // real user, so this degrades the same way a bind failure inside the thread does.
+    if let Err(e) = spawned {
+        eprintln!(
+            "hosted-test-control: failed to spawn listener thread: {e}; continuing without socket"
+        );
+    }
 }
 
 fn handle_client(stream: UnixStream, proxy: &EventLoopProxy<UserEvent>) {
-    let read_stream = match stream.try_clone() {
-        Ok(s) => s,
-        Err(_) => return,
+    let Ok(read_stream) = stream.try_clone() else {
+        return;
     };
     let mut writer = stream;
     let reader = BufReader::new(read_stream);
@@ -105,7 +114,7 @@ fn handle_client(stream: UnixStream, proxy: &EventLoopProxy<UserEvent>) {
             continue;
         }
         let resp = match serde_json::from_str::<HostedCommand>(&line) {
-            Ok(cmd) => execute(cmd, proxy),
+            Ok(cmd) => execute(&cmd, proxy),
             Err(e) => HostedResponse::Err {
                 code: "parse_error",
                 message: format!("invalid JSON: {e}"),
@@ -118,8 +127,8 @@ fn handle_client(stream: UnixStream, proxy: &EventLoopProxy<UserEvent>) {
     }
 }
 
-fn execute(cmd: HostedCommand, proxy: &EventLoopProxy<UserEvent>) -> HostedResponse {
-    let event = match cmd {
+fn execute(cmd: &HostedCommand, proxy: &EventLoopProxy<UserEvent>) -> HostedResponse {
+    let event = match *cmd {
         HostedCommand::ClickAt { x, y } => UserEvent::Click { x, y },
         HostedCommand::Hover { x, y } => UserEvent::Hover { x, y },
         HostedCommand::MouseWheel { dx, dy } => UserEvent::Wheel { dx, dy },

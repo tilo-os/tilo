@@ -88,6 +88,8 @@ fn project_over(path: &std::path::Path, len: f64, name: &str) -> Project {
         muted: false,
         locked: false,
         solo: false,
+        gain_db: 0.0,
+        pan: 0.0,
     });
     let cid = p.add_clip(tid, mid, 0.0).unwrap();
     p.clip_mut(cid).unwrap().in_point = 0.0;

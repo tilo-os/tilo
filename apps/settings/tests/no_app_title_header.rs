@@ -9,6 +9,16 @@
 //! is still exposed the sanctioned way — through `AppWidget::app_title`, which
 //! the OS reads for the pill.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use settings::SettingsApp;

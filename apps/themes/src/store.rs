@@ -70,22 +70,23 @@ pub fn store_path() -> Option<PathBuf> {
 /// empty) below `appearance.studio`, preserving Settings-owned preferences.
 /// Returns the pretty-printed document.
 pub fn to_json_merged(spec: &ThemeSpec, existing: &str) -> String {
-    let mut root: serde_json::Value =
-        serde_json::from_str(existing).unwrap_or(serde_json::Value::Null);
-    if !root.is_object() {
-        root = serde_json::json!({});
-    }
-    let obj = root.as_object_mut().expect("just ensured object");
+    let root: serde_json::Value = serde_json::from_str(existing).unwrap_or(serde_json::Value::Null);
+    // Coerce to a JSON object, discarding anything malformed rather than
+    // indexing into it and panicking — `existing` is a document another
+    // process (or an older schema version) may have written.
+    let mut obj = match root {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
     obj.insert("version".into(), serde_json::json!(1));
-    let appearance = obj.entry(SECTION).or_insert_with(|| serde_json::json!({}));
-    if !appearance.is_object() {
-        *appearance = serde_json::json!({});
-    }
-    let appearance = appearance.as_object_mut().expect("just ensured object");
+
+    let mut appearance = match obj.remove(SECTION) {
+        Some(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
 
     let active = crate::model::builtin_theme(&spec.id)
-        .map(|theme| theme.name)
-        .unwrap_or_else(|| format!("custom:{}", spec.id));
+        .map_or_else(|| format!("custom:{}", spec.id), |theme| theme.name);
     appearance.insert("theme".into(), serde_json::json!(active));
     if !spec.builtin {
         appearance.insert(
@@ -102,7 +103,9 @@ pub fn to_json_merged(spec: &ThemeSpec, existing: &str) -> String {
             "theme": serde_json::to_value(spec).unwrap_or(serde_json::Value::Null),
         }),
     );
-    serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".into())
+    obj.insert(SECTION.into(), serde_json::Value::Object(appearance));
+
+    serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap_or_else(|_| "{}".into())
 }
 
 /// The active theme's id in a settings document, if the `appearance`
@@ -127,6 +130,10 @@ pub fn active_spec(text: &str) -> Option<ThemeSpec> {
 /// sections, and write it back. Creates the parent directory if needed.
 /// The path-explicit core of [`save`], factored out so it can be tested
 /// against a temp file without mutating process-global environment.
+///
+/// # Errors
+///
+/// Returns an error if the parent directory cannot be created or the file cannot be written.
 pub fn save_to(path: &std::path::Path, spec: &ThemeSpec) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -142,6 +149,10 @@ pub fn load_active_id_from(path: &std::path::Path) -> Option<String> {
 
 /// Persist `spec` as the active OS theme, preserving foreign sections.
 /// Creates the `qos` config directory if needed. Returns the path written.
+///
+/// # Errors
+///
+/// Returns an error if the config directory cannot be determined or the file cannot be written.
 pub fn save(spec: &ThemeSpec) -> std::io::Result<PathBuf> {
     let path = store_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
     save_to(&path, spec)?;

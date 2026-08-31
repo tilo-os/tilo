@@ -36,6 +36,7 @@
 //! the single primary sidebar simply docks or overlays per the breakpoint.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, ReadDoc};
@@ -102,19 +103,19 @@ fn themes() -> Vec<Theme> {
 fn lang_accent(language: Language, theme: &Theme) -> Color {
     let c = &theme.tokens.colors;
     match language {
-        Language::Rust => c.semantic.warning,
-        Language::Python => c.semantic.info,
-        Language::JavaScript | Language::TypeScript => c.semantic.warning,
+        Language::Rust | Language::JavaScript | Language::TypeScript => c.semantic.warning,
+        Language::Python | Language::C | Language::Cpp | Language::Go => c.semantic.info,
         Language::Toml | Language::Yaml => c.accent[5],
-        Language::Json => c.semantic.success,
-        Language::Markdown => c.text_dim,
-        Language::Shell => c.semantic.success,
+        Language::Json | Language::Shell => c.semantic.success,
+        Language::Markdown | Language::PlainText => c.text_dim,
         Language::Html | Language::Css => c.semantic.danger,
-        Language::C | Language::Cpp | Language::Go => c.semantic.info,
-        Language::PlainText => c.text_dim,
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, unrelated flag (shots forcing, panel visibility, one-time seed guard, terminal focus, search truncation) on the app's top-level state, not a set of options that combine — a bitflag/enum would not read better"
+)]
 pub struct CodeApp {
     session: Session,
     sidebar: FileTree,
@@ -265,7 +266,7 @@ pub struct CodeApp {
 }
 
 /// What a pending portal pick is for.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortalIntent {
     /// Replace the project with the chosen directory.
     OpenFolder,
@@ -346,10 +347,10 @@ impl LspStatus {
             } => {
                 let mut s = format!("{server}: {}", title.to_lowercase());
                 if let Some(d) = detail {
-                    s.push_str(&format!(" {d}"));
+                    let _ = write!(s, " {d}");
                 }
                 if let Some(p) = percentage {
-                    s.push_str(&format!(" {p}%"));
+                    let _ = write!(s, " {p}%");
                 }
                 s
             }
@@ -385,10 +386,10 @@ impl LspStatus {
             } => {
                 let mut s = title.to_lowercase();
                 if let Some(d) = detail {
-                    s.push_str(&format!(" {d}"));
+                    let _ = write!(s, " {d}");
                 }
                 if let Some(p) = percentage {
-                    s.push_str(&format!(" {p}%"));
+                    let _ = write!(s, " {p}%");
                 }
                 s
             }
@@ -407,6 +408,12 @@ impl LspStatus {
 pub struct Notice {
     pub text: String,
     pub is_error: bool,
+}
+
+impl Default for CodeApp {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CodeApp {
@@ -563,7 +570,13 @@ impl CodeApp {
     /// The theme to render with: the user override if set, else the host's.
     fn active_theme<'a>(&self, host: &'a Theme) -> std::borrow::Cow<'a, Theme> {
         match self.theme_index {
-            Some(i) => std::borrow::Cow::Owned(themes()[i % themes().len()].clone()),
+            Some(i) => {
+                let list = themes();
+                let len = list.len().max(1);
+                list.get(i % len)
+                    .cloned()
+                    .map_or(std::borrow::Cow::Borrowed(host), std::borrow::Cow::Owned)
+            }
             None => std::borrow::Cow::Borrowed(host),
         }
     }
@@ -712,7 +725,9 @@ impl CodeApp {
         // next Ctrl+S.
         let mut failed: Vec<(TreeId, String)> = Vec::new();
         for i in 0..self.session.open.len() {
-            let node = self.session.open[i].node;
+            let Some(node) = self.session.open.get(i).map(|b| b.node) else {
+                continue;
+            };
             // The document already carrying text for this node is *not* proof
             // that the file has been read. The document is persisted across
             // launches, so on the next run it hands back the buffer while this
@@ -729,7 +744,7 @@ impl CodeApp {
             // as modified and the next save goes through the conflict check
             // like any other.
             let has_text = EditorDoc::buffer_text(doc, node).is_some();
-            let reconciled = self.session.open[i].stamp.is_some();
+            let reconciled = self.session.open.get(i).is_some_and(|b| b.stamp.is_some());
             let disk_backed = self.session.project.disk_path_of(node).is_some();
             if has_text && (reconciled || !disk_backed) {
                 continue;
@@ -737,12 +752,18 @@ impl CodeApp {
             match self.session.project.file_seed(node) {
                 Ok((text, stamp)) => {
                     EditorDoc::ensure_buffer(doc, node, &text);
-                    let buf = &mut self.session.open[i];
+                    let Some(buf) = self.session.open.get_mut(i) else {
+                        continue;
+                    };
                     buf.path = self.session.project.disk_path_of(node);
                     buf.mark_saved(text, stamp);
                 }
                 Err(e) => {
-                    let name = self.session.open[i].name.clone();
+                    let name = self
+                        .session
+                        .open
+                        .get(i)
+                        .map_or_else(String::new, |b| b.name.clone());
                     failed.push((node, format!("Could not open {name}: {e}")));
                 }
             }
@@ -760,9 +781,13 @@ impl CodeApp {
         // undoing back to the original clears the indicator rather than leaving
         // it stuck on.
         for i in 0..self.session.open.len() {
-            let node = self.session.open[i].node;
+            let Some(node) = self.session.open.get(i).map(|b| b.node) else {
+                continue;
+            };
             let current = EditorDoc::read_buffer(doc, node).unwrap_or_default();
-            let buf = &mut self.session.open[i];
+            let Some(buf) = self.session.open.get_mut(i) else {
+                continue;
+            };
             buf.dirty = buf.is_dirty(&current);
         }
 
@@ -1057,7 +1082,7 @@ impl CodeApp {
         let Some(idx) = self.session.open.iter().position(|b| b.node == node) else {
             return false;
         };
-        let Some(path) = self.session.open[idx].path.clone() else {
+        let Some(path) = self.session.open.get(idx).and_then(|b| b.path.clone()) else {
             // No file yet: a scratch buffer needs a destination first, which
             // only the user (through the picker) can choose.
             self.request_save_as(node);
@@ -1067,13 +1092,19 @@ impl CodeApp {
         let expected = if force {
             None
         } else {
-            self.session.open[idx].stamp.clone()
+            self.session.open.get(idx).and_then(|b| b.stamp.clone())
         };
 
         match disk::save(&path, &text, expected.as_ref()) {
             Ok(stamp) => {
-                let name = self.session.open[idx].name.clone();
-                self.session.open[idx].mark_saved(text, Some(stamp));
+                let name = self
+                    .session
+                    .open
+                    .get(idx)
+                    .map_or_else(String::new, |b| b.name.clone());
+                if let Some(buf) = self.session.open.get_mut(idx) {
+                    buf.mark_saved(text, Some(stamp));
+                }
                 self.note(format!("Saved {name}"), false);
                 self.reconcile_tabs();
                 // Tell the language server the file is on disk now; rustc-based
@@ -1084,15 +1115,25 @@ impl CodeApp {
                 true
             }
             Err(disk::SaveError::Conflict(_)) => {
-                self.session.open[idx].stale = true;
+                if let Some(buf) = self.session.open.get_mut(idx) {
+                    buf.stale = true;
+                }
                 self.conflict = Some(Conflict {
                     node,
-                    name: self.session.open[idx].name.clone(),
+                    name: self
+                        .session
+                        .open
+                        .get(idx)
+                        .map_or_else(String::new, |b| b.name.clone()),
                 });
                 false
             }
             Err(e) => {
-                let name = self.session.open[idx].name.clone();
+                let name = self
+                    .session
+                    .open
+                    .get(idx)
+                    .map_or_else(String::new, |b| b.name.clone());
                 self.note(format!("Could not save {name}: {e}"), true);
                 false
             }
@@ -1143,20 +1184,30 @@ impl CodeApp {
         };
         match self.session.project.file_seed(node) {
             Ok((text, stamp)) => {
-                let name = self.session.open[idx].name.clone();
+                let name = self
+                    .session
+                    .open
+                    .get(idx)
+                    .map_or_else(String::new, |b| b.name.clone());
                 // Replace the buffer's whole text through the CRDT so the edit
                 // is one undoable action and peers converge on it.
                 if let Some(obj) = EditorDoc::buffer_text(doc, node) {
                     let old_len = doc.text(&obj).map_or(0, |t| t.chars().count());
                     EditorDoc::splice(doc, &obj, 0, old_len, &text);
                 }
-                self.session.open[idx].mark_saved(text, stamp);
+                if let Some(buf) = self.session.open.get_mut(idx) {
+                    buf.mark_saved(text, stamp);
+                }
                 self.note(format!("Reloaded {name} from disk"), false);
                 self.bound_node = None;
                 self.reconcile_tabs();
             }
             Err(e) => {
-                let name = self.session.open[idx].name.clone();
+                let name = self
+                    .session
+                    .open
+                    .get(idx)
+                    .map_or_else(String::new, |b| b.name.clone());
                 self.note(format!("Could not reload {name}: {e}"), true);
             }
         }
@@ -1194,7 +1245,7 @@ impl CodeApp {
 
     /// The conflict prompt's keyboard shortcuts: Escape cancels, Enter takes
     /// the safe option (reload, which cannot destroy the other writer's work).
-    fn conflict_key(&self, event: &WindowEvent) -> Option<ConflictChoice> {
+    fn conflict_key(event: &WindowEvent) -> Option<ConflictChoice> {
         let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -1343,7 +1394,7 @@ impl CodeApp {
 
     /// Drain a pending picker, once per frame. Never blocks: the portal's
     /// D-Bus round-trip and its host dialog live entirely on a worker thread.
-    fn poll_portal(&mut self, doc: &mut AutoCommit) {
+    fn poll_portal(&mut self, doc: &AutoCommit) {
         let Some(rx) = self.portal.as_ref() else {
             return;
         };
@@ -1365,7 +1416,7 @@ impl CodeApp {
     /// a test can drive the exact path a real pick takes.
     pub(crate) fn apply_portal_outcome(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &AutoCommit,
         intent: Option<PortalIntent>,
         outcome: ui::portal::PortalOutcome,
     ) {
@@ -1389,7 +1440,7 @@ impl CodeApp {
                 self.session.project.set_file_path(node, &path, &name);
                 if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.path = Some(path.clone());
-                    buf.name = name.clone();
+                    buf.name.clone_from(&name);
                     buf.language = crate::model::Language::from_path(&name);
                     // No stamp: this is a destination the user chose, and the
                     // save that follows is the one they asked for.
@@ -1599,7 +1650,7 @@ impl CodeApp {
     }
 
     /// Answer an unsaved-close prompt.
-    fn resolve_close_prompt(&mut self, doc: &mut AutoCommit, choice: CloseChoice) {
+    fn resolve_close_prompt(&mut self, doc: &AutoCommit, choice: CloseChoice) {
         let Some(prompt) = self.close_prompt.take() else {
             return;
         };
@@ -1632,7 +1683,7 @@ impl CodeApp {
 
     /// The unsaved-close prompt's keyboard shortcuts: Enter saves (the choice
     /// that keeps the work), Escape cancels.
-    fn close_prompt_key(&self, event: &WindowEvent) -> Option<CloseChoice> {
+    fn close_prompt_key(event: &WindowEvent) -> Option<CloseChoice> {
         let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -2013,7 +2064,7 @@ impl CodeApp {
             self.note("Open a project folder to search it", true);
             return;
         };
-        self.last_search_needle = query.needle.clone();
+        self.last_search_needle.clone_from(&query.needle);
         if query.is_empty() {
             self.push_search_state();
             return;
@@ -2274,7 +2325,7 @@ impl CodeApp {
                     let server = self.lsp_server_name();
                     // Folding through the client's table is what keeps the task
                     // label stable: a `report` carries no title, only the token.
-                    let shown = self.lsp.as_mut().and_then(|c| c.note_progress(p));
+                    let shown = self.lsp.as_mut().and_then(|c| c.note_progress(&p));
                     self.lsp_status = match shown {
                         Some(p) => LspStatus::Busy {
                             server,
@@ -2374,9 +2425,8 @@ impl CodeApp {
     /// Issue the language-server request the editor asked for, at the caret.
     /// A no-op when no server is live (opt-in).
     fn dispatch_lsp_ask(&mut self, ask: LspAsk) {
-        let uri = match self.lsp_uri.clone() {
-            Some(u) => u,
-            None => return,
+        let Some(uri) = self.lsp_uri.clone() else {
+            return;
         };
         let pos = self.caret_lsp_pos();
         if let Some(c) = self.lsp.as_mut() {
@@ -2597,6 +2647,518 @@ impl CodeApp {
         }
         self.editor.show_completions(items);
     }
+
+    // ---- build_layout helpers (split out of `Widget::build_layout`, which
+    // assembles their results into the content row and outer column) ----
+
+    /// Lay out the sidebar node: docked (a real column, eased by the flap's
+    /// reveal) or overlay (collapsed to zero width — it draws off-flow,
+    /// sliding in over the content; see `draw`).
+    fn build_sidebar(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let layout = self.sidebar_layout();
+        let sidebar_node = self.sidebar.build_layout(taffy, theme, node_map);
+        let docked_w = match layout {
+            SplitLayout::Docked => SIDEBAR_WIDTH * self.flap.reveal(),
+            SplitLayout::Overlay => 0.0,
+        };
+        let docked_min = if layout == SplitLayout::Docked && self.flap.reveal() > 0.999 {
+            SIDEBAR_MIN as f32
+        } else {
+            0.0
+        };
+        let _ = taffy.set_style(
+            sidebar_node,
+            Style {
+                size: Size {
+                    width: Dimension::length(docked_w as f32),
+                    height: Dimension::percent(1.0),
+                },
+                min_size: Size {
+                    width: Dimension::length(docked_min),
+                    height: Dimension::auto(),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+        );
+        self.sidebar_node = Some(sidebar_node);
+        sidebar_node
+    }
+
+    /// Lay out the editor column: tab bar, find bar, editor, and (when
+    /// visible) the bottom panel, stacked into one flex column.
+    ///
+    /// # Panics
+    /// Panics if taffy's internal tree storage is corrupted — this only
+    /// inserts freshly built child nodes into a tree this same call already
+    /// holds a mutable reference to, so there is no data-dependent failure
+    /// path to recover from.
+    fn build_editor_column(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let tabs_node = self.tabs.build_layout(taffy, theme, node_map);
+        self.tabs_node = Some(tabs_node);
+
+        let editor_node = self.editor.build_layout(taffy, theme, node_map);
+        if let Ok(existing) = taffy.style(editor_node).cloned() {
+            let _ = taffy.set_style(
+                editor_node,
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::auto(),
+                    },
+                    flex_grow: 1.0,
+                    flex_basis: Dimension::length(0.0),
+                    ..existing
+                },
+            );
+        }
+        self.editor_node = Some(editor_node);
+
+        // The find bar sits between the tabs and the buffer, so it never covers
+        // the code it is searching.
+        let find_node = self.find.build_layout(taffy, theme, node_map);
+        self.find_node = Some(find_node);
+
+        let mut editor_col_children = vec![tabs_node, find_node, editor_node];
+        if self.panel_visible {
+            let panel_node = self.panel.build_layout(taffy, theme, node_map);
+            self.panel_node = Some(panel_node);
+            editor_col_children.push(panel_node);
+        } else {
+            self.panel_node = None;
+        }
+
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Widget::build_layout is infallible by trait contract; inserting a node with a fixed Style and freshly-created children cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
+        )]
+        let editor_col = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: Size {
+                        width: Dimension::auto(),
+                        height: Dimension::percent(1.0),
+                    },
+                    flex_grow: 1.0,
+                    flex_basis: Dimension::length(0.0),
+                    ..Default::default()
+                },
+                &editor_col_children,
+            )
+            .unwrap();
+        self.editor_col_node = Some(editor_col);
+        editor_col
+    }
+
+    // ---- handle_event helpers (split out of `Widget::handle_event`, which
+    // dispatches to them in the same order they used to run inline) ----
+
+    /// The palette, when open, owns all keyboard input. Otherwise, while the
+    /// unsaved-close prompt is up, cursor motion still needs tracking so its
+    /// button hit-tests have a position to work with. Returns `true` when the
+    /// event was consumed here.
+    fn handle_palette_and_prompt_cursor(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        if self.palette.is_visible()
+            && let WindowEvent::KeyboardInput { .. } = event
+            && self.palette.handle_key(event, modifiers, state)
+        {
+            *handled = true;
+            self.drain_child_events(state);
+            return true;
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            if self.close_prompt.is_some() {
+                self.close_prompt_hover = self.last_cursor;
+                *handled = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The unsaved-close prompt is modal: resolve it from a keypress or a
+    /// click on one of its buttons. Always consumes the event.
+    fn handle_close_prompt(&mut self, event: &WindowEvent, state: &AutoCommit, handled: &mut bool) {
+        if let Some(choice) = Self::close_prompt_key(event) {
+            self.resolve_close_prompt(state, choice);
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+            && let Some((choice, _)) = self
+                .close_prompt_buttons
+                .iter()
+                .find(|(_, r)| r.contains(self.last_cursor))
+                .copied()
+        {
+            self.resolve_close_prompt(state, choice);
+        }
+        *handled = true;
+    }
+
+    /// A modal conflict prompt: resolve it from a keypress or a click on one
+    /// of its buttons. Always consumes the event.
+    fn handle_conflict_prompt(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        if let Some(choice) = Self::conflict_key(event) {
+            self.resolve_conflict(state, choice);
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+            && let Some((choice, _)) = self
+                .conflict_buttons
+                .iter()
+                .find(|(_, r)| r.contains(self.last_cursor))
+                .copied()
+        {
+            self.resolve_conflict(state, choice);
+        }
+        *handled = true;
+    }
+
+    /// Esc dismisses an open overlay flap; a click on the hamburger toggles
+    /// it; a click on the scrim (outside the open sidebar) dismisses it.
+    /// Returns `true` when the event was consumed.
+    fn handle_overlay_shortcuts(
+        &mut self,
+        event: &WindowEvent,
+        overlay: bool,
+        handled: &mut bool,
+    ) -> bool {
+        if overlay
+            && self.sidebar_open()
+            && let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(winit::keyboard::NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } = event
+        {
+            self.flap.close();
+            *handled = true;
+            return true;
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            // The hamburger toggle (drawn only in overlay mode).
+            if overlay
+                && self.hamburger_rect.width() > 0.0
+                && self.hamburger_rect.contains(self.last_cursor)
+            {
+                self.toggle_sidebar();
+                *handled = true;
+                return true;
+            }
+            // A click on the scrim (outside the open sidebar) dismisses it.
+            if overlay
+                && self.sidebar_open()
+                && self.scrim_rect.width() > 0.0
+                && self.scrim_rect.contains(self.last_cursor)
+                && !self.overlay_sidebar_rect.contains(self.last_cursor)
+            {
+                self.flap.close();
+                *handled = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Global shortcuts: Ctrl/Cmd+P (files), Ctrl/Cmd+Shift+P (commands),
+    /// Ctrl/Cmd+B (sidebar), Ctrl/Cmd+J (panel), and the rest of the
+    /// single-letter command bindings. Returns `true` when the event was
+    /// consumed.
+    fn handle_global_shortcuts(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Character(c),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let mods = modifiers.state();
+        if !(mods.control_key() || mods.super_key()) {
+            return false;
+        }
+        let shift = mods.shift_key();
+        let alt = mods.alt_key();
+        let command = match c.to_lowercase().as_str() {
+            "p" => {
+                self.refresh_palette_entries();
+                if shift {
+                    self.palette.open_commands();
+                } else {
+                    self.palette.open_files();
+                }
+                *handled = true;
+                return true;
+            }
+            "b" => Some(Command::ToggleSidebar),
+            "j" => Some(Command::ToggleBottomPanel),
+            "o" if shift => Some(Command::OpenFolder),
+            "o" => Some(Command::OpenFile),
+            "s" if alt => Some(Command::SaveAll),
+            "s" if shift => Some(Command::SaveAs),
+            "s" => Some(Command::Save),
+            "f" if shift => Some(Command::SearchProject),
+            "f" => Some(Command::Find),
+            "h" => Some(Command::Replace),
+            "g" => Some(Command::GoToLine),
+            "w" => Some(Command::CloseTab),
+            _ => None,
+        };
+        if let Some(command) = command {
+            self.apply_command(command, state);
+            *handled = true;
+            return true;
+        }
+        false
+    }
+
+    /// The find bar takes keyboard input while it is open (its fields own
+    /// typing; Enter and Escape are its transport). Returns `true` when the
+    /// find bar newly consumed the event (the caller should stop routing).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards one WindowEvent's already-decoded fields to the find bar's own Widget::handle_event, whose signature this crate does not own"
+    )]
+    fn handle_find_bar(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !self.find.is_visible() {
+            return false;
+        }
+        let Some(n) = self.find_node else {
+            return false;
+        };
+        let before = *handled;
+        self.find.handle_event(
+            event,
+            scale_factor,
+            &modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            n,
+            taffy,
+        );
+        self.drain_find_events(state);
+        *handled && !before
+    }
+
+    /// While the Terminal dock tab shows a live terminal, a click in its
+    /// content region focuses the shell and routes keyboard + pointer input
+    /// to it; a press elsewhere returns focus to the editor. Returns `true`
+    /// when the focused terminal owns this event (the caller should stop
+    /// routing it to anything else).
+    fn handle_terminal_input(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        taffy: &TaffyTree<()>,
+        handled: &mut bool,
+    ) -> bool {
+        let term_active = self.terminal_visible();
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            self.terminal_focused =
+                term_active && self.panel.content_rect().contains(self.last_cursor);
+        }
+        if !(term_active && self.terminal_focused) {
+            return false;
+        }
+        let tr = EditorDoc::terminal_root(state);
+        if let Some(t) = self.terminal.as_mut() {
+            let mut th = false;
+            let mut tf = None;
+            t.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                &tr,
+                &mut th,
+                &mut tf,
+                NodeId::new(0),
+                taffy,
+            );
+            if th {
+                *handled = true;
+            }
+        }
+        // The focused terminal owns keyboard + pointer; consume those so the
+        // editor underneath doesn't also react.
+        matches!(
+            event,
+            WindowEvent::KeyboardInput { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::CursorMoved { .. }
+        )
+    }
+
+    /// Route the event to the sidebar (when active for the current layout),
+    /// tabs, bottom panel, and editor, plus the overlay sidebar's own
+    /// click-capture.
+    ///
+    /// Sidebar routing depends on the layout:
+    ///  * Docked: route whenever the column has width (reveal > 0); the tree
+    ///    hit-tests against its taffy-derived column rect.
+    ///  * Overlay: route only while the flap is open. The tree hit-tests
+    ///    against the off-flow overlay rect set in `draw` via `place_at`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards one WindowEvent's already-decoded fields to each child widget's own Widget::handle_event, whose signature this crate does not own"
+    )]
+    fn route_to_children(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+        overlay: bool,
+    ) {
+        let sidebar_active = match self.sidebar_layout() {
+            SplitLayout::Docked => self.flap.reveal() > 0.001,
+            SplitLayout::Overlay => self.sidebar_open(),
+        };
+        if sidebar_active && let Some(n) = self.sidebar_node {
+            self.sidebar.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
+
+        // While the overlay sidebar is open, it captures pointer presses over
+        // its area so clicks don't leak to the content behind it (the tree only
+        // self-marks `handled` on a row hit — empty rows would otherwise fall
+        // through). The scrim outside it was already handled above.
+        if overlay
+            && self.sidebar_open()
+            && let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } = event
+            && self.overlay_sidebar_rect.contains(self.last_cursor)
+        {
+            *handled = true;
+        }
+
+        if let Some(n) = self.tabs_node {
+            self.tabs.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
+        if self.panel_visible
+            && let Some(n) = self.panel_node
+        {
+            self.panel.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
+        if let Some(n) = self.editor_node {
+            self.editor.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
+    }
 }
 
 /// The flat character index of `(line, col)` in `text`.
@@ -2635,10 +3197,10 @@ fn source_filter() -> ui::portal::FileFilter {
 /// the shots scenarios to anchor canned diagnostics on real tokens.
 fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
     let byte = text.find(needle)?;
-    let prefix = &text[..byte];
+    let prefix = text.get(..byte).unwrap_or("");
     let line = prefix.matches('\n').count();
     let line_start = prefix.rfind('\n').map_or(0, |i| i + 1);
-    let start_col = text[line_start..byte].chars().count();
+    let start_col = text.get(line_start..byte).unwrap_or("").chars().count();
     let end_col = start_col + needle.chars().count();
     Some((line, start_col, end_col))
 }
@@ -2719,88 +3281,16 @@ impl Widget for CodeApp {
         // inset by exactly that much. Overlay (narrow): the column collapses to
         // zero so the content spans the full width — the sidebar is instead
         // drawn off-flow, sliding in over the content (see `draw`).
-        let layout = self.sidebar_layout();
-        let sidebar_node = self.sidebar.build_layout(taffy, theme, node_map);
-        let docked_w = match layout {
-            SplitLayout::Docked => SIDEBAR_WIDTH * self.flap.reveal(),
-            SplitLayout::Overlay => 0.0,
-        };
-        let docked_min = if layout == SplitLayout::Docked && self.flap.reveal() > 0.999 {
-            SIDEBAR_MIN as f32
-        } else {
-            0.0
-        };
-        let _ = taffy.set_style(
-            sidebar_node,
-            Style {
-                size: Size {
-                    width: Dimension::length(docked_w as f32),
-                    height: Dimension::percent(1.0),
-                },
-                min_size: Size {
-                    width: Dimension::length(docked_min),
-                    height: Dimension::auto(),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            },
-        );
-        self.sidebar_node = Some(sidebar_node);
+        let sidebar_node = self.build_sidebar(taffy, theme, node_map);
 
         // --- Editor column: tab bar + editor + (optional) bottom panel ---
-        let tabs_node = self.tabs.build_layout(taffy, theme, node_map);
-        self.tabs_node = Some(tabs_node);
-
-        let editor_node = self.editor.build_layout(taffy, theme, node_map);
-        if let Ok(existing) = taffy.style(editor_node).cloned() {
-            let _ = taffy.set_style(
-                editor_node,
-                Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::auto(),
-                    },
-                    flex_grow: 1.0,
-                    flex_basis: Dimension::length(0.0),
-                    ..existing
-                },
-            );
-        }
-        self.editor_node = Some(editor_node);
-
-        // The find bar sits between the tabs and the buffer, so it never covers
-        // the code it is searching.
-        let find_node = self.find.build_layout(taffy, theme, node_map);
-        self.find_node = Some(find_node);
-
-        let mut editor_col_children = vec![tabs_node, find_node, editor_node];
-        if self.panel_visible {
-            let panel_node = self.panel.build_layout(taffy, theme, node_map);
-            self.panel_node = Some(panel_node);
-            editor_col_children.push(panel_node);
-        } else {
-            self.panel_node = None;
-        }
-
-        let editor_col = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::auto(),
-                        height: Dimension::percent(1.0),
-                    },
-                    flex_grow: 1.0,
-                    flex_basis: Dimension::length(0.0),
-                    ..Default::default()
-                },
-                &editor_col_children,
-            )
-            .unwrap();
-        self.editor_col_node = Some(editor_col);
+        let editor_col = self.build_editor_column(taffy, theme, node_map);
 
         // --- Content row: sidebar + editor column ---
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Widget::build_layout is infallible by trait contract; inserting a node with a fixed Style and freshly-created children cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
+        )]
         let content_node = taffy
             .new_with_children(
                 Style {
@@ -2827,6 +3317,10 @@ impl Widget for CodeApp {
         // No status-bar row: the editor's status floats as a transient bubble
         // (see `draw_status_bubble`), so the content row spans the full window
         // height and reclaims the strip's row.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Widget::build_layout is infallible by trait contract; inserting a node with a fixed Style and freshly-created children cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
+        )]
         let root = taffy
             .new_with_children(
                 Style {
@@ -2849,6 +3343,10 @@ impl Widget for CodeApp {
         root
     }
 
+    #[allow(
+        clippy::unwrap_used,
+        reason = "Widget::apply_layout is infallible by trait contract; every node looked up here was created by this widget's own build_layout in the same tree, so a lookup failure means the taffy tree is already corrupted and there is no meaningful layout to fall back to"
+    )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
         self.rect = Rect::new(
@@ -3056,325 +3554,71 @@ impl Widget for CodeApp {
         _node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        // The palette, when open, owns all keyboard input.
-        if self.palette.is_visible()
-            && let WindowEvent::KeyboardInput { .. } = event
-            && self.palette.handle_key(event)
-        {
-            *handled = true;
-            self.drain_child_events(state);
+        if self.handle_palette_and_prompt_cursor(event, scale_factor, *modifiers, state, handled) {
             return;
-        }
-
-        // Track the cursor (MouseInput carries no coords) so the hamburger and
-        // scrim hit-tests below have a position to work with.
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-            if self.close_prompt.is_some() {
-                self.close_prompt_hover = self.last_cursor;
-                *handled = true;
-                return;
-            }
         }
 
         // The unsaved-close prompt is modal: while it is up it owns all input,
         // because closing the tab either way changes which of two versions of
         // the file survives.
         if self.close_prompt.is_some() {
-            if let Some(choice) = self.close_prompt_key(event) {
-                self.resolve_close_prompt(state, choice);
-            }
-            if let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } = event
-                && let Some((choice, _)) = self
-                    .close_prompt_buttons
-                    .iter()
-                    .find(|(_, r)| r.contains(self.last_cursor))
-                    .copied()
-            {
-                self.resolve_close_prompt(state, choice);
-            }
-            *handled = true;
+            self.handle_close_prompt(event, state, handled);
             return;
         }
 
         let overlay = self.sidebar_layout() == SplitLayout::Overlay;
 
-        // Esc dismisses an open overlay flap before anything else sees it.
-        if overlay
-            && self.sidebar_open()
-            && let WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Named(winit::keyboard::NamedKey::Escape),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            self.flap.close();
-            *handled = true;
+        if self.handle_overlay_shortcuts(event, overlay, handled) {
             return;
         }
 
-        // Left-click routing for the overlay-specific affordances.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            // The hamburger toggle (drawn only in overlay mode).
-            if overlay
-                && self.hamburger_rect.width() > 0.0
-                && self.hamburger_rect.contains(self.last_cursor)
-            {
-                self.toggle_sidebar();
-                *handled = true;
-                return;
-            }
-            // A click on the scrim (outside the open sidebar) dismisses it.
-            if overlay
-                && self.sidebar_open()
-                && self.scrim_rect.width() > 0.0
-                && self.scrim_rect.contains(self.last_cursor)
-                && !self.overlay_sidebar_rect.contains(self.last_cursor)
-            {
-                self.flap.close();
-                *handled = true;
-                return;
-            }
-        }
-
-        // Global shortcuts: Ctrl/Cmd+P (files), Ctrl/Cmd+Shift+P (commands),
-        // Ctrl/Cmd+B (sidebar), Ctrl/Cmd+J (panel).
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Character(c),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            let mods = modifiers.state();
-            let cmd = mods.control_key() || mods.super_key();
-            if cmd {
-                let shift = mods.shift_key();
-                let alt = mods.alt_key();
-                let command = match c.to_lowercase().as_str() {
-                    "p" => {
-                        self.refresh_palette_entries();
-                        if shift {
-                            self.palette.open_commands();
-                        } else {
-                            self.palette.open_files();
-                        }
-                        *handled = true;
-                        return;
-                    }
-                    "b" => Some(Command::ToggleSidebar),
-                    "j" => Some(Command::ToggleBottomPanel),
-                    "o" if shift => Some(Command::OpenFolder),
-                    "o" => Some(Command::OpenFile),
-                    "s" if alt => Some(Command::SaveAll),
-                    "s" if shift => Some(Command::SaveAs),
-                    "s" => Some(Command::Save),
-                    "f" if shift => Some(Command::SearchProject),
-                    "f" => Some(Command::Find),
-                    "h" => Some(Command::Replace),
-                    "g" => Some(Command::GoToLine),
-                    "w" => Some(Command::CloseTab),
-                    _ => None,
-                };
-                if let Some(command) = command {
-                    self.apply_command(command, state);
-                    *handled = true;
-                    return;
-                }
-            }
+        if self.handle_global_shortcuts(event, *modifiers, state, handled) {
+            return;
         }
 
         // A modal conflict prompt owns all input while it is up: the question
         // is "which of these two versions of your file survives", and letting
         // keystrokes fall through to the buffer underneath it would be wrong.
         if self.conflict.is_some() {
-            if let Some(choice) = self.conflict_key(event) {
-                self.resolve_conflict(state, choice);
-            }
-            if let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } = event
-                && let Some((choice, _)) = self
-                    .conflict_buttons
-                    .iter()
-                    .find(|(_, r)| r.contains(self.last_cursor))
-                    .copied()
-            {
-                self.resolve_conflict(state, choice);
-            }
-            *handled = true;
+            self.handle_conflict_prompt(event, state, handled);
             return;
         }
 
         // The find bar takes keyboard input while it is open (its fields own
         // typing; Enter and Escape are its transport).
-        if self.find.is_visible()
-            && let Some(n) = self.find_node
-        {
-            let before = *handled;
-            self.find.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            self.drain_find_events(state);
-            if *handled && !before {
-                return;
-            }
+        if self.handle_find_bar(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            taffy,
+        ) {
+            return;
         }
 
         // Terminal input capture: while the Terminal dock tab shows a live
         // terminal, a click in its content region focuses the shell and routes
         // keyboard + pointer input to it (like clicking into any terminal); a
         // press elsewhere returns focus to the editor.
-        let term_active = self.terminal_visible();
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            self.terminal_focused =
-                term_active && self.panel.content_rect().contains(self.last_cursor);
-        }
-        if term_active && self.terminal_focused {
-            let tr = EditorDoc::terminal_root(state);
-            if let Some(t) = self.terminal.as_mut() {
-                let mut th = false;
-                let mut tf = None;
-                t.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    &tr,
-                    &mut th,
-                    &mut tf,
-                    NodeId::new(0),
-                    taffy,
-                );
-                if th {
-                    *handled = true;
-                }
-            }
-            // The focused terminal owns keyboard + pointer; consume those so the
-            // editor underneath doesn't also react.
-            if matches!(
-                event,
-                WindowEvent::KeyboardInput { .. }
-                    | WindowEvent::MouseInput { .. }
-                    | WindowEvent::CursorMoved { .. }
-            ) {
-                return;
-            }
+        if self.handle_terminal_input(event, scale_factor, *modifiers, state, taffy, handled) {
+            return;
         }
 
         // Route to child widgets.
-        //
-        // Sidebar routing depends on the layout:
-        //  * Docked: route whenever the column has width (reveal > 0); the tree
-        //    hit-tests against its taffy-derived column rect.
-        //  * Overlay: route only while the flap is open. The tree hit-tests
-        //    against the off-flow overlay rect set in `draw` via `place_at`.
-        let sidebar_active = match self.sidebar_layout() {
-            SplitLayout::Docked => self.flap.reveal() > 0.001,
-            SplitLayout::Overlay => self.sidebar_open(),
-        };
-        if sidebar_active && let Some(n) = self.sidebar_node {
-            self.sidebar.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-        }
-
-        // While the overlay sidebar is open, it captures pointer presses over
-        // its area so clicks don't leak to the content behind it (the tree only
-        // self-marks `handled` on a row hit — empty rows would otherwise fall
-        // through). The scrim outside it was already handled above.
-        if overlay
-            && self.sidebar_open()
-            && let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } = event
-            && self.overlay_sidebar_rect.contains(self.last_cursor)
-        {
-            *handled = true;
-        }
-
-        if let Some(n) = self.tabs_node {
-            self.tabs.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-        }
-        if self.panel_visible
-            && let Some(n) = self.panel_node
-        {
-            self.panel.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-        }
-        if let Some(n) = self.editor_node {
-            self.editor.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-        }
+        self.route_to_children(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            taffy,
+            overlay,
+        );
 
         // If the editor asked for a language-server action (Ctrl+Space, F1,
         // F12), issue it now with the caret position.
@@ -3792,7 +4036,7 @@ mod tests {
             .unwrap();
         let from_spec = match &spec.input {
             qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("new-file is an immediate action"),
+            qos_actions::ActionInput::Prompted { .. } => panic!("new-file is an immediate action"),
         };
 
         app.apply_command(Command::NewFile, &mut doc);
@@ -4326,7 +4570,7 @@ mod tests {
         assert!(app.close_prompt.is_some(), "the save prompt is raised");
 
         // Discarding closes it and drops the edits.
-        app.resolve_close_prompt(&mut doc, CloseChoice::Discard);
+        app.resolve_close_prompt(&doc, CloseChoice::Discard);
         assert_eq!(app.session.open.len(), before - 1, "the tab closed");
         assert!(app.close_prompt.is_none());
     }

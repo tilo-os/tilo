@@ -61,6 +61,15 @@ pub enum InstallError {
 /// - Inserts a `RegistryEntry` with the requested pinning.
 ///
 /// Returns the resolved [`PackageId`].
+///
+/// # Errors
+///
+/// Returns [`InstallError::Parse`] if the tar isn't a well-formed
+/// `.qpkg` (missing `qpkg.toml`, malformed TOML, or a bad blob),
+/// [`InstallError::Verify`] if the signature check fails outright,
+/// [`InstallError::Unpack`] if extracting the payload fails, or
+/// [`InstallError::Store`] / [`InstallError::Io`] if writing to the
+/// on-disk store fails.
 pub fn install_qpkg(
     store: &Store,
     bytes: &[u8],
@@ -112,8 +121,8 @@ pub fn install_qpkg(
 
     // Verify — self-signed acceptable (empty trust set → UntrustedPublisher).
     let manifest = match pkg::verify(id, &mem, &[]) {
-        pkg::Verification::Trusted { manifest } => manifest,
-        pkg::Verification::UntrustedPublisher { manifest, .. } => manifest,
+        pkg::Verification::Trusted { manifest }
+        | pkg::Verification::UntrustedPublisher { manifest, .. } => manifest,
         other => {
             return Err(InstallError::Verify(format!("{other:?}")));
         }

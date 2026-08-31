@@ -71,6 +71,7 @@ pub fn hand_off() -> Option<ExternalDrag> {
     }
     let drag = s.active.clone()?;
     s.handed_off = true;
+    drop(s);
     Some(drag)
 }
 

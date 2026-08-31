@@ -63,18 +63,33 @@ pub(crate) fn default_icon() -> Option<Icon> {
 
 /// Anti-aliased rounded square filled with a vertical accent gradient.
 /// Pure CPU raster — no GPU, no asset — so it works headless too.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "s is the pixel scale, x/y are pixel coordinates, and r/g/b are colour \
+              channels — the conventional names for a per-pixel raster loop"
+)]
 fn render_default(size: u32) -> Vec<u8> {
     // qOS accent, top-to-bottom: indigo -> violet.
     let top = [0x4Cu8, 0x6Eu8, 0xF5u8];
     let bottom = [0x8Bu8, 0x5Cu8, 0xF6u8];
+    // `size` is a pixel dimension (the only caller passes a constant 128);
+    // f32 represents every integer up to 2^24 exactly, far past any
+    // realistic icon size, so this loses nothing.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "size is a pixel dimension, always far below f32's 2^24 exact-integer range"
+    )]
     let s = size as f32;
     let radius = s * 0.24;
     let half = s * 0.5;
-    let mut out = Vec::with_capacity((size * size * 4) as usize);
+    let mut out = Vec::with_capacity(size.saturating_mul(size).saturating_mul(4) as usize);
     for y in 0..size {
         for x in 0..size {
-            let px = x as f32 + 0.5;
-            let py = y as f32 + 0.5;
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "x/y are pixel coordinates, always far below f32's 2^24 exact-integer range"
+            )]
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
             // Signed distance to a rounded square centred in the tile.
             // Positive outside, negative inside; the |d| < 1px band is
             // the antialiased edge.
@@ -89,6 +104,13 @@ fn render_default(size: u32) -> Vec<u8> {
             let r = lerp(top[0], bottom[0], t);
             let g = lerp(top[1], bottom[1], t);
             let b = lerp(top[2], bottom[2], t);
+            // `cover` is clamped to 0.0..=1.0 just above, so this product,
+            // rounded, always lands in 0.0..=255.0.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "cover is clamped to 0.0..=1.0 above, so the scaled+rounded value always fits u8"
+            )]
             let a = (cover * 255.0).round() as u8;
             out.extend_from_slice(&[r, g, b, a]);
         }
@@ -97,9 +119,17 @@ fn render_default(size: u32) -> Vec<u8> {
 }
 
 fn lerp(a: u8, b: u8, t: f32) -> u8 {
-    (f32::from(a) + (f32::from(b) - f32::from(a)) * t)
+    let v = (f32::from(a) + (f32::from(b) - f32::from(a)) * t)
         .round()
-        .clamp(0.0, 255.0) as u8
+        .clamp(0.0, 255.0);
+    // Clamped to `0.0..=255.0` just above, so this always fits `u8` exactly.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "v is clamped to 0.0..=255.0 just above, so it always fits u8 exactly"
+    )]
+    let result = v as u8;
+    result
 }
 
 #[cfg(test)]

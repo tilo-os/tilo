@@ -34,6 +34,14 @@ pub struct SnippetsDoc;
 
 impl SnippetsDoc {
     /// Get-or-create the top-level `snippets` Map.
+    ///
+    /// # Panics
+    /// Never in practice: `ROOT` is permanent for the life of the document,
+    /// so `put_object` on it only fails for an already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "parent is ROOT, so put_object cannot fail short of a corrupted document — falling back to another ObjId would silently write the library into the wrong object"
+    )]
     pub fn snippets_map(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "snippets") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -44,6 +52,10 @@ impl SnippetsDoc {
     }
 
     /// Get-or-create the per-snippet Map for `id`.
+    #[allow(
+        clippy::expect_used,
+        reason = "parent is the snippets Map just resolved above, so put_object cannot fail short of a corrupted document — falling back to another ObjId would silently write this snippet into the wrong object"
+    )]
     fn ensure_snippet(doc: &mut AutoCommit, id: SnippetId) -> ObjId {
         let map = Self::snippets_map(doc);
         let key = id.to_string();
@@ -69,6 +81,15 @@ impl SnippetsDoc {
     /// Insert or update a whole snippet. Title / description / body are
     /// stored as `Text` so concurrent edits merge; scalars are plain
     /// puts; tags are rewritten as a fresh list when they differ.
+    ///
+    /// # Panics
+    /// Never in practice: every `put_object` call here targets `ROOT` or a
+    /// Map this function just resolved, so it only fails for an
+    /// already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "parent is the snippet Map just resolved above, so put_object cannot fail short of a corrupted document — falling back to another ObjId would silently write the tags into the wrong object"
+    )]
     pub fn upsert(doc: &mut AutoCommit, s: &Snippet) {
         let snip = Self::ensure_snippet(doc, s.id);
         // Title / description / body are diff-spliced Text — a one-char edit
@@ -102,9 +123,8 @@ impl SnippetsDoc {
     }
 
     fn read_tags(doc: &AutoCommit, snip: &ObjId) -> Vec<String> {
-        let list = match doc.get(snip, "tags") {
-            Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(snip, "tags") else {
+            return Vec::new();
         };
         let len = doc.length(&list);
         let mut out = Vec::with_capacity(len);
@@ -143,14 +163,12 @@ impl SnippetsDoc {
     /// The action layer uses this to read-modify-write one field on the
     /// authoritative document without touching the rest of the library.
     pub fn get(doc: &AutoCommit, id: SnippetId) -> Option<Snippet> {
-        let map = match doc.get(&ROOT, "snippets") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(&ROOT, "snippets") else {
+            return None;
         };
         let key = id.to_string();
-        let snip = match doc.get(&map, key.as_str()) {
-            Ok(Some((Value::Object(ObjType::Map), s))) => s,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::Map), snip))) = doc.get(&map, key.as_str()) else {
+            return None;
         };
         let language = Language::from_slug(&Self::read_str(doc, &snip, "language"));
         Some(Snippet {
@@ -169,9 +187,8 @@ impl SnippetsDoc {
     /// Read every snippet out of the document. Entries whose id key
     /// doesn't parse are skipped.
     pub fn list(doc: &AutoCommit) -> Vec<Snippet> {
-        let map = match doc.get(&ROOT, "snippets") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(&ROOT, "snippets") else {
+            return Vec::new();
         };
         let mut out = Vec::new();
         for key in doc.keys(&map) {

@@ -26,15 +26,64 @@ const REFRESH_KEY: &str = "settings.printers.refresh";
 const SCAN_KEY: &str = "settings.printers.discover";
 
 pub trait PrintService: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns `Err` if the CUPS backend cannot be reached or reports a fault
+    /// while enumerating queues.
     fn queues(&self) -> Result<Vec<PrinterQueue>, String>;
+
+    /// # Errors
+    ///
+    /// Returns `Err` if the CUPS backend cannot be reached or reports a fault
+    /// while enumerating the job list.
     fn jobs(&self) -> Result<Vec<PrintJob>, String>;
+
+    /// # Errors
+    ///
+    /// Returns `Err` if the driverless discovery scan (DNS-SD/mDNS) fails to
+    /// start or is interrupted.
     fn discover(&self) -> Result<Vec<DiscoveredPrinter>, String>;
+
+    /// # Errors
+    ///
+    /// Returns `Err` if the SANE backend cannot be reached or reports a fault
+    /// while enumerating scanners.
     fn scanners(&self) -> Result<Vec<Scanner>, String>;
+
+    /// # Errors
+    ///
+    /// Returns `Err` if the discovered printer cannot be added as a
+    /// driverless queue (unreachable URI, or CUPS rejects the queue).
     fn add(&self, printer: &DiscoveredPrinter) -> Result<(), String>;
+
+    /// # Errors
+    ///
+    /// Returns `Err` if `name` does not name an existing queue, or CUPS
+    /// refuses to change the system default.
     fn set_default(&self, name: &str) -> Result<(), String>;
+
+    /// # Errors
+    ///
+    /// Returns `Err` if `name` does not name an existing queue, or CUPS
+    /// refuses to change its enabled/paused state.
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), String>;
+
+    /// # Errors
+    ///
+    /// Returns `Err` if `name` does not name an existing queue, or CUPS
+    /// refuses to delete it.
     fn remove(&self, name: &str) -> Result<(), String>;
+
+    /// # Errors
+    ///
+    /// Returns `Err` if `id` does not name an active job, or CUPS refuses to
+    /// cancel it.
     fn cancel(&self, id: &str) -> Result<(), String>;
+
+    /// # Errors
+    ///
+    /// Returns `Err` if `id` does not name a stopped/canceled/aborted job, or
+    /// CUPS refuses to resubmit it.
     fn retry(&self, id: &str) -> Result<(), String>;
 }
 
@@ -477,10 +526,7 @@ fn job_row(job: &PrintJob) -> El {
     } else {
         format!("{} KB", job.size_bytes.div_ceil(1024))
     };
-    let state = job
-        .state
-        .map(job_state_label)
-        .unwrap_or("State not reported");
+    let state = job.state.map_or("State not reported", job_state_label);
     let progress = match (job.impressions_completed, job.impressions_total) {
         (Some(done), Some(total)) if total > 0 => format!(
             "{done} of {total} impressions · {}%",

@@ -155,6 +155,7 @@ impl Proto {
         }
     }
     pub const ALL: [Proto; 2] = [Proto::Tcp, Proto::Udp];
+    #[must_use]
     pub fn next(self) -> Proto {
         match self {
             Proto::Tcp => Proto::Udp,
@@ -178,6 +179,7 @@ impl Action {
         }
     }
     pub const ALL: [Action; 2] = [Action::Allow, Action::Deny];
+    #[must_use]
     pub fn next(self) -> Action {
         match self {
             Action::Allow => Action::Deny,
@@ -229,6 +231,7 @@ pub struct Rule {
 }
 
 impl Rule {
+    #[must_use]
     pub fn new(matcher: Matcher, action: Action, source: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -263,6 +266,7 @@ pub struct Zone {
 }
 
 impl Zone {
+    #[must_use]
     pub fn new(kind: ZoneKind, target: Target) -> Self {
         Self {
             kind,

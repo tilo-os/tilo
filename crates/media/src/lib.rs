@@ -48,6 +48,19 @@
 //!   device, and diff enumerations for hotplug. Every media surface plays
 //!   *through* `PipeWire`; this is where the OS routes it.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod audio;
 pub mod audio_runtime;
 pub mod cache;
@@ -106,5 +119,5 @@ pub use transport::{
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }

@@ -60,6 +60,13 @@ impl MprisConfig {
 
 /// A snapshot of everything MPRIS exposes about the player.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag mirrors one independent MPRIS `CanXxx` property; \
+              `apps/music` and `ui::widget::video_player` construct this by \
+              field name, so reshaping it into flags is out of scope for a \
+              lint fix"
+)]
 pub struct PlayerSnapshot {
     pub status: PlaybackStatus,
     /// Stable track id → the `mpris:trackid` object path. Empty ⇒ no track.
@@ -120,14 +127,14 @@ impl PlayerSnapshot {
     /// `Position`. Ignores sub-second position jitter to avoid signal spam.
     pub fn should_republish(&self, last: &Self) -> bool {
         self.status != last.status
-            || self.volume != last.volume
+            || (self.volume - last.volume).abs() > f64::EPSILON
             || self.can_next != last.can_next
             || self.can_prev != last.can_prev
             || self.can_play != last.can_play
             || self.can_pause != last.can_pause
             || self.can_seek != last.can_seek
             || self.metadata_differs(last)
-            || (self.position_us - last.position_us).abs() >= 1_000_000
+            || self.position_us.saturating_sub(last.position_us).abs() >= 1_000_000
     }
 }
 
@@ -257,6 +264,13 @@ pub const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 
 #[cfg(feature = "mpris")]
 mod imp {
+    #![allow(
+        clippy::used_underscore_binding,
+        reason = "zbus's #[interface] macro re-binds set_position's _track_id and open_uri's \
+                  _uri by their literal names in generated dispatch code that lands in this \
+                  module but outside the annotated impl/fn, so neither an impl- nor fn-level \
+                  allow reaches it; the method bodies never read either parameter"
+    )]
     use std::collections::HashMap;
     use std::sync::mpsc::{Receiver, Sender};
 
@@ -312,6 +326,11 @@ mod imp {
         pub desktop_entry: String,
     }
 
+    // Every method below takes `&self` because the #[interface] macro
+    // dispatches D-Bus calls by matching this exact method signature; a
+    // fixed-constant property (`CanQuit`, `HasTrackList`, …) that doesn't
+    // read `self` still can't drop the receiver without breaking the
+    // interface.
     #[interface(name = "org.mpris.MediaPlayer2")]
     impl RootIface {
         fn raise(&self) {
@@ -321,14 +340,17 @@ mod imp {
             let _ = self.cmd.send(MprisCommand::Quit);
         }
         #[zbus(property)]
+        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn can_quit(&self) -> bool {
             true
         }
         #[zbus(property)]
+        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn can_raise(&self) -> bool {
             true
         }
         #[zbus(property)]
+        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn has_track_list(&self) -> bool {
             false
         }
@@ -341,10 +363,12 @@ mod imp {
             self.desktop_entry.clone()
         }
         #[zbus(property)]
+        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn supported_uri_schemes(&self) -> Vec<String> {
             vec!["http".into(), "https".into(), "file".into()]
         }
         #[zbus(property)]
+        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn supported_mime_types(&self) -> Vec<String> {
             vec![
                 "video/mp4".into(),
@@ -361,6 +385,11 @@ mod imp {
         pub cmd: Sender<MprisCommand>,
     }
 
+    // Several MPRIS properties are fixed constants (`Rate`, `CanControl`, …)
+    // or a no-op setter the spec still requires (`SetRate`); they don't
+    // read or mutate `self`, but the #[interface] macro dispatches by
+    // matching this exact method signature, so the receiver and its
+    // mutability can't be dropped without breaking the interface.
     #[interface(name = "org.mpris.MediaPlayer2.Player")]
     impl PlayerIface {
         fn play(&self) {
@@ -387,6 +416,7 @@ mod imp {
         fn set_position(&self, _track_id: ObjectPath<'_>, position: i64) {
             let _ = self.cmd.send(MprisCommand::SetPosition(position));
         }
+        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn open_uri(&self, _uri: String) {}
 
         /// Emitted after a seek not caused by normal playback.
@@ -416,20 +446,29 @@ mod imp {
             let _ = self.cmd.send(MprisCommand::SetVolume(v));
         }
         #[zbus(property)]
+        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn rate(&self) -> f64 {
             1.0
         }
         #[zbus(property)]
+        #[allow(
+            clippy::unused_self,
+            clippy::needless_pass_by_ref_mut,
+            reason = "see the comment above this impl"
+        )]
         fn set_rate(&mut self, _rate: f64) {}
         #[zbus(property)]
+        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn minimum_rate(&self) -> f64 {
             1.0
         }
         #[zbus(property)]
+        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn maximum_rate(&self) -> f64 {
             1.0
         }
         #[zbus(property)]
+        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn can_control(&self) -> bool {
             true
         }
@@ -468,6 +507,14 @@ mod imp {
 
     /// Emit `PropertiesChanged` for whichever served properties changed between
     /// `old` and `new`, then store `new` as the served snapshot.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "`guard` must stay held across every `_changed` emission below: \
+                  they all report state relative to the one `new` just written, \
+                  and releasing the lock between signals would let a concurrent \
+                  update interleave, leaving MPRIS clients briefly observing an \
+                  inconsistent mix of old and new properties"
+    )]
     pub(super) async fn apply_update(
         connection: &zbus::Connection,
         old: &PlayerSnapshot,
@@ -506,7 +553,9 @@ mod imp {
                 guard.can_seek_changed(&ctxt).await?;
             }
         }
-        if old.track_id == new.track_id && (new.position_us - old.position_us).abs() > 2_000_000 {
+        if old.track_id == new.track_id
+            && new.position_us.saturating_sub(old.position_us).abs() > 2_000_000
+        {
             let _ = PlayerIface::seeked(&ctxt, new.position_us).await;
         }
         Ok(())
@@ -647,6 +696,11 @@ mod tests {
         const GUID: &str = "0123456789abcdef0123456789abcdef";
 
         let (cmd_tx, cmd_rx) = channel::<MprisCommand>();
+        // `mpsc::Receiver` isn't `Sync`, so a plain `&Receiver` held across
+        // an `.await` in `assert_commands_forwarded` makes that future
+        // `!Send`; a `Mutex` around it is `Sync` and fixes that with no
+        // behaviour change (this test never contends the lock).
+        let cmd_rx = std::sync::Mutex::new(cmd_rx);
         let snap = PlayerSnapshot {
             status: PlaybackStatus::Playing,
             track_id: "yt:abc123".into(),
@@ -694,6 +748,18 @@ mod tests {
             .await
             .expect("player proxy");
 
+        assert_served_state_matches(&player_proxy).await;
+        assert_commands_forwarded(&player_proxy, &cmd_rx).await;
+        assert_update_reflected(&server_conn, &player_proxy, &snap).await;
+
+        drop(client_conn);
+        drop(server_conn);
+    }
+
+    /// The properties zbus serves for the snapshot [`spawn`] published match
+    /// what was published.
+    #[cfg(feature = "mpris")]
+    async fn assert_served_state_matches(player_proxy: &zbus::Proxy<'_>) {
         let status: String = player_proxy
             .get_property("PlaybackStatus")
             .await
@@ -714,7 +780,15 @@ mod tests {
             })
             .expect("title in metadata");
         assert_eq!(title, "Runaway", "served now-playing reflected over D-Bus");
+    }
 
+    /// A client calling `Pause`/`Next`/`Play` over the proxy is forwarded to
+    /// the widget as [`MprisCommand`]s, in order.
+    #[cfg(feature = "mpris")]
+    async fn assert_commands_forwarded(
+        player_proxy: &zbus::Proxy<'_>,
+        cmd_rx: &std::sync::Mutex<std::sync::mpsc::Receiver<MprisCommand>>,
+    ) {
         player_proxy
             .call_method("Pause", &())
             .await
@@ -729,17 +803,32 @@ mod tests {
             .expect("Play call");
         let mut got = Vec::new();
         for _ in 0..3 {
-            got.push(cmd_rx.recv().expect("command delivered"));
+            got.push(
+                cmd_rx
+                    .lock()
+                    .expect("test-local mutex is never poisoned")
+                    .recv()
+                    .expect("command delivered"),
+            );
         }
         assert_eq!(
             got,
             vec![MprisCommand::Pause, MprisCommand::Next, MprisCommand::Play],
             "external control reaches the widget as commands"
         );
+    }
 
+    /// Publishing an update through [`imp::apply_update`] is reflected back
+    /// over the served property.
+    #[cfg(feature = "mpris")]
+    async fn assert_update_reflected(
+        server_conn: &zbus::Connection,
+        player_proxy: &zbus::Proxy<'_>,
+        snap: &PlayerSnapshot,
+    ) {
         let mut updated = snap.clone();
         updated.status = PlaybackStatus::Paused;
-        imp::apply_update(&server_conn, &snap, &updated)
+        imp::apply_update(server_conn, snap, &updated)
             .await
             .expect("apply update");
         let status: String = player_proxy
@@ -747,8 +836,5 @@ mod tests {
             .await
             .expect("re-read PlaybackStatus");
         assert_eq!(status, "Paused", "a Pause reflects on PlaybackStatus");
-
-        drop(client_conn);
-        drop(server_conn);
     }
 }

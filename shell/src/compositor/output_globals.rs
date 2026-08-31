@@ -149,7 +149,9 @@ impl OutputGlobals {
                 smithay::wayland::output::WlOutputData,
             > + 'static,
     {
-        let refresh = refresh_mhz.unwrap_or(60_000) as i32;
+        // A wl_output mode's refresh rate is i32; clamp rather than wrap on
+        // the (unrealistic) chance a reported rate exceeds i32::MAX.
+        let refresh = i32::try_from(refresh_mhz.unwrap_or(60_000)).unwrap_or(i32::MAX);
         for change in plan(&self.snapshot(), desired) {
             match change {
                 GlobalChange::Create(id) => {
@@ -232,8 +234,13 @@ impl OutputGlobals {
 
 fn mode_for(out: &Output, refresh: i32) -> OutputMode {
     let physical = out.physical_size();
+    // A wl_output mode's dimensions are i32; clamp rather than wrap if a
+    // backend ever reports something absurd, since wrapping could turn a
+    // huge width/height into a negative one.
+    let width = i32::try_from(physical.0).unwrap_or(i32::MAX);
+    let height = i32::try_from(physical.1).unwrap_or(i32::MAX);
     OutputMode {
-        size: Size::from((physical.0 as i32, physical.1 as i32)),
+        size: Size::from((width, height)),
         refresh,
     }
 }

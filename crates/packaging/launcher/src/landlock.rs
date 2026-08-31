@@ -65,7 +65,7 @@ impl LandlockOutcome {
     }
 }
 
-pub(crate) fn outcome_from_status(status: RulesetStatus) -> LandlockOutcome {
+pub(crate) fn outcome_from_status(status: &RulesetStatus) -> LandlockOutcome {
     match status {
         RulesetStatus::FullyEnforced => LandlockOutcome::FullyEnforced,
         RulesetStatus::PartiallyEnforced => LandlockOutcome::PartiallyEnforced,
@@ -82,7 +82,7 @@ pub fn plan_from_paths(ro: &[PathBuf], rw: &[PathBuf]) -> Vec<FsRule> {
     let abi = TARGET_ABI;
     let read = AccessFs::from_read(abi);
     let all = AccessFs::from_all(abi);
-    let mut plan = Vec::with_capacity(ro.len() + rw.len());
+    let mut plan = Vec::with_capacity(ro.len().saturating_add(rw.len()));
     for p in ro {
         plan.push(FsRule {
             path: p.clone(),
@@ -138,7 +138,7 @@ fn build_and_restrict(
 pub fn apply_plan_or_log(plan: &[FsRule], net_restricted: bool) -> LandlockOutcome {
     match build_and_restrict(plan, net_restricted) {
         Ok(status) => {
-            let outcome = outcome_from_status(status.ruleset);
+            let outcome = outcome_from_status(&status.ruleset);
             tracing::info!(
                 "{} ({} rules, net_restricted={net_restricted})",
                 outcome.describe(),
@@ -175,9 +175,12 @@ mod tests {
         let rw = vec![PathBuf::from("/b")];
         let plan = plan_from_paths(&ro, &rw);
         let abi = TARGET_ABI;
-        let ro_access = plan.iter().find(|r| r.path == *"/a").unwrap().access;
-        let rw_access = plan.iter().find(|r| r.path == *"/b").unwrap().access;
-        assert!(rw_access.contains(ro_access), "rw is superset of ro");
-        assert_eq!(rw_access, AccessFs::from_all(abi));
+        let read_only_access = plan.iter().find(|r| r.path == *"/a").unwrap().access;
+        let read_write_access = plan.iter().find(|r| r.path == *"/b").unwrap().access;
+        assert!(
+            read_write_access.contains(read_only_access),
+            "rw is superset of ro"
+        );
+        assert_eq!(read_write_access, AccessFs::from_all(abi));
     }
 }

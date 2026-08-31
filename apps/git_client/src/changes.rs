@@ -168,12 +168,70 @@ impl ChangesColumn {
         files: &[FileChange],
         change_area: ChangeArea,
         selected: Option<(ChangeArea, usize)>,
-        mut y: f64,
+        y: f64,
+        is_staged: bool,
+        regions: &mut Vec<HitRegion>,
+    ) -> f64 {
+        let mut y = Self::section_header(
+            scene, tr, t, theme, area, title, files, y, is_staged, regions,
+        );
+
+        if files.is_empty() {
+            let c = &theme.tokens.colors;
+            draw::text(
+                scene,
+                tr,
+                t,
+                "— nothing here —",
+                12.0,
+                c.neutral[5],
+                area.x0 + 20.0,
+                y + 2.0,
+                None,
+            );
+            return y + 22.0;
+        }
+
+        for (i, f) in files.iter().enumerate() {
+            Self::section_row(
+                scene,
+                tr,
+                t,
+                theme,
+                area,
+                change_area,
+                selected,
+                y,
+                is_staged,
+                f,
+                i,
+                regions,
+            );
+            y += ROW_H;
+        }
+        y + 8.0
+    }
+
+    /// The section header: title, count badge, and (when non-empty) the
+    /// bulk stage/unstage-all action (part of [`Self::section`]). Returns
+    /// the `y` the file rows should start at.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn section_header(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        area: Rect,
+        title: &str,
+        files: &[FileChange],
+        y: f64,
         is_staged: bool,
         regions: &mut Vec<HitRegion>,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        // Section header with count + bulk action.
         draw::text_weighted(
             scene,
             tr,
@@ -237,119 +295,125 @@ impl ChangesColumn {
                 },
             });
         }
-        y += SECTION_H;
+        y + SECTION_H
+    }
 
-        if files.is_empty() {
+    /// One file row: selection tint, status badge, name/dir, +/- counts,
+    /// and the stage/unstage chevron button (part of [`Self::section`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/y/c follow this file's graphics convention (transform, position, colour tokens); f/i are the iterated FileChange and its index"
+    )]
+    fn section_row(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        area: Rect,
+        change_area: ChangeArea,
+        selected: Option<(ChangeArea, usize)>,
+        y: f64,
+        is_staged: bool,
+        f: &FileChange,
+        i: usize,
+        regions: &mut Vec<HitRegion>,
+    ) {
+        let c = &theme.tokens.colors;
+        let rrect = Rect::new(area.x0, y, area.x1, y + ROW_H);
+        let is_sel = selected == Some((change_area, i));
+        if is_sel {
+            draw::fill_rect(scene, t, rrect, c.accent[2]);
+            draw::fill_rect(
+                scene,
+                t,
+                Rect::new(area.x0, y, area.x0 + 3.0, y + ROW_H),
+                theme.accent_primary,
+            );
+        }
+
+        // Status badge.
+        let badge = f.kind.badge();
+        let bcolor = draw::kind_color(theme, f.kind);
+        draw::mono(scene, tr, t, badge, 12.0, bcolor, area.x0 + 14.0, y + 8.0);
+
+        // Name (bold) + dir (dim).
+        let name = f.name();
+        draw::text_weighted(
+            scene,
+            tr,
+            t,
+            name,
+            12.5,
+            c.text_primary,
+            area.x0 + 32.0,
+            y + 7.0,
+            None,
+            TextWeight::Medium,
+        );
+        let nw = f64::from(tr.measure_weighted(name, 12.5, None, TextWeight::Medium).0);
+        let dir = f.dir();
+        if !dir.is_empty() {
             draw::text(
                 scene,
                 tr,
                 t,
-                "— nothing here —",
-                12.0,
+                dir,
+                11.0,
                 c.neutral[5],
-                area.x0 + 20.0,
-                y + 2.0,
-                None,
+                area.x0 + 36.0 + nw,
+                y + 8.0,
+                Some((area.width() - 130.0 - nw) as f32),
             );
-            return y + 22.0;
         }
 
-        for (i, f) in files.iter().enumerate() {
-            let rrect = Rect::new(area.x0, y, area.x1, y + ROW_H);
-            let is_sel = selected == Some((change_area, i));
-            if is_sel {
-                draw::fill_rect(scene, t, rrect, c.accent[2]);
-                draw::fill_rect(
-                    scene,
-                    t,
-                    Rect::new(area.x0, y, area.x0 + 3.0, y + ROW_H),
-                    theme.accent_primary,
-                );
-            }
-
-            // Status badge.
-            let badge = f.kind.badge();
-            let bcolor = draw::kind_color(theme, f.kind);
-            draw::mono(scene, tr, t, badge, 12.0, bcolor, area.x0 + 14.0, y + 8.0);
-
-            // Name (bold) + dir (dim).
-            let name = f.name();
-            draw::text_weighted(
-                scene,
-                tr,
-                t,
-                name,
-                12.5,
-                c.text_primary,
-                area.x0 + 32.0,
-                y + 7.0,
-                None,
-                TextWeight::Medium,
-            );
-            let nw = f64::from(tr.measure_weighted(name, 12.5, None, TextWeight::Medium).0);
-            let dir = f.dir();
-            if !dir.is_empty() {
-                draw::text(
-                    scene,
-                    tr,
-                    t,
-                    dir,
-                    11.0,
-                    c.neutral[5],
-                    area.x0 + 36.0 + nw,
-                    y + 8.0,
-                    Some((area.width() - 130.0 - nw) as f32),
-                );
-            }
-
-            // +/- counts.
-            if f.additions > 0 || f.deletions > 0 {
-                let counts = format!("+{} -{}", f.additions, f.deletions);
-                draw::mono(
-                    scene,
-                    tr,
-                    t,
-                    &counts,
-                    10.5,
-                    c.text_dim,
-                    area.x0 + 36.0 + nw,
-                    y + 18.0,
-                );
-            }
-
-            // Stage / unstage chevron button on the right.
-            let chev = if is_staged { "−" } else { "+" };
-            let brect = Rect::new(area.x1 - 28.0, y + 4.0, area.x1 - 8.0, y + ROW_H - 4.0);
-            draw::fill_round(scene, t, brect, 4.0, c.surface_white_10);
-            let chw = f64::from(draw::mono_width(tr, chev, 14.0));
+        // +/- counts.
+        if f.additions > 0 || f.deletions > 0 {
+            let counts = format!("+{} -{}", f.additions, f.deletions);
             draw::mono(
                 scene,
                 tr,
                 t,
-                chev,
-                14.0,
-                if is_staged {
-                    draw::del_fg(theme)
-                } else {
-                    draw::add_fg(theme)
-                },
-                brect.x0 + (brect.width() - chw) / 2.0,
-                brect.y0 + 1.0,
+                &counts,
+                10.5,
+                c.text_dim,
+                area.x0 + 36.0 + nw,
+                y + 18.0,
             );
-            regions.push(HitRegion {
-                rect: brect,
-                hit: ChangesHit::ToggleStage(change_area, i),
-            });
-
-            // Row select region (everything left of the chevron).
-            regions.push(HitRegion {
-                rect: Rect::new(area.x0, y, area.x1 - 30.0, y + ROW_H),
-                hit: ChangesHit::SelectFile(change_area, i),
-            });
-
-            y += ROW_H;
         }
-        y + 8.0
+
+        // Stage / unstage chevron button on the right.
+        let chev = if is_staged { "−" } else { "+" };
+        let brect = Rect::new(area.x1 - 28.0, y + 4.0, area.x1 - 8.0, y + ROW_H - 4.0);
+        draw::fill_round(scene, t, brect, 4.0, c.surface_white_10);
+        let chw = f64::from(draw::mono_width(tr, chev, 14.0));
+        draw::mono(
+            scene,
+            tr,
+            t,
+            chev,
+            14.0,
+            if is_staged {
+                draw::del_fg(theme)
+            } else {
+                draw::add_fg(theme)
+            },
+            brect.x0 + (brect.width() - chw) / 2.0,
+            brect.y0 + 1.0,
+        );
+        regions.push(HitRegion {
+            rect: brect,
+            hit: ChangesHit::ToggleStage(change_area, i),
+        });
+
+        // Row select region (everything left of the chevron).
+        regions.push(HitRegion {
+            rect: Rect::new(area.x0, y, area.x1 - 30.0, y + ROW_H),
+            hit: ChangesHit::SelectFile(change_area, i),
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -375,9 +439,42 @@ impl ChangesColumn {
             c.border_standard,
         );
 
-        // Author identity row.
-        let ax = box_rect.x0 + 12.0;
         let ay = box_rect.y0 + 12.0;
+        Self::commit_box_author(scene, tr, t, theme, box_rect, model, ay);
+
+        // Message input area. The owning app positions + draws a toolkit
+        // TextInput here (it paints its own frame, text and caret), and a
+        // click in this rect focuses it — so we only reserve the rect and its
+        // focus region here.
+        let input = Rect::new(
+            box_rect.x0 + 12.0,
+            ay + 32.0,
+            box_rect.x1 - 12.0,
+            box_rect.y1 - 52.0,
+        );
+        regions.push(HitRegion {
+            rect: input,
+            hit: ChangesHit::FocusMessage,
+        });
+
+        Self::commit_box_button(scene, tr, t, theme, box_rect, model, message, regions);
+
+        input
+    }
+
+    /// The author identity row (avatar + name/email) (part of
+    /// [`Self::commit_box`]).
+    fn commit_box_author(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        box_rect: Rect,
+        model: &RepoModel,
+        ay: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let ax = box_rect.x0 + 12.0;
         draw::avatar(
             scene,
             tr,
@@ -405,23 +502,25 @@ impl ChangesColumn {
             ay + 4.0,
             Some((box_rect.width() - 60.0) as f32),
         );
+    }
 
-        // Message input area. The owning app positions + draws a toolkit
-        // TextInput here (it paints its own frame, text and caret), and a
-        // click in this rect focuses it — so we only reserve the rect and its
-        // focus region here.
-        let input = Rect::new(
-            box_rect.x0 + 12.0,
-            ay + 32.0,
-            box_rect.x1 - 12.0,
-            box_rect.y1 - 52.0,
-        );
-        regions.push(HitRegion {
-            rect: input,
-            hit: ChangesHit::FocusMessage,
-        });
-
-        // Commit button.
+    /// The commit button and the branch indicator beside it (part of
+    /// [`Self::commit_box`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    fn commit_box_button(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        box_rect: Rect,
+        model: &RepoModel,
+        message: &str,
+        regions: &mut Vec<HitRegion>,
+    ) {
+        let c = &theme.tokens.colors;
         let enabled = !model.staged.is_empty() && !message.trim().is_empty();
         let brect = Rect::new(
             box_rect.x1 - 150.0,
@@ -480,7 +579,5 @@ impl ChangesColumn {
             box_rect.y1 - 34.0,
             None,
         );
-
-        input
     }
 }

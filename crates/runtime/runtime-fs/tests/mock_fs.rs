@@ -15,6 +15,16 @@
 // return; nothing outside this file constructs these servers, so the
 // refinement stays where it is written.
 #![allow(refining_impl_trait_internal)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::os::fd::IntoRawFd;
@@ -56,10 +66,8 @@ impl file_handle::Server for FakeFile {
                 Ok(r) => r,
                 Err(e) => return Promise::err(e),
             };
-            // The backend is an in-memory map, so an offset that doesn't fit
-            // usize is past the end of anything it holds and reads as empty.
             (
-                usize::try_from(r.get_offset()).unwrap_or(usize::MAX),
+                usize::try_from(r.get_offset()).expect("offset fits usize"),
                 r.get_max_len() as usize,
             )
         };
@@ -72,9 +80,7 @@ impl file_handle::Server for FakeFile {
             return Promise::ok(());
         }
         let end = offset.saturating_add(max_len).min(bytes.len());
-        results
-            .get()
-            .set_bytes(bytes.get(offset..end).unwrap_or_default());
+        results.get().set_bytes(&bytes[offset..end]);
         Promise::ok(())
     }
 
@@ -87,7 +93,7 @@ impl file_handle::Server for FakeFile {
             Ok(r) => r,
             Err(e) => return Promise::err(e),
         };
-        let offset = usize::try_from(r.get_offset()).unwrap_or(usize::MAX);
+        let offset = usize::try_from(r.get_offset()).expect("offset fits usize");
         let bytes = match r.get_bytes() {
             Ok(b) => b.to_vec(),
             Err(e) => return Promise::err(e),
@@ -101,15 +107,15 @@ impl file_handle::Server for FakeFile {
         // as needed.
         for (i, byte) in bytes.iter().enumerate() {
             let dst = offset.saturating_add(i);
-            if let Some(slot) = entry.get_mut(dst) {
-                *slot = *byte;
+            if dst < entry.len() {
+                entry[dst] = *byte;
             } else {
                 entry.push(*byte);
             }
         }
         results
             .get()
-            .set_written(u32::try_from(bytes.len()).unwrap_or(u32::MAX));
+            .set_written(u32::try_from(bytes.len()).expect("write size fits u32"));
         Promise::ok(())
     }
 
@@ -203,7 +209,10 @@ impl workspace_fs::Server for FakeFs {
         let matching: Vec<(String, u64)> = store
             .iter()
             .filter_map(|(k, v)| {
-                let rest = k.strip_prefix(prefix.as_str())?;
+                if !k.starts_with(&prefix) {
+                    return None;
+                }
+                let rest = &k[prefix.len()..];
                 // Only direct children (no further '/').
                 if rest.contains('/') {
                     return None;
@@ -211,10 +220,13 @@ impl workspace_fs::Server for FakeFs {
                 Some((rest.to_owned(), v.len() as u64))
             })
             .collect();
-        let count = u32::try_from(matching.len()).unwrap_or(u32::MAX);
-        let mut entries = results.get().init_entries(count);
-        for (i, (name, size)) in (0..count).zip(matching.iter()) {
-            let mut e = entries.reborrow().get(i);
+        let mut entries = results
+            .get()
+            .init_entries(u32::try_from(matching.len()).expect("entry count fits u32"));
+        for (i, (name, size)) in matching.iter().enumerate() {
+            let mut e = entries
+                .reborrow()
+                .get(u32::try_from(i).expect("index fits u32"));
             e.set_name(name);
             let mut md = e.init_metadata();
             md.set_kind(WireKind::File);

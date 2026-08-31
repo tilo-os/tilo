@@ -1,4 +1,4 @@
-//! `WorkspaceSettings` — the modal opened from the `TopBar`'s
+//! `WorkspaceSettings` — the contextual lens opened from the `TopBar`'s
 //! workspace-name button, with General / Members / Privacy & Security /
 //! Apps & Files tabs.
 //!
@@ -29,6 +29,30 @@ use crate::shell::state::{
     WorkspaceId,
 };
 
+/// The right-pane drawer [`WorkspaceSettings::draw_body`] dispatches to.
+pub type PaneDrawer<'a> = dyn FnMut(&mut Scene, Affine, Rect, &mut TextRenderer, &Theme) + 'a;
+
+/// Compose `transform` with a translation to `(dx, dy)`. `Affine`'s `Mul`
+/// is pure `f64` matrix composition — it cannot overflow or panic — but
+/// `arithmetic_side_effects` can't see that for a non-primitive `Mul`
+/// impl, so every call site funnels through this one function instead of
+/// an `#[allow]` at each of them.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine composition is float matrix multiplication; it cannot overflow or panic"
+)]
+fn at(transform: Affine, dx: f64, dy: f64) -> Affine {
+    transform * Affine::translate((dx, dy))
+}
+
+/// A colour paired with the alpha to paint it at, bundled so a caller of
+/// [`draw_pill`] doesn't pass a bare `f32` beside a `Color`.
+#[derive(Clone, Copy)]
+struct Tint {
+    color: Color,
+    alpha: f32,
+}
+
 /// Width of the modal's left sidebar in CSS px.
 pub const SIDEBAR_WIDTH: f64 = 256.0;
 
@@ -39,7 +63,7 @@ const NAV_ROW_GAP: f64 = 4.0;
 /// reserves room for the identity badge + caption.
 const NAV_ROWS_TOP: f64 = 120.0;
 
-/// Tab selector for the `WorkspaceSettings` modal.
+/// Tab selector for the shell-owned `WorkspaceSettings` lens.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WsTab {
     /// Workspace identity, invite link, collaborators.
@@ -65,6 +89,17 @@ impl WsTab {
         }
     }
 
+    /// Short labels for the same destinations when the lens promotes to a
+    /// narrow-screen sheet. This is responsive copy, not a second nav model.
+    pub fn compact_label(&self) -> &'static str {
+        match self {
+            WsTab::General => "General",
+            WsTab::Members => "People",
+            WsTab::Permissions => "Privacy",
+            WsTab::Apps => "Apps",
+        }
+    }
+
     /// Iteration order for the sidebar nav and tab strip. Every tab is
     /// always reachable — a host must reach Permissions before any
     /// grant exists.
@@ -84,21 +119,13 @@ pub fn invite_link(ws: &Workspace) -> String {
     format!("quickdesktop://invite/{}", u64::from(ws.id))
 }
 
-/// The `WorkspaceSettings` modal state.
+/// The `WorkspaceSettings` lens state.
+#[derive(Debug)]
 pub struct WorkspaceSettings {
     pub ws_id: WorkspaceId,
     pub active_tab: WsTab,
     modal: Modal,
     focus_trap: FocusTrap,
-}
-
-impl std::fmt::Debug for WorkspaceSettings {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WorkspaceSettings")
-            .field("ws_id", &self.ws_id)
-            .field("active_tab", &self.active_tab)
-            .finish()
-    }
 }
 
 impl WorkspaceSettings {
@@ -185,9 +212,15 @@ impl WorkspaceSettings {
         let inset_x1 = sidebar.x1 - 16.0;
         let tabs = WsTab::all();
         std::array::from_fn(|i| {
+            // `i` is a `std::array::from_fn::<_, 3>` index, always 0..=2.
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "i is a fixed 3-element array index, always 0..=2"
+            )]
             let y0 = sidebar.y0 + NAV_ROWS_TOP + i as f64 * (NAV_ROW_HEIGHT + NAV_ROW_GAP);
             let y1 = y0 + NAV_ROW_HEIGHT;
-            (tabs[i], Rect::new(inset_x0, y0, inset_x1, y1))
+            let tab = tabs.get(i).copied().unwrap_or_default();
+            (tab, Rect::new(inset_x0, y0, inset_x1, y1))
         })
     }
 
@@ -207,7 +240,7 @@ impl WorkspaceSettings {
         modal_rect: Rect,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        pane_drawer: Option<&mut dyn FnMut(&mut Scene, Affine, Rect, &mut TextRenderer, &Theme)>,
+        pane_drawer: Option<&mut PaneDrawer<'_>>,
     ) {
         self.draw_sidebar(scene, transform, modal_rect, text_renderer, theme);
 
@@ -263,7 +296,7 @@ impl WorkspaceSettings {
             "Workspace Settings",
             tokens.typography.scale.xs,
             colors.text_dim,
-            transform * Affine::translate((sidebar.x0 + 24.0, identity_rect.y1 + 12.0)),
+            at(transform, sidebar.x0 + 24.0, identity_rect.y1 + 12.0),
             None,
         );
 
@@ -283,7 +316,7 @@ impl WorkspaceSettings {
                 tab.label(),
                 tokens.typography.scale.base,
                 label_color,
-                transform * Affine::translate((row.x0 + 12.0, row.y0 + 10.0)),
+                at(transform, row.x0 + 12.0, row.y0 + 10.0),
                 None,
             );
         }
@@ -325,7 +358,7 @@ impl WorkspaceSettings {
             "Close Settings",
             tokens.typography.scale.sm,
             colors.text_dim,
-            transform * Affine::translate((footer.x0 + 36.0, footer.y0 + 12.0)),
+            at(transform, footer.x0 + 36.0, footer.y0 + 12.0),
             None,
         );
     }
@@ -349,6 +382,8 @@ fn tab_focus_id(tab: WsTab) -> u64 {
 
 const PANE_PAD_X: f64 = 16.0;
 const PANE_PAD_TOP: f64 = 12.0;
+const PANE_INTRO_HEIGHT: f64 = 64.0;
+const PANE_INTRO_GAP: f64 = 12.0;
 /// Two lines of text plus breathing room.
 const ROW_HEIGHT: f64 = 56.0;
 const ROW_GAP: f64 = 8.0;
@@ -383,19 +418,143 @@ fn draw_section_header(
         &text,
         tokens.typography.scale.xs,
         tokens.colors.text_dim,
-        transform * Affine::translate((origin.x, origin.y)),
+        at(transform, origin.x, origin.y),
         None,
     );
 }
 
 /// Paint a row card — the surface every subject row sits on.
 fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+    let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.neutral[3].with_alpha_factor(0.15),
+        theme.tokens.colors.surfaces.raised,
         None,
-        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg)),
+        &card,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        theme.tokens.colors.border_standard,
+        None,
+        &card,
+    );
+}
+
+/// A concise explanation and live status at the top of each policy pane.
+/// It gives normal users orientation without hiding the full controls.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one positional argument per painted value, shared across the three panes \
+              that open with this intro card; a context struct would need to be rebuilt \
+              at each call site anyway since scene/text_renderer are reborrowed for more \
+              drawing right after this call"
+)]
+fn draw_pane_intro(
+    scene: &mut Scene,
+    transform: Affine,
+    pane: Rect,
+    icon: Icon,
+    title: &str,
+    detail: &str,
+    status: &str,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+    let rect = Rect::new(
+        pane.x0 + PANE_PAD_X,
+        pane.y0 + PANE_PAD_TOP,
+        pane.x1 - PANE_PAD_X,
+        pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT,
+    );
+    let surface = RoundedRect::from_rect(rect, f64::from(tokens.radii.lg));
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surfaces.raised,
+        None,
+        &surface,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        colors.border_standard,
+        None,
+        &surface,
+    );
+
+    let icon_rect = Rect::new(
+        rect.x0 + 14.0,
+        rect.y0 + 14.0,
+        rect.x0 + 50.0,
+        rect.y1 - 14.0,
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.accent[5].with_alpha_factor(0.16),
+        None,
+        &RoundedRect::from_rect(icon_rect, f64::from(tokens.radii.md)),
+    );
+    draw_icon(
+        scene,
+        transform,
+        icon_rect.inset(9.0),
+        icon,
+        colors.accent[4],
+        LUCIDE_DEFAULT_STROKE_PX,
+    );
+    text_renderer.draw_text(
+        scene,
+        title,
+        tokens.typography.scale.sm,
+        colors.text_primary,
+        {
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
+            )]
+            let title_transform = transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 12.0));
+            title_transform
+        },
+        None,
+    );
+    let detail_max = (rect.width() - 62.0 - 124.0).max(80.0);
+    let shown = elide(
+        detail,
+        tokens.typography.scale.xs,
+        detail_max,
+        text_renderer,
+    );
+    text_renderer.draw_text(
+        scene,
+        &shown,
+        tokens.typography.scale.xs,
+        colors.text_dim,
+        {
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
+            )]
+            let detail_transform = transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 35.0));
+            detail_transform
+        },
+        None,
+    );
+    draw_pill(
+        scene,
+        transform,
+        Point::new(rect.x1 - 14.0, rect.center().y),
+        status,
+        Tint {
+            color: colors.accent[5],
+            alpha: 1.0,
+        },
+        text_renderer,
+        theme,
     );
 }
 
@@ -404,11 +563,9 @@ fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme
 fn draw_pill(
     scene: &mut Scene,
     transform: Affine,
-    right_edge: f64,
-    center_y: f64,
+    anchor: Point,
     label: &str,
-    tint: Color,
-    alpha: f32,
+    tint: Tint,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) -> Rect {
@@ -420,15 +577,15 @@ fn draw_pill(
     let w = f64::from(tw) + pad_x * 2.0;
     let h = f64::from(th) + pad_y * 2.0;
     let rect = Rect::new(
-        right_edge - w,
-        center_y - h / 2.0,
-        right_edge,
-        center_y + h / 2.0,
+        anchor.x - w,
+        anchor.y - h / 2.0,
+        anchor.x,
+        anchor.y + h / 2.0,
     );
     scene.fill(
         Fill::NonZero,
         transform,
-        tint.with_alpha_factor(0.20 * alpha),
+        tint.color.with_alpha_factor(0.20 * tint.alpha),
         None,
         &RoundedRect::from_rect(rect, f64::from(tokens.radii.md)),
     );
@@ -436,8 +593,8 @@ fn draw_pill(
         scene,
         label,
         size,
-        tint.with_alpha_factor(alpha),
-        transform * Affine::translate((rect.x0 + pad_x, rect.y0 + pad_y)),
+        tint.color.with_alpha_factor(tint.alpha),
+        at(transform, rect.x0 + pad_x, rect.y0 + pad_y),
         None,
     );
     rect
@@ -480,11 +637,11 @@ fn draw_avatar(
         &initial,
         size,
         colors.text_primary,
-        transform
-            * Affine::translate((
-                rect.center().x - f64::from(tw) / 2.0,
-                rect.center().y - f64::from(th) / 2.0,
-            )),
+        at(
+            transform,
+            rect.center().x - f64::from(tw) / 2.0,
+            rect.center().y - f64::from(th) / 2.0,
+        ),
         None,
     );
 }
@@ -544,7 +701,11 @@ fn draw_cycler(
         &shown,
         size,
         colors.text_primary.with_alpha_factor(alpha),
-        transform * Affine::translate((rect.x0 + 10.0, rect.center().y - f64::from(th) / 2.0)),
+        at(
+            transform,
+            rect.x0 + 10.0,
+            rect.center().y - f64::from(th) / 2.0,
+        ),
         None,
     );
     let glyph = Rect::new(
@@ -600,7 +761,7 @@ fn draw_control_caption(
         label,
         theme.tokens.typography.scale.xs,
         theme.tokens.colors.text_dim,
-        transform * Affine::translate((origin.x, origin.y)),
+        at(transform, origin.x, origin.y),
         None,
     );
 }
@@ -633,11 +794,11 @@ fn draw_danger_button(
         label,
         size,
         danger.with_alpha_factor(alpha),
-        transform
-            * Affine::translate((
-                rect.center().x - f64::from(tw) / 2.0,
-                rect.center().y - f64::from(th) / 2.0,
-            )),
+        at(
+            transform,
+            rect.center().x - f64::from(tw) / 2.0,
+            rect.center().y - f64::from(th) / 2.0,
+        ),
         None,
     );
 }
@@ -668,11 +829,11 @@ fn draw_primary_button(
         label,
         size,
         tokens.colors.text_primary.with_alpha_factor(alpha),
-        transform
-            * Affine::translate((
-                rect.center().x - f64::from(tw) / 2.0,
-                rect.center().y - f64::from(th) / 2.0,
-            )),
+        at(
+            transform,
+            rect.center().x - f64::from(tw) / 2.0,
+            rect.center().y - f64::from(th) / 2.0,
+        ),
         None,
     );
 }
@@ -683,11 +844,11 @@ fn draw_empty_state(
     transform: Affine,
     rect: Rect,
     icon: Icon,
-    headline: &str,
-    caption: &str,
+    text: (&str, &str),
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
+    let (headline, caption) = text;
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
     let glyph = 28.0_f64;
@@ -708,7 +869,7 @@ fn draw_empty_state(
         headline,
         h_size,
         colors.text_primary,
-        transform * Affine::translate((cx - f64::from(hw) / 2.0, top + glyph + 14.0)),
+        at(transform, cx - f64::from(hw) / 2.0, top + glyph + 14.0),
         None,
     );
     let c_size = tokens.typography.scale.sm;
@@ -718,7 +879,7 @@ fn draw_empty_state(
         caption,
         c_size,
         colors.text_dim,
-        transform * Affine::translate((cx - f64::from(cw) / 2.0, top + glyph + 36.0)),
+        at(transform, cx - f64::from(cw) / 2.0, top + glyph + 36.0),
         None,
     );
 }
@@ -756,7 +917,7 @@ pub fn scope_label(scope: &Scope) -> String {
         Scope::NetHost(host) if host == "*" => "any network host".to_string(),
         Scope::NetHost(host) => format!("network host {host}"),
         Scope::Action { app, action } => format!("“{action}” in {app}"),
-        Scope::ResourceType(kind) => format!("every {}", artifact_kind_label(kind)),
+        Scope::ResourceType(kind) => format!("every {}", artifact_kind_label(*kind)),
         Scope::ResourceInstance(id) => format!("one document ({})", short_id(&id.0.to_string())),
     }
 }
@@ -777,7 +938,7 @@ fn fs_scope_label(path: &str) -> String {
     }
 }
 
-fn artifact_kind_label(kind: &collab_types::role::ArtifactKind) -> &'static str {
+fn artifact_kind_label(kind: collab_types::role::ArtifactKind) -> &'static str {
     use collab_types::role::ArtifactKind;
     match kind {
         ArtifactKind::Note => "note",
@@ -807,7 +968,6 @@ pub fn capability_allows(cap: &CapOverride) -> String {
         (Scope::Device(_), Verb::Write | Verb::Admin) => format!("Control {what}"),
         (Scope::Device(_), _) => format!("Use {what}"),
         (Scope::NetHost(_), _) => format!("Reach {what}"),
-        (Scope::Workspace | Scope::Room(_), Verb::Admin) => format!("Administer {what}"),
         (Scope::Action { .. }, _) => format!("Run {what}"),
         (_, Verb::Admin) => format!("Administer {what}"),
         (_, Verb::Write) => format!("Edit {what}"),
@@ -957,6 +1117,15 @@ static GRANT_CHOICES: &[GrantChoice] = &[
     },
 ];
 
+/// Fallback for [`GrantDraft::choice`] if the index and [`GRANT_CHOICES`]'s
+/// length ever disagree — unreachable in practice since the index is
+/// always taken modulo the live length, but a real value beats a panic.
+const FALLBACK_CHOICE: GrantChoice = GrantChoice {
+    label: "Administer workspace",
+    target: GrantTarget::Workspace,
+    verb: Verb::Admin,
+};
+
 /// The path workspace files are projected at. A capability scoped here
 /// is enforced by the sandbox's binds and by the filesystem alike.
 const WORKSPACE_FILES_PATH: &str = "/var/workspace";
@@ -985,20 +1154,31 @@ impl Default for GrantDraft {
 }
 
 impl GrantDraft {
+    /// Advances to the next subject, wrapping at `len`. `len == 0` (an
+    /// empty subject list) lands back on index 0 via `checked_rem`'s
+    /// `None` fallback, same as the guard this replaced.
     pub fn cycle_subject(&mut self, len: usize) {
-        if len == 0 {
-            self.subject_index = 0;
-        } else {
-            self.subject_index = (self.subject_index + 1) % len;
-        }
+        self.subject_index = self
+            .subject_index
+            .wrapping_add(1)
+            .checked_rem(len)
+            .unwrap_or(0);
     }
 
     pub fn cycle_choice(&mut self) {
-        self.choice_index = (self.choice_index + 1) % GRANT_CHOICES.len();
+        self.choice_index = self
+            .choice_index
+            .wrapping_add(1)
+            .checked_rem(GRANT_CHOICES.len())
+            .unwrap_or(0);
     }
 
     pub fn choice(&self) -> &'static GrantChoice {
-        &GRANT_CHOICES[self.choice_index % GRANT_CHOICES.len()]
+        let idx = self
+            .choice_index
+            .checked_rem(GRANT_CHOICES.len())
+            .unwrap_or(0);
+        GRANT_CHOICES.get(idx).unwrap_or(&FALLBACK_CHOICE)
     }
 }
 
@@ -1020,9 +1200,7 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     for strip in &ws.strips {
         for group in &strip.window_groups {
             for tab in &group.tabs {
-                if let Some(app) = tile_app_id(&tab.tile) {
-                    apps.push(app);
-                }
+                apps.push(tile_app_id(&tab.tile));
             }
         }
     }
@@ -1040,15 +1218,16 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     out
 }
 
-/// The app id a tile belongs to, for subject discovery.
-fn tile_app_id(tile: &crate::shell::state::TileContent) -> Option<String> {
+/// The app id a tile belongs to, for subject discovery. `TileContent` has
+/// no variant without an app identity, so this never needs `Option`.
+fn tile_app_id(tile: &crate::shell::state::TileContent) -> String {
     use crate::shell::state::TileContent;
     match tile {
         TileContent::Foreign { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
-            Some(app_id.clone())
+            app_id.clone()
         }
         TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
-            Some(kind.as_str().to_string())
+            kind.as_str().to_string()
         }
     }
 }
@@ -1061,7 +1240,8 @@ pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<CapOverrid
     if subjects.is_empty() {
         return None;
     }
-    let subject_entry = &subjects[draft.subject_index % subjects.len()];
+    let idx = draft.subject_index.checked_rem(subjects.len()).unwrap_or(0);
+    let subject_entry = subjects.get(idx)?;
     let subject = subject_entry.to_subject()?;
     let choice = draft.choice();
     let scope = match choice.target {
@@ -1079,7 +1259,8 @@ pub fn draft_subject(ws: &Workspace, draft: &GrantDraft) -> Option<GrantSubject>
     if subjects.is_empty() {
         return None;
     }
-    Some(subjects[draft.subject_index % subjects.len()].clone())
+    let idx = draft.subject_index.checked_rem(subjects.len()).unwrap_or(0);
+    subjects.get(idx).cloned()
 }
 
 // Authority-checked mutations
@@ -1150,7 +1331,11 @@ fn role_verb(role: CapRole) -> Option<Verb> {
 
 pub fn next_role(role: CapRole) -> CapRole {
     let idx = ROLE_CYCLE.iter().position(|r| *r == role).unwrap_or(0);
-    ROLE_CYCLE[(idx + 1) % ROLE_CYCLE.len()]
+    let next = idx
+        .wrapping_add(1)
+        .checked_rem(ROLE_CYCLE.len())
+        .unwrap_or(0);
+    ROLE_CYCLE.get(next).copied().unwrap_or(CapRole::Viewer)
 }
 
 fn membership_ids(ws: &Workspace, member: &UserId) -> Vec<String> {
@@ -1194,11 +1379,7 @@ pub fn set_member_role(
             edit.revoked.push(id);
         }
     }
-    let cap = CapOverride::membership(
-        Subject::person(member.clone()),
-        ws.id.raw().to_string(),
-        verb,
-    );
+    let cap = CapOverride::membership(Subject::person(member.clone()), ws.room.to_string(), verb);
     if let Some(id) = ws.grant_as(actor, cap) {
         edit.granted.push(id);
     }
@@ -1268,7 +1449,8 @@ pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
         return rows;
     }
-    let mut cursor_y = pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT;
+    let mut cursor_y =
+        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT;
     for (user, role) in ordered_roster(ws) {
         let row_rect = Rect::new(
             pane_rect.x0 + PANE_PAD_X,
@@ -1318,6 +1500,11 @@ pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
 
 /// `is_owner` is the *local* user's authority — a non-owner sees every
 /// row and control, disabled.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "called from shell::overlay_host, outside this change's scope; bundling params \
+              into a struct would require updating that caller too"
+)]
 pub fn draw_members_pane(
     scene: &mut Scene,
     transform: Affine,
@@ -1331,18 +1518,37 @@ pub fn draw_members_pane(
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
         return;
     }
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
     let rows = members_pane_rows(ws, pane_rect);
 
+    let roster_count = ordered_roster(ws).len();
+    draw_pane_intro(
+        scene,
+        transform,
+        pane_rect,
+        Icon::Home,
+        &format!("{roster_count} people share this workspace"),
+        "Roles set the baseline; specific exceptions remain visible in Privacy & Security.",
+        if is_owner { "You manage" } else { "View only" },
+        text_renderer,
+        theme,
+    );
+
     if rows.is_empty() {
+        let empty = Rect::new(
+            pane_rect.x0,
+            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
+            pane_rect.x1,
+            pane_rect.y1,
+        );
         draw_empty_state(
             scene,
             transform,
-            pane_rect,
+            empty,
             Icon::Shield,
-            "No one else is in this workspace",
-            "Share the invite link from the General tab to add someone.",
+            (
+                "No one else is in this workspace",
+                "Share the invite link from the General tab to add someone.",
+            ),
             text_renderer,
             theme,
         );
@@ -1352,7 +1558,10 @@ pub fn draw_members_pane(
     draw_section_header(
         scene,
         transform,
-        Point::new(pane_rect.x0 + PANE_PAD_X, pane_rect.y0 + PANE_PAD_TOP),
+        Point::new(
+            pane_rect.x0 + PANE_PAD_X,
+            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
+        ),
         "MEMBERS",
         Some(ordered_roster(ws).len()),
         text_renderer,
@@ -1360,131 +1569,12 @@ pub fn draw_members_pane(
     );
 
     for row in &rows {
-        draw_row_card(scene, transform, row.row_rect, theme);
-
-        let avatar_size = 28.0_f64;
-        let avatar = Rect::new(
-            row.row_rect.x0 + 12.0,
-            row.row_rect.center().y - avatar_size / 2.0,
-            row.row_rect.x0 + 12.0 + avatar_size,
-            row.row_rect.center().y + avatar_size / 2.0,
-        );
-        let name = short_id(&row.user);
-        draw_avatar(scene, transform, avatar, &name, false, text_renderer, theme);
-
-        // Person ids are hex keys; a name alone doesn't say which row is you.
-        let mut text_limit = row.role_rect.x0 - 12.0;
-        if &row.user == local_user {
-            let you = draw_pill(
-                scene,
-                transform,
-                text_limit,
-                row.row_rect.center().y,
-                "You",
-                colors.accent[5],
-                1.0,
-                text_renderer,
-                theme,
-            );
-            text_limit = you.x0 - 8.0;
-        }
-
-        let text_x = avatar.x1 + 12.0;
-        let text_max = text_limit - text_x;
-        let title_size = tokens.typography.scale.sm;
-        let title_text = elide(&name, title_size, text_max, text_renderer);
-        text_renderer.draw_text(
-            scene,
-            &title_text,
-            title_size,
-            colors.text_primary,
-            transform * Affine::translate((text_x, row.row_rect.y0 + 12.0)),
-            None,
-        );
-
-        let detail = match row.grant_count {
-            0 => format!("{} · no extra permissions", role_label(row.role)),
-            1 => format!("{} · 1 extra permission", role_label(row.role)),
-            n => format!("{} · {n} extra permissions", role_label(row.role)),
-        };
-        let detail_size = tokens.typography.scale.xs;
-        let detail_text = elide(&detail, detail_size, text_max, text_renderer);
-        text_renderer.draw_text(
-            scene,
-            &detail_text,
-            detail_size,
-            colors.text_dim,
-            transform * Affine::translate((text_x, row.row_rect.y0 + 32.0)),
-            None,
-        );
-
-        let role_interactive = is_owner && !row.is_workspace_owner;
-        let chip_tint = if row.role == CapRole::Denied {
-            colors.semantic.danger
-        } else if row.is_workspace_owner {
-            colors.semantic.success
-        } else {
-            colors.accent[5]
-        };
-        let chip_alpha = if role_interactive || row.is_workspace_owner {
-            1.0
-        } else {
-            DISABLED_ALPHA
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            chip_tint.with_alpha_factor(0.20 * chip_alpha),
-            None,
-            &RoundedRect::from_rect(row.role_rect, f64::from(tokens.radii.md)),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            chip_tint.with_alpha_factor(if role_interactive { 0.60 } else { 0.35 }),
-            None,
-            &RoundedRect::from_rect(row.role_rect, f64::from(tokens.radii.md)),
-        );
-        let role_text = role_label(row.role);
-        let (rw, rh) = text_renderer.measure(role_text, detail_size, None);
-        // text_primary, not the chip's own hue: same-hue label on fill is unreadable.
-        text_renderer.draw_text(
-            scene,
-            role_text,
-            detail_size,
-            colors.text_primary.with_alpha_factor(chip_alpha),
-            transform
-                * Affine::translate((
-                    row.role_rect.x0 + 10.0,
-                    row.role_rect.center().y - f64::from(rh) / 2.0,
-                )),
-            None,
-        );
-        if role_interactive {
-            let glyph = 12.0_f64;
-            let gx =
-                (row.role_rect.x0 + 10.0 + f64::from(rw) + 6.0).min(row.role_rect.x1 - 6.0 - glyph);
-            draw_icon(
-                scene,
-                transform,
-                Rect::new(
-                    gx,
-                    row.role_rect.center().y - glyph / 2.0,
-                    gx + glyph,
-                    row.role_rect.center().y + glyph / 2.0,
-                ),
-                Icon::ChevronRight,
-                chip_tint,
-                LUCIDE_DEFAULT_STROKE_PX,
-            );
-        }
-
-        draw_danger_button(
+        draw_member_row(
             scene,
             transform,
-            row.remove_rect,
-            "Remove",
-            is_owner && !row.is_workspace_owner,
+            row,
+            local_user,
+            is_owner,
             text_renderer,
             theme,
         );
@@ -1492,6 +1582,173 @@ pub fn draw_members_pane(
 
     if !is_owner {
         draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
+    }
+}
+
+/// Paint one [`MemberRow`] — avatar, name, role chip, Remove button.
+fn draw_member_row(
+    scene: &mut Scene,
+    transform: Affine,
+    row: &MemberRow,
+    local_user: &UserId,
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+    draw_row_card(scene, transform, row.row_rect, theme);
+
+    let avatar_size = 28.0_f64;
+    let avatar = Rect::new(
+        row.row_rect.x0 + 12.0,
+        row.row_rect.center().y - avatar_size / 2.0,
+        row.row_rect.x0 + 12.0 + avatar_size,
+        row.row_rect.center().y + avatar_size / 2.0,
+    );
+    let name = short_id(&row.user);
+    draw_avatar(scene, transform, avatar, &name, false, text_renderer, theme);
+
+    // Person ids are hex keys; a name alone doesn't say which row is you.
+    let mut text_limit = row.role_rect.x0 - 12.0;
+    if &row.user == local_user {
+        let you = draw_pill(
+            scene,
+            transform,
+            Point::new(text_limit, row.row_rect.center().y),
+            "You",
+            Tint {
+                color: colors.accent[5],
+                alpha: 1.0,
+            },
+            text_renderer,
+            theme,
+        );
+        text_limit = you.x0 - 8.0;
+    }
+
+    let text_x = avatar.x1 + 12.0;
+    let text_max = text_limit - text_x;
+    let title_size = tokens.typography.scale.sm;
+    let title_text = elide(&name, title_size, text_max, text_renderer);
+    text_renderer.draw_text(
+        scene,
+        &title_text,
+        title_size,
+        colors.text_primary,
+        at(transform, text_x, row.row_rect.y0 + 12.0),
+        None,
+    );
+
+    let detail = match row.grant_count {
+        0 => format!("{} · no extra permissions", role_label(row.role)),
+        1 => format!("{} · 1 extra permission", role_label(row.role)),
+        n => format!("{} · {n} extra permissions", role_label(row.role)),
+    };
+    let detail_size = tokens.typography.scale.xs;
+    let detail_text = elide(&detail, detail_size, text_max, text_renderer);
+    text_renderer.draw_text(
+        scene,
+        &detail_text,
+        detail_size,
+        colors.text_dim,
+        at(transform, text_x, row.row_rect.y0 + 32.0),
+        None,
+    );
+
+    draw_member_role_chip(
+        scene,
+        transform,
+        row,
+        is_owner,
+        detail_size,
+        text_renderer,
+        theme,
+    );
+
+    draw_danger_button(
+        scene,
+        transform,
+        row.remove_rect,
+        "Remove",
+        is_owner && !row.is_workspace_owner,
+        text_renderer,
+        theme,
+    );
+}
+
+/// The role chip half of [`draw_member_row`] — its fill, label and the
+/// chevron affording that owners can cycle it.
+fn draw_member_role_chip(
+    scene: &mut Scene,
+    transform: Affine,
+    row: &MemberRow,
+    is_owner: bool,
+    detail_size: f32,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+    let role_interactive = is_owner && !row.is_workspace_owner;
+    let chip_tint = if row.role == CapRole::Denied {
+        colors.semantic.danger
+    } else if row.is_workspace_owner {
+        colors.semantic.success
+    } else {
+        colors.accent[5]
+    };
+    let chip_alpha = if role_interactive || row.is_workspace_owner {
+        1.0
+    } else {
+        DISABLED_ALPHA
+    };
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        chip_tint.with_alpha_factor(0.20 * chip_alpha),
+        None,
+        &RoundedRect::from_rect(row.role_rect, f64::from(tokens.radii.md)),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        chip_tint.with_alpha_factor(if role_interactive { 0.60 } else { 0.35 }),
+        None,
+        &RoundedRect::from_rect(row.role_rect, f64::from(tokens.radii.md)),
+    );
+    let role_text = role_label(row.role);
+    let (rw, rh) = text_renderer.measure(role_text, detail_size, None);
+    // text_primary, not the chip's own hue: same-hue label on fill is unreadable.
+    text_renderer.draw_text(
+        scene,
+        role_text,
+        detail_size,
+        colors.text_primary.with_alpha_factor(chip_alpha),
+        at(
+            transform,
+            row.role_rect.x0 + 10.0,
+            row.role_rect.center().y - f64::from(rh) / 2.0,
+        ),
+        None,
+    );
+    if role_interactive {
+        let glyph = 12.0_f64;
+        let gx =
+            (row.role_rect.x0 + 10.0 + f64::from(rw) + 6.0).min(row.role_rect.x1 - 6.0 - glyph);
+        draw_icon(
+            scene,
+            transform,
+            Rect::new(
+                gx,
+                row.role_rect.center().y - glyph / 2.0,
+                gx + glyph,
+                row.role_rect.center().y + glyph / 2.0,
+            ),
+            Icon::ChevronRight,
+            chip_tint,
+            LUCIDE_DEFAULT_STROKE_PX,
+        );
     }
 }
 
@@ -1520,7 +1777,18 @@ pub fn default_app_rows(
         .into_iter()
         .enumerate()
         .filter_map(|(index, resource)| {
-            let y0 = pane.y0 + 52.0 + index as f64 * 72.0;
+            // `index` is a row position in a pane-height-bounded list of
+            // deduplicated resource kinds — well under 2^53.
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "index is a small row position bounded by the resource-kind list, well under 2^53"
+            )]
+            let y0 = pane.y0
+                + PANE_PAD_TOP
+                + PANE_INTRO_HEIGHT
+                + PANE_INTRO_GAP
+                + 44.0
+                + index as f64 * 72.0;
             let row_rect = Rect::new(x0, y0, x1, y0 + 64.0);
             (row_rect.y1 <= pane.y1 - 10.0).then(|| DefaultAppRow {
                 resource,
@@ -1544,20 +1812,86 @@ fn app_name<'a>(id: &str, candidates: &'a [desktop_policy::AppCandidate]) -> &'a
         .map_or("Unavailable app", |a| a.display_name.as_str())
 }
 
+/// Bundles the per-workspace inputs to [`draw_default_apps_pane`] so the
+/// call stays under clippy's argument-count budget, without disturbing
+/// the shared `scene`/`transform`/`text_renderer`/`theme` draw parameters
+/// every other pane drawer in this file takes in that same order.
+pub struct DefaultAppsCtx<'a> {
+    pub ws: &'a Workspace,
+    pub local_user: &'a UserId,
+    pub candidates: &'a [desktop_policy::AppCandidate],
+}
+
 pub fn draw_default_apps_pane(
     scene: &mut Scene,
     transform: Affine,
     pane: Rect,
-    ws: &Workspace,
-    local_user: &UserId,
-    candidates: &[desktop_policy::AppCandidate],
+    ctx: &DefaultAppsCtx<'_>,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
+    let DefaultAppsCtx {
+        ws,
+        local_user,
+        candidates,
+    } = *ctx;
+    let resources = candidates
+        .iter()
+        .flat_map(|candidate| candidate.resources.iter())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let custom_rules = ws.default_apps.policy.len();
+    let status = if custom_rules == 0 {
+        format!("{resources} file types")
+    } else {
+        format!("{custom_rules} custom rules")
+    };
+    draw_default_apps_header(scene, transform, pane, &status, text_renderer, theme);
+    let can_admin = ws.may_administer(local_user);
+    draw_default_apps_rows(scene, transform, pane, ctx, can_admin, text_renderer, theme);
+    if candidates.iter().all(|a| a.resources.is_empty()) {
+        draw_empty_state(
+            scene,
+            transform,
+            pane,
+            Icon::LayoutGrid,
+            (
+                "No file handlers installed",
+                "Apps appear here after they declare supported file types.",
+            ),
+            text_renderer,
+            theme,
+        );
+    }
+}
+
+/// The intro card, section heading and column labels above the row list —
+/// split out of [`draw_default_apps_pane`] so that function stays readable
+/// as one top-to-bottom pass over the pane.
+fn draw_default_apps_header(
+    scene: &mut Scene,
+    transform: Affine,
+    pane: Rect,
+    status: &str,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    draw_pane_intro(
+        scene,
+        transform,
+        pane,
+        Icon::LayoutGrid,
+        "Defaults without lock-in",
+        "The workspace supplies a baseline; each person can explicitly choose something else.",
+        status,
+        text_renderer,
+        theme,
+    );
+    let heading_y = pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP;
     draw_section_header(
         scene,
         transform,
-        Point::new(pane.x0 + PANE_PAD_X, pane.y0 + PANE_PAD_TOP),
+        Point::new(pane.x0 + PANE_PAD_X, heading_y),
         "DEFAULT APPLICATIONS",
         None,
         text_renderer,
@@ -1568,7 +1902,7 @@ pub fn draw_default_apps_pane(
         "Workspace choice",
         theme.tokens.typography.scale.xs,
         theme.tokens.colors.text_dim,
-        transform * Affine::translate((pane.x1 - 404.0, pane.y0 + 34.0)),
+        at(transform, pane.x1 - 404.0, heading_y + 22.0),
         None,
     );
     text_renderer.draw_text(
@@ -1576,10 +1910,28 @@ pub fn draw_default_apps_pane(
         "Your choice",
         theme.tokens.typography.scale.xs,
         theme.tokens.colors.text_dim,
-        transform * Affine::translate((pane.x1 - 194.0, pane.y0 + 34.0)),
+        at(transform, pane.x1 - 194.0, heading_y + 22.0),
         None,
     );
-    let can_admin = ws.may_administer(local_user);
+}
+
+/// One row per resource kind: the workspace's policy cycler and the local
+/// user's own override, split out of [`draw_default_apps_pane`] to keep it
+/// under `too_many_lines`.
+fn draw_default_apps_rows(
+    scene: &mut Scene,
+    transform: Affine,
+    pane: Rect,
+    ctx: &DefaultAppsCtx<'_>,
+    can_admin: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let DefaultAppsCtx {
+        ws,
+        local_user,
+        candidates,
+    } = *ctx;
     for row in default_app_rows(pane, candidates) {
         draw_row_card(scene, transform, row.row_rect, theme);
         let label = row.resource.display_label();
@@ -1588,7 +1940,7 @@ pub fn draw_default_apps_pane(
             &label,
             theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((row.row_rect.x0 + 12.0, row.row_rect.y0 + 12.0)),
+            at(transform, row.row_rect.x0 + 12.0, row.row_rect.y0 + 12.0),
             None,
         );
         let policy = ws
@@ -1630,18 +1982,6 @@ pub fn draw_default_apps_pane(
             theme,
         );
     }
-    if candidates.iter().all(|a| a.resources.is_empty()) {
-        draw_empty_state(
-            scene,
-            transform,
-            pane,
-            Icon::LayoutGrid,
-            "No file handlers installed",
-            "Apps appear here after they declare supported file types.",
-            text_renderer,
-            theme,
-        );
-    }
 }
 
 pub fn next_workspace_default(
@@ -1658,7 +1998,7 @@ pub fn next_workspace_default(
         desktop_policy::WorkspaceDefaultPolicy::App(id) => apps
             .iter()
             .position(|a| &a.package_id == id)
-            .and_then(|i| apps.get(i + 1))
+            .and_then(|i| apps.get(i.saturating_add(1)))
             .map_or(
                 desktop_policy::WorkspaceDefaultPolicy::FollowPersonal,
                 |a| desktop_policy::WorkspaceDefaultPolicy::App(a.package_id.clone()),
@@ -1684,7 +2024,7 @@ pub fn next_user_default(
         desktop_policy::UserWorkspaceChoice::App(id) => apps
             .iter()
             .position(|a| &a.package_id == id)
-            .and_then(|i| apps.get(i + 1))
+            .and_then(|i| apps.get(i.saturating_add(1)))
             .map_or(desktop_policy::UserWorkspaceChoice::FollowWorkspace, |a| {
                 desktop_policy::UserWorkspaceChoice::App(a.package_id.clone())
             }),
@@ -1707,11 +2047,11 @@ fn draw_authority_footnote(
         note,
         size,
         tokens.colors.text_dim,
-        transform
-            * Affine::translate((
-                pane_rect.x0 + PANE_PAD_X,
-                pane_rect.y1 - PANE_PAD_TOP - 14.0,
-            )),
+        at(
+            transform,
+            pane_rect.x0 + PANE_PAD_X,
+            pane_rect.y1 - PANE_PAD_TOP - 14.0,
+        ),
         None,
     );
 }
@@ -1814,10 +2154,23 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
     // ---- Composer -------------------------------------------------
     let card = Rect::new(
         pane_rect.x0 + PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT,
+        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT,
         pane_rect.x1 - PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT + COMPOSER_HEIGHT,
+        pane_rect.y0
+            + PANE_PAD_TOP
+            + PANE_INTRO_HEIGHT
+            + PANE_INTRO_GAP
+            + SECTION_HEADER_HEIGHT
+            + COMPOSER_HEIGHT,
     );
+    layout_composer_controls(&mut layout, ws, card);
+    layout_capability_rows(&mut layout, ws, pane_rect, card);
+    layout
+}
+
+/// The composer card's subject/choice/expiry/submit controls — split out of
+/// [`permissions_pane_layout`] to keep it under `too_many_lines`.
+fn layout_composer_controls(layout: &mut PermissionsPaneLayout, ws: &Workspace, card: Rect) {
     let inner_x0 = card.x0 + 12.0;
     let inner_x1 = card.x1 - 12.0;
     let controls_y = card.y1 - 12.0 - CONTROL_HEIGHT;
@@ -1841,6 +2194,11 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
     );
     let expiry_x0 = layout.choice_rect.x1 + gap;
     layout.expiry_rects = std::array::from_fn(|i| {
+        // `i` is a `std::array::from_fn::<_, 3>` index, always 0..=2.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "i is a fixed 3-element array index, always 0..=2"
+        )]
         let x0 = expiry_x0 + i as f64 * EXPIRY_SEGMENT_WIDTH;
         Rect::new(
             x0,
@@ -1859,8 +2217,17 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
         layout.subject_rect = Rect::ZERO;
         layout.submit_rect = Rect::ZERO;
     }
+}
 
-    // ---- Capability rows ------------------------------------------
+/// The capability list below the composer, stopping once a row would run
+/// past the pane — split out of [`permissions_pane_layout`] to keep it
+/// under `too_many_lines`.
+fn layout_capability_rows(
+    layout: &mut PermissionsPaneLayout,
+    ws: &Workspace,
+    pane_rect: Rect,
+    card: Rect,
+) {
     let entries = listed_capabilities(ws);
     let mut cursor_y = card.y1 + 16.0;
     let mut last_kind: Option<SubjectKind> = None;
@@ -1899,14 +2266,18 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
         });
         last_kind = Some(subject.kind);
         cursor_y = row_rect.y1 + ROW_GAP;
-        placed += 1;
+        placed = placed.saturating_add(1);
     }
     layout.overflow = entries.len().saturating_sub(placed);
-    layout
 }
 
 /// Non-owners see the same list and controls, painted disabled, with a
 /// footnote explaining why.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "called from shell::overlay_host, outside this change's scope; bundling params \
+              into a struct would require updating that caller too"
+)]
 pub fn draw_permissions_pane(
     scene: &mut Scene,
     transform: Affine,
@@ -1920,42 +2291,109 @@ pub fn draw_permissions_pane(
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
         return;
     }
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
     let layout = permissions_pane_layout(ws, pane_rect);
-
-    // ---- Composer -------------------------------------------------
-    draw_section_header(
+    let active_grants = listed_capabilities(ws).len();
+    draw_pane_intro(
         scene,
         transform,
-        Point::new(pane_rect.x0 + PANE_PAD_X, pane_rect.y0 + PANE_PAD_TOP),
-        "GRANT A PERMISSION",
-        None,
+        pane_rect,
+        Icon::Shield,
+        "Access is explicit and revocable",
+        "Grants are enforced by the app sandbox and stay scoped to this workspace.",
+        &format!("{active_grants} active grants"),
         text_renderer,
         theme,
     );
-    let card = Rect::new(
-        pane_rect.x0 + PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT,
-        pane_rect.x1 - PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT + COMPOSER_HEIGHT,
-    );
-    let card_rr = RoundedRect::from_rect(card, f64::from(tokens.radii.lg));
-    scene.fill(
-        Fill::NonZero,
+
+    let card = draw_permission_composer(
+        scene,
         transform,
-        colors.neutral[1].with_alpha_factor(0.55),
-        None,
-        &card_rr,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        colors.border_standard,
-        None,
-        &card_rr,
+        pane_rect,
+        (ws, draft),
+        is_owner,
+        &layout,
+        (&mut *text_renderer, theme),
     );
 
+    // ---- Capability rows ------------------------------------------
+    if layout.rows.is_empty() {
+        let body = Rect::new(pane_rect.x0, card.y1, pane_rect.x1, pane_rect.y1);
+        draw_empty_state(
+            scene,
+            transform,
+            body,
+            Icon::Shield,
+            (
+                "No permissions granted",
+                "Apps get nothing until it is granted here or approved in a prompt.",
+            ),
+            text_renderer,
+            theme,
+        );
+        if !is_owner {
+            draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
+        }
+        return;
+    }
+
+    let mut last_kind: Option<SubjectKind> = None;
+    let group_counts = |kind: SubjectKind| -> usize {
+        layout
+            .rows
+            .iter()
+            .filter(|r| r.subject.kind == kind)
+            .count()
+    };
+    for row in &layout.rows {
+        if last_kind != Some(row.subject.kind) {
+            draw_section_header(
+                scene,
+                transform,
+                Point::new(
+                    row.row_rect.x0,
+                    row.row_rect.y0 - SECTION_HEADER_HEIGHT + 6.0,
+                ),
+                row.subject.kind.section_label(),
+                Some(group_counts(row.subject.kind)),
+                text_renderer,
+                theme,
+            );
+            last_kind = Some(row.subject.kind);
+        }
+        draw_permission_row(scene, transform, row, is_owner, text_renderer, theme);
+    }
+
+    if layout.overflow > 0 {
+        let more = format!("+{} more", layout.overflow);
+        text_renderer.draw_text(
+            scene,
+            &more,
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            at(
+                transform,
+                pane_rect.x0 + PANE_PAD_X,
+                pane_rect.y1 - PANE_PAD_TOP - 14.0,
+            ),
+            None,
+        );
+    } else if !is_owner {
+        draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
+    }
+}
+
+/// The "Who" and "What it allows" cyclers inside the composer card.
+fn draw_who_what_pickers(
+    scene: &mut Scene,
+    transform: Affine,
+    card: Rect,
+    subject_draft: (&Workspace, &GrantDraft),
+    is_owner: bool,
+    layout: &PermissionsPaneLayout,
+    render: (&mut TextRenderer, &Theme),
+) {
+    let (ws, draft) = subject_draft;
+    let (text_renderer, theme) = render;
     let caption_y = card.y0 + 12.0;
     let subject = draft_subject(ws, draft);
     match &subject {
@@ -2006,7 +2444,75 @@ pub fn draw_permissions_pane(
         text_renderer,
         theme,
     );
+}
 
+/// Paint the "Grant a permission" composer card — header, the who/what
+/// cyclers, the expiry track, the submit button. Returns the card's rect
+/// so the caller can lay out the capability rows beneath it.
+fn draw_permission_composer(
+    scene: &mut Scene,
+    transform: Affine,
+    pane_rect: Rect,
+    subject_draft: (&Workspace, &GrantDraft),
+    is_owner: bool,
+    layout: &PermissionsPaneLayout,
+    render: (&mut TextRenderer, &Theme),
+) -> Rect {
+    let draft = subject_draft.1;
+    let (text_renderer, theme) = render;
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+
+    draw_section_header(
+        scene,
+        transform,
+        Point::new(
+            pane_rect.x0 + PANE_PAD_X,
+            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
+        ),
+        "GRANT A PERMISSION",
+        None,
+        text_renderer,
+        theme,
+    );
+    let card = Rect::new(
+        pane_rect.x0 + PANE_PAD_X,
+        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT,
+        pane_rect.x1 - PANE_PAD_X,
+        pane_rect.y0
+            + PANE_PAD_TOP
+            + PANE_INTRO_HEIGHT
+            + PANE_INTRO_GAP
+            + SECTION_HEADER_HEIGHT
+            + COMPOSER_HEIGHT,
+    );
+    let card_rr = RoundedRect::from_rect(card, f64::from(tokens.radii.lg));
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surfaces.raised,
+        None,
+        &card_rr,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        colors.border_standard,
+        None,
+        &card_rr,
+    );
+
+    draw_who_what_pickers(
+        scene,
+        transform,
+        card,
+        subject_draft,
+        is_owner,
+        layout,
+        (&mut *text_renderer, theme),
+    );
+
+    let caption_y = card.y0 + 12.0;
     draw_control_caption(
         scene,
         transform,
@@ -2015,6 +2521,42 @@ pub fn draw_permissions_pane(
         text_renderer,
         theme,
     );
+    draw_expiry_track(
+        scene,
+        transform,
+        layout,
+        draft,
+        is_owner,
+        text_renderer,
+        theme,
+    );
+
+    if layout.submit_rect.area() > 0.0 {
+        draw_primary_button(
+            scene,
+            transform,
+            layout.submit_rect,
+            "Grant",
+            is_owner,
+            text_renderer,
+            theme,
+        );
+    }
+    card
+}
+
+/// The expiry segmented control inside the composer card.
+fn draw_expiry_track(
+    scene: &mut Scene,
+    transform: Affine,
+    layout: &PermissionsPaneLayout,
+    draft: &GrantDraft,
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
     let expiry_track = Rect::new(
         layout.expiry_rects[0].x0,
         layout.expiry_rects[0].y0,
@@ -2037,8 +2579,7 @@ pub fn draw_permissions_pane(
         None,
         &track_rr,
     );
-    for (i, expiry) in EXPIRY_CHOICES.into_iter().enumerate() {
-        let seg = layout.expiry_rects[i];
+    for (seg, expiry) in layout.expiry_rects.into_iter().zip(EXPIRY_CHOICES) {
         let selected = draft.expiry == expiry;
         if selected {
             scene.fill(
@@ -2062,158 +2603,96 @@ pub fn draw_permissions_pane(
             label,
             size,
             color.with_alpha_factor(track_alpha),
-            transform
-                * Affine::translate((
-                    seg.center().x - f64::from(tw) / 2.0,
-                    seg.center().y - f64::from(th) / 2.0,
-                )),
-            None,
-        );
-    }
-
-    if layout.submit_rect.area() > 0.0 {
-        draw_primary_button(
-            scene,
-            transform,
-            layout.submit_rect,
-            "Grant",
-            is_owner,
-            text_renderer,
-            theme,
-        );
-    }
-
-    // ---- Capability rows ------------------------------------------
-    if layout.rows.is_empty() {
-        let body = Rect::new(pane_rect.x0, card.y1, pane_rect.x1, pane_rect.y1);
-        draw_empty_state(
-            scene,
-            transform,
-            body,
-            Icon::Shield,
-            "No permissions granted",
-            "Apps get nothing until it is granted here or approved in a prompt.",
-            text_renderer,
-            theme,
-        );
-        if !is_owner {
-            draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
-        }
-        return;
-    }
-
-    let mut last_kind: Option<SubjectKind> = None;
-    let group_counts = |kind: SubjectKind| -> usize {
-        layout
-            .rows
-            .iter()
-            .filter(|r| r.subject.kind == kind)
-            .count()
-    };
-    for row in &layout.rows {
-        if last_kind != Some(row.subject.kind) {
-            draw_section_header(
-                scene,
+            at(
                 transform,
-                Point::new(
-                    row.row_rect.x0,
-                    row.row_rect.y0 - SECTION_HEADER_HEIGHT + 6.0,
-                ),
-                row.subject.kind.section_label(),
-                Some(group_counts(row.subject.kind)),
-                text_renderer,
-                theme,
-            );
-            last_kind = Some(row.subject.kind);
-        }
-
-        draw_row_card(scene, transform, row.row_rect, theme);
-
-        let avatar_size = 28.0_f64;
-        let avatar = Rect::new(
-            row.row_rect.x0 + 12.0,
-            row.row_rect.center().y - avatar_size / 2.0,
-            row.row_rect.x0 + 12.0 + avatar_size,
-            row.row_rect.center().y + avatar_size / 2.0,
-        );
-        let title = row.subject.display();
-        draw_avatar(
-            scene,
-            transform,
-            avatar,
-            &title,
-            row.subject.kind == SubjectKind::App,
-            text_renderer,
-            theme,
-        );
-
-        let chip = draw_pill(
-            scene,
-            transform,
-            row.revoke_rect.x0 - 12.0,
-            row.row_rect.center().y,
-            row.expiry,
-            colors.accent[5],
-            1.0,
-            text_renderer,
-            theme,
-        );
-
-        let text_x = avatar.x1 + 12.0;
-        let text_max = chip.x0 - 12.0 - text_x;
-        let title_size = tokens.typography.scale.sm;
-        let title_text = elide(&title, title_size, text_max, text_renderer);
-        text_renderer.draw_text(
-            scene,
-            &title_text,
-            title_size,
-            colors.text_primary,
-            transform * Affine::translate((text_x, row.row_rect.y0 + 12.0)),
+                seg.center().x - f64::from(tw) / 2.0,
+                seg.center().y - f64::from(th) / 2.0,
+            ),
             None,
-        );
-        let detail = match &row.granted_by {
-            Some(by) => format!("{} · {by}", row.allows),
-            None => row.allows.clone(),
-        };
-        let detail_size = tokens.typography.scale.xs;
-        let detail_text = elide(&detail, detail_size, text_max, text_renderer);
-        text_renderer.draw_text(
-            scene,
-            &detail_text,
-            detail_size,
-            colors.text_dim,
-            transform * Affine::translate((text_x, row.row_rect.y0 + 32.0)),
-            None,
-        );
-
-        draw_danger_button(
-            scene,
-            transform,
-            row.revoke_rect,
-            "Revoke",
-            is_owner,
-            text_renderer,
-            theme,
         );
     }
+}
 
-    if layout.overflow > 0 {
-        let more = format!("+{} more", layout.overflow);
-        text_renderer.draw_text(
-            scene,
-            &more,
-            tokens.typography.scale.xs,
-            colors.text_dim,
-            transform
-                * Affine::translate((
-                    pane_rect.x0 + PANE_PAD_X,
-                    pane_rect.y1 - PANE_PAD_TOP - 14.0,
-                )),
-            None,
-        );
-    } else if !is_owner {
-        draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
-    }
+/// Paint one [`PermissionRow`] — avatar, subject, expiry chip, Revoke button.
+fn draw_permission_row(
+    scene: &mut Scene,
+    transform: Affine,
+    row: &PermissionRow,
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+    draw_row_card(scene, transform, row.row_rect, theme);
+
+    let avatar_size = 28.0_f64;
+    let avatar = Rect::new(
+        row.row_rect.x0 + 12.0,
+        row.row_rect.center().y - avatar_size / 2.0,
+        row.row_rect.x0 + 12.0 + avatar_size,
+        row.row_rect.center().y + avatar_size / 2.0,
+    );
+    let title = row.subject.display();
+    draw_avatar(
+        scene,
+        transform,
+        avatar,
+        &title,
+        row.subject.kind == SubjectKind::App,
+        text_renderer,
+        theme,
+    );
+
+    let chip = draw_pill(
+        scene,
+        transform,
+        Point::new(row.revoke_rect.x0 - 12.0, row.row_rect.center().y),
+        row.expiry,
+        Tint {
+            color: colors.accent[5],
+            alpha: 1.0,
+        },
+        text_renderer,
+        theme,
+    );
+
+    let text_x = avatar.x1 + 12.0;
+    let text_max = chip.x0 - 12.0 - text_x;
+    let title_size = tokens.typography.scale.sm;
+    let title_text = elide(&title, title_size, text_max, text_renderer);
+    text_renderer.draw_text(
+        scene,
+        &title_text,
+        title_size,
+        colors.text_primary,
+        at(transform, text_x, row.row_rect.y0 + 12.0),
+        None,
+    );
+    let detail = match &row.granted_by {
+        Some(by) => format!("{} · {by}", row.allows),
+        None => row.allows.clone(),
+    };
+    let detail_size = tokens.typography.scale.xs;
+    let detail_text = elide(&detail, detail_size, text_max, text_renderer);
+    text_renderer.draw_text(
+        scene,
+        &detail_text,
+        detail_size,
+        colors.text_dim,
+        at(transform, text_x, row.row_rect.y0 + 32.0),
+        None,
+    );
+
+    draw_danger_button(
+        scene,
+        transform,
+        row.revoke_rect,
+        "Revoke",
+        is_owner,
+        text_renderer,
+        theme,
+    );
 }
 
 #[cfg(test)]
@@ -2259,6 +2738,14 @@ mod tab_tests {
                 WsTab::Permissions,
                 WsTab::Apps
             ]
+        );
+    }
+
+    #[test]
+    fn compact_labels_keep_every_destination_distinct() {
+        assert_eq!(
+            WsTab::all().map(|tab| tab.compact_label()),
+            ["General", "People", "Privacy", "Apps"]
         );
     }
 
@@ -2723,7 +3210,10 @@ mod permissions_pane_tests {
             ),
         )
         .expect("owner grants");
-        let layout = permissions_pane_layout(&ws, pane());
+        // This assertion is about grouping every subject kind, so give
+        // the viewport room for every seeded row after the explanatory
+        // header and composer.
+        let layout = permissions_pane_layout(&ws, Rect::new(0.0, 0.0, 660.0, 620.0));
         let kinds: Vec<SubjectKind> = layout.rows.iter().map(|r| r.subject.kind).collect();
         assert!(kinds.contains(&SubjectKind::App));
         assert!(kinds.contains(&SubjectKind::Member));
@@ -3024,7 +3514,7 @@ mod permissions_pane_tests {
         let ws = ws_with_grants();
         let subjects = grant_subjects(&ws);
         let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
-        for i in 0..GRANT_CHOICES.len() {
+        for (i, choice) in GRANT_CHOICES.iter().enumerate() {
             let draft = GrantDraft {
                 subject_index: firefox,
                 choice_index: i,
@@ -3046,7 +3536,7 @@ mod permissions_pane_tests {
             assert!(
                 probe.allows(&probe.actor_for_app("firefox"), &resource, cap.verb),
                 "granting {:?} must make the decision function allow it",
-                GRANT_CHOICES[i].label
+                choice.label
             );
         }
     }

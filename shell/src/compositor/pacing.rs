@@ -26,8 +26,11 @@ pub fn interval_from_millihertz(mhz: u32) -> Option<Duration> {
     if !(MIN_REFRESH_HZ * 1000..=MAX_REFRESH_HZ * 1000).contains(&mhz) {
         return None;
     }
-    // nanos = 1e12 / mhz, in u64 to keep sub-nanosecond error from compounding across a long deadline series.
-    Some(Duration::from_nanos(1_000_000_000_000u64 / u64::from(mhz)))
+    // nanos = 1e12 / mhz, in u64 to keep sub-nanosecond error from compounding across a long
+    // deadline series. `mhz` is already bounded away from 0 above, but the division is checked
+    // rather than trusting that.
+    let nanos = 1_000_000_000_000u64.checked_div(u64::from(mhz))?;
+    Some(Duration::from_nanos(nanos))
 }
 
 /// Convert a whole-hertz refresh rate (DRM's `Mode::vrefresh`) into a frame interval.
@@ -69,7 +72,18 @@ pub fn parse_refresh_override(raw: Option<&str>) -> Option<Duration> {
     if mhz < 0.0 || mhz > f64::from(u32::MAX) {
         return None;
     }
-    interval_from_millihertz(mhz as u32)
+    interval_from_millihertz(round_mhz(mhz))
+}
+
+/// Round `mhz` to a millihertz `u32`. Only called after the caller has already checked `mhz` is
+/// finite and within `[0.0, f64::from(u32::MAX)]`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to 0.0..=f64::from(u32::MAX) immediately above, so it always fits a non-negative u32"
+)]
+fn round_mhz(mhz: f64) -> u32 {
+    mhz.clamp(0.0, f64::from(u32::MAX)) as u32
 }
 
 /// [`parse_refresh_override`] against the process environment, warning when a value was set but rejected — a silently-ignored override would make a bench run report the fallback rate as the requested one.
@@ -173,11 +187,19 @@ impl FrameClock {
     /// Advances in whole intervals from the *previous deadline*, so the series stays phase-locked to
     /// the display rather than drifting by however long each frame took. Deadlines already in the past are stepped over (counted in [`Self::skipped_deadlines`]) instead of producing a backlog of zero-length budgets that would spin the loop.
     pub fn note_presented(&mut self, at: Instant) {
-        self.presented += 1;
-        let mut next = self.next_deadline + self.interval;
+        self.presented = self.presented.saturating_add(1);
+        let Some(mut next) = self.next_deadline.checked_add(self.interval) else {
+            // Past the platform's representable `Instant` range — essentially unreachable
+            // outside a multi-hundred-year uptime — so the series stops advancing rather than
+            // panicking on the addition.
+            return;
+        };
         while next <= at {
-            next += self.interval;
-            self.skipped += 1;
+            let Some(stepped) = next.checked_add(self.interval) else {
+                break;
+            };
+            next = stepped;
+            self.skipped = self.skipped.saturating_add(1);
         }
         self.next_deadline = next;
     }
@@ -190,8 +212,18 @@ impl FrameClock {
 
 /// Clamp an interval into the range the refresh bounds imply, so a caller constructing a clock directly from a bad duration can't park the compositor.
 fn sane(interval: Duration) -> Duration {
-    let min = Duration::from_nanos(1_000_000_000 / u64::from(MAX_REFRESH_HZ));
-    let max = Duration::from_nanos(1_000_000_000 / u64::from(MIN_REFRESH_HZ));
+    // `MAX_REFRESH_HZ`/`MIN_REFRESH_HZ` are fixed nonzero constants, so these divisions never
+    // actually hit their fallback; checked anyway rather than trusting that from a plain `/`.
+    let min = Duration::from_nanos(
+        1_000_000_000_u64
+            .checked_div(u64::from(MAX_REFRESH_HZ))
+            .unwrap_or(1),
+    );
+    let max = Duration::from_nanos(
+        1_000_000_000_u64
+            .checked_div(u64::from(MIN_REFRESH_HZ))
+            .unwrap_or(u64::MAX),
+    );
     interval.clamp(min, max)
 }
 
@@ -375,7 +407,7 @@ mod tests {
             Duration::from_nanos(1_000_000_000 / u64::from(MAX_REFRESH_HZ)),
             "a zero interval must clamp to the fastest supported rate"
         );
-        let frozen = FrameClock::new(Duration::from_hours(1), t0);
+        let frozen = FrameClock::new(Duration::from_secs(3600), t0);
         assert_eq!(
             frozen.interval(),
             Duration::from_nanos(1_000_000_000 / u64::from(MIN_REFRESH_HZ)),

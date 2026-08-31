@@ -3,15 +3,16 @@
 //! `--shots` never touches this module — the offscreen frame renders the
 //! bundled [`crate::sample`] data. In the live app the [`WeatherApp`] owns
 //! one [`WeatherService`]: a detached worker thread running a Tokio runtime
-//! + a `reqwest` client. The widget posts [`Request`]s down an mpsc channel
-//! and drains [`Response`]s (non-blocking) from another, applying them to
-//! the model on the next frame. While a request is in flight the widget
-//! reports `needs_animation_frame()`, so the event loop keeps pumping
-//! frames and the result surfaces within a few hundred ms of arrival.
+//! and a `reqwest` client. The widget posts [`Request`]s down an mpsc
+//! channel and drains [`Response`]s (non-blocking) from another, applying
+//! them to the model on the next frame. While a request is in flight the
+//! widget reports `needs_animation_frame()`, so the event loop keeps
+//! pumping frames and the result surfaces within a few hundred ms of
+//! arrival.
 //!
 //! [`WeatherApp`]: crate::app::WeatherApp
 
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
 use crate::api;
@@ -63,7 +64,7 @@ impl WeatherService {
 
         let _ = thread::Builder::new()
             .name("weather-net".to_string())
-            .spawn(move || worker(req_rx, res_tx));
+            .spawn(move || worker(&req_rx, &res_tx));
 
         Self {
             tx: req_tx,
@@ -80,17 +81,14 @@ impl WeatherService {
     /// Drain all ready responses without blocking.
     pub fn drain(&self) -> Vec<Response> {
         let mut out = Vec::new();
-        loop {
-            match self.rx.try_recv() {
-                Ok(r) => out.push(r),
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            }
+        while let Ok(r) = self.rx.try_recv() {
+            out.push(r);
         }
         out
     }
 }
 
-fn worker(req_rx: Receiver<Request>, res_tx: Sender<Response>) {
+fn worker(req_rx: &Receiver<Request>, res_tx: &Sender<Response>) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

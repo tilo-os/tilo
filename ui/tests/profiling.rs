@@ -4,6 +4,16 @@
 //! stands up the same headless [`ui::headless::Driver`] the persistence
 //! harness uses.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use ui::profiling::{FRAME_BUDGET_US, PerfScenario, PerfStep, run_scenario_on};
 use ui::state::State;
 use ui::widget::{Column, Scrollable, Text, Widget};

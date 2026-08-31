@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use vello::kurbo::Point;
 
 #[derive(Clone, Debug)]
@@ -123,7 +125,9 @@ fn percent_encode_path(path: &str) -> String {
         if unreserved {
             out.push(c as char);
         } else {
-            out.push_str(&format!("%{c:02X}"));
+            // Writing to a `String` cannot fail; discard the always-`Ok` result
+            // rather than allocating a temporary just to push it.
+            let _ = write!(out, "%{c:02X}");
         }
     }
     out

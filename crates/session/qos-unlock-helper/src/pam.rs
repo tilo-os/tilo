@@ -103,14 +103,12 @@ extern "C" fn converse(
     // Allocate the response array PAM expects (`num_msg` entries). PAM frees
     // this array and each `resp` with `free`, so it must come from the same
     // C allocator.
-    // Checked rather than `as`: the guard above already rules out a negative
-    // count, but this is a value PAM chose and it indexes the message array
-    // below. An `as` cast would turn a negative into an enormous length and
-    // walk off the end; saying so in the type keeps the guard and the loop
-    // from drifting apart.
-    let Ok(n) = usize::try_from(num_msg) else {
-        return PAM_CONV_ERR;
-    };
+    // `num_msg <= 0` already returned above, so `num_msg` is provably positive here.
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "num_msg > 0 is checked just above; the sign can't be lost"
+    )]
+    let n = num_msg as usize;
     let arr = unsafe { libc::calloc(n, std::mem::size_of::<PamResponse>()).cast::<PamResponse>() };
     if arr.is_null() {
         return PAM_CONV_ERR;
@@ -125,7 +123,7 @@ extern "C" fn converse(
         slot.resp_retcode = 0;
         if style == PAM_PROMPT_ECHO_OFF || style == PAM_PROMPT_ECHO_ON {
             // Duplicate the password with the C allocator so PAM can free it.
-            let dup = unsafe { libc::strdup(appdata_ptr.cast::<c_char>()) };
+            let dup = unsafe { libc::strdup(appdata_ptr as *const c_char) };
             if dup.is_null() {
                 // Roll back: free anything we set, then the array.
                 for j in 0..i {
@@ -217,22 +215,11 @@ pub fn authenticate(lib: &str, service: &str, user: &str, password: &str) -> Out
         return Outcome::Denied;
     };
 
-    // A buffer we own mutably, rather than a `*const` from the `CString`
-    // cast away to `*mut`. PAM's `appdata_ptr` is typed `*mut c_void` and
-    // there is no way to hand it anything else, so the choice is between
-    // casting away const on a buffer we promised not to write, or owning one
-    // that was mutable all along. The second has no promise to break.
-    //
-    // Nothing does write through it — the only reader is `converse`, which
-    // casts straight back to `*const c_char` and `strdup`s — but a
-    // const-to-mut cast handed to C is a hazard that survives the next person
-    // to change either side, and it does not need to exist here.
-    let mut pass_buf = c_pass.into_bytes_with_nul();
     // Keep the password buffer alive for the whole conversation; PAM reads
     // `appdata_ptr` during `pam_authenticate`.
     let conv = PamConv {
         conv: Some(converse),
-        appdata_ptr: pass_buf.as_mut_ptr().cast::<c_void>(),
+        appdata_ptr: c_pass.as_ptr().cast_mut().cast::<c_void>(),
     };
     let mut pamh: PamHandle = ptr::null_mut();
     let rc = unsafe {
@@ -261,15 +248,8 @@ pub fn authenticate(lib: &str, service: &str, user: &str, password: &str) -> Out
         Outcome::Denied
     };
     unsafe { (pam.end)(pamh, auth_rc) };
-    // The password buffer has outlived the conversation, which is the whole
-    // reason it is still in scope. Overwrite it before it is freed: a
-    // plaintext password left in a heap block that the allocator then hands
-    // to something else is the kind of thing that turns up in a core dump.
-    // `write_volatile` so the write cannot be optimised away as dead.
-    for b in &mut pass_buf {
-        unsafe { std::ptr::write_volatile(b, 0) };
-    }
-    drop(pass_buf);
+    // Ensure the password C string outlives the conversation above.
+    drop(c_pass);
     outcome
 }
 

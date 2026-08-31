@@ -84,17 +84,17 @@ fn unregister_launched_process(pid: u32) {
 pub(crate) fn verified_package_for_descendant(mut pid: u32) -> Option<String> {
     const MAX_ANCESTORS: usize = 32;
     for _ in 0..MAX_ANCESTORS {
-        let (ppid, start_time) = proc_stat(pid)?;
+        let (parent_pid, start_time) = proc_stat(pid)?;
         if let Ok(map) = LAUNCHED_PROCESSES.lock()
             && let Some(known) = map.get(&pid)
             && known.start_time == start_time
         {
             return Some(known.package_id.clone());
         }
-        if ppid == 0 || ppid == pid {
+        if parent_pid == 0 || parent_pid == pid {
             return None;
         }
-        pid = ppid;
+        pid = parent_pid;
     }
     None
 }
@@ -166,6 +166,10 @@ pub enum LaunchError {
     NoDisplay,
     /// No active workspace — both the app's sandbox policy and room.
     NoWorkspace,
+    /// A typed intent addresses shell chrome, not an application package.
+    ShellOwnedIntent,
+    /// The workspace's selected identity could not be resolved safely.
+    IdentityUnavailable { detail: String },
     /// The registry file exists but could not be read or parsed.
     RegistryUnreadable { detail: String },
     /// No `.desktop` entry with this id (distinct from
@@ -191,6 +195,12 @@ impl LaunchError {
                 "the compositor has not published a Wayland socket yet".to_string()
             }
             LaunchError::NoWorkspace => "there is no active workspace to open it in".to_string(),
+            LaunchError::ShellOwnedIntent => {
+                "this destination belongs to shell chrome, not an application".to_string()
+            }
+            LaunchError::IdentityUnavailable { detail } => {
+                format!("the workspace identity could not be loaded: {detail}")
+            }
             LaunchError::RegistryUnreadable { detail } => {
                 format!("the app registry could not be read: {detail}")
             }
@@ -267,6 +277,17 @@ static WORKSPACE_CAPABILITIES: Mutex<Vec<CapOverride>> = Mutex::new(Vec::new());
 /// toplevel in two trees and consuming here would desync them.
 static PENDING_PLACEMENT: Mutex<Vec<PendingPlacement>> = Mutex::new(Vec::new());
 
+/// Locks `mutex`, recovering the guard instead of panicking a second time
+/// if some other thread poisoned it. None of this module's locked state
+/// (`Vec`/`Option`/plain structs) has an invariant a partial mutation
+/// could break, so continuing with whatever the poisoned thread left
+/// behind is safer than aborting the whole session over it.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 struct PendingPlacement {
     /// Package id, or desktop-file id for a host app; keys replacement.
     key: String,
@@ -309,15 +330,12 @@ fn identities_for_package(package_id: &str) -> Vec<String> {
 /// (`wayland-1`) it printed.
 pub fn set_wayland_socket(socket_name: &OsStr) {
     let path = runtime_dir().join(socket_name);
-    *WAYLAND_SOCKET.lock().expect("WAYLAND_SOCKET poisoned") = Some(path);
+    *lock(&WAYLAND_SOCKET) = Some(path);
 }
 
 /// The socket [`set_wayland_socket`] published, if any.
 pub fn wayland_socket() -> Option<PathBuf> {
-    WAYLAND_SOCKET
-        .lock()
-        .expect("WAYLAND_SOCKET poisoned")
-        .clone()
+    lock(&WAYLAND_SOCKET).clone()
 }
 
 /// Publish the capability list of the workspace apps launch into. Call
@@ -325,9 +343,7 @@ pub fn wayland_socket() -> Option<PathBuf> {
 /// only reaches the next launch if republished. The whole list is
 /// published; [`launch`] and the launcher each filter their own slice.
 pub fn set_workspace_capabilities(capabilities: Vec<CapOverride>) {
-    *WORKSPACE_CAPABILITIES
-        .lock()
-        .expect("WORKSPACE_CAPABILITIES poisoned") = capabilities;
+    *lock(&WORKSPACE_CAPABILITIES) = capabilities;
 }
 
 /// Drop the published capability list. Subsequent launches get manifest
@@ -343,9 +359,7 @@ pub fn clear_workspace_capabilities() {
 /// needs to be able to *narrow* a grant.
 pub fn capabilities_for_app(app_id: &str) -> Vec<CapOverride> {
     let want = Subject::app(app_id);
-    WORKSPACE_CAPABILITIES
-        .lock()
-        .expect("WORKSPACE_CAPABILITIES poisoned")
+    lock(&WORKSPACE_CAPABILITIES)
         .iter()
         .filter(|c| c.subject == want)
         .cloned()
@@ -368,6 +382,11 @@ fn write_capabilities_file(
     package_id: &str,
     capabilities: &[CapOverride],
 ) -> std::io::Result<Option<PathBuf>> {
+    // Create at 0600 rather than writing and chmod-ing after: the window
+    // between the two is exactly when another process could open it.
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+
     // Reverse-DNS in principle, but this arrives from a registry file —
     // refuse anything that could escape the directory.
     let file_name = format!("{package_id}.json");
@@ -396,11 +415,6 @@ fn write_capabilities_file(
             format!("serialising capabilities: {e}"),
         )
     })?;
-    // Create at 0600 rather than writing and chmod-ing after: the
-    // window between the two is exactly when another process could open
-    // it.
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -425,6 +439,11 @@ pub fn runtime_dir() -> PathBuf {
 }
 
 /// Every installed package, GUI or not, freshly read from the registry.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::RegistryUnreadable`] if the app registry file
+/// cannot be read or parsed.
 pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     let entries =
         launcher::registry::list_installed().map_err(|e| LaunchError::RegistryUnreadable {
@@ -469,9 +488,14 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
 /// Installed packages, memoised for [`APP_CACHE_TTL`]. Errors are not
 /// cached, so a transiently unreadable registry doesn't wedge the
 /// launcher for the rest of the TTL.
+///
+/// # Errors
+///
+/// Returns an error if the cache is stale and re-reading the registry
+/// fails — see [`read_installed_apps`].
 pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     {
-        let cache = APP_CACHE.lock().expect("APP_CACHE poisoned");
+        let cache = lock(&APP_CACHE);
         if let Some((apps, at)) = cache.as_ref()
             && at.elapsed() < APP_CACHE_TTL
         {
@@ -479,14 +503,14 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
         }
     }
     let apps = read_installed_apps()?;
-    *APP_CACHE.lock().expect("APP_CACHE poisoned") = Some((apps.clone(), Instant::now()));
+    *lock(&APP_CACHE) = Some((apps.clone(), Instant::now()));
     Ok(apps)
 }
 
 /// Drop the memoised enumeration. Used after an install/remove and by
 /// tests that repoint `QOS_APPS_DATA_DIR`.
 pub fn invalidate_app_cache() {
-    *APP_CACHE.lock().expect("APP_CACHE poisoned") = None;
+    *lock(&APP_CACHE) = None;
 }
 
 /// Installed GUI applications, sorted by display name — what the
@@ -589,10 +613,11 @@ pub fn display_name_for_package_id(package_id: &str) -> String {
 /// compositor, then system paths. A shipped build must not let the
 /// environment name the binary that builds every app's sandbox.
 fn launcher_bin_candidates() -> Vec<PathBuf> {
+    let current_exe = std::env::current_exe().ok();
     launcher_bin_candidates_from(
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os("QOS_LAUNCHER_BIN"),
-        std::env::current_exe().ok(),
+        current_exe.as_deref(),
     )
 }
 
@@ -601,7 +626,7 @@ fn launcher_bin_candidates() -> Vec<PathBuf> {
 fn launcher_bin_candidates_from(
     dev_overrides: bool,
     explicit: Option<std::ffi::OsString>,
-    current_exe: Option<PathBuf>,
+    current_exe: Option<&Path>,
 ) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if dev_overrides
@@ -610,7 +635,7 @@ fn launcher_bin_candidates_from(
     {
         out.push(PathBuf::from(explicit));
     }
-    if let Some(dir) = current_exe.as_ref().and_then(|exe| exe.parent()) {
+    if let Some(dir) = current_exe.and_then(Path::parent) {
         out.push(dir.join("qos-launcher"));
     }
     out.push(PathBuf::from("/usr/libexec/qos-launcher"));
@@ -619,6 +644,11 @@ fn launcher_bin_candidates_from(
 }
 
 /// First candidate that exists, else the list we searched.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::LauncherBinaryMissing`] if `qos-launcher` is not
+/// found at any candidate path.
 pub fn resolve_launcher_bin() -> Result<PathBuf, LaunchError> {
     let candidates = launcher_bin_candidates();
     for candidate in &candidates {
@@ -640,12 +670,19 @@ pub fn resolve_launcher_bin() -> Result<PathBuf, LaunchError> {
 /// (dma-bufs generally can't cross GPUs). `document` rides across as
 /// `--open <path>` but grants nothing on its own — see
 /// [`crate::shell::doc_open`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the flat public convenience signature every non-uri caller (production and \
+              test) already depends on; `build_launch_command_for` is the one that groups \
+              extras into `LaunchExtras`, which this just forwards into with `uri: None`"
+)]
 pub fn build_launch_command(
     app: &InstalledApp,
     launcher_bin: &Path,
     wayland_socket: &Path,
     room: RoomId,
     capabilities_file: Option<&Path>,
+    identity_path: Option<&Path>,
     render_node: Option<&Path>,
     document: Option<&Path>,
 ) -> LaunchCommand {
@@ -654,11 +691,31 @@ pub fn build_launch_command(
         launcher_bin,
         wayland_socket,
         room,
-        capabilities_file,
-        render_node,
-        document,
-        None,
+        &LaunchExtras {
+            capabilities_file,
+            identity_path,
+            render_node,
+            document,
+            uri: None,
+        },
     )
+}
+
+/// The launch-command inputs beyond core app identity, grouped so
+/// [`build_launch_command_for`] stays under clippy's argument-count
+/// budget. `capabilities_file` is `None` when nothing was granted (no
+/// `--capabilities` flag); `render_node` pins the app's EGL/Vulkan
+/// loaders to this compositor's GPU; `document` rides across as
+/// `--open <path>`; `uri` is the one opaque URI argument for
+/// [`launch_with_uri`]. `Clone`/`Copy` since every field is a reference —
+/// [`build_launch_command_for`] takes it by `&` and copies it back apart.
+#[derive(Clone, Copy)]
+struct LaunchExtras<'a> {
+    capabilities_file: Option<&'a Path>,
+    identity_path: Option<&'a Path>,
+    render_node: Option<&'a Path>,
+    document: Option<&'a Path>,
+    uri: Option<&'a str>,
 }
 
 fn build_launch_command_for(
@@ -666,11 +723,15 @@ fn build_launch_command_for(
     launcher_bin: &Path,
     wayland_socket: &Path,
     room: RoomId,
-    capabilities_file: Option<&Path>,
-    render_node: Option<&Path>,
-    document: Option<&Path>,
-    uri: Option<&str>,
+    extras: &LaunchExtras<'_>,
 ) -> LaunchCommand {
+    let LaunchExtras {
+        capabilities_file,
+        identity_path,
+        render_node,
+        document,
+        uri,
+    } = *extras;
     let mut args = vec![
         "run".to_string(),
         "--manifest".to_string(),
@@ -688,6 +749,10 @@ fn build_launch_command_for(
     ];
     if let Some(path) = capabilities_file {
         args.push("--capabilities".to_string());
+        args.push(path.display().to_string());
+    }
+    if let Some(path) = identity_path {
+        args.push("--identity".to_string());
         args.push(path.display().to_string());
     }
     if let Some(node) = render_node {
@@ -720,6 +785,12 @@ fn build_launch_command_for(
 /// Resolve `package_id` and start it in `room`, with whatever the
 /// published workspace granted it. Returns as soon as the launch is
 /// handed to its worker thread — it never waits for the app to appear.
+///
+/// # Errors
+///
+/// Returns an error if `package_id` is not installed or is not a GUI app,
+/// if no Wayland socket has been published, or if the launcher binary
+/// cannot be found — see [`launch_with_document`].
 pub fn launch(package_id: &str, room: RoomId) -> Result<InstalledApp, LaunchError> {
     launch_with_document(package_id, room, None)
 }
@@ -727,6 +798,14 @@ pub fn launch(package_id: &str, room: RoomId) -> Result<InstalledApp, LaunchErro
 /// [`launch`], additionally asking the app to open `document`. Grant the
 /// path before calling this (see [`build_launch_command`]), or the app
 /// starts and finds nothing where it was pointed.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::NotInstalled`] if `package_id` names no
+/// installed package, [`LaunchError::NotAGuiApp`] if it has no GUI
+/// entrypoint, [`LaunchError::NoDisplay`] if the compositor has not
+/// published a Wayland socket yet, or an error from
+/// [`resolve_launcher_bin`] if `qos-launcher` cannot be found.
 pub fn launch_with_document(
     package_id: &str,
     room: RoomId,
@@ -739,6 +818,10 @@ pub fn launch_with_document(
 /// resource dispatcher must validate the scheme claim immediately before
 /// calling this; this layer only guarantees the value is not interpreted as a
 /// program or split into additional arguments.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`launch_with_document`].
 pub fn launch_with_uri(
     package_id: &str,
     room: RoomId,
@@ -750,8 +833,16 @@ pub fn launch_with_uri(
 /// Launch the only package owned by a typed tool intent and pass that exact
 /// context through the trusted launcher. The request format cannot smuggle an
 /// executable, package id, or extra arguments into this path.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`launch_with_document`],
+/// plus [`LaunchError::RegistryUnreadable`] if `intent` fails its own
+/// validation or cannot be serialised into the launched process's
+/// environment.
 pub fn launch_tool_intent(intent: &ToolIntent, room: RoomId) -> Result<InstalledApp, LaunchError> {
-    launch_with_context(intent.package_id(), room, None, None, Some(intent))
+    let package_id = intent.package_id().ok_or(LaunchError::ShellOwnedIntent)?;
+    launch_with_context(package_id, room, None, None, Some(intent))
 }
 
 fn launch_with_context(
@@ -790,16 +881,23 @@ fn launch_with_context(
             None
         }
     };
+    let identity_path = crate::identity_registry::selected_identity_path(&room.to_string())
+        .map_err(|error| LaunchError::IdentityUnavailable {
+            detail: error.to_string(),
+        })?;
 
     let mut command = build_launch_command_for(
         &app,
         &launcher_bin,
         &socket,
         room,
-        capabilities_file.as_deref(),
-        crate::compositor::render_node::resolved(),
-        document,
-        uri,
+        &LaunchExtras {
+            capabilities_file: capabilities_file.as_deref(),
+            identity_path: identity_path.as_deref(),
+            render_node: crate::compositor::render_node::resolved(),
+            document,
+            uri,
+        },
     );
     if let Some(intent) = tool_intent {
         // Validation happens at the service boundary too; repeat it here so
@@ -822,6 +920,10 @@ fn launch_with_context(
 
 /// Publish `workspace`'s capabilities and launch `package_id` into it —
 /// keeps the grant and the sandbox from being two separate decisions.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`launch_with_document`].
 pub fn launch_in_workspace(
     package_id: &str,
     workspace: &Workspace,
@@ -832,6 +934,10 @@ pub fn launch_in_workspace(
 /// [`launch_in_workspace`], additionally asking the app to open
 /// `document`. The workspace's capabilities are published first, so a
 /// read grant just added for this document actually reaches the sandbox.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`launch_with_document`].
 pub fn launch_document_in_workspace(
     package_id: &str,
     workspace: &Workspace,
@@ -841,13 +947,43 @@ pub fn launch_document_in_workspace(
     launch_with_document(package_id, workspace.room, document)
 }
 
+/// [`launch_uri_in_workspace`] taking the room and capabilities directly
+/// rather than a borrowed [`Workspace`], so a caller reading them out of a
+/// lock guard can drop it before the launch's file I/O and process spawn
+/// rather than holding it through them.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`launch_with_document`]
+/// (via [`launch_with_uri`]).
+pub fn launch_uri_in_room(
+    package_id: &str,
+    room: RoomId,
+    capabilities: Vec<CapOverride>,
+    uri: &str,
+) -> Result<InstalledApp, LaunchError> {
+    set_workspace_capabilities(capabilities);
+    launch_with_uri(package_id, room, uri)
+}
+
+/// [`launch_uri_in_room`], reading `room` and `capabilities` off `workspace`
+/// instead of taking them separately.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`launch_with_document`]
+/// (via [`launch_uri_in_room`] and [`launch_with_uri`]).
 pub fn launch_uri_in_workspace(
     package_id: &str,
     workspace: &Workspace,
     uri: &str,
 ) -> Result<InstalledApp, LaunchError> {
-    set_workspace_capabilities(workspace.capabilities.clone());
-    launch_with_uri(package_id, workspace.room, uri)
+    launch_uri_in_room(
+        package_id,
+        workspace.room,
+        workspace.capabilities.clone(),
+        uri,
+    )
 }
 
 /// Run `command` on a worker thread and report the outcome through
@@ -957,13 +1093,13 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
 }
 
 pub(crate) fn push_event(event: LaunchEvent) {
-    EVENTS.lock().expect("EVENTS poisoned").push(event);
+    lock(&EVENTS).push(event);
 }
 
 /// Take every launch event queued since the last call. Called once per
 /// frame by the chrome.
 pub fn drain_events() -> Vec<LaunchEvent> {
-    let mut events = EVENTS.lock().expect("EVENTS poisoned");
+    let mut events = lock(&EVENTS);
     std::mem::take(&mut *events)
 }
 
@@ -978,7 +1114,7 @@ pub(crate) fn remember_launch(app: &InstalledApp) {
 /// Records that `key`'s window may announce itself as any of `identities`,
 /// so a later toplevel can be given the app's real name.
 pub fn remember_launch_named(key: &str, identities: &[String], display_name: &str) {
-    let mut launched = LAUNCHED.lock().expect("LAUNCHED poisoned");
+    let mut launched = lock(&LAUNCHED);
     if launched.iter().any(|(k, _, _)| k == key) {
         return;
     }
@@ -1003,7 +1139,7 @@ pub(crate) fn clear_launched_for_test() {
 /// spawned pid (`SO_PEERCRED`), not this module.
 pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
     {
-        let launched = LAUNCHED.lock().expect("LAUNCHED poisoned");
+        let launched = lock(&LAUNCHED);
         if let Some((_, _, display_name)) = launched
             .iter()
             .find(|(_, identities, _)| identities_match(identities, app_id))
@@ -1056,9 +1192,7 @@ pub fn set_pending_placement_for_identities(
     identities: &[String],
     placement: crate::compositor::tab_binding::Placement,
 ) {
-    let mut pending = PENDING_PLACEMENT
-        .lock()
-        .expect("PENDING_PLACEMENT poisoned");
+    let mut pending = lock(&PENDING_PLACEMENT);
     pending.retain(|p| p.key != key);
     pending.push(PendingPlacement {
         key: key.to_string(),
@@ -1075,16 +1209,18 @@ pub fn placement_for_toplevel(
     app_id: &str,
     surface_id: u64,
 ) -> Option<crate::compositor::tab_binding::Placement> {
-    let mut pending = PENDING_PLACEMENT
-        .lock()
-        .expect("PENDING_PLACEMENT poisoned");
+    let mut pending = lock(&PENDING_PLACEMENT);
     let idx = pending.iter().position(|p| p.matches(app_id))?;
-    match pending[idx].claimed_by {
+    let claimed_by = pending.get(idx)?.claimed_by;
+    let placement = pending.get(idx)?.placement;
+    match claimed_by {
         None => {
-            pending[idx].claimed_by = Some(surface_id);
-            Some(pending[idx].placement)
+            if let Some(entry) = pending.get_mut(idx) {
+                entry.claimed_by = Some(surface_id);
+            }
+            Some(placement)
         }
-        Some(claimed) if claimed == surface_id => Some(pending[idx].placement),
+        Some(claimed) if claimed == surface_id => Some(placement),
         // A second window from the same client — the note was for the
         // first one; retire it so a third can't inherit it either.
         Some(_) => {
@@ -1097,19 +1233,14 @@ pub fn placement_for_toplevel(
 /// Drop the placement note for `package_id`, if any — undoes a
 /// [`set_pending_placement`] whose launch then failed to start.
 pub fn clear_pending_placement(package_id: &str) {
-    let mut pending = PENDING_PLACEMENT
-        .lock()
-        .expect("PENDING_PLACEMENT poisoned");
+    let mut pending = lock(&PENDING_PLACEMENT);
     pending.retain(|p| p.key != package_id);
 }
 
 /// Drop every placement note. Used by tests, which share this
 /// process-wide state.
 pub fn clear_pending_placements() {
-    PENDING_PLACEMENT
-        .lock()
-        .expect("PENDING_PLACEMENT poisoned")
-        .clear();
+    lock(&PENDING_PLACEMENT).clear();
 }
 
 /// Test hook: publish a socket path directly (production goes through
@@ -1137,7 +1268,7 @@ mod tests {
         let got = launcher_bin_candidates_from(
             true,
             Some(std::ffi::OsString::from("/tmp/my/qos-launcher")),
-            Some(PathBuf::from("/home/dev/target/debug/shell")),
+            Some(Path::new("/home/dev/target/debug/shell")),
         );
         assert_eq!(got[0], PathBuf::from("/tmp/my/qos-launcher"));
         assert_eq!(got[1], PathBuf::from("/home/dev/target/debug/qos-launcher"));
@@ -1150,7 +1281,7 @@ mod tests {
         let got = launcher_bin_candidates_from(
             false,
             Some(std::ffi::OsString::from("/tmp/evil/qos-launcher")),
-            Some(PathBuf::from("/usr/bin/qos-shell")),
+            Some(Path::new("/usr/bin/qos-shell")),
         );
         assert!(
             !got.iter().any(|p| p.starts_with("/tmp")),
@@ -1184,6 +1315,7 @@ mod tests {
     /// Write a registry + manifest pair into `dir` and point the
     /// launcher's registry reader at it. Returns the app's payload root.
     fn install_fixture(dir: &Path, package_id: &str, entrypoint_type: &str) -> PathBuf {
+        use std::fmt::Write as _;
         let payload = dir.join("payloads").join(package_id);
         std::fs::create_dir_all(payload.join("bin")).unwrap();
         let manifest_path = payload.join("manifest.toml");
@@ -1197,11 +1329,13 @@ mod tests {
         .unwrap();
         let registry = dir.join("registry.toml");
         let mut existing = std::fs::read_to_string(&registry).unwrap_or_default();
-        existing.push_str(&format!(
+        write!(
+            existing,
             "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
             payload.display().to_string(),
             manifest_path.display().to_string()
-        ));
+        )
+        .unwrap();
         std::fs::write(&registry, existing).unwrap();
         payload
     }
@@ -1276,6 +1410,7 @@ mod tests {
             Path::new("/run/user/1000/wayland-3"),
             RoomId::new(),
             None,
+            None,
             Some(Path::new("/dev/dri/renderD128")),
             None,
         );
@@ -1325,6 +1460,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(
             !cmd.args.iter().any(|a| a == "--render-node"),
@@ -1358,6 +1494,17 @@ mod tests {
         assert!(
             !message.contains("install"),
             "user-facing text must not talk about installing: {message}"
+        );
+    }
+
+    #[test]
+    fn shell_owned_intent_never_falls_through_to_the_app_registry() {
+        let intent = ToolIntent::WorkspaceSettings {
+            route: os_actions::WorkspaceSettingsRoute::Members,
+        };
+        assert_eq!(
+            launch_tool_intent(&intent, RoomId::new()).unwrap_err(),
+            LaunchError::ShellOwnedIntent
         );
     }
 
@@ -1566,6 +1713,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(
             cmd.args
@@ -1593,6 +1741,7 @@ mod tests {
             )),
             None,
             None,
+            None,
         );
         let pos = cmd
             .args
@@ -1602,6 +1751,29 @@ mod tests {
         assert_eq!(
             cmd.args[pos + 1],
             "/run/user/1000/qos/capabilities/dev.qos.books.json"
+        );
+    }
+
+    #[test]
+    fn launch_command_names_the_workspace_selected_identity() {
+        let cmd = build_launch_command(
+            &test_app("dev.qos.books"),
+            Path::new("/usr/bin/qos-launcher"),
+            Path::new("/run/user/1000/wayland-3"),
+            RoomId::new(),
+            None,
+            Some(Path::new("/home/alice/.config/qos/identity/alice.json")),
+            None,
+            None,
+        );
+        let position = cmd
+            .args
+            .iter()
+            .position(|arg| arg == "--identity")
+            .expect("--identity flag");
+        assert_eq!(
+            cmd.args[position + 1],
+            "/home/alice/.config/qos/identity/alice.json"
         );
     }
 
@@ -1643,6 +1815,7 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn a_granted_path_survives_the_handoff_and_becomes_a_read_only_bind() {
+        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
@@ -1657,7 +1830,6 @@ mod tests {
             .expect("a granted app gets a file");
 
         // readable only by the user: this file says what one app may reach
-        use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "capability file must not be world-readable");
 

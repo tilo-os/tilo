@@ -124,32 +124,26 @@ pub trait Highlighter {
 /// and never hard-codes an RGB. The terminal ANSI ramp is deliberately
 /// *not* used: it is shared across light and dark.
 pub fn token_color(kind: TokenKind, theme: &Theme) -> Color {
-    let c = &theme.tokens.colors;
     // Accent ramp indices, named for legibility (the ramp is a monochromatic
     // indigo scale, so these are lightness steps of the theme accent).
     const ACCENT_MID: usize = 5; // the dominant accent (indigo-500 in dark)
     const ACCENT_LIGHT: usize = 7;
     const ACCENT_LIGHTER: usize = 6;
+    let c = &theme.tokens.colors;
     match kind {
-        TokenKind::Keyword => c.accent.stops[ACCENT_MID],
-        TokenKind::Type => c.semantic.warning,
-        TokenKind::Function => c.semantic.info,
-        TokenKind::Number => c.accent.stops[ACCENT_LIGHT],
-        TokenKind::StringLit => c.semantic.success,
-        TokenKind::CharLit => c.semantic.success,
-        TokenKind::Comment => c.text_dim,
-        TokenKind::Operator => c.text_primary,
-        TokenKind::Punctuation => c.text_dim,
-        TokenKind::Attribute => c.semantic.warning,
+        TokenKind::Keyword | TokenKind::Heading => c.accent.stops[ACCENT_MID],
+        TokenKind::Type | TokenKind::Attribute => c.semantic.warning,
+        TokenKind::Function | TokenKind::Constant => c.semantic.info,
+        TokenKind::Number | TokenKind::Raw => c.accent.stops[ACCENT_LIGHT],
+        TokenKind::StringLit | TokenKind::CharLit => c.semantic.success,
+        TokenKind::Comment | TokenKind::Punctuation => c.text_dim,
+        TokenKind::Operator
+        | TokenKind::Variable
+        | TokenKind::Emphasis
+        | TokenKind::Strong
+        | TokenKind::Text => c.text_primary,
         TokenKind::Preprocessor => c.semantic.danger,
-        TokenKind::Constant => c.semantic.info,
-        TokenKind::Variable => c.text_primary,
-        TokenKind::Heading => c.accent.stops[ACCENT_MID],
-        TokenKind::Emphasis => c.text_primary,
-        TokenKind::Strong => c.text_primary,
-        TokenKind::Raw => c.accent.stops[ACCENT_LIGHT],
         TokenKind::Math => c.accent.stops[ACCENT_LIGHTER],
-        TokenKind::Text => c.text_primary,
     }
 }
 
@@ -214,6 +208,7 @@ impl CodeEditor {
 
     /// The editor owns rendering/caret/selection; this owns only the
     /// per-line lexing.
+    #[must_use]
     pub fn with_highlighter(mut self, h: Box<dyn Highlighter>) -> Self {
         self.inner.set_highlighter(Some(h));
         self
@@ -224,44 +219,52 @@ impl CodeEditor {
     }
 
     /// A no-op highlighter for [`Language::PlainText`].
+    #[must_use]
     pub fn with_language(mut self, lang: Language) -> Self {
         self.inner.set_highlighter(lang.highlighter());
         self
     }
 
     /// `0` inserts a literal `\t`.
+    #[must_use]
     pub fn with_tab_width(mut self, n: usize) -> Self {
         self.inner.set_tab_width(n);
         self
     }
 
+    #[must_use]
     pub fn with_gutter(mut self, on: bool) -> Self {
         self.inner.set_gutter(on);
         self
     }
 
+    #[must_use]
     pub fn with_current_line_highlight(mut self, on: bool) -> Self {
         self.inner.set_current_line_highlight(on);
         self
     }
 
+    #[must_use]
     pub fn with_font_size(mut self, size: f32) -> Self {
         self.inner.set_font_size(size);
         self
     }
 
     /// Caret parked at the end; not counted as an edit.
+    #[must_use]
     pub fn with_initial_value(mut self, s: &str) -> Self {
         self.inner.set_text(s);
         self
     }
 
+    #[must_use]
     pub fn with_placeholder(mut self, hint: &str) -> Self {
         self.inner.set_placeholder(hint);
         self
     }
 
     /// A stable id for the e2e harness.
+    #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.inner = self.inner.with_id(id);
         self
@@ -319,9 +322,9 @@ impl CodeEditor {
         if line < target {
             for (i, b) in text.bytes().enumerate() {
                 if b == b'\n' {
-                    line += 1;
+                    line = line.saturating_add(1);
                     if line == target {
-                        byte = i + 1;
+                        byte = i.saturating_add(1);
                         break;
                     }
                 }
@@ -339,7 +342,12 @@ impl CodeEditor {
     }
 
     pub fn line_count(&self) -> usize {
-        self.inner.value().bytes().filter(|&b| b == b'\n').count() + 1
+        self.inner
+            .value()
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count()
+            .saturating_add(1)
     }
 
     pub fn set_focused(&mut self, on: bool) {
@@ -624,7 +632,8 @@ impl Widget for CodeEditor {
 // ---------------------------------------------------------------------------
 
 fn find_from(hay: &str, from: usize, needle: char) -> Option<usize> {
-    hay[from..].find(needle).map(|i| from + i)
+    let rest = hay.get(from..)?;
+    rest.find(needle).map(|i| from.saturating_add(i))
 }
 
 /// A generic keyword-based highlighter: a set of keywords, an optional
@@ -686,12 +695,13 @@ impl Highlighter for GenericHighlighter {
         let mut i = 0usize;
         while i < n {
             if let Some(lc) = &self.line_comment
-                && line[i..].starts_with(lc.as_str())
+                && line.get(i..).is_some_and(|s| s.starts_with(lc.as_str()))
             {
                 spans.push(Span::new(i..n, TokenKind::Comment));
                 break;
             }
-            let c = bytes[i] as char;
+            let Some(&b) = bytes.get(i) else { break };
+            let c = b as char;
             if c == '"' || c == '\'' {
                 let end = string_end(line, i, c);
                 spans.push(Span::new(i..end, TokenKind::StringLit));
@@ -706,8 +716,13 @@ impl Highlighter for GenericHighlighter {
             }
             if is_ident_start(c) {
                 let end = ident_end(line, i);
-                let word = &line[i..end];
-                let followed_by_paren = line[end..].trim_start().starts_with('(');
+                let Some(word) = line.get(i..end) else {
+                    i = end;
+                    continue;
+                };
+                let followed_by_paren = line
+                    .get(end..)
+                    .is_some_and(|s| s.trim_start().starts_with('('));
                 if let Some(kind) = self.classify_word(word) {
                     spans.push(Span::new(i..end, kind));
                 } else if followed_by_paren {
@@ -716,7 +731,7 @@ impl Highlighter for GenericHighlighter {
                 i = end;
                 continue;
             }
-            i += next_char_len(line, i);
+            i = i.saturating_add(next_char_len(line, i));
         }
         LineSpans::line_local(spans)
     }
@@ -749,45 +764,48 @@ impl RustHighlighter {
     }
 }
 
-impl Default for RustHighlighter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Highlighter for RustHighlighter {
-    fn spans(&self, line: &str, carry: HlState) -> LineSpans {
+impl RustHighlighter {
+    /// `spans` when the carried state says we're still inside a `/* … */`
+    /// block comment: look for the close marker and recurse on the
+    /// remainder. Split out of `spans` to keep that under the line cap.
+    fn spans_in_block_comment(&self, line: &str) -> LineSpans {
         let n = line.len();
-        if carry & IN_BLOCK_COMMENT != 0 {
-            if let Some(close) = line.find("*/") {
-                let end = close + 2;
-                let mut ls = self.spans(&line[end..], 0);
-                shift_spans(&mut ls.spans, end);
-                let mut spans = vec![Span::new(0..end, TokenKind::Comment)];
-                spans.append(&mut ls.spans);
-                return LineSpans {
-                    spans,
-                    carry: ls.carry,
-                };
-            }
+        if let Some(close) = line.find("*/") {
+            let end = close.saturating_add(2);
+            let rest = line.get(end..).unwrap_or_default();
+            let mut ls = self.spans(rest, 0);
+            shift_spans(&mut ls.spans, end);
+            let mut spans = vec![Span::new(0..end, TokenKind::Comment)];
+            spans.append(&mut ls.spans);
             return LineSpans {
-                spans: vec![Span::new(0..n, TokenKind::Comment)],
-                carry: IN_BLOCK_COMMENT,
+                spans,
+                carry: ls.carry,
             };
         }
+        LineSpans {
+            spans: vec![Span::new(0..n, TokenKind::Comment)],
+            carry: IN_BLOCK_COMMENT,
+        }
+    }
 
+    /// `spans` when not already inside a block comment: the main
+    /// character-by-character tokenizer. Split out of `spans` to keep that
+    /// under the line cap.
+    fn tokenize_rust_line(&self, line: &str) -> LineSpans {
+        let n = line.len();
         let mut spans = Vec::new();
         let bytes = line.as_bytes();
         let mut i = 0usize;
         let mut carry_out = 0;
         while i < n {
-            if line[i..].starts_with("//") {
+            if line.get(i..).is_some_and(|s| s.starts_with("//")) {
                 spans.push(Span::new(i..n, TokenKind::Comment));
                 break;
             }
-            if line[i..].starts_with("/*") {
-                if let Some(rel) = line[i + 2..].find("*/") {
-                    let end = i + 2 + rel + 2;
+            if line.get(i..).is_some_and(|s| s.starts_with("/*")) {
+                let after_open = i.saturating_add(2);
+                if let Some(rel) = line.get(after_open..).and_then(|s| s.find("*/")) {
+                    let end = after_open.saturating_add(rel).saturating_add(2);
                     spans.push(Span::new(i..end, TokenKind::Comment));
                     i = end;
                     continue;
@@ -796,9 +814,14 @@ impl Highlighter for RustHighlighter {
                 carry_out = IN_BLOCK_COMMENT;
                 break;
             }
-            let c = bytes[i] as char;
-            if c == '#' && (line[i..].starts_with("#[") || line[i..].starts_with("#![")) {
-                let end = find_from(line, i, ']').map_or(n, |e| e + 1);
+            let Some(&b) = bytes.get(i) else { break };
+            let c = b as char;
+            if c == '#'
+                && line
+                    .get(i..)
+                    .is_some_and(|s| s.starts_with("#[") || s.starts_with("#!["))
+            {
+                let end = find_from(line, i, ']').map_or(n, |e| e.saturating_add(1));
                 spans.push(Span::new(i..end, TokenKind::Attribute));
                 i = end;
                 continue;
@@ -817,8 +840,8 @@ impl Highlighter for RustHighlighter {
                     i = end;
                     continue;
                 }
-                let end = ident_end(line, i + 1);
-                if end > i + 1 {
+                let end = ident_end(line, i.saturating_add(1));
+                if end > i.saturating_add(1) {
                     spans.push(Span::new(i..end, TokenKind::Keyword));
                     i = end;
                     continue;
@@ -832,16 +855,20 @@ impl Highlighter for RustHighlighter {
             }
             if is_ident_start(c) {
                 let end = ident_end(line, i);
-                let word = &line[i..end];
-                let after = &line[end..];
+                let Some(word) = line.get(i..end) else {
+                    i = end;
+                    continue;
+                };
+                let after = line.get(end..).unwrap_or_default();
                 let is_macro = after.starts_with('!');
                 let followed_by_paren = after.trim_start().starts_with('(');
                 if let Some(kind) = self.generic.classify_word(word) {
                     spans.push(Span::new(i..end, kind));
                 } else if is_macro {
                     // Include the `!` in the function span.
-                    spans.push(Span::new(i..end + 1, TokenKind::Function));
-                    i = end + 1;
+                    let end_incl = end.saturating_add(1);
+                    spans.push(Span::new(i..end_incl, TokenKind::Function));
+                    i = end_incl;
                     continue;
                 } else if followed_by_paren {
                     spans.push(Span::new(i..end, TokenKind::Function));
@@ -849,7 +876,7 @@ impl Highlighter for RustHighlighter {
                 i = end;
                 continue;
             }
-            i += next_char_len(line, i);
+            i = i.saturating_add(next_char_len(line, i));
         }
         LineSpans {
             spans,
@@ -858,78 +885,165 @@ impl Highlighter for RustHighlighter {
     }
 }
 
+impl Default for RustHighlighter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Highlighter for RustHighlighter {
+    fn spans(&self, line: &str, carry: HlState) -> LineSpans {
+        if carry & IN_BLOCK_COMMENT != 0 {
+            return self.spans_in_block_comment(line);
+        }
+        self.tokenize_rust_line(line)
+    }
+}
+
 /// A pragmatic SQL highlighter: case-insensitive keywords, `'…'` strings,
 /// `--` line comments, `/* … */` block comments (carried), and numbers.
 pub struct SqlHighlighter {
     generic: GenericHighlighter,
+    functions: HashSet<String>,
+    types: HashSet<String>,
 }
+
+/// Case-insensitive SQL keywords for [`SqlHighlighter::new`], split out as a
+/// module-level table (rather than a local `const` in the constructor) so
+/// the constructor itself stays short.
+const SQL_KEYWORDS: &[&str] = &[
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "INSERT",
+    "INTO",
+    "VALUES",
+    "UPDATE",
+    "SET",
+    "DELETE",
+    "CREATE",
+    "TABLE",
+    "DROP",
+    "ALTER",
+    "ADD",
+    "COLUMN",
+    "INDEX",
+    "VIEW",
+    "JOIN",
+    "INNER",
+    "LEFT",
+    "RIGHT",
+    "OUTER",
+    "FULL",
+    "ON",
+    "GROUP",
+    "BY",
+    "ORDER",
+    "HAVING",
+    "LIMIT",
+    "OFFSET",
+    "AS",
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "LIKE",
+    "BETWEEN",
+    "IS",
+    "DISTINCT",
+    "UNION",
+    "ALL",
+    "PRIMARY",
+    "KEY",
+    "FOREIGN",
+    "REFERENCES",
+    "DEFAULT",
+    "CONSTRAINT",
+    "UNIQUE",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "WITH",
+    "BEGIN",
+    "COMMIT",
+    "ROLLBACK",
+    "PRAGMA",
+    "EXISTS",
+    "USING",
+    "CASCADE",
+    "CHECK",
+    "AUTOINCREMENT",
+    "ASC",
+    "DESC",
+];
+const SQL_CONSTANTS: &[&str] = &["NULL", "TRUE", "FALSE"];
+const SQL_FUNCTIONS: &[&str] = &[
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "ROUND",
+    "COALESCE",
+    "IFNULL",
+    "LENGTH",
+    "LOWER",
+    "UPPER",
+    "SUBSTR",
+    "SUBSTRING",
+    "TRIM",
+    "REPLACE",
+    "ABS",
+    "CAST",
+    "DATE",
+    "TIME",
+    "DATETIME",
+    "STRFTIME",
+    "NOW",
+    "GROUP_CONCAT",
+    "TOTAL",
+    "NULLIF",
+    "INSTR",
+];
+const SQL_TYPES: &[&str] = &[
+    "INTEGER",
+    "INT",
+    "BIGINT",
+    "SMALLINT",
+    "TEXT",
+    "VARCHAR",
+    "CHAR",
+    "BLOB",
+    "REAL",
+    "FLOAT",
+    "DOUBLE",
+    "NUMERIC",
+    "DECIMAL",
+    "BOOLEAN",
+    "BOOL",
+    "DATE",
+    "DATETIME",
+    "TIMESTAMP",
+    "TIME",
+    "SERIAL",
+];
 
 impl SqlHighlighter {
     pub fn new() -> Self {
-        const KW: &[&str] = &[
-            "SELECT",
-            "FROM",
-            "WHERE",
-            "INSERT",
-            "INTO",
-            "VALUES",
-            "UPDATE",
-            "SET",
-            "DELETE",
-            "CREATE",
-            "TABLE",
-            "DROP",
-            "ALTER",
-            "ADD",
-            "COLUMN",
-            "INDEX",
-            "VIEW",
-            "JOIN",
-            "INNER",
-            "LEFT",
-            "RIGHT",
-            "OUTER",
-            "FULL",
-            "ON",
-            "GROUP",
-            "BY",
-            "ORDER",
-            "HAVING",
-            "LIMIT",
-            "OFFSET",
-            "AS",
-            "AND",
-            "OR",
-            "NOT",
-            "IN",
-            "LIKE",
-            "BETWEEN",
-            "IS",
-            "DISTINCT",
-            "UNION",
-            "ALL",
-            "PRIMARY",
-            "KEY",
-            "FOREIGN",
-            "REFERENCES",
-            "DEFAULT",
-            "CONSTRAINT",
-            "UNIQUE",
-            "CASE",
-            "WHEN",
-            "THEN",
-            "ELSE",
-            "END",
-            "COUNT",
-            "SUM",
-            "AVG",
-            "MIN",
-            "MAX",
-            "WITH",
-        ];
-        const CONST: &[&str] = &["NULL", "TRUE", "FALSE"];
         Self {
-            generic: GenericHighlighter::new(KW, CONST, None, true),
+            generic: GenericHighlighter::new(SQL_KEYWORDS, SQL_CONSTANTS, None, true),
+            functions: SQL_FUNCTIONS
+                .iter()
+                .map(|word| (*word).to_string())
+                .collect(),
+            types: SQL_TYPES.iter().map(|word| (*word).to_string()).collect(),
         }
     }
 }
@@ -940,38 +1054,70 @@ impl Default for SqlHighlighter {
     }
 }
 
+impl SqlHighlighter {
+    /// `spans` when the carried state says we're still inside a `/* … */`
+    /// block comment: look for the close marker and recurse on the
+    /// remainder. Split out of `spans` to keep that under the line cap.
+    fn spans_in_block_comment(&self, line: &str) -> LineSpans {
+        let n = line.len();
+        if let Some(close) = line.find("*/") {
+            let end = close.saturating_add(2);
+            let rest = line.get(end..).unwrap_or_default();
+            let mut ls = self.spans(rest, 0);
+            shift_spans(&mut ls.spans, end);
+            let mut spans = vec![Span::new(0..end, TokenKind::Comment)];
+            spans.append(&mut ls.spans);
+            return LineSpans {
+                spans,
+                carry: ls.carry,
+            };
+        }
+        LineSpans {
+            spans: vec![Span::new(0..n, TokenKind::Comment)],
+            carry: IN_BLOCK_COMMENT,
+        }
+    }
+
+    /// SQL token kind for the identifier `word`, restricted to the
+    /// categories SQL actually paints — an identifier that merely matches a
+    /// generic classifier keyword is not up-cast to `Type`/`Function`.
+    /// Split out of `spans` to keep that under the line cap.
+    fn classify_sql_word(&self, word: &str) -> Option<TokenKind> {
+        let upper = word.to_ascii_uppercase();
+        let kind = if self.functions.contains(&upper) {
+            Some(TokenKind::Function)
+        } else if self.types.contains(&upper) {
+            Some(TokenKind::Type)
+        } else {
+            self.generic.classify_word(word)
+        }?;
+        matches!(
+            kind,
+            TokenKind::Keyword | TokenKind::Constant | TokenKind::Function | TokenKind::Type
+        )
+        .then_some(kind)
+    }
+}
+
 impl Highlighter for SqlHighlighter {
     fn spans(&self, line: &str, carry: HlState) -> LineSpans {
         let n = line.len();
         if carry & IN_BLOCK_COMMENT != 0 {
-            if let Some(close) = line.find("*/") {
-                let end = close + 2;
-                let mut ls = self.spans(&line[end..], 0);
-                shift_spans(&mut ls.spans, end);
-                let mut spans = vec![Span::new(0..end, TokenKind::Comment)];
-                spans.append(&mut ls.spans);
-                return LineSpans {
-                    spans,
-                    carry: ls.carry,
-                };
-            }
-            return LineSpans {
-                spans: vec![Span::new(0..n, TokenKind::Comment)],
-                carry: IN_BLOCK_COMMENT,
-            };
+            return self.spans_in_block_comment(line);
         }
         let mut spans = Vec::new();
         let bytes = line.as_bytes();
         let mut i = 0usize;
         let mut carry_out = 0;
         while i < n {
-            if line[i..].starts_with("--") {
+            if line.get(i..).is_some_and(|s| s.starts_with("--")) {
                 spans.push(Span::new(i..n, TokenKind::Comment));
                 break;
             }
-            if line[i..].starts_with("/*") {
-                if let Some(rel) = line[i + 2..].find("*/") {
-                    let end = i + 2 + rel + 2;
+            if line.get(i..).is_some_and(|s| s.starts_with("/*")) {
+                let after_open = i.saturating_add(2);
+                if let Some(rel) = line.get(after_open..).and_then(|s| s.find("*/")) {
+                    let end = after_open.saturating_add(rel).saturating_add(2);
                     spans.push(Span::new(i..end, TokenKind::Comment));
                     i = end;
                     continue;
@@ -980,9 +1126,10 @@ impl Highlighter for SqlHighlighter {
                 carry_out = IN_BLOCK_COMMENT;
                 break;
             }
-            let c = bytes[i] as char;
-            if c == '\'' {
-                let end = string_end(line, i, '\'');
+            let Some(&b) = bytes.get(i) else { break };
+            let c = b as char;
+            if c == '\'' || c == '"' {
+                let end = sql_string_end(line, i, c);
                 spans.push(Span::new(i..end, TokenKind::StringLit));
                 i = end;
                 continue;
@@ -995,24 +1142,65 @@ impl Highlighter for SqlHighlighter {
             }
             if is_ident_start(c) {
                 let end = ident_end(line, i);
-                let word = &line[i..end];
-                if let Some(kind) = self.generic.classify_word(word) {
-                    // Don't up-case-classify identifiers as Type in SQL; only
-                    // keyword/constant matter.
-                    if matches!(kind, TokenKind::Keyword | TokenKind::Constant) {
-                        spans.push(Span::new(i..end, kind));
-                    }
+                if let Some(word) = line.get(i..end)
+                    && let Some(kind) = self.classify_sql_word(word)
+                {
+                    spans.push(Span::new(i..end, kind));
                 }
                 i = end;
                 continue;
             }
-            i += next_char_len(line, i);
+            if "+-*/%<>=!|&".contains(c) {
+                let mut end = i.saturating_add(c.len_utf8());
+                while bytes
+                    .get(end)
+                    .is_some_and(|byte| "+-*/%<>=!|&".contains(*byte as char))
+                {
+                    end = end.saturating_add(1);
+                }
+                spans.push(Span::new(i..end, TokenKind::Operator));
+                i = end;
+                continue;
+            }
+            if "(),.;".contains(c) {
+                let end = i.saturating_add(c.len_utf8());
+                spans.push(Span::new(i..end, TokenKind::Punctuation));
+                i = end;
+                continue;
+            }
+            i = i.saturating_add(next_char_len(line, i));
         }
         LineSpans {
             spans,
             carry: carry_out,
         }
     }
+}
+
+/// End of a SQL quoted literal/identifier, where a doubled quote escapes the
+/// delimiter (`'it''s'`, `"odd""name"`). Backslash escapes are accepted too
+/// for MySQL-compatible input. Unterminated strings run to the line end.
+fn sql_string_end(line: &str, start: usize, quote: char) -> usize {
+    let mut i = start.saturating_add(quote.len_utf8());
+    while i < line.len() {
+        let Some(rest) = line.get(i..) else { break };
+        let Some(c) = rest.chars().next() else { break };
+        i = i.saturating_add(c.len_utf8());
+        if c == '\\' {
+            if let Some(next) = line.get(i..).and_then(|tail| tail.chars().next()) {
+                i = i.saturating_add(next.len_utf8());
+            }
+            continue;
+        }
+        if c == quote {
+            if line.get(i..).is_some_and(|tail| tail.starts_with(quote)) {
+                i = i.saturating_add(quote.len_utf8());
+                continue;
+            }
+            break;
+        }
+    }
+    i.min(line.len())
 }
 
 /// Bit in [`HlState`] marking "the next line is inside a ```` ``` ```` fenced
@@ -1027,103 +1215,129 @@ pub struct TypstHighlighter;
 
 impl Highlighter for TypstHighlighter {
     fn spans(&self, line: &str, carry: HlState) -> LineSpans {
-        let n = line.len();
-        let trimmed = line.trim_start();
-        // Fence delimiter line toggles the fenced state; it renders as raw.
-        if trimmed.starts_with("```") {
-            let next = if carry & IN_FENCE != 0 { 0 } else { IN_FENCE };
-            return LineSpans {
-                spans: vec![Span::new(0..n, TokenKind::Raw)],
-                carry: next,
-            };
+        let len = line.len();
+        if let Some(early) = typst_fence_or_heading_spans(line, len, carry) {
+            return early;
         }
-        if carry & IN_FENCE != 0 {
-            return LineSpans {
-                spans: vec![Span::new(0..n, TokenKind::Raw)],
-                carry: IN_FENCE,
-            };
-        }
-        if trimmed.starts_with('=') {
-            return LineSpans {
-                spans: vec![Span::new(0..n, TokenKind::Heading)],
-                carry: 0,
-            };
-        }
-        let mut spans = Vec::new();
-        let bytes = line.as_bytes();
-        let mut i = 0usize;
-        while i < n {
-            let c = bytes[i] as char;
-            if line[i..].starts_with("//") {
-                spans.push(Span::new(i..n, TokenKind::Comment));
-                break;
-            }
-            if c == '"' {
-                let end = find_from(line, i + 1, '"').map_or(n, |e| e + 1);
-                spans.push(Span::new(i..end, TokenKind::StringLit));
-                i = end;
-                continue;
-            }
-            if c == '`' {
-                let end = find_from(line, i + 1, '`').map_or(n, |e| e + 1);
-                spans.push(Span::new(i..end, TokenKind::Raw));
-                i = end;
-                continue;
-            }
-            if c == '$' {
-                let end = find_from(line, i + 1, '$').map_or(n, |e| e + 1);
-                spans.push(Span::new(i..end, TokenKind::Math));
-                i = end;
-                continue;
-            }
-            if c == '#' {
-                let mut j = i + 1;
-                while j < n {
-                    let cj = bytes[j] as char;
-                    if cj.is_alphanumeric() || cj == '_' || cj == '.' {
-                        j += 1;
-                    } else {
-                        break;
-                    }
-                }
-                let end = j.max(i + 1);
-                spans.push(Span::new(i..end, TokenKind::Function));
-                i = end;
-                continue;
-            }
-            if c == '*'
-                && let Some(close) = find_from(line, i + 1, '*')
-                && close > i + 1
-            {
-                spans.push(Span::new(i..close + 1, TokenKind::Strong));
-                i = close + 1;
-                continue;
-            }
-            if c == '_'
-                && let Some(close) = find_from(line, i + 1, '_')
-                && close > i + 1
-            {
-                spans.push(Span::new(i..close + 1, TokenKind::Emphasis));
-                i = close + 1;
-                continue;
-            }
-            // Number with optional unit suffix (12pt, 1.5cm, 80%).
-            if c.is_ascii_digit() {
-                let mut j = i;
-                while j < n && (bytes[j].is_ascii_digit() || bytes[j] == b'.') {
-                    j += 1;
-                }
-                while j < n && ((bytes[j] as char).is_ascii_alphabetic() || bytes[j] == b'%') {
-                    j += 1;
-                }
-                spans.push(Span::new(i..j, TokenKind::Number));
-                i = j;
-                continue;
-            }
-            i += next_char_len(line, i);
-        }
-        LineSpans { spans, carry: 0 }
+        tokenize_typst_line(line, len)
     }
+}
+
+/// [`TypstHighlighter::spans`]'s fast paths: fence delimiter, inside a
+/// fence, heading. `None` means "none of these apply, fall through to the
+/// character tokenizer." Split out to keep that under the line cap.
+fn typst_fence_or_heading_spans(line: &str, len: usize, carry: HlState) -> Option<LineSpans> {
+    let trimmed = line.trim_start();
+    // Fence delimiter line toggles the fenced state; it renders as raw.
+    if trimmed.starts_with("```") {
+        let next = if carry & IN_FENCE != 0 { 0 } else { IN_FENCE };
+        return Some(LineSpans {
+            spans: vec![Span::new(0..len, TokenKind::Raw)],
+            carry: next,
+        });
+    }
+    if carry & IN_FENCE != 0 {
+        return Some(LineSpans {
+            spans: vec![Span::new(0..len, TokenKind::Raw)],
+            carry: IN_FENCE,
+        });
+    }
+    if trimmed.starts_with('=') {
+        return Some(LineSpans {
+            spans: vec![Span::new(0..len, TokenKind::Heading)],
+            carry: 0,
+        });
+    }
+    None
+}
+
+/// [`TypstHighlighter::spans`]'s character-by-character tokenizer, once the
+/// fast paths in [`typst_fence_or_heading_spans`] don't apply. Split out to
+/// keep that under the line cap.
+fn tokenize_typst_line(line: &str, len: usize) -> LineSpans {
+    let mut spans = Vec::new();
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    while i < len {
+        let Some(&byte) = bytes.get(i) else { break };
+        let c = byte as char;
+        if line.get(i..).is_some_and(|s| s.starts_with("//")) {
+            spans.push(Span::new(i..len, TokenKind::Comment));
+            break;
+        }
+        if c == '"' {
+            let end =
+                find_from(line, i.saturating_add(1), '"').map_or(len, |e| e.saturating_add(1));
+            spans.push(Span::new(i..end, TokenKind::StringLit));
+            i = end;
+            continue;
+        }
+        if c == '`' {
+            let end =
+                find_from(line, i.saturating_add(1), '`').map_or(len, |e| e.saturating_add(1));
+            spans.push(Span::new(i..end, TokenKind::Raw));
+            i = end;
+            continue;
+        }
+        if c == '$' {
+            let end =
+                find_from(line, i.saturating_add(1), '$').map_or(len, |e| e.saturating_add(1));
+            spans.push(Span::new(i..end, TokenKind::Math));
+            i = end;
+            continue;
+        }
+        if c == '#' {
+            let mut pos = i.saturating_add(1);
+            while let Some(&next_byte) = bytes.get(pos) {
+                let next_char = next_byte as char;
+                if next_char.is_alphanumeric() || next_char == '_' || next_char == '.' {
+                    pos = pos.saturating_add(1);
+                } else {
+                    break;
+                }
+            }
+            let end = pos.max(i.saturating_add(1));
+            spans.push(Span::new(i..end, TokenKind::Function));
+            i = end;
+            continue;
+        }
+        if c == '*'
+            && let Some(close) = find_from(line, i.saturating_add(1), '*')
+            && close > i.saturating_add(1)
+        {
+            spans.push(Span::new(i..close.saturating_add(1), TokenKind::Strong));
+            i = close.saturating_add(1);
+            continue;
+        }
+        if c == '_'
+            && let Some(close) = find_from(line, i.saturating_add(1), '_')
+            && close > i.saturating_add(1)
+        {
+            spans.push(Span::new(i..close.saturating_add(1), TokenKind::Emphasis));
+            i = close.saturating_add(1);
+            continue;
+        }
+        // Number with optional unit suffix (12pt, 1.5cm, 80%).
+        if c.is_ascii_digit() {
+            let mut pos = i;
+            while bytes
+                .get(pos)
+                .is_some_and(|&next_byte| next_byte.is_ascii_digit() || next_byte == b'.')
+            {
+                pos = pos.saturating_add(1);
+            }
+            while bytes.get(pos).is_some_and(|&next_byte| {
+                (next_byte as char).is_ascii_alphabetic() || next_byte == b'%'
+            }) {
+                pos = pos.saturating_add(1);
+            }
+            spans.push(Span::new(i..pos, TokenKind::Number));
+            i = pos;
+            continue;
+        }
+        i = i.saturating_add(next_char_len(line, i));
+    }
+    LineSpans { spans, carry: 0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -1131,7 +1345,9 @@ impl Highlighter for TypstHighlighter {
 // ---------------------------------------------------------------------------
 
 fn next_char_len(s: &str, i: usize) -> usize {
-    s[i..].chars().next().map_or(1, char::len_utf8)
+    s.get(i..)
+        .and_then(|rest| rest.chars().next())
+        .map_or(1, char::len_utf8)
 }
 
 fn is_ident_start(c: char) -> bool {
@@ -1144,11 +1360,13 @@ fn is_ident_continue(c: char) -> bool {
 
 fn ident_end(s: &str, i: usize) -> usize {
     let mut j = i;
-    for c in s[i..].chars() {
-        if is_ident_continue(c) {
-            j += c.len_utf8();
-        } else {
-            break;
+    if let Some(rest) = s.get(i..) {
+        for c in rest.chars() {
+            if is_ident_continue(c) {
+                j = j.saturating_add(c.len_utf8());
+            } else {
+                break;
+            }
         }
     }
     j
@@ -1158,11 +1376,13 @@ fn ident_end(s: &str, i: usize) -> usize {
 /// point, hex/underscore digits, and a trailing type/unit suffix.
 fn number_end(s: &str, i: usize) -> usize {
     let mut j = i;
-    for c in s[i..].chars() {
-        if c.is_ascii_alphanumeric() || c == '.' || c == '_' {
-            j += c.len_utf8();
-        } else {
-            break;
+    if let Some(rest) = s.get(i..) {
+        for c in rest.chars() {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' {
+                j = j.saturating_add(c.len_utf8());
+            } else {
+                break;
+            }
         }
     }
     j
@@ -1171,16 +1391,18 @@ fn number_end(s: &str, i: usize) -> usize {
 /// End (exclusive) of a string literal that opened with `quote` at `i`,
 /// honouring `\`-escapes. Runs to end-of-line if unterminated.
 fn string_end(s: &str, i: usize, quote: char) -> usize {
-    let mut j = i + quote.len_utf8();
+    let mut j = i.saturating_add(quote.len_utf8());
     let mut escaped = false;
-    for c in s[j..].chars() {
-        j += c.len_utf8();
-        if escaped {
-            escaped = false;
-        } else if c == '\\' {
-            escaped = true;
-        } else if c == quote {
-            break;
+    if let Some(rest) = s.get(j..) {
+        for c in rest.chars() {
+            j = j.saturating_add(c.len_utf8());
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == quote {
+                break;
+            }
         }
     }
     j.min(s.len())
@@ -1189,22 +1411,22 @@ fn string_end(s: &str, i: usize, quote: char) -> usize {
 /// If `i` opens a Rust char literal (`'x'`, `'\n'`, `'\u{1F}'`), return its end
 /// (exclusive); otherwise `None` (so the caller can treat `'` as a lifetime).
 fn char_literal_end(s: &str, i: usize) -> Option<usize> {
-    let rest = &s[i + 1..];
+    let rest = s.get(i.saturating_add(1)..)?;
     let mut chars = rest.char_indices();
     let (_, first) = chars.next()?;
     if first == '\\' {
         // Escape: consume until the closing quote.
         for (off, c) in chars {
             if c == '\'' {
-                return Some(i + 1 + off + 1);
+                return Some(i.saturating_add(1).saturating_add(off).saturating_add(1));
             }
         }
         None
     } else {
         // A single char then a closing quote.
-        let after = i + 1 + first.len_utf8();
-        if s[after..].starts_with('\'') {
-            Some(after + 1)
+        let after = i.saturating_add(1).saturating_add(first.len_utf8());
+        if s.get(after..).is_some_and(|s| s.starts_with('\'')) {
+            Some(after.saturating_add(1))
         } else {
             None
         }
@@ -1215,8 +1437,8 @@ fn char_literal_end(s: &str, i: usize) -> Option<usize> {
 /// remaining spans.
 fn shift_spans(spans: &mut [Span], by: usize) {
     for sp in spans.iter_mut() {
-        sp.range.start += by;
-        sp.range.end += by;
+        sp.range.start = sp.range.start.saturating_add(by);
+        sp.range.end = sp.range.end.saturating_add(by);
     }
 }
 
@@ -1250,13 +1472,13 @@ mod tests {
             .iter()
             .find(|s| s.kind == TokenKind::Keyword)
             .unwrap();
-        assert_eq!(&line[kw.range.clone()], "let");
+        assert_eq!(line.get(kw.range.clone()).expect("span in bounds"), "let");
         let num = ls
             .spans
             .iter()
             .find(|s| s.kind == TokenKind::Number)
             .unwrap();
-        assert_eq!(&line[num.range.clone()], "42");
+        assert_eq!(line.get(num.range.clone()).expect("span in bounds"), "42");
     }
 
     #[test]
@@ -1269,7 +1491,10 @@ mod tests {
             .iter()
             .find(|s| s.kind == TokenKind::StringLit)
             .unwrap();
-        assert_eq!(&line[str_span.range.clone()], r#""hi there""#);
+        assert_eq!(
+            line.get(str_span.range.clone()).expect("span in bounds"),
+            r#""hi there""#
+        );
     }
 
     #[test]
@@ -1302,11 +1527,47 @@ mod tests {
             .spans
             .iter()
             .filter(|s| s.kind == TokenKind::Keyword)
-            .map(|s| "select * from users where id = 1"[s.range.clone()].to_string())
+            .map(|s| {
+                "select * from users where id = 1"
+                    .get(s.range.clone())
+                    .expect("span in bounds")
+                    .to_string()
+            })
             .collect();
         assert!(kws.contains(&"select".to_string()));
         assert!(kws.contains(&"from".to_string()));
         assert!(kws.contains(&"where".to_string()));
+    }
+
+    #[test]
+    fn sql_preserves_function_type_and_operator_categories() {
+        let hl = SqlHighlighter::new();
+        let line = "SELECT count(id)::integer >= 2";
+        let spans = hl.spans(line, 0).spans;
+        let classified = |needle: &str, kind: TokenKind| {
+            spans.iter().any(|span| {
+                span.kind == kind
+                    && line
+                        .get(span.range.clone())
+                        .is_some_and(|text| text == needle)
+            })
+        };
+        assert!(classified("count", TokenKind::Function));
+        assert!(classified("integer", TokenKind::Type));
+        assert!(classified(">=", TokenKind::Operator));
+    }
+
+    #[test]
+    fn sql_doubled_quotes_stay_inside_one_string_span() {
+        let hl = SqlHighlighter::new();
+        let line = "SELECT 'it''s valid', \"odd\"\"name\" FROM t";
+        let spans = hl.spans(line, 0).spans;
+        let strings: Vec<_> = spans
+            .iter()
+            .filter(|span| span.kind == TokenKind::StringLit)
+            .filter_map(|span| line.get(span.range.clone()))
+            .collect();
+        assert_eq!(strings, vec!["'it''s valid'", "\"odd\"\"name\""]);
     }
 
     #[test]
@@ -1404,7 +1665,7 @@ mod tests {
         }
     }
 
-    fn drive(ed: &mut CodeEditor, doc: &mut AutoCommit, ev: &WindowEvent, m: &Modifiers) -> bool {
+    fn drive(ed: &mut CodeEditor, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -1412,7 +1673,7 @@ mod tests {
         ed.handle_event(
             ev,
             1.0,
-            m,
+            &m,
             doc,
             &automerge::ROOT,
             &mut handled,
@@ -1443,7 +1704,7 @@ mod tests {
                 &mut ed,
                 &mut doc,
                 &char_event(ch),
-                &mods(false, false)
+                mods(false, false)
             ));
         }
         assert_eq!(ed.value(), "fn x");
@@ -1465,7 +1726,7 @@ mod tests {
                 "漢".into(),
                 Some(("漢".len(), "漢".len())),
             )),
-            &mods(false, false),
+            mods(false, false),
         ));
         draw_once(&mut ed, &Theme::dark());
 
@@ -1483,15 +1744,15 @@ mod tests {
         let mut doc = AutoCommit::new();
         {
             let ch = "a";
-            drive(&mut ed, &mut doc, &char_event(ch), &mods(false, false));
+            drive(&mut ed, &mut doc, &char_event(ch), mods(false, false));
         }
         drive(
             &mut ed,
             &mut doc,
             &named_event(NamedKey::Enter),
-            &mods(false, false),
+            mods(false, false),
         );
-        drive(&mut ed, &mut doc, &char_event("b"), &mods(false, false));
+        drive(&mut ed, &mut doc, &char_event("b"), mods(false, false));
         assert_eq!(ed.value(), "a\nb");
         assert_eq!(
             ed.line_count(),
@@ -1510,16 +1771,16 @@ mod tests {
             &mut ed,
             &mut doc,
             &named_event(NamedKey::Tab),
-            &mods(false, false)
+            mods(false, false)
         ));
-        drive(&mut ed, &mut doc, &char_event("x"), &mods(false, false));
+        drive(&mut ed, &mut doc, &char_event("x"), mods(false, false));
         assert_eq!(ed.value(), "    x", "Tab inserts four spaces");
         // Shift+Tab removes one indent level.
         assert!(drive(
             &mut ed,
             &mut doc,
             &named_event(NamedKey::Tab),
-            &mods(false, true)
+            mods(false, true)
         ));
         assert_eq!(
             ed.value(),
@@ -1538,7 +1799,7 @@ mod tests {
             &mut ed,
             &mut doc,
             &char_event("a"),
-            &mods(true, false)
+            mods(true, false)
         ));
         assert_eq!(
             ed.inner().selection_range_public(),
@@ -1549,7 +1810,7 @@ mod tests {
             &mut ed,
             &mut doc,
             &char_event("x"),
-            &mods(true, false)
+            mods(true, false)
         ));
         assert_eq!(
             ed.value(),
@@ -1568,13 +1829,13 @@ mod tests {
             &mut ed,
             &mut doc,
             &named_event(NamedKey::Home),
-            &mods(false, false),
+            mods(false, false),
         );
         drive(
             &mut ed,
             &mut doc,
             &named_event(NamedKey::ArrowRight),
-            &mods(true, true),
+            mods(true, true),
         );
         let sel = ed
             .inner()
@@ -1596,7 +1857,12 @@ mod tests {
             4,
             "line 2 starts just after the first newline"
         );
-        assert_eq!(&ed.value()[ed.cursor_pos()..ed.cursor_pos() + 3], "two");
+        let start = ed.cursor_pos();
+        let end = start.saturating_add(3);
+        assert_eq!(
+            ed.value().get(start..end).expect("byte range is in bounds"),
+            "two"
+        );
     }
 
     #[test]

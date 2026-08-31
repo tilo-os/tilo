@@ -54,12 +54,21 @@ pub struct ShimInstall<'a> {
 /// Install one shim per command. Returns the list of files
 /// written so the caller can persist them in the registry entry
 /// for later removal.
+///
+/// # Errors
+///
+/// Returns [`ShimError::BadCommandName`] if a command name isn't
+/// filesystem-safe; [`ShimError::CreateDir`] if `spec.bin_dir` can't
+/// be created; [`ShimError::CopyShim`] if the shim binary can't be
+/// copied into place or its executable bit can't be set;
+/// [`ShimError::EncodeSidecar`] if the sidecar TOML fails to encode;
+/// or [`ShimError::WriteSidecar`] if the sidecar file can't be written.
 pub fn write_shims(spec: &ShimInstall<'_>) -> Result<Vec<PathBuf>, ShimError> {
     fs::create_dir_all(spec.bin_dir).map_err(|e| ShimError::CreateDir {
         path: spec.bin_dir.to_path_buf(),
         source: e,
     })?;
-    let mut written = Vec::with_capacity(spec.commands.len() * 2);
+    let mut written = Vec::with_capacity(spec.commands.len().saturating_mul(2));
     for cmd in spec.commands {
         validate_command_name(cmd)?;
         let shim_target = spec.bin_dir.join(cmd);
@@ -102,6 +111,11 @@ pub fn write_shims(spec: &ShimInstall<'_>) -> Result<Vec<PathBuf>, ShimError> {
 /// Remove the shims installed for a package. Best-effort — a
 /// missing file is silently ignored so a partial install doesn't
 /// leave the user stuck.
+///
+/// # Errors
+///
+/// Currently infallible (always `Ok`) — the `Result` return keeps the
+/// signature stable for a future policy that surfaces removal failures.
 pub fn remove_shims(bin_dir: &Path, commands: &[String]) -> Result<(), ShimError> {
     for cmd in commands {
         // We deliberately don't validate the name here — if a

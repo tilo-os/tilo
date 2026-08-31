@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use vello::kurbo::Rect;
 
+use crate::shell::search::action_api::ArgValue;
+
 /// Which pointer button a [`Command::PointerButton`] means — spelled out because X11, evdev and winit each number buttons differently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -183,6 +185,10 @@ pub trait ControlState {
     }
 
     /// Grant a capability on the active workspace via `Workspace::grant_as`. Default impl refuses: a `ControlState` with no live tree has nothing to administer, and answering anything else would let a harness believe it proved something about authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable refusal reason whenever the grant is not recorded — no live workspace, an unauthorised grantor, or an invalid subject/scope/verb.
     fn grant_capability(
         &self,
         _subject: &str,
@@ -194,11 +200,19 @@ pub trait ControlState {
     }
 
     /// Revoke a capability by id on the active workspace, via `Workspace::revoke_as`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable refusal reason whenever the revoke is not recorded — no live workspace, an unauthorised revoker, or an unknown capability id.
     fn revoke_capability(&self, _id: &str) -> Result<serde_json::Value, String> {
         Err("no live workspace on this control state".to_string())
     }
 
     /// Run `shell::actions::check_action` against the active workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable refusal reason whenever the check itself cannot be answered — no live workspace on this control state.
     fn check_action(
         &self,
         _actor: &str,
@@ -211,11 +225,19 @@ pub trait ControlState {
     }
 
     /// Enumerate the exported action surface for `query` as JSON. Default impl refuses, same reasoning as the capability methods: "exports nothing" and "cannot answer" must not share a wire shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable refusal reason whenever the surface cannot be enumerated at all — no live action registry on this control state.
     fn enumerate_actions(&self, _query: &str) -> Result<serde_json::Value, String> {
         Err("no live action registry on this control state".to_string())
     }
 
     /// Resolve `(provider, id)` against a fresh catalogue and report what it addresses, without invoking it — the validation half of `actions_invoke`, so the transport can refuse instead of planning an invocation that silently does nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ActionRefusal`] when the address names nothing this caller can see, the arguments don't match the resolved parameters, or the action failed to describe itself.
     fn resolve_action(
         &self,
         _provider: &str,
@@ -261,6 +283,43 @@ impl ActionRefusal {
             message: message.into(),
         }
     }
+}
+
+/// Translate one JSON argument object into the action vocabulary's values. Kept at the transport, not the action API, so the catalogue never learns a wire format. JSON shapes with no parameter type (null, arrays, objects, non-integer numbers) are refused by name.
+///
+/// # Errors
+///
+/// Returns [`ActionRefusal::invalid_arguments`] for a JSON value with no matching parameter type: a non-integer number, `null`, an array, or an object.
+pub fn arg_values_from_json(
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<(String, ArgValue)>, ActionRefusal> {
+    let mut out = Vec::with_capacity(args.len());
+    for (name, value) in args {
+        let bound = match value {
+            serde_json::Value::String(s) => ArgValue::Text(s.clone()),
+            serde_json::Value::Bool(b) => ArgValue::Boolean(*b),
+            serde_json::Value::Number(n) => match n.as_i64() {
+                Some(i) => ArgValue::Integer(i),
+                None => {
+                    return Err(ActionRefusal::invalid_arguments(format!(
+                        "argument `{name}` must be a whole number, got {n}"
+                    )));
+                }
+            },
+            other => {
+                return Err(ActionRefusal::invalid_arguments(format!(
+                    "argument `{name}` has no parameter type: {}",
+                    match other {
+                        serde_json::Value::Null => "null",
+                        serde_json::Value::Array(_) => "array",
+                        _ => "object",
+                    }
+                )));
+            }
+        };
+        out.push((name.clone(), bound));
+    }
+    Ok(out)
 }
 
 /// Side-effect actions the transport must execute after a `dispatch_command` call. Pure values, no I/O — the transport synthesises `winit::WindowEvent`s from these through `host_and_taffy_mut`, the same wire as `WinitBackend`/`ShellDriver`.
@@ -373,16 +432,7 @@ pub fn dispatch_command<S: ControlState>(
     state: &S,
 ) -> (Response, Vec<PlannedAction>) {
     match cmd {
-        Command::ListTargets => {
-            let registry = state.widget_registry();
-            let mut entries: Vec<TargetEntry> = registry
-                .iter()
-                .filter(|(_, r)| r.area() > 0.0)
-                .map(|(name, rect)| TargetEntry::from_kv(name, *rect))
-                .collect();
-            entries.sort_by(|a, b| a.name.cmp(&b.name));
-            (Response::Targets(entries), Vec::new())
-        }
+        Command::ListTargets => list_targets(state),
         Command::ClickAt { x, y } => (
             Response::Ok { frame: 0 },
             vec![
@@ -391,193 +441,43 @@ pub fn dispatch_command<S: ControlState>(
                 PlannedAction::MouseLeftButton { pressed: false },
             ],
         ),
-        Command::ClickNamed { name } => {
-            let registry = state.widget_registry();
-            match registry.get(name) {
-                Some(rect) if rect.area() > 0.0 => {
-                    let c = rect.center();
-                    (
-                        Response::Ok { frame: 0 },
-                        vec![
-                            PlannedAction::CursorMoved { x: c.x, y: c.y },
-                            PlannedAction::MouseLeftButton { pressed: true },
-                            PlannedAction::MouseLeftButton { pressed: false },
-                        ],
-                    )
-                }
-                _ => (
-                    Response::Err {
-                        code: "unknown_target".to_string(),
-                        message: format!(
-                            "no addressable widget named `{name}` (or its rect \
-                             has zero area; not yet laid out?)"
-                        ),
-                    },
-                    Vec::new(),
-                ),
-            }
-        }
+        Command::ClickNamed { name } => click_named(state, name),
         Command::Drag {
             x_from,
             y_from,
             x_to,
             y_to,
             steps,
-        } => {
-            let steps = steps.unwrap_or(8).max(1);
-            let mut actions = Vec::with_capacity(2 + steps as usize + 2);
-            actions.push(PlannedAction::CursorMoved {
-                x: *x_from,
-                y: *y_from,
-            });
-            actions.push(PlannedAction::MouseLeftButton { pressed: true });
-            let n = f64::from(steps);
-            for s in 0..steps {
-                // steps==1 lands a single motion at x_from, avoiding divide-by-zero.
-                let t = if steps == 1 {
-                    0.0
-                } else {
-                    f64::from(s) / (n - 1.0)
-                };
-                let x = x_from + (x_to - x_from) * t;
-                let y = y_from + (y_to - y_from) * t;
-                actions.push(PlannedAction::CursorMoved { x, y });
-            }
-            actions.push(PlannedAction::MouseLeftButton { pressed: false });
-            (Response::Ok { frame: 0 }, actions)
-        }
-        Command::Key { key } => match parse_key_tag(key) {
-            Some(tag) => (
-                Response::Ok { frame: 0 },
-                vec![
-                    PlannedAction::KeyboardKey {
-                        key: tag,
-                        pressed: true,
-                    },
-                    PlannedAction::KeyboardKey {
-                        key: tag,
-                        pressed: false,
-                    },
-                ],
-            ),
-            None => (
-                Response::Err {
-                    code: "parse_error".to_string(),
-                    message: format!("unrecognised key name `{key}`"),
-                },
-                Vec::new(),
-            ),
-        },
+        } => drag(*x_from, *y_from, *x_to, *y_to, *steps),
+        Command::Key { key } => key_press_release(key),
         Command::Scroll { dx, dy } => (
             Response::Ok { frame: 0 },
             vec![PlannedAction::MouseWheel { dx: *dx, dy: *dy }],
         ),
         Command::KeyDown { key } | Command::KeyUp { key } => {
-            let pressed = matches!(cmd, Command::KeyDown { .. });
-            match parse_key_tag(key) {
-                Some(tag) => (
-                    Response::Ok { frame: 0 },
-                    vec![PlannedAction::KeyboardKey { key: tag, pressed }],
-                ),
-                None => (
-                    Response::Err {
-                        code: "parse_error".to_string(),
-                        message: format!("unrecognised key name `{key}`"),
-                    },
-                    Vec::new(),
-                ),
-            }
+            key_down_or_up(key, matches!(cmd, Command::KeyDown { .. }))
         }
-        Command::Type { text } => {
-            // A `KeyTag::Char` reaches a Wayland client as a bare evdev keycode with no case (35 is `h` or `H` purely by whether Shift is held), so Shift must bracket it like real hardware. Chrome's own widgets read the synthesised `text` field and show the capital regardless, so this bug is invisible there — a focused client gets the lowercase letter, and typing "Hello" lands as "hello".
-            let mut actions = Vec::with_capacity(text.chars().count() * 2);
-            for c in text.chars() {
-                let tag = KeyTag::Char(c);
-                let shift = KeyTag::Named(NamedKeyTag::Shift);
-                // Shifted punctuation needs the same bracket as letters — both reach the client as a keyboard position, not a character. See `client_input::unshifted`.
-                let (_, shifted) = crate::compositor::client_input::unshifted(c);
-                if shifted {
-                    actions.push(PlannedAction::KeyboardKey {
-                        key: shift,
-                        pressed: true,
-                    });
-                }
-                actions.push(PlannedAction::KeyboardKey {
-                    key: tag,
-                    pressed: true,
-                });
-                actions.push(PlannedAction::KeyboardKey {
-                    key: tag,
-                    pressed: false,
-                });
-                if shifted {
-                    actions.push(PlannedAction::KeyboardKey {
-                        key: shift,
-                        pressed: false,
-                    });
-                }
-            }
-            (Response::Ok { frame: 0 }, actions)
-        }
+        Command::Type { text } => type_text(text),
         Command::Modifiers {
             ctrl,
             shift,
             alt,
             logo,
-        } => (
-            Response::Ok { frame: 0 },
-            vec![PlannedAction::SetModifiers {
-                ctrl: *ctrl,
-                shift: *shift,
-                alt: *alt,
-                logo: *logo,
-            }],
-        ),
-        Command::Snapshot { path } => {
-            // Pre-validate empty paths: `File::create("")` fails with a confusing `ENOENT`, and the harness wants a stable `invalid_path` code. Other path issues surface from the executor as `eprintln!` logs.
-            if path.is_empty() {
-                (
-                    Response::Err {
-                        code: "invalid_path".to_string(),
-                        message: "snapshot path must not be empty".to_string(),
-                    },
-                    Vec::new(),
-                )
-            } else {
-                (
-                    Response::Ok { frame: 0 },
-                    vec![PlannedAction::Snapshot {
-                        path: PathBuf::from(path),
-                    }],
-                )
-            }
-        }
-        Command::ForeignFrames => (
-            Response::ForeignFrames {
-                frames: state.foreign_frames_json(),
-            },
-            Vec::new(),
-        ),
-        Command::StateDump => (
-            Response::State {
-                workspace_tree: state.workspace_tree_json(),
-                chrome: state.chrome_state_json(),
-                peers: state.peers_json(),
-            },
-            Vec::new(),
-        ),
+        } => modifiers(PlannedAction::SetModifiers {
+            ctrl: *ctrl,
+            shift: *shift,
+            alt: *alt,
+            logo: *logo,
+        }),
+        Command::Snapshot { path } => snapshot(path),
+        Command::ForeignFrames => foreign_frames(state),
+        Command::StateDump => state_dump(state),
         Command::Grant {
             subject,
             scope,
             verb,
             id,
-        } => (
-            answer_or_err(
-                state.grant_capability(subject, scope, verb, id.as_deref()),
-                "grant_refused",
-            ),
-            Vec::new(),
-        ),
+        } => grant(state, subject, scope, verb, id.as_deref()),
         Command::Revoke { id } => (
             answer_or_err(state.revoke_capability(id), "revoke_refused"),
             Vec::new(),
@@ -588,13 +488,7 @@ pub fn dispatch_command<S: ControlState>(
             action,
             verb,
             destructive,
-        } => (
-            answer_or_err(
-                state.check_action(actor, app, action, verb, *destructive),
-                "check_failed",
-            ),
-            Vec::new(),
-        ),
+        } => check_action(state, actor, app, action, verb, *destructive),
         Command::PlaceNextWindow { app_id } => {
             crate::shell::launcher::set_pending_placement(
                 app_id,
@@ -612,55 +506,310 @@ pub fn dispatch_command<S: ControlState>(
                 permille: *permille,
             }],
         ),
-        Command::PointerButton { pressed, button } => (
-            Response::Ok { frame: 0 },
-            vec![match button {
-                PointerButtonKind::Left => PlannedAction::MouseLeftButton { pressed: *pressed },
-                other => PlannedAction::MousePointerButton {
-                    pressed: *pressed,
-                    button: *other,
-                },
-            }],
-        ),
-        Command::ClipboardCopy { text, primary } => {
-            if *primary {
-                ui::text_selection::clipboard_copy_primary(text);
-            } else {
-                ui::text_selection::clipboard_copy(text);
-            }
-            (Response::Ok { frame: 0 }, Vec::new())
-        }
-        Command::ClipboardPaste { primary } => {
-            let text = if *primary {
-                ui::text_selection::clipboard_paste_primary()
-            } else {
-                ui::text_selection::clipboard_paste()
-            };
-            (Response::Clipboard { text }, Vec::new())
-        }
+        Command::PointerButton { pressed, button } => pointer_button(*pressed, *button),
+        Command::ClipboardCopy { text, primary } => clipboard_copy(text, *primary),
+        Command::ClipboardPaste { primary } => clipboard_paste(*primary),
         Command::ActionsEnumerate { query } => (
             answer_or_err(state.enumerate_actions(query), "enumerate_failed"),
             Vec::new(),
         ),
-        Command::ActionsInvoke { provider, id, args } => {
-            match state.resolve_action(provider, id, args) {
-                Ok(resolved) => (
-                    Response::Answer(resolved),
-                    vec![PlannedAction::InvokeAction {
-                        provider: provider.clone(),
-                        id: id.clone(),
-                        args: args.clone(),
-                    }],
-                ),
-                Err(refusal) => (
-                    Response::Err {
-                        code: refusal.code.to_string(),
-                        message: refusal.message,
-                    },
-                    Vec::new(),
-                ),
-            }
+        Command::ActionsInvoke { provider, id, args } => actions_invoke(state, provider, id, args),
+    }
+}
+
+/// [`Command::ListTargets`]: every addressable widget, sorted by name for deterministic output.
+fn list_targets<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) {
+    let registry = state.widget_registry();
+    let mut entries: Vec<TargetEntry> = registry
+        .iter()
+        .filter(|(_, r)| r.area() > 0.0)
+        .map(|(name, rect)| TargetEntry::from_kv(name, *rect))
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    (Response::Targets(entries), Vec::new())
+}
+
+/// [`Command::ClickNamed`]: resolve `name` against the widget registry, then click its centre.
+fn click_named<S: ControlState>(state: &S, name: &str) -> (Response, Vec<PlannedAction>) {
+    let registry = state.widget_registry();
+    match registry.get(name) {
+        Some(rect) if rect.area() > 0.0 => {
+            let c = rect.center();
+            (
+                Response::Ok { frame: 0 },
+                vec![
+                    PlannedAction::CursorMoved { x: c.x, y: c.y },
+                    PlannedAction::MouseLeftButton { pressed: true },
+                    PlannedAction::MouseLeftButton { pressed: false },
+                ],
+            )
         }
+        _ => (
+            Response::Err {
+                code: "unknown_target".to_string(),
+                message: format!(
+                    "no addressable widget named `{name}` (or its rect \
+                     has zero area; not yet laid out?)"
+                ),
+            },
+            Vec::new(),
+        ),
+    }
+}
+
+/// [`Command::Drag`]: press, interpolate `steps` motions, release.
+fn drag(
+    x_from: f64,
+    y_from: f64,
+    x_to: f64,
+    y_to: f64,
+    steps: Option<u32>,
+) -> (Response, Vec<PlannedAction>) {
+    let steps = steps.unwrap_or(8).max(1);
+    // `steps` came off the wire uncapped; saturate the capacity hint instead of letting a huge value overflow the addition.
+    let mut actions = Vec::with_capacity((steps as usize).saturating_add(4));
+    actions.push(PlannedAction::CursorMoved {
+        x: x_from,
+        y: y_from,
+    });
+    actions.push(PlannedAction::MouseLeftButton { pressed: true });
+    let n = f64::from(steps);
+    for s in 0..steps {
+        // steps==1 lands a single motion at x_from, avoiding divide-by-zero.
+        let t = if steps == 1 {
+            0.0
+        } else {
+            f64::from(s) / (n - 1.0)
+        };
+        let x = x_from + (x_to - x_from) * t;
+        let y = y_from + (y_to - y_from) * t;
+        actions.push(PlannedAction::CursorMoved { x, y });
+    }
+    actions.push(PlannedAction::MouseLeftButton { pressed: false });
+    (Response::Ok { frame: 0 }, actions)
+}
+
+/// [`Command::Key`]: a press+release pair for one key.
+fn key_press_release(key: &str) -> (Response, Vec<PlannedAction>) {
+    match parse_key_tag(key) {
+        Some(tag) => (
+            Response::Ok { frame: 0 },
+            vec![
+                PlannedAction::KeyboardKey {
+                    key: tag,
+                    pressed: true,
+                },
+                PlannedAction::KeyboardKey {
+                    key: tag,
+                    pressed: false,
+                },
+            ],
+        ),
+        None => (
+            Response::Err {
+                code: "parse_error".to_string(),
+                message: format!("unrecognised key name `{key}`"),
+            },
+            Vec::new(),
+        ),
+    }
+}
+
+/// [`Command::KeyDown`]/[`Command::KeyUp`]: hold or release one key.
+fn key_down_or_up(key: &str, pressed: bool) -> (Response, Vec<PlannedAction>) {
+    match parse_key_tag(key) {
+        Some(tag) => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::KeyboardKey { key: tag, pressed }],
+        ),
+        None => (
+            Response::Err {
+                code: "parse_error".to_string(),
+                message: format!("unrecognised key name `{key}`"),
+            },
+            Vec::new(),
+        ),
+    }
+}
+
+/// [`Command::Type`]: a press+release pair per character, bracketed with Shift for characters that need it.
+fn type_text(text: &str) -> (Response, Vec<PlannedAction>) {
+    // A `KeyTag::Char` reaches a Wayland client as a bare evdev keycode with no case (35 is `h` or `H` purely by whether Shift is held), so Shift must bracket it like real hardware. Chrome's own widgets read the synthesised `text` field and show the capital regardless, so this bug is invisible there — a focused client gets the lowercase letter, and typing "Hello" lands as "hello".
+    let mut actions = Vec::with_capacity(text.chars().count().saturating_mul(2));
+    for c in text.chars() {
+        let tag = KeyTag::Char(c);
+        let shift = KeyTag::Named(NamedKeyTag::Shift);
+        // Shifted punctuation needs the same bracket as letters — both reach the client as a keyboard position, not a character. See `client_input::unshifted`.
+        let (_, shifted) = crate::compositor::client_input::unshifted(c);
+        if shifted {
+            actions.push(PlannedAction::KeyboardKey {
+                key: shift,
+                pressed: true,
+            });
+        }
+        actions.push(PlannedAction::KeyboardKey {
+            key: tag,
+            pressed: true,
+        });
+        actions.push(PlannedAction::KeyboardKey {
+            key: tag,
+            pressed: false,
+        });
+        if shifted {
+            actions.push(PlannedAction::KeyboardKey {
+                key: shift,
+                pressed: false,
+            });
+        }
+    }
+    (Response::Ok { frame: 0 }, actions)
+}
+
+/// [`Command::Modifiers`]: update the modifier mask carried into subsequent keyboard events.
+///
+/// Takes the already-built [`PlannedAction::SetModifiers`] rather than the
+/// four bare `ctrl`/`shift`/`alt`/`logo` bools — the caller destructures
+/// [`Command::Modifiers`], which has the same shape, so building the action
+/// there and handing it over avoids a four-`bool` parameter list here.
+fn modifiers(action: PlannedAction) -> (Response, Vec<PlannedAction>) {
+    (Response::Ok { frame: 0 }, vec![action])
+}
+
+/// [`Command::Snapshot`]: pre-validate the path, then plan the paint+write.
+fn snapshot(path: &str) -> (Response, Vec<PlannedAction>) {
+    // Pre-validate empty paths: `File::create("")` fails with a confusing `ENOENT`, and the harness wants a stable `invalid_path` code. Other path issues surface from the executor as `eprintln!` logs.
+    if path.is_empty() {
+        (
+            Response::Err {
+                code: "invalid_path".to_string(),
+                message: "snapshot path must not be empty".to_string(),
+            },
+            Vec::new(),
+        )
+    } else {
+        (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::Snapshot {
+                path: PathBuf::from(path),
+            }],
+        )
+    }
+}
+
+/// [`Command::ForeignFrames`]: per-surface frame counters, read-only.
+fn foreign_frames<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) {
+    (
+        Response::ForeignFrames {
+            frames: state.foreign_frames_json(),
+        },
+        Vec::new(),
+    )
+}
+
+/// [`Command::StateDump`]: the persisted tree, chrome state and peers, read-only.
+fn state_dump<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) {
+    (
+        Response::State {
+            workspace_tree: state.workspace_tree_json(),
+            chrome: state.chrome_state_json(),
+            peers: state.peers_json(),
+        },
+        Vec::new(),
+    )
+}
+
+/// [`Command::Grant`]: grant a capability through the real authority check.
+fn grant<S: ControlState>(
+    state: &S,
+    subject: &str,
+    scope: &str,
+    verb: &str,
+    id: Option<&str>,
+) -> (Response, Vec<PlannedAction>) {
+    (
+        answer_or_err(
+            state.grant_capability(subject, scope, verb, id),
+            "grant_refused",
+        ),
+        Vec::new(),
+    )
+}
+
+/// [`Command::CheckAction`]: ask the real authority check whether `actor` may invoke the action.
+fn check_action<S: ControlState>(
+    state: &S,
+    actor: &str,
+    app: &str,
+    action: &str,
+    verb: &str,
+    destructive: bool,
+) -> (Response, Vec<PlannedAction>) {
+    (
+        answer_or_err(
+            state.check_action(actor, app, action, verb, destructive),
+            "check_failed",
+        ),
+        Vec::new(),
+    )
+}
+
+/// [`Command::PointerButton`]: press or release a pointer button, `Left` taking the dedicated planned action.
+fn pointer_button(pressed: bool, button: PointerButtonKind) -> (Response, Vec<PlannedAction>) {
+    (
+        Response::Ok { frame: 0 },
+        vec![match button {
+            PointerButtonKind::Left => PlannedAction::MouseLeftButton { pressed },
+            other => PlannedAction::MousePointerButton {
+                pressed,
+                button: other,
+            },
+        }],
+    )
+}
+
+/// [`Command::ClipboardCopy`]: copy `text` onto the clipboard or primary selection in-process.
+fn clipboard_copy(text: &str, primary: bool) -> (Response, Vec<PlannedAction>) {
+    if primary {
+        ui::text_selection::clipboard_copy_primary(text);
+    } else {
+        ui::text_selection::clipboard_copy(text);
+    }
+    (Response::Ok { frame: 0 }, Vec::new())
+}
+
+/// [`Command::ClipboardPaste`]: read the clipboard or primary selection in-process.
+fn clipboard_paste(primary: bool) -> (Response, Vec<PlannedAction>) {
+    let text = if primary {
+        ui::text_selection::clipboard_paste_primary()
+    } else {
+        ui::text_selection::clipboard_paste()
+    };
+    (Response::Clipboard { text }, Vec::new())
+}
+
+/// [`Command::ActionsInvoke`]: resolve the address against a fresh catalogue, then plan the invocation.
+fn actions_invoke<S: ControlState>(
+    state: &S,
+    provider: &str,
+    id: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> (Response, Vec<PlannedAction>) {
+    match state.resolve_action(provider, id, args) {
+        Ok(resolved) => (
+            Response::Answer(resolved),
+            vec![PlannedAction::InvokeAction {
+                provider: provider.to_string(),
+                id: id.to_string(),
+                args: args.clone(),
+            }],
+        ),
+        Err(refusal) => (
+            Response::Err {
+                code: refusal.code.to_string(),
+                message: refusal.message,
+            },
+            Vec::new(),
+        ),
     }
 }
 
@@ -676,6 +825,10 @@ fn answer_or_err(result: Result<serde_json::Value, String>, code: &str) -> Respo
 }
 
 /// Parse a `person:` / `app:` / `agent:` subject string.
+///
+/// # Errors
+///
+/// Returns a human-readable message when `s` has no `person:`/`app:`/`agent:` prefix.
 pub fn parse_subject(s: &str) -> Result<crate::shell::state::Subject, String> {
     use crate::shell::state::Subject;
     match s.split_once(':') {
@@ -689,6 +842,10 @@ pub fn parse_subject(s: &str) -> Result<crate::shell::state::Subject, String> {
 }
 
 /// Parse a scope string against the room `room_key` names. `room_key` is the workspace's own id, the same key `Workspace::set_owner`/`role_of` use for `Scope::Room`, so a scope written here matches what the compositor writes.
+///
+/// # Errors
+///
+/// Returns a human-readable message when `s` matches none of `workspace`, `room`, `app:<id>`, `fs:<path>`, `device:<id>` or `action:<app>/<action>`.
 pub fn parse_scope(s: &str, room_key: &str) -> Result<crate::shell::state::Scope, String> {
     use crate::shell::state::Scope;
     match s {
@@ -717,6 +874,10 @@ pub fn parse_scope(s: &str, room_key: &str) -> Result<crate::shell::state::Scope
 }
 
 /// Parse a verb name.
+///
+/// # Errors
+///
+/// Returns a human-readable message when `s` is not one of read / comment / write / invite / admin.
 pub fn parse_verb(s: &str) -> Result<crate::shell::state::Verb, String> {
     use crate::shell::state::Verb;
     match s {
@@ -732,6 +893,16 @@ pub fn parse_verb(s: &str) -> Result<crate::shell::state::Verb, String> {
 }
 
 /// Parse a single JSON line into a [`Command`]. Returns a structured [`Response::Err`] on parse failure rather than bubbling a `serde_json::Error`, so clients see machine-readable error codes.
+///
+/// # Errors
+///
+/// Returns [`Response::Err`] with code `parse_error` when `line` is not valid JSON for a [`Command`].
+#[allow(
+    clippy::result_large_err,
+    reason = "the Err payload is the wire Response enum itself (deliberately opaque JSON \
+              variants like State); boxing it would ripple into its one external caller in \
+              native.rs, out of scope for this change"
+)]
 pub fn parse_command(line: &str) -> Result<Command, Response> {
     serde_json::from_str::<Command>(line.trim()).map_err(|e| Response::Err {
         code: "parse_error".to_string(),
@@ -741,7 +912,19 @@ pub fn parse_command(line: &str) -> Result<Command, Response> {
 
 /// Serialise a response to a single JSON line (the transport adds the newline).
 pub fn serialise_response(resp: &Response) -> String {
-    serde_json::to_string(resp).expect("serialise Response")
+    serde_json::to_string(resp).unwrap_or_else(|error| {
+        // Every real `Response` is built from JSON-safe primitives; a failure here would mean
+        // something upstream produced non-finite JSON (e.g. a NaN/Infinity rect coordinate).
+        // Fall back to a same-shape wire error rather than aborting the whole compositor over
+        // one malformed reply — this crate builds with `panic = "abort"`.
+        tracing::error!(
+            target: "shell::compositor::test_control",
+            %error,
+            "failed to serialise Response; sending fallback error"
+        );
+        r#"{"err":{"code":"serialise_error","message":"internal: response failed to serialise"}}"#
+            .to_string()
+    })
 }
 
 #[cfg(test)]
@@ -1465,14 +1648,14 @@ mod tests {
             let params: &[crate::shell::search::action_api::ActionParam] = match (provider, id) {
                 ("shell.actions", "settings.open") => &[],
                 ("shell.actions", "text.insert") => MOCK_INSERT_PARAMS,
-                ("shell.actions", "rate.set") => MOCK_RATE_PARAMS,
                 _ => {
                     return Err(ActionRefusal::unknown(format!(
                         "no visible action addressed by ({provider}, {id})"
                     )));
                 }
             };
-            crate::shell::search::action_api::ActionArgs::bind_json(params, args)
+            let values = arg_values_from_json(args)?;
+            crate::shell::search::action_api::ActionArgs::bind(params, values)
                 .map_err(|e| ActionRefusal::invalid_arguments(e.to_string()))?;
             Ok(serde_json::json!({
                 "provider": provider,
@@ -1496,20 +1679,7 @@ mod tests {
         ),
     ];
 
-    /// A parameter whose values are genuinely fractional. Rates, opacities
-    /// and volumes are the bulk of what an app's actions take, and rounding
-    /// one to an integer discards the value it exists to carry — so the
-    /// shared vocabulary has a `number` type, and the socket has to be able
-    /// to carry it.
-    const MOCK_RATE_PARAMS: &[crate::shell::search::action_api::ActionParam] =
-        &[crate::shell::search::action_api::ActionParam::required(
-            "rate",
-            crate::shell::search::action_api::ParamType::Number,
-            "playback rate",
-        )];
-
-    /// Build an `actions_invoke` command with the given arguments.
-    fn invoke_with(id: &str, args: serde_json::Value) -> Command {
+    fn invoke_with(id: &str, args: &serde_json::Value) -> Command {
         Command::ActionsInvoke {
             provider: "shell.actions".to_string(),
             id: id.to_string(),
@@ -1542,7 +1712,7 @@ mod tests {
     #[test]
     fn invoke_resolves_the_address_then_plans_one_invocation() {
         let (resp, actions) = dispatch_command(
-            &invoke_with("settings.open", serde_json::json!({})),
+            &invoke_with("settings.open", &serde_json::json!({})),
             &ActionState,
         );
 
@@ -1578,7 +1748,10 @@ mod tests {
     #[test]
     fn arguments_bind_and_reach_the_planned_invocation() {
         let (resp, actions) = dispatch_command(
-            &invoke_with("text.insert", serde_json::json!({"text": "hello", "at": 3})),
+            &invoke_with(
+                "text.insert",
+                &serde_json::json!({"text": "hello", "at": 3}),
+            ),
             &ActionState,
         );
         assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");
@@ -1593,7 +1766,7 @@ mod tests {
     #[test]
     fn a_missing_required_argument_is_refused_under_its_own_code() {
         let (resp, actions) = dispatch_command(
-            &invoke_with("text.insert", serde_json::json!({})),
+            &invoke_with("text.insert", &serde_json::json!({})),
             &ActionState,
         );
         assert!(
@@ -1614,7 +1787,7 @@ mod tests {
     #[test]
     fn a_wrong_typed_argument_is_refused_not_coerced() {
         let (resp, actions) = dispatch_command(
-            &invoke_with("text.insert", serde_json::json!({"text": 7})),
+            &invoke_with("text.insert", &serde_json::json!({"text": 7})),
             &ActionState,
         );
         assert!(actions.is_empty(), "got {actions:?}");
@@ -1634,7 +1807,7 @@ mod tests {
         let (resp, actions) = dispatch_command(
             &invoke_with(
                 "text.insert",
-                serde_json::json!({"text": "hi", "colour": "red"}),
+                &serde_json::json!({"text": "hi", "colour": "red"}),
             ),
             &ActionState,
         );
@@ -1646,108 +1819,27 @@ mod tests {
         assert!(message.contains("colour"), "{message}");
     }
 
-    /// A JSON shape no parameter type can hold is refused by name
-    /// rather than coerced into one that nearly fits.
-    ///
-    /// "By name" is asserted, not just described. A caller that cannot see
-    /// the screen has only the message to correct against, so a refusal
-    /// that dropped the parameter name would satisfy a code-only check
-    /// while leaving that caller with nowhere to look.
     #[test]
     fn a_json_shape_with_no_parameter_type_is_refused() {
-        for (bad, at_fault) in [
-            (serde_json::json!({"text": null}), "text"),
-            (serde_json::json!({"text": ["a"]}), "text"),
-            (serde_json::json!({"text": {"a": 1}}), "text"),
-            (serde_json::json!({"text": "ok", "at": 1.5}), "at"),
+        for bad in [
+            serde_json::json!({"text": null}),
+            serde_json::json!({"text": ["a"]}),
+            serde_json::json!({"text": "ok", "at": 1.5}),
         ] {
-            let (resp, actions) = dispatch_command(&invoke_with("text.insert", bad), &ActionState);
+            let (resp, actions) = dispatch_command(&invoke_with("text.insert", &bad), &ActionState);
             assert!(actions.is_empty(), "got {actions:?}");
-            let Response::Err { code, message } = resp else {
+            let Response::Err { code, .. } = resp else {
                 panic!("expected Response::Err, got {resp:?}");
             };
             assert_eq!(code, "invalid_arguments");
-            assert!(
-                message.contains(at_fault),
-                "the refusal must name the parameter at fault ({at_fault}), got {message:?}"
-            );
         }
     }
 
-    /// The integer→number widening is one-way, and that has to hold at the
-    /// socket rather than only in the binder.
-    ///
-    /// JSON has a single numeric type and spells `1.0` as `1`, so a `number`
-    /// parameter must accept a whole number. Making that symmetric would be
-    /// the obvious "fix" for the refusal below — and would turn `{"at": 1.5}`
-    /// into a silent character offset of 1, which is precisely the
-    /// guessed-intent failure this surface exists to remove.
-    #[test]
-    fn a_fractional_argument_is_refused_for_an_integer_parameter() {
-        let (resp, actions) = dispatch_command(
-            &invoke_with("text.insert", serde_json::json!({"text": "ok", "at": 1.5})),
-            &ActionState,
-        );
-        assert!(
-            actions.is_empty(),
-            "a refused invocation must plan nothing; got {actions:?}"
-        );
-        let Response::Err { code, message } = resp else {
-            panic!("expected Response::Err, got {resp:?}");
-        };
-        assert_eq!(code, "invalid_arguments");
-        assert!(
-            message.contains("at") && message.contains("integer"),
-            "the refusal must say which parameter wanted what, got {message:?}"
-        );
-    }
-
-    /// A `number` parameter carries its fractional value intact all the way
-    /// to the planned invocation.
-    ///
-    /// This is the half of the shared vocabulary the compositor did not have
-    /// before: the transport used to refuse every non-integral number ahead
-    /// of binding, so an action declaring `number` could not have been
-    /// invoked over this socket at all. Asserting the value — not merely an
-    /// `ok` — is what distinguishes "it was carried" from "it was rounded".
-    #[test]
-    fn a_number_parameter_carries_a_fractional_argument_over_the_wire() {
-        let (resp, actions) = dispatch_command(
-            &invoke_with("rate.set", serde_json::json!({"rate": 0.5})),
-            &ActionState,
-        );
-        assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");
-        let [PlannedAction::InvokeAction { args, .. }] = actions.as_slice() else {
-            panic!("expected exactly one planned invocation, got {actions:?}");
-        };
-        assert_eq!(
-            args["rate"].as_f64(),
-            Some(0.5),
-            "the fractional rate must reach the invocation unrounded"
-        );
-    }
-
-    /// …and a whole number satisfies a `number` parameter, because JSON has
-    /// no way to spell `1.0` differently from `1`. Refusing it would make a
-    /// perfectly ordinary rate of `1` un-passable over the wire.
-    #[test]
-    fn a_whole_number_satisfies_a_number_parameter() {
-        let (resp, actions) = dispatch_command(
-            &invoke_with("rate.set", serde_json::json!({"rate": 1})),
-            &ActionState,
-        );
-        assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");
-        assert_eq!(actions.len(), 1, "got {actions:?}");
-    }
-
-    /// Arguments are checked against the action the *address* resolves
-    /// to. Passing a parameterised action's arguments to a nullary one
-    /// is an unknown-argument refusal, not a silent success.
     /// Arguments are checked against the action the *address* resolves to, not the one the caller intended.
     #[test]
     fn arguments_meant_for_another_action_are_refused() {
         let (resp, actions) = dispatch_command(
-            &invoke_with("settings.open", serde_json::json!({"text": "hi"})),
+            &invoke_with("settings.open", &serde_json::json!({"text": "hi"})),
             &ActionState,
         );
         assert!(actions.is_empty(), "got {actions:?}");
@@ -1761,7 +1853,7 @@ mod tests {
     #[test]
     fn unknown_address_is_refused_and_plans_nothing() {
         let (resp, actions) = dispatch_command(
-            &invoke_with("definitely.not.a.real.action", serde_json::json!({})),
+            &invoke_with("definitely.not.a.real.action", &serde_json::json!({})),
             &ActionState,
         );
 

@@ -30,11 +30,10 @@ pub fn parse_csv(text: &str) -> HashMap<Addr, String> {
             field.clear();
         };
 
-    while i < chars.len() {
-        let c = chars[i];
+    while let Some(&c) = chars.get(i) {
         if in_quotes {
             if c == '"' {
-                if i + 1 < chars.len() && chars[i + 1] == '"' {
+                if chars.get(i + 1) == Some(&'"') {
                     field.push('"');
                     i += 2;
                     continue;

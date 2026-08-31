@@ -1,3 +1,13 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use shell::network::wayland::{ClientState, WaylandServer};
 use shell::security::container::Container;
 use smithay::{
@@ -10,6 +20,31 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
+
+/// Kills and reaps the sandboxed client on drop, so a panicking `.expect()`
+/// or a failing assertion before the explicit `kill`/`wait` can't leak the
+/// process.
+struct ChildGuard(std::process::Child);
+
+impl std::ops::Deref for ChildGuard {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 
 #[test]
 fn test_wayland_handshake_fixed() {
@@ -45,7 +80,8 @@ fn test_wayland_handshake_fixed() {
             .expect("Failed to insert socket into loop");
 
         started_tx.send(env_name).unwrap();
-        let mut server_state = WaylandServer::new(&display.handle(), tx);
+        let mut server_state =
+            WaylandServer::new(&display.handle(), tx).expect("WaylandServer::new");
 
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(10) {
@@ -85,7 +121,7 @@ fn test_wayland_handshake_fixed() {
     cmd.stdout(std::process::Stdio::from(log_file.try_clone().unwrap()));
     cmd.stderr(std::process::Stdio::from(log_file));
 
-    let mut child = cmd.spawn().expect("Failed to spawn the test client");
+    let mut child = ChildGuard(cmd.spawn().expect("Failed to spawn the test client"));
 
     let mut event_received = false;
     let timeout = Instant::now() + Duration::from_secs(8);
@@ -105,6 +141,7 @@ fn test_wayland_handshake_fixed() {
     println!("DEBUG: client log:\n{log_content}");
 
     let _ = child.kill();
+    let _ = child.wait();
     assert!(
         event_received,
         "Wayland server received no events. Check debug log above."

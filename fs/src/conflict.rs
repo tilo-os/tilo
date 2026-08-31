@@ -24,7 +24,9 @@ const MARKER: &str = ".sync-conflict-";
 /// Deterministic conflict-copy file name for a losing version of `name`, using a 128-bit (32 hex) prefix of the losing hash.
 pub fn conflict_name(name: &str, loser: &Hash) -> String {
     let hex = hex::encode(loser.as_bytes());
-    format!("{name}{MARKER}{}", &hex[..32])
+    // `hex::encode` only ever emits ASCII hex digits, so a char-count prefix is a byte prefix.
+    let prefix: String = hex.chars().take(32).collect();
+    format!("{name}{MARKER}{prefix}")
 }
 
 fn hash_from_hex(s: &str) -> Option<Hash> {
@@ -139,7 +141,7 @@ mod tests {
 
     #[test]
     fn concurrent_content_edits_produce_a_conflict_copy() {
-        let mut a = Namespace::new("A");
+        let mut a = Namespace::new("A").unwrap();
         let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
         let snap = a.save();
         let mut b = Namespace::from_bytes("B", &snap).unwrap();
@@ -168,7 +170,7 @@ mod tests {
 
     #[test]
     fn no_conflict_when_edits_are_sequential() {
-        let mut a = Namespace::new("A");
+        let mut a = Namespace::new("A").unwrap();
         let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
         a.set_content(ino, Some(&h(2)), 2, 2);
         a.set_content(ino, Some(&h(3)), 3, 3);
@@ -178,7 +180,7 @@ mod tests {
     #[test]
     fn plain_delete_does_not_resurrect() {
         // A deletes a file with no concurrent edit → no conflict copy.
-        let mut a = Namespace::new("A");
+        let mut a = Namespace::new("A").unwrap();
         let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
         a.remove(ino);
         assert!(detect(&a).is_empty(), "a clean delete must not resurrect");
@@ -187,7 +189,7 @@ mod tests {
     #[test]
     fn modify_delete_race_resurrects_the_edit() {
         // A deletes /doc while B edits its content concurrently.
-        let mut a = Namespace::new("A");
+        let mut a = Namespace::new("A").unwrap();
         let ino = a.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
         let snap = a.save();
         let mut b = Namespace::from_bytes("B", &snap).unwrap();

@@ -5,6 +5,16 @@
 //!
 //! Run: `cargo test -p shell --test leak_probe -- --ignored --nocapture`
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use shell::compositor::frame::FrameBuilder;
 
 fn rss_kb() -> u64 {
@@ -16,7 +26,7 @@ fn rss_kb() -> u64 {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     let page_kb = 4; // 4 KiB pages on x86_64
-    pages * page_kb
+    pages.saturating_mul(page_kb)
 }
 
 #[test]

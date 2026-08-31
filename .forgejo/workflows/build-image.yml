@@ -1,17 +1,41 @@
 name: Build qOS image (publish on tags + dispatch)
 
 # Builds the bootc OS container image (multi-stage, see os/Containerfile).
-# CADENCE: pushes to main and PRs BUILD ONLY (verify it builds + is
-# reproducible — no registry churn, no queue flooding). The signed image is
+# CADENCE: relevant image-input changes and a weekly backstop BUILD ONLY
+# (verify it builds + is reproducible — no registry churn or queue flooding).
+# Cargo changes are already compiled by check.yml and nightly.yml; rebuilding
+# the complete bootc image for every source-only commit duplicates that work.
+# The signed image is
 # pushed to code.podesta.ai/qos/qos:latest ONLY on a version tag (v*) or a
 # manual run, so `bootc upgrade` tracks deliberate releases, not every commit.
 
 on:
+  schedule:
+    # Keep the heavyweight image build away from Sunday's static-quality run.
+    - cron: "0 5 * * 6"
   push:
     branches: ["main"]
     tags: ["v*"]
+    paths:
+      - "os/**"
+      - "keys/**"
+      - "docs/recovery.md"
+      - "docs/security/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".forgejo/workflows/build-image.yml"
   pull_request:
     branches: ["main"]
+    paths:
+      - "os/**"
+      - "keys/**"
+      - "docs/recovery.md"
+      - "docs/security/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".forgejo/workflows/build-image.yml"
   workflow_dispatch:
     inputs:
       with_browser:
@@ -126,10 +150,11 @@ jobs:
             # when an image carrying it becomes reachable.
             type=raw,value=gen${{ env.QOS_GENERATION }}
 
-      # Build the multi-stage bootc image. Context is the repo root so the
-      # builder stage can COPY the whole workspace; the
-      # Containerfile lives in os/. push:false on PRs discards the image.
-      - name: Build the qOS image (push only on tags/dispatch)
+      # Build the multi-stage bootc image. Publishing deliberately happens only
+      # after the sealed image has been installed and booted below. On a release
+      # run buildx writes an OCI archive for that gate; ordinary build-only runs
+      # exercise the complete build and registry cache without retaining output.
+      - name: Build the qOS image
         id: build
         uses: docker/build-push-action@v5
         env:
@@ -137,7 +162,8 @@ jobs:
         with:
           context: .
           file: os/Containerfile
-          push: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
+          push: false
+          outputs: ${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && 'type=oci,dest=/var/tmp/qos-image.tar' || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # QOS_WITH_BROWSER: a manual run can omit the browser + its WPE WebKit
@@ -153,6 +179,17 @@ jobs:
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             QOS_WITH_BROWSER=${{ github.event.inputs.with_browser || '1' }}
             QOS_GENERATION=${{ env.QOS_GENERATION }}
+            SCCACHE_BUCKET=sccache
+            SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
+            SCCACHE_REGION=auto
+            SCCACHE_S3_KEY_PREFIX=quickdesktop/image/v1
+            SCCACHE_S3_USE_SSL=false
+          # The runner injects these two environment variables from a
+          # least-privilege Kubernetes Secret. BuildKit exposes them only to
+          # the Rust compile RUN; they never enter an image layer or build arg.
+          secret-envs: |
+            aws_access_key_id=AWS_ACCESS_KEY_ID
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
           # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
           # reproducible image digests.
           provenance: false
@@ -166,20 +203,60 @@ jobs:
           cache-from: type=registry,ref=code.podesta.ai/qos/qos-buildcache:latest
           cache-to: type=registry,ref=code.podesta.ai/qos/qos-buildcache:latest,mode=max
 
-      - name: Install, boot, and exercise the projection stack in a VM
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+      - name: Reseal, install, boot, and publish the verified image
+        id: release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
+        timeout-minutes: 60
         env:
-          QOS_IMAGE_REF: code.podesta.ai/qos/qos@${{ steps.build.outputs.digest }}
-          QOS_RUN: /tmp/qos-projection-vm
-          QOS_OUTPUT: /tmp/qos-projection-image
+          QOS_IMAGE: localhost/qos:release-candidate
+          QOS_RUN: /var/tmp/qos-projection-vm
+          QOS_OUTPUT: /var/tmp/qos-projection-image
           QOS_USER: quickuser
           QOS_PASS: quickdesktop
+          QOS_SKIP_BUILD: "1"
+          # TCG is substantially slower than KVM, so give the greeter up to 20
+          # minutes on Kata runners. Developer hosts with /dev/kvm still use KVM.
+          QOS_BOOT_WAIT_ATTEMPTS: "600"
+          # CI has the tools directly in its job container; the developer
+          # default enters a named distrobox that does not exist on runners.
+          QOS_DISTROBOX: ""
+          QOS_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          podman pull "$QOS_IMAGE_REF"
-          mkdir -p "$QOS_OUTPUT/qcow2" "$QOS_RUN"
-          ./os/dev/disk-image.sh "$QOS_IMAGE_REF" "$QOS_OUTPUT/qcow2" \
-            --user "$QOS_USER:$QOS_PASS:wheel"
+
+          sudo -n true || {
+            echo "::error::disk installation requires the runner's passwordless, Kata-confined sudo"
+            exit 1
+          }
+
+          # This is the only workflow that needs disk/firmware tooling. Keep it
+          # out of the general runner image and install it only for deliberate
+          # release validation; --no-install-recommends bounds download and
+          # unpack cost. The image build itself is not repeated.
+          export DEBIAN_FRONTEND=noninteractive
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends \
+            btrfs-progs dosfstools fuse-overlayfs openssh-client ovmf podman \
+            qemu-system-x86 qemu-utils slirp4netns socat sshpass sudo systemd \
+            uidmap util-linux
+          command -v podman qemu-img qemu-system-x86_64 sshpass socat systemd-repart >/dev/null
+
+          printf '%s' "$QOS_REGISTRY_TOKEN" | podman login code.podesta.ai \
+            --username "${{ github.actor }}" --password-stdin
+          podman load --input /var/tmp/qos-image.tar
+          first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
+          test -n "$first_tag"
+          podman tag "$first_tag" "$QOS_IMAGE"
+          # Keep the installed machine on the public release channel, not on
+          # the temporary localhost tag used only for resealing.
+          export QOS_TARGET_IMGREF="$first_tag"
+
+          # bootc currently requires a stable two-pass composefs UKI seal. The
+          # end-to-end helper performs that convergence and then creates qcow2;
+          # calling disk-image.sh directly would only exercise the rejected
+          # first pass and could never prove the published image bootable.
+          mkdir -p "$QOS_OUTPUT" "$QOS_RUN"
+          ./os/dev/build-image.sh
           export QOS_DISK="$QOS_OUTPUT/qcow2/disk.qcow2"
           trap './os/dev/vm.sh stop || true' EXIT
           ./os/dev/vm.sh boot --2d
@@ -196,6 +273,21 @@ jobs:
             sleep 2
           done
           ./os/dev/vm.sh ssh /usr/libexec/qos/projection-boot-check.sh
+
+          # Only the exact image that passed installation and boot receives a
+          # public tag. Every tag points at the same manifest digest.
+          digest_file="$(mktemp /var/tmp/qos-push-digest.XXXXXX)"
+          while IFS= read -r tag; do
+            test -n "$tag" || continue
+            podman tag "$QOS_IMAGE" "$tag"
+            podman push --digestfile "$digest_file" "$tag"
+          done <<'TAGS'
+          ${{ steps.meta.outputs.tags }}
+          TAGS
+          digest="$(tr -d '[:space:]' < "$digest_file")"
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "::notice::published boot-verified image $digest"
 
       # Sign the pushed image with cosign (security plan §9). The signature
       # lets installed systems verify provenance before `bootc upgrade` applies
@@ -218,7 +310,7 @@ jobs:
           # against cosign.pub with --insecure-ignore-tlog semantics. A *self-hosted*
           # transparency log (security plan §9) is a separate follow-up.
           cosign sign --yes --tlog-upload=false --key env://COSIGN_PRIVATE_KEY \
-            "code.podesta.ai/qos/qos@${{ steps.build.outputs.digest }}"
+            "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
 
       # SBOM (security plan §9): generate an SPDX inventory of the image and
       # attach it as a SIGNED in-toto attestation, so consumers can audit exactly
@@ -227,7 +319,7 @@ jobs:
         if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
         uses: anchore/sbom-action@v0
         with:
-          image: code.podesta.ai/qos/qos@${{ steps.build.outputs.digest }}
+          image: code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}
           format: spdx-json
           output-file: sbom.spdx.json
           # Skip the workflow-artifact upload: forgejo's action runner doesn't
@@ -247,4 +339,4 @@ jobs:
           cosign attest --yes --tlog-upload=false \
             --predicate sbom.spdx.json --type spdxjson \
             --key env://COSIGN_PRIVATE_KEY \
-            "code.podesta.ai/qos/qos@${{ steps.build.outputs.digest }}"
+            "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"

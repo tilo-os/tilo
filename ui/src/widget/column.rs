@@ -71,6 +71,7 @@ impl Column {
     /// filling the parent (`percent(1.0)`). Required when wrapping the
     /// column in a `Scrollable` — see the field doc on
     /// [`Column::intrinsic_height`] for the gory details.
+    #[must_use]
     pub fn with_intrinsic_height(mut self) -> Self {
         self.intrinsic_height = true;
         self
@@ -79,11 +80,13 @@ impl Column {
     /// Skip the default `padding_standard * 2` on all sides. Used by
     /// the shell's foreground column so the topbar lands at y=0
     /// instead of inset by the column's gutter.
+    #[must_use]
     pub fn with_no_padding(mut self) -> Self {
         self.no_padding = true;
         self
     }
 
+    #[must_use]
     pub fn push(mut self, child: Box<dyn Widget>) -> Self {
         self.children.push(child);
         self
@@ -93,6 +96,7 @@ impl Column {
     /// `padding_standard * 2`. Used to displace a workspace area to the
     /// right of an absolutely-positioned sidebar without shifting the
     /// surrounding chrome.
+    #[must_use]
     pub fn with_extra_left_padding(mut self, px: f32) -> Self {
         self.extra_left_padding = px;
         self
@@ -101,6 +105,7 @@ impl Column {
     /// Extra padding on top, e.g. to reserve room for a floating
     /// affordance the column doesn't own (the responsive shell's Back
     /// chip painted over the detail pane's top-left corner).
+    #[must_use]
     pub fn with_extra_top_padding(mut self, px: f32) -> Self {
         self.extra_top_padding = px;
         self
@@ -108,6 +113,7 @@ impl Column {
 
     /// Extra padding on the bottom, on top of the default
     /// `padding_standard * 2`.
+    #[must_use]
     pub fn with_extra_bottom_padding(mut self, px: f32) -> Self {
         self.extra_bottom_padding = px;
         self
@@ -116,6 +122,7 @@ impl Column {
     /// Override the column's top + bottom padding (default
     /// `padding_standard * 2`); left/right are unaffected. For layouts
     /// that need to hug the viewport's top/bottom edges.
+    #[must_use]
     pub fn with_vertical_padding(mut self, px: f32) -> Self {
         self.vertical_padding_override = Some(px);
         self
@@ -123,6 +130,7 @@ impl Column {
 
     /// Override the column's left + right padding (replacing
     /// `base + extra_left_padding` on the left, `base` on the right).
+    #[must_use]
     pub fn with_horizontal_padding(mut self, left: f32, right: f32) -> Self {
         self.horizontal_padding_override = Some((left, right));
         self
@@ -131,6 +139,7 @@ impl Column {
     /// Override the vertical gap between children (default
     /// `theme.gap_standard`). `0.0` for a tightly banded stack whose
     /// children own their own internal spacing.
+    #[must_use]
     pub fn with_gap(mut self, px: f32) -> Self {
         self.gap_override = Some(px);
         self
@@ -141,18 +150,21 @@ impl Column {
     /// topbar, say) — the percent variant would claim 100% of the parent on
     /// top of the sibling's height, overflowing and pushing the column's
     /// own bottom padding off-screen.
+    #[must_use]
     pub fn with_fill_remaining_height(mut self) -> Self {
         self.fill_remaining_height = true;
         self
     }
 
     /// Opt this layout into presence tracking by binding it to a CRDT-style path.
+    #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
     /// Gate this layout behind a permission scope.
+    #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -303,8 +315,13 @@ impl Widget for Column {
         // cursor crossing a peer widget's rect — otherwise the peer's
         // CursorMoved handler could set `handled` first.
         if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
-            let cnode = child_nodes[idx];
-            self.children[idx].handle_event(
+            let Some(&cnode) = child_nodes.get(idx) else {
+                return;
+            };
+            let Some(child) = self.children.get_mut(idx) else {
+                return;
+            };
+            child.handle_event(
                 event,
                 scale_factor,
                 modifiers,
@@ -429,6 +446,14 @@ impl Widget for Column {
             return;
         }
 
+        // Exact equality is deliberate: layout is deterministic given identical
+        // inputs, so this asks "did anything at all change since the cache was
+        // built", not "is the size close enough" — an epsilon would let a
+        // genuine sub-pixel resize slip past and leave the cache stale.
+        #[allow(
+            clippy::float_cmp,
+            reason = "deliberate exact reproducibility check on deterministic layout output"
+        )]
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
@@ -468,10 +493,14 @@ impl Widget for Column {
         } else {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
-            scene.append(
-                &self.subtree_cache,
-                Some(transform * Affine::translate((dx, dy))),
-            );
+            // Affine composition: pure `f64` matrix multiply, cannot panic
+            // regardless of operand magnitude.
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine composition is float matrix math and cannot panic"
+            )]
+            let cache_transform = transform * Affine::translate((dx, dy));
+            scene.append(&self.subtree_cache, Some(cache_transform));
         }
 
         if let Some(scope) = self.permission_scope()

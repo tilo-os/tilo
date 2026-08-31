@@ -32,7 +32,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::popover::Popover;
-use ui::widget::{Button, ButtonFace, ButtonStyle, ModalDialog, Text, Widget};
+use ui::widget::{Button, ButtonFace, ButtonStyle, ModalDialog, Text, TextInput, Widget};
 
 use crate::charts::{self, Series, with_alpha};
 use crate::layout;
@@ -146,6 +146,14 @@ const PROC_SPARK_CAP: usize = 48;
 /// never collide with them however narrow the pane gets.
 const DETAIL_ACTION_H: f64 = 46.0;
 
+/// Layout of the tall detail pane's two-column stat grid (MEMORY / VIRTUAL /
+/// THREADS / OPEN FILES / STATUS / RUNNING FOR). Shared between the
+/// sparkline pass (which needs the grid's total height to size itself) and
+/// the grid pass itself, so the two never disagree.
+const DETAIL_STAT_COUNT: usize = 6;
+const DETAIL_STAT_COLS: usize = 2;
+const DETAIL_STAT_ROW_H: f64 = 48.0;
+
 /// Human label for a refresh cadence in ms: `1s`, `1.5s`, `2s`. Whole seconds
 /// drop the decimal. Mirrors [`crate::prefs::Prefs::interval_label`] so the
 /// pill and the popover options read identically.
@@ -166,6 +174,43 @@ struct ScrollBarHit {
     track: Rect,
     thumb: Rect,
     max_value: f64,
+}
+
+/// Process table layout geometry, computed once per frame so the header,
+/// rows and scrollbar passes each take one struct instead of a long, mostly
+/// duplicated parameter list.
+#[derive(Clone, Copy, Debug)]
+struct TableGeom {
+    /// The card's full inner rect (post-panel padding).
+    ti: Rect,
+    /// The padded column band — header text and row cells clip to this so an
+    /// overflowing column is hidden past the edge, not overlapping the border.
+    band: Rect,
+    hdr: Rect,
+    /// The rows viewport, above any horizontal scrollbar.
+    view: Rect,
+    /// Left edge of content-space column 0, before the horizontal scroll.
+    cols_left: f64,
+    /// Horizontal scroll offset, in logical px.
+    sx: f64,
+    /// Height reserved for the horizontal scrollbar (0 when columns fit).
+    hbar_h: f64,
+    /// Total intrinsic width of every column.
+    content_w: f64,
+    /// The columns viewport width (the padded band's width).
+    avail_w: f64,
+    /// How far the columns overflow `avail_w` (0 when they fit).
+    h_overflow: f64,
+}
+
+/// Static face spec for one detail-pane action button (Stop/Kill), bundled
+/// so `draw_action_button` takes one struct instead of three label/icon/style
+/// arguments.
+#[derive(Clone, Copy)]
+struct ActionButtonSpec<'a> {
+    label: &'a str,
+    icon: Icon,
+    style: ButtonStyle,
 }
 
 /// Which scrollbar the user is dragging, plus where within its thumb they
@@ -253,6 +298,10 @@ impl Hit {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, unrelated flag (sort direction, tree/flat view, one-shot popover seed, shots-only sampling gate); pairing them into enums would be artificial"
+)]
 pub struct MonitorApp {
     model: MonitorModel,
     sampler: Sampler,
@@ -262,8 +311,10 @@ pub struct MonitorApp {
     tab: Tab,
     sort_key: SortKey,
     sort_desc: bool,
-    filter: String,
-    search_focused: bool,
+    /// Shared local editor for the process filter. Monitor owns filtering and
+    /// toolbar composition; the toolkit owns caret, selection, clipboard, IME
+    /// and accessibility behavior.
+    search_input: TextInput,
     selected_pid: Option<u32>,
     scroll_off: f32,
     /// Horizontal scroll of the process table, in logical px, when its
@@ -408,7 +459,7 @@ impl MonitorApp {
         // A `last_refresh` well in the past makes the first `maybe_refresh`
         // fire on the first draw, replacing the empty seed with real data.
         let stale = Instant::now()
-            .checked_sub(Duration::from_hours(1))
+            .checked_sub(Duration::from_secs(3600))
             .unwrap_or_else(Instant::now);
         Self::build(MonitorModel::empty(), None, stale)
     }
@@ -421,8 +472,10 @@ impl MonitorApp {
             tab: Tab::Processes,
             sort_key: SortKey::Cpu,
             sort_desc: true,
-            filter: String::new(),
-            search_focused: false,
+            search_input: TextInput::local()
+                .with_id("monitor.search")
+                .with_placeholder("Search processes…")
+                .with_plain_chrome(),
             selected_pid,
             scroll_off: 0.0,
             table_scroll_x: 0.0,
@@ -510,7 +563,7 @@ impl MonitorApp {
 
     /// The filtered + sorted process list currently displayed.
     fn visible_processes(&self) -> Vec<ProcessInfo> {
-        let f = self.filter.to_lowercase();
+        let f = self.search_input.value().to_lowercase();
         let mut v: Vec<ProcessInfo> = self
             .model
             .processes
@@ -551,7 +604,7 @@ impl MonitorApp {
     fn visible_rows(&self) -> Vec<Row> {
         if self.tree_mode {
             let forest = Forest::build(&self.model.processes);
-            let filter = self.filter.to_lowercase();
+            let filter = self.search_input.value().to_lowercase();
             forest.flatten(&FlattenOpts {
                 sum_mode: self.sum_mode,
                 sort_key: self.sort_key,
@@ -781,8 +834,10 @@ impl MonitorApp {
     /// Apply the interval option the popover just yielded (drained via
     /// `take_selection`) to the prefs + CRDT.
     fn apply_interval_selection(&mut self, doc: &mut AutoCommit, path: &ObjId) {
-        if let Some(sel) = self.interval_popover.take_selection() {
-            self.prefs.interval_ms = INTERVAL_OPTIONS[sel];
+        if let Some(sel) = self.interval_popover.take_selection()
+            && let Some(&ms) = INTERVAL_OPTIONS.get(sel)
+        {
+            self.prefs.interval_ms = ms;
             self.prefs.store(doc, path);
         }
     }
@@ -1155,7 +1210,7 @@ impl MonitorApp {
         let cx = (centre - pair_w / 2.0).clamp(gap_l, (gap_r - pair_w).max(gap_l));
         let proc_r = Rect::new(cx, cy, cx + seg_w, cy + seg_h);
         let res_r = Rect::new(cx + seg_w + 6.0, cy, cx + 2.0 * seg_w + 6.0, cy + seg_h);
-        self.draw_tab_pill_ex(
+        Self::draw_tab_pill_ex(
             scene,
             t,
             tr,
@@ -1166,7 +1221,7 @@ impl MonitorApp {
             self.tab == Tab::Processes,
             compact,
         );
-        self.draw_tab_pill_ex(
+        Self::draw_tab_pill_ex(
             scene,
             t,
             tr,
@@ -1234,7 +1289,6 @@ impl MonitorApp {
     /// dropped) so the tab control still fits when the header is narrow.
     #[allow(clippy::too_many_arguments)]
     fn draw_tab_pill_ex(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1295,6 +1349,10 @@ impl MonitorApp {
     /// Clicking a cell jumps to the
     /// Resources dashboard where that stat's full gauge/chart lives; the cell
     /// hit rects are recorded for `on_click`.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/r/g/c/i are this file's established short names for transform/rect/grid/colors/index, used the same way throughout every draw_* function"
+    )]
     fn draw_summary_strip(
         &mut self,
         scene: &mut Scene,
@@ -1304,8 +1362,6 @@ impl MonitorApp {
         r: Rect,
         g: layout::StripGrid,
     ) {
-        let c = &theme.tokens.colors;
-
         // Own the per-cell spec up front so the immutable metrics borrow is
         // released before we push into `self.hit`.
         struct Cell {
@@ -1316,6 +1372,7 @@ impl MonitorApp {
             max: f32,
             spark: Color,
         }
+        let c = &theme.tokens.colors;
         let cells = {
             let m = &self.model.metrics;
             let overall = m.cpu_overall();
@@ -1781,7 +1838,6 @@ impl MonitorApp {
         theme: &Theme,
         table_panel: Rect,
     ) {
-        let c = &theme.tokens.colors;
         let ti = charts::panel(scene, t, table_panel, theme, 0.0);
         let pad = layout::TABLE_PAD;
         // The columns' content viewport: the card inner box minus left/right
@@ -1805,16 +1861,43 @@ impl MonitorApp {
         let hbar_h = if h_overflow > 0.5 { 7.0 } else { 0.0 };
         self.table_scroll_x = self.table_scroll_x.clamp(0.0, h_overflow as f32);
         let sx = f64::from(self.table_scroll_x);
-        // Absolute x of a content-space column edge after the horizontal scroll.
-        let col_abs = |x: f64| cols_left + x - sx;
 
         // The horizontal clip: header text and row cells are clipped to the
         // padded column band so an overflowing column (e.g. THR when narrow)
         // is hidden past the right edge instead of overlapping the border.
         let band = Rect::new(cols_left, ti.y0, cols_right, ti.y1);
-
-        // Header row.
         let hdr = Rect::new(ti.x0, ti.y0, ti.x1, ti.y0 + TABLE_HEADER_H);
+        // Rows region (above any horizontal scrollbar).
+        let view = Rect::new(ti.x0, hdr.y1, ti.x1, ti.y1 - hbar_h);
+        let geom = TableGeom {
+            ti,
+            band,
+            hdr,
+            view,
+            cols_left,
+            sx,
+            hbar_h,
+            content_w,
+            avail_w,
+            h_overflow,
+        };
+
+        self.draw_table_header(scene, t, tr, theme, &columns, &geom);
+        let rows_len = self.draw_table_rows(scene, t, tr, theme, &columns, &geom);
+        self.draw_table_scrollbars(scene, t, theme, &geom, rows_len);
+    }
+
+    fn draw_table_header(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        columns: &[layout::Column],
+        geom: &TableGeom,
+    ) {
+        let c = &theme.tokens.colors;
+        let hdr = geom.hdr;
         charts::fill_rrect(scene, t, hdr, 0.0, c.surfaces.base);
         scene.stroke(
             &Stroke::new(1.0),
@@ -1825,10 +1908,10 @@ impl MonitorApp {
         );
         let hfs = theme.tokens.typography.scale.xs;
         self.hit.sort_headers.clear();
-        let hdr_clip = Rect::new(band.x0, hdr.y0, band.x1, hdr.y1);
+        let hdr_clip = Rect::new(geom.band.x0, hdr.y0, geom.band.x1, hdr.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &hdr_clip);
-        for col in &columns {
-            let x0 = col_abs(col.x0);
+        for col in columns {
+            let x0 = geom.cols_left + col.x0 - geom.sx;
             let active = self.sort_key == col.key;
             let color = if active { c.text_primary } else { c.text_dim };
             let mut text = col.header.to_string();
@@ -1853,8 +1936,8 @@ impl MonitorApp {
             );
             // Hit rect clamped to the visible band so a click maps to the
             // column under the cursor, not its off-screen extent.
-            let hx0 = x0.max(band.x0);
-            let hx1 = (x0 + col.w).min(band.x1);
+            let hx0 = x0.max(geom.band.x0);
+            let hx1 = (x0 + col.w).min(geom.band.x1);
             if hx1 > hx0 {
                 self.hit
                     .sort_headers
@@ -1862,173 +1945,238 @@ impl MonitorApp {
             }
         }
         scene.pop_layer();
+    }
 
-        // Rows region (above any horizontal scrollbar).
-        let view = Rect::new(ti.x0, hdr.y1, ti.x1, ti.y1 - hbar_h);
-        self.rows_per_page = (view.height() / ROW_H).floor().max(1.0) as usize;
+    /// Lay out and draw the visible rows, returning the total (unpaged) row
+    /// count so the scrollbar pass can size its thumb.
+    fn draw_table_rows(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        columns: &[layout::Column],
+        geom: &TableGeom,
+    ) -> usize {
+        self.rows_per_page = (geom.view.height() / ROW_H).floor().max(1.0) as usize;
         let rows = self.visible_rows();
         let max_scroll = rows.len().saturating_sub(self.rows_per_page) as f32;
         self.scroll_off = self.scroll_off.clamp(0.0, max_scroll);
         let start = self.scroll_off as usize;
         // Record the viewport so wheel routing can tell table-scroll from
         // page-scroll.
-        self.table_viewport = view;
+        self.table_viewport = geom.view;
 
         // Clip rows to the view (both axes — vertical for row scroll, and the
         // padded band horizontally so overflowing columns stay inside).
-        let rows_clip = Rect::new(band.x0, view.y0, band.x1, view.y1);
+        let rows_clip = Rect::new(geom.band.x0, geom.view.y0, geom.band.x1, geom.view.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rows_clip);
         self.hit.rows.clear();
         self.hit.twisties.clear();
-        let fs = theme.tokens.typography.scale.sm;
         for i in 0..self.rows_per_page {
             let idx = start + i;
             let Some(p) = rows.get(idx) else { break };
-            let y0 = view.y0 + i as f64 * ROW_H;
-            let row = Rect::new(view.x0, y0, view.x1, y0 + ROW_H);
-            let selected = self.selected_pid == Some(p.pid);
-            if selected {
-                charts::fill_rrect(
-                    scene,
-                    t,
-                    Rect::new(row.x0, row.y0, row.x1, row.y1),
-                    0.0,
-                    with_alpha(c.accent[5], 60),
-                );
-                let bar = Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1);
-                scene.fill(Fill::NonZero, t, c.accent[5], None, &bar);
-            } else if idx % 2 == 1 {
-                charts::fill_rrect(scene, t, row, 0.0, c.neutral[2]);
-            }
-
-            let ty = row.center().y - f64::from(fs) / 2.0 - 1.0;
-            let txt = if selected { c.text_primary } else { c.text_dim };
-            let name_color = c.text_primary;
-
-            // helper to draw a cell at a content-space column.
-            let cell = |tr: &mut TextRenderer,
-                        scene: &mut Scene,
-                        s: &str,
-                        col: &layout::Column,
-                        color: Color,
-                        weight: TextWeight| {
-                let x0 = col_abs(col.x0);
-                let s = Self::truncate(tr, s, fs, col.w - 8.0);
-                let (sw, _) = tr.measure_weighted(&s, fs, None, weight);
-                let x = if col.right {
-                    x0 + col.w - f64::from(sw) - 6.0
-                } else {
-                    x0 + 2.0
-                };
-                tr.draw_text_weighted(
-                    scene,
-                    &s,
-                    fs,
-                    color,
-                    t * Affine::translate((x, ty)),
-                    None,
-                    weight,
-                );
-            };
-            // Look a column up by key — the set is now width-dependent (USER is
-            // dropped at narrow widths), so cells are addressed by identity, not
-            // a fixed index.
-            let column = |k: SortKey| columns.iter().find(|c| c.key == k);
-            if let Some(col) = column(SortKey::Pid) {
-                cell(tr, scene, &p.pid.to_string(), col, txt, TextWeight::Regular);
-            }
-
-            // NAME column: tree indent + twisty + name, all in the NAME band.
-            let name_col = column(SortKey::Name).expect("NAME column is always shown");
-            let indent = p.depth as f64 * TREE_INDENT;
-            let name_x0 = col_abs(name_col.x0) + 2.0 + indent;
-            if self.tree_mode && p.has_children {
-                // Expand/collapse triangle (▸ collapsed, ▾ expanded).
-                let tw = Rect::new(name_x0, row.y0, name_x0 + TWISTY_W, row.y1);
-                Self::draw_twisty(
-                    scene,
-                    t,
-                    tw,
-                    p.expanded,
-                    if selected { c.text_primary } else { c.text_dim },
-                );
-                // Hit rect for the twisty (clamped to the visible band).
-                let hx0 = tw.x0.max(band.x0);
-                let hx1 = tw.x1.min(band.x1);
-                if hx1 > hx0 {
-                    self.hit
-                        .twisties
-                        .push((p.pid, Rect::new(hx0, row.y0, hx1, row.y1)));
-                }
-            }
-            let text_x0 = name_x0 + if self.tree_mode { TWISTY_W } else { 0.0 };
-            // Width left for the name text after the indent + twisty.
-            let name_avail = (col_abs(name_col.x0) + name_col.w - text_x0 - 4.0).max(8.0);
-            let label = Self::truncate(tr, &p.name, fs, name_avail);
-            tr.draw_text_weighted(
-                scene,
-                &label,
-                fs,
-                name_color,
-                t * Affine::translate((text_x0, ty)),
-                None,
-                TextWeight::Medium,
-            );
-
-            if let Some(col) = column(SortKey::User) {
-                cell(tr, scene, &p.user, col, txt, TextWeight::Regular);
-            }
-            // CPU% coloured by load. A collapsed parent's summed total can
-            // exceed 100% (multi-core); colour against a single core's scale
-            // but clamp the hue so a hot subtree reads as fully loaded.
-            let cpu_frac = (p.cpu / 100.0).clamp(0.0, 1.0);
-            let cpu_col = if p.cpu >= 1.0 {
-                charts::load_color(theme, cpu_frac)
-            } else {
-                txt
-            };
-            if let Some(col) = column(SortKey::Cpu) {
-                cell(
-                    tr,
-                    scene,
-                    &format!("{:.1}", p.cpu),
-                    col,
-                    cpu_col,
-                    TextWeight::Medium,
-                );
-            }
-            if let Some(col) = column(SortKey::Mem) {
-                cell(
-                    tr,
-                    scene,
-                    &fmt_bytes(p.mem_bytes),
-                    col,
-                    txt,
-                    TextWeight::Regular,
-                );
-            }
-            if let Some(col) = column(SortKey::Threads) {
-                cell(
-                    tr,
-                    scene,
-                    &p.threads.to_string(),
-                    col,
-                    txt,
-                    TextWeight::Regular,
-                );
-            }
-
-            self.hit.rows.push((p.pid, row));
+            let y0 = geom.view.y0 + i as f64 * ROW_H;
+            let row = Rect::new(geom.view.x0, y0, geom.view.x1, y0 + ROW_H);
+            self.draw_table_row(scene, t, tr, theme, columns, geom, p, row, idx % 2 == 1);
         }
         scene.pop_layer();
+        rows.len()
+    }
 
+    /// Draw one process row: selection/zebra background, the NAME column's
+    /// tree indent + twisty, and every other visible column's cell.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::many_single_char_names,
+        reason = "threads the render context (scene/transform/text/theme) plus this row's geometry and data through a single draw call, mirroring charts.rs's gauge/chart primitives; t/c/p/x/s/k are this file's established short names for transform/colors/row/coordinate/string/key"
+    )]
+    fn draw_table_row(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        columns: &[layout::Column],
+        geom: &TableGeom,
+        p: &Row,
+        row: Rect,
+        alt: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        let selected = self.selected_pid == Some(p.pid);
+        if selected {
+            charts::fill_rrect(
+                scene,
+                t,
+                Rect::new(row.x0, row.y0, row.x1, row.y1),
+                0.0,
+                with_alpha(c.accent[5], 60),
+            );
+            let bar = Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1);
+            scene.fill(Fill::NonZero, t, c.accent[5], None, &bar);
+        } else if alt {
+            charts::fill_rrect(scene, t, row, 0.0, c.neutral[2]);
+        }
+
+        let fs = theme.tokens.typography.scale.sm;
+        let ty = row.center().y - f64::from(fs) / 2.0 - 1.0;
+        let txt = if selected { c.text_primary } else { c.text_dim };
+
+        // Absolute x of a content-space column edge after the horizontal scroll.
+        let col_abs = |x: f64| geom.cols_left + x - geom.sx;
+        // helper to draw a cell at a content-space column.
+        let cell = |tr: &mut TextRenderer,
+                    scene: &mut Scene,
+                    s: &str,
+                    col: &layout::Column,
+                    color: Color,
+                    weight: TextWeight| {
+            let x0 = col_abs(col.x0);
+            let s = Self::truncate(tr, s, fs, col.w - 8.0);
+            let (sw, _) = tr.measure_weighted(&s, fs, None, weight);
+            let x = if col.right {
+                x0 + col.w - f64::from(sw) - 6.0
+            } else {
+                x0 + 2.0
+            };
+            tr.draw_text_weighted(
+                scene,
+                &s,
+                fs,
+                color,
+                t * Affine::translate((x, ty)),
+                None,
+                weight,
+            );
+        };
+        // Look a column up by key — the set is now width-dependent (USER is
+        // dropped at narrow widths), so cells are addressed by identity, not
+        // a fixed index.
+        let column = |k: SortKey| columns.iter().find(|col| col.key == k);
+        // CPU% coloured by load. A collapsed parent's summed total can exceed
+        // 100% (multi-core); colour against a single core's scale but clamp
+        // the hue so a hot subtree reads as fully loaded.
+        let cpu_frac = (p.cpu / 100.0).clamp(0.0, 1.0);
+        let cpu_col = if p.cpu >= 1.0 {
+            charts::load_color(theme, cpu_frac)
+        } else {
+            txt
+        };
+        let entries = [
+            (SortKey::Pid, p.pid.to_string(), txt, TextWeight::Regular),
+            (SortKey::User, p.user.clone(), txt, TextWeight::Regular),
+            (
+                SortKey::Cpu,
+                format!("{:.1}", p.cpu),
+                cpu_col,
+                TextWeight::Medium,
+            ),
+            (
+                SortKey::Mem,
+                fmt_bytes(p.mem_bytes),
+                txt,
+                TextWeight::Regular,
+            ),
+            (
+                SortKey::Threads,
+                p.threads.to_string(),
+                txt,
+                TextWeight::Regular,
+            ),
+        ];
+        for (key, text, color, weight) in entries {
+            if let Some(col) = column(key) {
+                cell(tr, scene, &text, col, color, weight);
+            }
+        }
+
+        // NAME column: tree indent + twisty + name, all in the NAME band.
+        self.draw_table_row_name(scene, t, tr, theme, columns, geom, p, row, selected);
+
+        self.hit.rows.push((p.pid, row));
+    }
+
+    /// Draw the NAME column's tree indent + twisty + name text for one row.
+    /// `layout::process_columns` always includes NAME; if a future layout
+    /// change ever dropped it, this is a no-op rather than a panic — the
+    /// row's other cells and hit rect still render regardless.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "threads the render context plus this row's geometry and data through a single draw call, mirroring charts.rs's gauge/chart primitives"
+    )]
+    fn draw_table_row_name(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        columns: &[layout::Column],
+        geom: &TableGeom,
+        p: &Row,
+        row: Rect,
+        selected: bool,
+    ) {
+        let Some(name_col) = columns.iter().find(|col| col.key == SortKey::Name) else {
+            return;
+        };
+        let c = &theme.tokens.colors;
+        let fs = theme.tokens.typography.scale.sm;
+        let ty = row.center().y - f64::from(fs) / 2.0 - 1.0;
+        let col_abs = |x: f64| geom.cols_left + x - geom.sx;
+        let indent = p.depth as f64 * TREE_INDENT;
+        let name_x0 = col_abs(name_col.x0) + 2.0 + indent;
+        if self.tree_mode && p.has_children {
+            // Expand/collapse triangle (▸ collapsed, ▾ expanded).
+            let tw = Rect::new(name_x0, row.y0, name_x0 + TWISTY_W, row.y1);
+            Self::draw_twisty(
+                scene,
+                t,
+                tw,
+                p.expanded,
+                if selected { c.text_primary } else { c.text_dim },
+            );
+            // Hit rect for the twisty (clamped to the visible band).
+            let hx0 = tw.x0.max(geom.band.x0);
+            let hx1 = tw.x1.min(geom.band.x1);
+            if hx1 > hx0 {
+                self.hit
+                    .twisties
+                    .push((p.pid, Rect::new(hx0, row.y0, hx1, row.y1)));
+            }
+        }
+        let text_x0 = name_x0 + if self.tree_mode { TWISTY_W } else { 0.0 };
+        // Width left for the name text after the indent + twisty.
+        let name_avail = (col_abs(name_col.x0) + name_col.w - text_x0 - 4.0).max(8.0);
+        let label = Self::truncate(tr, &p.name, fs, name_avail);
+        tr.draw_text_weighted(
+            scene,
+            &label,
+            fs,
+            c.text_primary,
+            t * Affine::translate((text_x0, ty)),
+            None,
+            TextWeight::Medium,
+        );
+    }
+
+    fn draw_table_scrollbars(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        geom: &TableGeom,
+        rows_len: usize,
+    ) {
+        let c = &theme.tokens.colors;
         // Vertical row scrollbar — a draggable thumb over a page-able track.
-        if rows.len() > self.rows_per_page {
+        if rows_len > self.rows_per_page {
+            let view = geom.view;
             let track = Rect::new(view.x1 - 8.0, view.y0, view.x1 - 1.0, view.y1);
             charts::fill_rrect(scene, t, track, 2.0, with_alpha(c.border_standard, 90));
-            let frac_v = self.rows_per_page as f64 / rows.len() as f64;
+            let frac_v = self.rows_per_page as f64 / rows_len as f64;
             let thumb_h = (track.height() * frac_v).max(24.0);
-            let max_off = (rows.len() - self.rows_per_page) as f64;
+            let max_off = (rows_len - self.rows_per_page) as f64;
             let pos = if max_off > 0.0 {
                 f64::from(self.scroll_off) / max_off
             } else {
@@ -2049,19 +2197,24 @@ impl MonitorApp {
         // Horizontal scrollbar — appears only when the columns overflow the
         // viewport (a narrow window), so THR no longer overlaps the border:
         // the user scrolls right to reach it instead.
-        if h_overflow > 0.5 {
-            let track = Rect::new(band.x0, ti.y1 - hbar_h + 1.0, band.x1, ti.y1 - 1.0);
+        if geom.h_overflow > 0.5 {
+            let track = Rect::new(
+                geom.band.x0,
+                geom.ti.y1 - geom.hbar_h + 1.0,
+                geom.band.x1,
+                geom.ti.y1 - 1.0,
+            );
             charts::fill_rrect(scene, t, track, 2.0, with_alpha(c.border_standard, 90));
-            let frac_h = (avail_w / content_w).clamp(0.0, 1.0);
+            let frac_h = (geom.avail_w / geom.content_w).clamp(0.0, 1.0);
             let thumb_w = (track.width() * frac_h).max(24.0);
-            let pos = (sx / h_overflow).clamp(0.0, 1.0);
+            let pos = (geom.sx / geom.h_overflow).clamp(0.0, 1.0);
             let tx0 = track.x0 + (track.width() - thumb_w) * pos;
             let thumb = Rect::new(tx0, track.y0, tx0 + thumb_w, track.y1);
             charts::fill_rrect(scene, t, thumb, 2.0, with_alpha(c.text_dim, 160));
             self.hit.h_scrollbar = Some(ScrollBarHit {
                 track,
                 thumb,
-                max_value: h_overflow,
+                max_value: geom.h_overflow,
             });
         } else {
             self.hit.h_scrollbar = None;
@@ -2198,35 +2351,67 @@ impl MonitorApp {
         }
     }
 
-    fn draw_toolbar(
+    /// Draw one centered-label toggle pill: filled/stroked capsule, accent
+    /// tinted when `on`. Shared by the sum/tree/confirm-kills toolbar pills —
+    /// the kernel-threads toggle has its own switch-knob visual and isn't
+    /// drawn through this.
+    fn draw_toggle_pill(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        label: &str,
+        on: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        let fs = theme.tokens.typography.scale.sm;
+        let radius = rect.height() / 2.0;
+        charts::fill_rrect(
+            scene,
+            t,
+            rect,
+            radius,
+            if on {
+                with_alpha(c.accent[5], 60)
+            } else {
+                c.surface_white_5
+            },
+        );
+        charts::stroke_rrect(
+            scene,
+            t,
+            rect,
+            radius,
+            if on { c.accent[5] } else { c.border_standard },
+            1.0,
+        );
+        let (lw, _) = tr.measure(label, fs, None);
+        tr.draw_text(
+            scene,
+            label,
+            fs,
+            if on { c.text_primary } else { c.text_dim },
+            t * Affine::translate((
+                rect.center().x - f64::from(lw) / 2.0,
+                rect.center().y - f64::from(fs) / 2.0 - 1.0,
+            )),
+            None,
+        );
+    }
+
+    /// Draw the kernel-threads switch pill (rightmost in `pills_row`) and
+    /// return its rect, so the next pill to its left can butt against it.
+    fn draw_kernel_toggle_pill(
         &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        r: Rect,
-    ) {
+        pills_row: Rect,
+    ) -> Rect {
         let c = &theme.tokens.colors;
         let fs = theme.tokens.typography.scale.sm;
-
-        // One row (search beside pills) or two (search above pills). Deriving
-        // this from `r.width()` — the width the host allocated this frame —
-        // keeps the toolbar reflowing on every resize rather than freezing to
-        // whatever the first frame chose.
-        let stacked = self.toolbar_stacked(tr, theme, r.width());
-        let pills_row = if stacked {
-            Rect::new(r.x0, r.y1 - TOOLBAR_ROW_H, r.x1, r.y1)
-        } else {
-            Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_ROW_H)
-        };
-        let search_row = if stacked {
-            Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_ROW_H)
-        } else {
-            pills_row
-        };
-
-        // ---- filter pills, laid right→left in `pills_row` -----------------
-        // Kernel-threads toggle (rightmost).
         let kt_label = "kernel threads";
         let ktw = f64::from(tr.measure(kt_label, fs, None).0) + 44.0;
         let kt_r = Rect::new(
@@ -2297,64 +2482,53 @@ impl MonitorApp {
             None,
         );
         self.hit.kernel_toggle = kt_r;
+        kt_r
+    }
 
-        // Sum-mode pill, left of the kernel toggle: "Σ Sum subtree" /
-        // "Σ Per-process". Active (Sum) is accent-filled. Hidden in flat
-        // mode (there's nothing to sum into when there's no tree).
-        let mut next_x1 = kt_r.x0 - TOOLBAR_PILL_GAP;
-        if self.tree_mode {
-            let sum_label = self.sum_mode.label();
-            let sum_text = format!("Σ {sum_label}");
-            let sw = f64::from(tr.measure(&sum_text, fs, None).0) + 24.0;
-            let sum_r = Rect::new(
-                next_x1 - sw,
-                pills_row.y0 + 2.0,
-                next_x1,
-                pills_row.y1 - 2.0,
-            );
-            let summing = self.sum_mode == SumMode::SumSubtree;
-            charts::fill_rrect(
-                scene,
-                t,
-                sum_r,
-                sum_r.height() / 2.0,
-                if summing {
-                    with_alpha(c.accent[5], 60)
-                } else {
-                    c.surface_white_5
-                },
-            );
-            charts::stroke_rrect(
-                scene,
-                t,
-                sum_r,
-                sum_r.height() / 2.0,
-                if summing {
-                    c.accent[5]
-                } else {
-                    c.border_standard
-                },
-                1.0,
-            );
-            let (stw, _) = tr.measure(&sum_text, fs, None);
-            tr.draw_text(
-                scene,
-                &sum_text,
-                fs,
-                if summing { c.text_primary } else { c.text_dim },
-                t * Affine::translate((
-                    sum_r.center().x - f64::from(stw) / 2.0,
-                    sum_r.center().y - f64::from(fs) / 2.0 - 1.0,
-                )),
-                None,
-            );
-            self.hit.sum_toggle = sum_r;
-            next_x1 = sum_r.x0 - TOOLBAR_PILL_GAP;
-        } else {
+    /// Draw the "Σ Sum subtree"/"Σ Per-process" pill, left of the kernel
+    /// toggle. Hidden in flat mode (there's nothing to sum into when there's
+    /// no tree). Returns the x1 the next pill to its left should butt against.
+    fn draw_sum_mode_pill(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        pills_row: Rect,
+        next_x1: f64,
+    ) -> f64 {
+        if !self.tree_mode {
             self.hit.sum_toggle = Rect::ZERO;
+            return next_x1;
         }
+        let fs = theme.tokens.typography.scale.sm;
+        let sum_label = self.sum_mode.label();
+        let sum_text = format!("Σ {sum_label}");
+        let sw = f64::from(tr.measure(&sum_text, fs, None).0) + 24.0;
+        let sum_r = Rect::new(
+            next_x1 - sw,
+            pills_row.y0 + 2.0,
+            next_x1,
+            pills_row.y1 - 2.0,
+        );
+        let summing = self.sum_mode == SumMode::SumSubtree;
+        Self::draw_toggle_pill(scene, t, tr, theme, sum_r, &sum_text, summing);
+        self.hit.sum_toggle = sum_r;
+        sum_r.x0 - TOOLBAR_PILL_GAP
+    }
 
-        // Tree/Flat view pill, left of the sum pill.
+    /// Draw the Tree/Flat view pill, left of the sum pill. Returns its rect
+    /// (the confirm-kills pill's right edge).
+    fn draw_tree_flat_pill(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        pills_row: Rect,
+        next_x1: f64,
+    ) -> Rect {
+        let fs = theme.tokens.typography.scale.sm;
         let tree_text = if self.tree_mode {
             "⊟ Tree"
         } else {
@@ -2367,108 +2541,68 @@ impl MonitorApp {
             next_x1,
             pills_row.y1 - 2.0,
         );
-        charts::fill_rrect(
-            scene,
-            t,
-            tree_r,
-            tree_r.height() / 2.0,
-            if self.tree_mode {
-                with_alpha(c.accent[5], 60)
-            } else {
-                c.surface_white_5
-            },
-        );
-        charts::stroke_rrect(
-            scene,
-            t,
-            tree_r,
-            tree_r.height() / 2.0,
-            if self.tree_mode {
-                c.accent[5]
-            } else {
-                c.border_standard
-            },
-            1.0,
-        );
-        let (ttw, _) = tr.measure(tree_text, fs, None);
-        tr.draw_text(
-            scene,
-            tree_text,
-            fs,
-            if self.tree_mode {
-                c.text_primary
-            } else {
-                c.text_dim
-            },
-            t * Affine::translate((
-                tree_r.center().x - f64::from(ttw) / 2.0,
-                tree_r.center().y - f64::from(fs) / 2.0 - 1.0,
-            )),
-            None,
-        );
+        Self::draw_toggle_pill(scene, t, tr, theme, tree_r, tree_text, self.tree_mode);
         self.hit.tree_toggle = tree_r;
+        tree_r
+    }
 
-        // Confirm-kills toggle pill, left of the tree pill. Accent-filled when
-        // on. This is the only affordance that reaches the persisted
-        // `confirm_kill` preference. Drawn whenever it fits within the pills
-        // row; at extreme-narrow widths (where the toolbar is already stacked)
-        // it's dropped rather than clipped off the left edge.
+    /// Draw the "Confirm kills" preference pill, left of the tree pill — the
+    /// only affordance that reaches the persisted `confirm_kill` preference.
+    /// Drawn whenever it fits within the pills row; at extreme-narrow widths
+    /// (where the toolbar is already stacked) it's dropped rather than
+    /// clipped off the left edge. Returns the left edge of the pill cluster,
+    /// so the search box stops before it and the two can never overlap
+    /// however narrow the window.
+    fn draw_confirm_kills_pill(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        pills_row: Rect,
+        tree_r: Rect,
+    ) -> f64 {
+        let fs = theme.tokens.typography.scale.sm;
         let confirm_text = "Confirm kills";
         let cfw = f64::from(tr.measure(confirm_text, fs, None).0) + 24.0;
         let confirm_x1 = tree_r.x0 - TOOLBAR_PILL_GAP;
         let confirm_x0 = confirm_x1 - cfw;
-        // Left edge of the pill cluster — the search box stops before this so
-        // the box and the pills can never overlap however narrow the window.
-        let cluster_left = if confirm_x0 >= pills_row.x0 {
-            let confirm_r = Rect::new(
-                confirm_x0,
-                pills_row.y0 + 2.0,
-                confirm_x1,
-                pills_row.y1 - 2.0,
-            );
-            let ck = self.prefs.confirm_kill;
-            charts::fill_rrect(
-                scene,
-                t,
-                confirm_r,
-                confirm_r.height() / 2.0,
-                if ck {
-                    with_alpha(c.accent[5], 60)
-                } else {
-                    c.surface_white_5
-                },
-            );
-            charts::stroke_rrect(
-                scene,
-                t,
-                confirm_r,
-                confirm_r.height() / 2.0,
-                if ck { c.accent[5] } else { c.border_standard },
-                1.0,
-            );
-            let (cftw, _) = tr.measure(confirm_text, fs, None);
-            tr.draw_text(
-                scene,
-                confirm_text,
-                fs,
-                if ck { c.text_primary } else { c.text_dim },
-                t * Affine::translate((
-                    confirm_r.center().x - f64::from(cftw) / 2.0,
-                    confirm_r.center().y - f64::from(fs) / 2.0 - 1.0,
-                )),
-                None,
-            );
-            self.hit.confirm_toggle = confirm_r;
-            confirm_r.x0
-        } else {
+        if confirm_x0 < pills_row.x0 {
             self.hit.confirm_toggle = Rect::ZERO;
-            tree_r.x0
-        };
+            return tree_r.x0;
+        }
+        let confirm_r = Rect::new(
+            confirm_x0,
+            pills_row.y0 + 2.0,
+            confirm_x1,
+            pills_row.y1 - 2.0,
+        );
+        let ck = self.prefs.confirm_kill;
+        Self::draw_toggle_pill(scene, t, tr, theme, confirm_r, confirm_text, ck);
+        self.hit.confirm_toggle = confirm_r;
+        confirm_r.x0
+    }
 
-        // ---- search box in `search_row` -----------------------------------
-        // Stacked: full width on its own row. Side-by-side: fill from the left
-        // up to the pill cluster (capped at a comfortable preferred width), so
-        // the box and the pills can never overlap however narrow the window.
+    /// Draw the search box in `search_row`. Stacked: full width on its own
+    /// row. Side-by-side: fill from the left up to the pill cluster (capped
+    /// at a comfortable preferred width), so the box and the pills can never
+    /// overlap however narrow the window. Returns its rect, for the count
+    /// label.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "threads the render context plus this toolbar row's layout state through a single draw call"
+    )]
+    fn draw_toolbar_search_box(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        search_row: Rect,
+        stacked: bool,
+        cluster_left: f64,
+    ) -> Rect {
+        let c = &theme.tokens.colors;
         let search_r = if stacked {
             Rect::new(search_row.x0, search_row.y0, search_row.x1, search_row.y1)
         } else {
@@ -2478,7 +2612,8 @@ impl MonitorApp {
         };
         let radius = search_r.height() / 2.0;
         charts::fill_rrect(scene, t, search_r, radius, c.surfaces.base);
-        let border = if self.search_focused {
+        let search_focused = self.search_input.is_focused();
+        let border = if search_focused {
             c.border_focus
         } else {
             c.border_standard
@@ -2489,7 +2624,7 @@ impl MonitorApp {
             search_r,
             radius,
             border,
-            if self.search_focused { 1.6 } else { 1.0 },
+            if search_focused { 1.6 } else { 1.0 },
         );
         let icon_r = Rect::new(
             search_r.x0 + 10.0,
@@ -2499,68 +2634,99 @@ impl MonitorApp {
         );
         icons::draw_icon(scene, t, icon_r, Icon::Search, c.text_dim, 1.6);
         let tx = icon_r.x1 + 8.0;
-        let ty = search_r.center().y - f64::from(fs) / 2.0 - 1.0;
-        if self.filter.is_empty() && !self.search_focused {
-            let placeholder = Self::truncate(tr, "Search processes…", fs, search_r.x1 - tx - 12.0);
+        self.search_input.apply_layout_external(Rect::new(
+            tx,
+            search_r.y0,
+            search_r.x1 - 8.0,
+            search_r.y1,
+        ));
+        let presence = PresenceCtx::empty();
+        self.search_input.draw(scene, t, tr, theme, &presence);
+        self.hit.search = search_r;
+        search_r
+    }
+
+    /// Count label centred in the slack between the search box and the pill
+    /// cluster — only drawn when it genuinely fits, so it never overlaps a
+    /// pill (the caller only calls this on a single, unstacked row).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "threads the render context plus this toolbar row's layout state through a single draw call"
+    )]
+    fn draw_toolbar_count_label(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        pills_row: Rect,
+        search_r: Rect,
+        cluster_left: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let fs = theme.tokens.typography.scale.sm;
+        let total = self
+            .model
+            .processes
+            .iter()
+            .filter(|p| self.prefs.show_kernel_threads || !p.kernel)
+            .count();
+        let shown = self.visible_rows().len();
+        let count = format!("{shown} of {total} shown");
+        let (cw, _) = tr.measure(&count, fs, None);
+        let cxx = f64::midpoint(search_r.x1, cluster_left) - f64::from(cw) / 2.0;
+        if cluster_left - (search_r.x1 + 10.0) > f64::from(cw) + 8.0 {
             tr.draw_text(
                 scene,
-                &placeholder,
+                &count,
                 fs,
                 c.text_dim,
-                t * Affine::translate((tx, ty)),
+                t * Affine::translate((
+                    cxx.max(search_r.x1 + 10.0),
+                    pills_row.center().y - f64::from(fs) / 2.0 - 1.0,
+                )),
                 None,
             );
-        } else {
-            let shown = Self::truncate(tr, &self.filter, fs, search_r.x1 - tx - 12.0);
-            tr.draw_text(
-                scene,
-                &shown,
-                fs,
-                c.text_primary,
-                t * Affine::translate((tx, ty)),
-                None,
-            );
-            if self.search_focused {
-                let (cw, _) = tr.measure(&shown, fs, None);
-                let caret_x = tx + f64::from(cw) + 1.0;
-                scene.stroke(
-                    &Stroke::new(1.5),
-                    t,
-                    c.accent[5],
-                    None,
-                    &Line::new((caret_x, search_r.y0 + 8.0), (caret_x, search_r.y1 - 8.0)),
-                );
-            }
         }
-        self.hit.search = search_r;
+    }
 
-        // Count label centred in the slack between the search box and the pill
-        // cluster — only on a single row, and only when it genuinely fits, so
-        // it never overlaps a pill.
+    fn draw_toolbar(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+    ) {
+        // One row (search beside pills) or two (search above pills). Deriving
+        // this from `r.width()` — the width the host allocated this frame —
+        // keeps the toolbar reflowing on every resize rather than freezing to
+        // whatever the first frame chose.
+        let stacked = self.toolbar_stacked(tr, theme, r.width());
+        let pills_row = if stacked {
+            Rect::new(r.x0, r.y1 - TOOLBAR_ROW_H, r.x1, r.y1)
+        } else {
+            Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_ROW_H)
+        };
+        let search_row = if stacked {
+            Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_ROW_H)
+        } else {
+            pills_row
+        };
+
+        // ---- filter pills, laid right→left in `pills_row` -----------------
+        let kt_r = self.draw_kernel_toggle_pill(scene, t, tr, theme, pills_row);
+        let next_x1 =
+            self.draw_sum_mode_pill(scene, t, tr, theme, pills_row, kt_r.x0 - TOOLBAR_PILL_GAP);
+        let tree_r = self.draw_tree_flat_pill(scene, t, tr, theme, pills_row, next_x1);
+        let cluster_left = self.draw_confirm_kills_pill(scene, t, tr, theme, pills_row, tree_r);
+
+        // ---- search box in `search_row` -----------------------------------
+        let search_r =
+            self.draw_toolbar_search_box(scene, t, tr, theme, search_row, stacked, cluster_left);
+
         if !stacked {
-            let total = self
-                .model
-                .processes
-                .iter()
-                .filter(|p| self.prefs.show_kernel_threads || !p.kernel)
-                .count();
-            let shown = self.visible_rows().len();
-            let count = format!("{shown} of {total} shown");
-            let (cw, _) = tr.measure(&count, fs, None);
-            let cxx = f64::midpoint(search_r.x1, cluster_left) - f64::from(cw) / 2.0;
-            if cluster_left - (search_r.x1 + 10.0) > f64::from(cw) + 8.0 {
-                tr.draw_text(
-                    scene,
-                    &count,
-                    fs,
-                    c.text_dim,
-                    t * Affine::translate((
-                        cxx.max(search_r.x1 + 10.0),
-                        pills_row.center().y - f64::from(fs) / 2.0 - 1.0,
-                    )),
-                    None,
-                );
-            }
+            self.draw_toolbar_count_label(scene, t, tr, theme, pills_row, search_r, cluster_left);
         }
     }
 
@@ -2568,8 +2734,9 @@ impl MonitorApp {
     /// at the bottom so process content can never collide with the buttons.
     /// When the pane is tall (the narrow pushed detail), fills the space with
     /// the command line, identity, a live CPU sparkline and a two-column stat
-    /// grid; when it's the short wide strip, keeps a compact chip row clear of
-    /// the reserved buttons.
+    /// grid ([`Self::draw_detail_full`]); when it's the short wide strip,
+    /// keeps a compact chip row clear of the reserved buttons
+    /// ([`Self::draw_detail_compact`]).
     fn draw_detail(
         &mut self,
         scene: &mut Scene,
@@ -2593,271 +2760,335 @@ impl MonitorApp {
             );
             return;
         };
+        if inner.height() > 150.0 {
+            self.draw_detail_full(scene, t, tr, theme, inner, &p);
+        } else {
+            self.draw_detail_compact(scene, t, tr, theme, inner, &p);
+        }
+    }
 
+    /// Full detail: reserve a bottom action bar, fill above it with the
+    /// header, a live CPU sparkline and a two-column stat grid.
+    fn draw_detail_full(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        inner: Rect,
+        p: &ProcessInfo,
+    ) {
+        let c = &theme.tokens.colors;
+        let bar = Rect::new(inner.x0, inner.y1 - DETAIL_ACTION_H, inner.x1, inner.y1);
+        let content = Rect::new(inner.x0, inner.y0, inner.x1, bar.y0 - 12.0);
+        let y = Self::draw_detail_header(scene, t, tr, theme, content, p);
+        let y = self.draw_detail_sparkline(scene, t, tr, theme, content, p, y);
+        Self::draw_detail_stat_grid(scene, t, tr, theme, content, p, y);
+
+        // Reserved action bar: hairline top, right-aligned Stop + Kill.
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            with_alpha(c.border_standard, 120),
+            None,
+            &Line::new((bar.x0, bar.y0), (bar.x1, bar.y0)),
+        );
+        self.draw_detail_actions(scene, t, tr, theme, bar);
+    }
+
+    /// Name + identity + command header. Returns the y position for whatever
+    /// draws next.
+    fn draw_detail_header(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        p: &ProcessInfo,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
         let xs = theme.tokens.typography.scale.xs;
         let sm = theme.tokens.typography.scale.sm;
+        let lg = theme.tokens.typography.scale.lg;
+        let ppid = p.ppid.map_or_else(|| "—".into(), |x| x.to_string());
+        let mut y = content.y0;
+
+        tr.draw_text_weighted(
+            scene,
+            &p.name,
+            lg,
+            c.text_primary,
+            t * Affine::translate((content.x0, y)),
+            None,
+            TextWeight::Bold,
+        );
+        y += f64::from(lg) + 8.0;
+        let ident = format!("PID {}   ·   PPID {}   ·   {}", p.pid, ppid, p.user);
+        tr.draw_text(
+            scene,
+            &ident,
+            xs,
+            c.text_dim,
+            t * Affine::translate((content.x0, y)),
+            None,
+        );
+        y += f64::from(xs) + 14.0;
+
+        tr.draw_text_weighted(
+            scene,
+            "COMMAND",
+            xs,
+            c.text_dim,
+            t * Affine::translate((content.x0, y)),
+            None,
+            TextWeight::Semibold,
+        );
+        y += f64::from(xs) + 4.0;
+        let cmd = Self::truncate(tr, &p.cmd, sm, content.width());
+        tr.draw_text(
+            scene,
+            &cmd,
+            sm,
+            c.text_primary,
+            t * Affine::translate((content.x0, y)),
+            None,
+        );
+        y += f64::from(sm) + 14.0;
+
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            c.border_standard,
+            None,
+            &Line::new((content.x0, y), (content.x1, y)),
+        );
+        y + 14.0
+    }
+
+    /// CPU label + current value over a mini area line, sized to absorb
+    /// whatever vertical slack remains above the stat grid so a tall pane
+    /// fills top-to-bottom cleanly instead of leaving gaps. Returns the y
+    /// position for the stat grid.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_detail_sparkline(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        p: &ProcessInfo,
+        y: f64,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let xs = theme.tokens.typography.scale.xs;
+        let base = theme.tokens.typography.scale.base;
+        let cpu_col = charts::load_color(theme, (p.cpu / 100.0).clamp(0.0, 1.0));
+
+        tr.draw_text_weighted(
+            scene,
+            "CPU",
+            xs,
+            c.text_dim,
+            t * Affine::translate((content.x0, y)),
+            None,
+            TextWeight::Semibold,
+        );
+        let cpu_val = format!("{:.1}%", p.cpu);
+        let (cvw, _) = tr.measure_weighted(&cpu_val, base, None, TextWeight::Bold);
+        tr.draw_text_weighted(
+            scene,
+            &cpu_val,
+            base,
+            cpu_col,
+            t * Affine::translate((content.x1 - f64::from(cvw), y - 2.0)),
+            None,
+            TextWeight::Bold,
+        );
+        let y = y + f64::from(base) + 6.0;
+        let grid_h = DETAIL_STAT_COUNT.div_ceil(DETAIL_STAT_COLS) as f64 * DETAIL_STAT_ROW_H;
+        // Sparkline fills the space between the CPU value line and the grid
+        // (minus the two 14px divider gaps around it), floored so it stays
+        // legible on a short pane.
+        let spark_h = (content.y1 - y - grid_h - 28.0).max(46.0);
+        let spark = Rect::new(content.x0, y, content.x1, y + spark_h);
+        charts::fill_rrect(scene, t, spark, 6.0, with_alpha(c.border_standard, 40));
+        if let Some(ring) = self.proc_cpu_hist.get(&p.pid) {
+            let smax = ring.max().max(100.0);
+            charts::sparkline(
+                scene,
+                t,
+                layout::inner(spark, 5.0),
+                ring.as_slice(),
+                smax,
+                cpu_col,
+            );
+        }
+        let y = y + spark_h + 14.0;
+
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            c.border_standard,
+            None,
+            &Line::new((content.x0, y), (content.x1, y)),
+        );
+        y + 14.0
+    }
+
+    /// The two-column MEMORY/VIRTUAL/THREADS/OPEN FILES/STATUS/RUNNING FOR
+    /// stat grid, starting at `y`.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t/y/c/p/v are the standard graphics convention: transform, position, colour tokens, and this row's process/value"
+    )]
+    fn draw_detail_stat_grid(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        p: &ProcessInfo,
+        y: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let xs = theme.tokens.typography.scale.xs;
+        let base = theme.tokens.typography.scale.base;
+        let stats: [(&str, String, Color); DETAIL_STAT_COUNT] = [
+            ("MEMORY (RSS)", fmt_bytes(p.mem_bytes), c.text_primary),
+            ("VIRTUAL", fmt_bytes(p.virt_bytes), c.text_primary),
+            ("THREADS", p.threads.to_string(), c.text_primary),
+            (
+                "OPEN FILES",
+                p.open_files.map_or_else(|| "—".into(), |n| n.to_string()),
+                c.text_primary,
+            ),
+            ("STATUS", p.status.clone(), c.semantic.info),
+            ("RUNNING FOR", fmt_uptime(p.run_secs), c.text_primary),
+        ];
+        let col_gap = 18.0;
+        let cell_w =
+            (content.width() - (DETAIL_STAT_COLS as f64 - 1.0) * col_gap) / DETAIL_STAT_COLS as f64;
+        for (idx, (label, value, color)) in stats.iter().enumerate() {
+            let col = idx % DETAIL_STAT_COLS;
+            let row = idx / DETAIL_STAT_COLS;
+            let cx = content.x0 + col as f64 * (cell_w + col_gap);
+            let cy = y + row as f64 * DETAIL_STAT_ROW_H;
+            tr.draw_text(
+                scene,
+                label,
+                xs,
+                c.text_dim,
+                t * Affine::translate((cx, cy)),
+                None,
+            );
+            let v = Self::truncate(tr, value, base, cell_w);
+            tr.draw_text_weighted(
+                scene,
+                &v,
+                base,
+                *color,
+                t * Affine::translate((cx, cy + f64::from(xs) + 5.0)),
+                None,
+                TextWeight::Semibold,
+            );
+        }
+    }
+
+    /// Compact strip: name + identity + a chip row clamped left of the
+    /// Stop/Kill button cluster.
+    fn draw_detail_compact(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        inner: Rect,
+        p: &ProcessInfo,
+    ) {
+        let c = &theme.tokens.colors;
+        let xs = theme.tokens.typography.scale.xs;
         let base = theme.tokens.typography.scale.base;
         let lg = theme.tokens.typography.scale.lg;
         let ppid = p.ppid.map_or_else(|| "—".into(), |x| x.to_string());
         let cpu_col = charts::load_color(theme, (p.cpu / 100.0).clamp(0.0, 1.0));
 
-        let tall = inner.height() > 150.0;
+        let cluster_w = 92.0 + 8.0 + 92.0;
+        let bar = Rect::new(inner.x1 - cluster_w, inner.y1 - 32.0, inner.x1, inner.y1);
+        let chips_right = bar.x0 - 14.0;
 
-        if tall {
-            // ---- full detail: reserve a bottom action bar, fill above it ----
-            let bar = Rect::new(inner.x0, inner.y1 - DETAIL_ACTION_H, inner.x1, inner.y1);
-            let content = Rect::new(inner.x0, inner.y0, inner.x1, bar.y0 - 12.0);
-            let mut y = content.y0;
+        tr.draw_text_weighted(
+            scene,
+            &p.name,
+            lg,
+            c.text_primary,
+            t * Affine::translate((inner.x0, inner.y0)),
+            None,
+            TextWeight::Bold,
+        );
+        let ident = format!(
+            "PID {}  ·  PPID {}  ·  {}  ·  {}",
+            p.pid, ppid, p.user, p.status
+        );
+        let ident = Self::truncate(tr, &ident, xs, chips_right - inner.x0);
+        tr.draw_text(
+            scene,
+            &ident,
+            xs,
+            c.text_dim,
+            t * Affine::translate((inner.x0, inner.y0 + f64::from(lg) + 4.0)),
+            None,
+        );
 
-            // Header: name + identity line.
-            tr.draw_text_weighted(
-                scene,
-                &p.name,
-                lg,
-                c.text_primary,
-                t * Affine::translate((content.x0, y)),
-                None,
-                TextWeight::Bold,
-            );
-            y += f64::from(lg) + 8.0;
-            let ident = format!("PID {}   ·   PPID {}   ·   {}", p.pid, ppid, p.user);
+        // Chip row along the bottom, stopping before the button cluster.
+        let chip = |scene: &mut Scene,
+                    tr: &mut TextRenderer,
+                    x: f64,
+                    label: &str,
+                    value: &str,
+                    color: Color|
+         -> f64 {
+            if x > chips_right {
+                return x;
+            }
             tr.draw_text(
                 scene,
-                &ident,
+                label,
                 xs,
                 c.text_dim,
-                t * Affine::translate((content.x0, y)),
+                t * Affine::translate((x, inner.y1 - 30.0)),
                 None,
             );
-            y += f64::from(xs) + 14.0;
-
-            // Command line.
             tr.draw_text_weighted(
                 scene,
-                "COMMAND",
-                xs,
-                c.text_dim,
-                t * Affine::translate((content.x0, y)),
-                None,
-                TextWeight::Semibold,
-            );
-            y += f64::from(xs) + 4.0;
-            let cmd = Self::truncate(tr, &p.cmd, sm, content.width());
-            tr.draw_text(
-                scene,
-                &cmd,
-                sm,
-                c.text_primary,
-                t * Affine::translate((content.x0, y)),
-                None,
-            );
-            y += f64::from(sm) + 14.0;
-
-            scene.stroke(
-                &Stroke::new(1.0),
-                t,
-                c.border_standard,
-                None,
-                &Line::new((content.x0, y), (content.x1, y)),
-            );
-            y += 14.0;
-
-            // CPU sparkline block: label + current value over a mini area line.
-            tr.draw_text_weighted(
-                scene,
-                "CPU",
-                xs,
-                c.text_dim,
-                t * Affine::translate((content.x0, y)),
-                None,
-                TextWeight::Semibold,
-            );
-            let cpu_val = format!("{:.1}%", p.cpu);
-            let (cvw, _) = tr.measure_weighted(&cpu_val, base, None, TextWeight::Bold);
-            tr.draw_text_weighted(
-                scene,
-                &cpu_val,
+                value,
                 base,
-                cpu_col,
-                t * Affine::translate((content.x1 - f64::from(cvw), y - 2.0)),
+                color,
+                t * Affine::translate((x, inner.y1 - 16.0)),
                 None,
                 TextWeight::Bold,
             );
-            y += f64::from(base) + 6.0;
-            // The stat grid gets a fixed, comfortable stride; the sparkline
-            // absorbs whatever vertical slack remains so a tall pane fills
-            // top-to-bottom cleanly instead of leaving gaps between the rows.
-            let stats: [(&str, String, Color); 6] = [
-                ("MEMORY (RSS)", fmt_bytes(p.mem_bytes), c.text_primary),
-                ("VIRTUAL", fmt_bytes(p.virt_bytes), c.text_primary),
-                ("THREADS", p.threads.to_string(), c.text_primary),
-                (
-                    "OPEN FILES",
-                    p.open_files.map_or_else(|| "—".into(), |n| n.to_string()),
-                    c.text_primary,
-                ),
-                ("STATUS", p.status.clone(), c.semantic.info),
-                ("RUNNING FOR", fmt_uptime(p.run_secs), c.text_primary),
-            ];
-            let cols = 2usize;
-            let grid_rows = stats.len().div_ceil(cols);
-            let stat_row_h = 48.0;
-            let grid_h = grid_rows as f64 * stat_row_h;
-            // Sparkline fills the space between the CPU value line and the grid
-            // (minus the two 14px divider gaps around it), floored so it stays
-            // legible on a short pane.
-            let spark_h = (content.y1 - y - grid_h - 28.0).max(46.0);
-            let spark = Rect::new(content.x0, y, content.x1, y + spark_h);
-            charts::fill_rrect(scene, t, spark, 6.0, with_alpha(c.border_standard, 40));
-            if let Some(ring) = self.proc_cpu_hist.get(&p.pid) {
-                let smax = ring.max().max(100.0);
-                charts::sparkline(
-                    scene,
-                    t,
-                    layout::inner(spark, 5.0),
-                    ring.as_slice(),
-                    smax,
-                    cpu_col,
-                );
-            }
-            y += spark_h + 14.0;
-
-            scene.stroke(
-                &Stroke::new(1.0),
-                t,
-                c.border_standard,
-                None,
-                &Line::new((content.x0, y), (content.x1, y)),
-            );
-            y += 14.0;
-
-            let col_gap = 18.0;
-            let cell_w = (content.width() - (cols as f64 - 1.0) * col_gap) / cols as f64;
-            for (i, (label, value, color)) in stats.iter().enumerate() {
-                let col = i % cols;
-                let row = i / cols;
-                let cx = content.x0 + col as f64 * (cell_w + col_gap);
-                let cy = y + row as f64 * stat_row_h;
-                tr.draw_text(
-                    scene,
-                    label,
-                    xs,
-                    c.text_dim,
-                    t * Affine::translate((cx, cy)),
-                    None,
-                );
-                let v = Self::truncate(tr, value, base, cell_w);
-                tr.draw_text_weighted(
-                    scene,
-                    &v,
-                    base,
-                    *color,
-                    t * Affine::translate((cx, cy + f64::from(xs) + 5.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
-            }
-
-            // Reserved action bar: hairline top, right-aligned Stop + Kill.
-            scene.stroke(
-                &Stroke::new(1.0),
-                t,
-                with_alpha(c.border_standard, 120),
-                None,
-                &Line::new((bar.x0, bar.y0), (bar.x1, bar.y0)),
-            );
-            self.draw_detail_actions(scene, t, tr, theme, bar);
-        } else {
-            // ---- compact strip: chips clamped left of a button cluster ------
-            let cluster_w = 92.0 + 8.0 + 92.0;
-            let bar = Rect::new(inner.x1 - cluster_w, inner.y1 - 32.0, inner.x1, inner.y1);
-            let chips_right = bar.x0 - 14.0;
-
-            tr.draw_text_weighted(
-                scene,
-                &p.name,
-                lg,
-                c.text_primary,
-                t * Affine::translate((inner.x0, inner.y0)),
-                None,
-                TextWeight::Bold,
-            );
-            let ident = format!(
-                "PID {}  ·  PPID {}  ·  {}  ·  {}",
-                p.pid, ppid, p.user, p.status
-            );
-            let ident = Self::truncate(tr, &ident, xs, chips_right - inner.x0);
-            tr.draw_text(
-                scene,
-                &ident,
-                xs,
-                c.text_dim,
-                t * Affine::translate((inner.x0, inner.y0 + f64::from(lg) + 4.0)),
-                None,
-            );
-
-            // Chip row along the bottom, stopping before the button cluster.
-            let chip = |scene: &mut Scene,
-                        tr: &mut TextRenderer,
-                        x: f64,
-                        label: &str,
-                        value: &str,
-                        color: Color|
-             -> f64 {
-                if x > chips_right {
-                    return x;
-                }
-                tr.draw_text(
-                    scene,
-                    label,
-                    xs,
-                    c.text_dim,
-                    t * Affine::translate((x, inner.y1 - 30.0)),
-                    None,
-                );
-                tr.draw_text_weighted(
-                    scene,
-                    value,
-                    base,
-                    color,
-                    t * Affine::translate((x, inner.y1 - 16.0)),
-                    None,
-                    TextWeight::Bold,
-                );
-                let w1 = f64::from(tr.measure(label, xs, None).0);
-                let w2 = f64::from(tr.measure_weighted(value, base, None, TextWeight::Bold).0);
-                x + w1.max(w2) + 24.0
-            };
-            let mut x = inner.x0;
-            x = chip(scene, tr, x, "CPU", &format!("{:.1}%", p.cpu), cpu_col);
-            x = chip(scene, tr, x, "RSS", &fmt_bytes(p.mem_bytes), c.text_primary);
-            x = chip(
-                scene,
-                tr,
-                x,
-                "VIRT",
-                &fmt_bytes(p.virt_bytes),
-                c.text_primary,
-            );
-            x = chip(
-                scene,
-                tr,
-                x,
-                "THREADS",
-                &p.threads.to_string(),
-                c.text_primary,
-            );
-            let _ = chip(
-                scene,
-                tr,
-                x,
+            let w1 = f64::from(tr.measure(label, xs, None).0);
+            let w2 = f64::from(tr.measure_weighted(value, base, None, TextWeight::Bold).0);
+            x + w1.max(w2) + 24.0
+        };
+        let chips = [
+            ("CPU", format!("{:.1}%", p.cpu), cpu_col),
+            ("RSS", fmt_bytes(p.mem_bytes), c.text_primary),
+            ("VIRT", fmt_bytes(p.virt_bytes), c.text_primary),
+            ("THREADS", p.threads.to_string(), c.text_primary),
+            (
                 "FILES",
-                &p.open_files.map_or_else(|| "—".into(), |n| n.to_string()),
+                p.open_files.map_or_else(|| "—".into(), |n| n.to_string()),
                 c.text_primary,
-            );
-
-            self.draw_detail_actions(scene, t, tr, theme, bar);
+            ),
+        ];
+        let mut x = inner.x0;
+        for (label, value, color) in &chips {
+            x = chip(scene, tr, x, label, value.as_str(), *color);
         }
+
+        self.draw_detail_actions(scene, t, tr, theme, bar);
     }
 
     /// Draw the detail pane's Stop (SIGTERM) + Kill (SIGKILL) buttons,
@@ -2871,7 +3102,6 @@ impl MonitorApp {
         theme: &Theme,
         bar: Rect,
     ) {
-        let _c = &theme.tokens.colors;
         let bh = (bar.height() - 8.0).clamp(26.0, 34.0);
         let by0 = bar.center().y - bh / 2.0;
         let bw = 92.0_f64.min((bar.width() - 8.0) / 2.0);
@@ -2884,9 +3114,11 @@ impl MonitorApp {
             tr,
             theme,
             stop_r,
-            "Stop",
-            Icon::Power,
-            ButtonStyle::Neutral,
+            ActionButtonSpec {
+                label: "Stop",
+                icon: Icon::Power,
+                style: ButtonStyle::Neutral,
+            },
             stop_r.contains(cur),
         );
         Self::draw_action_button(
@@ -2895,9 +3127,11 @@ impl MonitorApp {
             tr,
             theme,
             kill_r,
-            "Kill",
-            Icon::X,
-            ButtonStyle::Danger,
+            ActionButtonSpec {
+                label: "Kill",
+                icon: Icon::X,
+                style: ButtonStyle::Danger,
+            },
             kill_r.contains(cur),
         );
         self.hit.stop_btn = stop_r;
@@ -2913,9 +3147,7 @@ impl MonitorApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        label: &str,
-        icon: Icon,
-        style: ButtonStyle,
+        spec: ActionButtonSpec,
         hovered: bool,
     ) {
         Button::paint(
@@ -2923,12 +3155,12 @@ impl MonitorApp {
             t,
             tr,
             theme,
-            &ButtonFace::new(rect, label)
+            &ButtonFace::new(rect, spec.label)
                 .radius(f64::from(theme.tokens.radii.md))
                 .text_size(theme.tokens.typography.scale.sm)
                 .weight(TextWeight::Semibold)
-                .icon(icon)
-                .style(style)
+                .icon(spec.icon)
+                .style(spec.style)
                 .hovered(hovered),
         );
     }
@@ -2941,16 +3173,41 @@ impl MonitorApp {
     /// whole view page-scrolls when the content is taller than the viewport
     /// (`content_natural_h` → `resources_natural_h`).
     fn draw_resources(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         r: Rect,
     ) {
-        let c = &theme.tokens.colors;
+        let y = self.draw_resources_overview(scene, t, tr, theme, r);
 
-        // ---- overview row: Processor / Memory / System --------------------
+        // ---- per-core utilisation grid (full width) -----------------------
+        let n = self.model.metrics.cores.len().max(1);
+        let grid = layout::per_core_grid(n, r.width() - 2.0 * layout::RAIL_CARD_PAD);
+        let core_h = layout::per_core_card_h(grid);
+        self.draw_per_core(
+            scene,
+            t,
+            tr,
+            theme,
+            Rect::new(r.x0, y, r.x1, y + core_h),
+            grid,
+        );
+
+        self.draw_resources_charts(scene, t, tr, theme, r, y + core_h + GAP);
+    }
+
+    /// The overview row: Processor / Memory / System, three abreast when
+    /// wide and stacked when narrow. Returns the y position below it.
+    fn draw_resources_overview(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+    ) -> f64 {
         let mut y = r.y0;
         if layout::overview_cols(r.width()) == 3 {
             let card_w = (r.width() - 2.0 * GAP) / 3.0;
@@ -2988,41 +3245,37 @@ impl MonitorApp {
             );
             y += layout::OVERVIEW_SYS_H + GAP;
         }
+        y
+    }
 
-        // ---- per-core utilisation grid (full width) -----------------------
-        let n = self.model.metrics.cores.len().max(1);
-        let grid = layout::per_core_grid(n, r.width() - 2.0 * layout::RAIL_CARD_PAD);
-        let core_h = layout::per_core_card_h(grid);
-        self.draw_per_core(
-            scene,
-            t,
-            tr,
-            theme,
-            Rect::new(r.x0, y, r.x1, y + core_h),
-            grid,
-        );
-        y += core_h + GAP;
-
-        // ---- chart grid: CPU / Memory / Network / Disk --------------------
-        // Two-up when wide, one column when narrow. Each cell keeps a legible
-        // minimum height; when the viewport is short the page scrolls.
+    /// The chart grid: CPU / Memory / Network / Disk, two-up when wide and
+    /// one column when narrow, starting at `top`. Each cell keeps a legible
+    /// minimum height; when the viewport is short the page scrolls.
+    fn draw_resources_charts(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        top: f64,
+    ) {
+        let c = &theme.tokens.colors;
         let cols = layout::charts_cols(r.width());
         let rows = layout::charts_rows(r.width());
         let min_chart_h = 150.0;
-        let charts_top = y;
-        let avail_h =
-            (r.y1 - charts_top).max(rows as f64 * min_chart_h + (rows as f64 - 1.0) * GAP);
+        let avail_h = (r.y1 - top).max(rows as f64 * min_chart_h + (rows as f64 - 1.0) * GAP);
         let cw = (r.width() - (cols as f64 - 1.0) * GAP) / cols as f64;
         let ch = (avail_h - (rows as f64 - 1.0) * GAP) / rows as f64;
-        let cell = |i: usize| {
-            let col = i % cols;
-            let row = i / cols;
+        let cell = |idx: usize| {
+            let col = idx % cols;
+            let row = idx / cols;
             let x0 = r.x0 + col as f64 * (cw + GAP);
-            let y0 = charts_top + row as f64 * (ch + GAP);
+            let y0 = top + row as f64 * (ch + GAP);
             Rect::new(x0, y0, x0 + cw, y0 + ch)
         };
 
-        let m = &self.model.metrics;
+        let metrics = &self.model.metrics;
         // CPU%.
         charts::area_chart(
             scene,
@@ -3032,9 +3285,9 @@ impl MonitorApp {
             theme,
             "CPU",
             &[Series {
-                data: m.cpu_hist.as_slice(),
+                data: metrics.cpu_hist.as_slice(),
                 color: c.accent[5],
-                legend: format!("{:.0}%", m.cpu_overall()),
+                legend: format!("{:.0}%", metrics.cpu_overall()),
             }],
             100.0,
             "100%",
@@ -3049,58 +3302,81 @@ impl MonitorApp {
             theme,
             "Memory",
             &[Series {
-                data: m.mem_hist.as_slice(),
+                data: metrics.mem_hist.as_slice(),
                 color: c.semantic.success,
-                legend: fmt_bytes(m.mem_used),
+                legend: fmt_bytes(metrics.mem_used),
             }],
             1.0,
             "100%",
             "0%",
         );
-        // Network rx/tx.
-        let net_max = m.net_rx_hist.max().max(m.net_tx_hist.max()).max(1.0) * 1.2;
+        self.draw_resources_net_disk_charts(scene, t, tr, theme, cell(2), cell(3));
+    }
+
+    /// The Network (rx/tx) and Disk I/O (read/write) charts.
+    fn draw_resources_net_disk_charts(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        net_cell: Rect,
+        disk_cell: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        let metrics = &self.model.metrics;
+        let net_max = metrics
+            .net_rx_hist
+            .max()
+            .max(metrics.net_tx_hist.max())
+            .max(1.0)
+            * 1.2;
         charts::area_chart(
             scene,
             t,
             tr,
-            cell(2),
+            net_cell,
             theme,
             "Network",
             &[
                 Series {
-                    data: m.net_rx_hist.as_slice(),
+                    data: metrics.net_rx_hist.as_slice(),
                     color: c.semantic.info,
-                    legend: format!("↓ {}", fmt_rate(m.net_rx)),
+                    legend: format!("↓ {}", fmt_rate(metrics.net_rx)),
                 },
                 Series {
-                    data: m.net_tx_hist.as_slice(),
+                    data: metrics.net_tx_hist.as_slice(),
                     color: c.accent[6],
-                    legend: format!("↑ {}", fmt_rate(m.net_tx)),
+                    legend: format!("↑ {}", fmt_rate(metrics.net_tx)),
                 },
             ],
             net_max,
             &fmt_rate(net_max),
             "0",
         );
-        // Disk read/write.
-        let disk_max = m.disk_read_hist.max().max(m.disk_write_hist.max()).max(1.0) * 1.2;
+        let disk_max = metrics
+            .disk_read_hist
+            .max()
+            .max(metrics.disk_write_hist.max())
+            .max(1.0)
+            * 1.2;
         charts::area_chart(
             scene,
             t,
             tr,
-            cell(3),
+            disk_cell,
             theme,
             "Disk I/O",
             &[
                 Series {
-                    data: m.disk_read_hist.as_slice(),
+                    data: metrics.disk_read_hist.as_slice(),
                     color: c.semantic.warning,
-                    legend: format!("R {}", fmt_rate(m.disk_read)),
+                    legend: format!("R {}", fmt_rate(metrics.disk_read)),
                 },
                 Series {
-                    data: m.disk_write_hist.as_slice(),
+                    data: metrics.disk_write_hist.as_slice(),
                     color: c.semantic.danger,
-                    legend: format!("W {}", fmt_rate(m.disk_write)),
+                    legend: format!("W {}", fmt_rate(metrics.disk_write)),
                 },
             ],
             disk_max,
@@ -3178,18 +3454,18 @@ impl MonitorApp {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = cd.dialog.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(self.rect.width() as f32),
-                        height: Dimension::length(self.rect.height() as f32),
-                    },
-                    ..Default::default()
+        let Ok(root) = taffy.new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(self.rect.width() as f32),
+                    height: Dimension::length(self.rect.height() as f32),
                 },
-                &[node],
-            )
-            .unwrap();
+                ..Default::default()
+            },
+            &[node],
+        ) else {
+            return;
+        };
         let _ = taffy.compute_layout(
             root,
             Size {
@@ -3208,7 +3484,7 @@ impl MonitorApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         doc: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -3231,12 +3507,14 @@ impl MonitorApp {
                 return;
             };
             let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
+            let Ok(node) = taffy.new_leaf(Style::default()) else {
+                return;
+            };
             let mut focus_target = None;
             cd.dialog.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 doc,
                 path,
                 handled,
@@ -3393,45 +3671,14 @@ impl MonitorApp {
         // The stop-confirmation modal is handled in `handle_event` before
         // dispatch reaches here (the shared dialog captures all input while
         // open), so `on_click` never runs with a confirm pending.
-
-        // An open interval popover captures clicks: a press on an option row
-        // selects that cadence, a press anywhere else dismisses. Either way the
-        // click is consumed so it doesn't fall through to the content.
-        if self.interval_popover.is_open() {
-            if let Some(idx) = self.interval_popover.item_at(p) {
-                self.interval_popover.select(idx);
-                self.apply_interval_selection(doc, path);
-            } else {
-                self.interval_popover.close();
-            }
+        if self.click_interval_popover(p, doc, path) {
             *handled = true;
             return;
         }
-
-        // An open context menu floats above the rest of the content. A click
-        // on one of its action rows dispatches the action (and the action's
-        // callback records a `ProcAction` we then drain + apply); a click
-        // anywhere else dismisses it. Either way the click is consumed.
-        if self.context.is_open() {
-            let mut hit_idx = None;
-            for (idx, rect) in self.context_menu_item_rects() {
-                if rect.contains(p) {
-                    hit_idx = Some(idx);
-                    break;
-                }
-            }
-            if let Some(idx) = hit_idx {
-                self.context.click_item(idx); // fires the callback → pending_action
-                let action = self.pending_action.lock().ok().and_then(|mut g| g.take());
-                if let Some(action) = action {
-                    self.apply_action(action, doc, path);
-                }
-            }
-            self.close_context_menu();
+        if self.click_context_menu(p, doc, path) {
             *handled = true;
             return;
         }
-
         // Scrollbar thumbs/tracks take precedence over the content beneath them,
         // so a press on the row scrollbar drags/pages instead of selecting the
         // row it overlaps.
@@ -3442,13 +3689,69 @@ impl MonitorApp {
 
         // Lose search focus unless the search box itself is clicked.
         let clicked_search = self.hit.search.contains(p);
-        self.search_focused = clicked_search;
+        self.search_input.set_focus(clicked_search);
 
+        if self.click_nav_chrome(p) {
+            *handled = true;
+            return;
+        }
+        if self.tab == Tab::Processes && self.click_process_table(p, clicked_search, doc, path) {
+            *handled = true;
+        }
+    }
+
+    /// An open interval popover captures clicks: a press on an option row
+    /// selects that cadence, a press anywhere else dismisses. Returns `true`
+    /// (always) when the popover was open — either way the click is consumed
+    /// so it doesn't fall through to the content.
+    fn click_interval_popover(&mut self, p: Point, doc: &mut AutoCommit, path: &ObjId) -> bool {
+        if !self.interval_popover.is_open() {
+            return false;
+        }
+        if let Some(idx) = self.interval_popover.item_at(p) {
+            self.interval_popover.select(idx);
+            self.apply_interval_selection(doc, path);
+        } else {
+            self.interval_popover.close();
+        }
+        true
+    }
+
+    /// An open context menu floats above the rest of the content. A click on
+    /// one of its action rows dispatches the action (and the action's
+    /// callback records a `ProcAction` we then drain + apply); a click
+    /// anywhere else dismisses it. Returns `true` (always) when the menu was
+    /// open — either way the click is consumed.
+    fn click_context_menu(&mut self, p: Point, doc: &mut AutoCommit, path: &ObjId) -> bool {
+        if !self.context.is_open() {
+            return false;
+        }
+        let mut hit_idx = None;
+        for (idx, rect) in self.context_menu_item_rects() {
+            if rect.contains(p) {
+                hit_idx = Some(idx);
+                break;
+            }
+        }
+        if let Some(idx) = hit_idx {
+            self.context.click_item(idx); // fires the callback → pending_action
+            let action = self.pending_action.lock().ok().and_then(|mut g| g.take());
+            if let Some(action) = action {
+                self.apply_action(action, doc, path);
+            }
+        }
+        self.close_context_menu();
+        true
+    }
+
+    /// Non-tab-specific chrome: the detail-pane Back affordance, a
+    /// summary-strip cell jump, the tab pills, and starting the interval
+    /// pill's press-and-hold timer. Returns whether the click was consumed.
+    fn click_nav_chrome(&mut self, p: Point) -> bool {
         // Back affordance in the narrow pushed detail pane → return to table.
         if self.hit.detail_back.contains(p) {
             self.proc_push.show_table();
-            *handled = true;
-            return;
+            return true;
         }
 
         // A click on a summary-strip cell (Processes) jumps to the Resources
@@ -3460,8 +3763,7 @@ impl MonitorApp {
                 self.tab = Tab::Resources;
                 let (body_w, viewport_h) = self.body_metrics();
                 self.view_scroll_y = self.resources_scroll_for_stat(i, body_w, viewport_h);
-                *handled = true;
-                return;
+                return true;
             }
         }
 
@@ -3470,16 +3772,14 @@ impl MonitorApp {
                 self.view_scroll_y = 0.0;
             }
             self.tab = Tab::Processes;
-            *handled = true;
-            return;
+            return true;
         }
         if self.hit.tab_res.contains(p) {
             if self.tab != Tab::Resources {
                 self.view_scroll_y = 0.0;
             }
             self.tab = Tab::Resources;
-            *handled = true;
-            return;
+            return true;
         }
         if self.hit.interval.contains(p) {
             // The interval pill distinguishes a quick click (cycle) from a
@@ -3488,86 +3788,87 @@ impl MonitorApp {
             // `release_interval_press` cycles on an early release.
             self.interval_press = Some(Instant::now());
             self.interval_hold_opened = false;
-            *handled = true;
-            return;
+            return true;
         }
+        false
+    }
 
-        if self.tab == Tab::Processes {
-            if clicked_search {
-                *handled = true;
-                return;
-            }
-            if self.hit.kernel_toggle.contains(p) {
-                self.prefs.show_kernel_threads = !self.prefs.show_kernel_threads;
-                self.prefs.store(doc, path);
-                self.clamp_scroll();
-                *handled = true;
-                return;
-            }
-            // Confirm-kills preference toggle (persisted).
-            if self.hit.confirm_toggle.contains(p) {
-                self.prefs.confirm_kill = !self.prefs.confirm_kill;
-                self.prefs.store(doc, path);
-                *handled = true;
-                return;
-            }
-            // Tree/Flat view toggle.
-            if self.hit.tree_toggle.contains(p) {
-                self.tree_mode = !self.tree_mode;
-                self.scroll_off = 0.0;
-                self.clamp_scroll();
-                *handled = true;
-                return;
-            }
-            // Sum subtree / Per-process toggle (tree mode only).
-            if self.tree_mode && self.hit.sum_toggle.contains(p) {
-                self.sum_mode = self.sum_mode.toggled();
-                *handled = true;
-                return;
-            }
-            for (key, rect) in self.hit.sort_headers.clone() {
-                if rect.contains(p) {
-                    self.set_sort(key);
-                    *handled = true;
-                    return;
-                }
-            }
-            if self.hit.kill_btn.contains(p) {
-                if let Some(pid) = self.selected_pid {
-                    self.request_kill(pid, doc, path);
-                }
-                *handled = true;
-                return;
-            }
-            if self.hit.stop_btn.contains(p) {
-                if let Some(pid) = self.selected_pid {
-                    self.request_stop(pid, doc);
-                }
-                *handled = true;
-                return;
-            }
-            // Expand/collapse triangles take precedence over the row body, so
-            // clicking a twisty toggles the subtree without selecting/pushing.
-            for (pid, rect) in self.hit.twisties.clone() {
-                if rect.contains(p) {
-                    self.toggle_expand(pid);
-                    *handled = true;
-                    return;
-                }
-            }
-            for (pid, rect) in self.hit.rows.clone() {
-                if rect.contains(p) {
-                    self.selected_pid = Some(pid);
-                    // On narrow windows the detail is its own pushed pane;
-                    // selecting a row slides it in.
-                    if self.is_narrow() {
-                        self.proc_push.show_detail();
-                    }
-                    *handled = true;
-                    return;
-                }
+    /// Click targets specific to the Processes tab, tried once search focus
+    /// is already resolved: kernel/confirm/tree/sum toggles, sort headers,
+    /// the Stop/Kill buttons, twisties and rows. Returns whether the click
+    /// was consumed.
+    fn click_process_table(
+        &mut self,
+        p: Point,
+        clicked_search: bool,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if clicked_search {
+            return true;
+        }
+        if self.hit.kernel_toggle.contains(p) {
+            self.prefs.show_kernel_threads = !self.prefs.show_kernel_threads;
+            self.prefs.store(doc, path);
+            self.clamp_scroll();
+            return true;
+        }
+        // Confirm-kills preference toggle (persisted).
+        if self.hit.confirm_toggle.contains(p) {
+            self.prefs.confirm_kill = !self.prefs.confirm_kill;
+            self.prefs.store(doc, path);
+            return true;
+        }
+        // Tree/Flat view toggle.
+        if self.hit.tree_toggle.contains(p) {
+            self.tree_mode = !self.tree_mode;
+            self.scroll_off = 0.0;
+            self.clamp_scroll();
+            return true;
+        }
+        // Sum subtree / Per-process toggle (tree mode only).
+        if self.tree_mode && self.hit.sum_toggle.contains(p) {
+            self.sum_mode = self.sum_mode.toggled();
+            return true;
+        }
+        for (key, rect) in self.hit.sort_headers.clone() {
+            if rect.contains(p) {
+                self.set_sort(key);
+                return true;
             }
         }
+        if self.hit.kill_btn.contains(p) {
+            if let Some(pid) = self.selected_pid {
+                self.request_kill(pid, doc, path);
+            }
+            return true;
+        }
+        if self.hit.stop_btn.contains(p) {
+            if let Some(pid) = self.selected_pid {
+                self.request_stop(pid, doc);
+            }
+            return true;
+        }
+        // Expand/collapse triangles take precedence over the row body, so
+        // clicking a twisty toggles the subtree without selecting/pushing.
+        for (pid, rect) in self.hit.twisties.clone() {
+            if rect.contains(p) {
+                self.toggle_expand(pid);
+                return true;
+            }
+        }
+        for (pid, rect) in self.hit.rows.clone() {
+            if rect.contains(p) {
+                self.selected_pid = Some(pid);
+                // On narrow windows the detail is its own pushed pane;
+                // selecting a row slides it in.
+                if self.is_narrow() {
+                    self.proc_push.show_detail();
+                }
+                return true;
+            }
+        }
+        false
     }
 
     /// A right-click (secondary button) over a process row opens the action
@@ -3614,7 +3915,10 @@ impl MonitorApp {
                 }
             }
         };
-        self.selected_pid = Some(procs[next].pid);
+        let Some(next_row) = procs.get(next) else {
+            return;
+        };
+        self.selected_pid = Some(next_row.pid);
         // Keep the selection in view.
         let next_f = next as f32;
         if next_f < self.scroll_off {
@@ -3628,7 +3932,7 @@ impl MonitorApp {
     fn on_key(
         &mut self,
         key: &Key,
-        text: Option<&str>,
+        _text: Option<&str>,
         ctrl: bool,
         doc: &mut AutoCommit,
         path: &ObjId,
@@ -3647,74 +3951,57 @@ impl MonitorApp {
             return;
         }
 
-        // Interval popover open: full keyboard nav (↑/↓/Home/End move, Enter
-        // selects, Esc closes). Every key is swallowed so none leaks to the
-        // table behind the overlay — the primitive's focus-capture contract.
-        if self.interval_popover.is_open() {
-            match key {
-                Key::Named(NamedKey::ArrowDown) => self.interval_popover.move_highlight(1),
-                Key::Named(NamedKey::ArrowUp) => self.interval_popover.move_highlight(-1),
-                Key::Named(NamedKey::Home) => self.interval_popover.highlight_first(),
-                Key::Named(NamedKey::End) => self.interval_popover.highlight_last(),
-                Key::Named(NamedKey::Enter) => {
-                    self.interval_popover.select_highlighted();
-                    self.apply_interval_selection(doc, path);
-                }
-                Key::Named(NamedKey::Escape) => self.interval_popover.close(),
-                _ => {}
-            }
+        if self.key_interval_popover(key, doc, path) {
             *handled = true;
             return;
         }
-
-        // Context menu open: Esc dismisses it, everything else is swallowed.
-        if self.context.is_open() {
-            if matches!(key, Key::Named(NamedKey::Escape)) {
-                self.close_context_menu();
-            }
+        if self.key_context_menu(key) {
             *handled = true;
             return;
         }
-
         // The stop-confirmation modal is handled in `handle_event` before
         // dispatch reaches here, so `on_key` never runs with a confirm pending.
+        self.key_global(key, doc, path, handled);
+    }
 
-        // Search editing.
-        if self.search_focused {
-            match key {
-                Key::Named(NamedKey::Escape | NamedKey::Enter) => {
-                    self.search_focused = false;
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    self.filter.pop();
-                    self.scroll_off = 0.0;
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Space) => {
-                    self.filter.push(' ');
-                    *handled = true;
-                }
-                _ => {
-                    if let Some(txt) = text {
-                        let mut pushed = false;
-                        for ch in txt.chars() {
-                            if !ch.is_control() {
-                                self.filter.push(ch);
-                                pushed = true;
-                            }
-                        }
-                        if pushed {
-                            self.scroll_off = 0.0;
-                            *handled = true;
-                        }
-                    }
-                }
-            }
-            return;
+    /// Interval popover open: full keyboard nav (↑/↓/Home/End move, Enter
+    /// selects, Esc closes). Every key is swallowed so none leaks to the
+    /// table behind the overlay — the primitive's focus-capture contract.
+    /// Returns `true` (always) when the popover was open.
+    fn key_interval_popover(&mut self, key: &Key, doc: &mut AutoCommit, path: &ObjId) -> bool {
+        if !self.interval_popover.is_open() {
+            return false;
         }
+        match key {
+            Key::Named(NamedKey::ArrowDown) => self.interval_popover.move_highlight(1),
+            Key::Named(NamedKey::ArrowUp) => self.interval_popover.move_highlight(-1),
+            Key::Named(NamedKey::Home) => self.interval_popover.highlight_first(),
+            Key::Named(NamedKey::End) => self.interval_popover.highlight_last(),
+            Key::Named(NamedKey::Enter) => {
+                self.interval_popover.select_highlighted();
+                self.apply_interval_selection(doc, path);
+            }
+            Key::Named(NamedKey::Escape) => self.interval_popover.close(),
+            _ => {}
+        }
+        true
+    }
 
-        // Global keys.
+    /// Context menu open: Esc dismisses it, everything else is swallowed.
+    /// Returns `true` (always) when the menu was open.
+    fn key_context_menu(&mut self, key: &Key) -> bool {
+        if !self.context.is_open() {
+            return false;
+        }
+        if matches!(key, Key::Named(NamedKey::Escape)) {
+            self.close_context_menu();
+        }
+        true
+    }
+
+    /// Global keys: Esc/Tab, selection nav, tree expand/collapse, Kill, and
+    /// single-character shortcuts.
+    fn key_global(&mut self, key: &Key, doc: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
         match key {
             // Esc pops a pushed detail pane back to the table (narrow).
             Key::Named(NamedKey::Escape) => {
@@ -3753,55 +4040,57 @@ impl MonitorApp {
                     *handled = true;
                 }
             }
-            Key::Named(NamedKey::Enter) if self.tab == Tab::Processes => {
-                if let Some(pid) = self.selected_pid {
-                    self.request_kill(pid, doc, path);
-                    *handled = true;
-                }
-            }
-            Key::Named(NamedKey::Delete) if self.tab == Tab::Processes => {
+            // Enter and Delete both kill the selected process.
+            Key::Named(NamedKey::Enter | NamedKey::Delete) if self.tab == Tab::Processes => {
                 if let Some(pid) = self.selected_pid {
                     self.request_kill(pid, doc, path);
                     *handled = true;
                 }
             }
             Key::Character(s) => {
-                match s.as_str() {
-                    "1" => self.tab = Tab::Processes,
-                    "2" => self.tab = Tab::Resources,
-                    "/" => {
-                        self.tab = Tab::Processes;
-                        self.search_focused = true;
-                    }
-                    "c" | "C" => self.set_sort(SortKey::Cpu),
-                    "m" | "M" => self.set_sort(SortKey::Mem),
-                    "p" | "P" => self.set_sort(SortKey::Pid),
-                    "n" | "N" => self.set_sort(SortKey::Name),
-                    // "s" sends SIGTERM (Stop) to the selection; "g" toggles
-                    // the subtree-sum mode; "t" toggles tree/flat.
-                    "s" | "S" => {
-                        if self.tab == Tab::Processes
-                            && let Some(pid) = self.selected_pid
-                        {
-                            self.request_stop(pid, doc);
-                        }
-                    }
-                    "g" | "G" => {
-                        if self.tree_mode {
-                            self.sum_mode = self.sum_mode.toggled();
-                        }
-                    }
-                    "t" | "T" => {
-                        self.tree_mode = !self.tree_mode;
-                        self.scroll_off = 0.0;
-                        self.clamp_scroll();
-                    }
-                    _ => return,
-                }
-                *handled = true;
+                *handled = self.key_character_shortcut(s.as_str(), doc);
             }
             _ => {}
         }
+    }
+
+    /// Single-character keyboard shortcuts: tab switch, search focus, sort
+    /// keys, Stop, and the tree/sum toggles. Returns whether the character
+    /// was recognised.
+    fn key_character_shortcut(&mut self, s: &str, doc: &mut AutoCommit) -> bool {
+        match s {
+            "1" => self.tab = Tab::Processes,
+            "2" => self.tab = Tab::Resources,
+            "/" => {
+                self.tab = Tab::Processes;
+                self.search_input.set_focus(true);
+            }
+            "c" | "C" => self.set_sort(SortKey::Cpu),
+            "m" | "M" => self.set_sort(SortKey::Mem),
+            "p" | "P" => self.set_sort(SortKey::Pid),
+            "n" | "N" => self.set_sort(SortKey::Name),
+            // "s" sends SIGTERM (Stop) to the selection; "g" toggles the
+            // subtree-sum mode; "t" toggles tree/flat.
+            "s" | "S" => {
+                if self.tab == Tab::Processes
+                    && let Some(pid) = self.selected_pid
+                {
+                    self.request_stop(pid, doc);
+                }
+            }
+            "g" | "G" => {
+                if self.tree_mode {
+                    self.sum_mode = self.sum_mode.toggled();
+                }
+            }
+            "t" | "T" => {
+                self.tree_mode = !self.tree_mode;
+                self.scroll_off = 0.0;
+                self.clamp_scroll();
+            }
+            _ => return false,
+        }
+        true
     }
 }
 
@@ -3811,6 +4100,10 @@ impl Widget for MonitorApp {
         self.prefs = Prefs::load(state, path);
     }
 
+    #[allow(
+        clippy::unwrap_used,
+        reason = "Widget::build_layout must return a NodeId with no fallible path to propagate to; new_leaf on a fresh, empty-style node cannot fail short of the taffy arena itself being corrupted"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -3831,7 +4124,12 @@ impl Widget for MonitorApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        // A missing layout would mean `node` came from a different tree than
+        // the one `compute_layout` ran over — keep the previous frame's
+        // `rect` rather than panic.
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -3846,7 +4144,7 @@ impl Widget for MonitorApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         self.maybe_refresh();
         let r = self.rect;
@@ -3880,11 +4178,101 @@ impl Widget for MonitorApp {
         let body = Rect::new(content.x0, body_top, content.x1, content.y1);
 
         self.draw_header(scene, t, text_renderer, theme, header);
+        self.tick_interval_press_hold();
 
-        // A press-and-hold on the interval pill opens the option popover while
-        // still held (the pill's hit rect is now known from `draw_header`). The
-        // redraw loop keeps pumping — `needs_animation_frame` is always true —
-        // so this check fires mid-hold without waiting for another event.
+        self.draw_scrolled_body(scene, t, text_renderer, theme, body);
+        self.draw_overlays(scene, t, text_renderer, theme, presence);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        // A pending stop confirmation is modal: while it's up the shared
+        // dialog captures every event (typing, clicks, Esc) and nothing leaks
+        // to the process table behind the scrim.
+        if self.confirm_stop.is_some() {
+            self.route_confirm_event(event, scale_factor, *modifiers, doc, path, handled);
+            return;
+        }
+        if self.route_search(
+            event,
+            scale_factor,
+            *modifiers,
+            doc,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            return;
+        }
+        self.dispatch_event(event, scale_factor, *modifiers, doc, path, handled);
+    }
+
+    fn name(&self) -> &'static str {
+        "MonitorApp"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("monitor_app")
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.search_input.ime_cursor_rect()
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.search_input.ime_purpose()
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.search_input.cursor_shape(point)
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.search_input
+            .is_focused()
+            .then(|| self.search_input.accessibility())
+            .flatten()
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.search_input.needs_commit()
+    }
+
+    fn on_commit(&mut self) {
+        self.search_input.on_commit();
+    }
+
+    /// A live monitor keeps the redraw loop pumping so the throttled
+    /// sysinfo refresh and the chart histories keep advancing.
+    fn needs_animation_frame(&self) -> bool {
+        true
+    }
+}
+
+impl MonitorApp {
+    /// A press-and-hold on the interval pill opens the option popover while
+    /// still held (the pill's hit rect is now known from `draw_header`). The
+    /// redraw loop keeps pumping — `needs_animation_frame` is always true —
+    /// so this check fires mid-hold without waiting for another event. Also
+    /// drains a headless `--shots` seed to open the popover deterministically
+    /// once the pill is positioned.
+    fn tick_interval_press_hold(&mut self) {
         if let Some(started) = self.interval_press
             && !self.interval_hold_opened
             && !self.interval_popover.is_open()
@@ -3893,21 +4281,27 @@ impl Widget for MonitorApp {
             self.open_interval_popover();
             self.interval_hold_opened = true;
         }
-        // Headless `--shots` seed: open the popover deterministically once the
-        // pill is positioned.
         if std::mem::take(&mut self.interval_popover_seed) {
             self.open_interval_popover();
         }
+    }
 
-        // ---- whole-view vertical scroll -------------------------------
-        // The Resources dashboard can be taller than its viewport — the
-        // overview row + per-core grid + chart grid on a large machine or a
-        // short/narrow window. Mirror `ui::widget::Scrollable`'s model: draw
-        // the body content at `(… − offset)` inside a clip layer the size of
-        // the viewport, clamp the offset to `content − viewport`, and paint a
-        // scrollbar. The header stays pinned above the scroll. The Processes
-        // tab manages its own internal row scroll, so it reports zero
-        // page-content height and never page-scrolls.
+    /// The Resources dashboard can be taller than its viewport — the
+    /// overview row + per-core grid + chart grid on a large machine or a
+    /// short/narrow window. Mirrors `ui::widget::Scrollable`'s model: draw
+    /// the body content at `(… − offset)` inside a clip layer the size of
+    /// the viewport, clamp the offset to `content − viewport`, and paint a
+    /// scrollbar. The header stays pinned above the scroll. The Processes
+    /// tab manages its own internal row scroll, so it reports zero
+    /// page-content height and never page-scrolls.
+    fn draw_scrolled_body(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        body: Rect,
+    ) {
         let viewport_h = body.height();
         let content_natural_h = self.content_natural_h(body.width());
         let page_overflow = (content_natural_h - viewport_h).max(0.0);
@@ -3938,75 +4332,65 @@ impl Widget for MonitorApp {
 
         if scrolling {
             scene.pop_layer();
-            // Page scrollbar down the right edge of the body viewport — a
-            // draggable thumb over a page-able track.
-            let track = Rect::new(body.x1 - 8.0, body.y0, body.x1 - 1.0, body.y1);
-            let c = &theme.tokens.colors;
-            charts::fill_rrect(scene, t, track, 2.0, with_alpha(c.border_standard, 90));
-            let frac_v = (viewport_h / self.content_h).clamp(0.0, 1.0);
-            let thumb_h = (track.height() * frac_v).max(24.0);
-            let pos = if page_overflow > 0.0 {
-                dy / page_overflow
-            } else {
-                0.0
-            };
-            let ty0 = track.y0 + (track.height() - thumb_h) * pos;
-            let thumb = Rect::new(track.x0, ty0, track.x1, ty0 + thumb_h);
-            charts::fill_rrect(scene, t, thumb, 2.0, with_alpha(c.text_dim, 160));
-            self.hit.page_scrollbar = Some(ScrollBarHit {
-                track,
-                thumb,
-                max_value: page_overflow,
-            });
+            self.draw_page_scrollbar(scene, t, theme, body, viewport_h, page_overflow, dy);
         }
+    }
 
-        // A `--shots` request to open the context menu over a seeded pid: now
-        // that the table rows are laid out (`hit.rows` is populated), anchor
-        // the menu at that row and clear the seed. If the seeded pid isn't a
-        // visible row this frame, fall back to the first laid-out row so the
-        // shot still demonstrates the menu.
-        if let Some(seed) = self.context_menu_seed.take() {
-            let target = self
-                .hit
-                .rows
-                .iter()
-                .find(|(rp, _)| *rp == seed)
-                .or_else(|| self.hit.rows.first())
-                .map(|(rp, rect)| (*rp, *rect));
-            if let Some((pid, rect)) = target {
-                let anchor = Point::new(rect.x0 + 60.0, rect.y0 + ROW_H);
-                self.last_cursor = Point::new(anchor.x + 20.0, anchor.y + CONTEXT_MENU_ROW_H * 3.5);
-                self.open_context_menu(pid, anchor);
-            }
-        }
-
-        // The right-click action menu floats above the content (but below the
-        // confirm modal). The primitive renders itself at its stored anchor;
-        // we draw it directly here, the same hand-drawn way as the rest of the
-        // app, then record its item hit rects for `on_click` routing.
-        if self.context.is_open() {
-            self.context.draw(scene, t, text_renderer, theme, _presence);
-            self.hit.menu_items = self.context_menu_item_rects();
-            // Highlight the row under the cursor for affordance.
-            let cur = self.last_cursor;
-            let c = &theme.tokens.colors;
-            for (_idx, rect) in &self.hit.menu_items {
-                if rect.contains(cur) {
-                    charts::fill_rrect(scene, t, *rect, 4.0, with_alpha(c.accent[5], 70));
-                }
-            }
-            // Re-draw labels over the highlight so they stay legible.
-            self.context.draw(scene, t, text_renderer, theme, _presence);
+    /// Page scrollbar down the right edge of the body viewport — a
+    /// draggable thumb over a page-able track.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "threads the render context plus this frame's scroll geometry through a single draw call"
+    )]
+    fn draw_page_scrollbar(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        body: Rect,
+        viewport_h: f64,
+        page_overflow: f64,
+        dy: f64,
+    ) {
+        let track = Rect::new(body.x1 - 8.0, body.y0, body.x1 - 1.0, body.y1);
+        let c = &theme.tokens.colors;
+        charts::fill_rrect(scene, t, track, 2.0, with_alpha(c.border_standard, 90));
+        let frac_v = (viewport_h / self.content_h).clamp(0.0, 1.0);
+        let thumb_h = (track.height() * frac_v).max(24.0);
+        let pos = if page_overflow > 0.0 {
+            dy / page_overflow
         } else {
-            self.hit.menu_items.clear();
-        }
+            0.0
+        };
+        let ty0 = track.y0 + (track.height() - thumb_h) * pos;
+        let thumb = Rect::new(track.x0, ty0, track.x1, ty0 + thumb_h);
+        charts::fill_rrect(scene, t, thumb, 2.0, with_alpha(c.text_dim, 160));
+        self.hit.page_scrollbar = Some(ScrollBarHit {
+            track,
+            thumb,
+            max_value: page_overflow,
+        });
+    }
+
+    /// Everything painted above the tab content: the context menu, the
+    /// interval popover, the copy toast, and the stop-confirmation dialog.
+    fn draw_overlays(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.seed_context_menu_from_shots();
+        self.draw_context_menu_overlay(scene, t, text_renderer, theme, presence);
 
         // The refresh-interval option popover floats above the content (below
         // the confirm modal). The reusable primitive positions + paints itself
         // against the pill anchor; the app routes clicks/keys into it.
         if self.interval_popover.is_open() {
             self.interval_popover
-                .draw(scene, t, text_renderer, theme, _presence);
+                .draw(scene, t, text_renderer, theme, presence);
         }
 
         // The "PID copied" toast floats above the content, below the modal.
@@ -4016,32 +4400,171 @@ impl Widget for MonitorApp {
             self.ensure_confirm_dialog(pid, kind);
             self.layout_confirm_dialog();
             if let Some(cd) = self.confirm_dialog.as_mut() {
-                cd.dialog.draw(scene, t, text_renderer, theme, _presence);
+                cd.dialog.draw(scene, t, text_renderer, theme, presence);
             }
         } else {
             self.confirm_dialog = None;
         }
     }
 
-    fn handle_event(
+    /// A `--shots` request to open the context menu over a seeded pid: now
+    /// that the table rows are laid out (`hit.rows` is populated), anchor the
+    /// menu at that row and clear the seed. If the seeded pid isn't a visible
+    /// row this frame, fall back to the first laid-out row so the shot still
+    /// demonstrates the menu.
+    fn seed_context_menu_from_shots(&mut self) {
+        let Some(seed) = self.context_menu_seed.take() else {
+            return;
+        };
+        let target = self
+            .hit
+            .rows
+            .iter()
+            .find(|(rp, _)| *rp == seed)
+            .or_else(|| self.hit.rows.first())
+            .map(|(rp, rect)| (*rp, *rect));
+        if let Some((pid, rect)) = target {
+            let anchor = Point::new(rect.x0 + 60.0, rect.y0 + ROW_H);
+            self.last_cursor = Point::new(anchor.x + 20.0, anchor.y + CONTEXT_MENU_ROW_H * 3.5);
+            self.open_context_menu(pid, anchor);
+        }
+    }
+
+    /// The right-click action menu floats above the content (but below the
+    /// confirm modal). The primitive renders itself at its stored anchor; we
+    /// draw it directly here, the same hand-drawn way as the rest of the app,
+    /// then record its item hit rects for `on_click` routing.
+    fn draw_context_menu_overlay(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if !self.context.is_open() {
+            self.hit.menu_items.clear();
+            return;
+        }
+        self.context.draw(scene, t, text_renderer, theme, presence);
+        self.hit.menu_items = self.context_menu_item_rects();
+        // Highlight the row under the cursor for affordance.
+        let cur = self.last_cursor;
+        let c = &theme.tokens.colors;
+        for (_idx, rect) in &self.hit.menu_items {
+            if rect.contains(cur) {
+                charts::fill_rrect(scene, t, *rect, 4.0, with_alpha(c.accent[5], 70));
+            }
+        }
+        // Re-draw labels over the highlight so they stay legible.
+        self.context.draw(scene, t, text_renderer, theme, presence);
+    }
+
+    /// Resolve search-box focus for this event, and either dispatch it into
+    /// the search box or hand back control. Returns whether `handle_event`
+    /// should return immediately — either because the search box consumed
+    /// the event, or because a reserved global chord is deliberately left
+    /// unhandled so it bubbles to the host.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "threads the full event-dispatch context (event, modifiers, doc, focus, taffy) through one call, mirroring the Widget::handle_event signature it routes"
+    )]
+    fn route_search(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         doc: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // A pending stop confirmation is modal: while it's up the shared
-        // dialog captures every event (typing, clicks, Esc) and nothing leaks
-        // to the process table behind the scrim.
-        if self.confirm_stop.is_some() {
-            self.route_confirm_event(event, scale_factor, modifiers, doc, path, handled);
-            return;
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let search_rect = self.hit.search;
+        self.search_input.apply_layout_external(Rect::new(
+            search_rect.x0 + 34.0,
+            search_rect.y0,
+            search_rect.x1 - 8.0,
+            search_rect.y1,
+        ));
+        let left_press = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        );
+        if left_press {
+            self.search_input
+                .set_focus(search_rect.contains(self.last_cursor));
         }
+
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == ElementState::Pressed
+        {
+            let ctrl = modifiers.state().control_key();
+            if ctrl
+                && matches!(&key.logical_key, Key::Character(s) if matches!(s.as_str(), "k" | "K" | "/"))
+            {
+                // Keep the host's global-search chords available even when
+                // the local process filter owns keyboard focus. `handled`
+                // stays false → event propagates to the host.
+                return true;
+            }
+            if self.search_input.is_focused()
+                && matches!(
+                    &key.logical_key,
+                    Key::Named(NamedKey::Escape | NamedKey::Enter)
+                )
+            {
+                self.search_input.set_focus(false);
+                *handled = true;
+                return true;
+            }
+        }
+
+        let route_to_search = self.search_input.is_focused()
+            || matches!(event, WindowEvent::CursorMoved { .. })
+            || (left_press && search_rect.contains(self.last_cursor));
+        if !route_to_search {
+            return false;
+        }
+        let mut input_handled = false;
+        self.search_input.handle_event(
+            event,
+            scale_factor,
+            &modifiers,
+            doc,
+            path,
+            &mut input_handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+        if self.search_input.take_dirty().is_some() {
+            self.scroll_off = 0.0;
+            input_handled = true;
+        }
+        if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
+            *handled = true;
+            return true;
+        }
+        false
+    }
+
+    /// The main event dispatch once the confirm modal and the search box
+    /// have both had first refusal.
+    fn dispatch_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+    ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -4052,46 +4575,7 @@ impl Widget for MonitorApp {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.confirm_stop.is_some() {
-                    return;
-                }
-                // Pixels of scroll this notch represents (≈60px/line desktop
-                // convention; touchpad pixel deltas pass through 1×).
-                let (px_x, px_y) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (-x * 60.0, -y * 60.0),
-                    MouseScrollDelta::PixelDelta(pos) => (-(pos.x as f32), -(pos.y as f32)),
-                };
-                let shift = modifiers.state().shift_key();
-                let over_table = self.tab == Tab::Processes
-                    && self.proc_push.slide() < 0.5
-                    && self.table_viewport.contains(self.last_cursor);
-                if over_table {
-                    // Shift-wheel (or a horizontal touchpad delta) scrolls the
-                    // table sideways through its overflowing columns; a plain
-                    // vertical wheel scrolls the rows.
-                    if shift || px_x.abs() > px_y.abs() {
-                        let dx = if shift && px_x == 0.0 { px_y } else { px_x };
-                        // Clamp against the *columns* viewport (`table_cols_w`,
-                        // the padded band), NOT the card's full inner width, so
-                        // the final column + its right padding scroll into view.
-                        let max_x = (self.table_content_w - self.table_cols_w).max(0.0) as f32;
-                        self.table_scroll_x = (self.table_scroll_x + dx).clamp(0.0, max_x);
-                    } else {
-                        let rows = px_y / ROW_H as f32;
-                        self.scroll_off = (self.scroll_off + rows).max(0.0);
-                        self.clamp_scroll();
-                    }
-                    *handled = true;
-                } else {
-                    // Anywhere else (the Resources dashboard, the summary
-                    // strip, the toolbar) scrolls the whole page.
-                    let max_y = (self.content_h - self.viewport_h).max(0.0) as f32;
-                    let before = self.view_scroll_y;
-                    self.view_scroll_y = (self.view_scroll_y + px_y).clamp(0.0, max_y);
-                    if (self.view_scroll_y - before).abs() > f32::EPSILON {
-                        *handled = true;
-                    }
-                }
+                self.handle_wheel(*delta, modifiers.state().shift_key(), handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -4116,10 +4600,11 @@ impl Widget for MonitorApp {
             } => {
                 // End any scrollbar thumb drag, otherwise resolve a pending
                 // interval-pill press (quick release cycles; a held release
-                // that already opened the popover leaves it up).
-                if self.scroll_drag.take().is_some() {
-                    *handled = true;
-                } else if self.release_interval_press(doc, path) {
+                // that already opened the popover leaves it up). `||`
+                // short-circuits exactly like the `if`/`else if` this
+                // replaces: `release_interval_press` only runs when no drag
+                // was active.
+                if self.scroll_drag.take().is_some() || self.release_interval_press(doc, path) {
                     *handled = true;
                 }
             }
@@ -4138,22 +4623,50 @@ impl Widget for MonitorApp {
         }
     }
 
-    fn name(&self) -> &'static str {
-        "MonitorApp"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("monitor_app")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    /// A live monitor keeps the redraw loop pumping so the throttled
-    /// sysinfo refresh and the chart histories keep advancing.
-    fn needs_animation_frame(&self) -> bool {
-        true
+    /// A mouse-wheel notch: scrolls the process table (rows, or sideways
+    /// through overflowing columns on Shift) when the cursor is over it on
+    /// the Processes tab, otherwise scrolls the whole page. A no-op while a
+    /// stop confirmation is up (the modal owns input).
+    fn handle_wheel(&mut self, delta: MouseScrollDelta, shift: bool, handled: &mut bool) {
+        if self.confirm_stop.is_some() {
+            return;
+        }
+        // Pixels of scroll this notch represents (≈60px/line desktop
+        // convention; touchpad pixel deltas pass through 1×).
+        let (px_x, px_y) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (-x * 60.0, -y * 60.0),
+            MouseScrollDelta::PixelDelta(pos) => (-(pos.x as f32), -(pos.y as f32)),
+        };
+        let over_table = self.tab == Tab::Processes
+            && self.proc_push.slide() < 0.5
+            && self.table_viewport.contains(self.last_cursor);
+        if over_table {
+            // Shift-wheel (or a horizontal touchpad delta) scrolls the table
+            // sideways through its overflowing columns; a plain vertical
+            // wheel scrolls the rows.
+            if shift || px_x.abs() > px_y.abs() {
+                let dx = if shift && px_x == 0.0 { px_y } else { px_x };
+                // Clamp against the *columns* viewport (`table_cols_w`, the
+                // padded band), NOT the card's full inner width, so the
+                // final column + its right padding scroll into view.
+                let max_x = (self.table_content_w - self.table_cols_w).max(0.0) as f32;
+                self.table_scroll_x = (self.table_scroll_x + dx).clamp(0.0, max_x);
+            } else {
+                let rows = px_y / ROW_H as f32;
+                self.scroll_off = (self.scroll_off + rows).max(0.0);
+                self.clamp_scroll();
+            }
+            *handled = true;
+        } else {
+            // Anywhere else (the Resources dashboard, the summary strip, the
+            // toolbar) scrolls the whole page.
+            let max_y = (self.content_h - self.viewport_h).max(0.0) as f32;
+            let before = self.view_scroll_y;
+            self.view_scroll_y = (self.view_scroll_y + px_y).clamp(0.0, max_y);
+            if (self.view_scroll_y - before).abs() > f32::EPSILON {
+                *handled = true;
+            }
+        }
     }
 }
 
@@ -4218,7 +4731,7 @@ mod tests {
     fn filter_narrows_the_list() {
         let mut a = app();
         let all = a.visible_processes().len();
-        a.filter = "browser".into();
+        a.search_input.set_text("browser");
         let some = a.visible_processes().len();
         assert!(some >= 1 && some < all);
         assert!(a.visible_processes().iter().all(|p| {
@@ -4423,7 +4936,7 @@ mod tests {
         let mut handled2 = false;
         a.on_key(&slash, Some("/"), false, &mut doc, &root, &mut handled2);
         assert!(
-            handled2 && a.search_focused,
+            handled2 && a.search_input.is_focused(),
             "bare / still focuses local search"
         );
     }
@@ -4809,7 +5322,7 @@ mod tests {
     #[test]
     fn filter_works_over_the_tree() {
         let mut a = app();
-        a.filter = "rustc".into();
+        a.search_input.set_text("rustc");
         let rows = a.visible_rows();
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"rustc"), "match present: {names:?}");
@@ -5069,6 +5582,22 @@ mod tests {
         ev.state = ElementState::Pressed;
         ev.repeat = false;
         ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+    fn synth_text(text: &str) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(text.into());
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(text.into());
         WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             event: ev,
@@ -5453,45 +5982,22 @@ mod tests {
     fn search_click_focus_and_keyboard_editing_filters() {
         let mut a = app();
         a.hit.search = Rect::new(0.0, 0.0, 300.0, 30.0);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
-        assert!(h && a.search_focused, "clicking the search box focuses it");
+        dispatch_ev(&mut a, &synth_cursor(50.0, 15.0));
+        let h = dispatch_ev(&mut a, &synth_press());
+        assert!(
+            h && a.search_input.is_focused(),
+            "clicking the search box focuses its shared editor"
+        );
         for ch in "brow".chars() {
             let s = ch.to_string();
-            let mut hk = false;
-            a.on_key(
-                &Key::Character(s.as_str().into()),
-                Some(s.as_str()),
-                false,
-                &mut doc,
-                &root,
-                &mut hk,
-            );
+            let hk = dispatch_ev(&mut a, &synth_text(&s));
             assert!(hk, "typed char handled");
         }
-        assert_eq!(a.filter, "brow");
-        let mut hsp = false;
-        a.on_key(
-            &Key::Named(NamedKey::Space),
-            None,
-            false,
-            &mut doc,
-            &root,
-            &mut hsp,
-        );
-        assert_eq!(a.filter, "brow ");
-        let mut hbs = false;
-        a.on_key(
-            &Key::Named(NamedKey::Backspace),
-            None,
-            false,
-            &mut doc,
-            &root,
-            &mut hbs,
-        );
-        assert_eq!(a.filter, "brow");
+        assert_eq!(a.search_input.value(), "brow");
+        assert!(dispatch_ev(&mut a, &synth_text(" ")));
+        assert_eq!(a.search_input.value(), "brow ");
+        assert!(dispatch_ev(&mut a, &synth_key(NamedKey::Backspace)));
+        assert_eq!(a.search_input.value(), "brow");
         assert!(
             a.visible_processes()
                 .iter()
@@ -5500,16 +6006,11 @@ mod tests {
                     || p.pid.to_string().contains("brow")),
             "typed filter actually narrows the list"
         );
-        let mut hesc = false;
-        a.on_key(
-            &Key::Named(NamedKey::Escape),
-            None,
-            false,
-            &mut doc,
-            &root,
-            &mut hesc,
+        let hesc = dispatch_ev(&mut a, &synth_key(NamedKey::Escape));
+        assert!(
+            hesc && !a.search_input.is_focused(),
+            "Escape leaves the search box"
         );
-        assert!(hesc && !a.search_focused, "Escape leaves the search box");
     }
 
     /// On a narrow window, selecting a row through the real click path pushes

@@ -48,18 +48,32 @@ pub enum FirmwareEvent {
 }
 
 /// Query updates already offered by fwupd's configured remotes.
+///
+/// # Errors
+///
+/// Returns an error message if `fwupdmgr` is not installed, the command fails, or its output
+/// is not valid fwupd JSON.
 pub fn get_firmware_updates() -> Result<Vec<FirmwareUpdate>, String> {
     let json = run_capture("fwupdmgr", &["get-updates", "--json"])?;
     parse_updates(&json)
 }
 
 /// Refresh signed metadata from configured fwupd remotes.
+///
+/// # Errors
+///
+/// Returns an error message if `fwupdmgr` is not installed or the command fails.
 pub fn refresh_firmware_metadata() -> Result<(), String> {
     run("fwupdmgr", &["refresh"])
 }
 
 /// Read fwupd's own transaction history. This is authoritative lifecycle
 /// state, not a qOS-maintained success counter.
+///
+/// # Errors
+///
+/// Returns an error message if `fwupdmgr` is not installed, the command fails, or its output
+/// is not valid fwupd JSON.
 pub fn get_firmware_history() -> Result<Vec<FirmwareHistoryEntry>, String> {
     let json = run_capture("fwupdmgr", &["get-history", "--json"])?;
     parse_history(&json)
@@ -68,6 +82,11 @@ pub fn get_firmware_history() -> Result<Vec<FirmwareHistoryEntry>, String> {
 /// Start a long-running fwupd transaction without blocking the compositor or
 /// Settings event loop. fwupd remains the verifier and policy authority; qOS
 /// only reports its lifecycle and never passes force/downgrade flags.
+///
+/// # Errors
+///
+/// Returns an error message if `updates` is empty, the battery is below 20% and not on AC
+/// power, an update is missing a device id, or the worker thread fails to start.
 pub fn start_firmware_install(
     updates: &[FirmwareUpdate],
 ) -> Result<Receiver<FirmwareEvent>, String> {
@@ -104,8 +123,16 @@ pub fn start_firmware_install(
                     run_fwupd_transaction(device_id, |event| {
                         let event = match event {
                             FirmwareEvent::Progress { percent, message } => {
+                                // Blend this device's own progress into the overall total: each
+                                // device owns an equal 100/total-percent slice of the run.
+                                let overall = index
+                                    .saturating_mul(100)
+                                    .saturating_add(usize::from(percent))
+                                    .checked_div(total)
+                                    .unwrap_or(0)
+                                    .min(100);
                                 FirmwareEvent::Progress {
-                                    percent: (((index * 100) + usize::from(percent)) / total) as u8,
+                                    percent: u8::try_from(overall).unwrap_or(100),
                                     message,
                                 }
                             }
@@ -160,7 +187,7 @@ fn run_fwupd_transaction(
     drop(line_tx);
 
     let started = Instant::now();
-    let deadline = Duration::from_secs(45 * 60);
+    let deadline = Duration::from_secs(2700);
     let mut last_lines = Vec::new();
     loop {
         while let Ok(line) = line_rx.try_recv() {
@@ -201,7 +228,8 @@ fn run_fwupd_transaction(
 
 fn progress_percent(line: &str) -> Option<u8> {
     let end = line.find('%')?;
-    let digits: String = line[..end]
+    let prefix = line.get(..end)?;
+    let digits: String = prefix
         .chars()
         .rev()
         .take_while(|c| c.is_ascii_digit() || c.is_ascii_whitespace())

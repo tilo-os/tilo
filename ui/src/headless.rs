@@ -41,7 +41,7 @@ use crate::presence::PresenceCtx;
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::Widget;
+use crate::widget::{TaffyTreeExt, Widget};
 
 /// Viewport the driver lays out at unless a spec overrides it. Matches the
 /// default `--shots` viewport so a driven frame and a screenshot agree.
@@ -246,6 +246,7 @@ impl FrameHarness {
 
     /// Drive a record-aware app: the live document is a record's, and the
     /// widget names which one. Mirrors [`crate::App::with_records`].
+    #[must_use]
     pub fn with_records(
         mut self,
         records: crate::record::RecordSet,
@@ -296,6 +297,11 @@ impl FrameHarness {
     /// rects while drawing, so skipping it would leave every click silently
     /// missing — exactly the false-pass this harness must avoid. Nothing is
     /// rasterised; the `Scene` is encoded on the CPU and discarded.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "viewport width/height are pixel dimensions, always far below \
+                  f32's 2^24 exact-integer range"
+    )]
     pub fn relayout(&mut self) {
         // Records first, as `ui::App` does: an action that opened a document
         // must be editing that document by the time the next frame syncs.
@@ -315,41 +321,47 @@ impl FrameHarness {
             .root
             .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
         let (w, h) = self.viewport;
-        let root_node = self
-            .taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
-                    },
-                    ..Default::default()
+        // `TaffyTreeExt::parent_node` is panic-free by construction (see its
+        // doc comment): `child` was just built in this same fresh tree.
+        let root_node = self.taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
                 },
-                &[child],
-            )
-            .expect("headless root node");
+                ..Default::default()
+            },
+            &[child],
+        );
         let measure_map = self.node_map.clone();
         let text = &mut self.text;
-        self.taffy
-            .compute_layout_with_measure(
-                root_node,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        // SAFETY: `node_map` holds pointers into `self.root`,
-                        // which outlives this call and is not otherwise
-                        // borrowed here. Same contract as `App`'s own measure
-                        // closure.
-                        unsafe { (*ptr).measure(known, available, text) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("headless layout");
+        let layout_result = self.taffy.compute_layout_with_measure(
+            root_node,
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    // SAFETY: `node_map` holds pointers into `self.root`,
+                    // which outlives this call and is not otherwise
+                    // borrowed here. Same contract as `App`'s own measure
+                    // closure.
+                    unsafe { (*ptr).measure(known, available, text) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        );
+        // Mirrors `App`'s own frame loop (`ui/src/app.rs`): a computed-layout
+        // failure skips this frame rather than crashing the driven process.
+        if let Err(err) = layout_result {
+            tracing::error!(
+                ?err,
+                "headless: compute_layout_with_measure failed; skipping frame"
+            );
+            return;
+        }
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::BuildLayout, t_build);
         }
@@ -440,26 +452,36 @@ impl FrameHarness {
         if order.is_empty() {
             return None;
         }
+        // `order` is non-empty (checked above), so `order.len() - 1` never
+        // underflows and `next` always lands in `0..order.len()`; the
+        // arithmetic is still spelled with saturating/wrapping-safe ops so
+        // clippy can see that too.
         let next = match self
             .focused
             .and_then(|f| order.iter().position(|&x| x == f))
         {
             Some(idx) => {
                 if back {
-                    if idx == 0 { order.len() - 1 } else { idx - 1 }
+                    if idx == 0 {
+                        order.len().saturating_sub(1)
+                    } else {
+                        idx.saturating_sub(1)
+                    }
                 } else {
-                    (idx + 1) % order.len()
+                    let next = idx.saturating_add(1);
+                    if next < order.len() { next } else { 0 }
                 }
             }
             None => {
                 if back {
-                    order.len() - 1
+                    order.len().saturating_sub(1)
                 } else {
                     0
                 }
             }
         };
-        let target = order[next];
+        // `next` is constructed above from `0..order.len()` in every branch.
+        let target = *order.get(next)?;
         self.set_focused(Some(target));
         self.relayout();
         Some(target)
@@ -613,12 +635,12 @@ impl FrameHarness {
     }
 
     /// Deliver one event through the production dispatch path.
-    pub fn send(&mut self, event: WindowEvent) {
+    pub fn send(&mut self, event: &WindowEvent) {
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
         let t_event = self.profiler.as_ref().map(|_| std::time::Instant::now());
         self.root.handle_event(
-            &event,
+            event,
             1.0,
             &self.modifiers,
             &mut self.state.doc,
@@ -680,16 +702,16 @@ impl FrameHarness {
     /// Move the pointer to `(x, y)` and press+release the left button — the
     /// three events a real click produces, in order.
     pub fn click_at(&mut self, x: f64, y: f64) {
-        self.send(WindowEvent::CursorMoved {
+        self.send(&WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         });
-        self.send(WindowEvent::MouseInput {
+        self.send(&WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
-        self.send(WindowEvent::MouseInput {
+        self.send(&WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -699,6 +721,10 @@ impl FrameHarness {
     /// Click the centre of the named widget. `Err` names the target when it
     /// is not in the tree, so a stale scenario fails loudly instead of
     /// quietly doing nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the widget is not found or has a zero-sized rect.
     pub fn click_named(&mut self, name: &str) -> Result<(), String> {
         let rect = self
             .targets()
@@ -736,7 +762,7 @@ impl FrameHarness {
         }
         let key = parse_key(spec);
         for state in [ElementState::Pressed, ElementState::Released] {
-            self.send(key_event(key.clone(), state));
+            self.send(&key_event(&key, state));
         }
     }
 
@@ -751,9 +777,18 @@ impl FrameHarness {
     /// production event path. Content scrollables handle the wheel
     /// regardless of pointer position, so no prior cursor move is needed.
     pub fn scroll(&mut self, dx: f64, dy: f64) {
-        self.send(WindowEvent::MouseWheel {
+        // Deltas are line counts chosen by the driver's own caller (test
+        // code or an agent), always small integers; there is no fallible
+        // f64->f32 conversion to fall back to, and winit's own delta type
+        // is f32.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "line-delta counts are small integers; winit's `LineDelta` is f32 and there is no fallible f64->f32 conversion"
+        )]
+        let (dx, dy) = (dx as f32, dy as f32);
+        self.send(&WindowEvent::MouseWheel {
             device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(dx as f32, dy as f32),
+            delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
             phase: winit::event::TouchPhase::Moved,
         });
     }
@@ -801,10 +836,14 @@ impl FrameHarness {
             }
         }
         self.modifiers = winit::event::Modifiers::from(st);
-        self.send(WindowEvent::ModifiersChanged(self.modifiers));
+        self.send(&WindowEvent::ModifiersChanged(self.modifiers));
     }
 
     /// Run one action.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the action cannot be performed.
     pub fn perform(&mut self, action: &Action) -> Result<(), String> {
         match action {
             Action::ClickNamed(name) => self.click_named(name),
@@ -865,7 +904,9 @@ fn collect_targets(
     let sibling_key = format!("{parent_path}::{name}");
     let idx = sibling_counts.entry(sibling_key).or_insert(0);
     let my_index = *idx;
-    *idx += 1;
+    // Bounded by the number of sibling widgets under one parent, nowhere
+    // near `usize::MAX`; saturating just makes the bound explicit.
+    *idx = idx.saturating_add(1);
     let path = if parent_path.is_empty() {
         format!("{name}[{my_index}]")
     } else {
@@ -895,7 +936,7 @@ fn collect_targets(
 /// can't be built field-by-field from outside that crate. Zero-initialising
 /// and overwriting every field we care about is the same workaround the
 /// compositor's own driver uses (`shell/src/bin/shots/driver.rs`).
-fn key_event(key: Key, state: ElementState) -> WindowEvent {
+fn key_event(key: &Key, state: ElementState) -> WindowEvent {
     // SAFETY: `KeyEvent`'s only unwritten field is the platform payload,
     // which on Linux is a plain `Option`-shaped struct for which an
     // all-zero bit pattern is a valid value, and which nothing downstream
@@ -944,6 +985,16 @@ fn parse_key(spec: &str) -> Key {
 /// `{"key": "Enter"}`, `{"type": "hello"}`, `{"modifiers": ["ctrl"]}`),
 /// `dump` (path for the document JSON) and `targets` (path for the
 /// addressable-widget list).
+// Every app's `main` calls this before building any window state (see the
+// module doc), so exiting on a malformed `--headless-drive` payload is the
+// same "fail before anything is built" contract a CLI arg parser has —
+// there is nothing yet to unwind. Threading a `Result` through instead
+// would mean every one of the ~15 call sites across `apps/*` duplicates
+// this same exit, for no behavioural change.
+#[allow(
+    clippy::exit,
+    reason = "arg-parsing entry point mirrors a CLI flag parser: fails fast before any window/Drop state exists, exactly like the callers already do via `std::process::exit(ui::headless::run(..))`"
+)]
 pub fn spec_from_args(args: &[String]) -> Option<Spec> {
     let raw = value_arg(args, "--headless-drive")?;
     match parse_spec(&raw) {
@@ -970,6 +1021,10 @@ fn value_arg(args: &[String], flag: &str) -> Option<String> {
 }
 
 /// Parse the `--headless-drive` payload.
+///
+/// # Errors
+///
+/// Returns an error if the JSON is invalid or does not conform to the expected structure.
 pub fn parse_spec(raw: &str) -> Result<Spec, String> {
     let v: serde_json::Value =
         serde_json::from_str(raw).map_err(|e| format!("invalid JSON: {e}"))?;
@@ -982,13 +1037,15 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
             .as_array()
             .filter(|vp| vp.len() == 2)
             .ok_or("viewport must be [width, height]")?;
-        let width = vp[0]
-            .as_u64()
+        let width = vp
+            .first()
+            .and_then(serde_json::Value::as_u64)
             .and_then(|n| u32::try_from(n).ok())
             .filter(|n| *n > 0)
             .ok_or("viewport width must be a non-zero u32")?;
-        let height = vp[1]
-            .as_u64()
+        let height = vp
+            .get(1)
+            .and_then(serde_json::Value::as_u64)
             .and_then(|n| u32::try_from(n).ok())
             .filter(|n| *n > 0)
             .ok_or("viewport height must be a non-zero u32")?;
@@ -1055,7 +1112,7 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
 /// action succeeded, `1` when one did not (with the reason on stderr) and
 /// `3` when persistence itself was unavailable, which a sweep must not
 /// mistake for "nothing changed".
-pub fn run(spec: Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
+pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
     let (state, mut autosave) = crate::persist::open(manifest_id);
     if !autosave.is_enabled() {
         eprintln!(
@@ -1068,8 +1125,11 @@ pub fn run(spec: Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
     // document, not the room index — see `records` on `Driver`.
     let mut driver = Driver::new(state, root, spec.viewport.unwrap_or(DEFAULT_VIEWPORT));
     if driver.root_record_intent().is_some() {
-        let (room, _) = crate::persist::open(manifest_id);
-        driver = driver.with_records(crate::record::RecordSet::open(manifest_id), room.doc);
+        let (records_state, _) = crate::persist::open(manifest_id);
+        driver = driver.with_records(
+            crate::record::RecordSet::open(manifest_id),
+            records_state.doc,
+        );
     }
 
     let mut failure: Option<String> = None;
@@ -2112,7 +2172,7 @@ mod dispatched_action_driver_tests {
         d.type_text("a");
 
         // A pointer move: reaches the tree, dispatches no action.
-        d.send(WindowEvent::CursorMoved {
+        d.send(&WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(5.0, 5.0),
         });

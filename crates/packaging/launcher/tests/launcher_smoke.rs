@@ -15,6 +15,16 @@
 //! The non-ignored tests cover manifest-handling and service-resolution
 //! semantics without touching bwrap at all.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -144,9 +154,7 @@ fn no_services_flag_skips_required_resolution() {
 #[test]
 #[ignore = "requires bwrap + unprivileged user namespaces; run with --ignored"]
 fn hello_world_runs() {
-    let bwrap = if let Some(p) = bwrap_path() {
-        p
-    } else {
+    let Some(bwrap) = bwrap_path() else {
         eprintln!("bwrap not installed; skipping");
         return;
     };
@@ -175,9 +183,7 @@ fn hello_world_runs() {
 #[test]
 #[ignore = "requires bwrap; run with --ignored"]
 fn no_services_flag_skips_required() {
-    let bwrap = if let Some(p) = bwrap_path() {
-        p
-    } else {
+    let Some(bwrap) = bwrap_path() else {
         eprintln!("bwrap not installed; skipping");
         return;
     };
@@ -202,9 +208,7 @@ fn no_services_flag_skips_required() {
 #[test]
 #[ignore = "requires bwrap; run with --ignored"]
 fn optional_service_missing_warns_and_runs() {
-    let bwrap = if let Some(p) = bwrap_path() {
-        p
-    } else {
+    let Some(bwrap) = bwrap_path() else {
         eprintln!("bwrap not installed; skipping");
         return;
     };
@@ -555,6 +559,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
 fn dbus_proxy_wires_up_when_manifest_declares_via_host_portal() {
     use launcher::dbus_proxy::PROXY_BIN_ENV;
     use launcher::sandbox::{DBusBindKind, build_bwrap_argv};
+    use std::os::unix::fs::PermissionsExt;
 
     // Point the launcher's proxy binary at a shell-script mock.
     let tmp = tempfile::tempdir().unwrap();
@@ -575,7 +580,6 @@ wait $!
 "#,
     )
     .unwrap();
-    use std::os::unix::fs::PermissionsExt;
     let mut perms = std::fs::metadata(&mock).unwrap().permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&mock, perms).unwrap();
@@ -692,8 +696,8 @@ fn dbus_direct_bind_used_when_proxy_missing() {
 #[test]
 fn read_manifest_round_trips() {
     // Smoke: write a manifest, read it back, assert key fields.
-    let _dir = tempfile::tempdir().unwrap();
-    let path = _dir.path().join("manifest.toml");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("manifest.toml");
     std::fs::write(
         &path,
         r#"

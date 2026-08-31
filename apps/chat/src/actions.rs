@@ -247,6 +247,28 @@ pub enum ChatAction {
 
 impl Action for ChatAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        // Each helper matches only its own category's variants (a `_ => {}`
+        // no-op for the rest), so exactly one of the three does real work per
+        // call — split out of this trait method because a helper that isn't
+        // itself a trait method can't live in this `impl Action for ..`
+        // block (E0407).
+        self.apply_message(doc);
+        self.apply_channel(doc);
+        self.apply_call(doc);
+        Ok(())
+    }
+
+    fn locus(&self) -> ExecutionLocus {
+        // Chat mutations are client-local: each peer applies + replicates its own
+        // sends/edits/reactions; peers replay them. There is no authoritative
+        // ordering host for a message row.
+        ExecutionLocus::ClientLocal
+    }
+}
+
+impl ChatAction {
+    /// Message-row mutations: send, edit, delete, react, pin.
+    fn apply_message(&self, doc: &mut Doc) {
         match self {
             ChatAction::SendMessage {
                 channel,
@@ -309,6 +331,14 @@ impl Action for ChatAction {
             } => {
                 ChatDoc::set_message_pinned(doc, channel, msg, *pinned);
             }
+            _ => {}
+        }
+    }
+
+    /// Channel/workspace-structure mutations: create, rename, delete,
+    /// archive, mark-read, and the agent-work annotation on a message.
+    fn apply_channel(&self, doc: &mut Doc) {
+        match self {
             ChatAction::CreateChannel {
                 workspace,
                 category,
@@ -342,6 +372,15 @@ impl Action for ChatAction {
             } => {
                 ChatDoc::set_message_work(doc, channel, msg, work, say.as_deref());
             }
+            _ => {}
+        }
+    }
+
+    /// The voice-membership half of a call: join/leave and the shared mic /
+    /// screen-share / signalling state. See the module docs for why this
+    /// half — and only this half — is an action.
+    fn apply_call(&self, doc: &mut Doc) {
+        match self {
             ChatAction::JoinCall { channel, user } => {
                 ChatDoc::voice_join(doc, channel, user);
             }
@@ -380,15 +419,8 @@ impl Action for ChatAction {
             } => {
                 ChatDoc::voice_set_ticket(doc, channel, user, ticket);
             }
+            _ => {}
         }
-        Ok(())
-    }
-
-    fn locus(&self) -> ExecutionLocus {
-        // Chat mutations are client-local: each peer applies + replicates its own
-        // sends/edits/reactions; peers replay them. There is no authoritative
-        // ordering host for a message row.
-        ExecutionLocus::ClientLocal
     }
 }
 
@@ -400,6 +432,18 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`ChatAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a Chat action into a
 /// replayable envelope.
+///
+/// # Panics
+/// Never in practice: every [`ChatAction`] field is a plain, always-encodable
+/// value (String/i64/bool/Option/Vec and the same kind of struct/enum
+/// recursively), so the underlying JSON encode cannot fail short of a
+/// serializer bug. Returning a `Result` here would ripple into every
+/// `build: Arc<dyn Fn(&str) -> EncodedAction>` closure below, which the
+/// action-spec contract requires to hand back an `EncodedAction` directly.
+#[allow(
+    clippy::expect_used,
+    reason = "ChatAction is a plain serde-derived enum with no non-serializable content, so encode cannot fail short of a serializer bug; the ActionInput::Prompted closure contract requires returning EncodedAction directly, not a Result"
+)]
 pub fn encode(action: &ChatAction) -> EncodedAction {
     EncodedAction::encode(CHAT_ACTION_TYPE, action).expect("ChatAction is always serializable")
 }
@@ -619,6 +663,16 @@ pub struct ChatResourceCtx {
     pub participants: Vec<crate::mention::Participant>,
 }
 
+/// # Panics
+/// Never in practice: `ActionSpec::immediate` only fails if encoding `action`
+/// fails, and — as with [`encode`] — a `ChatAction` is always encodable.
+/// `provide_resources` (the only caller, via the palette's resource tree)
+/// returns a plain `Vec<Resource>` to match [`ResourceProvider`]'s contract,
+/// so there is no `Result` to propagate through.
+#[allow(
+    clippy::expect_used,
+    reason = "ChatAction is always encodable (see encode's reason), and the ResourceProvider trait contract this feeds returns Vec<Resource> directly, not a Result"
+)]
 fn immediate_spec(id: &str, label: &str, action: &ChatAction) -> ActionSpec {
     ActionSpec::immediate(id, label, CHAT_ACTION_TYPE, action).expect("encode chat action")
 }
@@ -650,10 +704,20 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
             ctx.workspace_name.clone()
         },
     );
+    workspace = workspace.with_action(new_channel_action_spec(ctx));
 
-    // Workspace-level: create a new text channel in the uncategorised group. The
-    // fresh id is minted once, here, at authoring time (like the on-screen "+").
-    workspace = workspace.with_action(ActionSpec::prompted(
+    for ch in &ctx.channels {
+        let channel = build_channel_resource(ctx, doc, ch);
+        workspace = workspace.with_child(channel);
+    }
+
+    vec![workspace]
+}
+
+/// Workspace-level: create a new text channel in the uncategorised group. The
+/// fresh id is minted once, here, at authoring time (like the on-screen "+").
+fn new_channel_action_spec(ctx: &ChatResourceCtx) -> ActionSpec {
+    ActionSpec::prompted(
         "new-channel",
         "New channel",
         "Name",
@@ -674,158 +738,170 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 ))
             }
         },
+    )
+}
+
+/// A channel resource: its actions (post/rename/archive/mark-read/delete),
+/// plus — only when it's the open channel — its messages as sub-resources.
+fn build_channel_resource(
+    ctx: &ChatResourceCtx,
+    doc: &AutoCommit,
+    ch: &ChannelResource,
+) -> Resource {
+    let mut channel = Resource::new(
+        format!("chat.channel:{}", ch.id),
+        "chat.channel",
+        channel_label(ch),
+    );
+
+    // Post a message (Send, from the palette). Id + timestamp minted in the
+    // closure at authoring time so the payload is self-contained.
+    channel = channel.with_action(ActionSpec::prompted(
+        "post",
+        "Post message",
+        "Message",
+        "type a message…",
+        ExecutionLocus::ClientLocal,
+        {
+            let cid = ch.id.clone();
+            let me = ctx.me.clone();
+            let room = ctx.participants.clone();
+            move |text: &str| {
+                let id = format!("m_{}", uuid::Uuid::new_v4().simple());
+                let mentions = crate::mention::resolve(text, &room);
+                encode(&send_message_action(
+                    &cid,
+                    &id,
+                    &me,
+                    now_secs(),
+                    text,
+                    None,
+                    None,
+                    mentions,
+                ))
+            }
+        },
     ));
 
-    for ch in &ctx.channels {
-        let mut channel = Resource::new(
-            format!("chat.channel:{}", ch.id),
-            "chat.channel",
-            channel_label(ch),
-        );
+    // Rename — a prompted action carrying the new name.
+    channel = channel.with_action(ActionSpec::prompted(
+        "rename",
+        "Rename channel",
+        "Name",
+        "channel name…",
+        ExecutionLocus::ClientLocal,
+        {
+            let cid = ch.id.clone();
+            move |name: &str| encode(&rename_channel_action(&cid, name.trim()))
+        },
+    ));
 
-        // Post a message (Send, from the palette). Id + timestamp minted in the
-        // closure at authoring time so the payload is self-contained.
-        channel = channel.with_action(ActionSpec::prompted(
-            "post",
-            "Post message",
-            "Message",
-            "type a message…",
-            ExecutionLocus::ClientLocal,
-            {
-                let cid = ch.id.clone();
-                let me = ctx.me.clone();
-                let room = ctx.participants.clone();
-                move |text: &str| {
-                    let id = format!("m_{}", uuid::Uuid::new_v4().simple());
-                    let mentions = crate::mention::resolve(text, &room);
-                    encode(&send_message_action(
-                        &cid,
-                        &id,
-                        &me,
-                        now_secs(),
-                        text,
-                        None,
-                        None,
-                        mentions,
-                    ))
-                }
-            },
-        ));
-
-        // Rename — a prompted action carrying the new name.
-        channel = channel.with_action(ActionSpec::prompted(
-            "rename",
-            "Rename channel",
-            "Name",
-            "channel name…",
-            ExecutionLocus::ClientLocal,
-            {
-                let cid = ch.id.clone();
-                move |name: &str| encode(&rename_channel_action(&cid, name.trim()))
-            },
-        ));
-
-        // Archive / unarchive toggles the stored flag.
-        if ch.archived {
-            channel = channel.with_action(immediate_spec(
-                "unarchive",
-                "Unarchive channel",
-                &archive_channel_action(&ch.id, false),
-            ));
-        } else {
-            channel = channel.with_action(immediate_spec(
-                "archive",
-                "Archive channel",
-                &archive_channel_action(&ch.id, true),
-            ));
-        }
-
-        // Mark the channel read: the watermark target is the current top-level
-        // count, read from the document at authoring time and baked in.
-        let count = ChatDoc::top_level_count(doc, &ch.id) as i64;
+    // Archive / unarchive toggles the stored flag.
+    if ch.archived {
         channel = channel.with_action(immediate_spec(
-            "mark-read",
-            "Mark as read",
-            &mark_read_action(&ch.id, &ctx.me, count),
+            "unarchive",
+            "Unarchive channel",
+            &archive_channel_action(&ch.id, false),
         ));
-
-        // Delete the whole channel.
+    } else {
         channel = channel.with_action(immediate_spec(
-            "delete",
-            "Delete channel",
-            &delete_channel_action(&ch.id),
+            "archive",
+            "Archive channel",
+            &archive_channel_action(&ch.id, true),
         ));
-
-        // Only the open channel exposes its messages as sub-resources.
-        if ch.id == ctx.active_channel {
-            for m in &ctx.messages {
-                let mut message = Resource::new(
-                    format!("chat.message:{}", m.id),
-                    "chat.message",
-                    m.label.clone(),
-                );
-
-                // Edit — prompted; the edit timestamp is minted in the closure.
-                message = message.with_action(ActionSpec::prompted(
-                    "edit",
-                    "Edit message",
-                    "Message",
-                    "new text…",
-                    ExecutionLocus::ClientLocal,
-                    {
-                        let cid = ch.id.clone();
-                        let mid = m.id.clone();
-                        move |text: &str| encode(&edit_message_action(&cid, &mid, text, now_secs()))
-                    },
-                ));
-
-                // React — prompted for an emoji; adds the local peer's reaction.
-                message = message.with_action(ActionSpec::prompted(
-                    "react",
-                    "Add reaction",
-                    "Emoji",
-                    "👍",
-                    ExecutionLocus::ClientLocal,
-                    {
-                        let cid = ch.id.clone();
-                        let mid = m.id.clone();
-                        let me = ctx.me.clone();
-                        move |emoji: &str| {
-                            encode(&add_reaction_action(&cid, &mid, emoji.trim(), &me))
-                        }
-                    },
-                ));
-
-                // Pin / unpin toggles the stored flag.
-                if m.pinned {
-                    message = message.with_action(immediate_spec(
-                        "unpin",
-                        "Unpin message",
-                        &pin_message_action(&ch.id, &m.id, false),
-                    ));
-                } else {
-                    message = message.with_action(immediate_spec(
-                        "pin",
-                        "Pin message",
-                        &pin_message_action(&ch.id, &m.id, true),
-                    ));
-                }
-
-                // Delete the message.
-                message = message.with_action(immediate_spec(
-                    "delete",
-                    "Delete message",
-                    &delete_message_action(&ch.id, &m.id),
-                ));
-
-                channel = channel.with_child(message);
-            }
-        }
-
-        workspace = workspace.with_child(channel);
     }
 
-    vec![workspace]
+    // Mark the channel read: the watermark target is the current top-level
+    // count, read from the document at authoring time and baked in.
+    let count = ChatDoc::top_level_count(doc, &ch.id) as i64;
+    channel = channel.with_action(immediate_spec(
+        "mark-read",
+        "Mark as read",
+        &mark_read_action(&ch.id, &ctx.me, count),
+    ));
+
+    // Delete the whole channel.
+    channel = channel.with_action(immediate_spec(
+        "delete",
+        "Delete channel",
+        &delete_channel_action(&ch.id),
+    ));
+
+    // Only the open channel exposes its messages as sub-resources.
+    if ch.id == ctx.active_channel {
+        for m in &ctx.messages {
+            let message = build_message_resource(ctx, ch, m);
+            channel = channel.with_child(message);
+        }
+    }
+
+    channel
+}
+
+/// A message resource: edit/react (prompted), pin-or-unpin, and delete.
+fn build_message_resource(
+    ctx: &ChatResourceCtx,
+    ch: &ChannelResource,
+    m: &MessageResource,
+) -> Resource {
+    let mut message = Resource::new(
+        format!("chat.message:{}", m.id),
+        "chat.message",
+        m.label.clone(),
+    );
+
+    // Edit — prompted; the edit timestamp is minted in the closure.
+    message = message.with_action(ActionSpec::prompted(
+        "edit",
+        "Edit message",
+        "Message",
+        "new text…",
+        ExecutionLocus::ClientLocal,
+        {
+            let cid = ch.id.clone();
+            let mid = m.id.clone();
+            move |text: &str| encode(&edit_message_action(&cid, &mid, text, now_secs()))
+        },
+    ));
+
+    // React — prompted for an emoji; adds the local peer's reaction.
+    message = message.with_action(ActionSpec::prompted(
+        "react",
+        "Add reaction",
+        "Emoji",
+        "👍",
+        ExecutionLocus::ClientLocal,
+        {
+            let cid = ch.id.clone();
+            let mid = m.id.clone();
+            let me = ctx.me.clone();
+            move |emoji: &str| encode(&add_reaction_action(&cid, &mid, emoji.trim(), &me))
+        },
+    ));
+
+    // Pin / unpin toggles the stored flag.
+    if m.pinned {
+        message = message.with_action(immediate_spec(
+            "unpin",
+            "Unpin message",
+            &pin_message_action(&ch.id, &m.id, false),
+        ));
+    } else {
+        message = message.with_action(immediate_spec(
+            "pin",
+            "Pin message",
+            &pin_message_action(&ch.id, &m.id, true),
+        ));
+    }
+
+    // Delete the message.
+    message = message.with_action(immediate_spec(
+        "delete",
+        "Delete message",
+        &delete_message_action(&ch.id, &m.id),
+    ));
+
+    message
 }
 
 /// Wall-clock seconds since the epoch, used by the prompted palette closures to
@@ -864,14 +940,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 

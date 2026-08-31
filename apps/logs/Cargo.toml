@@ -2,6 +2,8 @@
 name = "logs"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "logs"
@@ -15,7 +17,6 @@ path = "src/main.rs"
 ui = { path = "../../ui" }
 automerge.workspace = true
 serde_json.workspace = true
-tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

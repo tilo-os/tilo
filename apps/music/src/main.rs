@@ -27,10 +27,23 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -42,7 +55,29 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+const SHOT_SCENARIOS: &[&str] = &[
+    "sidebar",
+    "collapsed",
+    "context",
+    "new-playlist",
+    "search-focus",
+    "skeleton",
+    "nowplaying",
+    "queue",
+    "lyrics",
+    "downloading",
+    "search-tabs",
+    "search-songs",
+    "search-artists",
+    "artist-page",
+    "album-page",
+];
 
+/// # Errors
+///
+/// Returns an error if `--probe` fails: backend init, the search itself, a
+/// zero-result search, or resolving/verifying the top hit's audio stream
+/// (network / API failure).
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -54,7 +89,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(pos) = args.iter().position(|a| a == "--probe") {
         // Join all trailing args so an unquoted multi-word query
         // (`--probe aurora runaway`) is still taken as one search.
-        let query = args[pos + 1..].join(" ");
+        let query = args
+            .get(pos + 1..)
+            .map_or_else(String::new, |a| a.join(" "));
         let query = if query.trim().is_empty() {
             "aurora runaway".to_string()
         } else {
@@ -89,45 +126,47 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_value_arg(&args, "--viewport")
             .and_then(|s| parse_viewport(&s))
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        return run_bench(n, viewport);
-    }
-
-    if let Some(out) = parse_shots_arg(&args) {
-        let scenario = parse_value_arg(&args, "--scenario").unwrap_or_default();
-        let viewport = parse_value_arg(&args, "--viewport")
-            .and_then(|s| parse_viewport(&s))
-            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        // `--theme light|dark` (or `QOS_MUSIC_THEME`) picks the OS theme the frame
-        // renders in — the shot proves the app looks right in both. Default dark.
-        let theme = pick_shot_theme(&args);
-        // `--live` captures the real screen: fetch live Home/album/artist content
-        // + real cover art off-thread, wait for it to settle, then render.
-        let live = args.iter().any(|a| a == "--live")
-            || std::env::var("QOS_MUSIC_LIVE").is_ok_and(|v| !v.is_empty());
-        if live {
-            let play = parse_value_arg(&args, "--play")
-                .or_else(|| std::env::var("QOS_MUSIC_PLAY").ok())
-                .filter(|s| !s.is_empty());
-            render_live_shot_to_png(viewport, &out, play.as_deref(), theme)?;
-        } else {
-            render_shot_to_png(music::app_root_for_shot(&scenario), viewport, &out, theme)?;
-        }
+        run_bench(n, viewport);
         return Ok(());
     }
 
-    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
-    // keystrokes against the real widget tree with no display, persisting
-    // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, music::app_root(), "dev.qos.music"));
-    }
+    // The ordinary GUI, screenshots, and headless driver share the standard
+    // lifecycle. Probe/relay/benchmark remain explicit command modes above:
+    // they do not construct a GUI and therefore are not launch lifecycle.
+    ui::launch::run(
+        &LaunchSpec::new("dev.qos.music", music::app_root)
+            .shot_handler(render_shot)
+            .allowed_flags(&["--live"])
+            .allowed_options(&["--theme", "--play"])
+            .scenarios(SHOT_SCENARIOS)
+            .configure_app(configure_app),
+    )?;
+    Ok(())
+}
 
-    let (state, autosave) = ui::persist::open("dev.qos.music");
-    let mut app = ui::App::new(state, music::app_root()).with_autosave(autosave);
-    // Register Music's actions so the shell's Ctrl+K palette can decode + replay
-    // the same library edits the on-screen affordances dispatch.
+fn configure_app(app: &mut ui::App) {
     music::actions::register(app.action_registry_mut());
-    app.run();
+}
+
+fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or_else(|| {
+        LaunchError::Operation("music screenshot handler was called without --shots".into())
+    })?;
+    let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+    let scenario = args.scenario.as_deref().unwrap_or_default();
+    let theme = pick_shot_theme(args);
+    let live =
+        args.has("--live") || std::env::var("QOS_MUSIC_LIVE").is_ok_and(|value| !value.is_empty());
+    if live {
+        let play = args
+            .value("--play")
+            .map(str::to_owned)
+            .or_else(|| std::env::var("QOS_MUSIC_PLAY").ok())
+            .filter(|value| !value.is_empty());
+        render_live_shot_to_png(viewport, out, play.as_deref(), &theme);
+    } else {
+        render_shot_to_png(music::app_root_for_shot(scenario), viewport, out, &theme);
+    }
     Ok(())
 }
 
@@ -148,9 +187,9 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
     let hits = backend
         .search_tracks(query)
         .map_err(|e| format!("search failed (network / API): {e}"))?;
-    if hits.is_empty() {
+    let Some(top) = hits.first() else {
         return Err("search returned zero results — cannot prove the path".into());
-    }
+    };
     for (i, h) in hits.iter().take(10).enumerate() {
         let (m, s) = (h.duration_s / 60, h.duration_s % 60);
         println!(
@@ -162,7 +201,22 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let top = &hits[0];
+    probe_stream(&backend, top)?;
+    probe_home(&backend);
+    probe_artist(&backend, top);
+    probe_album(&backend, top);
+
+    println!("\nprobe OK — search + stream + home + artist + album are real.");
+    Ok(())
+}
+
+/// Resolve a real audio stream for the top hit, print its details, and prove
+/// the URL serves real bytes (+ a best-effort decode).
+#[cfg(feature = "live")]
+fn probe_stream(
+    backend: &impl music::backend::MusicBackend,
+    top: &music::backend::TrackHit,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("\n== resolve a real audio stream for the top hit ==");
     println!("   {} — {}  ({})", top.title, top.artist, top.video_id);
     let stream = backend
@@ -181,15 +235,21 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
         "   API content-length: {} bytes ({mib:.2} MiB)",
         stream.size_bytes
     );
-    println!("   URL: {}", stream.url);
+    // Signed media URLs contain short-lived query credentials. Keep them out of
+    // local and CI logs while still verifying the exact URL below.
+    println!("   source URL resolved (redacted)");
 
     // Independent proof the URL actually serves audio bytes.
     verify_stream_http(&stream.url)?;
 
     // Best-effort decode proof (only with the `audio` feature / GStreamer).
     probe_decode(&stream.url);
+    Ok(())
+}
 
-    // Real Home content (charts / new releases / top artists) with cover art.
+/// Real Home content (charts / new releases / top artists) with cover art.
+#[cfg(feature = "live")]
+fn probe_home(backend: &impl music::backend::MusicBackend) {
     println!("\n== real Home content (YouTube-Music charts) ==");
     match backend.home() {
         Ok(home) => {
@@ -210,58 +270,65 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(e) => println!("   home unavailable: {e}"),
     }
+}
 
-    // Real artist page for the top hit's artist (proves the artist endpoint +
-    // yields a channel id usable for `QOS_MUSIC_VIEW=artist:<id>`).
-    if let Some(aid) = top.artist_id.clone() {
-        println!("\n== real artist page ==  (channel id: {aid})");
-        match backend.artist(&aid) {
-            Ok(page) => {
-                println!(
-                    "   {}  \u{2014}  {} subscribers, {} top songs, {} albums",
-                    page.name,
-                    page.subscriber_count,
-                    page.tracks.len(),
-                    page.albums.len()
-                );
-                if let Some(t) = page.tracks.first() {
-                    println!("   top song: {} [{}]", t.title, t.video_id);
-                }
-                if let Some(a) = page.albums.first() {
-                    println!("   album: {} ({})", a.title, a.year);
-                }
+/// Real artist page for the top hit's artist (proves the artist endpoint +
+/// yields a channel id usable for `QOS_MUSIC_VIEW=artist:<id>`).
+#[cfg(feature = "live")]
+fn probe_artist(backend: &impl music::backend::MusicBackend, top: &music::backend::TrackHit) {
+    let Some(aid) = top.artist_id.clone() else {
+        return;
+    };
+    println!("\n== real artist page ==  (channel id: {aid})");
+    match backend.artist(&aid) {
+        Ok(page) => {
+            println!(
+                "   {}  \u{2014}  {} subscribers, {} top songs, {} albums",
+                page.name,
+                page.subscriber_count,
+                page.tracks.len(),
+                page.albums.len()
+            );
+            if let Some(t) = page.tracks.first() {
+                println!("   top song: {} [{}]", t.title, t.video_id);
             }
-            Err(e) => println!("   artist page unavailable: {e}"),
-        }
-    }
-
-    // Real album page (ordered track list) for the top hit's album.
-    if let Some(alid) = top.album_id.clone() {
-        println!("\n== real album page ==  (album id: {alid})");
-        match backend.album(&alid) {
-            Ok(al) => {
-                println!(
-                    "   {} \u{2014} {} ({}), {} tracks",
-                    al.title,
-                    al.artist_name,
-                    al.year,
-                    al.tracks.len()
-                );
-                for tk in al.tracks.iter().take(3) {
-                    println!("        {}. {} [{}]", tk.title, tk.artist, tk.video_id);
-                }
+            if let Some(a) = page.albums.first() {
+                println!("   album: {} ({})", a.title, a.year);
             }
-            Err(e) => println!("   album page unavailable: {e}"),
         }
+        Err(e) => println!("   artist page unavailable: {e}"),
     }
+}
 
-    println!("\nprobe OK — search + stream + home + artist + album are real.");
-    Ok(())
+/// Real album page (ordered track list) for the top hit's album.
+#[cfg(feature = "live")]
+fn probe_album(backend: &impl music::backend::MusicBackend, top: &music::backend::TrackHit) {
+    let Some(alid) = top.album_id.clone() else {
+        return;
+    };
+    println!("\n== real album page ==  (album id: {alid})");
+    match backend.album(&alid) {
+        Ok(al) => {
+            println!(
+                "   {} \u{2014} {} ({}), {} tracks",
+                al.title,
+                al.artist_name,
+                al.year,
+                al.tracks.len()
+            );
+            for tk in al.tracks.iter().take(3) {
+                println!("        {}. {} [{}]", tk.title, tk.artist, tk.video_id);
+            }
+        }
+        Err(e) => println!("   album page unavailable: {e}"),
+    }
 }
 
 /// Range-GET the resolved stream URL to prove it serves real media bytes.
 #[cfg(feature = "live")]
 fn verify_stream_http(url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+
     println!("\n== independent HTTP verification (Range GET first 64 KiB) ==");
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
@@ -289,7 +356,10 @@ fn verify_stream_http(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(cr) = content_range {
         println!("   Content-Range: {cr}");
     }
-    let sig: String = bytes.iter().take(12).map(|b| format!("{b:02x} ")).collect();
+    let sig = bytes.iter().take(12).fold(String::new(), |mut acc, b| {
+        let _ = write!(acc, "{b:02x} ");
+        acc
+    });
     println!(
         "   received {} bytes; first 12: {}",
         bytes.len(),
@@ -395,19 +465,6 @@ fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     std::process::exit(2);
 }
 
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
-}
-
 /// Parse a `--flag VALUE` or `--flag=VALUE` pair out of argv.
 fn parse_value_arg(args: &[String], flag: &str) -> Option<String> {
     let mut iter = args.iter().skip(1);
@@ -432,8 +489,10 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 /// The OS theme a `--shots` frame renders in: `--theme light|dark` (or the
 /// `QOS_MUSIC_THEME` env), defaulting to dark. Lets the same scenario be
 /// captured in both themes to prove the app looks right either way.
-fn pick_shot_theme(args: &[String]) -> Theme {
-    let sel = parse_value_arg(args, "--theme")
+fn pick_shot_theme(args: &LaunchArgs) -> Theme {
+    let sel = args
+        .value("--theme")
+        .map(str::to_owned)
         .or_else(|| std::env::var("QOS_MUSIC_THEME").ok())
         .unwrap_or_default();
     match sel.to_lowercase().as_str() {
@@ -445,7 +504,7 @@ fn pick_shot_theme(args: &[String]) -> Theme {
 /// Headless benchmark: render the current view (`QOS_MUSIC_VIEW`) `n` times
 /// offscreen, timing the full per-frame CPU path (sync → layout → draw) that
 /// `QUICK_UI_PERF` reports live. No GPU submit, no display — reproducible.
-fn run_bench(n: usize, viewport: (u32, u32)) -> Result<(), Box<dyn std::error::Error>> {
+fn run_bench(n: usize, viewport: (u32, u32)) {
     use std::time::Instant;
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
@@ -479,19 +538,21 @@ fn run_bench(n: usize, viewport: (u32, u32)) -> Result<(), Box<dyn std::error::E
         );
         samples.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
-    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    samples.sort_by(f64::total_cmp);
     let sum: f64 = samples.iter().sum();
     let avg = sum / n as f64;
-    let p50 = samples[n / 2];
-    let p95 = samples[(n as f64 * 0.95) as usize];
-    let max = *samples.last().unwrap();
+    let p50 = samples.get(n / 2).copied().unwrap_or(0.0);
+    let p95 = samples
+        .get((n as f64 * 0.95) as usize)
+        .copied()
+        .unwrap_or(0.0);
+    let max = samples.last().copied().unwrap_or(0.0);
     let view = std::env::var("QOS_MUSIC_VIEW").unwrap_or_else(|_| "home".into());
     let nocache = std::env::var("QOS_MUSIC_NOCACHE").is_ok();
     println!(
         "bench view={view} nocache={nocache} frames={n} @ {}x{} :  avg={avg:.3}ms  p50={p50:.3}ms  p95={p95:.3}ms  max={max:.3}ms",
         viewport.0, viewport.1
     );
-    Ok(())
 }
 
 /// Run one offscreen frame against `widget` and return the drawn Vello scene.
@@ -512,6 +573,13 @@ fn render_widget_frame(
     widget.sync(&mut state.doc, &state.root);
 
     let child = widget.build_layout(&mut taffy, theme, &mut node_map);
+    // `new_with_children` only fails for a child `NodeId` from a different
+    // tree, which never happens here — `child` was just built in this exact
+    // `taffy` above.
+    #[allow(
+        clippy::expect_used,
+        reason = "new_with_children only errors for a child NodeId from a different tree; `child` was just built in this exact taffy above"
+    )]
     let root = taffy
         .new_with_children(
             Style {
@@ -528,6 +596,13 @@ fn render_widget_frame(
     {
         let measure_map = node_map.clone();
         let tr = &mut *text_renderer;
+        // `compute_layout_with_measure` only errors for a node absent from
+        // this tree, which cannot happen for the `root` this function just
+        // built moments ago.
+        #[allow(
+            clippy::expect_used,
+            reason = "compute_layout_with_measure only errors for a node absent from this tree; root was just built in this exact taffy above"
+        )]
         taffy
             .compute_layout_with_measure(
                 root,
@@ -575,8 +650,8 @@ fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
-    theme: Theme,
-) -> Result<(), Box<dyn std::error::Error>> {
+    theme: &Theme,
+) {
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -586,12 +661,11 @@ fn render_shot_to_png(
         &mut state,
         viewport,
         &mut text_renderer,
-        &theme,
+        theme,
         &presence,
         &permission,
     );
     write_scene_png(&scene, viewport, out);
-    Ok(())
 }
 
 /// Live shot: build the real Music app, let its background worker + image cache
@@ -602,8 +676,8 @@ fn render_live_shot_to_png(
     viewport: (u32, u32),
     out: &std::path::Path,
     play: Option<&str>,
-    theme: Theme,
-) -> Result<(), Box<dyn std::error::Error>> {
+    theme: &Theme,
+) {
     use std::time::Duration;
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
@@ -612,15 +686,7 @@ fn render_live_shot_to_png(
     let mut state = ui::State::new();
 
     let mut frame = |app: &mut music::MusicApp, state: &mut ui::State| {
-        render_widget_frame(
-            app,
-            state,
-            viewport,
-            &mut tr,
-            &theme,
-            &presence,
-            &permission,
-        )
+        render_widget_frame(app, state, viewport, &mut tr, theme, &presence, &permission)
     };
 
     if let Some(q) = play {
@@ -668,5 +734,4 @@ fn render_live_shot_to_png(
 
     let scene = frame(&mut app, &mut state);
     write_scene_png(&scene, viewport, out);
-    Ok(())
 }

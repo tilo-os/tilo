@@ -5,6 +5,16 @@
 //! tampering of an *encoded* envelope makes signature verification
 //! fail — this is the property that makes signed ops trustworthy.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::{Duration, SystemTime};
 
 use collab_types::canonical::from_canonical_bytes;
@@ -28,7 +38,9 @@ fn fake_sig(byte: u8) -> Signature {
 }
 
 fn t(secs: u64) -> SystemTime {
-    SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(secs))
+        .unwrap()
 }
 
 // ---------- round-trips for every wire type ----------

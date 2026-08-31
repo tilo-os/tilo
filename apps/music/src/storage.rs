@@ -51,6 +51,11 @@ pub fn load_from(path: &Path) -> Option<AutoCommit> {
 
 /// Atomically persist `doc` to `path` (temp file + rename) so a crash mid-write
 /// can't corrupt the saved library.
+///
+/// # Errors
+///
+/// Returns an error if the parent directory can't be created, or if the
+/// atomic temp-file write/rename fails (e.g. permissions, no space left).
 pub fn save_to(path: &Path, doc: &mut AutoCommit) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

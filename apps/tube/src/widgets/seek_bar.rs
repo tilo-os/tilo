@@ -67,6 +67,7 @@ impl SeekBar {
 
     /// Stable, addressable id so headless tests can resolve the scrubber's
     /// laid-out rect and drive a real drag-to-seek through it.
+    #[must_use]
     pub fn id(mut self, id: &str) -> Self {
         self.test_id = Some(id.to_string());
         self
@@ -105,6 +106,11 @@ impl Widget for SeekBar {
         self.rect = super::layout_rect(taffy, node, origin);
     }
 
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "conventional short names for the track geometry (x0/x1: span, w: width, \
+                  cy: vertical center) used consistently across this module's draw code"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,

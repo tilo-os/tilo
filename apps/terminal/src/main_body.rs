@@ -123,8 +123,14 @@ impl CellColor {
     }
     fn unpack(b: &[u8]) -> Self {
         match b.first().copied().unwrap_or(0) {
-            1 => CellColor::Indexed(b[1]),
-            2 => CellColor::Rgb(b[1], b[2], b[3]),
+            1 => b
+                .get(1)
+                .copied()
+                .map_or(CellColor::Default, CellColor::Indexed),
+            2 => match (b.get(1), b.get(2), b.get(3)) {
+                (Some(&r), Some(&g), Some(&blue)) => CellColor::Rgb(r, g, blue),
+                _ => CellColor::Default,
+            },
             _ => CellColor::Default,
         }
     }
@@ -134,6 +140,11 @@ impl CellColor {
 /// / truecolor); the four SGR style bits plus the wide-glyph continuation
 /// marker are packed into a single flags byte.
 #[derive(Clone, Copy, PartialEq, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is an independent SGR style bit, packed into one flags byte by `pack`; \
+              grouping them would not change what they mean"
+)]
 pub struct Attr {
     pub fg: CellColor,
     pub bg: CellColor,
@@ -193,10 +204,14 @@ impl Attr {
         if bytes.len() < ATTR_BYTES {
             return Self::default();
         }
-        let flags = bytes[8];
+        let flags = bytes.get(8).copied().unwrap_or(0);
+        let link_id = match (bytes.get(9), bytes.get(10)) {
+            (Some(&lo), Some(&hi)) => u16::from_le_bytes([lo, hi]),
+            _ => 0,
+        };
         Self {
-            fg: CellColor::unpack(&bytes[0..4]),
-            bg: CellColor::unpack(&bytes[4..8]),
+            fg: CellColor::unpack(bytes.get(0..4).unwrap_or(&[])),
+            bg: CellColor::unpack(bytes.get(4..8).unwrap_or(&[])),
             bold: flags & 0b000_0001 != 0,
             italic: flags & 0b000_0010 != 0,
             underline: flags & 0b000_0100 != 0,
@@ -204,7 +219,7 @@ impl Attr {
             is_wide_cont: flags & 0b001_0000 != 0,
             dim: flags & 0b010_0000 != 0,
             strike: flags & 0b100_0000 != 0,
-            link_id: u16::from_le_bytes([bytes[9], bytes[10]]),
+            link_id,
         }
     }
 }
@@ -231,6 +246,11 @@ impl Default for Attr {
 /// performer so parsed modes (bracketed paste, cursor visibility, mouse
 /// reporting, application cursor keys) survive across PTY reads.
 #[derive(Clone, Copy, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is an independent DEC private mode (CSI ? Ps h/l), set and read \
+              separately by the vte performer; grouping them would not change what they mean"
+)]
 pub struct TermModes {
     /// `?25` — block cursor drawn when true (DECTCEM).
     pub cursor_visible: bool,
@@ -289,6 +309,12 @@ impl Default for TermModes {
 /// / [`scroll_offset`](Self::scroll_offset)) and the read-back accessors
 /// ([`grid_text`](Self::grid_text) / [`grid_size`](Self::grid_size)) let a host
 /// inspect and control the session without a GPU.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent piece of terminal/selection state \
+              (force_resync, pending_wrap, alt_active, select_to_copy, …) read and \
+              set on its own; grouping them would not change what they mean"
+)]
 pub struct TerminalWidget {
     rect: Rect,
     pty_write: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -495,12 +521,8 @@ impl TerminalWidget {
     ) -> Self {
         let width = 80;
         let height = 24;
-        let mut grid = Vec::new();
-        let mut grid_attrs = Vec::new();
-        for _ in 0..height {
-            grid.push(" ".repeat(width));
-            grid_attrs.push(vec![Attr::default(); width]);
-        }
+        let grid = vec![" ".repeat(width); height];
+        let grid_attrs = vec![vec![Attr::default(); width]; height];
 
         Self {
             rect: Rect::ZERO,
@@ -864,6 +886,12 @@ impl TerminalWidget {
     /// input processing — the PTY pump feeds real shell output through it,
     /// and tests / headless screenshot scenarios feed canned VT sequences
     /// through the very same path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `grid_id`, `alt_grid_id`, `cursor_id` or `links_id` are
+    /// still unset — an internal invariant `init_crdt`, called first here,
+    /// always establishes.
     pub fn feed(&mut self, state: &mut AutoCommit, root: &ObjId, bytes: &[u8]) {
         self.init_crdt(state, root);
 
@@ -1224,97 +1252,23 @@ impl Widget for TerminalWidget {
         self.init_crdt(state, root);
 
         // Mirror whichever buffer is active. The alt buffer has no scrollback,
-        // so its list is exactly `height` lines.
+        // so its list is exactly `height` lines. Cloned rather than borrowed:
+        // the mirror refresh below needs `&mut self` while still reading
+        // these ids, and a clone of a handful of `ObjId`s is cheap next to a
+        // full grid re-read.
         let (grid_id, line_ids) = if self.alt_active {
-            (self.alt_grid_id.clone(), &self.alt_line_ids)
+            (self.alt_grid_id.clone(), self.alt_line_ids.clone())
         } else {
-            (self.grid_id.clone(), &self.line_ids)
+            (self.grid_id.clone(), self.line_ids.clone())
         };
-        let grid_id = match grid_id {
-            Some(id) => id,
-            None => return,
+        let Some(grid_id) = grid_id else {
+            return;
         };
 
         let len = state.length(&grid_id);
-
-        // Choose the first line to re-read. A full pass rebuilds the mirror;
-        // the incremental pass keeps the mirror aligned by dropping the oldest
-        // lines that were trimmed off the CRDT front, then re-reads from the
-        // *previous* frame's screen top through the end — that spans every row
-        // the emulator could have touched (the old screen scrolled into
-        // history plus everything freshly appended).
-        let start = if full_reread {
-            self.grid.clear();
-            self.grid_attrs.clear();
-            self.trimmed_front = 0;
-            0
-        } else {
-            let trimmed = self.trimmed_front;
-            let drop = trimmed.min(self.grid.len());
-            self.grid.drain(0..drop);
-            self.grid_attrs.drain(0..drop);
-            self.trimmed_front = 0;
-            self.synced_len
-                .saturating_sub(self.height)
-                .saturating_sub(trimmed)
-                .min(self.grid.len())
-        };
-        self.grid.resize(len, String::new());
-        self.grid_attrs.resize(len, Vec::new());
-
-        for i in start..len.min(line_ids.len()) {
-            if let Ok(Some((Value::Object(ObjType::Text), text_id))) =
-                state.get(&line_ids[i], "text")
-                && let Ok(text) = state.text(&text_id)
-            {
-                self.grid[i] = text;
-            }
-            if let Ok(Some((Value::Scalar(v), _))) = state.get(&line_ids[i], "attrs")
-                && let automerge::ScalarValue::Bytes(bytes) = v.as_ref()
-            {
-                self.grid_attrs[i] = bytes.chunks_exact(ATTR_BYTES).map(Attr::unpack).collect();
-            }
-        }
-        self.mirror_valid = true;
-        self.synced_len = len;
-
-        // Refresh the window title + hyperlink registry from the CRDT so a
-        // collaborator picking up a remote OSC 0/2/8 sees the same title and
-        // can resolve the same links. Cheap: title is one scalar, links is a
-        // small map keyed by link id.
-        if let Ok(Some((Value::Scalar(v), _))) = state.get(root, "terminal_title")
-            && let Some(t) = v.to_str()
-        {
-            self.title = t.to_string();
-        }
-        if let Some(links_id) = self.links_id.clone() {
-            self.links.clear();
-            for key in state.keys(&links_id) {
-                if let Ok(Some((Value::Scalar(v), _))) = state.get(&links_id, &key)
-                    && let (Ok(id), Some(url)) = (key.parse::<u16>(), v.to_str())
-                {
-                    self.links.insert(id, url.to_string());
-                }
-            }
-        }
-
-        let active_len = line_ids.len();
-        if let Some(cursor_id) = self.cursor_id.as_ref() {
-            if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "x")
-                && let Some(x) = v.to_i64()
-            {
-                self.cursor_x = x as usize;
-            }
-            if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "y")
-                && let Some(y) = v.to_i64()
-            {
-                let abs_y = y as usize;
-                let history_offset = active_len.saturating_sub(self.height);
-                self.cursor_y = abs_y
-                    .saturating_sub(history_offset)
-                    .min(self.height.saturating_sub(1));
-            }
-        }
+        self.refresh_grid_mirror(state, &line_ids, len, full_reread);
+        self.refresh_title_and_links(state, root);
+        self.refresh_cursor_from_crdt(state, line_ids.len());
     }
 
     fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
@@ -1465,140 +1419,44 @@ impl Widget for TerminalWidget {
         }
 
         // Paint the selection BEFORE the cell text so glyphs read on top of
-        // the highlight. Selection rows are buffer-absolute, so a row only
-        // paints when it falls inside the current viewport window
-        // `[start_y, start_y + visible_rows)`, translated to an on-screen row.
-        if let Some(sel) = self.selection {
-            // A slightly stronger tint than a hover veneer so a live selection
-            // reads clearly over black, still translucent so glyphs show.
-            let sel_color = theme.accent_primary.with_alpha_factor(0.35);
-            for (row, start_col, end_col) in selection_row_spans(&sel, self.width) {
-                if row < start_y || row >= start_y + visible_rows {
-                    continue;
-                }
-                let vrow = row - start_y;
-                let py = (grid_rect.y0 + vrow as f64 * self.char_h).floor();
-                let x0 = grid_rect.x0 + padding_x + start_col as f64 * self.char_w;
-                let x1 = grid_rect.x0 + padding_x + end_col as f64 * self.char_w;
-                let band = Rect::new(x0, py, x1, py + self.char_h);
-                scene.fill(Fill::NonZero, transform, sel_color, None, &band);
-            }
-        }
+        // the highlight.
+        self.draw_selection_highlight(
+            scene,
+            transform,
+            theme,
+            grid_rect,
+            padding_x,
+            start_y,
+            visible_rows,
+        );
 
-        for (y, line_text) in self
-            .grid
-            .iter()
-            .skip(start_y)
-            .take(visible_rows)
-            .enumerate()
-        {
-            let py = (grid_rect.y0 + y as f64 * self.char_h).floor();
-            let attrs_idx = y + start_y;
-            if attrs_idx >= self.grid_attrs.len() {
-                continue;
-            }
-            let attrs = &self.grid_attrs[attrs_idx];
+        self.draw_cell_rows(
+            scene,
+            transform,
+            text_renderer,
+            font_size,
+            palette,
+            &mono,
+            grid_rect,
+            padding_x,
+            start_y,
+            visible_rows,
+        );
 
-            let mut current_run = String::new();
-            let mut current_attr: Option<Attr> = None;
-            let mut run_start_cell_idx = 0;
-
-            let mut cell_idx = 0;
-            for c in line_text.chars() {
-                let c_w = c.width().unwrap_or(1);
-                if cell_idx >= self.width {
-                    break;
-                }
-                let attr = if cell_idx < attrs.len() {
-                    attrs[cell_idx]
-                } else {
-                    Attr::default()
-                };
-
-                if Some(attr) != current_attr {
-                    if !current_run.is_empty() {
-                        self.draw_run(
-                            scene,
-                            &current_run,
-                            current_attr.unwrap(),
-                            py,
-                            run_start_cell_idx as f64 * self.char_w + padding_x,
-                            text_renderer,
-                            transform,
-                            font_size,
-                            palette,
-                            &mono,
-                        );
-                    }
-                    current_run.clear();
-                    current_attr = Some(attr);
-                    run_start_cell_idx = cell_idx;
-                }
-                current_run.push(c);
-                cell_idx += c_w;
-            }
-            if !current_run.is_empty() {
-                self.draw_run(
-                    scene,
-                    &current_run,
-                    current_attr.unwrap(),
-                    py,
-                    run_start_cell_idx as f64 * self.char_w + padding_x,
-                    text_renderer,
-                    transform,
-                    font_size,
-                    palette,
-                    &mono,
-                );
-            }
-        }
-
-        // Absolute grid row of the cursor → visible row (may be scrolled off).
-        // The block cursor only makes sense pinned to the live output; while
-        // the user has scrolled back into history we hide it (matching xterm/
-        // kitty), so it doesn't imply the caret is somewhere on an old line.
-        let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
-        let scrolled_back = !self.alt_active && scroll > 0;
-        if self.modes.cursor_visible
-            && !scrolled_back
-            && cursor_abs >= start_y
-            && cursor_abs < start_y + visible_rows.max(1)
-        {
-            let cy_local = cursor_abs - start_y;
-            let cx = grid_rect.x0 + padding_x + self.cursor_x as f64 * self.char_w;
-            let cy = (grid_rect.y0 + cy_local as f64 * self.char_h).floor();
-            // A rounded, slightly inset caret reads softer than a hard-edged
-            // full-cell block while staying an unmistakable, theme-coloured
-            // "inverted cell" cursor.
-            let cursor_rect = RoundedRect::from_rect(
-                Rect::new(cx, cy + 0.5, cx + self.char_w, cy + self.char_h - 0.5),
-                2.0,
-            );
-            scene.fill(Fill::NonZero, transform, cursor_color, None, &cursor_rect);
-
-            // Re-punch the glyph beneath the block in the background color so
-            // the character under the caret stays legible (a solid block that
-            // hides its own cell reads as a blank cursor). This is the standard
-            // "inverted cell" block cursor.
-            if let Some(ch) = self
-                .grid
-                .get(cursor_abs)
-                .and_then(|line| cell_char_at(line, self.cursor_x))
-                && !ch.is_whitespace()
-            {
-                text_renderer.draw_text_font(
-                    scene,
-                    &ch.to_string(),
-                    font_size,
-                    palette.bg_default,
-                    transform * Affine::translate((cx, cy)),
-                    None,
-                    TextWeight::Regular,
-                    false,
-                    &mono,
-                );
-            }
-        }
+        self.draw_block_cursor(
+            scene,
+            transform,
+            text_renderer,
+            font_size,
+            palette,
+            &mono,
+            grid_rect,
+            padding_x,
+            start_y,
+            visible_rows,
+            scroll,
+            cursor_color,
+        );
 
         // A themed scrollbar indicator in the reserved right gutter, shown only
         // when the buffer overflows the viewport.
@@ -1632,116 +1490,25 @@ impl Widget for TerminalWidget {
         self.init_crdt(state, root);
 
         match event {
-            WindowEvent::MouseWheel { delta, .. } => {
-                if !self.rect.contains(self.last_cursor_pos) {
-                    return;
-                }
-                let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (*y * 3.0).round() as i32,
-                    MouseScrollDelta::PixelDelta(pos) => {
-                        (pos.y / self.char_h.max(1.0)).round() as i32
-                    }
-                };
-                if lines == 0 {
-                    return;
-                }
-                if self.alt_active && !self.modes.mouse_report {
-                    // In the alternate screen (pager / editor) forward wheel
-                    // notches as arrow keys so `less`/`man` scroll naturally.
-                    // Honour DECCKM so apps that requested application cursor
-                    // keys (`vim`, `less -R`) receive the SS3 form they expect.
-                    let seq: &[u8] = match (lines > 0, self.modes.app_cursor_keys) {
-                        (true, false) => b"\x1b[A",
-                        (false, false) => b"\x1b[B",
-                        (true, true) => b"\x1bOA",
-                        (false, true) => b"\x1bOB",
-                    };
-                    let reps = lines.unsigned_abs() as usize;
-                    let mut out = Vec::new();
-                    for _ in 0..reps {
-                        out.extend_from_slice(seq);
-                    }
-                    self.write_input(&out);
-                } else if !self.alt_active {
-                    if lines > 0 {
-                        self.scroll_up(lines as usize);
-                    } else {
-                        self.scroll_down((-lines) as usize);
-                    }
-                }
-                *handled = true;
-            }
+            WindowEvent::MouseWheel { delta, .. } => self.handle_wheel_event(delta, handled),
             WindowEvent::CursorMoved { position, .. } => {
-                // Always cache pointer position so the next MouseInput::Pressed
-                // event can hit-test without needing the position from
-                // winit (Pressed arrives without coordinates).
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_cursor_pos = logical;
-                if self.drag_select.is_dragging() && self.selection.is_some() {
-                    let pos = self.pos_from_logical(logical);
-                    self.extend_drag_to(pos);
-                    *handled = true;
-                }
+                self.handle_cursor_moved_event(*position, scale_factor, handled);
             }
             WindowEvent::MouseInput {
                 state: element_state,
                 button: MouseButton::Left,
                 ..
-            } => {
-                // A left click while the context menu is open routes to the menu
-                // (pick a row, or dismiss on click-outside) instead of starting a
-                // new selection.
-                if matches!(element_state, ElementState::Pressed) && self.context_menu.is_open() {
-                    self.click_context_menu_at_cursor();
-                    *handled = true;
-                    return;
-                }
-                // Mouse reporting (ESC[?1000h family) is parsed into `modes`
-                // but click forwarding is intentionally a stub — the left
-                // button always drives text selection.
-                match element_state {
-                    ElementState::Pressed if self.grid_rect.contains(self.last_cursor_pos) => {
-                        let shift = modifiers.state().shift_key();
-                        let intent = self.drag_select.press(self.last_cursor_pos, shift);
-                        let pos = self.pos_from_logical(self.last_cursor_pos);
-                        self.begin_selection(intent.extend, intent.granularity, pos);
-                        *handled = true;
-                    }
-                    ElementState::Released if self.drag_select.release() => {
-                        self.finish_selection();
-                        *handled = true;
-                    }
-                    _ => {}
-                }
-            }
+            } => self.handle_left_click_event(*element_state, *modifiers, handled),
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Middle,
                 ..
-            } => {
-                // X11/Wayland primary-selection paste: middle-click inserts the
-                // currently-selected text (from any app), matching every
-                // terminal. Snaps the viewport back to the live bottom.
-                if self.grid_rect.contains(self.last_cursor_pos) {
-                    if let Some(text) = clipboard_paste_primary() {
-                        self.paste(&text);
-                    }
-                    *handled = true;
-                }
-            }
+            } => self.handle_middle_click_event(handled),
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } => {
-                // Right-click opens the Copy/Paste context menu (Copy only when
-                // there's a selection). The window-group decoration is the OS's;
-                // this menu is app content, so it uses the shared toolkit primitive.
-                if self.grid_rect.contains(self.last_cursor_pos) {
-                    self.open_context_menu_at_cursor();
-                    *handled = true;
-                }
-            }
+            } => self.handle_right_click_event(handled),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -1752,92 +1519,7 @@ impl Widget for TerminalWidget {
                     },
                 ..
             } if *element_state == ElementState::Pressed => {
-                // Escape dismisses an open context menu before the app sees it.
-                if self.context_menu.is_open()
-                    && let Key::Named(NamedKey::Escape) = logical_key
-                {
-                    self.context_menu.close();
-                    *handled = true;
-                    return;
-                }
-                let mods = modifiers.state();
-                // Ctrl+Shift+C → clipboard copy; Ctrl+Shift+V → paste.
-                // Both must be matched BEFORE the regular Ctrl+C → SIGINT
-                // path or the user would lose the ability to interrupt.
-                if mods.control_key()
-                    && mods.shift_key()
-                    && let Key::Character(c) = logical_key
-                {
-                    if c.as_str().eq_ignore_ascii_case("c") {
-                        if let Some(text) = self.selected_text()
-                            && !text.is_empty()
-                        {
-                            clipboard_copy(&text);
-                        }
-                        *handled = true;
-                        return;
-                    }
-                    if c.as_str().eq_ignore_ascii_case("v") {
-                        if let Some(text) = clipboard_paste() {
-                            self.paste(&text);
-                        }
-                        *handled = true;
-                        return;
-                    }
-                }
-
-                // Scrollback navigation — only intercepted for the main
-                // buffer; the alternate screen (pager / editor) gets the
-                // keys forwarded to the app instead.
-                if !self.alt_active
-                    && let Key::Named(named) = logical_key
-                {
-                    let page = self.current_visible_rows().saturating_sub(1).max(1);
-                    match named {
-                        NamedKey::PageUp => {
-                            self.scroll_up(page);
-                            *handled = true;
-                            return;
-                        }
-                        NamedKey::PageDown => {
-                            self.scroll_down(page);
-                            *handled = true;
-                            return;
-                        }
-                        NamedKey::Home if mods.shift_key() => {
-                            self.scroll_to_top();
-                            *handled = true;
-                            return;
-                        }
-                        NamedKey::End if mods.shift_key() => {
-                            self.scroll_to_bottom();
-                            *handled = true;
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-
-                let mut bytes = self.map_key(logical_key, modifiers);
-                if bytes.is_none()
-                    && let Some(t) = text
-                    && !t
-                        .as_str()
-                        .chars()
-                        .any(|c| c as u32 == 0x23CE || c as u32 == 0x21B5)
-                {
-                    bytes = Some(t.as_str().as_bytes().to_vec());
-                }
-                if let Some(b) = bytes {
-                    {
-                        let mut w = self.pty_write.lock().unwrap();
-                        let _ = w.write_all(&b);
-                        let _ = w.flush();
-                    }
-                    // Typing snaps the viewport back to the live bottom.
-                    self.scroll_offset = 0;
-                    *handled = true;
-                }
+                self.handle_key_press_event(logical_key, text.as_deref(), *modifiers, handled);
             }
             _ => {}
         }
@@ -1924,6 +1606,505 @@ impl Widget for TerminalWidget {
 }
 
 impl TerminalWidget {
+    /// Helper for [`Widget::handle_event`]'s `WindowEvent::MouseWheel` arm.
+    fn handle_wheel_event(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
+        if !self.rect.contains(self.last_cursor_pos) {
+            return;
+        }
+        let lines = match delta {
+            MouseScrollDelta::LineDelta(_, y) => (*y * 3.0).round() as i32,
+            MouseScrollDelta::PixelDelta(pos) => (pos.y / self.char_h.max(1.0)).round() as i32,
+        };
+        if lines == 0 {
+            return;
+        }
+        if self.alt_active && !self.modes.mouse_report {
+            // In the alternate screen (pager / editor) forward wheel
+            // notches as arrow keys so `less`/`man` scroll naturally.
+            // Honour DECCKM so apps that requested application cursor
+            // keys (`vim`, `less -R`) receive the SS3 form they expect.
+            let seq: &[u8] = match (lines > 0, self.modes.app_cursor_keys) {
+                (true, false) => b"\x1b[A",
+                (false, false) => b"\x1b[B",
+                (true, true) => b"\x1bOA",
+                (false, true) => b"\x1bOB",
+            };
+            let reps = lines.unsigned_abs() as usize;
+            let mut out = Vec::new();
+            for _ in 0..reps {
+                out.extend_from_slice(seq);
+            }
+            self.write_input(&out);
+        } else if !self.alt_active {
+            if lines > 0 {
+                self.scroll_up(lines as usize);
+            } else {
+                self.scroll_down((-lines) as usize);
+            }
+        }
+        *handled = true;
+    }
+
+    /// Helper for [`Widget::handle_event`]'s `WindowEvent::CursorMoved` arm.
+    fn handle_cursor_moved_event(
+        &mut self,
+        position: winit::dpi::PhysicalPosition<f64>,
+        scale_factor: f64,
+        handled: &mut bool,
+    ) {
+        // Always cache pointer position so the next MouseInput::Pressed
+        // event can hit-test without needing the position from
+        // winit (Pressed arrives without coordinates).
+        let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+        self.last_cursor_pos = logical;
+        if self.drag_select.is_dragging() && self.selection.is_some() {
+            let pos = self.pos_from_logical(logical);
+            self.extend_drag_to(pos);
+            *handled = true;
+        }
+    }
+
+    /// Helper for [`Widget::handle_event`]'s left-button `WindowEvent::MouseInput` arm.
+    fn handle_left_click_event(
+        &mut self,
+        element_state: ElementState,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) {
+        // A left click while the context menu is open routes to the menu
+        // (pick a row, or dismiss on click-outside) instead of starting a
+        // new selection.
+        if matches!(element_state, ElementState::Pressed) && self.context_menu.is_open() {
+            self.click_context_menu_at_cursor();
+            *handled = true;
+            return;
+        }
+        // Mouse reporting (ESC[?1000h family) is parsed into `modes`
+        // but click forwarding is intentionally a stub — the left
+        // button always drives text selection.
+        match element_state {
+            ElementState::Pressed if self.grid_rect.contains(self.last_cursor_pos) => {
+                let shift = modifiers.state().shift_key();
+                let intent = self.drag_select.press(self.last_cursor_pos, shift);
+                let pos = self.pos_from_logical(self.last_cursor_pos);
+                self.begin_selection(intent.extend, intent.granularity, pos);
+                *handled = true;
+            }
+            ElementState::Released if self.drag_select.release() => {
+                self.finish_selection();
+                *handled = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// Helper for [`Widget::handle_event`]'s middle-button `WindowEvent::MouseInput` arm.
+    fn handle_middle_click_event(&mut self, handled: &mut bool) {
+        // X11/Wayland primary-selection paste: middle-click inserts the
+        // currently-selected text (from any app), matching every
+        // terminal. Snaps the viewport back to the live bottom.
+        if self.grid_rect.contains(self.last_cursor_pos) {
+            if let Some(text) = clipboard_paste_primary() {
+                self.paste(&text);
+            }
+            *handled = true;
+        }
+    }
+
+    /// Helper for [`Widget::handle_event`]'s right-button `WindowEvent::MouseInput` arm.
+    fn handle_right_click_event(&mut self, handled: &mut bool) {
+        // Right-click opens the Copy/Paste context menu (Copy only when
+        // there's a selection). The window-group decoration is the OS's;
+        // this menu is app content, so it uses the shared toolkit primitive.
+        if self.grid_rect.contains(self.last_cursor_pos) {
+            self.open_context_menu_at_cursor();
+            *handled = true;
+        }
+    }
+
+    /// Helper for [`Widget::handle_event`]'s `WindowEvent::KeyboardInput` arm.
+    fn handle_key_press_event(
+        &mut self,
+        logical_key: &Key,
+        text: Option<&str>,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) {
+        // Escape dismisses an open context menu before the app sees it.
+        if self.context_menu.is_open()
+            && let Key::Named(NamedKey::Escape) = logical_key
+        {
+            self.context_menu.close();
+            *handled = true;
+            return;
+        }
+        let mods = modifiers.state();
+        // Ctrl+Shift+C → clipboard copy; Ctrl+Shift+V → paste.
+        // Both must be matched BEFORE the regular Ctrl+C → SIGINT
+        // path or the user would lose the ability to interrupt.
+        if mods.control_key()
+            && mods.shift_key()
+            && let Key::Character(c) = logical_key
+        {
+            if c.as_str().eq_ignore_ascii_case("c") {
+                if let Some(text) = self.selected_text()
+                    && !text.is_empty()
+                {
+                    clipboard_copy(&text);
+                }
+                *handled = true;
+                return;
+            }
+            if c.as_str().eq_ignore_ascii_case("v") {
+                if let Some(text) = clipboard_paste() {
+                    self.paste(&text);
+                }
+                *handled = true;
+                return;
+            }
+        }
+
+        // Scrollback navigation — only intercepted for the main
+        // buffer; the alternate screen (pager / editor) gets the
+        // keys forwarded to the app instead.
+        if !self.alt_active
+            && let Key::Named(named) = logical_key
+        {
+            let page = self.current_visible_rows().saturating_sub(1).max(1);
+            match named {
+                NamedKey::PageUp => {
+                    self.scroll_up(page);
+                    *handled = true;
+                    return;
+                }
+                NamedKey::PageDown => {
+                    self.scroll_down(page);
+                    *handled = true;
+                    return;
+                }
+                NamedKey::Home if mods.shift_key() => {
+                    self.scroll_to_top();
+                    *handled = true;
+                    return;
+                }
+                NamedKey::End if mods.shift_key() => {
+                    self.scroll_to_bottom();
+                    *handled = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        let mut bytes = self.map_key(logical_key, modifiers);
+        if bytes.is_none()
+            && let Some(t) = text
+            && !t.chars().any(|c| c as u32 == 0x23CE || c as u32 == 0x21B5)
+        {
+            bytes = Some(t.as_bytes().to_vec());
+        }
+        if let Some(b) = bytes {
+            {
+                let mut w = self.pty_write.lock().unwrap();
+                let _ = w.write_all(&b);
+                let _ = w.flush();
+            }
+            // Typing snaps the viewport back to the live bottom.
+            self.scroll_offset = 0;
+            *handled = true;
+        }
+    }
+
+    /// Re-read `line_ids[start..len]` from `state` into the `grid`/
+    /// `grid_attrs` mirror, choosing `start` by whether a full or
+    /// incremental re-read is needed. Helper for [`Widget::sync`].
+    fn refresh_grid_mirror(
+        &mut self,
+        state: &AutoCommit,
+        line_ids: &[ObjId],
+        len: usize,
+        full_reread: bool,
+    ) {
+        // Choose the first line to re-read. A full pass rebuilds the mirror;
+        // the incremental pass keeps the mirror aligned by dropping the oldest
+        // lines that were trimmed off the CRDT front, then re-reads from the
+        // *previous* frame's screen top through the end — that spans every row
+        // the emulator could have touched (the old screen scrolled into
+        // history plus everything freshly appended).
+        let start = if full_reread {
+            self.grid.clear();
+            self.grid_attrs.clear();
+            self.trimmed_front = 0;
+            0
+        } else {
+            let trimmed = self.trimmed_front;
+            let drop = trimmed.min(self.grid.len());
+            self.grid.drain(0..drop);
+            self.grid_attrs.drain(0..drop);
+            self.trimmed_front = 0;
+            self.synced_len
+                .saturating_sub(self.height)
+                .saturating_sub(trimmed)
+                .min(self.grid.len())
+        };
+        self.grid.resize(len, String::new());
+        self.grid_attrs.resize(len, Vec::new());
+
+        let end = len.min(line_ids.len());
+        for (i, line_id) in line_ids.iter().enumerate().take(end).skip(start) {
+            if let Ok(Some((Value::Object(ObjType::Text), text_id))) = state.get(line_id, "text")
+                && let Ok(text) = state.text(&text_id)
+            {
+                self.grid[i] = text;
+            }
+            if let Ok(Some((Value::Scalar(v), _))) = state.get(line_id, "attrs")
+                && let automerge::ScalarValue::Bytes(bytes) = v.as_ref()
+            {
+                self.grid_attrs[i] = bytes.chunks_exact(ATTR_BYTES).map(Attr::unpack).collect();
+            }
+        }
+        self.mirror_valid = true;
+        self.synced_len = len;
+    }
+
+    /// Refresh the window title + hyperlink registry from the CRDT so a
+    /// collaborator picking up a remote OSC 0/2/8 sees the same title and
+    /// can resolve the same links. Cheap: title is one scalar, links is a
+    /// small map keyed by link id. Helper for [`Widget::sync`].
+    fn refresh_title_and_links(&mut self, state: &AutoCommit, root: &ObjId) {
+        if let Ok(Some((Value::Scalar(v), _))) = state.get(root, "terminal_title")
+            && let Some(t) = v.to_str()
+        {
+            self.title = t.to_string();
+        }
+        if let Some(links_id) = self.links_id.clone() {
+            self.links.clear();
+            for key in state.keys(&links_id) {
+                if let Ok(Some((Value::Scalar(v), _))) = state.get(&links_id, &key)
+                    && let (Ok(id), Some(url)) = (key.parse::<u16>(), v.to_str())
+                {
+                    self.links.insert(id, url.to_string());
+                }
+            }
+        }
+    }
+
+    /// Refresh the cursor position from the CRDT, converting the
+    /// buffer-absolute row the emulator wrote into a viewport-local row.
+    /// `active_len` is the length of the currently active buffer's line
+    /// list. Helper for [`Widget::sync`].
+    fn refresh_cursor_from_crdt(&mut self, state: &AutoCommit, active_len: usize) {
+        if let Some(cursor_id) = self.cursor_id.as_ref() {
+            if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "x")
+                && let Some(x) = v.to_i64()
+            {
+                self.cursor_x = x as usize;
+            }
+            if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "y")
+                && let Some(y) = v.to_i64()
+            {
+                let abs_y = y as usize;
+                let history_offset = active_len.saturating_sub(self.height);
+                self.cursor_y = abs_y
+                    .saturating_sub(history_offset)
+                    .min(self.height.saturating_sub(1));
+            }
+        }
+    }
+
+    /// Paint the flow-selection highlight, if any, before the cell text so
+    /// glyphs read on top of it. Selection rows are buffer-absolute, so a
+    /// row only paints when it falls inside the current viewport window
+    /// `[start_y, start_y + visible_rows)`, translated to an on-screen row.
+    /// Helper for [`Widget::draw`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one drawing pass, geometry threaded through explicitly"
+    )]
+    fn draw_selection_highlight(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        grid_rect: Rect,
+        padding_x: f64,
+        start_y: usize,
+        visible_rows: usize,
+    ) {
+        let Some(sel) = self.selection else { return };
+        // A slightly stronger tint than a hover veneer so a live selection
+        // reads clearly over black, still translucent so glyphs show.
+        let sel_color = theme.accent_primary.with_alpha_factor(0.35);
+        for (row, start_col, end_col) in selection_row_spans(&sel, self.width) {
+            if row < start_y || row >= start_y + visible_rows {
+                continue;
+            }
+            let vrow = row - start_y;
+            let py = (grid_rect.y0 + vrow as f64 * self.char_h).floor();
+            let x0 = grid_rect.x0 + padding_x + start_col as f64 * self.char_w;
+            let x1 = grid_rect.x0 + padding_x + end_col as f64 * self.char_w;
+            let band = Rect::new(x0, py, x1, py + self.char_h);
+            scene.fill(Fill::NonZero, transform, sel_color, None, &band);
+        }
+    }
+
+    /// Paint every visible row's cell text as colour runs (consecutive cells
+    /// sharing one [`Attr`] drawn in a single [`Self::draw_run`] call).
+    /// Helper for [`Widget::draw`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one drawing pass, geometry threaded through explicitly"
+    )]
+    fn draw_cell_rows(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        font_size: f32,
+        palette: &ui::tokens::TerminalPalette,
+        mono: &FontChoice,
+        grid_rect: Rect,
+        padding_x: f64,
+        start_y: usize,
+        visible_rows: usize,
+    ) {
+        for (y, line_text) in self
+            .grid
+            .iter()
+            .skip(start_y)
+            .take(visible_rows)
+            .enumerate()
+        {
+            let py = (grid_rect.y0 + y as f64 * self.char_h).floor();
+            let attrs_idx = y + start_y;
+            if attrs_idx >= self.grid_attrs.len() {
+                continue;
+            }
+            let attrs = &self.grid_attrs[attrs_idx];
+
+            let mut current_run = String::new();
+            let mut current_attr: Option<Attr> = None;
+            let mut run_start_cell_idx = 0;
+
+            let mut cell_idx = 0;
+            for c in line_text.chars() {
+                let c_w = c.width().unwrap_or(1);
+                if cell_idx >= self.width {
+                    break;
+                }
+                let attr = if cell_idx < attrs.len() {
+                    attrs[cell_idx]
+                } else {
+                    Attr::default()
+                };
+
+                if Some(attr) != current_attr {
+                    if !current_run.is_empty() {
+                        self.draw_run(
+                            scene,
+                            &current_run,
+                            current_attr.unwrap(),
+                            py,
+                            run_start_cell_idx as f64 * self.char_w + padding_x,
+                            text_renderer,
+                            transform,
+                            font_size,
+                            palette,
+                            mono,
+                        );
+                    }
+                    current_run.clear();
+                    current_attr = Some(attr);
+                    run_start_cell_idx = cell_idx;
+                }
+                current_run.push(c);
+                cell_idx += c_w;
+            }
+            if !current_run.is_empty() {
+                self.draw_run(
+                    scene,
+                    &current_run,
+                    current_attr.unwrap(),
+                    py,
+                    run_start_cell_idx as f64 * self.char_w + padding_x,
+                    text_renderer,
+                    transform,
+                    font_size,
+                    palette,
+                    mono,
+                );
+            }
+        }
+    }
+
+    /// Paint the block cursor, pinned to the live output — while the user
+    /// has scrolled back into history it hides (matching xterm/kitty), so
+    /// it doesn't imply the caret is somewhere on an old line. Helper for
+    /// [`Widget::draw`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one drawing pass, geometry threaded through explicitly"
+    )]
+    fn draw_block_cursor(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        font_size: f32,
+        palette: &ui::tokens::TerminalPalette,
+        mono: &FontChoice,
+        grid_rect: Rect,
+        padding_x: f64,
+        start_y: usize,
+        visible_rows: usize,
+        scroll: usize,
+        cursor_color: Color,
+    ) {
+        // Absolute grid row of the cursor → visible row (may be scrolled off).
+        let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
+        let scrolled_back = !self.alt_active && scroll > 0;
+        if self.modes.cursor_visible
+            && !scrolled_back
+            && cursor_abs >= start_y
+            && cursor_abs < start_y + visible_rows.max(1)
+        {
+            let cy_local = cursor_abs - start_y;
+            let cx = grid_rect.x0 + padding_x + self.cursor_x as f64 * self.char_w;
+            let cy = (grid_rect.y0 + cy_local as f64 * self.char_h).floor();
+            // A rounded, slightly inset caret reads softer than a hard-edged
+            // full-cell block while staying an unmistakable, theme-coloured
+            // "inverted cell" cursor.
+            let cursor_rect = RoundedRect::from_rect(
+                Rect::new(cx, cy + 0.5, cx + self.char_w, cy + self.char_h - 0.5),
+                2.0,
+            );
+            scene.fill(Fill::NonZero, transform, cursor_color, None, &cursor_rect);
+
+            // Re-punch the glyph beneath the block in the background color so
+            // the character under the caret stays legible (a solid block that
+            // hides its own cell reads as a blank cursor). This is the standard
+            // "inverted cell" block cursor.
+            if let Some(ch) = self
+                .grid
+                .get(cursor_abs)
+                .and_then(|line| cell_char_at(line, self.cursor_x))
+                && !ch.is_whitespace()
+            {
+                text_renderer.draw_text_font(
+                    scene,
+                    &ch.to_string(),
+                    font_size,
+                    palette.bg_default,
+                    transform * Affine::translate((cx, cy)),
+                    None,
+                    TextWeight::Regular,
+                    false,
+                    mono,
+                );
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn draw_run(
         &self,
@@ -2526,133 +2707,147 @@ impl TerminalWidget {
         Some(out)
     }
 
-    fn map_key(&self, key: &Key, modifiers: &winit::event::Modifiers) -> Option<Vec<u8>> {
+    fn map_key(&self, key: &Key, modifiers: winit::event::Modifiers) -> Option<Vec<u8>> {
         let mods = modifiers.state();
         let shift = mods.shift_key();
         let alt = mods.alt_key();
         let ctrl = mods.control_key();
-
-        // xterm modifier parameter: 1 + (shift?1) + (alt?2) + (ctrl?4). Only
-        // meaningful when at least one is held.
-        let mod_param: Option<u8> = {
-            let mut m = 0u8;
-            if shift {
-                m |= 1;
-            }
-            if alt {
-                m |= 2;
-            }
-            if ctrl {
-                m |= 4;
-            }
-            if m == 0 { None } else { Some(m + 1) }
-        };
-
-        // Cursor/edit keys: unmodified use the DECCKM-aware SS3/CSI prefix; a
-        // held modifier forces the CSI `1;<mod><final>` form (xterm behaviour),
-        // which is what shells and editors decode for word-wise motion and
-        // in-app selection.
-        let csi_final = |final_byte: u8| -> Vec<u8> {
-            if let Some(m) = mod_param {
-                format!("\x1b[1;{m}{}", final_byte as char).into_bytes()
-            } else {
-                let prefix: &[u8] = if self.modes.app_cursor_keys {
-                    b"\x1bO"
-                } else {
-                    b"\x1b["
-                };
-                let mut v = prefix.to_vec();
-                v.push(final_byte);
-                v
-            }
-        };
-        // Keypad-style `CSI <n> ~` keys, with the optional modifier parameter.
-        let csi_tilde = |n: u8| -> Vec<u8> {
-            match mod_param {
-                Some(m) => format!("\x1b[{n};{m}~").into_bytes(),
-                None => format!("\x1b[{n}~").into_bytes(),
-            }
-        };
-        // F1..F4 use SS3 finals P/Q/R/S when unmodified, CSI `1;<mod><final>`
-        // when modified.
-        let fkey_ss3 = |final_byte: u8| -> Vec<u8> {
-            match mod_param {
-                Some(m) => format!("\x1b[1;{m}{}", final_byte as char).into_bytes(),
-                None => format!("\x1bO{}", final_byte as char).into_bytes(),
-            }
-        };
+        let mod_param = Self::key_mod_param(shift, alt, ctrl);
 
         match key {
-            Key::Named(named) => match named {
-                NamedKey::Enter => Some(vec![b'\r']),
-                NamedKey::Backspace => Some(vec![127]),
-                // Shift+Tab is back-tab (CSI Z) — reverse field / completion.
-                NamedKey::Tab if shift => Some(b"\x1b[Z".to_vec()),
-                NamedKey::Tab => Some(vec![b'\t']),
-                NamedKey::Escape => Some(vec![27]),
-                NamedKey::ArrowUp => Some(csi_final(b'A')),
-                NamedKey::ArrowDown => Some(csi_final(b'B')),
-                NamedKey::ArrowRight => Some(csi_final(b'C')),
-                NamedKey::ArrowLeft => Some(csi_final(b'D')),
-                NamedKey::Home => Some(csi_final(b'H')),
-                NamedKey::End => Some(csi_final(b'F')),
-                NamedKey::PageUp => Some(csi_tilde(5)),
-                NamedKey::PageDown => Some(csi_tilde(6)),
-                NamedKey::Insert => Some(csi_tilde(2)),
-                NamedKey::Delete => Some(csi_tilde(3)),
-                NamedKey::F1 => Some(fkey_ss3(b'P')),
-                NamedKey::F2 => Some(fkey_ss3(b'Q')),
-                NamedKey::F3 => Some(fkey_ss3(b'R')),
-                NamedKey::F4 => Some(fkey_ss3(b'S')),
-                NamedKey::F5 => Some(csi_tilde(15)),
-                NamedKey::F6 => Some(csi_tilde(17)),
-                NamedKey::F7 => Some(csi_tilde(18)),
-                NamedKey::F8 => Some(csi_tilde(19)),
-                NamedKey::F9 => Some(csi_tilde(20)),
-                NamedKey::F10 => Some(csi_tilde(21)),
-                NamedKey::F11 => Some(csi_tilde(23)),
-                NamedKey::F12 => Some(csi_tilde(24)),
-                _ => None,
-            },
-            Key::Character(c) if ctrl => {
-                // Ctrl+letter → the corresponding C0 control code. When Alt is
-                // also held, prefix ESC (Alt-as-Meta) so e.g. Alt+Ctrl+F works.
-                let s = c.as_str();
-                let ch = s.chars().next()?;
-                let up = ch.to_ascii_uppercase();
-                let code = match up {
-                    'A'..='Z' => (up as u8) - b'A' + 1,
-                    ' ' | '@' => 0, // Ctrl+Space / Ctrl+@ → NUL
-                    '[' => 27,
-                    '\\' => 28,
-                    ']' => 29,
-                    '^' => 30,
-                    '_' => 31,
-                    _ => return None,
-                };
-                if alt {
-                    Some(vec![27, code])
-                } else {
-                    Some(vec![code])
-                }
+            Key::Named(named) => {
+                Self::map_named_key(*named, shift, mod_param, self.modes.app_cursor_keys)
             }
-            // Alt-as-Meta for plain alphanumerics (readline word ops: Alt-f,
-            // Alt-b, Alt-d, numeric arguments). Restricted to ASCII
-            // alphanumeric logical keys so AltGr-composed symbols on layouts
-            // like de_DE (AltGr+q=@, AltGr+e=€, AltGr+7={ …) are never poached
-            // — those resolve to non-alphanumeric logical keys and fall
-            // through to their composed `text`.
+            Key::Character(c) if ctrl => Self::map_ctrl_char(c.as_str(), alt),
             Key::Character(c) if alt && !ctrl && !mods.super_key() => {
-                let s = c.as_str();
-                if s.chars().count() == 1 && s.chars().all(|ch| ch.is_ascii_alphanumeric()) {
-                    let mut v = vec![27u8];
-                    v.extend_from_slice(s.as_bytes());
-                    Some(v)
-                } else {
-                    None
-                }
+                Self::map_alt_char(c.as_str())
             }
             _ => None,
+        }
+    }
+
+    /// xterm modifier parameter: 1 + (shift?1) + (alt?2) + (ctrl?4). Only
+    /// meaningful when at least one is held.
+    fn key_mod_param(shift: bool, alt: bool, ctrl: bool) -> Option<u8> {
+        let mut m = 0u8;
+        if shift {
+            m |= 1;
+        }
+        if alt {
+            m |= 2;
+        }
+        if ctrl {
+            m |= 4;
+        }
+        if m == 0 { None } else { Some(m + 1) }
+    }
+
+    /// Cursor/edit keys: unmodified use the DECCKM-aware SS3/CSI prefix; a
+    /// held modifier forces the CSI `1;<mod><final>` form (xterm behaviour),
+    /// which is what shells and editors decode for word-wise motion and
+    /// in-app selection.
+    fn key_csi_final(final_byte: u8, mod_param: Option<u8>, app_cursor_keys: bool) -> Vec<u8> {
+        if let Some(m) = mod_param {
+            format!("\x1b[1;{m}{}", final_byte as char).into_bytes()
+        } else {
+            let prefix: &[u8] = if app_cursor_keys { b"\x1bO" } else { b"\x1b[" };
+            let mut v = prefix.to_vec();
+            v.push(final_byte);
+            v
+        }
+    }
+
+    /// Keypad-style `CSI <n> ~` keys, with the optional modifier parameter.
+    fn key_csi_tilde(n: u8, mod_param: Option<u8>) -> Vec<u8> {
+        match mod_param {
+            Some(m) => format!("\x1b[{n};{m}~").into_bytes(),
+            None => format!("\x1b[{n}~").into_bytes(),
+        }
+    }
+
+    /// F1..F4 use SS3 finals P/Q/R/S when unmodified, CSI `1;<mod><final>`
+    /// when modified.
+    fn key_fkey_ss3(final_byte: u8, mod_param: Option<u8>) -> Vec<u8> {
+        match mod_param {
+            Some(m) => format!("\x1b[1;{m}{}", final_byte as char).into_bytes(),
+            None => format!("\x1bO{}", final_byte as char).into_bytes(),
+        }
+    }
+
+    fn map_named_key(
+        named: NamedKey,
+        shift: bool,
+        mod_param: Option<u8>,
+        app_cursor_keys: bool,
+    ) -> Option<Vec<u8>> {
+        match named {
+            NamedKey::Enter => Some(vec![b'\r']),
+            NamedKey::Backspace => Some(vec![127]),
+            // Shift+Tab is back-tab (CSI Z) — reverse field / completion.
+            NamedKey::Tab if shift => Some(b"\x1b[Z".to_vec()),
+            NamedKey::Tab => Some(vec![b'\t']),
+            NamedKey::Escape => Some(vec![27]),
+            NamedKey::ArrowUp => Some(Self::key_csi_final(b'A', mod_param, app_cursor_keys)),
+            NamedKey::ArrowDown => Some(Self::key_csi_final(b'B', mod_param, app_cursor_keys)),
+            NamedKey::ArrowRight => Some(Self::key_csi_final(b'C', mod_param, app_cursor_keys)),
+            NamedKey::ArrowLeft => Some(Self::key_csi_final(b'D', mod_param, app_cursor_keys)),
+            NamedKey::Home => Some(Self::key_csi_final(b'H', mod_param, app_cursor_keys)),
+            NamedKey::End => Some(Self::key_csi_final(b'F', mod_param, app_cursor_keys)),
+            NamedKey::PageUp => Some(Self::key_csi_tilde(5, mod_param)),
+            NamedKey::PageDown => Some(Self::key_csi_tilde(6, mod_param)),
+            NamedKey::Insert => Some(Self::key_csi_tilde(2, mod_param)),
+            NamedKey::Delete => Some(Self::key_csi_tilde(3, mod_param)),
+            NamedKey::F1 => Some(Self::key_fkey_ss3(b'P', mod_param)),
+            NamedKey::F2 => Some(Self::key_fkey_ss3(b'Q', mod_param)),
+            NamedKey::F3 => Some(Self::key_fkey_ss3(b'R', mod_param)),
+            NamedKey::F4 => Some(Self::key_fkey_ss3(b'S', mod_param)),
+            NamedKey::F5 => Some(Self::key_csi_tilde(15, mod_param)),
+            NamedKey::F6 => Some(Self::key_csi_tilde(17, mod_param)),
+            NamedKey::F7 => Some(Self::key_csi_tilde(18, mod_param)),
+            NamedKey::F8 => Some(Self::key_csi_tilde(19, mod_param)),
+            NamedKey::F9 => Some(Self::key_csi_tilde(20, mod_param)),
+            NamedKey::F10 => Some(Self::key_csi_tilde(21, mod_param)),
+            NamedKey::F11 => Some(Self::key_csi_tilde(23, mod_param)),
+            NamedKey::F12 => Some(Self::key_csi_tilde(24, mod_param)),
+            _ => None,
+        }
+    }
+
+    /// Ctrl+letter → the corresponding C0 control code. When Alt is also
+    /// held, prefix ESC (Alt-as-Meta) so e.g. Alt+Ctrl+F works.
+    fn map_ctrl_char(s: &str, alt: bool) -> Option<Vec<u8>> {
+        let ch = s.chars().next()?;
+        let up = ch.to_ascii_uppercase();
+        let code = match up {
+            'A'..='Z' => (up as u8) - b'A' + 1,
+            ' ' | '@' => 0, // Ctrl+Space / Ctrl+@ → NUL
+            '[' => 27,
+            '\\' => 28,
+            ']' => 29,
+            '^' => 30,
+            '_' => 31,
+            _ => return None,
+        };
+        if alt {
+            Some(vec![27, code])
+        } else {
+            Some(vec![code])
+        }
+    }
+
+    /// Alt-as-Meta for plain alphanumerics (readline word ops: Alt-f,
+    /// Alt-b, Alt-d, numeric arguments). Restricted to ASCII
+    /// alphanumeric logical keys so AltGr-composed symbols on layouts
+    /// like `de_DE` (AltGr+q=@, AltGr+e=€, AltGr+7={ …) are never poached
+    /// — those resolve to non-alphanumeric logical keys and fall
+    /// through to their composed `text`.
+    fn map_alt_char(s: &str) -> Option<Vec<u8>> {
+        if s.chars().count() == 1 && s.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+            let mut v = vec![27u8];
+            v.extend_from_slice(s.as_bytes());
+            Some(v)
+        } else {
+            None
         }
     }
 }
@@ -2750,9 +2945,8 @@ impl Perform for TerminalPerformer<'_> {
         }
 
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) {
-            Some(o) => o,
-            None => return,
+        let Some(line_obj) = self.active_line_id(y) else {
+            return;
         };
 
         // Point the write buffer at this line, loading its current text + attrs
@@ -2766,9 +2960,10 @@ impl Perform for TerminalPerformer<'_> {
             .is_none_or(|b| b.line_obj != line_obj);
         if need_load {
             self.flush_print_buf();
-            let text_id = match self.state.get(&line_obj, "text") {
-                Ok(Some((Value::Object(ObjType::Text), id))) => id,
-                _ => return,
+            let Ok(Some((Value::Object(ObjType::Text), text_id))) =
+                self.state.get(&line_obj, "text")
+            else {
+                return;
             };
             let text = self.state.text(&text_id).unwrap_or_default();
             let attrs = match self.state.get(&line_obj, "attrs") {
@@ -2795,11 +2990,8 @@ impl Perform for TerminalPerformer<'_> {
         if self.cursor_x > chars.len() {
             chars.resize(self.cursor_x, ' ');
         }
-        let mut repl: Vec<char> = Vec::with_capacity(char_w);
-        repl.push(c);
-        for _ in 1..char_w {
-            repl.push(' ');
-        }
+        let mut repl: Vec<char> = vec![c];
+        repl.resize(char_w, ' ');
         if self.cursor_x < chars.len() {
             let end = (self.cursor_x + char_w).min(chars.len());
             chars.splice(self.cursor_x..end, repl);
@@ -2863,7 +3055,8 @@ impl Perform for TerminalPerformer<'_> {
                 let next = ((self.cursor_x / 8) + 1) * 8;
                 self.cursor_x = next.min(self.width.saturating_sub(1));
             }
-            7 => {} // BEL — no audible bell in the toolkit yet.
+            // Everything else, including 7 (BEL), is a no-op — the toolkit
+            // has no audible bell yet and no other single byte has meaning.
             _ => {}
         }
         self.update_cursor();
@@ -2910,134 +3103,10 @@ impl Perform for TerminalPerformer<'_> {
     fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], _ignore: bool, c: char) {
         self.flush_print_buf();
         self.pending_wrap = false;
-        let private = intermediates.first() == Some(&b'?');
-        let first = |p: &vte::Params| {
-            p.iter()
-                .next()
-                .and_then(|x| x.first())
-                .copied()
-                .unwrap_or(0)
-        };
-        let first_or1 = |p: &vte::Params| {
-            let v = first(p);
-            if v == 0 { 1 } else { v as usize }
-        };
-
-        if private {
-            match c {
-                'h' => self.set_dec_modes(params, true),
-                'l' => self.set_dec_modes(params, false),
-                // DECRQM — request the setting of a DEC-private mode
-                // (`CSI ? Pm $ p`). Answered with DECRPM so terminfo probes
-                // that ask "is bracketed paste / alt-screen on?" get a reply
-                // instead of stalling.
-                'p' if intermediates.contains(&b'$') => self.reply_decrqm(first(params)),
-                // DECXCPR — DEC-private cursor position report (`CSI ? 6 n`).
-                'n' => self.reply_dsr_private(first(params)),
-                _ => {}
-            }
-            self.update_cursor();
-            return;
-        }
-
-        match c {
-            'A' => {
-                let n = first_or1(params);
-                self.cursor_y = self.cursor_y.saturating_sub(n);
-            }
-            'B' | 'e' => {
-                let n = first_or1(params);
-                self.cursor_y = (self.cursor_y + n).min(self.height - 1);
-            }
-            'C' | 'a' => {
-                let n = first_or1(params);
-                self.cursor_x = (self.cursor_x + n).min(self.width - 1);
-            }
-            'D' => {
-                let n = first_or1(params);
-                self.cursor_x = self.cursor_x.saturating_sub(n);
-            }
-            'G' | '`' => {
-                let n = first_or1(params);
-                self.cursor_x = (n - 1).min(self.width - 1);
-            } // CHA
-            'd' => {
-                let n = first_or1(params);
-                self.cursor_y = (n - 1).min(self.height - 1);
-            } // VPA
-            'H' | 'f' => {
-                let mut it = params.iter();
-                let y = it.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
-                let x = it.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
-                self.cursor_y = (y.saturating_sub(1)).min(self.height - 1);
-                self.cursor_x = (x.saturating_sub(1)).min(self.width - 1);
-            }
-            'J' => self.erase_display(first(params)),
-            'K' => self.erase_line(first(params)),
-            'X' => self.erase_chars(first_or1(params)), // ECH
-            '@' => self.insert_chars(first_or1(params)), // ICH
-            'P' => self.delete_chars(first_or1(params)), // DCH
-            'L' => self.insert_lines(first_or1(params)), // IL
-            'M' => self.delete_lines(first_or1(params)), // DL
-            'S' => self.scroll_region_up(first_or1(params)), // SU
-            'T' => self.scroll_region_down(first_or1(params)), // SD
-            'r' => {
-                // DECSTBM — set scrolling region
-                let mut it = params.iter();
-                let top = it.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
-                let bot = it
-                    .next()
-                    .and_then(|p| p.first())
-                    .copied()
-                    .unwrap_or(self.height as u16) as usize;
-                let top0 = top.saturating_sub(1).min(self.height.saturating_sub(1));
-                let bot0 = if bot == 0 {
-                    self.height - 1
-                } else {
-                    (bot - 1).min(self.height - 1)
-                };
-                if top0 < bot0 {
-                    self.scroll_top = top0;
-                    self.scroll_bottom = bot0;
-                }
-                self.cursor_x = 0;
-                self.cursor_y = 0;
-            }
-            's' => {
-                *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr));
-            } // SCP
-            'u' => {
-                // RCP
-                if let Some((x, y, a)) = *self.saved_cursor {
-                    self.cursor_x = x.min(self.width - 1);
-                    self.cursor_y = y.min(self.height - 1);
-                    self.current_attr = a;
-                }
-            }
-            'm' => self.apply_sgr(params),
-            // Device Attributes. `CSI c` / `CSI 0 c` is the Primary request
-            // (DA1); `CSI > c` / `CSI > 0 c` is the Secondary (DA2). fish
-            // blocks on the DA1 reply for up to 10s at startup.
-            'c' => match intermediates.first() {
-                None => self.reply_da1(),
-                Some(&b'>') => self.reply_da2(),
-                _ => {}
-            },
-            // Device Status Report. `CSI 5 n` → terminal OK; `CSI 6 n` →
-            // cursor position (CPR). Only the plain (non-`>`) form replies.
-            'n' if intermediates.is_empty() => self.reply_dsr(first(params)),
-            // XTVERSION — `CSI > 0 q` → the terminal's name + version.
-            'q' if intermediates.first() == Some(&b'>') && first(params) == 0 => {
-                self.reply_xtversion();
-            }
-            // DECRQM for ANSI (non-private) modes, `CSI Pm $ p`. We do not
-            // track ANSI modes, so answer "mode not recognised" (0) rather
-            // than leave the requester waiting.
-            'p' if intermediates.contains(&b'$') => {
-                let m = first(params);
-                self.respond(format!("\x1b[{m};0$y").as_bytes());
-            }
-            _ => {}
+        if intermediates.first() == Some(&b'?') {
+            self.csi_dispatch_private(params, intermediates, c);
+        } else {
+            self.csi_dispatch_public(params, intermediates, c);
         }
         self.update_cursor();
     }
@@ -3104,6 +3173,141 @@ impl Perform for TerminalPerformer<'_> {
 }
 
 impl TerminalPerformer<'_> {
+    fn csi_first(p: &vte::Params) -> u16 {
+        p.iter()
+            .next()
+            .and_then(|x| x.first())
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn csi_first_or1(p: &vte::Params) -> usize {
+        let v = Self::csi_first(p);
+        if v == 0 { 1 } else { v as usize }
+    }
+
+    /// DEC-private CSI sequences (`CSI ? ... <final>`), dispatched separately
+    /// from the ANSI/xterm set below since a private and a public sequence
+    /// can share the same final byte with unrelated meanings.
+    fn csi_dispatch_private(&mut self, params: &vte::Params, intermediates: &[u8], c: char) {
+        match c {
+            'h' => self.set_dec_modes(params, true),
+            'l' => self.set_dec_modes(params, false),
+            // DECRQM — request the setting of a DEC-private mode
+            // (`CSI ? Pm $ p`). Answered with DECRPM so terminfo probes
+            // that ask "is bracketed paste / alt-screen on?" get a reply
+            // instead of stalling.
+            'p' if intermediates.contains(&b'$') => self.reply_decrqm(Self::csi_first(params)),
+            // DECXCPR — DEC-private cursor position report (`CSI ? 6 n`).
+            'n' => self.reply_dsr_private(Self::csi_first(params)),
+            _ => {}
+        }
+    }
+
+    /// ANSI/xterm CSI sequences (cursor motion, erase, scroll region,
+    /// SGR, device attributes/status).
+    fn csi_dispatch_public(&mut self, params: &vte::Params, intermediates: &[u8], c: char) {
+        match c {
+            'A' => {
+                let n = Self::csi_first_or1(params);
+                self.cursor_y = self.cursor_y.saturating_sub(n);
+            }
+            'B' | 'e' => {
+                let n = Self::csi_first_or1(params);
+                self.cursor_y = (self.cursor_y + n).min(self.height - 1);
+            }
+            'C' | 'a' => {
+                let n = Self::csi_first_or1(params);
+                self.cursor_x = (self.cursor_x + n).min(self.width - 1);
+            }
+            'D' => {
+                let n = Self::csi_first_or1(params);
+                self.cursor_x = self.cursor_x.saturating_sub(n);
+            }
+            'G' | '`' => {
+                let n = Self::csi_first_or1(params);
+                self.cursor_x = (n - 1).min(self.width - 1);
+            } // CHA
+            'd' => {
+                let n = Self::csi_first_or1(params);
+                self.cursor_y = (n - 1).min(self.height - 1);
+            } // VPA
+            'H' | 'f' => {
+                let mut it = params.iter();
+                let y = it.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
+                let x = it.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
+                self.cursor_y = (y.saturating_sub(1)).min(self.height - 1);
+                self.cursor_x = (x.saturating_sub(1)).min(self.width - 1);
+            }
+            'J' => self.erase_display(Self::csi_first(params)),
+            'K' => self.erase_line(Self::csi_first(params)),
+            'X' => self.erase_chars(Self::csi_first_or1(params)), // ECH
+            '@' => self.insert_chars(Self::csi_first_or1(params)), // ICH
+            'P' => self.delete_chars(Self::csi_first_or1(params)), // DCH
+            'L' => self.insert_lines(Self::csi_first_or1(params)), // IL
+            'M' => self.delete_lines(Self::csi_first_or1(params)), // DL
+            'S' => self.scroll_region_up(Self::csi_first_or1(params)), // SU
+            'T' => self.scroll_region_down(Self::csi_first_or1(params)), // SD
+            'r' => {
+                // DECSTBM — set scrolling region
+                let mut it = params.iter();
+                let top = it.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
+                let bot = it
+                    .next()
+                    .and_then(|p| p.first())
+                    .copied()
+                    .unwrap_or(self.height as u16) as usize;
+                let top0 = top.saturating_sub(1).min(self.height.saturating_sub(1));
+                let bot0 = if bot == 0 {
+                    self.height - 1
+                } else {
+                    (bot - 1).min(self.height - 1)
+                };
+                if top0 < bot0 {
+                    self.scroll_top = top0;
+                    self.scroll_bottom = bot0;
+                }
+                self.cursor_x = 0;
+                self.cursor_y = 0;
+            }
+            's' => {
+                *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr));
+            } // SCP
+            'u' => {
+                // RCP
+                if let Some((x, y, a)) = *self.saved_cursor {
+                    self.cursor_x = x.min(self.width - 1);
+                    self.cursor_y = y.min(self.height - 1);
+                    self.current_attr = a;
+                }
+            }
+            'm' => self.apply_sgr(params),
+            // Device Attributes. `CSI c` / `CSI 0 c` is the Primary request
+            // (DA1); `CSI > c` / `CSI > 0 c` is the Secondary (DA2). fish
+            // blocks on the DA1 reply for up to 10s at startup.
+            'c' => match intermediates.first() {
+                None => self.reply_da1(),
+                Some(&b'>') => self.reply_da2(),
+                _ => {}
+            },
+            // Device Status Report. `CSI 5 n` → terminal OK; `CSI 6 n` →
+            // cursor position (CPR). Only the plain (non-`>`) form replies.
+            'n' if intermediates.is_empty() => self.reply_dsr(Self::csi_first(params)),
+            // XTVERSION — `CSI > 0 q` → the terminal's name + version.
+            'q' if intermediates.first() == Some(&b'>') && Self::csi_first(params) == 0 => {
+                self.reply_xtversion();
+            }
+            // DECRQM for ANSI (non-private) modes, `CSI Pm $ p`. We do not
+            // track ANSI modes, so answer "mode not recognised" (0) rather
+            // than leave the requester waiting.
+            'p' if intermediates.contains(&b'$') => {
+                let m = Self::csi_first(params);
+                self.respond(format!("\x1b[{m};0$y").as_bytes());
+            }
+            _ => {}
+        }
+    }
+
     fn active_grid_id(&self) -> ObjId {
         if *self.alt_active {
             self.alt_grid_id.clone()
@@ -3323,9 +3527,8 @@ impl TerminalPerformer<'_> {
 
     fn erase_line(&mut self, mode: u16) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) {
-            Some(o) => o,
-            None => return,
+        let Some(line_obj) = self.active_line_id(y) else {
+            return;
         };
         if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
         {
@@ -3347,9 +3550,8 @@ impl TerminalPerformer<'_> {
 
     fn erase_chars(&mut self, n: usize) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) {
-            Some(o) => o,
-            None => return,
+        let Some(line_obj) = self.active_line_id(y) else {
+            return;
         };
         if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
         {
@@ -3369,9 +3571,8 @@ impl TerminalPerformer<'_> {
 
     fn insert_chars(&mut self, n: usize) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) {
-            Some(o) => o,
-            None => return,
+        let Some(line_obj) = self.active_line_id(y) else {
+            return;
         };
         if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
         {
@@ -3394,9 +3595,8 @@ impl TerminalPerformer<'_> {
 
     fn delete_chars(&mut self, n: usize) {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let line_obj = match self.active_line_id(y) {
-            Some(o) => o,
-            None => return,
+        let Some(line_obj) = self.active_line_id(y) else {
+            return;
         };
         if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text")
         {
@@ -3636,6 +3836,11 @@ impl TerminalPerformer<'_> {
     /// stream is parsed; the CRDT copy is written once per feed by
     /// [`flush_cursor`](Self::flush_cursor) rather than on every cell, so this
     /// is intentionally a no-op kept only so the call sites read naturally.
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        clippy::unused_self,
+        reason = "deliberate no-op: `&mut self` marks every cursor-moving call site as a mutation for readability/symmetry with flush_cursor, even though the actual CRDT write is batched there"
+    )]
     fn update_cursor(&mut self) {}
 
     /// Commit any buffered run of printed characters to the CRDT: one diffed
@@ -4034,6 +4239,10 @@ impl TerminalBackend {
     /// cannot flip route 2 on to escape, and cannot reach an *escalated*
     /// best-effort shell — route 3's child is still bounded by the launcher's
     /// seccomp + namespace + bind mounts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no suitable confinement route is available or the backend fails to initialize.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         match confinement_route() {
             ConfineRoute::Service => {
@@ -4062,6 +4271,10 @@ impl TerminalBackend {
     /// Open a PTY running an arbitrary command. `TERM` is forced to
     /// `xterm-256color` (unless the caller already set it) so programs emit the
     /// SGR / DEC sequences this emulator understands.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the PTY cannot be created or the command cannot be spawned.
     pub fn with_command(mut cmd: CommandBuilder) -> Result<Self, Box<dyn std::error::Error>> {
         if cmd.get_env("TERM").is_none() {
             cmd.env("TERM", "xterm-256color");
@@ -4403,7 +4616,7 @@ impl TerminalWidget {
             loop {
                 let mut r = reader.lock().unwrap();
                 match std::io::Read::read(&mut *r, &mut buf) {
-                    Ok(0) => break,
+                    Ok(0) | Err(_) => break,
                     Ok(n) => {
                         if output_tx.send(buf[..n].to_vec()).is_err() {
                             break;
@@ -4429,7 +4642,6 @@ impl TerminalWidget {
                             }
                         }
                     }
-                    Err(_) => break,
                 }
             }
         });
@@ -4438,7 +4650,11 @@ impl TerminalWidget {
     }
 
     /// Spawn the user's login shell (`$SHELL`) in a PTY + reader thread and
-    /// return a fully wired `TerminalWidget`. Errors if PTY creation fails.
+    /// return a fully wired `TerminalWidget`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if PTY creation fails.
     pub fn spawn_default() -> anyhow::Result<Self> {
         let backend = TerminalBackend::new().map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(Self::from_backend(backend))
@@ -4447,13 +4663,17 @@ impl TerminalWidget {
     /// Spawn an arbitrary command in a PTY + reader thread and return a fully
     /// wired `TerminalWidget`. This is the embedding entry point for hosts that
     /// want the terminal to run a specific program (a build, a REPL, `ssh …`)
-    /// instead of a login shell. Errors if PTY creation or the spawn fails.
+    /// instead of a login shell.
     ///
     /// ```no_run
     /// use terminal::{TerminalWidget, CommandBuilder};
     /// let cmd = CommandBuilder::new("htop");
     /// let _term = TerminalWidget::spawn_command(cmd).unwrap();
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if PTY creation or the command spawn fails.
     pub fn spawn_command(cmd: CommandBuilder) -> anyhow::Result<Self> {
         let backend =
             TerminalBackend::with_command(cmd).map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -4464,6 +4684,10 @@ impl TerminalWidget {
     /// mock PTY master. No shell is spawned, so nothing arrives on the output
     /// channel — used by headless screenshot scenarios that drive the grid
     /// entirely through `feed`, keeping the frame deterministic.
+    ///
+    /// # Errors
+    ///
+    /// This function should not fail under normal circumstances as it uses a null backend.
     pub fn spawn_headless() -> anyhow::Result<Self> {
         struct NullMaster;
         impl MasterPty for NullMaster {

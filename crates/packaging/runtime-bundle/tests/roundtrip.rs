@@ -2,6 +2,16 @@
 //! then flip a byte and confirm verify rejects it. Also exercises the
 //! cross-arch aarch64 path and the signing round-trip.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::fs;
 use std::path::Path;
 
@@ -300,8 +310,9 @@ fn tampered_root_hash_in_signed_bundle_is_caught() {
     // right layered behavior. Either error type is acceptable — both mean
     // "you can't fake this".
     match err {
-        BundleError::HashMismatch { .. } | BundleError::BadSignature => {}
-        BundleError::SignatureFieldMalformed { .. } => {}
+        BundleError::HashMismatch { .. }
+        | BundleError::BadSignature
+        | BundleError::SignatureFieldMalformed { .. } => {}
         other => panic!("unexpected: {other:?}"),
     }
 }

@@ -81,12 +81,12 @@ impl Category {
             ("amenity", "hospital" | "clinic" | "doctors") => Category::Hospital,
             ("tourism", "museum" | "gallery" | "artwork") => Category::Museum,
             ("tourism", "hotel" | "hostel" | "guest_house" | "motel") => Category::Hotel,
-            ("tourism", "attraction" | "viewpoint" | "monument") => Category::Landmark,
-            ("historic", _) => Category::Landmark,
+            ("tourism", "attraction" | "viewpoint" | "monument") | ("historic", _) => {
+                Category::Landmark
+            }
             ("leisure", "park" | "garden" | "nature_reserve") => Category::Park,
             ("shop", _) => Category::Shop,
-            ("railway" | "public_transport", _) => Category::Transit,
-            ("highway", "bus_stop") => Category::Transit,
+            ("railway" | "public_transport", _) | ("highway", "bus_stop") => Category::Transit,
             _ => Category::Other,
         }
     }
@@ -199,11 +199,12 @@ impl TravelMode {
     /// modes; `Transit` never routes via OSRM (guarded by [`is_transit`]).
     pub fn osrm_profile(self) -> &'static str {
         match self {
-            TravelMode::Car => "driving",
+            // `Transit` never actually routes via OSRM (guarded by
+            // `is_transit`); it shares Car's profile string only because the
+            // return type demands some value.
+            TravelMode::Car | TravelMode::Transit => "driving",
             TravelMode::Bike => "cycling",
             TravelMode::Foot => "foot",
-            // Unused: transit journeys are planned via MOTIS, not OSRM.
-            TravelMode::Transit => "driving",
         }
     }
 
@@ -335,12 +336,13 @@ impl TransitMode {
     pub fn from_motis(mode: &str) -> TransitMode {
         match mode.to_ascii_uppercase().as_str() {
             "WALK" => TransitMode::Walk,
-            "BUS" | "COACH" => TransitMode::Bus,
             "TRAM" | "STREETCAR" | "LIGHT_RAIL" => TransitMode::Tram,
             "SUBWAY" | "METRO" => TransitMode::Subway,
             "RAIL" | "REGIONAL_RAIL" | "REGIONAL_FAST_RAIL" | "LONG_DISTANCE"
             | "HIGHSPEED_RAIL" | "NIGHT_RAIL" => TransitMode::Rail,
             "FERRY" => TransitMode::Ferry,
+            // "BUS" | "COACH", and any mode MOTIS doesn't report yet, both land
+            // here — the safest default for an unrecognised surface mode.
             _ => TransitMode::Bus,
         }
     }

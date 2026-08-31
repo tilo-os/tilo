@@ -2,6 +2,8 @@
 name = "thumbnail"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 # The one shared thumbnail generator + content-addressed cache for qOS. The FUSE
 # filesystem host-generates previews as metadata, the file manager and pickers

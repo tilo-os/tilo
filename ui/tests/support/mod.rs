@@ -1,4 +1,13 @@
 #![allow(dead_code)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 
 pub mod offscreen;
 pub mod typed_collab;
@@ -42,7 +51,7 @@ impl MemoryRelay {
         }
     }
 
-    pub fn attach(&mut self, id: &str) -> Peer {
+    pub fn attach(&self, id: &str) -> Peer {
         self.inboxes
             .lock()
             .unwrap()
@@ -76,11 +85,13 @@ impl Peer {
     }
 
     pub fn poll(&self) -> Vec<CollabEvent> {
-        let mut guard = self.inbox.lock().unwrap();
-        let mine = guard
+        self.inbox
+            .lock()
+            .unwrap()
             .get_mut(&self.id)
-            .expect("peer inbox removed from relay");
-        mine.drain(..).collect()
+            .expect("peer inbox removed from relay")
+            .drain(..)
+            .collect()
     }
 
     pub fn id(&self) -> &str {

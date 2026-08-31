@@ -34,6 +34,19 @@
 //! `logind.Suspend`, mirrors the registry into a logind `idle:sleep` lock,
 //! watches the battery, and reacts to the lid.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 pub mod battery;
 pub mod bridge;
 pub mod config;

@@ -25,7 +25,11 @@ impl ConnKind {
             ConnKind::OpenVpn => "openvpn",
         }
     }
-    pub fn from_str(s: &str) -> ConnKind {
+    /// Parse the stored spelling, falling back to the spec default
+    /// `WireGuard` for anything unrecognised. Named `parse` rather than
+    /// `from_str` so it isn't confused with `std::str::FromStr::from_str`
+    /// (this never fails, so it has no `Result`/`Err` to report).
+    pub fn parse(s: &str) -> ConnKind {
         match s {
             "openvpn" => ConnKind::OpenVpn,
             _ => ConnKind::WireGuard,
@@ -69,7 +73,11 @@ impl ConnStatus {
             ConnStatus::Connected => "connected",
         }
     }
-    pub fn from_str(s: &str) -> ConnStatus {
+    /// Parse the stored spelling, falling back to `Disconnected` for
+    /// anything unrecognised. Named `parse` rather than `from_str` so it
+    /// isn't confused with `std::str::FromStr::from_str` (this never fails,
+    /// so it has no `Result`/`Err` to report).
+    pub fn parse(s: &str) -> ConnStatus {
         match s {
             "connected" => ConnStatus::Connected,
             "connecting" => ConnStatus::Connecting,
@@ -317,11 +325,11 @@ mod tests {
     #[test]
     fn kind_status_round_trip() {
         assert_eq!(
-            ConnKind::from_str(ConnKind::OpenVpn.as_str()),
+            ConnKind::parse(ConnKind::OpenVpn.as_str()),
             ConnKind::OpenVpn
         );
         assert_eq!(
-            ConnStatus::from_str(ConnStatus::Connecting.as_str()),
+            ConnStatus::parse(ConnStatus::Connecting.as_str()),
             ConnStatus::Connecting
         );
     }

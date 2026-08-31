@@ -29,9 +29,9 @@
 use std::io::{self, BufRead, Write};
 use std::time::Duration;
 
-use qos_bluez::BluezClient;
 use qos_bluez::agent::{AgentEvent, AgentRegistration, PairingAgent};
 use qos_bluez::model::{PairingPrompt, PairingReply};
+use qos_bluez::{AdapterInfo, AgentEvents, BluezClient, DeviceInfo};
 
 /// The device path the simulated calls name. It does not have to exist —
 /// the agent is being asked a question about it, not asked to reach it.
@@ -62,7 +62,7 @@ fn arg_value(flag: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
     args.iter()
         .position(|a| a == flag)
-        .and_then(|i| args.get(i + 1).cloned())
+        .and_then(|i| args.get(i.saturating_add(1)).cloned())
 }
 
 /// The root half: call `org.bluez.Agent1.RequestConfirmation` on the agent
@@ -132,17 +132,8 @@ async fn as_bluez(unique_name: &str, path: &str, passkey: u32) -> Result<String,
     .map_err(|e| e.to_string())?
 }
 
-async fn run() -> Result<(), String> {
-    let scan_secs: u64 = arg_value("--scan")
-        .map(|s| {
-            s.parse()
-                .map_err(|_| "--scan wants a number of seconds".to_string())
-        })
-        .transpose()?
-        .unwrap_or(0);
-    let pair_target = arg_value("--pair");
-
-    // 1. Reach bluetoothd.
+/// Step 1: reach `bluetoothd` and report the machine's adapter.
+async fn connect_and_show_adapter() -> Result<(BluezClient, AdapterInfo), String> {
     let client = BluezClient::connect()
         .await
         .map_err(|e| format!("cannot reach org.bluez on the system bus: {e}"))?;
@@ -155,8 +146,11 @@ async fn run() -> Result<(), String> {
         "adapter  {}  [{}]  name={:?} powered={} discovering={}",
         adapter.path, adapter.address, adapter.name, adapter.powered, adapter.discovering
     );
+    Ok((client, adapter))
+}
 
-    // 2. Known devices.
+/// Step 2: report every device `bluetoothd` already knows about.
+async fn list_devices(client: &BluezClient) -> Result<Vec<DeviceInfo>, String> {
     let devices = client
         .devices()
         .await
@@ -168,9 +162,15 @@ async fn run() -> Result<(), String> {
             d.name, d.address, d.paired, d.trusted, d.connected, d.rssi
         );
     }
+    Ok(devices)
+}
 
-    // 3. Register the pairing agent with the real daemon.
-    let (agent, mut events) = PairingAgent::new(client.names());
+/// Step 3: register the pairing agent with the real daemon as the default,
+/// so pairings started from anywhere route to it.
+async fn register_default_agent(
+    client: &BluezClient,
+) -> Result<(AgentRegistration, AgentEvents, String), String> {
+    let (agent, events) = PairingAgent::new(client.names());
     let reg = AgentRegistration::register(client.connection(), agent)
         .await
         .map_err(|e| format!("bluetoothd refused to register the pairing agent: {e}"))?;
@@ -183,8 +183,11 @@ async fn run() -> Result<(), String> {
         .unique_name()
         .ok_or("our connection has no unique name")?
         .to_string();
+    Ok((reg, events, unique))
+}
 
-    // 4. A passkey confirmation the user accepts must unblock the caller.
+/// Step 4: a passkey confirmation the user accepts must unblock the caller.
+async fn accept_round_trip(mut events: AgentEvents, unique: &str) -> Result<(), String> {
     let accept = tokio::spawn(async move {
         let AgentEvent::Ask { request, reply } =
             events.recv().await.ok_or("agent channel closed")?
@@ -205,57 +208,55 @@ async fn run() -> Result<(), String> {
             .map_err(|_| "could not answer".to_string())?;
         Ok::<_, String>(request.device_name)
     });
-    let line = as_bluez(&unique, qos_bluez::AGENT_PATH, 424_242).await?;
+    let line = as_bluez(unique, qos_bluez::AGENT_PATH, 424_242).await?;
     if line != "RESULT=OK" {
         return Err(format!("an accepted passkey did not succeed: {line}"));
     }
     let named = accept.await.map_err(|e| e.to_string())??;
     println!("agent    accept  -> {line}  (device {named})");
+    Ok(())
+}
 
-    // 5. The bus policy is the gate: the same call from this unprivileged
-    //    process must be refused before it ever reaches our object.
+/// Step 5: the bus policy is the gate — the same call from this unprivileged
+/// process must be refused before it ever reaches our object.
+async fn refuse_unprivileged_caller(unique: &str) -> Result<(), String> {
     let caller = zbus::Connection::system()
         .await
         .map_err(|e| format!("second system-bus connection failed: {e}"))?;
-    let proxy = zbus::Proxy::new(
-        &caller,
-        unique.as_str(),
-        qos_bluez::AGENT_PATH,
-        "org.bluez.Agent1",
-    )
-    .await
-    .map_err(|e| format!("cannot address our own agent object: {e}"))?;
+    let proxy = zbus::Proxy::new(&caller, unique, qos_bluez::AGENT_PATH, "org.bluez.Agent1")
+        .await
+        .map_err(|e| format!("cannot address our own agent object: {e}"))?;
     let device = zbus::zvariant::ObjectPath::try_from(DEV).map_err(|e| e.to_string())?;
     match proxy
         .call_method("RequestConfirmation", &(&device, 1u32))
         .await
     {
-        Ok(_) => {
-            return Err(
-                "an unprivileged process drove the pairing agent — the bus policy \
-                        restricting org.bluez.Agent1 to root is not in force"
-                    .to_string(),
-            );
-        }
+        Ok(_) => Err(
+            "an unprivileged process drove the pairing agent — the bus policy \
+                    restricting org.bluez.Agent1 to root is not in force"
+                .to_string(),
+        ),
         Err(zbus::Error::MethodError(name, _, _))
             if name.as_str() == "org.freedesktop.DBus.Error.AccessDenied" =>
         {
             println!(
                 "agent    unprivileged caller refused by bus policy (only bluetoothd may ask)"
             );
+            Ok(())
         }
-        Err(e) => {
-            return Err(format!(
-                "unprivileged call failed for the wrong reason: {e}"
-            ));
-        }
+        Err(e) => Err(format!(
+            "unprivileged call failed for the wrong reason: {e}"
+        )),
     }
+}
 
-    // 6. A decline must come back as org.bluez.Error.Rejected — that name is
-    //    what aborts the pairing rather than leaving it hanging.
-    //
-    //    On its own connection: BlueZ keys agents by sender and refuses a
-    //    second RegisterAgent from one connection with AlreadyExists.
+/// Step 6: a decline must come back as `org.bluez.Error.Rejected` — that name
+/// is what aborts the pairing rather than leaving it hanging. Runs on its own
+/// connection: `BlueZ` keys agents by sender and refuses a second
+/// `RegisterAgent` from one connection with `AlreadyExists`. Returns the
+/// registration so the caller can unregister it once the timeout check below
+/// has also run.
+async fn decline_round_trip(client: &BluezClient) -> Result<AgentRegistration, String> {
     let conn2 = zbus::Connection::system()
         .await
         .map_err(|e| format!("third system-bus connection failed: {e}"))?;
@@ -280,9 +281,13 @@ async fn run() -> Result<(), String> {
         ));
     }
     println!("agent    decline -> {line}");
+    Ok(reg2)
+}
 
-    // 7. And nobody answering must come back as Canceled, not as a hang and
-    //    not as a silent success.
+/// Step 7: nobody answering must come back as `Canceled`, not as a hang and
+/// not as a silent success. Returns the registration so the caller can
+/// unregister it alongside [`decline_round_trip`]'s.
+async fn timeout_round_trip(client: &BluezClient) -> Result<AgentRegistration, String> {
     let (agent3, events3) = PairingAgent::with_timeout(client.names(), Duration::from_secs(2));
     let path3 = "/org/qos/BluetoothAgentTimeoutCheck";
     let conn3 = zbus::Connection::system()
@@ -298,130 +303,172 @@ async fn run() -> Result<(), String> {
         return Err(format!("an unattended prompt did not refuse: {line}"));
     }
     println!("agent    no UI   -> {line}");
+    Ok(reg3)
+}
+
+/// Step 8: real discovery, if `--scan` was given.
+async fn run_scan(
+    client: &BluezClient,
+    adapter: &AdapterInfo,
+    devices: &[DeviceInfo],
+    scan_secs: u64,
+) -> Result<(), String> {
+    println!(
+        "scan     starting {scan_secs}s discovery on {}",
+        adapter.path
+    );
+    client
+        .start_discovery(&adapter.path)
+        .await
+        .map_err(|e| format!("StartDiscovery failed: {e}"))?;
+    if !client.is_discovering(&adapter.path).await.unwrap_or(false) {
+        return Err("StartDiscovery returned OK but the adapter is not discovering".into());
+    }
+    let before: Vec<String> = devices.iter().map(|d| d.path.clone()).collect();
+    tokio::time::sleep(Duration::from_secs(scan_secs)).await;
+    let after = client.devices().await.map_err(|e| e.to_string())?;
+    client
+        .stop_discovery(&adapter.path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let fresh: Vec<_> = after.iter().filter(|d| !before.contains(&d.path)).collect();
+    println!(
+        "scan     {} devices known, {} newly seen",
+        after.len(),
+        fresh.len()
+    );
+    for d in &after {
+        if d.rssi.is_some() || fresh.iter().any(|f| f.path == d.path) {
+            let tag = if fresh.iter().any(|f| f.path == d.path) {
+                "NEW "
+            } else {
+                "    "
+            };
+            println!(
+                "  {tag}{:<24} {} rssi={:?} paired={}",
+                d.name, d.address, d.rssi, d.paired
+            );
+        }
+    }
+    if client.is_discovering(&adapter.path).await.unwrap_or(true) {
+        return Err("StopDiscovery left the adapter scanning".into());
+    }
+    println!("scan     stopped cleanly");
+    Ok(())
+}
+
+/// Step 9: real pairing, if `--pair ADDR` was given. Answers the agent from
+/// the terminal, which is what a compositor prompt does with a pointer.
+async fn run_pairing(
+    client: &BluezClient,
+    adapter: &AdapterInfo,
+    addr: &str,
+) -> Result<(), String> {
+    let path = qos_bluez::path_for_address(&adapter.path, addr);
+    println!("pair     pairing {addr} at {path}");
+    let (agent4, mut events4) = PairingAgent::new(client.names());
+    let conn4 = zbus::Connection::system()
+        .await
+        .map_err(|e| e.to_string())?;
+    let reg4 = AgentRegistration::register_at(
+        &conn4,
+        agent4,
+        "/org/qos/BluetoothAgentPair",
+        "KeyboardDisplay",
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    tokio::spawn(async move {
+        while let Some(ev) = events4.recv().await {
+            match ev {
+                AgentEvent::Ask { request, reply } => {
+                    println!(
+                        "\n  BlueZ asks about {}: {:?}",
+                        request.device_name, request.prompt
+                    );
+                    if let Some(t) = request.prompt.passkey_text() {
+                        println!("  passkey/PIN: {t}");
+                    }
+                    if !request.prompt.expects_answer() {
+                        continue;
+                    }
+                    print!("  answer ([y]es / [n]o / digits): ");
+                    let _ = io::stdout().flush();
+                    let mut line = String::new();
+                    let _ = io::stdin().lock().read_line(&mut line);
+                    let line = line.trim().to_string();
+                    let answer = if line.eq_ignore_ascii_case("y") {
+                        PairingReply::Accept
+                    } else if let Ok(n) = line.parse::<u32>() {
+                        if request.prompt.expects_entry() {
+                            PairingReply::Passkey(n)
+                        } else {
+                            PairingReply::Accept
+                        }
+                    } else if request.prompt.expects_entry() && !line.is_empty() {
+                        PairingReply::PinCode(line)
+                    } else {
+                        PairingReply::Reject
+                    };
+                    let _ = reply.send(answer);
+                }
+                AgentEvent::Cancelled => println!("  BlueZ cancelled the request"),
+                AgentEvent::Released => println!("  BlueZ released the agent"),
+            }
+        }
+    });
+    let outcome = client
+        .pair_and_connect(&adapter.path, &path)
+        .await
+        .map_err(|e| format!("pairing failed: {}", qos_bluez::error_text(&e)))?;
+    println!("pair     {outcome:?}");
+    let after = client.devices().await.map_err(|e| e.to_string())?;
+    let d = after
+        .iter()
+        .find(|d| d.path == path)
+        .ok_or("the paired device is not in the device list")?;
+    if !d.paired {
+        return Err(format!("{} reports Paired=false after pairing", d.name));
+    }
+    if !d.trusted {
+        return Err(format!("{} reports Trusted=false after pairing", d.name));
+    }
+    println!(
+        "pair     {} paired={} trusted={} connected={}",
+        d.name, d.paired, d.trusted, d.connected
+    );
+    reg4.unregister().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn run() -> Result<(), String> {
+    let scan_secs: u64 = arg_value("--scan")
+        .map(|s| {
+            s.parse()
+                .map_err(|_| "--scan wants a number of seconds".to_string())
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let pair_target = arg_value("--pair");
+
+    let (client, adapter) = connect_and_show_adapter().await?;
+    let devices = list_devices(&client).await?;
+
+    let (reg, events, unique) = register_default_agent(&client).await?;
+    accept_round_trip(events, &unique).await?;
+    refuse_unprivileged_caller(&unique).await?;
+
+    let reg2 = decline_round_trip(&client).await?;
+    let reg3 = timeout_round_trip(&client).await?;
     reg3.unregister().await.map_err(|e| e.to_string())?;
     reg2.unregister().await.map_err(|e| e.to_string())?;
 
-    // 8. Real discovery, if asked.
     if scan_secs > 0 {
-        println!(
-            "scan     starting {scan_secs}s discovery on {}",
-            adapter.path
-        );
-        client
-            .start_discovery(&adapter.path)
-            .await
-            .map_err(|e| format!("StartDiscovery failed: {e}"))?;
-        if !client.is_discovering(&adapter.path).await.unwrap_or(false) {
-            return Err("StartDiscovery returned OK but the adapter is not discovering".into());
-        }
-        let before: Vec<String> = devices.iter().map(|d| d.path.clone()).collect();
-        tokio::time::sleep(Duration::from_secs(scan_secs)).await;
-        let after = client.devices().await.map_err(|e| e.to_string())?;
-        client
-            .stop_discovery(&adapter.path)
-            .await
-            .map_err(|e| e.to_string())?;
-        let fresh: Vec<_> = after.iter().filter(|d| !before.contains(&d.path)).collect();
-        println!(
-            "scan     {} devices known, {} newly seen",
-            after.len(),
-            fresh.len()
-        );
-        for d in &after {
-            if d.rssi.is_some() || fresh.iter().any(|f| f.path == d.path) {
-                let tag = if fresh.iter().any(|f| f.path == d.path) {
-                    "NEW "
-                } else {
-                    "    "
-                };
-                println!(
-                    "  {tag}{:<24} {} rssi={:?} paired={}",
-                    d.name, d.address, d.rssi, d.paired
-                );
-            }
-        }
-        if client.is_discovering(&adapter.path).await.unwrap_or(true) {
-            return Err("StopDiscovery left the adapter scanning".into());
-        }
-        println!("scan     stopped cleanly");
+        run_scan(&client, &adapter, &devices, scan_secs).await?;
     }
 
-    // 9. Real pairing, if asked.
     if let Some(addr) = pair_target {
-        let path = qos_bluez::path_for_address(&adapter.path, &addr);
-        println!("pair     pairing {addr} at {path}");
-        let (agent4, mut events4) = PairingAgent::new(client.names());
-        let conn4 = zbus::Connection::system()
-            .await
-            .map_err(|e| e.to_string())?;
-        let reg4 = AgentRegistration::register_at(
-            &conn4,
-            agent4,
-            "/org/qos/BluetoothAgentPair",
-            "KeyboardDisplay",
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        tokio::spawn(async move {
-            while let Some(ev) = events4.recv().await {
-                match ev {
-                    AgentEvent::Ask { request, reply } => {
-                        println!(
-                            "\n  BlueZ asks about {}: {:?}",
-                            request.device_name, request.prompt
-                        );
-                        if let Some(t) = request.prompt.passkey_text() {
-                            println!("  passkey/PIN: {t}");
-                        }
-                        if !request.prompt.expects_answer() {
-                            continue;
-                        }
-                        print!("  answer ([y]es / [n]o / digits): ");
-                        let _ = io::stdout().flush();
-                        let mut line = String::new();
-                        let _ = io::stdin().lock().read_line(&mut line);
-                        let line = line.trim().to_string();
-                        let answer = if line.eq_ignore_ascii_case("y") {
-                            PairingReply::Accept
-                        } else if let Ok(n) = line.parse::<u32>() {
-                            if request.prompt.expects_entry() {
-                                PairingReply::Passkey(n)
-                            } else {
-                                PairingReply::Accept
-                            }
-                        } else if request.prompt.expects_entry() && !line.is_empty() {
-                            PairingReply::PinCode(line)
-                        } else {
-                            PairingReply::Reject
-                        };
-                        let _ = reply.send(answer);
-                    }
-                    AgentEvent::Cancelled => println!("  BlueZ cancelled the request"),
-                    AgentEvent::Released => println!("  BlueZ released the agent"),
-                }
-            }
-        });
-        let outcome = client
-            .pair_and_connect(&adapter.path, &path)
-            .await
-            .map_err(|e| format!("pairing failed: {}", qos_bluez::error_text(&e)))?;
-        println!("pair     {outcome:?}");
-        let after = client.devices().await.map_err(|e| e.to_string())?;
-        let d = after
-            .iter()
-            .find(|d| d.path == path)
-            .ok_or("the paired device is not in the device list")?;
-        if !d.paired {
-            return Err(format!("{} reports Paired=false after pairing", d.name));
-        }
-        if !d.trusted {
-            return Err(format!("{} reports Trusted=false after pairing", d.name));
-        }
-        println!(
-            "pair     {} paired={} trusted={} connected={}",
-            d.name, d.paired, d.trusted, d.connected
-        );
-        reg4.unregister().await.map_err(|e| e.to_string())?;
+        run_pairing(&client, &adapter, &addr).await?;
     }
 
     reg.unregister()

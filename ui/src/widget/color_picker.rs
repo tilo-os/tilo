@@ -13,7 +13,7 @@ use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -225,19 +225,60 @@ impl ColorPicker {
 
     /// Register a callback that fires whenever `color` mutates, after the
     /// new value is stored so observers can just call `picker.color()`.
+    #[must_use]
     pub fn on_change<F: FnMut(Color) + 'static>(mut self, f: F) -> Self {
         self.on_change = Some(Box::new(f));
         self
     }
 
+    /// Narrows a layout/measurement value to `f32` for vello/taffy. Every
+    /// call site here is a screen-space coordinate or a fraction already
+    /// clamped to `0.0..=1.0`, always far below `f32::MAX`, so the
+    /// truncation the lint warns about can't actually occur.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "screen-space pixel values and 0.0..=1.0 fractions in this widget never approach f32::MAX"
+    )]
+    fn px(v: f64) -> f32 {
+        v as f32
+    }
+
+    /// Round a float already known to sit in `0.0..=255.0` down to its
+    /// `u8` channel value. Callers clamp immediately before calling this,
+    /// so the cast can never truncate or lose a sign.
+    fn channel_u8(x: f32) -> u8 {
+        let x = x.clamp(0.0, 255.0).round();
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "x is clamped to 0.0..=255.0 immediately above, so this can never truncate or wrap"
+        )]
+        let channel = x as u8;
+        channel
+    }
+
     /// Standard HSV → RGB (HSV all in 0..1; output 0..255 per channel).
     /// Branch table form to avoid floating-point modulus surprises around
     /// h ≈ 1.0.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "h, s, v, i, f, p, q, t, r, g, b are the standard HSV/RGB channel and \
+                  interpolation names; inventing longer ones would only hurt readability here"
+    )]
     fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
         let h = h.rem_euclid(1.0);
         let s = s.clamp(0.0, 1.0);
         let v = v.clamp(0.0, 1.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "h*6.0 is in [0.0, 6.0] after rem_euclid(1.0) above, so floor() never \
+                      approaches i32::MAX"
+        )]
         let i = (h * 6.0).floor() as i32;
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "i is bounded to roughly 0..=6 (see above), far below f32's exact-integer range"
+        )]
         let f = h * 6.0 - i as f32;
         let p = v * (1.0 - s);
         let q = v * (1.0 - f * s);
@@ -251,9 +292,9 @@ impl ColorPicker {
             _ => (v, p, q),
         };
         (
-            (r * 255.0).round().clamp(0.0, 255.0) as u8,
-            (g * 255.0).round().clamp(0.0, 255.0) as u8,
-            (b * 255.0).round().clamp(0.0, 255.0) as u8,
+            Self::channel_u8(r * 255.0),
+            Self::channel_u8(g * 255.0),
+            Self::channel_u8(b * 255.0),
         )
     }
 
@@ -261,6 +302,11 @@ impl ColorPicker {
     /// colour is on the achromatic axis (max == min) we keep `h = 0` —
     /// callers writing back into HSV should preserve whatever hue they
     /// last had rather than relying on this fallback.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "r, g, b, h, s, v are the standard RGB/HSV channel names; inventing longer \
+                  ones would only hurt readability here"
+    )]
     fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
         let rf = f32::from(r) / 255.0;
         let gf = f32::from(g) / 255.0;
@@ -274,6 +320,11 @@ impl ColorPicker {
         } else {
             delta / max
         };
+        #[allow(
+            clippy::float_cmp,
+            reason = "max is exactly one of rf/gf/bf via f32::max (a selection, not an \
+                      independent computation), so exact equality is the correct test"
+        )]
         let h = if delta <= f32::EPSILON {
             0.0
         } else if max == rf {
@@ -292,6 +343,11 @@ impl ColorPicker {
 
     /// Rebuild `self.color` from a new hue, preserving the current
     /// saturation and value. Fires the `on_change` callback.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "h, s, v, r, g, b are the standard HSV/RGB channel names; inventing longer \
+                  ones would only hurt readability here"
+    )]
     fn set_hue(&mut self, h: f32) {
         let (_, s, v) = self.current_hsv();
         // On the achromatic axis s=0; clamp to a minimum so picking a
@@ -325,8 +381,8 @@ impl ColorPicker {
     /// Map a press inside `sv_rect` to saturation (x) and value (y): top
     /// left is sat=0/value=1, matching the standard SV-square convention.
     fn sv_from_point(&self, p: Point) -> (f32, f32) {
-        let sx = ((p.x - self.sv_rect.x0) / self.sv_rect.width()).clamp(0.0, 1.0) as f32;
-        let sy = ((p.y - self.sv_rect.y0) / self.sv_rect.height()).clamp(0.0, 1.0) as f32;
+        let sx = Self::px(((p.x - self.sv_rect.x0) / self.sv_rect.width()).clamp(0.0, 1.0));
+        let sy = Self::px(((p.y - self.sv_rect.y0) / self.sv_rect.height()).clamp(0.0, 1.0));
         let s = sx;
         let v = 1.0 - sy;
         (s, v)
@@ -334,11 +390,11 @@ impl ColorPicker {
 
     /// Hue from cursor y in the hue strip rect, 0..1 top to bottom.
     fn hue_from_point(&self, p: Point) -> f32 {
-        ((p.y - self.hue_strip_rect.y0) / self.hue_strip_rect.height()).clamp(0.0, 1.0) as f32
+        Self::px(((p.y - self.hue_strip_rect.y0) / self.hue_strip_rect.height()).clamp(0.0, 1.0))
     }
 
     fn channel_from_point(slider_rect: Rect, p: Point) -> f32 {
-        ((p.x - slider_rect.x0) / slider_rect.width()).clamp(0.0, 1.0) as f32
+        Self::px(((p.x - slider_rect.x0) / slider_rect.width()).clamp(0.0, 1.0))
     }
 
     fn target_at(&self, p: Point) -> Option<DragTarget> {
@@ -362,6 +418,11 @@ impl ColorPicker {
 
     /// Drive whichever control is currently dragging from a cursor
     /// position. No-op when `drag_target` is `None`.
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "h, s, v, r, g, b, p, f are the standard HSV/RGB channel and cursor-point \
+                  names; inventing longer ones would only hurt readability here"
+    )]
     fn apply_drag(&mut self, p: Point) {
         match self.drag_target {
             Some(DragTarget::Sv) => {
@@ -376,91 +437,33 @@ impl ColorPicker {
             }
             Some(DragTarget::R) => {
                 let f = Self::channel_from_point(self.r_slider_rect, p);
-                let new_r = (f * 255.0).round() as u8;
+                let new_r = Self::channel_u8(f * 255.0);
                 self.set_rgb(new_r, self.color.g(), self.color.b());
             }
             Some(DragTarget::G) => {
                 let f = Self::channel_from_point(self.g_slider_rect, p);
-                let new_g = (f * 255.0).round() as u8;
+                let new_g = Self::channel_u8(f * 255.0);
                 self.set_rgb(self.color.r(), new_g, self.color.b());
             }
             Some(DragTarget::B) => {
                 let f = Self::channel_from_point(self.b_slider_rect, p);
-                let new_b = (f * 255.0).round() as u8;
+                let new_b = Self::channel_u8(f * 255.0);
                 self.set_rgb(self.color.r(), self.color.g(), new_b);
             }
             None => {}
         }
     }
 
-    /// Hue-strip stop palette pulled from theme tokens. Falls back to
-    /// `Color::WHITE`/`Color::BLACK` for slots not represented in the
-    /// theme — tests don't pin the exact colours, only that hue clicks
-    /// change the RGB output.
-    fn hue_stops(theme: &Theme) -> [Color; 8] {
-        let c = &theme.tokens.colors;
-        [
-            c.semantic.danger,            // red-ish (top)
-            c.semantic.warning,           // amber/orange
-            c.semantic.success,           // green
-            c.semantic.info,              // cyan/blue
-            c.accent[ACCENT_PRIMARY_IDX], // indigo
-            Color::WHITE,
-            Color::BLACK,
-            c.semantic.danger, // wrap back to red
-        ]
-    }
-}
-
-impl Widget for ColorPicker {
-    fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {
-        // The picker's state lives on `self.color`; CRDT persistence is
-        // an opt-in extension a caller can wire through `on_change`
-        // (e.g. writing to an Automerge field on every change).
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::length(PICKER_WIDTH as f32),
-                height: Dimension::length(PICKER_HEIGHT as f32),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x0 = origin.x + f64::from(layout.location.x);
-        let y0 = origin.y + f64::from(layout.location.y);
-        let x1 = x0 + f64::from(layout.size.width);
-        let y1 = y0 + f64::from(layout.size.height);
-        self.apply_layout_external(Rect::new(x0, y0, x1, y1));
-    }
-
-    fn draw(
-        &mut self,
+    /// Draws the SV square (with focus ring and cursor) and the hue strip
+    /// (with tick). Split out of `draw` to keep that function readable.
+    fn draw_sv_and_hue(
+        &self,
         scene: &mut Scene,
         transform: Affine,
-        text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        colors: &crate::tokens::colors::Colors,
+        radius_sm: f64,
     ) {
-        let colors = &theme.tokens.colors;
-        let radius_sm = f64::from(theme.tokens.radii.sm);
-
-        // No bounding-box focus border: the picker's rect spans empty
-        // space between its controls, so a stroke around all of it would
-        // frame dead space. Focus is already carried by the SV cursor
-        // ring, hue tick, and slider knobs.
-
         // --- SV square ---
         let sv_shape = RoundedRect::from_rect(self.sv_rect, radius_sm);
         scene.fill(
@@ -480,7 +483,7 @@ impl Widget for ColorPicker {
             &sv_shape,
         );
         // The SV square carries the keyboard-focus ring for the whole
-        // picker (see the no-bounding-box note above).
+        // picker (see the no-bounding-box note in `draw`).
         let (sv_border_w, sv_border_c) = if self.is_focused {
             (2.0, colors.border_focus)
         } else {
@@ -511,15 +514,22 @@ impl Widget for ColorPicker {
 
         // --- Hue strip (8 horizontal bands from `hue_stops`) ---
         let stops = Self::hue_stops(theme);
-        let band_h = self.hue_strip_rect.height() / stops.len() as f64;
-        for (i, stop) in stops.iter().enumerate() {
-            let band = Rect::new(
-                self.hue_strip_rect.x0,
-                self.hue_strip_rect.y0 + i as f64 * band_h,
-                self.hue_strip_rect.x1,
-                self.hue_strip_rect.y0 + (i as f64 + 1.0) * band_h,
-            );
-            scene.fill(vello::peniko::Fill::NonZero, transform, *stop, None, &band);
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "stops has a fixed length of 8; i and stops.len() are always far below \
+                      f64's exact-integer range"
+        )]
+        {
+            let band_h = self.hue_strip_rect.height() / stops.len() as f64;
+            for (i, stop) in stops.iter().enumerate() {
+                let band = Rect::new(
+                    self.hue_strip_rect.x0,
+                    self.hue_strip_rect.y0 + i as f64 * band_h,
+                    self.hue_strip_rect.x1,
+                    self.hue_strip_rect.y0 + (i as f64 + 1.0) * band_h,
+                );
+                scene.fill(vello::peniko::Fill::NonZero, transform, *stop, None, &band);
+            }
         }
         let hue_shape = RoundedRect::from_rect(self.hue_strip_rect, radius_sm);
         scene.stroke(
@@ -545,7 +555,17 @@ impl Widget for ColorPicker {
             None,
             &tick,
         );
+    }
 
+    /// Draws the preview swatch and the three RGB sliders (track, active
+    /// fill and knob). Split out of `draw` to keep that function readable.
+    fn draw_preview_and_sliders(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        colors: &crate::tokens::colors::Colors,
+        radius_sm: f64,
+    ) {
         // --- Preview swatch ---
         let preview_shape = RoundedRect::from_rect(self.preview_rect, radius_sm);
         scene.fill(
@@ -638,11 +658,82 @@ impl Widget for ColorPicker {
                 &knob,
             );
         }
+    }
+
+    /// Hue-strip stop palette pulled from theme tokens. Falls back to
+    /// `Color::WHITE`/`Color::BLACK` for slots not represented in the
+    /// theme — tests don't pin the exact colours, only that hue clicks
+    /// change the RGB output.
+    fn hue_stops(theme: &Theme) -> [Color; 8] {
+        let c = &theme.tokens.colors;
+        [
+            c.semantic.danger,            // red-ish (top)
+            c.semantic.warning,           // amber/orange
+            c.semantic.success,           // green
+            c.semantic.info,              // cyan/blue
+            c.accent[ACCENT_PRIMARY_IDX], // indigo
+            Color::WHITE,
+            Color::BLACK,
+            c.semantic.danger, // wrap back to red
+        ]
+    }
+}
+
+impl Widget for ColorPicker {
+    fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {
+        // The picker's state lives on `self.color`; CRDT persistence is
+        // an opt-in extension a caller can wire through `on_change`
+        // (e.g. writing to an Automerge field on every change).
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::length(Self::px(PICKER_WIDTH)),
+                height: Dimension::length(Self::px(PICKER_HEIGHT)),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        let x0 = origin.x + f64::from(layout.location.x);
+        let y0 = origin.y + f64::from(layout.location.y);
+        let x1 = x0 + f64::from(layout.size.width);
+        let y1 = y0 + f64::from(layout.size.height);
+        self.apply_layout_external(Rect::new(x0, y0, x1, y1));
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        let colors = &theme.tokens.colors;
+        let radius_sm = f64::from(theme.tokens.radii.sm);
+
+        // No bounding-box focus border: the picker's rect spans empty
+        // space between its controls, so a stroke around all of it would
+        // frame dead space. Focus is already carried by the SV cursor
+        // ring, hue tick, and slider knobs.
+        self.draw_sv_and_hue(scene, transform, theme, colors, radius_sm);
+        self.draw_preview_and_sliders(scene, transform, colors, radius_sm);
 
         // --- Hex input + RGB readout --- drawn here directly since
         // `hex_input` isn't in the taffy tree.
         self.hex_input
-            .draw(scene, transform, text_renderer, theme, _presence);
+            .draw(scene, transform, text_renderer, theme, presence);
 
         let text_size = theme.tokens.typography.scale.sm;
         let rgb_label = self.rgb_string();
@@ -654,7 +745,7 @@ impl Widget for ColorPicker {
             &rgb_label,
             text_size,
             colors.text_dim,
-            transform * Affine::translate((label_x, rgb_y)),
+            transform.pre_translate(Vec2::new(label_x, rgb_y)),
             None,
         );
     }
@@ -838,9 +929,9 @@ fn parse_hex(s: &str) -> Option<Color> {
     if s.len() != 6 {
         return None;
     }
-    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    let r = u8::from_str_radix(s.get(0..2)?, 16).ok()?;
+    let g = u8::from_str_radix(s.get(2..4)?, 16).ok()?;
+    let b = u8::from_str_radix(s.get(4..6)?, 16).ok()?;
     Some(Color::from_rgba8(r, g, b, 255))
 }
 
@@ -934,7 +1025,7 @@ mod tests {
 
         let (_, _, v_before) = ColorPicker::rgb_to_hsv(initial.r(), initial.g(), initial.b());
 
-        let click_x = (p.hue_strip_rect.x0 + p.hue_strip_rect.x1) / 2.0;
+        let click_x = f64::midpoint(p.hue_strip_rect.x0, p.hue_strip_rect.x1);
         let click_y = p.hue_strip_rect.y0 + 0.66 * p.hue_strip_rect.height();
         dispatch(&mut p, &cursor_moved(click_x, click_y));
         dispatch(&mut p, &mouse_press());
@@ -950,9 +1041,7 @@ mod tests {
         let (_, _, v_after) = ColorPicker::rgb_to_hsv(after.r(), after.g(), after.b());
         assert!(
             (v_after - v_before).abs() < 0.1 + 0.001,
-            "hue strip must preserve V within ±0.1 — before={}, after={}",
-            v_before,
-            v_after,
+            "hue strip must preserve V within ±0.1 — before={v_before}, after={v_after}",
         );
     }
 
@@ -972,13 +1061,11 @@ mod tests {
         let (_, s_tr, v_tr) = ColorPicker::rgb_to_hsv(after_tr.r(), after_tr.g(), after_tr.b());
         assert!(
             s_tr > 0.8,
-            "top-right SV click must yield high saturation — got s={}",
-            s_tr,
+            "top-right SV click must yield high saturation — got s={s_tr}",
         );
         assert!(
             v_tr > 0.8,
-            "top-right SV click must yield high value — got v={}",
-            v_tr,
+            "top-right SV click must yield high value — got v={v_tr}",
         );
 
         // Either channel dropping below the post-TR reading proves the click landed.
@@ -993,11 +1080,7 @@ mod tests {
         assert!(
             s_bl < s_tr || v_bl < v_tr,
             "bottom-left SV click must lower saturation or value — \
-             s_tr={}, s_bl={}, v_tr={}, v_bl={}",
-            s_tr,
-            s_bl,
-            v_tr,
-            v_bl,
+             s_tr={s_tr}, s_bl={s_bl}, v_tr={v_tr}, v_bl={v_bl}",
         );
     }
 
@@ -1008,31 +1091,31 @@ mod tests {
         let mut p = picker_at(Color::from_rgba8(80, 80, 80, 255), Point::ZERO);
 
         let r_x = p.r_slider_rect.x1 - 1.0;
-        let r_y = (p.r_slider_rect.y0 + p.r_slider_rect.y1) / 2.0;
+        let r_y = f64::midpoint(p.r_slider_rect.y0, p.r_slider_rect.y1);
         dispatch(&mut p, &cursor_moved(r_x, r_y));
         dispatch(&mut p, &mouse_press());
         dispatch(&mut p, &mouse_release());
 
         let g_x = p.g_slider_rect.x0 + 1.0;
-        let g_y = (p.g_slider_rect.y0 + p.g_slider_rect.y1) / 2.0;
+        let g_y = f64::midpoint(p.g_slider_rect.y0, p.g_slider_rect.y1);
         dispatch(&mut p, &cursor_moved(g_x, g_y));
         dispatch(&mut p, &mouse_press());
         dispatch(&mut p, &mouse_release());
 
         let b_x = p.b_slider_rect.x0 + 1.0;
-        let b_y = (p.b_slider_rect.y0 + p.b_slider_rect.y1) / 2.0;
+        let b_y = f64::midpoint(p.b_slider_rect.y0, p.b_slider_rect.y1);
         dispatch(&mut p, &cursor_moved(b_x, b_y));
         dispatch(&mut p, &mouse_press());
         dispatch(&mut p, &mouse_release());
 
         let c = p.color();
         assert!(
-            (c.r() as i32 - 255).abs() <= 5,
+            (i32::from(c.r()) - 255).abs() <= 5,
             "expected r ≈ 255, got {}",
             c.r(),
         );
-        assert!(c.g() <= 5, "expected g ≈ 0, got {}", c.g(),);
-        assert!(c.b() <= 5, "expected b ≈ 0, got {}", c.b(),);
+        assert!(c.g() <= 5, "expected g ≈ 0, got {}", c.g());
+        assert!(c.b() <= 5, "expected b ≈ 0, got {}", c.b());
     }
 
     /// `hex_string` must always produce `#RRGGBB` in upper-case with
@@ -1084,7 +1167,7 @@ mod tests {
 
         // A real drag through the production handle_event path.
         let r_x = p.r_slider_rect.x1 - 1.0;
-        let r_y = (p.r_slider_rect.y0 + p.r_slider_rect.y1) / 2.0;
+        let r_y = f64::midpoint(p.r_slider_rect.y0, p.r_slider_rect.y1);
         dispatch(&mut p, &cursor_moved(r_x, r_y));
         dispatch(&mut p, &mouse_press());
         dispatch(&mut p, &mouse_release());
@@ -1096,7 +1179,7 @@ mod tests {
             "reported colour matches the live colour"
         );
         assert!(
-            (reported.r() as i32 - 255).abs() <= 5,
+            (i32::from(reported.r()) - 255).abs() <= 5,
             "R went to ~255, got {}",
             reported.r()
         );
@@ -1138,7 +1221,7 @@ mod tests {
         p.hue_strip_rect = base.hue_strip_rect;
 
         let r_x = p.r_slider_rect.x1 - 1.0;
-        let r_y = (p.r_slider_rect.y0 + p.r_slider_rect.y1) / 2.0;
+        let r_y = f64::midpoint(p.r_slider_rect.y0, p.r_slider_rect.y1);
         dispatch(&mut p, &cursor_moved(r_x, r_y));
         dispatch(&mut p, &mouse_press());
 

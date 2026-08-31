@@ -18,6 +18,16 @@
 //! Set `MAPS_LIVE_OUT=/some/dir` to control where the inspection PNGs are
 //! written (default: `apps/maps/live-out/`).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -51,9 +61,11 @@ fn skip(name: &str) {
 }
 
 fn unique_cache() -> PathBuf {
+    // Only needs to be distinct per run; a pre-epoch clock (never in practice)
+    // just falls back to 0 rather than panicking the test setup.
     let n = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_nanos();
     std::env::temp_dir().join(format!("qos-maps-live-{}-{}", std::process::id(), n))
 }

@@ -23,6 +23,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use ui::ImageStore;
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -44,7 +45,6 @@ use crate::model::{
     Album, Artist, CacheState, Library, Playback, RepeatMode, SearchResults, Track,
 };
 use crate::mpris::{MprisCommand, MprisHandle, PlaybackStatus, PlayerSnapshot};
-use crate::portal::{self, CoverOutcome};
 use crate::seed;
 use crate::source::Source;
 use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
@@ -52,6 +52,22 @@ use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
 const SIDEBAR_W: f64 = 236.0;
 const NOWPLAYING_H: f64 = 92.0;
 const HEADER_H: f64 = 72.0;
+
+fn cover_request() -> PickRequest {
+    PickRequest::open("Choose a playlist cover", "Set cover")
+        .thread_name("music-portal-cover")
+        .filter(
+            FileFilter::new("Images")
+                .mimetype("image/png")
+                .mimetype("image/jpeg")
+                .mimetype("image/webp")
+                .glob("*.png")
+                .glob("*.jpg")
+                .glob("*.jpeg")
+                .glob("*.webp"),
+        )
+        .all_files()
+}
 
 /// Below this allocated width (logical px) the navigation sidebar stops
 /// sitting permanently beside the content and becomes an overlay flap that
@@ -238,6 +254,13 @@ struct Hit {
     action: Action,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool tracks an independent, unrelated concern (backend readiness, one-time \
+              seeding, playback init, the volume popover, the redraw flag) scattered across a \
+              large app-state struct; grouping them into a sub-struct would only rename the \
+              ~50 call sites across app.rs and render.rs, not reduce them"
+)]
 pub struct MusicApp {
     lib: Library,
     pb: Playback,
@@ -298,7 +321,7 @@ pub struct MusicApp {
 
     /// A playlist-cover file-portal pick in flight: the receiver the frame loop
     /// drains, plus the playlist it targets. `None` when no picker is open.
-    cover_pick: Option<portal::CoverChannel>,
+    cover_pick: Option<PortalChannel>,
     /// Which playlist an in-flight cover pick belongs to. The portal only ever
     /// answers "which file", so the app remembers "for what".
     cover_pick_for: Option<String>,
@@ -537,6 +560,14 @@ struct NameDlg {
 }
 
 impl MusicApp {
+    // A flat struct literal initializing every field of `MusicApp`'s ~90-field
+    // state; splitting it into sub-builders would only relocate the field
+    // assignments across more functions, not reduce them (the same reasoning
+    // as the file-level `too_many_arguments` allow above).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "flat struct-literal initializing every MusicApp field once; splitting it would only relocate field assignments, not reduce them"
+    )]
     pub fn new() -> Self {
         // Optional initial-view override, used by `--shots` to capture
         // screens other than Home (e.g. `QOS_MUSIC_VIEW=album:al_glasslight`).
@@ -622,7 +653,7 @@ impl MusicApp {
             lyrics_for: None,
             lyrics_synced: false,
             shot_stage: None,
-            images: ImageStore::new(image_fetcher()),
+            images: ImageStore::new(&image_fetcher()),
             art_urls: HashMap::new(),
             home: None,
             home_requested: false,
@@ -769,9 +800,8 @@ impl MusicApp {
     }
 
     fn parse_initial_view() -> (View, String) {
-        let raw = match std::env::var("QOS_MUSIC_VIEW") {
-            Ok(v) => v,
-            Err(_) => return (View::Home, String::new()),
+        let Ok(raw) = std::env::var("QOS_MUSIC_VIEW") else {
+            return (View::Home, String::new());
         };
         let v = match raw.as_str() {
             "home" => View::Home,
@@ -909,9 +939,9 @@ impl MusicApp {
     /// in-memory library from the document afterward for immediate UI feedback;
     /// `sync` reconciles it again on the next frame (so a palette dispatch shows
     /// up the same way).
-    fn perform_action(&mut self, state: &mut AutoCommit, action: crate::actions::MusicAction) {
+    fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::MusicAction) {
         self.actions
-            .dispatch(state, crate::actions::MUSIC_ACTION_TYPE, &action);
+            .dispatch(state, crate::actions::MUSIC_ACTION_TYPE, action);
     }
 
     /// The context Ctrl+K needs to build Music's resource tree: the user's
@@ -1027,14 +1057,14 @@ impl MusicApp {
         };
         if let Some(id) = self.pb.current.clone() {
             if let Some(t) = self.lib.track(&id) {
-                snap.track_id = id.clone();
-                snap.title = t.title.clone();
+                snap.track_id.clone_from(&id);
+                snap.title.clone_from(&t.title);
                 snap.artist = self.lib.artist_name(&t.artist_id).to_string();
                 snap.album = self.lib.album_title(&t.album_id).to_string();
                 snap.length_us = t.duration_ms() as i64 * 1000;
                 let cover = self.best_cover_id(&id, &t.album_id);
                 if let Some(url) = self.art_urls.get(&cover) {
-                    snap.art_url = url.clone();
+                    snap.art_url.clone_from(url);
                 }
             }
             snap.can_play = !self.pb.playing;
@@ -1113,7 +1143,7 @@ impl MusicApp {
         self.cover_pick = None;
         let playlist_id = self.cover_pick_for.take();
         match outcome {
-            CoverOutcome::Opened(path) => {
+            PortalOutcome::Opened(path) => {
                 let Some(playlist_id) = playlist_id else {
                     return;
                 };
@@ -1123,15 +1153,15 @@ impl MusicApp {
                 // The pick (the file portal) is app-side, non-deterministic work;
                 // the resulting write of the chosen URL is a replayable action so
                 // the cover replicates to peers like any other playlist edit.
-                self.perform_action(state, crate::actions::set_cover_action(&playlist_id, &url));
+                self.perform_action(state, &crate::actions::set_cover_action(&playlist_id, &url));
                 self.reload_library(state);
                 // Overwrite (not `or_insert`) so re-picking a cover replaces the
                 // old one in the image cache.
                 self.art_urls.insert(playlist_id, url);
                 self.toast = Some(("Playlist cover updated".to_string(), Instant::now()));
             }
-            CoverOutcome::Cancelled => {}
-            CoverOutcome::Failed(reason) => {
+            PortalOutcome::Cancelled => {}
+            PortalOutcome::Failed(reason) => {
                 self.toast = Some((
                     format!("Couldn\u{2019}t set cover: {reason}"),
                     Instant::now(),
@@ -1214,7 +1244,7 @@ impl MusicApp {
         if self.pb.playing
             && let Some(id) = self.pb.current.clone()
         {
-            self.start_stream(id);
+            self.start_stream(&id);
         }
     }
 
@@ -1256,8 +1286,7 @@ impl MusicApp {
                     self.playhead_ms = self.current_duration_ms() as f64;
                     self.pb.playing = false;
                 }
-            } else {
-                let next_idx = self.shuffle_order[pos + 1];
+            } else if let Some(&next_idx) = self.shuffle_order.get(pos + 1) {
                 self.play_index(next_idx);
             }
             return;
@@ -1294,7 +1323,9 @@ impl MusicApp {
                 self.playhead_ms = 0.0;
                 return;
             }
-            let prev_idx = self.shuffle_order[pos - 1];
+            let Some(&prev_idx) = self.shuffle_order.get(pos - 1) else {
+                return;
+            };
             self.play_index(prev_idx);
             return;
         }
@@ -1473,6 +1504,13 @@ impl MusicApp {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = nd.dialog.build_layout(&mut taffy, &theme, &mut node_map);
+        // `new_with_children` only fails when a child `NodeId` belongs to a
+        // *different* tree, which never happens here — `node` was just built
+        // in this exact `taffy` above.
+        #[allow(
+            clippy::expect_used,
+            reason = "new_with_children only errors for a child NodeId from a different tree; `node` was just built in this exact taffy above"
+        )]
         let root = taffy
             .new_with_children(
                 Style {
@@ -1502,7 +1540,7 @@ impl MusicApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
@@ -1525,6 +1563,13 @@ impl MusicApp {
                 return;
             };
             let mut taffy: TaffyTree<()> = TaffyTree::new();
+            // `new_leaf` on a fresh tree with a default `Style` cannot fail;
+            // this throwaway node only satisfies `Widget::handle_event`'s
+            // trait signature.
+            #[allow(
+                clippy::expect_used,
+                reason = "new_leaf on a fresh tree with a default Style cannot fail; this throwaway node only satisfies Widget::handle_event's trait signature"
+            )]
             let node = taffy
                 .new_leaf(Style::default())
                 .expect("a leaf on a fresh taffy tree");
@@ -1532,7 +1577,7 @@ impl MusicApp {
             nd.dialog.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 &automerge::ROOT,
                 handled,
@@ -1570,447 +1615,512 @@ impl MusicApp {
     fn dispatch(&mut self, action: Action, state: &mut AutoCommit) {
         self.dirty = true;
         match action {
-            Action::Nav(v) => {
-                if v != self.view {
-                    self.nav_back.push(self.view.clone());
-                    self.view = v;
-                    self.scroll = 0.0;
-                }
-                if matches!(self.view, View::Search) {
-                    self.search_input.set_focus(true);
-                }
-                // Picking a destination dismisses the overlay sidebar so the
-                // chosen screen takes the full width (Adwaita flap behaviour).
-                if self.drawer.is_overlay() {
-                    self.drawer.close();
-                }
-            }
-            Action::Back => {
-                if let Some(v) = self.nav_back.pop() {
-                    self.view = v;
-                    self.scroll = 0.0;
-                }
-            }
-            Action::BrowseGenre(genre) => {
-                // A "Browse all" category chip: drop the genre into the search
-                // field and stay on Search so the (genre-aware) results render.
-                if self.view != View::Search {
-                    self.nav_back.push(self.view.clone());
-                    self.view = View::Search;
-                }
-                self.search_input.set_text(&genre);
-                self.search_input.set_focus(true);
-                // Invalidate the memoised query so the new results recompute, and
-                // arm the debounced live search (live build surfaces real hits).
-                self.search_cache = None;
-                self.search_edit_at = Some(Instant::now());
-                self.scroll = 0.0;
-                if self.drawer.is_overlay() {
-                    self.drawer.close();
-                }
-            }
-            Action::Play { queue, index } => {
-                self.pb.queue = queue;
-                // A fresh queue invalidates any prior shuffle permutation; it's
-                // rebuilt (current-first) on the next shuffled advance.
-                self.shuffle_order.clear();
-                self.play_index(index);
-                if let Some(id) = self.pb.current.clone() {
-                    self.persist_live_track(&id, state);
-                    self.start_stream(id);
-                }
-                self.persist_playback(state);
-            }
-            Action::TogglePlay => {
-                // Play/pause is a no-op with nothing loaded: never flip the
-                // transport to a fake "playing" state when there's no current
-                // track. The button simply does nothing until a song is queued.
-                if self.pb.current.is_none() {
-                    return;
-                }
-                self.pb.playing = !self.pb.playing;
-                if self.pb.playing {
-                    self.audio.play();
-                } else {
-                    self.audio.pause();
-                }
-                self.persist_playback(state);
-            }
-            Action::Next => {
-                self.advance(false);
-                if let Some(id) = self.pb.current.clone() {
-                    self.persist_live_track(&id, state);
-                    self.start_stream(id);
-                }
-                self.persist_playback(state);
-            }
-            Action::Prev => {
-                self.previous();
-                if let Some(id) = self.pb.current.clone() {
-                    self.persist_live_track(&id, state);
-                    self.start_stream(id);
-                }
-                self.persist_playback(state);
-            }
-            Action::ToggleShuffle => {
-                self.pb.shuffle = !self.pb.shuffle;
-                if self.pb.shuffle {
-                    // Randomise the upcoming order now so the next/auto-advance
-                    // follows a shuffled sequence.
-                    self.rebuild_shuffle_order();
-                } else {
-                    // Back to the queue's linear order.
-                    self.shuffle_order.clear();
-                }
-                self.persist_playback(state);
-            }
-            Action::CycleRepeat => {
-                self.pb.repeat = self.pb.repeat.next();
-                self.persist_playback(state);
-            }
-            Action::SeekFrac(f) => {
-                let dur = self.current_duration_ms();
-                self.playhead_ms = (f.clamp(0.0, 1.0) * dur as f64).max(0.0);
-                self.audio.seek_ms(self.playhead_ms as u64);
-                self.persist_playback(state);
-            }
-            Action::VolumeFrac(f) => {
-                self.pb.volume = (f.clamp(0.0, 1.0) * 100.0).round() as u8;
-                // Dragging the volume above zero clears a mute.
-                if self.pb.volume > 0 {
-                    self.premute_volume = None;
-                }
-                self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
-                self.persist_playback(state);
-            }
+            Action::Nav(v) => self.on_nav(v),
+            Action::Back => self.on_back(),
+            Action::BrowseGenre(genre) => self.on_browse_genre(&genre),
+            Action::Play { queue, index } => self.on_play(queue, index, state),
+            Action::TogglePlay => self.on_toggle_play(state),
+            Action::Next => self.on_next(state),
+            Action::Prev => self.on_prev(state),
+            Action::ToggleShuffle => self.on_toggle_shuffle(state),
+            Action::CycleRepeat => self.on_cycle_repeat(state),
+            Action::SeekFrac(f) => self.on_seek_frac(f, state),
+            Action::VolumeFrac(f) => self.on_volume_frac(f, state),
             Action::ToggleVolumePopover => {
                 self.volume_popover_open = !self.volume_popover_open;
             }
-            Action::ToggleMute => {
-                if self.pb.volume > 0 {
-                    self.premute_volume = Some(self.pb.volume);
-                    self.pb.volume = 0;
-                } else {
-                    // Restore the pre-mute level (default to a sensible level if
-                    // we were already at zero with nothing captured).
-                    self.pb.volume = self.premute_volume.take().filter(|&v| v > 0).unwrap_or(80);
-                }
-                self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
-                self.persist_playback(state);
-            }
-            Action::ToggleDownload(id) => {
-                let label = self
-                    .lib
-                    .track(&id)
-                    .map(|t| t.title.clone())
-                    .unwrap_or_default();
-                let toast = match self.lib.cache_state(&id) {
-                    CacheState::Cached => {
-                        // Already offline → drop it.
-                        self.downloads.remove(&id);
-                        doc::set_cache(state, &id, CacheState::Streamed);
-                        self.lib = doc::load_library(state);
-                        format!("Removed \u{201c}{label}\u{201d} from offline")
-                    }
-                    CacheState::Downloading(_) => {
-                        // Tapping an in-flight download cancels it.
-                        self.downloads.remove(&id);
-                        doc::set_cache(state, &id, CacheState::Streamed);
-                        self.lib = doc::load_library(state);
-                        format!("Stopped downloading \u{201c}{label}\u{201d}")
-                    }
-                    CacheState::Streamed => {
-                        // Start a real, time-progressing download. It shows the
-                        // working spinner and flips to Cached when it finishes.
-                        self.downloads.insert(id.clone(), Instant::now());
-                        // Reflect the in-flight state immediately (the doc keeps
-                        // only terminal states; see `advance_downloads`).
-                        self.lib
-                            .cache
-                            .insert(id.clone(), CacheState::Downloading(0.0));
-                        format!("Downloading \u{201c}{label}\u{201d} for offline")
-                    }
-                };
-                self.toast = Some((toast, Instant::now()));
-            }
-            Action::DownloadAll(ids) => {
-                // Keep every not-yet-cached track offline in one gesture. Tracks
-                // already cached stay as-is (idempotent).
-                let mut added = 0usize;
-                for id in &ids {
-                    if self.lib.cache_state(id) != CacheState::Cached {
-                        doc::set_cache(state, id, CacheState::Cached);
-                        added += 1;
-                    }
-                }
-                self.lib = doc::load_library(state);
-                self.toast = Some((
-                    if added == 0 {
-                        "Already saved for offline".to_string()
-                    } else {
-                        format!("Saving {added} songs for offline")
-                    },
-                    Instant::now(),
-                ));
-            }
-            Action::PickPlaylistCover(playlist_id) => {
-                // Route through the host's XDG file-chooser portal (never an
-                // in-app picker). The pick is async; the frame loop drains the
-                // outcome and applies the cover.
-                self.cover_pick_for = Some(playlist_id);
-                self.cover_pick = Some(portal::request_cover());
-                self.toast = Some(("Choose a cover image\u{2026}".to_string(), Instant::now()));
-            }
-            Action::AddToQueue(id) => {
-                self.pb.queue.push(id.clone());
-                let label = self
-                    .lib
-                    .track(&id)
-                    .map(|t| t.title.clone())
-                    .unwrap_or_default();
-                self.toast = Some((
-                    format!("Added \u{201c}{label}\u{201d} to queue"),
-                    Instant::now(),
-                ));
-                self.persist_playback(state);
-            }
-            Action::PlayNext(id) => {
-                self.queue_play_next(id.clone());
-                let label = self
-                    .lib
-                    .track(&id)
-                    .map(|t| t.title.clone())
-                    .unwrap_or_default();
-                self.toast = Some((
-                    format!("Playing \u{201c}{label}\u{201d} next"),
-                    Instant::now(),
-                ));
-                if self.pb.current.as_deref() == Some(id.as_str()) {
-                    self.start_stream(id);
-                }
-                self.persist_playback(state);
-            }
-            Action::RemoveFromQueue(index) => {
-                self.queue_remove(index);
-                self.persist_playback(state);
-            }
-            Action::MoveQueueItem { from, to } => {
-                self.queue_move(from, to);
-                self.persist_playback(state);
-            }
-            Action::ToggleLike(id) => {
-                self.perform_action(state, crate::actions::toggle_liked_action(&id));
-                self.reload_library(state);
-                let now = self.lib.is_liked(&id);
-                let label = self
-                    .lib
-                    .track(&id)
-                    .map(|t| t.title.clone())
-                    .unwrap_or_default();
-                self.toast = Some((
-                    if now {
-                        format!("Liked \u{201c}{label}\u{201d}")
-                    } else {
-                        format!("Removed \u{201c}{label}\u{201d} from Liked Songs")
-                    },
-                    Instant::now(),
-                ));
-            }
-            Action::ToggleSaveAlbum(id) => {
-                self.perform_action(state, crate::actions::toggle_saved_album_action(&id));
-                self.reload_library(state);
-                let now = self.lib.is_album_saved(&id);
-                let label = self.lib.album_title(&id).to_string();
-                self.toast = Some((
-                    if now {
-                        format!("Added \u{201c}{label}\u{201d} to your library")
-                    } else {
-                        format!("Removed \u{201c}{label}\u{201d} from your library")
-                    },
-                    Instant::now(),
-                ));
-            }
-            Action::ToggleFollow(id) => {
-                self.perform_action(state, crate::actions::toggle_followed_artist_action(&id));
-                self.reload_library(state);
-                let now = self.lib.is_artist_followed(&id);
-                // Prefer a live artist-page name; fall back to the library.
-                let label = self
-                    .artist_pages
-                    .get(&id)
-                    .map(|p| p.name.clone())
-                    .filter(|n| !n.is_empty())
-                    .unwrap_or_else(|| self.lib.artist_name(&id).to_string());
-                self.toast = Some((
-                    if now {
-                        format!("Following {label}")
-                    } else {
-                        format!("Unfollowed {label}")
-                    },
-                    Instant::now(),
-                ));
-            }
-            Action::SelectSearchTab(tab) => {
-                self.search_tab = tab;
-                self.scroll = 0.0;
-                // Switching to a specific type deep-fetches a fuller list for it
-                // (once per query) so the tab is genuinely richer than the mix.
-                self.request_search_more(tab);
-            }
+            Action::ToggleMute => self.on_toggle_mute(state),
+            Action::ToggleDownload(id) => self.on_toggle_download(&id, state),
+            Action::DownloadAll(ids) => self.on_download_all(&ids, state),
+            Action::PickPlaylistCover(playlist_id) => self.on_pick_playlist_cover(playlist_id),
+            Action::AddToQueue(id) => self.on_add_to_queue(&id, state),
+            Action::PlayNext(id) => self.on_play_next(&id, state),
+            Action::RemoveFromQueue(index) => self.on_remove_from_queue(index, state),
+            Action::MoveQueueItem { from, to } => self.on_move_queue_item(from, to, state),
+            Action::ToggleLike(id) => self.on_toggle_like(&id, state),
+            Action::ToggleSaveAlbum(id) => self.on_toggle_save_album(&id, state),
+            Action::ToggleFollow(id) => self.on_toggle_follow(&id, state),
+            Action::SelectSearchTab(tab) => self.on_select_search_tab(tab),
             Action::AddToPlaylist { playlist, track } => {
-                self.perform_action(state, crate::actions::add_track_action(&playlist, &track));
-                self.reload_library(state);
-                let pl = self
-                    .lib
-                    .playlist(&playlist)
-                    .map(|p| p.name.clone())
-                    .unwrap_or_default();
-                self.toast = Some((format!("Added to \u{201c}{pl}\u{201d}"), Instant::now()));
+                self.on_add_to_playlist(&playlist, &track, state);
             }
             Action::RemoveFromPlaylist { playlist, track } => {
-                self.perform_action(
-                    state,
-                    crate::actions::remove_track_action(&playlist, &track),
-                );
-                self.reload_library(state);
+                self.on_remove_from_playlist(&playlist, &track, state);
             }
             Action::MovePlaylistItem { playlist, from, to } => {
-                self.perform_action(
-                    state,
-                    crate::actions::move_track_action(&playlist, from, to),
-                );
-                self.reload_library(state);
+                self.on_move_playlist_item(&playlist, from, to, state);
             }
-            Action::BeginNewPlaylist => {
-                self.name_prompt = Some(NamePrompt::NewPlaylist);
-                self.name_input = String::new();
-                self.name_dialog = None;
-                self.new_playlist_track = None;
-                self.search_input.set_focus(false);
-            }
-            Action::BeginNewPlaylistFor(track) => {
-                self.name_prompt = Some(NamePrompt::NewPlaylist);
-                self.name_input = String::new();
-                self.name_dialog = None;
-                self.new_playlist_track = Some(track);
-                self.search_input.set_focus(false);
-            }
-            Action::CreatePlaylist => {
-                let name = if self.name_input.trim().is_empty() {
-                    "New Playlist".to_string()
-                } else {
-                    self.name_input.trim().to_string()
-                };
-                // Mint the id at authoring time and carry it in the action, so
-                // the create replays deterministically (see `crate::actions`).
-                let id = crate::actions::new_playlist_id();
-                self.perform_action(state, crate::actions::create_playlist_action(&id, &name));
-                // If this create came from "Add to playlist… → New playlist…",
-                // drop the target track into the freshly-created playlist — a
-                // second action bracketed into the same undo boundary.
-                let added_track = self.new_playlist_track.take();
-                if let Some(track) = &added_track {
-                    self.perform_action(state, crate::actions::add_track_action(&id, track));
-                }
-                self.reload_library(state);
-                self.name_prompt = None;
-                self.name_input.clear();
-                self.name_dialog = None;
-                self.nav_back.push(self.view.clone());
-                self.view = View::Playlist(id);
-                self.scroll = 0.0;
-                self.toast = Some((
-                    if added_track.is_some() {
-                        format!("Added to new playlist \u{201c}{name}\u{201d}")
-                    } else {
-                        format!("Created \u{201c}{name}\u{201d}")
-                    },
-                    Instant::now(),
-                ));
-            }
-            Action::BeginRenamePlaylist(id) => {
-                self.name_input = self
-                    .lib
-                    .playlist(&id)
-                    .map(|p| p.name.clone())
-                    .unwrap_or_default();
-                self.name_prompt = Some(NamePrompt::Rename(id));
-                self.name_dialog = None;
-                self.search_input.set_focus(false);
-            }
-            Action::CommitRename(id) => {
-                let name = self.name_input.trim().to_string();
-                if !name.is_empty() {
-                    self.perform_action(state, crate::actions::rename_playlist_action(&id, &name));
-                    self.reload_library(state);
-                }
-                self.name_prompt = None;
-                self.name_input.clear();
-                self.name_dialog = None;
-            }
-            Action::DeletePlaylist(id) => {
-                self.perform_action(state, crate::actions::delete_playlist_action(&id));
-                self.reload_library(state);
-                // Leave the now-deleted detail page.
-                if self.view == View::Playlist(id) {
-                    self.view = View::Playlists;
-                    self.scroll = 0.0;
-                }
-                self.toast = Some(("Playlist deleted".into(), Instant::now()));
-            }
+            Action::BeginNewPlaylist => self.on_begin_new_playlist(None),
+            Action::BeginNewPlaylistFor(track) => self.on_begin_new_playlist(Some(track)),
+            Action::CreatePlaylist => self.on_create_playlist(state),
+            Action::BeginRenamePlaylist(id) => self.on_begin_rename_playlist(id),
+            Action::CommitRename(id) => self.on_commit_rename(&id, state),
+            Action::DeletePlaylist(id) => self.on_delete_playlist(id, state),
             Action::OpenTrackMenu {
                 track,
                 in_playlist,
                 queue_index,
-            } => {
-                self.open_track_menu(track, in_playlist, queue_index);
-            }
-            Action::OpenAddToPlaylist(track) => {
-                self.open_add_to_playlist_menu(track);
-            }
-            Action::FocusSearch => {
-                if self.view != View::Search {
-                    self.nav_back.push(self.view.clone());
-                }
-                self.view = View::Search;
-                self.search_input.set_focus(true);
-            }
-            Action::ToggleQueue => {
-                if self.view == View::Queue {
-                    // Toggle off: restore exactly where the user was (view +
-                    // scroll), not a reset. Fall back to nav-back if the queue
-                    // was reached some other way.
-                    if let Some((v, s)) = self.queue_return.take() {
-                        self.view = v;
-                        self.scroll = s;
-                    } else if let Some(v) = self.nav_back.pop() {
-                        self.view = v;
-                        self.scroll = 0.0;
-                    }
-                } else {
-                    // Toggle on: remember the current view + scroll so the next
-                    // toggle returns here.
-                    self.queue_return = Some((self.view.clone(), self.scroll));
-                    self.view = View::Queue;
-                    self.scroll = 0.0;
-                }
-                if self.drawer.is_overlay() {
-                    self.drawer.close();
-                }
-            }
-            Action::ToggleSidebar => {
-                self.toggle_sidebar();
-            }
-            Action::CloseSidebar => {
-                self.drawer.close();
-            }
-            Action::CloseNamePrompt => {
-                self.name_prompt = None;
-                self.name_input.clear();
-                self.name_dialog = None;
-                self.new_playlist_track = None;
-            }
+            } => self.open_track_menu(track, in_playlist.as_deref(), queue_index),
+            Action::OpenAddToPlaylist(track) => self.open_add_to_playlist_menu(&track),
+            Action::FocusSearch => self.on_focus_search(),
+            Action::ToggleQueue => self.on_toggle_queue(),
+            Action::ToggleSidebar => self.toggle_sidebar(),
+            Action::CloseSidebar => self.drawer.close(),
+            Action::CloseNamePrompt => self.on_close_name_prompt(),
             Action::None => {}
+        }
+    }
+
+    fn on_cycle_repeat(&mut self, state: &mut AutoCommit) {
+        self.pb.repeat = self.pb.repeat.next();
+        self.persist_playback(state);
+    }
+
+    fn on_remove_from_queue(&mut self, index: usize, state: &mut AutoCommit) {
+        self.queue_remove(index);
+        self.persist_playback(state);
+    }
+
+    fn on_move_queue_item(&mut self, from: usize, to: usize, state: &mut AutoCommit) {
+        self.queue_move(from, to);
+        self.persist_playback(state);
+    }
+
+    fn on_select_search_tab(&mut self, tab: SearchTab) {
+        self.search_tab = tab;
+        self.scroll = 0.0;
+        // Switching to a specific type deep-fetches a fuller list for it
+        // (once per query) so the tab is genuinely richer than the mix.
+        self.request_search_more(tab);
+    }
+
+    fn on_remove_from_playlist(&mut self, playlist: &str, track: &str, state: &mut AutoCommit) {
+        self.perform_action(state, &crate::actions::remove_track_action(playlist, track));
+        self.reload_library(state);
+    }
+
+    fn on_move_playlist_item(
+        &mut self,
+        playlist: &str,
+        from: usize,
+        to: usize,
+        state: &mut AutoCommit,
+    ) {
+        self.perform_action(
+            state,
+            &crate::actions::move_track_action(playlist, from, to),
+        );
+        self.reload_library(state);
+    }
+
+    fn on_focus_search(&mut self) {
+        if self.view != View::Search {
+            self.nav_back.push(self.view.clone());
+        }
+        self.view = View::Search;
+        self.search_input.set_focus(true);
+    }
+
+    fn on_close_name_prompt(&mut self) {
+        self.name_prompt = None;
+        self.name_input.clear();
+        self.name_dialog = None;
+        self.new_playlist_track = None;
+    }
+
+    fn on_nav(&mut self, v: View) {
+        if v != self.view {
+            self.nav_back.push(self.view.clone());
+            self.view = v;
+            self.scroll = 0.0;
+        }
+        if matches!(self.view, View::Search) {
+            self.search_input.set_focus(true);
+        }
+        // Picking a destination dismisses the overlay sidebar so the
+        // chosen screen takes the full width (Adwaita flap behaviour).
+        if self.drawer.is_overlay() {
+            self.drawer.close();
+        }
+    }
+
+    fn on_back(&mut self) {
+        if let Some(v) = self.nav_back.pop() {
+            self.view = v;
+            self.scroll = 0.0;
+        }
+    }
+
+    fn on_browse_genre(&mut self, genre: &str) {
+        // A "Browse all" category chip: drop the genre into the search
+        // field and stay on Search so the (genre-aware) results render.
+        if self.view != View::Search {
+            self.nav_back.push(self.view.clone());
+            self.view = View::Search;
+        }
+        self.search_input.set_text(genre);
+        self.search_input.set_focus(true);
+        // Invalidate the memoised query so the new results recompute, and
+        // arm the debounced live search (live build surfaces real hits).
+        self.search_cache = None;
+        self.search_edit_at = Some(Instant::now());
+        self.scroll = 0.0;
+        if self.drawer.is_overlay() {
+            self.drawer.close();
+        }
+    }
+
+    fn on_play(&mut self, queue: Vec<String>, index: usize, state: &mut AutoCommit) {
+        self.pb.queue = queue;
+        // A fresh queue invalidates any prior shuffle permutation; it's
+        // rebuilt (current-first) on the next shuffled advance.
+        self.shuffle_order.clear();
+        self.play_index(index);
+        if let Some(id) = self.pb.current.clone() {
+            self.persist_live_track(&id, state);
+            self.start_stream(&id);
+        }
+        self.persist_playback(state);
+    }
+
+    fn on_toggle_play(&mut self, state: &mut AutoCommit) {
+        // Play/pause is a no-op with nothing loaded: never flip the
+        // transport to a fake "playing" state when there's no current
+        // track. The button simply does nothing until a song is queued.
+        if self.pb.current.is_none() {
+            return;
+        }
+        self.pb.playing = !self.pb.playing;
+        if self.pb.playing {
+            self.audio.play();
+        } else {
+            self.audio.pause();
+        }
+        self.persist_playback(state);
+    }
+
+    fn on_next(&mut self, state: &mut AutoCommit) {
+        self.advance(false);
+        if let Some(id) = self.pb.current.clone() {
+            self.persist_live_track(&id, state);
+            self.start_stream(&id);
+        }
+        self.persist_playback(state);
+    }
+
+    fn on_prev(&mut self, state: &mut AutoCommit) {
+        self.previous();
+        if let Some(id) = self.pb.current.clone() {
+            self.persist_live_track(&id, state);
+            self.start_stream(&id);
+        }
+        self.persist_playback(state);
+    }
+
+    fn on_toggle_shuffle(&mut self, state: &mut AutoCommit) {
+        self.pb.shuffle = !self.pb.shuffle;
+        if self.pb.shuffle {
+            // Randomise the upcoming order now so the next/auto-advance
+            // follows a shuffled sequence.
+            self.rebuild_shuffle_order();
+        } else {
+            // Back to the queue's linear order.
+            self.shuffle_order.clear();
+        }
+        self.persist_playback(state);
+    }
+
+    fn on_seek_frac(&mut self, f: f64, state: &mut AutoCommit) {
+        let dur = self.current_duration_ms();
+        self.playhead_ms = (f.clamp(0.0, 1.0) * dur as f64).max(0.0);
+        self.audio.seek_ms(self.playhead_ms as u64);
+        self.persist_playback(state);
+    }
+
+    fn on_volume_frac(&mut self, f: f64, state: &mut AutoCommit) {
+        self.pb.volume = (f.clamp(0.0, 1.0) * 100.0).round() as u8;
+        // Dragging the volume above zero clears a mute.
+        if self.pb.volume > 0 {
+            self.premute_volume = None;
+        }
+        self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
+        self.persist_playback(state);
+    }
+
+    fn on_toggle_mute(&mut self, state: &mut AutoCommit) {
+        if self.pb.volume > 0 {
+            self.premute_volume = Some(self.pb.volume);
+            self.pb.volume = 0;
+        } else {
+            // Restore the pre-mute level (default to a sensible level if
+            // we were already at zero with nothing captured).
+            self.pb.volume = self.premute_volume.take().filter(|&v| v > 0).unwrap_or(80);
+        }
+        self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
+        self.persist_playback(state);
+    }
+
+    fn on_toggle_download(&mut self, id: &str, state: &mut AutoCommit) {
+        let label = self
+            .lib
+            .track(id)
+            .map(|t| t.title.clone())
+            .unwrap_or_default();
+        let toast = match self.lib.cache_state(id) {
+            CacheState::Cached => {
+                // Already offline → drop it.
+                self.downloads.remove(id);
+                doc::set_cache(state, id, CacheState::Streamed);
+                self.lib = doc::load_library(state);
+                format!("Removed \u{201c}{label}\u{201d} from offline")
+            }
+            CacheState::Downloading(_) => {
+                // Tapping an in-flight download cancels it.
+                self.downloads.remove(id);
+                doc::set_cache(state, id, CacheState::Streamed);
+                self.lib = doc::load_library(state);
+                format!("Stopped downloading \u{201c}{label}\u{201d}")
+            }
+            CacheState::Streamed => {
+                // Start a real, time-progressing download. It shows the
+                // working spinner and flips to Cached when it finishes.
+                self.downloads.insert(id.to_string(), Instant::now());
+                // Reflect the in-flight state immediately (the doc keeps
+                // only terminal states; see `advance_downloads`).
+                self.lib
+                    .cache
+                    .insert(id.to_string(), CacheState::Downloading(0.0));
+                format!("Downloading \u{201c}{label}\u{201d} for offline")
+            }
+        };
+        self.toast = Some((toast, Instant::now()));
+    }
+
+    fn on_download_all(&mut self, ids: &[String], state: &mut AutoCommit) {
+        // Keep every not-yet-cached track offline in one gesture. Tracks
+        // already cached stay as-is (idempotent).
+        let mut added = 0usize;
+        for id in ids {
+            if self.lib.cache_state(id) != CacheState::Cached {
+                doc::set_cache(state, id, CacheState::Cached);
+                added += 1;
+            }
+        }
+        self.lib = doc::load_library(state);
+        self.toast = Some((
+            if added == 0 {
+                "Already saved for offline".to_string()
+            } else {
+                format!("Saving {added} songs for offline")
+            },
+            Instant::now(),
+        ));
+    }
+
+    fn on_pick_playlist_cover(&mut self, playlist_id: String) {
+        // Route through the host's XDG file-chooser portal (never an
+        // in-app picker). The pick is async; the frame loop drains the
+        // outcome and applies the cover.
+        self.cover_pick_for = Some(playlist_id);
+        self.cover_pick = Some(cover_request().send());
+        self.toast = Some(("Choose a cover image\u{2026}".to_string(), Instant::now()));
+    }
+
+    fn on_add_to_queue(&mut self, id: &str, state: &mut AutoCommit) {
+        self.pb.queue.push(id.to_string());
+        let label = self
+            .lib
+            .track(id)
+            .map(|t| t.title.clone())
+            .unwrap_or_default();
+        self.toast = Some((
+            format!("Added \u{201c}{label}\u{201d} to queue"),
+            Instant::now(),
+        ));
+        self.persist_playback(state);
+    }
+
+    fn on_play_next(&mut self, id: &str, state: &mut AutoCommit) {
+        self.queue_play_next(id.to_string());
+        let label = self
+            .lib
+            .track(id)
+            .map(|t| t.title.clone())
+            .unwrap_or_default();
+        self.toast = Some((
+            format!("Playing \u{201c}{label}\u{201d} next"),
+            Instant::now(),
+        ));
+        if self.pb.current.as_deref() == Some(id) {
+            self.start_stream(id);
+        }
+        self.persist_playback(state);
+    }
+
+    fn on_toggle_like(&mut self, id: &str, state: &mut AutoCommit) {
+        self.perform_action(state, &crate::actions::toggle_liked_action(id));
+        self.reload_library(state);
+        let now = self.lib.is_liked(id);
+        let label = self
+            .lib
+            .track(id)
+            .map(|t| t.title.clone())
+            .unwrap_or_default();
+        self.toast = Some((
+            if now {
+                format!("Liked \u{201c}{label}\u{201d}")
+            } else {
+                format!("Removed \u{201c}{label}\u{201d} from Liked Songs")
+            },
+            Instant::now(),
+        ));
+    }
+
+    fn on_toggle_save_album(&mut self, id: &str, state: &mut AutoCommit) {
+        self.perform_action(state, &crate::actions::toggle_saved_album_action(id));
+        self.reload_library(state);
+        let now = self.lib.is_album_saved(id);
+        let label = self.lib.album_title(id).to_string();
+        self.toast = Some((
+            if now {
+                format!("Added \u{201c}{label}\u{201d} to your library")
+            } else {
+                format!("Removed \u{201c}{label}\u{201d} from your library")
+            },
+            Instant::now(),
+        ));
+    }
+
+    fn on_toggle_follow(&mut self, id: &str, state: &mut AutoCommit) {
+        self.perform_action(state, &crate::actions::toggle_followed_artist_action(id));
+        self.reload_library(state);
+        let now = self.lib.is_artist_followed(id);
+        // Prefer a live artist-page name; fall back to the library.
+        let label = self
+            .artist_pages
+            .get(id)
+            .map(|p| p.name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| self.lib.artist_name(id).to_string());
+        self.toast = Some((
+            if now {
+                format!("Following {label}")
+            } else {
+                format!("Unfollowed {label}")
+            },
+            Instant::now(),
+        ));
+    }
+
+    fn on_add_to_playlist(&mut self, playlist: &str, track: &str, state: &mut AutoCommit) {
+        self.perform_action(state, &crate::actions::add_track_action(playlist, track));
+        self.reload_library(state);
+        let pl = self
+            .lib
+            .playlist(playlist)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        self.toast = Some((format!("Added to \u{201c}{pl}\u{201d}"), Instant::now()));
+    }
+
+    /// Begin the new-playlist name prompt; `track` is set when this came from
+    /// "Add to playlist… → New playlist…" so the create also adds it.
+    fn on_begin_new_playlist(&mut self, track: Option<String>) {
+        self.name_prompt = Some(NamePrompt::NewPlaylist);
+        self.name_input = String::new();
+        self.name_dialog = None;
+        self.new_playlist_track = track;
+        self.search_input.set_focus(false);
+    }
+
+    fn on_create_playlist(&mut self, state: &mut AutoCommit) {
+        let name = if self.name_input.trim().is_empty() {
+            "New Playlist".to_string()
+        } else {
+            self.name_input.trim().to_string()
+        };
+        // Mint the id at authoring time and carry it in the action, so
+        // the create replays deterministically (see `crate::actions`).
+        let id = crate::actions::new_playlist_id();
+        self.perform_action(state, &crate::actions::create_playlist_action(&id, &name));
+        // If this create came from "Add to playlist… → New playlist…",
+        // drop the target track into the freshly-created playlist — a
+        // second action bracketed into the same undo boundary.
+        let added_track = self.new_playlist_track.take();
+        if let Some(track) = &added_track {
+            self.perform_action(state, &crate::actions::add_track_action(&id, track));
+        }
+        self.reload_library(state);
+        self.name_prompt = None;
+        self.name_input.clear();
+        self.name_dialog = None;
+        self.nav_back.push(self.view.clone());
+        self.view = View::Playlist(id);
+        self.scroll = 0.0;
+        self.toast = Some((
+            if added_track.is_some() {
+                format!("Added to new playlist \u{201c}{name}\u{201d}")
+            } else {
+                format!("Created \u{201c}{name}\u{201d}")
+            },
+            Instant::now(),
+        ));
+    }
+
+    fn on_begin_rename_playlist(&mut self, id: String) {
+        self.name_input = self
+            .lib
+            .playlist(&id)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        self.name_prompt = Some(NamePrompt::Rename(id));
+        self.name_dialog = None;
+        self.search_input.set_focus(false);
+    }
+
+    fn on_commit_rename(&mut self, id: &str, state: &mut AutoCommit) {
+        let name = self.name_input.trim().to_string();
+        if !name.is_empty() {
+            self.perform_action(state, &crate::actions::rename_playlist_action(id, &name));
+            self.reload_library(state);
+        }
+        self.name_prompt = None;
+        self.name_input.clear();
+        self.name_dialog = None;
+    }
+
+    fn on_delete_playlist(&mut self, id: String, state: &mut AutoCommit) {
+        self.perform_action(state, &crate::actions::delete_playlist_action(&id));
+        self.reload_library(state);
+        // Leave the now-deleted detail page.
+        if self.view == View::Playlist(id) {
+            self.view = View::Playlists;
+            self.scroll = 0.0;
+        }
+        self.toast = Some(("Playlist deleted".into(), Instant::now()));
+    }
+
+    fn on_toggle_queue(&mut self) {
+        if self.view == View::Queue {
+            // Toggle off: restore exactly where the user was (view +
+            // scroll), not a reset. Fall back to nav-back if the queue
+            // was reached some other way.
+            if let Some((v, s)) = self.queue_return.take() {
+                self.view = v;
+                self.scroll = s;
+            } else if let Some(v) = self.nav_back.pop() {
+                self.view = v;
+                self.scroll = 0.0;
+            }
+        } else {
+            // Toggle on: remember the current view + scroll so the next
+            // toggle returns here.
+            self.queue_return = Some((self.view.clone(), self.scroll));
+            self.view = View::Queue;
+            self.scroll = 0.0;
+        }
+        if self.drawer.is_overlay() {
+            self.drawer.close();
         }
     }
 
@@ -2022,20 +2132,20 @@ impl MusicApp {
     /// when it lands, in [`Self::drain_worker`]. Non-live sample tracks (and
     /// builds without the `live` feature) fall back to the legacy Piped
     /// resolver, or stay silent with the local playhead advancing offline.
-    fn start_stream(&mut self, track_id: String) {
-        let Some(t) = self.lib.track(&track_id) else {
+    fn start_stream(&mut self, track_id: &str) {
+        let Some(t) = self.lib.track(track_id) else {
             return;
         };
         let yt_id = t.yt_id.clone();
 
-        if is_live_track(&track_id) {
+        if is_live_track(track_id) {
             self.ensure_worker();
             if let Some(w) = &self.worker {
                 // Stop the previous stream while the next one resolves so two
                 // tracks never overlap on a fast skip.
                 self.audio.pause();
                 w.request(StreamRequest::Resolve {
-                    track_id: track_id.clone(),
+                    track_id: track_id.to_string(),
                     video_id: yt_id,
                 });
                 self.resolve_in_flight += 1;
@@ -2092,7 +2202,7 @@ impl MusicApp {
     /// Persist a live track (and its artist/album) into the document when it is
     /// actually played, so it joins the user's library permanently and syncs
     /// across devices. No-op for sample tracks.
-    fn persist_live_track(&mut self, track_id: &str, state: &mut AutoCommit) {
+    fn persist_live_track(&self, track_id: &str, state: &mut AutoCommit) {
         if !is_live_track(track_id) {
             return;
         }
@@ -2118,7 +2228,7 @@ impl MusicApp {
                     self.backend_name = name;
                 }
                 StreamUpdate::SearchResults { query, bundle } => {
-                    self.ingest_search_results(query, *bundle);
+                    self.ingest_search_results(&query, *bundle);
                 }
                 StreamUpdate::SearchMore {
                     query,
@@ -2316,8 +2426,8 @@ impl MusicApp {
     /// Ingest a fresh multi-type search response for `query`: record covers,
     /// make tracks playable, and stash the bundle so the filter tabs render.
     /// Resets the active tab to `All` so a new query lands on the mix.
-    fn ingest_search_results(&mut self, query: String, bundle: SearchBundle) {
-        if self.live_search_pending.as_deref() == Some(query.as_str()) {
+    fn ingest_search_results(&mut self, query: &str, bundle: SearchBundle) {
+        if self.live_search_pending.as_deref() == Some(query) {
             self.live_search_pending = None;
         }
         self.absorb_bundle(&bundle);
@@ -2335,14 +2445,14 @@ impl MusicApp {
         .iter()
         .filter(|b| **b)
         .count();
-        self.live_results = Some((query.clone(), ordered));
+        self.live_results = Some((query.to_string(), ordered));
         // A brand-new query resets the tab to the curated mix; re-running the
         // same query (debounce/Enter) keeps the user's chosen tab.
-        let same_query = self.live_bundle.as_ref().is_some_and(|(q, _)| q == &query);
+        let same_query = self.live_bundle.as_ref().is_some_and(|(q, _)| q == query);
         if !same_query {
             self.search_tab = SearchTab::All;
         }
-        self.live_bundle = Some((query.clone(), bundle));
+        self.live_bundle = Some((query.to_string(), bundle));
         self.toast = Some((
             format!(
                 "Results for \u{201c}{query}\u{201d}{}",
@@ -2638,15 +2748,16 @@ impl MusicApp {
         // Backdate each start so this single frame captures a mid-progress
         // spinner (the per-frame `advance_downloads` recomputes the same frac).
         for (i, frac) in [0.25_f64, 0.55, 0.85].iter().enumerate() {
-            if let Some(id) = ids.get(i) {
-                let start = Instant::now()
-                    .checked_sub(std::time::Duration::from_secs_f64(DOWNLOAD_SECS * frac))
-                    .unwrap();
-                self.downloads.insert(id.clone(), start);
-                self.lib
-                    .cache
-                    .insert(id.clone(), CacheState::Downloading(*frac as f32));
-            }
+            let Some(id) = ids.get(i) else { continue };
+            let Some(start) = Instant::now()
+                .checked_sub(std::time::Duration::from_secs_f64(DOWNLOAD_SECS * frac))
+            else {
+                continue;
+            };
+            self.downloads.insert(id.clone(), start);
+            self.lib
+                .cache
+                .insert(id.clone(), CacheState::Downloading(*frac as f32));
         }
     }
 
@@ -2662,108 +2773,124 @@ impl MusicApp {
                 subscriber_count: 2_140_553,
                 avatar_url: String::new(),
             })),
-            tracks: vec![
-                sample_hit(
-                    "aur_g1",
-                    "Glasslight",
-                    "Aurora Skies",
-                    "ar_aurora",
-                    "al_glasslight",
-                    "Glasslight",
-                    215,
-                ),
-                sample_hit(
-                    "aur_p1",
-                    "Paper Boats",
-                    "Aurora Skies",
-                    "ar_aurora",
-                    "al_paperboats",
-                    "Paper Boats",
-                    221,
-                ),
-                sample_hit(
-                    "aur_g5",
-                    "Halcyon",
-                    "Aurora Skies",
-                    "ar_aurora",
-                    "al_glasslight",
-                    "Glasslight",
-                    263,
-                ),
-                sample_hit(
-                    "aur_g3",
-                    "Slow Tide",
-                    "Aurora Skies",
-                    "ar_aurora",
-                    "al_glasslight",
-                    "Glasslight",
-                    242,
-                ),
-            ],
-            albums: vec![
-                sample_album_hit(
-                    "al_glasslight",
-                    "Glasslight",
-                    "Aurora Skies",
-                    "ar_aurora",
-                    2023,
-                ),
-                sample_album_hit(
-                    "al_paperboats",
-                    "Paper Boats",
-                    "Aurora Skies",
-                    "ar_aurora",
-                    2021,
-                ),
-                sample_album_hit(
-                    "al_afterhours",
-                    "After Hours Drive",
-                    "Midnight Transit",
-                    "ar_midnight",
-                    2022,
-                ),
-            ],
-            artists: vec![
-                ArtistHit {
-                    id: "ar_aurora".into(),
-                    name: "Aurora Skies".into(),
-                    subscriber_count: 2_140_553,
-                    avatar_url: String::new(),
-                },
-                ArtistHit {
-                    id: "ar_lumen".into(),
-                    name: "Lumen Theory".into(),
-                    subscriber_count: 3_771_440,
-                    avatar_url: String::new(),
-                },
-                ArtistHit {
-                    id: "ar_neon".into(),
-                    name: "Neon Harbor".into(),
-                    subscriber_count: 1_009_330,
-                    avatar_url: String::new(),
-                },
-            ],
-            playlists: vec![
-                PlaylistHit {
-                    id: "PLaurora_essentials".into(),
-                    title: "Aurora Skies Essentials".into(),
-                    subtitle: "YouTube Music".into(),
-                    track_count: 40,
-                    cover_url: String::new(),
-                },
-                PlaylistHit {
-                    id: "PLdreampop".into(),
-                    title: "Dream Pop Dreaming".into(),
-                    subtitle: "YouTube Music".into(),
-                    track_count: 80,
-                    cover_url: String::new(),
-                },
-            ],
+            tracks: Self::snap_search_tracks(),
+            albums: Self::snap_search_albums(),
+            artists: Self::snap_search_artists(),
+            playlists: Self::snap_search_playlists(),
         };
-        self.ingest_search_results("aurora".into(), bundle);
+        self.ingest_search_results("aurora", bundle);
         self.search_tab = tab;
         self.search_input.set_text("aurora");
         self.view = View::Search;
+    }
+
+    fn snap_search_tracks() -> Vec<TrackHit> {
+        vec![
+            sample_hit(
+                "aur_g1",
+                "Glasslight",
+                "Aurora Skies",
+                "ar_aurora",
+                "al_glasslight",
+                "Glasslight",
+                215,
+            ),
+            sample_hit(
+                "aur_p1",
+                "Paper Boats",
+                "Aurora Skies",
+                "ar_aurora",
+                "al_paperboats",
+                "Paper Boats",
+                221,
+            ),
+            sample_hit(
+                "aur_g5",
+                "Halcyon",
+                "Aurora Skies",
+                "ar_aurora",
+                "al_glasslight",
+                "Glasslight",
+                263,
+            ),
+            sample_hit(
+                "aur_g3",
+                "Slow Tide",
+                "Aurora Skies",
+                "ar_aurora",
+                "al_glasslight",
+                "Glasslight",
+                242,
+            ),
+        ]
+    }
+
+    fn snap_search_albums() -> Vec<crate::backend::AlbumHit> {
+        vec![
+            sample_album_hit(
+                "al_glasslight",
+                "Glasslight",
+                "Aurora Skies",
+                "ar_aurora",
+                2023,
+            ),
+            sample_album_hit(
+                "al_paperboats",
+                "Paper Boats",
+                "Aurora Skies",
+                "ar_aurora",
+                2021,
+            ),
+            sample_album_hit(
+                "al_afterhours",
+                "After Hours Drive",
+                "Midnight Transit",
+                "ar_midnight",
+                2022,
+            ),
+        ]
+    }
+
+    fn snap_search_artists() -> Vec<ArtistHit> {
+        vec![
+            ArtistHit {
+                id: "ar_aurora".into(),
+                name: "Aurora Skies".into(),
+                subscriber_count: 2_140_553,
+                avatar_url: String::new(),
+            },
+            ArtistHit {
+                id: "ar_lumen".into(),
+                name: "Lumen Theory".into(),
+                subscriber_count: 3_771_440,
+                avatar_url: String::new(),
+            },
+            ArtistHit {
+                id: "ar_neon".into(),
+                name: "Neon Harbor".into(),
+                subscriber_count: 1_009_330,
+                avatar_url: String::new(),
+            },
+        ]
+    }
+
+    fn snap_search_playlists() -> Vec<PlaylistHit> {
+        vec![
+            PlaylistHit {
+                id: "PLaurora_essentials".into(),
+                title: "Aurora Skies Essentials".into(),
+                subtitle: "YouTube Music".into(),
+                track_count: 40,
+                cover_url: String::new(),
+            },
+            PlaylistHit {
+                id: "PLdreampop".into(),
+                title: "Dream Pop Dreaming".into(),
+                subtitle: "YouTube Music".into(),
+                track_count: 80,
+                cover_url: String::new(),
+            },
+        ]
     }
 
     /// Stage a full (live-style) artist page for a hermetic `--shots` frame:
@@ -2780,113 +2907,125 @@ impl MusicApp {
                 .into(),
             wikipedia_url: "https://en.wikipedia.org/wiki/Aurora_Skies".into(),
             header_url: String::new(),
-            tracks: vec![
-                sample_hit(
-                    "aur_g1",
-                    "Glasslight",
-                    "Aurora Skies",
-                    "ar_aurora",
-                    "al_glasslight",
-                    "Glasslight",
-                    215,
-                ),
-                sample_hit(
-                    "aur_p1",
-                    "Paper Boats",
-                    "Aurora Skies",
-                    "ar_aurora",
-                    "al_paperboats",
-                    "Paper Boats",
-                    221,
-                ),
-                sample_hit(
-                    "aur_g5",
-                    "Halcyon",
-                    "Aurora Skies",
-                    "ar_aurora",
-                    "al_glasslight",
-                    "Glasslight",
-                    263,
-                ),
-                sample_hit(
-                    "aur_g3",
-                    "Slow Tide",
-                    "Aurora Skies",
-                    "ar_aurora",
-                    "al_glasslight",
-                    "Glasslight",
-                    242,
-                ),
-                sample_hit(
-                    "aur_p3",
-                    "Lighthouse",
-                    "Aurora Skies",
-                    "ar_aurora",
-                    "al_paperboats",
-                    "Paper Boats",
-                    234,
-                ),
-            ],
-            albums: vec![
-                crate::backend::ArtistAlbum {
-                    id: "al_glasslight".into(),
-                    title: "Glasslight".into(),
-                    year: 2023,
-                    kind: crate::backend::AlbumKind::Album,
-                    cover_url: String::new(),
-                },
-                crate::backend::ArtistAlbum {
-                    id: "al_paperboats".into(),
-                    title: "Paper Boats".into(),
-                    year: 2021,
-                    kind: crate::backend::AlbumKind::Album,
-                    cover_url: String::new(),
-                },
-                crate::backend::ArtistAlbum {
-                    id: "al_halcyon_single".into(),
-                    title: "Halcyon".into(),
-                    year: 2024,
-                    kind: crate::backend::AlbumKind::Single,
-                    cover_url: String::new(),
-                },
-                crate::backend::ArtistAlbum {
-                    id: "al_tides_ep".into(),
-                    title: "Tides EP".into(),
-                    year: 2022,
-                    kind: crate::backend::AlbumKind::Ep,
-                    cover_url: String::new(),
-                },
-            ],
-            similar: vec![
-                ArtistHit {
-                    id: "ar_midnight".into(),
-                    name: "Midnight Transit".into(),
-                    subscriber_count: 884_201,
-                    avatar_url: String::new(),
-                },
-                ArtistHit {
-                    id: "ar_lumen".into(),
-                    name: "Lumen Theory".into(),
-                    subscriber_count: 3_771_440,
-                    avatar_url: String::new(),
-                },
-                ArtistHit {
-                    id: "ar_neon".into(),
-                    name: "Neon Harbor".into(),
-                    subscriber_count: 1_009_330,
-                    avatar_url: String::new(),
-                },
-                ArtistHit {
-                    id: "ar_kavi".into(),
-                    name: "Kavi & The Tide".into(),
-                    subscriber_count: 1_502_998,
-                    avatar_url: String::new(),
-                },
-            ],
+            tracks: Self::snap_artist_page_tracks(),
+            albums: Self::snap_artist_page_albums(),
+            similar: Self::snap_artist_page_similar(),
         };
         self.absorb_artist(&page);
         self.artist_pages.insert(page.id.clone(), page);
         self.view = View::Artist("ar_aurora".into());
+    }
+
+    fn snap_artist_page_tracks() -> Vec<TrackHit> {
+        vec![
+            sample_hit(
+                "aur_g1",
+                "Glasslight",
+                "Aurora Skies",
+                "ar_aurora",
+                "al_glasslight",
+                "Glasslight",
+                215,
+            ),
+            sample_hit(
+                "aur_p1",
+                "Paper Boats",
+                "Aurora Skies",
+                "ar_aurora",
+                "al_paperboats",
+                "Paper Boats",
+                221,
+            ),
+            sample_hit(
+                "aur_g5",
+                "Halcyon",
+                "Aurora Skies",
+                "ar_aurora",
+                "al_glasslight",
+                "Glasslight",
+                263,
+            ),
+            sample_hit(
+                "aur_g3",
+                "Slow Tide",
+                "Aurora Skies",
+                "ar_aurora",
+                "al_glasslight",
+                "Glasslight",
+                242,
+            ),
+            sample_hit(
+                "aur_p3",
+                "Lighthouse",
+                "Aurora Skies",
+                "ar_aurora",
+                "al_paperboats",
+                "Paper Boats",
+                234,
+            ),
+        ]
+    }
+
+    fn snap_artist_page_albums() -> Vec<crate::backend::ArtistAlbum> {
+        vec![
+            crate::backend::ArtistAlbum {
+                id: "al_glasslight".into(),
+                title: "Glasslight".into(),
+                year: 2023,
+                kind: crate::backend::AlbumKind::Album,
+                cover_url: String::new(),
+            },
+            crate::backend::ArtistAlbum {
+                id: "al_paperboats".into(),
+                title: "Paper Boats".into(),
+                year: 2021,
+                kind: crate::backend::AlbumKind::Album,
+                cover_url: String::new(),
+            },
+            crate::backend::ArtistAlbum {
+                id: "al_halcyon_single".into(),
+                title: "Halcyon".into(),
+                year: 2024,
+                kind: crate::backend::AlbumKind::Single,
+                cover_url: String::new(),
+            },
+            crate::backend::ArtistAlbum {
+                id: "al_tides_ep".into(),
+                title: "Tides EP".into(),
+                year: 2022,
+                kind: crate::backend::AlbumKind::Ep,
+                cover_url: String::new(),
+            },
+        ]
+    }
+
+    fn snap_artist_page_similar() -> Vec<ArtistHit> {
+        vec![
+            ArtistHit {
+                id: "ar_midnight".into(),
+                name: "Midnight Transit".into(),
+                subscriber_count: 884_201,
+                avatar_url: String::new(),
+            },
+            ArtistHit {
+                id: "ar_lumen".into(),
+                name: "Lumen Theory".into(),
+                subscriber_count: 3_771_440,
+                avatar_url: String::new(),
+            },
+            ArtistHit {
+                id: "ar_neon".into(),
+                name: "Neon Harbor".into(),
+                subscriber_count: 1_009_330,
+                avatar_url: String::new(),
+            },
+            ArtistHit {
+                id: "ar_kavi".into(),
+                name: "Kavi & The Tide".into(),
+                subscriber_count: 1_502_998,
+                avatar_url: String::new(),
+            },
+        ]
     }
 
     /// Stage a full (live-style) album page for a hermetic `--shots` frame:
@@ -3033,13 +3172,13 @@ impl MusicApp {
     fn open_track_menu(
         &mut self,
         track: String,
-        in_playlist: Option<String>,
+        in_playlist: Option<&str>,
         queue_index: Option<usize>,
     ) {
         self.context = ContextMenu::new();
         self.menu_actions.clear();
         self.ctx_track = Some(track.clone());
-        self.ctx_in_playlist = in_playlist.clone();
+        self.ctx_in_playlist = in_playlist.map(ToString::to_string);
         self.ctx_queue_index = queue_index;
 
         let liked = self.lib.is_liked(&track);
@@ -3061,11 +3200,11 @@ impl MusicApp {
             "Add to playlist\u{2026}",
             Action::OpenAddToPlaylist(track.clone()),
         );
-        if let Some(pl) = &in_playlist {
+        if let Some(pl) = in_playlist {
             self.push_menu(
                 "Remove from this playlist",
                 Action::RemoveFromPlaylist {
-                    playlist: pl.clone(),
+                    playlist: pl.to_string(),
                     track: track.clone(),
                 },
             );
@@ -3093,14 +3232,14 @@ impl MusicApp {
     }
 
     /// Build + open the "Add to playlist…" secondary picker.
-    fn open_add_to_playlist_menu(&mut self, track: String) {
+    fn open_add_to_playlist_menu(&mut self, track: &str) {
         self.context = ContextMenu::new();
         self.menu_actions.clear();
-        self.ctx_track = Some(track.clone());
+        self.ctx_track = Some(track.to_string());
 
         self.push_menu(
             "New playlist\u{2026}",
-            Action::BeginNewPlaylistFor(track.clone()),
+            Action::BeginNewPlaylistFor(track.to_string()),
         );
         if !self.lib.playlists.is_empty() {
             self.context.push(MenuItem::separator());
@@ -3117,7 +3256,7 @@ impl MusicApp {
                 name,
                 Action::AddToPlaylist {
                     playlist: id,
-                    track: track.clone(),
+                    track: track.to_string(),
                 },
             );
         }
@@ -3181,14 +3320,14 @@ impl MusicApp {
         if cur == self.lyrics_for {
             return;
         }
-        self.lyrics_for = cur.clone();
+        self.lyrics_for.clone_from(&cur);
         self.lyrics.clear();
         self.lyrics_synced = false;
         self.lyrics_pending_for = None;
         let Some(id) = cur else { return };
         // Already resolved (revisited track, or prefetched) — use the cache.
         if let Some((lines, synced)) = self.lyrics_cache.get(&id) {
-            self.lyrics = lines.clone();
+            self.lyrics.clone_from(lines);
             self.lyrics_synced = *synced;
             return;
         }
@@ -3657,14 +3796,14 @@ mod tests {
     }
     /// Drive one event through the production `handle_event` path.
     fn send(app: &mut MusicApp, ev: &WindowEvent, doc: &mut AutoCommit) -> bool {
-        send_with(app, ev, &winit::event::Modifiers::default(), doc)
+        send_with(app, ev, winit::event::Modifiers::default(), doc)
     }
 
     /// Drive one event through `handle_event` with explicit modifiers held.
     fn send_with(
         app: &mut MusicApp,
         ev: &WindowEvent,
-        mods: &winit::event::Modifiers,
+        mods: winit::event::Modifiers,
         doc: &mut AutoCommit,
     ) -> bool {
         let mut taffy = TaffyTree::<()>::new();
@@ -3675,7 +3814,7 @@ mod tests {
         app.handle_event(
             ev,
             1.0,
-            mods,
+            &mods,
             doc,
             &root,
             &mut handled,
@@ -4591,13 +4730,35 @@ mod tests {
     /// End-to-end through the *real app widget*: submit a YouTube-Music search,
     /// let the worker return real hits, then play the top hit and confirm the
     /// app resolved + loaded a real `googlevideo.com` audio URL into the engine.
-    /// Network-dependent, so gated behind the `live` feature.
+    /// Network-dependent, so gated behind the `live` feature and exercised by
+    /// the nightly live-integration step rather than every deterministic shard.
     #[cfg(feature = "live")]
     #[test]
+    #[ignore = "queries third-party music services; nightly runs it explicitly"]
     fn live_search_and_stream_resolve_through_the_app() {
-        use std::time::Duration;
         let (mut app, mut doc) = app_with_doc();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+
+        let first = live_search_top_result(&mut app);
+        let _url = live_play_and_resolve_stream(&mut app, &mut doc, &first);
+
+        // …and, when this build can actually reach a sound sink, prove the real
+        // stream *renders* — decoded PCM buffers reach a real audio sink and the
+        // transport advances off the stream clock. This is the end-to-end "a real
+        // YouTube track plays sound" proof: the engine stages the resolved
+        // (rangeable) source to a temp file with bounded reqwest ranges and plays
+        // that.
+        #[cfg(feature = "audio")]
+        live_audio_render_proof(&mut app);
+    }
+
+    /// Submit a real YouTube-Music search, pump the worker until real hits
+    /// land, and confirm the top hit is a real, injected, streamable library
+    /// track. Returns its id. Part of
+    /// [`live_search_and_stream_resolve_through_the_app`].
+    #[cfg(feature = "live")]
+    fn live_search_top_result(app: &mut MusicApp) -> String {
+        use std::time::Duration;
 
         // Submit a real search (spawns the worker + sends the request).
         app.search_input.set_text("aurora runaway");
@@ -4633,16 +4794,29 @@ mod tests {
             app.lib.track(&first).is_some(),
             "live track merged into the library"
         );
+        first
+    }
+
+    /// Play `first` and pump the worker until the app resolves + loads a
+    /// real rangeable audio URL into the engine. Returns the loaded URL.
+    /// Part of [`live_search_and_stream_resolve_through_the_app`].
+    #[cfg(feature = "live")]
+    fn live_play_and_resolve_stream(
+        app: &mut MusicApp,
+        doc: &mut AutoCommit,
+        first: &str,
+    ) -> String {
+        use std::time::Duration;
 
         // Play it → the app requests a stream resolution on the worker.
         app.dispatch(
             Action::Play {
-                queue: vec![first.clone()],
+                queue: vec![first.to_string()],
                 index: 0,
             },
-            &mut doc,
+            doc,
         );
-        assert_eq!(app.pb.current.as_deref(), Some(first.as_str()));
+        assert_eq!(app.pb.current.as_deref(), Some(first));
         assert!(
             app.resolve_in_flight >= 1,
             "play requested a stream resolve"
@@ -4673,16 +4847,19 @@ mod tests {
         let url = loaded_url.expect("app resolved + loaded a rangeable audio URL");
         assert!(
             is_streamable(&url),
-            "resolved a rangeable, itag-bearing audio URL: {url}"
+            "resolved a rangeable, itag-bearing audio URL"
         );
+        url
+    }
 
-        // …and, when this build can actually reach a sound sink, prove the real
-        // stream *renders* — decoded PCM buffers reach a real audio sink and the
-        // transport advances off the stream clock. This is the end-to-end "a real
-        // YouTube track plays sound" proof: the engine stages the resolved
-        // (rangeable) source to a temp file with bounded reqwest ranges and plays
-        // that.
-        #[cfg(feature = "audio")]
+    /// When this build can reach a real sound sink, prove the resolved
+    /// stream actually renders: decoded PCM buffers reach a real audio sink
+    /// and the transport advances off the stream clock. Part of
+    /// [`live_search_and_stream_resolve_through_the_app`].
+    #[cfg(all(feature = "live", feature = "audio"))]
+    fn live_audio_render_proof(app: &mut MusicApp) {
+        use std::time::Duration;
+
         if audio_server_present() && decode_plugins_present() {
             // Drive the real frame loop until decoded PCM reaches the sink *and*
             // the transport clock has advanced off it (both prove genuine, not
@@ -4711,10 +4888,9 @@ mod tests {
                 "the playhead advanced with real playback"
             );
             eprintln!(
-                "[live audio] PLAYING: sink={:?} frames={frames} playhead={:.0}ms url={}",
+                "[live audio] PLAYING: sink={:?} frames={frames} playhead={:.0}ms",
                 app.audio.actual_audio_sink_name(),
-                app.playhead_ms,
-                url
+                app.playhead_ms
             );
 
             // …and it keeps *advancing*: sample the transport clock over the next
@@ -5283,14 +5459,14 @@ mod tests {
         send_with(
             &mut app,
             &named_key(NamedKey::ArrowRight),
-            &shift_mods(),
+            shift_mods(),
             &mut doc,
         );
         assert_eq!(app.pb.queue_index, 1, "shift+right skips to the next track");
         send_with(
             &mut app,
             &named_key(NamedKey::ArrowLeft),
-            &shift_mods(),
+            shift_mods(),
             &mut doc,
         );
         assert_eq!(
@@ -5481,7 +5657,7 @@ mod tests {
         app.search_input.set_text("hello world");
         // Ctrl+A on the focused field.
         assert!(
-            send_with(&mut app, &char_key("a"), &ctrl_mods(), &mut doc),
+            send_with(&mut app, &char_key("a"), ctrl_mods(), &mut doc),
             "Ctrl+A is consumed by the focused search field"
         );
         assert_eq!(
@@ -5632,7 +5808,7 @@ mod tests {
     fn add_to_playlist_new_playlist_includes_target_track() {
         let (mut app, mut doc) = app_with_doc();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.open_add_to_playlist_menu("tk_s2".into());
+        app.open_add_to_playlist_menu("tk_s2");
         let idx = menu_index(&app, "New playlist\u{2026}")
             .expect("picker offers a New playlist row") as i64;
         app.pending.store(idx, Ordering::SeqCst);
@@ -6021,29 +6197,29 @@ mod tests {
         let cols = render::track_row_columns(left, right, true);
         let mid = f64::midpoint(left, right);
         assert!(
-            (cols.album_x - mid).abs() < 130.0,
+            (cols.album - mid).abs() < 130.0,
             "album sits near the row middle (album {} vs mid {mid})",
-            cols.album_x
+            cols.album
         );
         assert!(
-            cols.album_x + 150.0 < cols.like_x,
+            cols.album + 150.0 < cols.like,
             "album column leaves room before the control cluster (album {} / like {})",
-            cols.album_x,
-            cols.like_x
+            cols.album,
+            cols.like
         );
-        let title_col = cols.album_x - cols.text_x;
+        let title_col = cols.album - cols.text;
         assert!(
             (200.0..=520.0).contains(&title_col),
             "title column is bounded, not stretched across the row (was {title_col})"
         );
         assert!(
-            cols.album_x < right - 380.0,
+            cols.album < right - 380.0,
             "album is not bunched against the right edge (album {})",
-            cols.album_x
+            cols.album
         );
         // Mid-width rows keep the album ahead of the controls too.
         let m = render::track_row_columns(60.0, 720.0, true);
-        assert!(m.album_x >= m.text_x + 190.0 && m.album_x <= m.like_x - 150.0);
+        assert!(m.album >= m.text + 190.0 && m.album <= m.like - 150.0);
     }
 
     #[test]
@@ -6205,7 +6381,7 @@ mod tests {
         let (mut app, doc) = app_with_doc();
         app.set_offline_for_shot();
         app.playback_loaded = true;
-        app.ingest_search_results("daft punk".into(), sample_bundle());
+        app.ingest_search_results("daft punk", sample_bundle());
         app.view = View::Search;
         app.search_input.set_text("daft punk");
         (app, doc)

@@ -23,10 +23,10 @@ pub struct ChargeCapCapability {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChargeCapBackend {
     /// Linux power-supply attributes such as
-    /// `charge_control_end_threshold`; used by ThinkPad, Framework, ASUS,
+    /// `charge_control_end_threshold`; used by `ThinkPad`, Framework, ASUS,
     /// TUXEDO and several other drivers.
     PowerSupply,
-    /// Lenovo IdeaPad's binary conservation mode (roughly 55–60%, or off).
+    /// Lenovo `IdeaPad`'s binary conservation mode (roughly 55–60%, or off).
     ConservationMode,
     /// Huawei WMI's paired `start end` threshold control.
     HuaweiWmi,
@@ -119,7 +119,7 @@ impl BatteryInfo {
                 let dir = entry.path();
                 match read_trim(&dir.join("type")).as_deref() {
                     Some("Battery") if battery_dir.is_none() => battery_dir = Some(dir),
-                    Some("Mains") | Some("USB")
+                    Some("Mains" | "USB")
                         if read_trim(&dir.join("online")).as_deref() == Some("1") =>
                     {
                         on_ac = true;
@@ -166,7 +166,9 @@ impl BatteryInfo {
     /// Remaining capacity relative to the factory design capacity.
     pub fn health_percent(&self) -> Option<u32> {
         let (full, design) = (self.full_capacity?, self.design_capacity?);
-        (design > 0).then(|| ((full.saturating_mul(100) / design).min(100)) as u32)
+        full.saturating_mul(100)
+            .checked_div(design)
+            .map(|pct| u32::try_from(pct.min(100)).unwrap_or(100))
     }
 
     pub fn health_explanation(&self) -> &'static str {
@@ -296,6 +298,11 @@ pub fn charge_capability_from(sys_root: &Path) -> Option<ChargeCapCapability> {
 }
 
 /// Apply a normalized charge cap through the narrowly-scoped system service.
+///
+/// # Errors
+///
+/// Returns an error message if `percent` is outside `50..=100`, or the `qos-battery-cap@`
+/// service is unavailable, not authorised, or fails.
 pub fn set_charge_limit(percent: u32) -> Result<(), String> {
     if !(50..=100).contains(&percent) {
         return Err("battery charge cap must be between 50 and 100 percent".into());
@@ -306,6 +313,11 @@ pub fn set_charge_limit(percent: u32) -> Result<(), String> {
 
 /// Apply and then re-read the hardware contract.  A successful systemd start
 /// is not enough: firmware may accept the write while clamping or ignoring it.
+///
+/// # Errors
+///
+/// Returns an error message if [`set_charge_limit`] fails, the charge-cap control disappears
+/// after applying the change, or the firmware clamps the cap to a value other than `percent`.
 pub fn set_charge_limit_checked(percent: u32) -> Result<ChargeCapCapability, String> {
     set_charge_limit(percent)?;
     let actual =

@@ -42,6 +42,18 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 pub mod accounts;
 pub mod actions;
@@ -88,6 +100,16 @@ pub(crate) fn ensure_text_object(
         },
         _ => String::new(),
     };
+    // `put_object` only fails when `root` doesn't exist or isn't a keyed
+    // (Map/Table) object; every caller passes either the document root or a
+    // map key resolved earlier in the same synchronous `sync`, so neither
+    // case is reachable here. There is no meaningful fallback `ObjId` to
+    // return instead — `automerge::ROOT` would silently redirect the
+    // caller's later `splice_text` onto the wrong (non-Text) object.
+    #[allow(
+        clippy::expect_used,
+        reason = "root is always a live keyed object in the current transaction; see comment above"
+    )]
     let obj = state
         .put_object(root, key, ObjType::Text)
         .expect("seed a Text object for an editable field");

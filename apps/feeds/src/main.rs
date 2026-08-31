@@ -8,10 +8,26 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is dictated by ui::launch::ShotFactory, which other apps' fallible shot roots need"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(feeds::app_root_for_shot(
         args.scenario.as_deref().unwrap_or_default(),
@@ -20,7 +36,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 
 pub fn main() {
     ui::launch::run_or_exit(
-        LaunchSpec::new("dev.qos.feeds", feeds::app_root)
+        &LaunchSpec::new("dev.qos.feeds", feeds::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "sidebar-open",
@@ -34,5 +50,5 @@ pub fn main() {
                 "add-subscription",
             ])
             .configure_app(|app| feeds::actions::register(app.action_registry_mut())),
-    )
+    );
 }

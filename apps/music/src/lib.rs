@@ -41,6 +41,18 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 pub mod actions;
 pub mod app;
@@ -53,7 +65,6 @@ pub mod lyrics;
 pub mod model;
 pub mod mpris;
 pub mod net;
-pub mod portal;
 pub mod relay;
 pub mod search_type;
 pub mod seed;

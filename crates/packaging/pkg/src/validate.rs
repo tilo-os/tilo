@@ -67,6 +67,20 @@ pub enum ManifestError {
 /// Validate the manifest against schema rules that don't require
 /// touching the payload; payload-side checks live in
 /// [`crate::pack::pack`] and [`validate_manifest_with_payload`].
+///
+/// # Errors
+///
+/// Returns the specific [`ManifestError`] variant for the first invariant
+/// violated, checked in this order: an explicit `[sandbox.fs]` grant
+/// (`FsWriteDeclared`/`FsReadDeclared`), an unparseable `package.version`
+/// (`BadVersion`), a malformed or misplaced `package.runtime`
+/// (`RuntimeKindHasRuntime`/`BadRuntimeForm`/`BadRuntimeVersion`), a missing
+/// `kind = "app"` entrypoint (`AppMissingEntrypoint`), an empty
+/// `kind = "format-provider"` mime list (`FormatProviderMissingMime`), an
+/// invalid provider extension/mime/scheme
+/// (`BadProviderExtension`/`BadProviderMime`/`BadProviderScheme`), or an
+/// unparseable `publisher.identity`/`publisher.signature`
+/// (`BadPublisherIdentity`/`BadPublisherSignature`).
 pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     // Filesystem policy first — the check most likely to reject a
     // package a publisher believed was fine, so it's the line they read
@@ -90,10 +104,11 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
 
     match (&m.package.kind, &m.package.runtime) {
         (Kind::Runtime, Some(_)) => return Err(ManifestError::RuntimeKindHasRuntime),
-        (Kind::Runtime, None) => {}
         (_, Some(rt)) => validate_runtime_string(rt)?,
         (_, None) => {
-            // Schema allows runtime to be omitted for non-runtime kinds; the loader applies a default, not an error here.
+            // Schema allows runtime to be omitted for non-runtime kinds (this
+            // also covers Kind::Runtime with no runtime field); the loader
+            // applies a default, not an error here.
         }
     }
 
@@ -237,6 +252,12 @@ fn is_calver(ver: &str) -> bool {
 /// Payload-aware validation, called after walking the payload
 /// directory: checks `format-provider` ships `component.wasm` and
 /// `entrypoint.bin` resolves.
+///
+/// # Errors
+///
+/// Returns whatever [`validate_manifest`] would for the manifest alone, or
+/// [`ManifestError::FormatProviderMissingMime`] if `kind = "format-provider"`
+/// and `payload_files` has no `component.wasm`.
 pub fn validate_manifest_with_payload(
     m: &Manifest,
     payload_files: &[std::path::PathBuf],

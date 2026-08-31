@@ -44,6 +44,7 @@ keys/**/*.private.pem
 .claude/qos-logs/
 .claude/qos-tmp/
 .claude/build/
+.claude/clippy-campaign/
 .claude/worktrees/
 .claude/app-status.md
 .claude/*.log
@@ -52,3 +53,6 @@ keys/**/*.private.pem
 # freshly built qos-rollback binary into the composefs build context
 os/dev/composefs/01-hardening.toml
 os/dev/composefs/stage/
+
+# Vendored crates carry their own lock files; ours is the workspace one.
+vendor/*/Cargo.lock

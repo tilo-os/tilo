@@ -33,6 +33,15 @@ impl WeatherDoc {
     }
 
     /// Mirror the entire model into the document (idempotent overwrite).
+    ///
+    /// # Panics
+    /// Never in practice: every `put_object`/`insert_object` call here
+    /// targets `ROOT` or a Map/List this function just resolved, so it only
+    /// fails for an already-corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "parent is ROOT or a just-resolved Map/List, so put_object/insert_object cannot fail short of a corrupted document — falling back to another ObjId would silently write into the wrong object"
+    )]
     pub fn write_model(doc: &mut AutoCommit, model: &WeatherModel) {
         // locations — replace the list wholesale (small, infrequent).
         let list = doc
@@ -105,6 +114,15 @@ impl WeatherDoc {
     }
 
     /// Write a single freshly-fetched snapshot without touching the rest.
+    ///
+    /// # Panics
+    /// Never in practice: the parent is `ROOT` or a Map this function just
+    /// resolved, so `put_object` only fails for an already-corrupted
+    /// document.
+    #[allow(
+        clippy::expect_used,
+        reason = "parent is ROOT or a just-resolved Map, so put_object cannot fail short of a corrupted document — falling back to another ObjId would silently write the snapshot into the wrong object"
+    )]
     pub fn put_snapshot(doc: &mut AutoCommit, snap: &WeatherSnapshot) {
         let snaps = match doc.get(&ROOT, "snapshots") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,

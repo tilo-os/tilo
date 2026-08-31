@@ -91,8 +91,13 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`CameraAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a Camera action into
 /// a replayable envelope.
-pub fn encode(action: &CameraAction) -> EncodedAction {
-    EncodedAction::encode(CAMERA_ACTION_TYPE, action).expect("CameraAction is always serializable")
+///
+/// # Errors
+///
+/// Returns an error if `action` cannot be serialized, which does not happen
+/// for the plain string/bool/i64 fields [`CameraAction`] carries today.
+pub fn encode(action: &CameraAction) -> Result<EncodedAction, ActionError> {
+    EncodedAction::encode(CAMERA_ACTION_TYPE, action)
 }
 
 // ===========================================================================
@@ -137,8 +142,11 @@ pub struct CameraResourceCtx {
     pub items: Vec<GalleryItem>,
 }
 
-fn immediate_spec(id: &str, label: &str, action: &CameraAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, CAMERA_ACTION_TYPE, action).expect("encode camera action")
+/// Builds the palette spec for `action`, or `None` if it fails to encode (it
+/// does not for today's plain string/bool/i64 `CameraAction` fields) — a
+/// resource simply drops the action rather than crashing the palette.
+fn immediate_spec(id: &str, label: &str, action: &CameraAction) -> Option<ActionSpec> {
+    ActionSpec::immediate(id, label, CAMERA_ACTION_TYPE, action).ok()
 }
 
 fn item_label(it: &GalleryItem) -> String {
@@ -171,9 +179,10 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         } else {
             ("Favorite", true)
         };
-        let child = Resource::new(format!("{kind}:{}", it.id), kind, item_label(it)).with_action(
-            immediate_spec("favorite", label, &set_favorite_action(&it.id, on)),
-        );
+        let mut child = Resource::new(format!("{kind}:{}", it.id), kind, item_label(it));
+        if let Some(spec) = immediate_spec("favorite", label, &set_favorite_action(&it.id, on)) {
+            child = child.with_action(spec);
+        }
         root = root.with_child(child);
     }
     vec![root]
@@ -201,7 +210,7 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
@@ -266,7 +275,7 @@ mod tests {
         let before_heads = state.doc.get_heads();
 
         let action = set_favorite_action(id, true);
-        let encoded = encode(&action);
+        let encoded = encode(&action).unwrap();
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
@@ -305,7 +314,7 @@ mod tests {
         );
 
         let action = set_favorite_action("c5", true);
-        let encoded = encode(&action);
+        let encoded = encode(&action).unwrap();
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
@@ -336,7 +345,7 @@ mod tests {
         );
 
         let action = record_scan_action("https://qos.example/hello", 1234);
-        let encoded = encode(&action);
+        let encoded = encode(&action).unwrap();
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 

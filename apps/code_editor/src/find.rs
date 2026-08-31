@@ -109,6 +109,10 @@ pub enum FindEvent {
 }
 
 /// The find / replace bar.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, unrelated flag (bar visibility, replace-row visibility, two search options, a redraw flag) rather than a set of options that combine — a bitflag/enum would not read better"
+)]
 pub struct FindBar {
     visible: bool,
     replace_open: bool,
@@ -254,7 +258,7 @@ impl FindBar {
     }
 
     /// The controls showing right now, right-to-left from the bar's edge.
-    fn buttons(&self) -> Vec<Btn> {
+    fn buttons() -> Vec<Btn> {
         vec![
             Btn::Case,
             Btn::Word,
@@ -352,6 +356,85 @@ impl FindBar {
     pub fn set_replacement(&mut self, r: &str) {
         self.replace.set_query(r);
     }
+
+    /// Lay out the find row: the shared `SearchField`, padded on the right
+    /// for the status readout and the control cluster (see
+    /// [`Widget::build_layout`]).
+    fn build_find_row(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        controls_w: f64,
+    ) -> NodeId {
+        let find_node = self.find.build_layout(taffy, theme, node_map);
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Widget::build_layout is infallible by trait contract; inserting a node with a fixed Style and a freshly-created child cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
+        )]
+        let find_row = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    align_items: Some(taffy::AlignItems::Center),
+                    size: Size {
+                        width: taffy::Dimension::percent(1.0),
+                        height: taffy::Dimension::length(BAR_HEIGHT as f32),
+                    },
+                    padding: taffy::Rect {
+                        left: length(PAD as f32),
+                        right: length(controls_w as f32),
+                        top: length(0.0_f32),
+                        bottom: length(0.0_f32),
+                    },
+                    ..Default::default()
+                },
+                &[find_node],
+            )
+            .unwrap();
+        self.find_node = Some(find_node);
+        find_row
+    }
+
+    /// Lay out the replace row: the shared `SearchField`, padded on the
+    /// right for the "Replace"/"All" buttons that sit where the find row's
+    /// control cluster is (see [`Widget::build_layout`]).
+    fn build_replace_row(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let replace_node = self.replace.build_layout(taffy, theme, node_map);
+        // The replace row's two buttons sit where the find row's cluster is.
+        let replace_controls = PAD * 2.0 + 96.0 + GAP + 56.0;
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Widget::build_layout is infallible by trait contract; inserting a node with a fixed Style and a freshly-created child cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
+        )]
+        let replace_row = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    align_items: Some(taffy::AlignItems::Center),
+                    size: Size {
+                        width: taffy::Dimension::percent(1.0),
+                        height: taffy::Dimension::length((BAR_HEIGHT_REPLACE - BAR_HEIGHT) as f32),
+                    },
+                    padding: taffy::Rect {
+                        left: length(PAD as f32),
+                        right: length(replace_controls as f32),
+                        top: length(0.0_f32),
+                        bottom: length(0.0_f32),
+                    },
+                    ..Default::default()
+                },
+                &[replace_node],
+            )
+            .unwrap();
+        self.replace_node = Some(replace_node);
+        replace_row
+    }
 }
 
 impl Default for FindBar {
@@ -388,6 +471,10 @@ impl Widget for FindBar {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         if !self.visible {
+            #[allow(
+                clippy::unwrap_used,
+                reason = "Widget::build_layout is infallible by trait contract; inserting a single leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
+            )]
             let node = taffy
                 .new_leaf(Style {
                     size: Size {
@@ -406,64 +493,20 @@ impl Widget for FindBar {
         // The find row leaves room on the right for the status readout and the
         // control cluster; the fields themselves are shared widgets sized by
         // their own layout.
-        let controls_w = STATUS_W + self.buttons().len() as f64 * (BTN_W + GAP) + PAD * 2.0;
-
-        let find_node = self.find.build_layout(taffy, theme, node_map);
-        let find_row = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    align_items: Some(taffy::AlignItems::Center),
-                    size: Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::length(BAR_HEIGHT as f32),
-                    },
-                    padding: taffy::Rect {
-                        left: length(PAD as f32),
-                        right: length(controls_w as f32),
-                        top: length(0.0_f32),
-                        bottom: length(0.0_f32),
-                    },
-                    ..Default::default()
-                },
-                &[find_node],
-            )
-            .unwrap();
-        self.find_node = Some(find_node);
+        let controls_w = STATUS_W + Self::buttons().len() as f64 * (BTN_W + GAP) + PAD * 2.0;
+        let find_row = self.build_find_row(taffy, theme, node_map, controls_w);
 
         let mut rows = vec![find_row];
         if self.replace_open {
-            let replace_node = self.replace.build_layout(taffy, theme, node_map);
-            // The replace row's two buttons sit where the find row's cluster is.
-            let replace_controls = PAD * 2.0 + 96.0 + GAP + 56.0;
-            let replace_row = taffy
-                .new_with_children(
-                    Style {
-                        display: taffy::Display::Flex,
-                        align_items: Some(taffy::AlignItems::Center),
-                        size: Size {
-                            width: taffy::Dimension::percent(1.0),
-                            height: taffy::Dimension::length(
-                                (BAR_HEIGHT_REPLACE - BAR_HEIGHT) as f32,
-                            ),
-                        },
-                        padding: taffy::Rect {
-                            left: length(PAD as f32),
-                            right: length(replace_controls as f32),
-                            top: length(0.0_f32),
-                            bottom: length(0.0_f32),
-                        },
-                        ..Default::default()
-                    },
-                    &[replace_node],
-                )
-                .unwrap();
-            self.replace_node = Some(replace_node);
-            rows.push(replace_row);
+            rows.push(self.build_replace_row(taffy, theme, node_map));
         } else {
             self.replace_node = None;
         }
 
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Widget::build_layout is infallible by trait contract; inserting a node with a fixed Style and freshly-created children cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
+        )]
         let node = taffy
             .new_with_children(
                 Style {
@@ -484,6 +527,10 @@ impl Widget for FindBar {
         node
     }
 
+    #[allow(
+        clippy::unwrap_used,
+        reason = "Widget::apply_layout is infallible by trait contract; every node looked up here was created by this widget's own build_layout in the same tree, so a lookup failure means the taffy tree is already corrupted and there is no meaningful layout to fall back to"
+    )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
@@ -564,91 +611,9 @@ impl Widget for FindBar {
         }
 
         self.button_rects.clear();
-        let find_row_mid = self.rect.y0 + BAR_HEIGHT / 2.0;
-
-        // Status readout, immediately left of the control cluster.
-        let buttons = self.buttons();
-        let cluster_w = buttons.len() as f64 * (BTN_W + GAP);
-        let cluster_x0 = self.rect.x1 - PAD - cluster_w;
-        let status = self.status_label();
-        if !status.is_empty() {
-            let color = if self.total == 0 {
-                c.semantic.warning
-            } else {
-                c.text_dim
-            };
-            let (w, _) = text_renderer.measure(&status, 12.0, None);
-            text_renderer.draw_text(
-                scene,
-                &status,
-                12.0,
-                color,
-                transform
-                    * Affine::translate((cluster_x0 - GAP - f64::from(w), find_row_mid - 7.0)),
-                None,
-            );
-        }
-
-        // The control cluster, painted through the shared button face so the
-        // hover/press/disabled palette is the OS's, not this app's.
-        let mut x = cluster_x0;
-        for b in buttons {
-            let rect = Rect::new(
-                x,
-                find_row_mid - BTN_H / 2.0,
-                x + BTN_W,
-                find_row_mid + BTN_H / 2.0,
-            );
-            let enabled = match b {
-                Btn::Prev | Btn::Next => self.total > 0,
-                _ => true,
-            };
-            let style = if self.is_active(b) {
-                ButtonStyle::Primary
-            } else {
-                ButtonStyle::Ghost
-            };
-            let face = ButtonFace::new(rect, Self::label_of(b))
-                .style(style)
-                .radius(6.0)
-                .text_size(12.0)
-                .disabled(!enabled)
-                .hovered(enabled && rect.contains(self.hover))
-                .accessible_name(Self::accessible_name_of(b));
-            Button::paint(scene, transform, text_renderer, theme, &face);
-            self.button_rects.push((b, rect));
-            x += BTN_W + GAP;
-        }
-
+        self.draw_find_controls(scene, transform, text_renderer, theme);
         if self.replace_open {
-            let mid = self.rect.y0 + BAR_HEIGHT + (BAR_HEIGHT_REPLACE - BAR_HEIGHT) / 2.0;
-            let all = Rect::new(
-                self.rect.x1 - PAD - 56.0,
-                mid - BTN_H / 2.0,
-                self.rect.x1 - PAD,
-                mid + BTN_H / 2.0,
-            );
-            let one = Rect::new(
-                all.x0 - GAP - 96.0,
-                mid - BTN_H / 2.0,
-                all.x0 - GAP,
-                mid + BTN_H / 2.0,
-            );
-            for (b, rect, style) in [
-                (Btn::ReplaceOne, one, ButtonStyle::Neutral),
-                (Btn::ReplaceAll, all, ButtonStyle::Neutral),
-            ] {
-                let enabled = self.total > 0;
-                let face = ButtonFace::new(rect, Self::label_of(b))
-                    .style(style)
-                    .radius(6.0)
-                    .text_size(12.0)
-                    .disabled(!enabled)
-                    .hovered(enabled && rect.contains(self.hover))
-                    .accessible_name(Self::accessible_name_of(b));
-                Button::paint(scene, transform, text_renderer, theme, &face);
-                self.button_rects.push((b, rect));
-            }
+            self.draw_replace_buttons(scene, transform, text_renderer, theme);
         }
     }
 
@@ -789,6 +754,115 @@ impl Widget for FindBar {
         self.needs_redraw = false;
         self.find.mark_drawn();
         self.replace.mark_drawn();
+    }
+}
+
+impl FindBar {
+    /// Draw the status readout and the transport/option/close button
+    /// cluster on the find row's right edge, recording each button's hit
+    /// rect.
+    fn draw_find_controls(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
+        let find_row_mid = self.rect.y0 + BAR_HEIGHT / 2.0;
+
+        // Status readout, immediately left of the control cluster.
+        let buttons = Self::buttons();
+        let cluster_w = buttons.len() as f64 * (BTN_W + GAP);
+        let cluster_x0 = self.rect.x1 - PAD - cluster_w;
+        let status = self.status_label();
+        if !status.is_empty() {
+            let color = if self.total == 0 {
+                c.semantic.warning
+            } else {
+                c.text_dim
+            };
+            let (w, _) = text_renderer.measure(&status, 12.0, None);
+            text_renderer.draw_text(
+                scene,
+                &status,
+                12.0,
+                color,
+                transform
+                    * Affine::translate((cluster_x0 - GAP - f64::from(w), find_row_mid - 7.0)),
+                None,
+            );
+        }
+
+        // The control cluster, painted through the shared button face so the
+        // hover/press/disabled palette is the OS's, not this app's.
+        let mut x = cluster_x0;
+        for b in buttons {
+            let rect = Rect::new(
+                x,
+                find_row_mid - BTN_H / 2.0,
+                x + BTN_W,
+                find_row_mid + BTN_H / 2.0,
+            );
+            let enabled = match b {
+                Btn::Prev | Btn::Next => self.total > 0,
+                _ => true,
+            };
+            let style = if self.is_active(b) {
+                ButtonStyle::Primary
+            } else {
+                ButtonStyle::Ghost
+            };
+            let face = ButtonFace::new(rect, Self::label_of(b))
+                .style(style)
+                .radius(6.0)
+                .text_size(12.0)
+                .disabled(!enabled)
+                .hovered(enabled && rect.contains(self.hover))
+                .accessible_name(Self::accessible_name_of(b));
+            Button::paint(scene, transform, text_renderer, theme, &face);
+            self.button_rects.push((b, rect));
+            x += BTN_W + GAP;
+        }
+    }
+
+    /// Draw the replace row's "Replace"/"All" buttons, recording their hit
+    /// rects.
+    fn draw_replace_buttons(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let mid = self.rect.y0 + BAR_HEIGHT + (BAR_HEIGHT_REPLACE - BAR_HEIGHT) / 2.0;
+        let all = Rect::new(
+            self.rect.x1 - PAD - 56.0,
+            mid - BTN_H / 2.0,
+            self.rect.x1 - PAD,
+            mid + BTN_H / 2.0,
+        );
+        let one = Rect::new(
+            all.x0 - GAP - 96.0,
+            mid - BTN_H / 2.0,
+            all.x0 - GAP,
+            mid + BTN_H / 2.0,
+        );
+        for (b, rect, style) in [
+            (Btn::ReplaceOne, one, ButtonStyle::Neutral),
+            (Btn::ReplaceAll, all, ButtonStyle::Neutral),
+        ] {
+            let enabled = self.total > 0;
+            let face = ButtonFace::new(rect, Self::label_of(b))
+                .style(style)
+                .radius(6.0)
+                .text_size(12.0)
+                .disabled(!enabled)
+                .hovered(enabled && rect.contains(self.hover))
+                .accessible_name(Self::accessible_name_of(b));
+            Button::paint(scene, transform, text_renderer, theme, &face);
+            self.button_rects.push((b, rect));
+        }
     }
 }
 

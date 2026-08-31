@@ -523,23 +523,9 @@ impl Resolver {
                     } else {
                         // If the atlas is already maximum size, there's nothing we can do. Set
                         // the xy field to None so this image isn't rendered and then carry on--
-                        // other images might still fit.
-                        //
-                        // Say so. The consequence downstream is that the
-                        // image's dimensions are written as zeros and it
-                        // draws as nothing (see the `ResolvedPatch::Image`
-                        // arm above) -- a picture silently missing from an
-                        // otherwise ordinary frame, which is written to a
-                        // PNG or a recording as normally as any other. That
-                        // is the same failure class as a bump-buffer
-                        // overflow, and the same rule applies: a frame that
-                        // could not be drawn correctly must not be
-                        // indistinguishable from one that could.
-                        report_dropped_image(
-                            pending_image.image.width,
-                            pending_image.image.height,
-                            self.image_cache.atlas_size(),
-                        );
+                        // other images might still fit. Record the omission so the renderer can
+                        // report why the image is missing.
+                        self.image_cache.record_omission();
                         break None;
                     }
                 };
@@ -548,35 +534,6 @@ impl Resolver {
             // the maximum atlas size.
             break;
         }
-    }
-}
-
-/// Report an image the atlas could not place, on stderr, throttled.
-///
-/// Throttled rather than silenced: once the atlas is full it usually
-/// stays full, so an unconditional line would be one per image per
-/// frame -- a firehose during a recording, which is its own way of
-/// being unreadable. The first is always printed, then one in
-/// [`DROP_REPORT_EVERY`], each carrying the running total so a reader
-/// can tell "it happened once" from "it has been happening for a
-/// minute".
-///
-/// `eprintln!` and not `log`/`tracing`: this crate depends on neither,
-/// and a record nothing is subscribed to is exactly the unobservable
-/// failure this is here to end. Applications built on this toolkit
-/// install no logger at all.
-fn report_dropped_image(width: u32, height: u32, atlas_size: u32) {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static DROPPED: AtomicU64 = AtomicU64::new(0);
-    const DROP_REPORT_EVERY: u64 = 300;
-
-    let n = DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
-    if n == 1 || n % DROP_REPORT_EVERY == 0 {
-        eprintln!(
-            "vello: no atlas room for a {width}x{height} image at atlas \
-             {atlas_size}x{atlas_size} (the maximum) -- it will draw as \
-             nothing and the frame is wrong. {n} dropped so far."
-        );
     }
 }
 

@@ -202,6 +202,13 @@ pub fn power_command(action: PowerAction) -> Command {
 /// emits more than a pipe buffer (~64 KiB) of stderr *before* finishing
 /// stdout could deadlock; the real `qos-install` writes progress to
 /// stdout and only short errors to stderr, so this is safe in practice.
+///
+/// # Errors
+///
+/// Returns `Err` if `cmd` fails to spawn, if writing `password` /
+/// `extra_stdin` to its stdin fails for a reason other than a broken pipe
+/// (the child exiting before it finishes reading stdin is tolerated), if a
+/// stdout line can't be read, or if waiting on the child fails.
 pub fn stream_command<F: FnMut(String)>(
     mut cmd: Command,
     password: &str,
@@ -262,6 +269,13 @@ pub fn stream_command<F: FnMut(String)>(
 /// Run the real `qos-install` backend for `disk` + `user` + `opts`, feeding
 /// `password` (and, when an encryption PIN is set, the PIN as a second
 /// stdin line) and relaying every output line to `on_line`.
+///
+/// # Errors
+///
+/// Returns `Err` under the same conditions as [`stream_command`]: the
+/// backend fails to spawn, writing the password/PIN to its stdin fails
+/// (other than a broken pipe), a stdout line can't be read, or waiting on
+/// the child fails.
 pub fn run_install<F: FnMut(String)>(
     disk: &str,
     user: &str,
@@ -282,6 +296,11 @@ pub fn run_install<F: FnMut(String)>(
 /// Run the power backend. Returns `Ok(true)` on a clean spawn+exit — though
 /// on success the machine is already on its way down, so the UI typically
 /// never observes the return.
+///
+/// # Errors
+///
+/// Returns `Err` if the power backend fails to spawn or its exit status
+/// can't be retrieved.
 pub fn run_power(action: PowerAction) -> std::io::Result<bool> {
     let status = power_command(action).status()?;
     Ok(status.success())
@@ -545,9 +564,9 @@ mod tests {
     fn install_command_omits_encrypt_by_default() {
         let opts = InstallOptions::default();
         let cmd = install_command("/dev/vda", "qq", &opts);
-        let args: Vec<&str> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        let mut args = cmd.get_args().map(|a| a.to_str().unwrap());
         assert!(
-            !args.contains(&"--encrypt"),
+            !args.any(|a| a == "--encrypt"),
             "default options must not request encryption"
         );
     }

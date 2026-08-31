@@ -64,12 +64,22 @@ pub struct SwitchControlRuntime {
     next_scan: Option<Instant>,
 }
 
+/// `now + delta`, saturating to `now` itself on the (cosmically unlikely) `Instant` overflow
+/// rather than panicking — a scan or reload deadline that cannot be represented becomes "due
+/// now" instead of crashing the compositor.
+fn after(now: Instant, delta: Duration) -> Instant {
+    now.checked_add(delta).unwrap_or(now)
+}
+
 impl SwitchControlRuntime {
     pub fn new(now: Instant) -> Self {
         let config = Config::load();
         Self {
-            next_reload: now + Duration::from_millis(750),
-            next_scan: config.scan.filter(|_| config.enabled).map(|d| now + d),
+            next_reload: after(now, Duration::from_millis(750)),
+            next_scan: config
+                .scan
+                .filter(|_| config.enabled)
+                .map(|d| after(now, d)),
             config,
         }
     }
@@ -78,7 +88,7 @@ impl SwitchControlRuntime {
         if now < self.next_reload {
             return;
         }
-        self.next_reload = now + Duration::from_millis(750);
+        self.next_reload = after(now, Duration::from_millis(750));
         let old = self.config;
         self.config = Config::load();
         if old.enabled != self.config.enabled || old.scan != self.config.scan {
@@ -86,7 +96,7 @@ impl SwitchControlRuntime {
                 .config
                 .scan
                 .filter(|_| self.config.enabled)
-                .map(|d| now + d);
+                .map(|d| after(now, d));
         }
     }
 
@@ -110,7 +120,7 @@ impl SwitchControlRuntime {
             _ => return None,
         };
         if action == SwitchAction::Next && event.state == ElementState::Pressed {
-            self.next_scan = self.config.scan.map(|d| now + d);
+            self.next_scan = self.config.scan.map(|d| after(now, d));
         }
         Some((action, event.state == ElementState::Pressed))
     }
@@ -121,7 +131,7 @@ impl SwitchControlRuntime {
         if !due {
             return None;
         }
-        self.next_scan = self.config.scan.map(|d| now + d);
+        self.next_scan = self.config.scan.map(|d| after(now, d));
         Some(SwitchAction::Next)
     }
 }

@@ -87,6 +87,11 @@ impl Source {
     /// returns the planned request URL in the error, documenting exactly
     /// what the worker *would* fetch. The audio worker treats this as
     /// "cannot stream right now" and stays silent.
+    ///
+    /// # Errors
+    ///
+    /// Always returns `Err` in this build — the `streaming` feature is
+    /// required to actually fetch a stream.
     #[cfg(not(feature = "streaming"))]
     pub fn resolve_best(&self, video_id: &str) -> Result<AudioStream, String> {
         // TODO(streaming): enable the `streaming` feature to perform a real
@@ -96,6 +101,14 @@ impl Source {
         Err(format!("offline: would GET {}", self.streams_url(video_id)))
     }
 
+    /// Resolve a video id to its best audio stream URL via a real blocking
+    /// fetch against the configured backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the request fails or the response isn't a success
+    /// status, if the body isn't valid JSON, or if the response carries no
+    /// audio stream candidates.
     #[cfg(feature = "streaming")]
     pub fn resolve_best(&self, video_id: &str) -> Result<AudioStream, String> {
         let url = self.streams_url(video_id);
@@ -151,6 +164,7 @@ fn parse_audio_streams(backend: Backend, json: &serde_json::Value) -> Vec<AudioS
 /// Minimal percent-encoding for query strings (alnum + a few safe chars
 /// pass through; everything else is %XX). Avoids pulling a url crate.
 fn urlencode(s: &str) -> String {
+    use std::fmt::Write;
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
@@ -158,7 +172,9 @@ fn urlencode(s: &str) -> String {
                 out.push(b as char);
             }
             b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out

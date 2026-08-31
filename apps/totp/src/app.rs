@@ -28,6 +28,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -46,6 +47,20 @@ const ADD_BTN_H: f64 = 40.0;
 const SEARCH_H: f64 = 44.0;
 const HEADER_H: f64 = 150.0;
 const TOAST_TTL: Duration = Duration::from_millis(1800);
+
+fn qr_image_request() -> PickRequest {
+    PickRequest::open("Choose a QR image", "Open")
+        .thread_name("totp-portal-open")
+        .filter(
+            FileFilter::new("QR images")
+                .mimetype("image/png")
+                .mimetype("image/jpeg")
+                .glob("*.png")
+                .glob("*.jpg")
+                .glob("*.jpeg"),
+        )
+        .all_files()
+}
 
 /// How the initial vault is populated.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -70,7 +85,7 @@ pub struct AuthenticatorApp {
     /// and hands the chosen path back over this channel, drained once per
     /// frame in [`Widget::sync`]. `None` when no picker is in flight — the app
     /// never draws its own picker (HIG §5).
-    portal_rx: Option<crate::portal::PortalChannel>,
+    portal_rx: Option<PortalChannel>,
 
     rect: Rect,
     root_node: Option<NodeId>,
@@ -187,9 +202,9 @@ impl AuthenticatorApp {
     /// from the document afterward for immediate feedback; `sync` reconciles it
     /// again each frame (so a palette dispatch shows up the same way). This app
     /// supplies only its domain: the action and its type.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::TotpAction) {
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::TotpAction) {
         self.actions
-            .dispatch(doc, crate::actions::TOTP_ACTION_TYPE, &action);
+            .dispatch(doc, crate::actions::TOTP_ACTION_TYPE, action);
     }
 
     /// Re-project the in-memory vault from the now-authoritative document, and —
@@ -269,15 +284,15 @@ impl AuthenticatorApp {
                 self.list_dirty = true;
             }
             ListEvent::MoveUp(id) => {
-                self.perform_action(state, crate::actions::move_up_action(id));
+                self.perform_action(state, &crate::actions::move_up_action(id));
                 self.reload_from_doc(state);
             }
             ListEvent::MoveDown(id) => {
-                self.perform_action(state, crate::actions::move_down_action(id));
+                self.perform_action(state, &crate::actions::move_down_action(id));
                 self.reload_from_doc(state);
             }
             ListEvent::Delete(id) => {
-                self.perform_action(state, crate::actions::delete_account_action(id));
+                self.perform_action(state, &crate::actions::delete_account_action(id));
                 self.reload_from_doc(state);
                 if self.selected == Some(id) {
                     self.selected = self.vault.ordered().first().map(|a| a.id);
@@ -301,7 +316,7 @@ impl AuthenticatorApp {
                 acc.color = (self.vault.len() % 7) as u8;
                 let order = self.vault.next_order();
                 let id = acc.id;
-                self.perform_action(state, crate::actions::add_account_action(&acc, order));
+                self.perform_action(state, &crate::actions::add_account_action(&acc, order));
                 self.reload_from_doc(state);
                 self.selected = Some(id);
                 self.toast("Account added");
@@ -322,10 +337,107 @@ impl AuthenticatorApp {
         }
     }
 
+    /// Global keyboard shortcuts available whenever the add-panel modal
+    /// isn't open: Ctrl/Cmd+N (add), Ctrl/Cmd+F and `/` (focus search),
+    /// Escape (clear + unfocus search) and Enter (copy the focused code).
+    /// Returns `true` when the event was fully consumed here — `handled`
+    /// is already set in that case, so [`Widget::handle_event`] should stop
+    /// routing further.
+    fn handle_global_shortcut(
+        &mut self,
+        event: &WindowEvent,
+        mods: winit::keyboard::ModifiersState,
+        handled: &mut bool,
+    ) -> bool {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+
+        // Ctrl/Cmd+N → add account.
+        if let Key::Character(c) = logical_key {
+            let lc = c.to_lowercase();
+            if (mods.control_key() || mods.super_key()) && lc == "n" {
+                self.add_panel.open();
+                self.add_panel.layout(self.rect);
+                *handled = true;
+                return true;
+            }
+            if (mods.control_key() || mods.super_key()) && lc == "f" {
+                self.search.set_focus(true);
+                *handled = true;
+                return true;
+            }
+            // "/" focuses search when not already typing there.
+            if c.as_str() == "/" && !self.search.is_focused() {
+                self.search.set_focus(true);
+                *handled = true;
+                return true;
+            }
+        }
+        match logical_key {
+            Key::Named(NamedKey::Escape) => {
+                if self.search.is_focused() {
+                    self.search.set_focus(false);
+                    if !self.search.value().is_empty() {
+                        self.search.set_text("");
+                        self.refresh_list();
+                    }
+                    *handled = true;
+                    return true;
+                }
+            }
+            Key::Named(NamedKey::Enter) => {
+                self.copy_focused();
+                *handled = true;
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// Add-button + search-field focus management on a left click. Returns
+    /// `true` when the click opened the add modal — fully consumed, so
+    /// [`Widget::handle_event`] should stop routing further; a click that
+    /// only moves search focus returns `false` so the event still reaches
+    /// the search field and list below.
+    fn handle_add_and_search_focus_click(
+        &mut self,
+        event: &WindowEvent,
+        handled: &mut bool,
+    ) -> bool {
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        if self.add_btn_rect.contains(self.last_mouse) {
+            self.add_panel.open();
+            self.add_panel.layout(self.rect);
+            *handled = true;
+            return true;
+        }
+        let on_search = self.search_rect.contains(self.last_mouse);
+        self.search.set_focus(on_search);
+        false
+    }
+
     /// Import a QR code from an image file into the open add panel.
     ///
     /// Choosing the screenshot/photo goes through the **host** file chooser
-    /// (the XDG Desktop Portal, [`crate::portal`]) — the app never draws its
+    /// (the XDG Desktop Portal, [`ui::portal`]) — the app never draws its
     /// own picker (HIG §5). The portal round-trip runs on a worker thread and
     /// the chosen path is drained each frame and decoded by the pure-Rust,
     /// offline QR reader in [`crate::qr`]. A `TOTP_QR_IMAGE` environment
@@ -341,7 +453,7 @@ impl AuthenticatorApp {
 
     /// Ask the host desktop's file chooser for a QR image. Per HIG §5 the app
     /// never draws its own picker: the portal round-trip runs on a worker
-    /// thread ([`crate::portal::request_open`]) and the chosen path comes back
+    /// thread ([`ui::portal::PickRequest`]) and the chosen path comes back
     /// over a channel drained each frame in [`Self::drain_portal`]. A second
     /// request while one is in flight is ignored, so a double-tap can't stack
     /// two host dialogs.
@@ -349,7 +461,7 @@ impl AuthenticatorApp {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(crate::portal::request_open());
+        self.portal_rx = Some(qr_image_request().send());
     }
 
     /// Drain a completed portal request, if any. Called once per frame from
@@ -365,10 +477,10 @@ impl AuthenticatorApp {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
-                    crate::portal::PortalOutcome::Opened(path) => self.decode_qr_path(&path),
+                    PortalOutcome::Opened(path) => self.decode_qr_path(&path),
                     // A cancel is a no-op — the add panel is left as it was.
-                    crate::portal::PortalOutcome::Cancelled => {}
-                    crate::portal::PortalOutcome::Failed(reason) => {
+                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Failed(reason) => {
                         self.toast(format!("Couldn't open the file chooser: {reason}"));
                     }
                 }
@@ -571,6 +683,10 @@ impl Widget for AuthenticatorApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -587,7 +703,7 @@ impl Widget for AuthenticatorApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let x0 = origin.x + f64::from(layout.location.x);
         let y0 = origin.y + f64::from(layout.location.y);
         self.rect = Rect::new(
@@ -714,76 +830,12 @@ impl Widget for AuthenticatorApp {
             return;
         }
 
-        let mods = modifiers.state();
-
-        // Global keyboard shortcuts.
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            // Ctrl/Cmd+N → add account.
-            if let Key::Character(c) = logical_key {
-                let lc = c.to_lowercase();
-                if (mods.control_key() || mods.super_key()) && lc == "n" {
-                    self.add_panel.open();
-                    self.add_panel.layout(self.rect);
-                    *handled = true;
-                    return;
-                }
-                if (mods.control_key() || mods.super_key()) && lc == "f" {
-                    self.search.set_focus(true);
-                    *handled = true;
-                    return;
-                }
-                // "/" focuses search when not already typing there.
-                if c.as_str() == "/" && !self.search.is_focused() {
-                    self.search.set_focus(true);
-                    *handled = true;
-                    return;
-                }
-            }
-            match logical_key {
-                Key::Named(NamedKey::Escape) => {
-                    if self.search.is_focused() {
-                        self.search.set_focus(false);
-                        if !self.search.value().is_empty() {
-                            self.search.set_text("");
-                            self.refresh_list();
-                        }
-                        *handled = true;
-                        return;
-                    }
-                }
-                Key::Named(NamedKey::Enter) => {
-                    self.copy_focused();
-                    *handled = true;
-                    return;
-                }
-                _ => {}
-            }
+        if self.handle_global_shortcut(event, modifiers.state(), handled) {
+            return;
         }
 
-        // Add-button + search focus management on click.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            if self.add_btn_rect.contains(self.last_mouse) {
-                self.add_panel.open();
-                self.add_panel.layout(self.rect);
-                *handled = true;
-                return;
-            }
-            let on_search = self.search_rect.contains(self.last_mouse);
-            self.search.set_focus(on_search);
+        if self.handle_add_and_search_focus_click(event, handled) {
+            return;
         }
 
         // Route to the search field (caret placement + typing) when it
@@ -938,7 +990,7 @@ mod tests {
     fn dispatch(
         app: &mut AuthenticatorApp,
         ev: &WindowEvent,
-        mods: &winit::event::Modifiers,
+        mods: winit::event::Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         node: NodeId,
@@ -949,7 +1001,7 @@ mod tests {
         app.handle_event(
             ev,
             1.0,
-            mods,
+            &mods,
             state,
             root,
             &mut handled,
@@ -1130,7 +1182,7 @@ mod tests {
     /// dialog; the in-flight guard must preserve it.
     #[test]
     fn qr_cta_routes_to_the_host_portal() {
-        use crate::portal::{PortalOutcome, inject_for_test};
+        use ui::portal::inject_for_test;
         let (mut app, _state) = app_with_state();
         app.rect = Rect::new(0.0, 0.0, 1000.0, 800.0);
         app.add_panel.open();
@@ -1147,7 +1199,7 @@ mod tests {
     /// portal result is injected (no real dialog) and the next `sync` loads it.
     #[test]
     fn portal_chosen_qr_image_fills_the_add_panel_via_frame_drain() {
-        use crate::portal::{PortalOutcome, inject_for_test};
+        use ui::portal::inject_for_test;
         let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
         let dir = std::env::temp_dir().join(format!("totp-portal-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1177,7 +1229,7 @@ mod tests {
     /// left exactly as they were and the channel clears.
     #[test]
     fn portal_cancel_leaves_the_add_panel_untouched() {
-        use crate::portal::{PortalOutcome, inject_for_test};
+        use ui::portal::inject_for_test;
         let (mut app, mut state) = app_with_state();
         app.add_panel.open();
         let before = app.add_panel.field_snapshot();
@@ -1231,7 +1283,7 @@ mod tests {
         dispatch(
             &mut app,
             &cursor_at(btn),
-            &mods,
+            mods,
             &mut state.doc,
             &state.root,
             node,
@@ -1240,7 +1292,7 @@ mod tests {
         dispatch(
             &mut app,
             &left_press(),
-            &mods,
+            mods,
             &mut state.doc,
             &state.root,
             node,
@@ -1260,7 +1312,7 @@ mod tests {
         let handled = dispatch(
             &mut app,
             &char_press("n"),
-            &ctrl,
+            ctrl,
             &mut state.doc,
             &state.root,
             node,
@@ -1277,11 +1329,11 @@ mod tests {
         assert!(!app.search.is_focused());
 
         // "/" focuses search when not already typing there.
-        let none = no_mods();
+        let mods = no_mods();
         dispatch(
             &mut app,
             &char_press("/"),
-            &none,
+            mods,
             &mut state.doc,
             &state.root,
             node,
@@ -1295,7 +1347,7 @@ mod tests {
         dispatch(
             &mut app,
             &char_press("f"),
-            &ctrl,
+            ctrl,
             &mut state.doc,
             &state.root,
             node,
@@ -1311,11 +1363,11 @@ mod tests {
         app.search.set_focus(true);
         app.search.set_text("github");
 
-        let none = no_mods();
+        let mods = no_mods();
         let handled = dispatch(
             &mut app,
             &named_press(NamedKey::Escape),
-            &none,
+            mods,
             &mut state.doc,
             &state.root,
             node,
@@ -1339,11 +1391,11 @@ mod tests {
         let acc = app.vault.get(id).cloned().unwrap();
 
         let before = totp::current_code(&acc);
-        let none = no_mods();
+        let mods = no_mods();
         dispatch(
             &mut app,
             &named_press(NamedKey::Enter),
-            &none,
+            mods,
             &mut state.doc,
             &state.root,
             node,
@@ -1371,11 +1423,11 @@ mod tests {
         app.add_panel.layout(app.rect);
         assert!(!app.search.is_focused());
 
-        let none = no_mods();
+        let mods = no_mods();
         dispatch(
             &mut app,
             &char_press("/"),
-            &none,
+            mods,
             &mut state.doc,
             &state.root,
             node,
@@ -1401,13 +1453,16 @@ mod tests {
         );
     }
 
+    /// A `--shots` entry point: its display name and root-widget factory.
+    type ShotsScenario = (&'static str, fn() -> Box<dyn Widget>);
+
     #[test]
     fn every_shots_scenario_renders_a_nonblank_frame() {
         // The five `--shots` entry points must each produce a real frame, not
         // collapse to nothing. Runs the exact host cycle (sync → build_layout →
         // compute_layout(measure) → apply_layout → draw) and asserts the scene
         // encoded draw commands. No GPU needed — this is pure Vello encoding.
-        let scenarios: [(&str, fn() -> Box<dyn Widget>); 5] = [
+        let scenarios: [ShotsScenario; 5] = [
             ("demo", crate::app_root_demo),
             ("empty", crate::app_root_empty),
             ("add", crate::app_root_add_screen),

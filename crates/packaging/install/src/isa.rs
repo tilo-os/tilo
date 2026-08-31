@@ -136,6 +136,12 @@ pub fn pick_variant(host: IsaLevel, available: &[IsaLevel]) -> Option<IsaLevel> 
 /// requirements + the local CPU. Returns `Ok(level)` when there's a
 /// build that fits, `Err(reason)` when there isn't (which the CLI
 /// prints and refuses to install).
+///
+/// # Errors
+///
+/// Returns [`InstallError::NoBuildForArch`] if the manifest declares
+/// no build for `host_arch`, or [`InstallError::HostTooOld`] if the
+/// build for that arch requires a higher ISA level than `host_level`.
 pub fn install_check(
     reqs: &IsaRequirements,
     host_arch: Arch,

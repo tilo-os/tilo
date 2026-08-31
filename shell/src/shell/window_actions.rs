@@ -110,6 +110,19 @@ impl DuplicateError {
 
 /// A fresh instance, not a copy of state — the new tab starts however that
 /// app starts (a second shell, for a terminal, the case this exists for).
+///
+/// # Errors
+///
+/// [`DuplicateError::NoActiveTab`] when nothing is focused (an empty
+/// workspace, or a strip/group/tab list gone empty underneath the
+/// active ids); [`DuplicateError::ForeignWindow`] when the focused tab
+/// is a client-owned or peer surface the compositor can't clone.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "every field this reads is chained from the previous lookup (ws -> strip -> group \
+              -> tab), so the ChromeState borrow can't be dropped before the last one without \
+              cloning each step early for no real gain"
+)]
 pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateError> {
     let (kind, title, group) = {
         let tree = st.tree();
@@ -163,6 +176,11 @@ mod tests {
     }
 
     /// The group the user is looking at, and the number of tabs in it.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the borrow is used for exactly one chained expression that is this fn's tail \
+                  return value; there is no later point to drop it earlier than"
+    )]
     fn focused_group_tab_count(st: &ChromeState) -> usize {
         let g = focused_group(st).expect("a focused group");
         let tree = st.tree();
@@ -177,6 +195,12 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the borrow feeds a chain of derived references (strip -> window_groups -> \
+                  group -> tab) used through the assertions right after; ending it earlier \
+                  would mean cloning test fixture data for no real gain"
+    )]
     fn open_terminal_here_adds_a_tab_to_the_focused_group() {
         let chrome = chrome_with_default_tree();
         let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
@@ -213,6 +237,12 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "each borrow feeds a chain of derived references (strip -> window_groups -> \
+                  original) used through the assertion right after; ending it earlier would mean \
+                  cloning test fixture data for no real gain"
+    )]
     fn open_terminal_beside_leaves_the_focused_group_alone_when_it_holds_one_tab() {
         let chrome = chrome_with_default_tree();
         let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
@@ -244,6 +274,12 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "each borrow feeds a chain of derived references used through the assertion \
+                  right after; ending it earlier would mean cloning test fixture data for no \
+                  real gain"
+    )]
     fn duplicate_active_tab_copies_the_focused_app_into_the_same_group() {
         let chrome = chrome_with_default_tree();
         let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
@@ -300,6 +336,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the mutable borrow's only job in this block is building the fixture; it's \
+                  already dropped at the block's closing brace, right after its last use"
+    )]
     fn duplicating_a_foreign_window_reports_why_it_cannot() {
         let chrome = chrome_with_default_tree();
         let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();

@@ -32,6 +32,7 @@ pub enum SumMode {
 
 impl SumMode {
     /// The mode this toggles to.
+    #[must_use]
     pub fn toggled(self) -> SumMode {
         match self {
             SumMode::SumSubtree => SumMode::PerProcess,
@@ -105,16 +106,23 @@ impl Forest {
 
         let mut roots: Vec<usize> = Vec::new();
         for i in 0..nodes.len() {
-            let parent = nodes[i]
+            let Some(node_i) = nodes.get(i) else {
+                continue;
+            };
+            let parent = node_i
                 .proc
                 .ppid
-                .filter(|pp| *pp != nodes[i].proc.pid) // never self-parent
+                .filter(|pp| *pp != node_i.proc.pid) // never self-parent
                 .and_then(|pp| index.get(&pp).copied())
                 .filter(|&pi| pi != i);
             match parent {
                 // A child of a systemd boundary is promoted to a top-level root.
-                Some(pi) if is_boundary[pi] => roots.push(i),
-                Some(pi) => nodes[pi].children.push(i),
+                Some(pi) if is_boundary.get(pi).copied().unwrap_or(false) => roots.push(i),
+                Some(pi) => {
+                    if let Some(node_pi) = nodes.get_mut(pi) {
+                        node_pi.children.push(i);
+                    }
+                }
                 None => roots.push(i),
             }
         }
@@ -126,28 +134,35 @@ impl Forest {
         let mut reachable = vec![false; nodes.len()];
         let mut stack: Vec<usize> = roots.clone();
         while let Some(i) = stack.pop() {
-            if reachable[i] {
-                continue;
+            match reachable.get_mut(i) {
+                Some(seen) if !*seen => *seen = true,
+                _ => continue,
             }
-            reachable[i] = true;
-            stack.extend(nodes[i].children.iter().copied());
+            if let Some(node_i) = nodes.get(i) {
+                stack.extend(node_i.children.iter().copied());
+            }
         }
         for i in 0..nodes.len() {
-            if !reachable[i] {
+            if !reachable.get(i).copied().unwrap_or(true) {
                 // Detach from its (cyclic) parent so the tree stays acyclic,
                 // then root it.
-                if let Some(pp) = nodes[i].proc.ppid.and_then(|pp| index.get(&pp).copied()) {
-                    nodes[pp].children.retain(|&c| c != i);
+                let parent_pid = nodes.get(i).and_then(|n| n.proc.ppid);
+                if let Some(pp) = parent_pid.and_then(|pp| index.get(&pp).copied())
+                    && let Some(node_pp) = nodes.get_mut(pp)
+                {
+                    node_pp.children.retain(|&c| c != i);
                 }
                 roots.push(i);
                 // Mark its now-reachable subtree so we don't double-root.
                 let mut s = vec![i];
                 while let Some(j) = s.pop() {
-                    if reachable[j] {
-                        continue;
+                    match reachable.get_mut(j) {
+                        Some(seen) if !*seen => *seen = true,
+                        _ => continue,
                     }
-                    reachable[j] = true;
-                    s.extend(nodes[j].children.iter().copied());
+                    if let Some(node_j) = nodes.get(j) {
+                        s.extend(node_j.children.iter().copied());
+                    }
                 }
             }
         }
@@ -168,27 +183,37 @@ impl Forest {
         let mut stack: Vec<(usize, bool)> = self.roots.iter().map(|&r| (r, false)).collect();
         while let Some((i, returning)) = stack.pop() {
             if returning {
-                let kids = self.nodes[i].children.clone();
-                let mut cpu = self.nodes[i].proc.cpu;
-                let mut mem = self.nodes[i].proc.mem_bytes;
+                let Some(node_i) = self.nodes.get(i) else {
+                    continue;
+                };
+                let kids = node_i.children.clone();
+                let mut cpu = node_i.proc.cpu;
+                let mut mem = node_i.proc.mem_bytes;
                 let mut desc = 0usize;
                 for k in kids {
-                    cpu += self.nodes[k].cpu_subtree;
-                    mem += self.nodes[k].mem_subtree;
-                    desc += 1 + self.nodes[k].descendants;
+                    let Some(node_k) = self.nodes.get(k) else {
+                        continue;
+                    };
+                    cpu += node_k.cpu_subtree;
+                    mem += node_k.mem_subtree;
+                    desc += 1 + node_k.descendants;
                 }
-                self.nodes[i].cpu_subtree = cpu;
-                self.nodes[i].mem_subtree = mem;
-                self.nodes[i].descendants = desc;
+                if let Some(node_i) = self.nodes.get_mut(i) {
+                    node_i.cpu_subtree = cpu;
+                    node_i.mem_subtree = mem;
+                    node_i.descendants = desc;
+                }
             } else {
-                if visited[i] {
-                    continue;
+                match visited.get_mut(i) {
+                    Some(seen) if !*seen => *seen = true,
+                    _ => continue,
                 }
-                visited[i] = true;
                 stack.push((i, true));
-                for &c in &self.nodes[i].children {
-                    if !visited[c] {
-                        stack.push((c, false));
+                if let Some(node_i) = self.nodes.get(i) {
+                    for &c in &node_i.children {
+                        if !visited.get(c).copied().unwrap_or(true) {
+                            stack.push((c, false));
+                        }
                     }
                 }
             }
@@ -274,17 +299,19 @@ impl Forest {
         if self.node_matches(i, filter) {
             return true;
         }
-        self.nodes[i]
-            .children
-            .iter()
-            .any(|&c| self.matches_subtree(c, filter))
+        self.nodes
+            .get(i)
+            .is_some_and(|n| n.children.iter().any(|&c| self.matches_subtree(c, filter)))
     }
 
     fn node_matches(&self, i: usize, filter: &str) -> bool {
         if filter.is_empty() {
             return true;
         }
-        let p = &self.nodes[i].proc;
+        let Some(node) = self.nodes.get(i) else {
+            return false;
+        };
+        let p = &node.proc;
         p.name.to_lowercase().contains(filter)
             || p.user.to_lowercase().contains(filter)
             || p.pid.to_string().contains(filter)
@@ -308,7 +335,11 @@ impl Forest {
             .roots
             .iter()
             .copied()
-            .filter(|&i| opts.show_kernel || !self.nodes[i].proc.kernel)
+            .filter(|&i| {
+                self.nodes
+                    .get(i)
+                    .is_some_and(|n| opts.show_kernel || !n.proc.kernel)
+            })
             .filter(|&i| !filtering || self.matches_subtree(i, opts.filter))
             .collect();
         self.sort_indices(&mut root_rows, opts);
@@ -329,7 +360,25 @@ impl Forest {
     /// Build the display [`Row`] for node `i` (without recursing). `cpu`/`mem`
     /// reflect the sum mode; `expanded`/`has_children` reflect collapse state.
     fn row_for(&self, i: usize, opts: &FlattenOpts) -> Row {
-        let n = &self.nodes[i];
+        let Some(n) = self.nodes.get(i) else {
+            // An out-of-range arena index would be an internal bug (every
+            // index reaching here comes from `roots`/`children`, populated
+            // only with valid indices at build time) — degrade to an empty
+            // row rather than panic.
+            return Row {
+                pid: 0,
+                name: String::new(),
+                user: String::new(),
+                cpu: 0.0,
+                mem_bytes: 0,
+                threads: 0,
+                status: String::new(),
+                depth: 0,
+                has_children: false,
+                expanded: false,
+                descendants: 0,
+            };
+        };
         let (cpu, mem) = match opts.sum_mode {
             SumMode::SumSubtree => (n.cpu_subtree, n.mem_subtree),
             SumMode::PerProcess => (n.proc.cpu, n.proc.mem_bytes),
@@ -357,10 +406,16 @@ impl Forest {
         opts: &'a FlattenOpts<'a>,
     ) -> impl Iterator<Item = usize> + 'a {
         let filtering = !opts.filter.is_empty();
-        self.nodes[i].children.iter().copied().filter(move |&c| {
-            (opts.show_kernel || !self.nodes[c].proc.kernel)
-                && (!filtering || self.matches_subtree(c, opts.filter))
-        })
+        self.nodes
+            .get(i)
+            .into_iter()
+            .flat_map(|n| n.children.iter().copied())
+            .filter(move |&c| {
+                self.nodes.get(c).is_some_and(|node| {
+                    (opts.show_kernel || !node.proc.kernel)
+                        && (!filtering || self.matches_subtree(c, opts.filter))
+                })
+            })
     }
 
     fn push_row(
@@ -401,6 +456,10 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    #[allow(
+        clippy::similar_names,
+        reason = "pid/ppid are the standard process-table terms; renaming either would read worse"
+    )]
     fn p(pid: u32, ppid: Option<u32>, name: &str, cpu: f32, mem_mib: u64) -> ProcessInfo {
         ProcessInfo {
             pid,

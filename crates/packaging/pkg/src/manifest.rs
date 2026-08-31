@@ -249,11 +249,24 @@ pub struct Publisher {
 
 impl Publisher {
     /// Parse the hex part out of an `ed25519:<hex>` identity string into raw key bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityParseError::BadPrefix`] if `identity` isn't
+    /// `ed25519:<hex>`, [`IdentityParseError::Hex`] if the hex is
+    /// malformed, or [`IdentityParseError::WrongLength`] if it doesn't
+    /// decode to exactly 32 bytes.
     pub fn identity_bytes(&self) -> Result<[u8; 32], IdentityParseError> {
         parse_ed25519_hex(&self.identity)
     }
 
     /// Parse the hex signature into 64 raw bytes; `Ok(None)` if unsigned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityParseError::Hex`] if the signature is not valid
+    /// hex, or [`IdentityParseError::WrongLength`] if it doesn't decode to
+    /// exactly 64 bytes.
     pub fn signature_bytes(&self) -> Result<Option<[u8; 64]>, IdentityParseError> {
         if self.signature.is_empty() {
             return Ok(None);
@@ -323,6 +336,12 @@ pub struct TrustAttestation {
 
 impl TrustAttestation {
     /// Parse the signature hex into raw bytes; `Ok(None)` when empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityParseError::Hex`] if `signature_hex` is not valid
+    /// hex, or [`IdentityParseError::WrongLength`] if it doesn't decode to
+    /// exactly 64 bytes.
     pub fn signature_bytes(&self) -> Result<Option<[u8; 64]>, IdentityParseError> {
         if self.signature_hex.is_empty() {
             return Ok(None);
@@ -470,6 +489,12 @@ pub enum Requirement {
 
 impl ServiceReq {
     /// Parse `"required@1"`/`"optional@2"`/`"required"` (defaults version to 1); rejects anything else.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceReqParseError::BadVersion`] if the text after `@`
+    /// isn't a valid integer, or [`ServiceReqParseError::BadSeverity`] if
+    /// the severity is neither `required` nor `optional`.
     pub fn parse(protocol: &str, raw: &str) -> Result<Self, ServiceReqParseError> {
         let (sev, version) = match raw.split_once('@') {
             Some((sev, ver)) => {
@@ -618,6 +643,13 @@ pub struct SplashSegment {
 
 impl SplashSegment {
     /// Parse the wire form.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SplashSegmentError::BadShape`] if `raw` isn't
+    /// `path[start:end]` or a plain path, [`SplashSegmentError::BadInt`] if
+    /// `start`/`end` aren't valid decimal or `0x`-prefixed hex integers, and
+    /// [`SplashSegmentError::EmptyRange`] if `end < start`.
     pub fn parse(raw: &str) -> Result<Self, SplashSegmentError> {
         if let Some(open) = raw.rfind('[') {
             let close = raw
@@ -626,8 +658,16 @@ impl SplashSegment {
             if close <= open {
                 return Err(SplashSegmentError::BadShape(raw.to_string()));
             }
-            let path = PathBuf::from(&raw[..open]);
-            let inner = &raw[open + 1..close];
+            let path_str = raw
+                .get(..open)
+                .ok_or_else(|| SplashSegmentError::BadShape(raw.to_string()))?;
+            let path = PathBuf::from(path_str);
+            let inner_start = open
+                .checked_add(1)
+                .ok_or_else(|| SplashSegmentError::BadShape(raw.to_string()))?;
+            let inner = raw
+                .get(inner_start..close)
+                .ok_or_else(|| SplashSegmentError::BadShape(raw.to_string()))?;
             let (a, b) = inner
                 .split_once(':')
                 .ok_or_else(|| SplashSegmentError::BadShape(raw.to_string()))?;
@@ -729,6 +769,11 @@ fn normalize_unique(values: &[String], normalize: impl Fn(&str) -> String) -> Ve
 
 impl Manifest {
     /// Decode a manifest from TOML source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManifestParseError::Toml`] if `s` is not valid TOML for
+    /// this schema.
     pub fn from_toml_str(s: &str) -> Result<Self, ManifestParseError> {
         // TOML encodes [sandbox.services] as service-name → "required@1"
         // string; the generic decode loses the key, so post-process it below.
@@ -738,7 +783,7 @@ impl Manifest {
         m.sandbox.services = services
             .into_iter()
             .map(|(name, mut req)| {
-                req.protocol = name.clone();
+                req.protocol.clone_from(&name);
                 (name, req)
             })
             .collect();
@@ -747,6 +792,10 @@ impl Manifest {
     }
 
     /// Re-encode to TOML; used for round-trip tests and `qos-pkg inspect`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManifestParseError::Encode`] if serialisation fails.
     pub fn to_toml_string(&self) -> Result<String, ManifestParseError> {
         toml::to_string_pretty(self).map_err(ManifestParseError::Encode)
     }

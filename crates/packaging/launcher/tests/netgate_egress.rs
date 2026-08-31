@@ -33,6 +33,16 @@
 //! assert on, so a probe that silently did nothing fails the outer
 //! assertions rather than passing them.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -304,7 +314,10 @@ fn socks_exchange<S: Read + Write>(s: &mut S, host: &str, port: u16) -> Outcome 
 
     // CONNECT, by domain name — including for an address literal, so the
     // gate sees exactly what the app asked for.
-    let mut req = vec![0x05, 0x01, 0x00, 0x03, host.len() as u8];
+    let Ok(host_len) = u8::try_from(host.len()) else {
+        return Outcome::Failed("host name too long for SOCKS5".into());
+    };
+    let mut req = vec![0x05, 0x01, 0x00, 0x03, host_len];
     req.extend_from_slice(host.as_bytes());
     req.extend_from_slice(&port.to_be_bytes());
     if s.write_all(&req).is_err() {
@@ -504,13 +517,13 @@ fn run_probe(
     }
 
     let output = cmd.output().expect("spawn bwrap");
-    report_from(output)
+    report_from(&output)
 }
 
 /// Read the child's output, refusing one that selected no test —
 /// libtest exits 0 when its filter matches nothing, so a stale probe
 /// name looks like a probe that ran and found nothing to say.
-fn report_from(output: std::process::Output) -> ProbeReport {
+fn report_from(output: &std::process::Output) -> ProbeReport {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -1025,7 +1038,7 @@ fn run_device_local_probe(
     };
 
     let output = cmd.output().expect("spawn bwrap");
-    report_from(output)
+    report_from(&output)
 }
 
 /// An app denied the network cannot reach a service on this device — not

@@ -25,6 +25,19 @@
 //! within one filesystem — a cross-device rename fails with `EXDEV` and would leave the
 //! original untouched and the write silently lost by any caller that ignored the error.
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -35,24 +48,9 @@ use std::path::{Path, PathBuf};
 ///
 /// # Errors
 ///
-/// Returns the first `io::Error` of the write sequence. On any of them `path` still holds
-/// its previous contents — that is the guarantee the temp-and-rename dance buys. A failure
-/// *before* the rename does leave the temp file beside the target; only a failed rename
-/// cleans up after itself.
-///
-/// - creating the temp file: [`NotFound`](io::ErrorKind::NotFound) when the parent
-///   directory does not exist, [`PermissionDenied`](io::ErrorKind::PermissionDenied) when
-///   the parent is not writable, or [`IsADirectory`](io::ErrorKind::IsADirectory) if
-///   something already occupies the temp path;
-/// - writing the bytes: a full filesystem, an exceeded quota, or a device error;
-/// - `fsync` of the temp file: a device error surfacing writeback that failed;
-/// - renaming it over `path`: typically
-///   [`PermissionDenied`](io::ErrorKind::PermissionDenied) on the directory, or
-///   [`IsADirectory`](io::ErrorKind::IsADirectory) when `path` is itself a directory.
-///
-/// The final `fsync` of the containing directory is best-effort and its failure is never
-/// reported: the bytes are already durable and the new directory entry is already visible,
-/// and some filesystems refuse to open a directory for writing at all.
+/// Returns an error if the temp file can't be created/written/synced, or if the rename
+/// over `path` fails (including `EXDEV` if `path`'s parent is on a different filesystem
+/// than the temp file, or if `path`'s parent doesn't exist).
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_inner(path, bytes, None)
 }
@@ -61,10 +59,7 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 ///
 /// # Errors
 ///
-/// Everything [`write`] returns, minus the missing-parent case, plus the errors of creating
-/// that parent: [`PermissionDenied`](io::ErrorKind::PermissionDenied) when some ancestor is
-/// not writable, or [`NotADirectory`](io::ErrorKind::NotADirectory) when a component of the
-/// path exists as a file.
+/// Returns an error if the parent directory can't be created, or any error [`write`] documents.
 pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent()
         && !dir.as_os_str().is_empty()
@@ -81,10 +76,7 @@ pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
 ///
 /// # Errors
 ///
-/// Everything [`write`] returns, plus the failure to apply `mode` to the temp file — which
-/// on unix is a `chmod` the caller's process may not be permitted to make. That error aborts
-/// the write rather than continuing, so a secret is never renamed into place with the
-/// default permissions. On platforms other than unix `mode` is ignored and cannot fail.
+/// Returns any error [`write`] documents. `mode` is ignored (no-op) on non-Unix targets.
 pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     write_inner(path, bytes, Some(mode))
 }
@@ -175,7 +167,7 @@ mod tests {
             .unwrap()
             .filter_map(std::result::Result::ok)
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| Path::new(n).extension().is_some_and(|ext| ext == "tmp"))
+            .filter(|n| Path::new(n).extension().is_some_and(|e| e == "tmp"))
             .collect();
         assert!(left.is_empty(), "left {left:?}");
     }
@@ -190,7 +182,11 @@ mod tests {
             t.file_name().unwrap().to_string_lossy().starts_with('.'),
             "temp file should be hidden: {t:?}"
         );
-        assert_eq!(t.extension().unwrap(), "tmp");
+        assert!(
+            t.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp")),
+            "expected a .tmp extension, got {t:?}"
+        );
     }
 
     #[test]

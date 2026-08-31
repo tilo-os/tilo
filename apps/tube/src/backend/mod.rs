@@ -139,23 +139,47 @@ pub trait YtBackend: Send + Sync {
     fn name(&self) -> &str;
 
     /// Full-text video search.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the backend cannot reach or parse the search results.
     fn search(&self, query: &str) -> BackendOutcome;
 
     /// Full metadata for a single video.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the backend cannot reach or parse the video.
     fn video(&self, id: &str) -> BackendOutcome;
 
     /// Channel page + uploads.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the backend cannot reach or parse the channel.
     fn channel(&self, id: &str) -> BackendOutcome;
 
     /// Per-video related / "up next".
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the backend cannot reach or parse the related list.
     fn related(&self, id: &str) -> BackendOutcome;
 
     /// Region trending.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the backend cannot reach or parse the trending feed.
     fn trending(&self) -> BackendOutcome;
 
     /// A playlist page: its metadata + ordered video list. The default errors —
     /// only a backend that can reach a real extractor produces one. The UI shows
     /// an "unavailable" state when this fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` unless overridden by a backend that can resolve playlists.
     fn playlist(&self, _id: &str) -> Result<(Playlist, Vec<Video>), BackendError> {
         Err(BackendError("this backend cannot resolve playlists".into()))
     }
@@ -165,6 +189,10 @@ pub trait YtBackend: Send + Sync {
     /// produces real comments; the offline sample carries its own, and the
     /// yt-dlp path leaves comments to rustypipe (yt-dlp's own comment extraction
     /// is slow and unreliable). The UI degrades to "no comments" when empty.
+    ///
+    /// # Errors
+    ///
+    /// The default never errors (`Ok(Vec::new())`); an overriding backend may.
     fn comments(&self, _id: &str) -> Result<Vec<Comment>, BackendError> {
         Ok(Vec::new())
     }
@@ -174,6 +202,11 @@ pub trait YtBackend: Send + Sync {
     /// default is a plain [`search`](YtBackend::search); a live backend can
     /// override it with a view-count-sorted, recent-upload filter so the feed is
     /// genuinely "popular" rather than arbitrary.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` under the same conditions as [`YtBackend::search`], which
+    /// the default implementation delegates to.
     fn popular_search(&self, query: &str) -> BackendOutcome {
         self.search(query)
     }
@@ -182,6 +215,11 @@ pub trait YtBackend: Send + Sync {
     /// decode path (VP9 / AV1 / H.264 + audio). The default errors — only a
     /// backend that can reach a real extractor (yt-dlp) produces one. The UI
     /// degrades to the poster when this fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` unless overridden by a backend that can resolve a
+    /// playable source.
     fn resolve_playback_source(&self, _id: &str) -> Result<PlaybackSource, BackendError> {
         Err(BackendError(
             "this backend cannot resolve a playback source".into(),
@@ -192,11 +230,19 @@ pub trait YtBackend: Send + Sync {
     /// feed). The default implementation pulls each channel's uploads via
     /// [`YtBackend::channel`] and interleaves them newest-first; a backend
     /// with a cheaper bulk endpoint may override.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if any fanned-out [`YtBackend::channel`] call fails.
     fn subscription_feed(&self, channel_ids: &[String]) -> BackendOutcome {
         crate::recommend::fan_out_subscription_feed(self, channel_ids)
     }
 
     /// Dispatch a [`Query`] to the right method. Lets the worker stay generic.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` under the same conditions as the dispatched method.
     fn run(&self, query: Query) -> BackendOutcome {
         match query {
             Query::Search(q) => self.search(&q),

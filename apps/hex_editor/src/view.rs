@@ -8,11 +8,11 @@
 //! Regions, top to bottom:
 //!   * header — file name, byte count, edit-mode / endianness pills
 //!   * body   — offset gutter | hex byte columns | ASCII column   (left)
-//!              data inspector panel                              (right)
-//!              (the grid + inspector span to the window bottom)
+//!     data inspector panel (right)
+//!     (the grid + inspector span to the window bottom)
 //!   * status — a transient floating bubble (cursor offset, selection
-//!              length, dirty count, save/error flash) that surfaces on a
-//!              change or a bottom-corner hover, then fades; no permanent strip
+//!     length, dirty count, save/error flash) that surfaces on a
+//!     change or a bottom-corner hover, then fades; no permanent strip
 //!   * overlay — search bar and goto-offset prompt (modal-ish, on top)
 //!
 //! State lives in the CRDT: every edit is written straight back into the
@@ -21,6 +21,7 @@
 //! cache, rebuilt from the document in `sync`.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::mpsc::TryRecvError;
 use std::time::Instant;
@@ -35,18 +36,31 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::TextInput;
 
 use crate::doc::HexDoc;
 use crate::inspector::{self, Interpretation};
 use crate::model::{Column, EditMode, HexModel};
-use crate::portal::{self, PortalChannel, PortalOutcome};
 use crate::search::{self, SearchKind};
 
 /// How long a transient status message (Saved / open error) stays up.
 const FLASH_MS: u128 = 3500;
+
+fn file_open_request() -> PickRequest {
+    PickRequest::open("Open file", "Open")
+        .thread_name("hex-portal-open")
+        .filter(FileFilter::all_files())
+}
+
+fn file_save_request(suggested_name: &str) -> PickRequest {
+    PickRequest::save("Save file", "Save", suggested_name)
+        .thread_name("hex-portal-save")
+        .filter(FileFilter::all_files())
+}
 
 /// Which transient prompt, if any, is capturing keystrokes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +70,23 @@ enum Overlay {
     Goto,
 }
 
+/// The taffy/focus triple [`HexView::handle_overlay_event`] forwards on to
+/// the active field's own `Widget::handle_event` — bundled so the helper
+/// itself stays under the argument-count limit without reshaping the
+/// `Widget` trait signature it forwards into.
+struct OverlayLayoutCtx<'a> {
+    focus_target: &'a mut Option<NodeId>,
+    node_id: NodeId,
+    taffy: &'a TaffyTree<()>,
+}
+
+// The four bools below are independent view flags (redraw-pending, doc-seeded,
+// buffer-present, shots-forced-visible), not a combinatorial option set, so
+// folding them into an enum would only add indirection.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four unrelated view flags (dirty/seeded/has_file/shots_status), not a combinatorial option set"
+)]
 pub struct HexView {
     /// Decoded render cache of the document. Rebuilt in `sync`.
     model: HexModel,
@@ -66,7 +97,9 @@ pub struct HexView {
 
     // --- search state (per-peer; not in the shared doc) ---
     overlay: Overlay,
-    search_query: String,
+    /// Shared local text field: owns caret, selection, clipboard, IME and
+    /// accessibility while the byte-search policy remains app-owned.
+    search_input: TextInput,
     search_kind: SearchKind,
     /// Cached match offsets for the current query, recomputed on demand.
     matches: Vec<usize>,
@@ -74,7 +107,8 @@ pub struct HexView {
     match_idx: Option<usize>,
 
     // --- goto state ---
-    goto_query: String,
+    /// Shared local text field for decimal / hexadecimal offsets.
+    goto_input: TextInput,
 
     /// Whether the user has seeded the doc yet (so the first sync writes
     /// the model in rather than reading an empty document back out).
@@ -132,11 +166,19 @@ impl HexView {
             rect: Rect::ZERO,
             dirty: true,
             overlay: Overlay::None,
-            search_query: String::new(),
+            search_input: TextInput::local()
+                .with_id("hex.search")
+                .with_placeholder("search…")
+                .with_plain_chrome()
+                .with_mono(),
             search_kind: SearchKind::Hex,
             matches: Vec::new(),
             match_idx: None,
-            goto_query: String::new(),
+            goto_input: TextInput::local()
+                .with_id("hex.goto")
+                .with_placeholder("0x… or decimal")
+                .with_plain_chrome()
+                .with_mono(),
             seeded: false,
             visible_rows: 1,
             last_mouse: Point::ZERO,
@@ -164,6 +206,7 @@ impl HexView {
 
     /// Record the on-disk path this buffer came from, so `Ctrl+S` writes back
     /// to it without a chooser.
+    #[must_use]
     pub fn with_path(mut self, path: PathBuf) -> Self {
         self.path = Some(path);
         self
@@ -219,11 +262,12 @@ impl HexView {
     /// path, exactly as the worker thread would deliver it. Lets the e2e suite
     /// exercise the production open flow without a live host file chooser.
     pub fn inject_open_outcome_for_test(&mut self, outcome: PortalOutcome) {
-        self.open_rx = Some(portal::inject_for_test(outcome));
+        self.open_rx = Some(ui::portal::inject_for_test(outcome));
     }
 
     /// Place the initial cursor at `offset`. Useful for opening a file
     /// "at" a field of interest. Clamped to the buffer.
+    #[must_use]
     pub fn with_cursor(mut self, offset: usize) -> Self {
         self.model.move_to(offset, false);
         self
@@ -231,6 +275,7 @@ impl HexView {
 
     /// Choose the initial inspector endianness. Big-endian suits opening
     /// network / image formats whose multi-byte fields are big-endian.
+    #[must_use]
     pub fn with_big_endian(mut self) -> Self {
         if self.model.endian() != crate::model::Endian::Big {
             self.model.toggle_endian();
@@ -261,7 +306,7 @@ impl HexView {
     /// it is written straight to the document, never as an action.
     fn persist(&mut self, doc: &mut AutoCommit) {
         for edit in self.model.take_edits() {
-            self.perform_action(doc, crate::actions::edit_to_action(&edit));
+            self.perform_action(doc, &crate::actions::edit_to_action(&edit));
         }
         HexDoc::write_meta(doc, &self.model);
         self.dirty = true;
@@ -272,9 +317,9 @@ impl HexView {
     /// executor (a pinned actor + committed change, so it replays byte-identically
     /// on peers). The heads captured just before the first action of the event
     /// are stashed so the host records **one** undo boundary bracketing it.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::HexEditorAction) {
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::HexEditorAction) {
         self.actions
-            .dispatch(doc, crate::actions::HEX_EDITOR_ACTION_TYPE, &action);
+            .dispatch(doc, crate::actions::HEX_EDITOR_ACTION_TYPE, action);
     }
 
     // --- file open / save (through the host portal) --------------------
@@ -283,7 +328,7 @@ impl HexView {
     /// flight. The pick arrives over `open_rx`, drained in `sync`.
     fn begin_open(&mut self) {
         if self.open_rx.is_none() {
-            self.open_rx = Some(portal::request_open());
+            self.open_rx = Some(file_open_request().send());
         }
     }
 
@@ -293,7 +338,7 @@ impl HexView {
         if let Some(path) = self.path.clone() {
             self.write_to(&path);
         } else if self.save_rx.is_none() {
-            self.save_rx = Some(portal::request_save(self.suggested_name()));
+            self.save_rx = Some(file_save_request(&self.suggested_name()).send());
         }
     }
 
@@ -415,7 +460,7 @@ impl HexView {
 
     /// Recompute match offsets from the current query + kind.
     fn recompute_matches(&mut self) {
-        self.matches = match search::needle(&self.search_query, self.search_kind) {
+        self.matches = match search::needle(self.search_input.value(), self.search_kind) {
             Some(n) => search::find_all(self.model.bytes(), &n),
             None => Vec::new(),
         };
@@ -429,7 +474,7 @@ impl HexView {
     }
 
     fn jump_to_match(&mut self, forward: bool) {
-        let Some(n) = search::needle(&self.search_query, self.search_kind) else {
+        let Some(n) = search::needle(self.search_input.value(), self.search_kind) else {
             return;
         };
         let cur = self.model.cursor();
@@ -450,7 +495,7 @@ impl HexView {
     }
 
     fn commit_goto(&mut self) {
-        let q = self.goto_query.trim();
+        let q = self.goto_input.value().trim();
         // Accept "0x.." hex or plain decimal.
         let parsed = if let Some(hex) = q.strip_prefix("0x").or_else(|| q.strip_prefix("0X")) {
             usize::from_str_radix(hex, 16).ok()
@@ -467,7 +512,8 @@ impl HexView {
                 .scroll_into_view(off / self.model.bytes_per_row(), self.visible_rows);
         }
         self.overlay = Overlay::None;
-        self.goto_query.clear();
+        self.goto_input.set_text("");
+        self.goto_input.set_focus(false);
     }
 
     // --- geometry helpers ----------------------------------------------
@@ -569,7 +615,7 @@ impl HexView {
         // Right-aligned pills: mode + endianness + width.
         let mut x = bar.x1 - pad;
         let width_label = format!("{}/row", self.model.bytes_per_row());
-        x = self.draw_pill(
+        x = Self::draw_pill(
             scene,
             t,
             tr,
@@ -581,7 +627,7 @@ impl HexView {
         );
         x -= 8.0;
         let endian_color = tokens.colors.accent[4];
-        x = self.draw_pill(
+        x = Self::draw_pill(
             scene,
             t,
             tr,
@@ -596,7 +642,7 @@ impl HexView {
             EditMode::Overwrite => tokens.colors.neutral[3],
             EditMode::Insert => tokens.colors.semantic.warning,
         };
-        let _ = self.draw_pill(
+        let _ = Self::draw_pill(
             scene,
             t,
             tr,
@@ -611,7 +657,6 @@ impl HexView {
     /// Draw a small rounded pill ending at `right_x`; returns its left x.
     #[allow(clippy::too_many_arguments)]
     fn draw_pill(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -642,7 +687,6 @@ impl HexView {
         x0
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_grid(
         &mut self,
         scene: &mut Scene,
@@ -651,11 +695,67 @@ impl HexView {
         theme: &Theme,
         m: &GridMetrics,
     ) {
-        let tokens = &theme.tokens;
         let bpr = self.model.bytes_per_row();
-        let size = m.cell_font;
+        self.draw_grid_headers(scene, t, tr, theme, m, bpr);
 
-        // Column header row: offset label + per-column byte index.
+        let selection = self.model.selection();
+        let inspector_span = self.inspector_span();
+        let cursor = self.model.cursor();
+
+        let visible = m.visible_rows.max(1);
+        self.visible_rows = visible;
+
+        for vr in 0..visible {
+            let row = self.model.top_row() + vr;
+            let row_off = row * bpr;
+            if row_off > self.model.len() && !self.model.is_empty() {
+                break;
+            }
+            let y = m.grid_top + vr as f64 * m.row_h;
+            let text_y = y + (m.row_h - f64::from(m.cell_font)) / 2.0;
+
+            // Offset gutter.
+            let gutter = format!("{row_off:08X}");
+            tr.draw_text_styled(
+                scene,
+                &gutter,
+                m.cell_font,
+                theme.tokens.colors.accent[6],
+                t * Affine::translate((m.gutter_x0, text_y)),
+                None,
+                TextWeight::Regular,
+                false,
+                true,
+            );
+
+            let ctx = GridCellCtx {
+                theme,
+                m,
+                selection,
+                inspector_span,
+                cursor,
+                y,
+                text_y,
+            };
+            for c in 0..bpr {
+                self.draw_grid_cell(scene, t, tr, &ctx, row_off + c, c);
+            }
+        }
+    }
+
+    /// The offset/hex-index/ASCII column headers, plus the hairline and
+    /// vertical separators framing the grid. Drawn once per frame, ahead of
+    /// the per-row cell loop.
+    fn draw_grid_headers(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        m: &GridMetrics,
+        bpr: usize,
+    ) {
+        let tokens = &theme.tokens;
         let head_y = m.col_header_y;
         tr.draw_text_styled(
             scene,
@@ -715,157 +815,200 @@ impl HexView {
                 &Line::new((sep_x, m.grid_top - 2.0), (sep_x, m.grid_bottom)),
             );
         }
+    }
 
-        let selection = self.model.selection();
-        let inspector_span = self.inspector_span();
-        let cursor = self.model.cursor();
+    /// Draw one byte's hex + ASCII cells: background tint layers (inspected /
+    /// match / selection), the cursor outline, then the two glyphs. `ctx`
+    /// bundles the per-row state (theme, metrics, selection, cursor) shared
+    /// across a row's cells.
+    fn draw_grid_cell(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        ctx: &GridCellCtx<'_>,
+        off: usize,
+        c: usize,
+    ) {
+        let Some(&byte) = self.model.bytes().get(off) else {
+            return;
+        };
+        let m = ctx.m;
+        let hex_x = m.hex_x0 + c as f64 * m.hex_col_w;
+        let ascii_x = m.ascii_x0 + c as f64 * m.char_w;
+        let cells = (
+            Rect::new(hex_x - 3.0, ctx.y, hex_x + m.byte_w + 3.0, ctx.y + m.row_h),
+            Rect::new(
+                ascii_x - 1.0,
+                ctx.y,
+                ascii_x + m.char_w + 1.0,
+                ctx.y + m.row_h,
+            ),
+        );
 
-        let visible = m.visible_rows.max(1);
-        self.visible_rows = visible;
-
-        for vr in 0..visible {
-            let row = self.model.top_row() + vr;
-            let row_off = row * bpr;
-            if row_off > self.model.len() && !self.model.is_empty() {
-                break;
-            }
-            let y = m.grid_top + vr as f64 * m.row_h;
-            let text_y = y + (m.row_h - f64::from(size)) / 2.0;
-
-            // Offset gutter.
-            let gutter = format!("{row_off:08X}");
-            tr.draw_text_styled(
-                scene,
-                &gutter,
-                size,
-                tokens.colors.accent[6],
-                t * Affine::translate((m.gutter_x0, text_y)),
-                None,
-                TextWeight::Regular,
-                false,
-                true,
-            );
-
-            for c in 0..bpr {
-                let off = row_off + c;
-                let Some(&byte) = self.model.bytes().get(off) else {
-                    continue;
-                };
-                let hex_x = m.hex_x0 + c as f64 * m.hex_col_w;
-                let ascii_x = m.ascii_x0 + c as f64 * m.char_w;
-
-                let selected = selection.is_some_and(|(lo, hi)| off >= lo && off <= hi);
-                let inspected = inspector_span.is_some_and(|(lo, hi)| off >= lo && off <= hi);
-                let is_cursor = off == cursor;
-                let is_match = self.matches.iter().any(|&mh| {
-                    // Highlight cells inside any match span.
-                    if let Some(n) = search::needle(&self.search_query, self.search_kind) {
-                        off >= mh && off < mh + n.len()
-                    } else {
-                        false
-                    }
-                });
-                let is_dirty = self.model.is_dirty(off);
-
-                // --- cell background layers (lowest to highest) ---
-                let cell_hex = Rect::new(hex_x - 3.0, y, hex_x + m.byte_w + 3.0, y + m.row_h);
-                let cell_ascii = Rect::new(ascii_x - 1.0, y, ascii_x + m.char_w + 1.0, y + m.row_h);
-
-                if inspected && !is_cursor {
-                    let tint = with_alpha(tokens.colors.accent[5], 40);
-                    scene.fill(Fill::NonZero, t, tint, None, &cell_hex);
-                    scene.fill(Fill::NonZero, t, tint, None, &cell_ascii);
-                }
-                if is_match {
-                    let tint = with_alpha(tokens.colors.semantic.warning, 70);
-                    scene.fill(Fill::NonZero, t, tint, None, &cell_hex);
-                    scene.fill(Fill::NonZero, t, tint, None, &cell_ascii);
-                }
-                if selected {
-                    let tint = with_alpha(tokens.colors.accent[5], 90);
-                    scene.fill(Fill::NonZero, t, tint, None, &cell_hex);
-                    scene.fill(Fill::NonZero, t, tint, None, &cell_ascii);
-                }
-
-                // --- cursor cell outline on the active column ---
-                if is_cursor {
-                    let active_hex = self.model.column() == Column::Hex;
-                    let (cell, other) = if active_hex {
-                        (cell_hex, cell_ascii)
-                    } else {
-                        (cell_ascii, cell_hex)
-                    };
-                    scene.fill(
-                        Fill::NonZero,
-                        t,
-                        tokens.colors.accent[ui_accent_idx()],
-                        None,
-                        &cell,
-                    );
-                    // The mirror column gets a faint outline so the synced
-                    // position is visible in both panes.
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        t,
-                        tokens.colors.accent[ui_accent_idx()],
-                        None,
-                        &RoundedRect::from_rect(other, 2.0),
-                    );
-                }
-
-                // --- glyphs ---
-                let hex_color = if is_cursor {
-                    contrast_on(tokens.colors.accent[ui_accent_idx()])
-                } else if is_dirty {
-                    tokens.colors.semantic.warning
-                } else if selected {
-                    tokens.colors.text_primary
-                } else if byte == 0 {
-                    // Zero bytes read as background noise — dim them.
-                    tokens.colors.neutral[5]
-                } else {
-                    tokens.colors.text_primary
-                };
-                tr.draw_text_styled(
-                    scene,
-                    &format!("{byte:02X}"),
-                    size,
-                    hex_color,
-                    t * Affine::translate((hex_x, text_y)),
-                    None,
-                    if is_dirty {
-                        TextWeight::Bold
-                    } else {
-                        TextWeight::Regular
-                    },
-                    false,
-                    true,
-                );
-
-                // ASCII glyph.
-                let ch = ascii_glyph(byte);
-                let ascii_color = if is_cursor && self.model.column() == Column::Ascii {
-                    contrast_on(tokens.colors.accent[ui_accent_idx()])
-                } else if is_dirty {
-                    tokens.colors.semantic.warning
-                } else if (0x20..=0x7E).contains(&byte) {
-                    tokens.colors.text_primary
-                } else {
-                    tokens.colors.neutral[5]
-                };
-                tr.draw_text_styled(
-                    scene,
-                    &ch,
-                    size,
-                    ascii_color,
-                    t * Affine::translate((ascii_x, text_y)),
-                    None,
-                    TextWeight::Regular,
-                    false,
-                    true,
-                );
-            }
+        self.paint_cell_background(scene, t, ctx, off, cells);
+        if off == ctx.cursor {
+            self.paint_cursor_outline(scene, t, ctx, cells);
         }
+        self.draw_cell_glyphs(
+            scene,
+            t,
+            tr,
+            ctx,
+            &CellGeom {
+                off,
+                byte,
+                hex_x,
+                ascii_x,
+            },
+        );
+    }
+
+    /// The inspected / search-match / selection tint layers under one cell,
+    /// lowest to highest. Split out of [`Self::draw_grid_cell`] to keep that
+    /// dispatch under the line-count limit.
+    fn paint_cell_background(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        ctx: &GridCellCtx<'_>,
+        off: usize,
+        cells: (Rect, Rect),
+    ) {
+        let (cell_hex, cell_ascii) = cells;
+        let tokens = &ctx.theme.tokens;
+        let is_cursor = off == ctx.cursor;
+        let selected = ctx.selection.is_some_and(|(lo, hi)| off >= lo && off <= hi);
+        let inspected = ctx
+            .inspector_span
+            .is_some_and(|(lo, hi)| off >= lo && off <= hi);
+        let is_match = self.matches.iter().any(|&mh| {
+            // Highlight cells inside any match span.
+            if let Some(n) = search::needle(self.search_input.value(), self.search_kind) {
+                off >= mh && off < mh + n.len()
+            } else {
+                false
+            }
+        });
+
+        if inspected && !is_cursor {
+            let tint = with_alpha(tokens.colors.accent[5], 40);
+            scene.fill(Fill::NonZero, t, tint, None, &cell_hex);
+            scene.fill(Fill::NonZero, t, tint, None, &cell_ascii);
+        }
+        if is_match {
+            let tint = with_alpha(tokens.colors.semantic.warning, 70);
+            scene.fill(Fill::NonZero, t, tint, None, &cell_hex);
+            scene.fill(Fill::NonZero, t, tint, None, &cell_ascii);
+        }
+        if selected {
+            let tint = with_alpha(tokens.colors.accent[5], 90);
+            scene.fill(Fill::NonZero, t, tint, None, &cell_hex);
+            scene.fill(Fill::NonZero, t, tint, None, &cell_ascii);
+        }
+    }
+
+    /// The cursor cell's fill on its active column, plus a faint outline on
+    /// the mirror column so the synced position is visible in both panes.
+    fn paint_cursor_outline(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        ctx: &GridCellCtx<'_>,
+        cells: (Rect, Rect),
+    ) {
+        let (cell_hex, cell_ascii) = cells;
+        let active_hex = self.model.column() == Column::Hex;
+        let (cell, other) = if active_hex {
+            (cell_hex, cell_ascii)
+        } else {
+            (cell_ascii, cell_hex)
+        };
+        let tokens = &ctx.theme.tokens;
+        scene.fill(
+            Fill::NonZero,
+            t,
+            tokens.colors.accent[ui_accent_idx()],
+            None,
+            &cell,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            tokens.colors.accent[ui_accent_idx()],
+            None,
+            &RoundedRect::from_rect(other, 2.0),
+        );
+    }
+
+    /// The hex and ASCII glyphs for one cell, coloured for cursor / dirty /
+    /// selection / zero-byte state.
+    fn draw_cell_glyphs(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        ctx: &GridCellCtx<'_>,
+        geom: &CellGeom,
+    ) {
+        let tokens = &ctx.theme.tokens;
+        let size = ctx.m.cell_font;
+        let is_cursor = geom.off == ctx.cursor;
+        let is_dirty = self.model.is_dirty(geom.off);
+        let selected = ctx
+            .selection
+            .is_some_and(|(lo, hi)| geom.off >= lo && geom.off <= hi);
+
+        let hex_color = if is_cursor {
+            contrast_on(tokens.colors.accent[ui_accent_idx()])
+        } else if is_dirty {
+            tokens.colors.semantic.warning
+        } else if selected {
+            tokens.colors.text_primary
+        } else if geom.byte == 0 {
+            // Zero bytes read as background noise — dim them.
+            tokens.colors.neutral[5]
+        } else {
+            tokens.colors.text_primary
+        };
+        tr.draw_text_styled(
+            scene,
+            &format!("{:02X}", geom.byte),
+            size,
+            hex_color,
+            t * Affine::translate((geom.hex_x, ctx.text_y)),
+            None,
+            if is_dirty {
+                TextWeight::Bold
+            } else {
+                TextWeight::Regular
+            },
+            false,
+            true,
+        );
+
+        // ASCII glyph.
+        let ch = ascii_glyph(geom.byte);
+        let ascii_color = if is_cursor && self.model.column() == Column::Ascii {
+            contrast_on(tokens.colors.accent[ui_accent_idx()])
+        } else if is_dirty {
+            tokens.colors.semantic.warning
+        } else if (0x20..=0x7E).contains(&geom.byte) {
+            tokens.colors.text_primary
+        } else {
+            tokens.colors.neutral[5]
+        };
+        tr.draw_text_styled(
+            scene,
+            &ch,
+            size,
+            ascii_color,
+            t * Affine::translate((geom.ascii_x, ctx.text_y)),
+            None,
+            TextWeight::Regular,
+            false,
+            true,
+        );
     }
 
     /// Byte range the current inspector interpretation highlights — the
@@ -877,7 +1020,7 @@ impl HexView {
             return None;
         }
         let remaining = self.model.len() - cur;
-        let width = remaining.min(8).max(1);
+        let width = remaining.clamp(1, 8);
         Some((cur, cur + width - 1))
     }
 
@@ -999,13 +1142,14 @@ impl HexView {
         let mut s = format!("0x{:08X}  ({})", self.model.cursor(), self.model.cursor());
         let sel = self.model.selection_len();
         if sel > 0 {
-            s.push_str(&format!("   sel {sel} B"));
+            // Writing to a `String` via `fmt::Write` never fails.
+            let _ = write!(s, "   sel {sel} B");
         }
         if self.model.dirty_count() > 0 {
-            s.push_str(&format!("   ●{} edited", self.model.dirty_count()));
+            let _ = write!(s, "   ●{} edited", self.model.dirty_count());
         }
         if let Some((msg, _error, _)) = &self.flash {
-            s.push_str(&format!("   {msg}"));
+            let _ = write!(s, "   {msg}");
         }
         s
     }
@@ -1161,7 +1305,7 @@ impl HexView {
     }
 
     fn draw_search_overlay(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1189,7 +1333,6 @@ impl HexView {
         );
 
         let pad = 14.0;
-        let size = tokens.typography.scale.base;
         // Kind toggle chip.
         let kind = self.search_kind.label();
         let chip_w = 48.0;
@@ -1217,34 +1360,11 @@ impl HexView {
             TextWeight::Bold,
         );
 
-        // Query text + caret.
-        let qx = x0 + pad + chip_w + 12.0;
-        let qy = y0 + (h - f64::from(size)) / 2.0;
-        let display = if self.search_query.is_empty() {
-            "search…".to_string()
-        } else {
-            self.search_query.clone()
-        };
-        let qcolor = if self.search_query.is_empty() {
-            tokens.colors.text_dim
-        } else {
-            tokens.colors.text_primary
-        };
-        tr.draw_text_styled(
-            scene,
-            &display,
-            size,
-            qcolor,
-            t * Affine::translate((qx, qy)),
-            None,
-            TextWeight::Regular,
-            false,
-            self.search_kind == SearchKind::Hex,
-        );
-
-        // Match counter.
+        // Match counter. It stays app-owned because it describes byte-search
+        // policy, while the shared field owns all text-editing behaviour.
+        let query_empty = self.search_input.value().is_empty();
         let count = if self.matches.is_empty() {
-            if self.search_query.is_empty() {
+            if query_empty {
                 String::new()
             } else {
                 "no matches".to_string()
@@ -1253,8 +1373,28 @@ impl HexView {
             let pos = self.match_idx.map_or(0, |i| i + 1);
             format!("{}/{}", pos, self.matches.len())
         };
+        let count_w = if count.is_empty() {
+            0.0
+        } else {
+            f64::from(tr.measure(&count, tokens.typography.scale.sm, None).0)
+        };
+
+        // The shared field supplies selection, word/caret navigation,
+        // clipboard, context-menu and IME support inside the existing overlay.
+        let qx = x0 + pad + chip_w + 12.0;
+        let qright = x0 + w
+            - pad
+            - if count.is_empty() {
+                0.0
+            } else {
+                count_w + 16.0
+            };
+        self.search_input
+            .apply_layout_external(Rect::new(qx, y0 + 8.0, qright, y0 + h - 8.0));
+        let presence = PresenceCtx::empty();
+        self.search_input.draw(scene, t, tr, theme, &presence);
+
         if !count.is_empty() {
-            let (cw, _) = tr.measure(&count, tokens.typography.scale.sm, None);
             let ccolor = if self.matches.is_empty() {
                 tokens.colors.semantic.danger
             } else {
@@ -1266,7 +1406,7 @@ impl HexView {
                 tokens.typography.scale.sm,
                 ccolor,
                 t * Affine::translate((
-                    x0 + w - pad - f64::from(cw),
+                    x0 + w - pad - count_w,
                     y0 + (h - f64::from(tokens.typography.scale.sm)) / 2.0,
                 )),
                 None,
@@ -1275,7 +1415,7 @@ impl HexView {
     }
 
     fn draw_goto_overlay(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1312,106 +1452,115 @@ impl HexView {
             None,
             TextWeight::Bold,
         );
-        let size = tokens.typography.scale.base;
-        let display = if self.goto_query.is_empty() {
-            "0x… or decimal".to_string()
-        } else {
-            self.goto_query.clone()
-        };
-        let color = if self.goto_query.is_empty() {
-            tokens.colors.text_dim
-        } else {
-            tokens.colors.text_primary
-        };
-        tr.draw_text_styled(
-            scene,
-            &display,
-            size,
-            color,
-            t * Affine::translate((x0 + pad, y0 + 26.0)),
-            None,
-            TextWeight::Regular,
-            false,
-            true,
-        );
+        self.goto_input.apply_layout_external(Rect::new(
+            x0 + pad,
+            y0 + 19.0,
+            x0 + w - pad,
+            y0 + h - 3.0,
+        ));
+        let presence = PresenceCtx::empty();
+        self.goto_input.draw(scene, t, tr, theme, &presence);
     }
 
     // --- keyboard ------------------------------------------------------
 
-    /// Handle a key while an overlay (search / goto) is open. Returns true
-    /// if consumed. `doc` is needed because committing a goto may move the
-    /// cursor which we persist.
-    fn handle_overlay_key(
+    /// Route an event into the active shared field, keeping only byte-search
+    /// policy (kind cycling / match navigation / offset commit) in this app.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "OverlayLayoutCtx bundles a `&mut Option<NodeId>` and is built fresh at the \
+                  single call site purely to move its fields on into the active field's \
+                  Widget::handle_event; it isn't Copy and taking it by reference would still \
+                  need to move the mutable reference back out, so by-value is the real shape"
+    )]
+    fn handle_overlay_event(
         &mut self,
-        key: &Key,
-        ctrl: bool,
-        shift: bool,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
         doc: &mut AutoCommit,
+        path: &ObjId,
+        layout: OverlayLayoutCtx<'_>,
     ) -> bool {
-        match self.overlay {
-            Overlay::Search => match key {
-                Key::Named(NamedKey::Escape) => {
+        let shift = modifiers.state().shift_key();
+        if let WindowEvent::KeyboardInput { event: ke, .. } = event
+            && ke.state == ElementState::Pressed
+        {
+            match (self.overlay, &ke.logical_key) {
+                (Overlay::Search, Key::Named(NamedKey::Escape)) => {
+                    self.search_input.set_focus(false);
                     self.overlay = Overlay::None;
                     self.dirty = true;
-                    true
+                    return true;
                 }
-                Key::Named(NamedKey::Enter) => {
+                (Overlay::Search, Key::Named(NamedKey::Enter)) => {
                     self.jump_to_match(!shift);
                     self.persist(doc);
-                    true
+                    return true;
                 }
-                Key::Named(NamedKey::Backspace) => {
-                    self.search_query.pop();
-                    self.recompute_matches();
-                    self.dirty = true;
-                    true
-                }
-                Key::Named(NamedKey::Tab) => {
+                (Overlay::Search, Key::Named(NamedKey::Tab)) => {
                     self.search_kind = self.search_kind.toggle();
+                    self.search_input
+                        .set_mono(self.search_kind == SearchKind::Hex);
                     self.recompute_matches();
                     self.dirty = true;
-                    true
+                    return true;
                 }
-                Key::Character(c) if !ctrl => {
-                    self.search_query.push_str(c.as_str());
-                    self.recompute_matches();
-                    self.dirty = true;
-                    true
-                }
-                Key::Named(NamedKey::Space) if !ctrl => {
-                    self.search_query.push(' ');
-                    self.recompute_matches();
-                    self.dirty = true;
-                    true
-                }
-                _ => false,
-            },
-            Overlay::Goto => match key {
-                Key::Named(NamedKey::Escape) => {
+                (Overlay::Goto, Key::Named(NamedKey::Escape)) => {
+                    self.goto_input.set_text("");
+                    self.goto_input.set_focus(false);
                     self.overlay = Overlay::None;
-                    self.goto_query.clear();
                     self.dirty = true;
-                    true
+                    return true;
                 }
-                Key::Named(NamedKey::Enter) => {
+                (Overlay::Goto, Key::Named(NamedKey::Enter)) => {
                     self.commit_goto();
                     self.persist(doc);
-                    true
+                    return true;
                 }
-                Key::Named(NamedKey::Backspace) => {
-                    self.goto_query.pop();
-                    self.dirty = true;
-                    true
-                }
-                Key::Character(c) if !ctrl => {
-                    self.goto_query.push_str(c.as_str());
-                    self.dirty = true;
-                    true
-                }
-                _ => false,
-            },
-            Overlay::None => false,
+                _ => {}
+            }
         }
+
+        let mut field_handled = false;
+        let changed = match self.overlay {
+            Overlay::Search => {
+                self.search_input.handle_event(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    doc,
+                    path,
+                    &mut field_handled,
+                    layout.focus_target,
+                    layout.node_id,
+                    layout.taffy,
+                );
+                self.search_input.take_dirty().is_some()
+            }
+            Overlay::Goto => {
+                self.goto_input.handle_event(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    doc,
+                    path,
+                    &mut field_handled,
+                    layout.focus_target,
+                    layout.node_id,
+                    layout.taffy,
+                );
+                self.goto_input.take_dirty().is_some()
+            }
+            Overlay::None => false,
+        };
+        if changed {
+            if self.overlay == Overlay::Search {
+                self.recompute_matches();
+            }
+            self.dirty = true;
+        }
+        field_handled || changed
     }
 }
 
@@ -1574,38 +1723,44 @@ impl Widget for HexView {
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         let ctrl = modifiers.state().control_key();
         let shift = modifiers.state().shift_key();
+
+        if self.overlay != Overlay::None {
+            if self.handle_overlay_event(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                path,
+                OverlayLayoutCtx {
+                    focus_target,
+                    node_id,
+                    taffy,
+                },
+            ) {
+                *handled = true;
+                return;
+            }
+            // An open prompt captures keys even when the field deliberately
+            // ignores the chord, so grid editing never fires behind it.
+            if matches!(event, WindowEvent::KeyboardInput { .. }) {
+                return;
+            }
+        }
 
         match event {
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                // Empty state: the only affordance is the centred Open button.
-                if !self.has_file {
-                    if self.open_button.contains(self.last_mouse) {
-                        self.begin_open();
-                        *handled = true;
-                    }
-                    return;
-                }
-                // Click position is tracked via CursorMoved; recompute on
-                // press from the last known position.
-                if let Some((off, col)) = self.hit_test(self.last_mouse) {
-                    self.model.set_column(col);
-                    self.model.move_to(off, shift);
-                    self.persist(state);
-                    *handled = true;
-                }
-            }
+            } => self.handle_mouse_press(shift, state, handled),
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
@@ -1618,121 +1773,15 @@ impl Widget for HexView {
                 self.dirty = true;
                 *handled = true;
             }
-            WindowEvent::KeyboardInput { event: ke, .. } => {
-                if ke.state != ElementState::Pressed {
-                    return;
-                }
-                let key = &ke.logical_key;
-
-                // Empty state: the only meaningful key action is opening a file.
-                if !self.has_file {
-                    if ctrl
-                        && let Key::Character(c) = key
-                        && c.eq_ignore_ascii_case("o")
-                    {
-                        self.begin_open();
-                        *handled = true;
-                    }
-                    return;
-                }
-
-                // Overlay capture takes priority.
-                if self.overlay != Overlay::None {
-                    if self.handle_overlay_key(key, ctrl, shift, state) {
-                        *handled = true;
-                    }
-                    return;
-                }
-
-                // Global chords.
-                if ctrl && let Key::Character(c) = key {
-                    match c.as_str() {
-                        "o" | "O" => {
-                            self.begin_open();
-                            *handled = true;
-                            return;
-                        }
-                        "s" | "S" => {
-                            self.begin_save();
-                            *handled = true;
-                            return;
-                        }
-                        "f" | "F" => {
-                            self.overlay = Overlay::Search;
-                            self.recompute_matches();
-                            self.dirty = true;
-                            *handled = true;
-                            return;
-                        }
-                        "g" | "G" => {
-                            self.overlay = Overlay::Goto;
-                            self.dirty = true;
-                            *handled = true;
-                            return;
-                        }
-                        "a" | "A" => {
-                            self.model.select_all();
-                            self.persist(state);
-                            *handled = true;
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-
-                let mut moved = true;
-                match key {
-                    Key::Named(NamedKey::ArrowLeft) => self.model.move_left(shift),
-                    Key::Named(NamedKey::ArrowRight) => self.model.move_right(shift),
-                    Key::Named(NamedKey::ArrowUp) => self.model.move_up(shift),
-                    Key::Named(NamedKey::ArrowDown) => self.model.move_down(shift),
-                    Key::Named(NamedKey::Home) => {
-                        if ctrl {
-                            self.model.move_doc_start(shift);
-                        } else {
-                            self.model.move_row_start(shift);
-                        }
-                    }
-                    Key::Named(NamedKey::End) => {
-                        if ctrl {
-                            self.model.move_doc_end(shift);
-                        } else {
-                            self.model.move_row_end(shift);
-                        }
-                    }
-                    Key::Named(NamedKey::PageUp) => self
-                        .model
-                        .page_up(self.visible_rows.saturating_sub(1).max(1), shift),
-                    Key::Named(NamedKey::PageDown) => self
-                        .model
-                        .page_down(self.visible_rows.saturating_sub(1).max(1), shift),
-                    Key::Named(NamedKey::Tab) => {
-                        self.model.toggle_column();
-                    }
-                    Key::Named(NamedKey::Insert) => {
-                        self.model.toggle_mode();
-                    }
-                    Key::Named(NamedKey::Escape) => {
-                        self.model.clear_selection();
-                    }
-                    Key::Named(NamedKey::Backspace) => {
-                        self.model.backspace();
-                    }
-                    Key::Named(NamedKey::Delete) => {
-                        self.model.delete_at_cursor();
-                    }
-                    Key::Character(c) => {
-                        moved = self.handle_char(c.as_str());
-                    }
-                    _ => moved = false,
-                }
-
-                if moved {
-                    let (row, _) = self.model.cursor_cell();
-                    self.model.scroll_into_view(row, self.visible_rows);
-                    self.persist(state);
-                    *handled = true;
-                }
+            WindowEvent::KeyboardInput {
+                event:
+                    ke @ winit::event::KeyEvent {
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                self.handle_key_event(ke, ctrl, shift, state, handled);
             }
             _ => {}
         }
@@ -1765,6 +1814,38 @@ impl Widget for HexView {
         self.rect
     }
 
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        match self.overlay {
+            Overlay::Search => self.search_input.ime_cursor_rect(),
+            Overlay::Goto => self.goto_input.ime_cursor_rect(),
+            Overlay::None => None,
+        }
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        match self.overlay {
+            Overlay::Search => self.search_input.ime_purpose(),
+            Overlay::Goto => self.goto_input.ime_purpose(),
+            Overlay::None => None,
+        }
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        match self.overlay {
+            Overlay::Search => self.search_input.cursor_shape(point),
+            Overlay::Goto => self.goto_input.cursor_shape(point),
+            Overlay::None => None,
+        }
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        match self.overlay {
+            Overlay::Search => self.search_input.accessibility(),
+            Overlay::Goto => self.goto_input.accessibility(),
+            Overlay::None => None,
+        }
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty
     }
@@ -1775,6 +1856,182 @@ impl Widget for HexView {
 }
 
 impl HexView {
+    /// Left-click handling for the byte grid: the empty-state Open button, or
+    /// a grid hit-test that moves the cursor (optionally extending the
+    /// selection). Split out of `Widget::handle_event` to keep that dispatch
+    /// under the line-count limit.
+    fn handle_mouse_press(&mut self, shift: bool, state: &mut AutoCommit, handled: &mut bool) {
+        // Empty state: the only affordance is the centred Open button.
+        if !self.has_file {
+            if self.open_button.contains(self.last_mouse) {
+                self.begin_open();
+                *handled = true;
+            }
+            return;
+        }
+        // Click position is tracked via CursorMoved; recompute on press from
+        // the last known position.
+        if let Some((off, col)) = self.hit_test(self.last_mouse) {
+            self.model.set_column(col);
+            self.model.move_to(off, shift);
+            self.persist(state);
+            *handled = true;
+        }
+    }
+
+    /// Keyboard handling for the byte grid: global chords (open / save /
+    /// search / goto / select-all), cursor movement, and printable-character
+    /// edits. Split out of `Widget::handle_event` to keep that dispatch under
+    /// the line-count limit.
+    fn handle_key_event(
+        &mut self,
+        ke: &winit::event::KeyEvent,
+        ctrl: bool,
+        shift: bool,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        let key = &ke.logical_key;
+
+        // Empty state: the only meaningful key action is opening a file.
+        if !self.has_file {
+            self.handle_empty_state_key(key, ctrl, handled);
+            return;
+        }
+
+        if self.handle_global_chord(key, ctrl, state, handled) {
+            return;
+        }
+
+        let moved = self.handle_navigation_key(key, ctrl, shift);
+        if moved {
+            let (row, _) = self.model.cursor_cell();
+            self.model.scroll_into_view(row, self.visible_rows);
+            self.persist(state);
+            *handled = true;
+        }
+    }
+
+    /// The only meaningful key action while no file is open. Part of
+    /// [`Self::handle_key_event`].
+    fn handle_empty_state_key(&mut self, key: &Key, ctrl: bool, handled: &mut bool) {
+        if ctrl
+            && let Key::Character(c) = key
+            && c.eq_ignore_ascii_case("o")
+        {
+            self.begin_open();
+            *handled = true;
+        }
+    }
+
+    /// Ctrl+letter global chords. Returns `true` if one matched (the caller
+    /// should stop dispatching this key further). Part of
+    /// [`Self::handle_key_event`].
+    fn handle_global_chord(
+        &mut self,
+        key: &Key,
+        ctrl: bool,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        let Key::Character(c) = key else {
+            return false;
+        };
+        if !ctrl {
+            return false;
+        }
+        match c.as_str() {
+            "o" | "O" => {
+                self.begin_open();
+                *handled = true;
+                true
+            }
+            "s" | "S" => {
+                self.begin_save();
+                *handled = true;
+                true
+            }
+            "f" | "F" => {
+                self.overlay = Overlay::Search;
+                self.search_input.set_focus(true);
+                self.search_input
+                    .set_cursor_pos(self.search_input.value().len());
+                self.recompute_matches();
+                self.dirty = true;
+                *handled = true;
+                true
+            }
+            "g" | "G" => {
+                self.overlay = Overlay::Goto;
+                self.goto_input.set_focus(true);
+                self.goto_input
+                    .set_cursor_pos(self.goto_input.value().len());
+                self.dirty = true;
+                *handled = true;
+                true
+            }
+            "a" | "A" => {
+                self.model.select_all();
+                self.persist(state);
+                *handled = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Cursor movement / mode keys. Returns whether the cursor moved (or a
+    /// byte was edited), so the caller knows to scroll it into view and
+    /// persist. Part of [`Self::handle_key_event`].
+    fn handle_navigation_key(&mut self, key: &Key, ctrl: bool, shift: bool) -> bool {
+        match key {
+            Key::Named(NamedKey::ArrowLeft) => self.model.move_left(shift),
+            Key::Named(NamedKey::ArrowRight) => self.model.move_right(shift),
+            Key::Named(NamedKey::ArrowUp) => self.model.move_up(shift),
+            Key::Named(NamedKey::ArrowDown) => self.model.move_down(shift),
+            Key::Named(NamedKey::Home) => {
+                if ctrl {
+                    self.model.move_doc_start(shift);
+                } else {
+                    self.model.move_row_start(shift);
+                }
+            }
+            Key::Named(NamedKey::End) => {
+                if ctrl {
+                    self.model.move_doc_end(shift);
+                } else {
+                    self.model.move_row_end(shift);
+                }
+            }
+            Key::Named(NamedKey::PageUp) => self
+                .model
+                .page_up(self.visible_rows.saturating_sub(1).max(1), shift),
+            Key::Named(NamedKey::PageDown) => self
+                .model
+                .page_down(self.visible_rows.saturating_sub(1).max(1), shift),
+            Key::Named(NamedKey::Tab) => {
+                self.model.toggle_column();
+            }
+            Key::Named(NamedKey::Insert) => {
+                self.model.toggle_mode();
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.model.clear_selection();
+            }
+            Key::Named(NamedKey::Backspace) => {
+                self.model.backspace();
+            }
+            Key::Named(NamedKey::Delete) => {
+                self.model.delete_at_cursor();
+            }
+            Key::Character(c) => {
+                return self.handle_char(c.as_str());
+            }
+            _ => return false,
+        }
+        true
+    }
+
     /// Dispatch a printable character to the active column / mode. Also
     /// handles the unshifted single-letter shortcuts (e / r) that only
     /// apply outside the ASCII column.
@@ -1801,6 +2058,27 @@ impl HexView {
             Column::Ascii => self.model.input_ascii_char(ch),
         }
     }
+}
+
+/// Per-row state shared across a row's cells, bundled so
+/// [`HexView::draw_grid_cell`] stays under the argument-count limit.
+struct GridCellCtx<'a> {
+    theme: &'a Theme,
+    m: &'a GridMetrics,
+    selection: Option<(usize, usize)>,
+    inspector_span: Option<(usize, usize)>,
+    cursor: usize,
+    y: f64,
+    text_y: f64,
+}
+
+/// Byte position + value for one grid cell, bundled so
+/// [`HexView::draw_cell_glyphs`] stays under the argument-count limit.
+struct CellGeom {
+    off: usize,
+    byte: u8,
+    hex_x: f64,
+    ascii_x: f64,
 }
 
 /// Computed layout metrics for one frame. All in logical px.
@@ -1935,5 +2213,42 @@ fn ascii_glyph(b: u8) -> String {
         (b as char).to_string()
     } else {
         "·".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_search_field_still_drives_byte_match_policy() {
+        let mut view = HexView::new(vec![0xde, 0xad, 0x00, 0xde, 0xad], "bytes.bin");
+        view.search_input.set_text("de ad");
+        view.recompute_matches();
+
+        assert_eq!(view.search_input.value(), "de ad");
+        assert_eq!(view.matches, vec![0, 3]);
+        assert_eq!(view.match_idx, Some(0));
+
+        view.search_kind = SearchKind::Text;
+        view.search_input.set_text("Þ");
+        view.recompute_matches();
+        assert!(view.matches.is_empty());
+    }
+
+    #[test]
+    fn shared_goto_field_keeps_hex_and_decimal_offset_parsing() {
+        let mut view = HexView::new(vec![0; 64], "bytes.bin");
+
+        view.overlay = Overlay::Goto;
+        view.goto_input.set_text("0x1f");
+        view.commit_goto();
+        assert_eq!(view.model.cursor(), 31);
+        assert!(view.goto_input.value().is_empty());
+
+        view.overlay = Overlay::Goto;
+        view.goto_input.set_text("12");
+        view.commit_goto();
+        assert_eq!(view.model.cursor(), 12);
     }
 }

@@ -116,6 +116,10 @@ impl Caret {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, unrelated flag (focus, dirty, popup state, zero-state click) rather than a set of options that combine — a bitflag/enum would not read better"
+)]
 pub struct EditorView {
     rect: Rect,
     /// The buffer's lines (cache of the CRDT Text split on '\n').
@@ -226,6 +230,17 @@ impl EditorView {
         std::mem::take(&mut self.empty_action)
     }
 
+    /// The primary caret. `carets` is always non-empty by construction (`new`
+    /// seeds one and nothing ever empties it), but this goes through
+    /// `first()` so that invariant is provable instead of asserted via
+    /// indexing.
+    fn primary(&self) -> Caret {
+        self.carets
+            .first()
+            .copied()
+            .unwrap_or_else(|| Caret::at(0, 0))
+    }
+
     /// Set the find bar's matches so they are tinted in the buffer.
     ///
     /// Showing *all* matches rather than only the one you are standing on is
@@ -239,8 +254,7 @@ impl EditorView {
         }
         if let Some(m) = current.and_then(|i| self.find_matches.get(i)).copied() {
             // Keep the current match on screen as the user steps through.
-            self.carets.truncate(1);
-            self.carets[0] = Caret::at(m.line, m.col);
+            self.carets = vec![Caret::at(m.line, m.col)];
             self.scroll_to_caret();
         }
     }
@@ -288,7 +302,7 @@ impl EditorView {
 
     /// Primary caret position (line, col), 0-based.
     pub fn primary_caret(&self) -> (usize, usize) {
-        let c = self.carets[0];
+        let c = self.primary();
         (c.line, c.col)
     }
 
@@ -310,9 +324,10 @@ impl EditorView {
         if s.0 == e.0 {
             return e.1.saturating_sub(s.1);
         }
-        let mut total = self.lines[s.0].chars().count().saturating_sub(s.1) + 1;
+        let start_len = self.lines.get(s.0).map_or(0, |l| l.chars().count());
+        let mut total = start_len.saturating_sub(s.1) + 1;
         for l in (s.0 + 1)..e.0 {
-            total += self.lines[l].chars().count() + 1;
+            total += self.lines.get(l).map_or(0, |l| l.chars().count()) + 1;
         }
         total += e.1;
         total
@@ -354,13 +369,14 @@ impl EditorView {
 
     fn clamp_carets(&mut self) {
         let last_line = self.lines.len().saturating_sub(1);
+        let line_len = |lines: &[String], l: usize| lines.get(l).map_or(0, |s| s.chars().count());
         for c in &mut self.carets {
             c.line = c.line.min(last_line);
-            let cols = self.lines[c.line].chars().count();
+            let cols = line_len(&self.lines, c.line);
             c.col = c.col.min(cols);
             if let Some((al, ac)) = c.anchor {
                 let al = al.min(last_line);
-                let ac = ac.min(self.lines[al].chars().count());
+                let ac = ac.min(line_len(&self.lines, al));
                 c.anchor = Some((al, ac));
             }
         }
@@ -371,7 +387,7 @@ impl EditorView {
     fn char_index(&self, line: usize, col: usize) -> usize {
         let mut idx = 0;
         for l in 0..line {
-            idx += self.lines[l].chars().count() + 1; // +1 for the '\n'
+            idx += self.lines.get(l).map_or(0, |s| s.chars().count()) + 1; // +1 for the '\n'
         }
         idx + col
     }
@@ -389,12 +405,12 @@ impl EditorView {
             idx -= len + 1; // consume the line's chars plus its trailing '\n'
         }
         let last = self.lines.len().saturating_sub(1);
-        (last, self.lines[last].chars().count())
+        (last, self.lines.get(last).map_or(0, |s| s.chars().count()))
     }
 
     /// The primary caret's ordered selection as flat char indices, or `None`.
     fn primary_flat_selection(&self) -> Option<(usize, usize)> {
-        let (s, e) = self.carets[0].selection()?;
+        let (s, e) = self.primary().selection()?;
         Some((self.char_index(s.0, s.1), self.char_index(e.0, e.1)))
     }
 
@@ -413,9 +429,14 @@ impl EditorView {
     /// selection collapses.
     fn set_primary_flat(&mut self, target: usize, extend: bool) {
         self.carets.truncate(1);
-        let (cl, cc) = (self.carets[0].line, self.carets[0].col);
+        if self.carets.is_empty() {
+            self.carets.push(Caret::at(0, 0));
+        }
+        let (cl, cc) = (self.primary().line, self.primary().col);
         let (nl, nc) = self.pos_from_flat(target);
-        let c = &mut self.carets[0];
+        let Some(c) = self.carets.first_mut() else {
+            return;
+        };
         if extend {
             if c.anchor.is_none() {
                 c.anchor = Some((cl, cc));
@@ -433,7 +454,8 @@ impl EditorView {
     /// `ui::text_selection` char-indexed helpers so the editor uses exactly the
     /// same word semantics as `TextInput`.
     fn word_move(&mut self, forward: bool, extend: bool) {
-        let flat = self.char_index(self.carets[0].line, self.carets[0].col);
+        let primary = self.primary();
+        let flat = self.char_index(primary.line, primary.col);
         let target = if forward {
             next_word_boundary_chars(&self.cached_text, flat)
         } else {
@@ -451,24 +473,23 @@ impl EditorView {
         let (ws, we) = word_boundaries_chars(&self.cached_text, flat);
         let (al, ac) = self.pos_from_flat(ws);
         let (cl, cc) = self.pos_from_flat(we);
-        self.carets[0] = Caret {
+        self.carets = vec![Caret {
             line: cl,
             col: cc,
             anchor: if ws == we { None } else { Some((al, ac)) },
-        };
+        }];
         self.dirty = true;
         (ws, we)
     }
 
     /// Select the whole line `line` (triple-click). Returns the flat span.
     fn select_line_at(&mut self, line: usize) -> (usize, usize) {
-        self.carets.truncate(1);
-        let len = self.lines[line].chars().count();
-        self.carets[0] = Caret {
+        let len = self.lines.get(line).map_or(0, |l| l.chars().count());
+        self.carets = vec![Caret {
             line,
             col: len,
             anchor: Some((line, 0)),
-        };
+        }];
         self.dirty = true;
         (self.char_index(line, 0), self.char_index(line, len))
     }
@@ -476,10 +497,9 @@ impl EditorView {
     /// Set the primary selection from an anchor+cursor pair of flat indices,
     /// collapsing to a bare caret when the two coincide.
     fn set_primary_range(&mut self, anchor: usize, cursor: usize) {
-        self.carets.truncate(1);
         let (al, ac) = self.pos_from_flat(anchor);
         let (cl, cc) = self.pos_from_flat(cursor);
-        self.carets[0] = Caret {
+        self.carets = vec![Caret {
             line: cl,
             col: cc,
             anchor: if anchor == cursor {
@@ -487,7 +507,7 @@ impl EditorView {
             } else {
                 Some((al, ac))
             },
-        };
+        }];
         self.dirty = true;
     }
 
@@ -575,7 +595,9 @@ impl EditorView {
         if !self.completion_active() {
             return;
         }
-        let item = self.completions[self.completion_index].clone();
+        let Some(item) = self.completions.get(self.completion_index).cloned() else {
+            return;
+        };
         let (line, col) = self.primary_caret();
         // Replace [completion_anchor, caret) with the insert text.
         self.carets = vec![Caret {
@@ -690,13 +712,9 @@ impl EditorView {
         };
         // Process carets bottom-to-top so a splice doesn't shift the indices
         // of carets we haven't handled yet.
-        let mut order: Vec<usize> = (0..self.carets.len()).collect();
-        order.sort_by(|&a, &b| {
-            let ca = (self.carets[a].line, self.carets[a].col);
-            let cb = (self.carets[b].line, self.carets[b].col);
-            cb.cmp(&ca)
-        });
-        for &i in &order {
+        let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
+        order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
+        for (i, _) in order {
             self.apply_insert_at(doc, &text, i, s);
         }
         self.sync_from_doc(doc);
@@ -704,13 +722,17 @@ impl EditorView {
     }
 
     fn apply_insert_at(&mut self, doc: &mut AutoCommit, text: &ObjId, i: usize, s: &str) {
-        let caret = self.carets[i];
+        let Some(caret) = self.carets.get(i).copied() else {
+            return;
+        };
         // Delete selection first if present.
         let start = if let Some((sel_s, sel_e)) = caret.selection() {
             let s_idx = self.char_index(sel_s.0, sel_s.1);
             let e_idx = self.char_index(sel_e.0, sel_e.1);
             EditorDoc::splice(doc, text, s_idx, e_idx - s_idx, "");
-            self.carets[i].anchor = None;
+            if let Some(c) = self.carets.get_mut(i) {
+                c.anchor = None;
+            }
             sel_s
         } else {
             (caret.line, caret.col)
@@ -719,11 +741,14 @@ impl EditorView {
         EditorDoc::splice(doc, text, idx, 0, s);
         // Recompute caret position after the inserted text.
         let inserted_lines = s.split('\n').count();
+        let Some(c) = self.carets.get_mut(i) else {
+            return;
+        };
         if inserted_lines == 1 {
-            self.carets[i] = Caret::at(start.0, start.1 + s.chars().count());
+            *c = Caret::at(start.0, start.1 + s.chars().count());
         } else {
             let last = s.rsplit('\n').next().unwrap_or("");
-            self.carets[i] = Caret::at(start.0 + inserted_lines - 1, last.chars().count());
+            *c = Caret::at(start.0 + inserted_lines - 1, last.chars().count());
         }
     }
 
@@ -733,19 +758,16 @@ impl EditorView {
         let Some(text) = self.text_obj.clone() else {
             return;
         };
-        let mut order: Vec<usize> = (0..self.carets.len()).collect();
-        order.sort_by(|&a, &b| {
-            let ca = (self.carets[a].line, self.carets[a].col);
-            let cb = (self.carets[b].line, self.carets[b].col);
-            cb.cmp(&ca)
-        });
-        for &i in &order {
-            let caret = self.carets[i];
+        let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
+        order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
+        for (i, caret) in order {
             if let Some((s, e)) = caret.selection() {
                 let s_idx = self.char_index(s.0, s.1);
                 let e_idx = self.char_index(e.0, e.1);
                 EditorDoc::splice(doc, &text, s_idx, e_idx - s_idx, "");
-                self.carets[i] = Caret::at(s.0, s.1);
+                if let Some(c) = self.carets.get_mut(i) {
+                    *c = Caret::at(s.0, s.1);
+                }
             } else {
                 let idx = self.char_index(caret.line, caret.col);
                 if idx == 0 {
@@ -755,10 +777,17 @@ impl EditorView {
                 // Position recomputed after sync from the new flat text; we
                 // estimate here and clamp later.
                 if caret.col > 0 {
-                    self.carets[i] = Caret::at(caret.line, caret.col - 1);
+                    if let Some(c) = self.carets.get_mut(i) {
+                        *c = Caret::at(caret.line, caret.col - 1);
+                    }
                 } else if caret.line > 0 {
-                    let prev_len = self.lines[caret.line - 1].chars().count();
-                    self.carets[i] = Caret::at(caret.line - 1, prev_len);
+                    let prev_len = self
+                        .lines
+                        .get(caret.line - 1)
+                        .map_or(0, |l| l.chars().count());
+                    if let Some(c) = self.carets.get_mut(i) {
+                        *c = Caret::at(caret.line - 1, prev_len);
+                    }
                 }
             }
         }
@@ -771,19 +800,16 @@ impl EditorView {
         let Some(text) = self.text_obj.clone() else {
             return;
         };
-        let mut order: Vec<usize> = (0..self.carets.len()).collect();
-        order.sort_by(|&a, &b| {
-            let ca = (self.carets[a].line, self.carets[a].col);
-            let cb = (self.carets[b].line, self.carets[b].col);
-            cb.cmp(&ca)
-        });
-        for &i in &order {
-            let caret = self.carets[i];
+        let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
+        order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
+        for (i, caret) in order {
             if let Some((s, e)) = caret.selection() {
                 let s_idx = self.char_index(s.0, s.1);
                 let e_idx = self.char_index(e.0, e.1);
                 EditorDoc::splice(doc, &text, s_idx, e_idx - s_idx, "");
-                self.carets[i] = Caret::at(s.0, s.1);
+                if let Some(c) = self.carets.get_mut(i) {
+                    *c = Caret::at(s.0, s.1);
+                }
             } else {
                 let idx = self.char_index(caret.line, caret.col);
                 let total: usize = self.cached_text.chars().count();
@@ -798,7 +824,7 @@ impl EditorView {
 
     /// Re-read the buffer from the CRDT and rebuild caches. Called after every
     /// local edit and from `sync` for remote edits.
-    fn sync_from_doc(&mut self, doc: &mut AutoCommit) {
+    fn sync_from_doc(&mut self, doc: &AutoCommit) {
         if let Some(t) = self.text_obj.clone() {
             use automerge::ReadDoc;
             let text = doc.text(&t).unwrap_or_default();
@@ -819,14 +845,19 @@ impl EditorView {
         if dx != 0
             && dy == 0
             && !extend
-            && let Some((s, e)) = self.carets[0].selection()
+            && let Some((s, e)) = self.primary().selection()
         {
             let target = if dx < 0 { s } else { e };
-            self.carets[0] = Caret::at(target.0, target.1);
+            self.carets = vec![Caret::at(target.0, target.1)];
             self.scroll_to_caret();
             return;
         }
-        let c = &mut self.carets[0];
+        if self.carets.is_empty() {
+            self.carets.push(Caret::at(0, 0));
+        }
+        let Some(c) = self.carets.first_mut() else {
+            return;
+        };
         if extend && c.anchor.is_none() {
             c.anchor = Some((c.line, c.col));
         }
@@ -836,11 +867,11 @@ impl EditorView {
         if dy != 0 {
             let new_line = (c.line as isize + dy).clamp(0, self.lines.len() as isize - 1) as usize;
             c.line = new_line;
-            let cols = self.lines[new_line].chars().count();
+            let cols = self.lines.get(new_line).map_or(0, |l| l.chars().count());
             c.col = c.col.min(cols);
         }
         if dx != 0 {
-            let cols = self.lines[c.line].chars().count();
+            let cols = self.lines.get(c.line).map_or(0, |l| l.chars().count());
             if dx > 0 {
                 if c.col < cols {
                     c.col += 1;
@@ -852,7 +883,7 @@ impl EditorView {
                 c.col -= 1;
             } else if c.line > 0 {
                 c.line -= 1;
-                c.col = self.lines[c.line].chars().count();
+                c.col = self.lines.get(c.line).map_or(0, |l| l.chars().count());
             }
         }
         self.scroll_to_caret();
@@ -860,7 +891,12 @@ impl EditorView {
 
     fn move_home(&mut self, extend: bool) {
         self.carets.truncate(1);
-        let c = &mut self.carets[0];
+        if self.carets.is_empty() {
+            self.carets.push(Caret::at(0, 0));
+        }
+        let Some(c) = self.carets.first_mut() else {
+            return;
+        };
         if extend && c.anchor.is_none() {
             c.anchor = Some((c.line, c.col));
         }
@@ -868,8 +904,9 @@ impl EditorView {
             c.anchor = None;
         }
         // Smart home: first non-whitespace, then column 0.
-        let line = &self.lines[c.line];
-        let first_non_ws = line.chars().take_while(|ch| ch.is_whitespace()).count();
+        let first_non_ws = self.lines.get(c.line).map_or(0, |line| {
+            line.chars().take_while(|ch| ch.is_whitespace()).count()
+        });
         c.col = if c.col == first_non_ws {
             0
         } else {
@@ -880,35 +917,38 @@ impl EditorView {
 
     fn move_end(&mut self, extend: bool) {
         self.carets.truncate(1);
-        let c = &mut self.carets[0];
+        if self.carets.is_empty() {
+            self.carets.push(Caret::at(0, 0));
+        }
+        let Some(c) = self.carets.first_mut() else {
+            return;
+        };
         if extend && c.anchor.is_none() {
             c.anchor = Some((c.line, c.col));
         }
         if !extend {
             c.anchor = None;
         }
-        c.col = self.lines[c.line].chars().count();
+        c.col = self.lines.get(c.line).map_or(0, |l| l.chars().count());
         self.scroll_to_caret();
     }
 
     fn select_all(&mut self) {
-        self.carets.truncate(1);
-        let last = self.lines.len() - 1;
-        let last_col = self.lines[last].chars().count();
-        self.carets[0] = Caret {
+        let last = self.lines.len().saturating_sub(1);
+        let last_col = self.lines.get(last).map_or(0, |l| l.chars().count());
+        self.carets = vec![Caret {
             line: last,
             col: last_col,
             anchor: Some((0, 0)),
-        };
+        }];
         self.dirty = true;
     }
 
     /// Add a caret on the line below the lowest current caret (multi-cursor).
     fn add_caret_below(&mut self) {
         if let Some(last) = self.carets.iter().max_by_key(|c| c.line).copied()
-            && last.line + 1 < self.lines.len()
+            && let Some(cols) = self.lines.get(last.line + 1).map(|l| l.chars().count())
         {
-            let cols = self.lines[last.line + 1].chars().count();
             self.carets
                 .push(Caret::at(last.line + 1, last.col.min(cols)));
             self.dirty = true;
@@ -919,10 +959,15 @@ impl EditorView {
     /// whitespace — the single most-felt editor nicety.
     fn newline_with_indent(&mut self, doc: &mut AutoCommit) {
         let (line, _) = self.primary_caret();
-        let indent: String = self.lines[line]
-            .chars()
-            .take_while(|ch| *ch == ' ' || *ch == '\t')
-            .collect();
+        let indent: String = self
+            .lines
+            .get(line)
+            .map(|l| {
+                l.chars()
+                    .take_while(|ch| *ch == ' ' || *ch == '\t')
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut payload = String::from("\n");
         payload.push_str(&indent);
         self.insert(doc, &payload);
@@ -942,7 +987,7 @@ impl EditorView {
     /// selecting down to the start of a line and running "delete line" does not
     /// eat the line the caret only touches.
     fn primary_line_range(&self) -> (usize, usize) {
-        let c = self.carets[0];
+        let c = self.primary();
         match c.selection() {
             Some((s, e)) => {
                 let last = if e.1 == 0 && e.0 > s.0 { e.0 - 1 } else { e.0 };
@@ -961,7 +1006,7 @@ impl EditorView {
     /// keeping the column. Used after a line move so the caret rides with the
     /// text it moved.
     fn shift_primary_lines(&mut self, delta: isize) {
-        let cur = self.carets[0];
+        let cur = self.primary();
         let shift = |l: usize| (l as isize + delta).max(0) as usize;
         self.carets = vec![Caret {
             line: shift(cur.line),
@@ -981,8 +1026,12 @@ impl EditorView {
             return;
         };
         let (a, b) = self.primary_line_range();
-        let block: String = self.lines[a..=b].join("\n");
-        let end_of_b = self.char_index(b, self.lines[b].chars().count());
+        let block: String = self
+            .lines
+            .get(a..=b)
+            .map(|s| s.join("\n"))
+            .unwrap_or_default();
+        let end_of_b = self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count()));
         EditorDoc::splice(doc, &text, end_of_b, 0, &format!("\n{block}"));
         self.sync_from_doc(doc);
         if focus_copy {
@@ -999,14 +1048,20 @@ impl EditorView {
             return;
         };
         let (a, b) = self.primary_line_range();
-        let block: String = self.lines[a..=b].join("\n");
+        let block: String = self
+            .lines
+            .get(a..=b)
+            .map(|s| s.join("\n"))
+            .unwrap_or_default();
         if up {
             if a == 0 {
                 return;
             }
-            let prev = self.lines[a - 1].clone();
+            let Some(prev) = self.lines.get(a - 1).cloned() else {
+                return;
+            };
             let from = self.line_start_index(a - 1);
-            let to = self.char_index(b, self.lines[b].chars().count());
+            let to = self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count()));
             // Region is "{prev}\n{block}" → swap to "{block}\n{prev}".
             EditorDoc::splice(doc, &text, from, to - from, &format!("{block}\n{prev}"));
             self.sync_from_doc(doc);
@@ -1015,9 +1070,14 @@ impl EditorView {
             if b + 1 >= self.lines.len() {
                 return;
             }
-            let next = self.lines[b + 1].clone();
+            let Some(next) = self.lines.get(b + 1).cloned() else {
+                return;
+            };
             let from = self.line_start_index(a);
-            let to = self.char_index(b + 1, self.lines[b + 1].chars().count());
+            let to = self.char_index(
+                b + 1,
+                self.lines.get(b + 1).map_or(0, |l| l.chars().count()),
+            );
             // Region is "{block}\n{next}" → swap to "{next}\n{block}".
             EditorDoc::splice(doc, &text, from, to - from, &format!("{next}\n{block}"));
             self.sync_from_doc(doc);
@@ -1038,12 +1098,18 @@ impl EditorView {
         } else if a > 0 {
             // Last line(s): take the leading newline instead.
             (
-                self.char_index(a - 1, self.lines[a - 1].chars().count()),
-                self.char_index(b, self.lines[b].chars().count()),
+                self.char_index(
+                    a - 1,
+                    self.lines.get(a - 1).map_or(0, |l| l.chars().count()),
+                ),
+                self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count())),
             )
         } else {
             // The whole buffer is selected — leave a single empty line.
-            (0, self.char_index(b, self.lines[b].chars().count()))
+            (
+                0,
+                self.char_index(b, self.lines.get(b).map_or(0, |l| l.chars().count())),
+            )
         };
         EditorDoc::splice(doc, &text, from, to - from, "");
         self.sync_from_doc(doc);
@@ -1066,33 +1132,37 @@ impl EditorView {
         };
         let (a, b) = self.primary_line_range();
         let non_blank: Vec<usize> = (a..=b)
-            .filter(|&l| !self.lines[l].trim().is_empty())
+            .filter(|&l| !self.lines.get(l).is_none_or(|s| s.trim().is_empty()))
             .collect();
         if non_blank.is_empty() {
             return;
         }
-        let all_commented = non_blank
-            .iter()
-            .all(|&l| self.lines[l].trim_start().starts_with(token));
+        let all_commented = non_blank.iter().all(|&l| {
+            self.lines
+                .get(l)
+                .is_some_and(|s| s.trim_start().starts_with(token))
+        });
         // Shallowest indent across the range, so added markers align.
         let indent = non_blank
             .iter()
             .map(|&l| {
-                self.lines[l]
-                    .chars()
-                    .take_while(|c| *c == ' ' || *c == '\t')
-                    .count()
+                self.lines.get(l).map_or(0, |s| {
+                    s.chars().take_while(|c| *c == ' ' || *c == '\t').count()
+                })
             })
             .min()
             .unwrap_or(0);
         // Splice bottom-up so earlier line indices stay valid.
         for &l in non_blank.iter().rev() {
-            let line = &self.lines[l];
+            let Some(line) = self.lines.get(l) else {
+                continue;
+            };
             if all_commented {
                 // Remove the token (and one following space, if present) at the
                 // first non-whitespace column.
                 let lead = line.chars().take_while(|c| c.is_whitespace()).count();
-                let after = &line[line.char_indices().nth(lead).map_or(line.len(), |(i, _)| i)..];
+                let after_start = line.char_indices().nth(lead).map_or(line.len(), |(i, _)| i);
+                let after = line.get(after_start..).unwrap_or("");
                 if let Some(rest) = after.strip_prefix(token) {
                     let mut remove = token.chars().count();
                     if rest.starts_with(' ') {
@@ -1121,7 +1191,7 @@ impl EditorView {
         let (a, b) = self.primary_line_range();
         let pad = " ".repeat(self.indent_width);
         for l in (a..=b).rev() {
-            if self.lines[l].is_empty() {
+            if self.lines.get(l).is_none_or(String::is_empty) {
                 continue;
             }
             let at = self.line_start_index(l);
@@ -1139,7 +1209,9 @@ impl EditorView {
         };
         let (a, b) = self.primary_line_range();
         for l in (a..=b).rev() {
-            let line = &self.lines[l];
+            let Some(line) = self.lines.get(l) else {
+                continue;
+            };
             // Remove up to `indent_width` leading spaces, or a single leading tab.
             let remove = if line.starts_with('\t') {
                 1
@@ -1174,81 +1246,40 @@ impl EditorView {
         let line = ((rel_y / LINE_HEIGHT).floor() as isize).clamp(0, self.lines.len() as isize - 1)
             as usize;
         let rel_x = p.x - self.rect.x0 - gutter - CODE_PAD_LEFT + self.scroll_x;
-        let col =
-            ((rel_x / self.cell_w).round().max(0.0) as usize).min(self.lines[line].chars().count());
+        let max_col = self.lines.get(line).map_or(0, |l| l.chars().count());
+        let col = ((rel_x / self.cell_w).round().max(0.0) as usize).min(max_col);
         (line, col)
     }
-}
 
-impl Widget for EditorView {
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
-        // Pull remote/undo edits: if the buffer text differs from our cache,
-        // rebuild. Cheap string compare on the hot path.
-        if let Some(t) = self.text_obj.clone() {
-            use automerge::ReadDoc;
-            let text = state.text(&t).unwrap_or_default();
-            if text != self.cached_text {
-                self.rebuild(&text);
-            }
-        }
-    }
+    // ---- draw helpers (split out of `Widget::draw`, which orchestrates them) ----
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                flex_grow: 1.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        let c = &theme.tokens.colors;
-        // Measure the real monospace cell width once we have a renderer.
+    /// Measure the real monospace cell width once a renderer is available,
+    /// caching it on `self` (the fallback stays in place until the first
+    /// successful measurement).
+    fn measure_cell_width(&mut self, text_renderer: &mut TextRenderer) {
         let (mw, _) =
             text_renderer.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
         if mw > 0.0 {
             self.cell_w = f64::from(mw);
         }
+    }
 
-        // Editor background.
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
-
+    /// The geometry a draw pass threads through: gutter width, the code
+    /// area's left edge, the first (possibly partial) visible line, its
+    /// fractional scroll offset, and how many rows fit in the viewport.
+    fn layout_metrics(&self) -> (f64, f64, usize, f64, usize) {
         let gutter_w = self.gutter_width();
         let code_x0 = self.rect.x0 + gutter_w + CODE_PAD_LEFT;
         let first_line = self.scroll_y.floor() as usize;
         let frac = self.scroll_y - first_line as f64;
         let n_visible = self.visible_lines();
+        (gutter_w, code_x0, first_line, frac, n_visible)
+    }
 
-        // Gutter background (very subtly raised).
+    /// Fill the editor background and the (subtly raised) gutter background.
+    fn draw_backgrounds(&self, scene: &mut Scene, transform: Affine, theme: &Theme, gutter_w: f64) {
+        let c = &theme.tokens.colors;
+        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
         let gutter_rect = Rect::new(
             self.rect.x0,
             self.rect.y0,
@@ -1262,35 +1293,35 @@ impl Widget for EditorView {
             None,
             &gutter_rect,
         );
+    }
 
-        if self.text_obj.is_none() {
-            // A composed zero-state through the shared primitive: a hero icon,
-            // a title, a one-line invitation, and an actionable "Open File"
-            // pill that summons the portal picker.
-            self.empty_action_rect = EmptyState::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                self.rect,
-                Some(Icon::FileCode),
-                "No file open",
-                Some("Open a file from the tree, or pick one to start editing."),
-                Some("Open File"),
-                self.last_cursor,
-            )
-            .unwrap_or(Rect::ZERO);
-            return;
-        }
-
-        let primary_line = self.carets[0].line;
-
-        // Clip code area so long lines don't bleed into the gutter.
+    /// Draw the per-line background bands for every visible row: the
+    /// active-line highlight, find-bar match bands, and selection bands.
+    /// Runs as its own pass over the visible rows (before [`Self::draw_line_text`]
+    /// paints line numbers and code on top) — safe because rows never overlap,
+    /// so the pass order only has to hold within a single row, not across rows.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a draw pass over one screenful of lines threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
+    )]
+    fn draw_line_backgrounds(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        gutter_w: f64,
+        code_x0: f64,
+        first_line: usize,
+        frac: f64,
+        n_visible: usize,
+        primary_line: usize,
+    ) {
+        let c = &theme.tokens.colors;
         for vi in 0..n_visible {
             let line_idx = first_line + vi;
-            if line_idx >= self.lines.len() {
+            let Some(line) = self.lines.get(line_idx) else {
                 break;
-            }
+            };
             let y = self.rect.y0 + (vi as f64 - frac) * LINE_HEIGHT;
             if y > self.rect.y1 {
                 break;
@@ -1358,7 +1389,7 @@ impl Widget for EditorView {
                     let end_col = if line_idx == e.0 {
                         e.1
                     } else {
-                        self.lines[line_idx].chars().count() + 1 // include EOL
+                        line.chars().count() + 1 // include EOL
                     };
                     let sx0 = code_x0 + start_col as f64 * self.cell_w - self.scroll_x;
                     let sx1 = code_x0 + end_col as f64 * self.cell_w - self.scroll_x;
@@ -1368,6 +1399,38 @@ impl Widget for EditorView {
                     let sel_color = c.accent[5].multiply_alpha(0.35);
                     scene.fill(Fill::NonZero, transform, sel_color, None, &sel);
                 }
+            }
+        }
+    }
+
+    /// Draw the gutter line number and syntax-highlighted code text for every
+    /// visible row (the pass on top of [`Self::draw_line_backgrounds`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a draw pass over one screenful of lines threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
+    )]
+    fn draw_line_text(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        gutter_w: f64,
+        code_x0: f64,
+        first_line: usize,
+        frac: f64,
+        n_visible: usize,
+        primary_line: usize,
+    ) {
+        let c = &theme.tokens.colors;
+        for vi in 0..n_visible {
+            let line_idx = first_line + vi;
+            let Some(line) = self.lines.get(line_idx) else {
+                break;
+            };
+            let y = self.rect.y0 + (vi as f64 - frac) * LINE_HEIGHT;
+            if y > self.rect.y1 {
+                break;
             }
 
             // Line number, right-aligned in the gutter.
@@ -1392,7 +1455,6 @@ impl Widget for EditorView {
             );
 
             // The highlighted code text, span by span.
-            let line = &self.lines[line_idx];
             let empty: Vec<Span> = Vec::new();
             let spans = self.spans.get(line_idx).unwrap_or(&empty);
             let base_x = code_x0 - self.scroll_x;
@@ -1413,7 +1475,10 @@ impl Widget for EditorView {
             } else {
                 for span in spans {
                     // Byte offsets → char offset for x positioning.
-                    let prefix = &line.as_bytes()[..span.start.min(line.len())];
+                    let prefix = line
+                        .as_bytes()
+                        .get(..span.start.min(line.len()))
+                        .unwrap_or(&[]);
                     let char_col = std::str::from_utf8(prefix).map_or(0, |s| s.chars().count());
                     let seg = line.get(span.start..span.end.min(line.len())).unwrap_or("");
                     if seg.is_empty() {
@@ -1444,9 +1509,25 @@ impl Widget for EditorView {
                 }
             }
         }
+    }
 
-        // Inline diagnostics: a coloured wavy underline under each offending
-        // span (from the language server).
+    /// Draw a coloured wavy underline under each inline diagnostic's span
+    /// (from the language server) that falls within the visible line range.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a draw pass threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
+    )]
+    fn draw_diagnostics(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        first_line: usize,
+        n_visible: usize,
+        code_x0: f64,
+        gutter_w: f64,
+    ) {
+        let c = &theme.tokens.colors;
         for d in &self.diagnostics {
             if d.line < first_line || d.line >= first_line + n_visible {
                 continue;
@@ -1477,41 +1558,714 @@ impl Widget for EditorView {
                 Severity::Hint => c.text_dim,
             };
             // Zigzag underline — a couple of px amplitude reads as a squiggle.
+            // Stepped by an integer segment count (rather than a `while x <
+            // x_right` float loop) so the number of iterations is exact.
             let mut path = BezPath::new();
-            let mut x = x_left;
-            path.move_to((x, sy));
+            path.move_to((x_left, sy));
+            let span = (x_right - x_left).max(0.0);
+            let segments = (span / 3.0).ceil() as usize;
             let mut up = true;
-            while x < x_right {
-                let nx = (x + 3.0).min(x_right);
+            for seg in 1..=segments {
+                let nx = (x_left + seg as f64 * 3.0).min(x_right);
                 path.line_to((nx, if up { sy - 1.6 } else { sy + 1.6 }));
-                x = nx;
                 up = !up;
             }
             scene.stroke(&Stroke::new(1.2), transform, color, None, &path);
         }
+    }
 
-        // Carets (drawn last, on top). Blink-free for screenshot determinism.
-        if self.is_focused {
-            for caret in &self.carets {
-                if caret.line < first_line || caret.line >= first_line + n_visible {
-                    continue;
-                }
-                let y = self.rect.y0 + (caret.line as f64 - self.scroll_y) * LINE_HEIGHT;
-                let x = code_x0 + caret.col as f64 * self.cell_w - self.scroll_x;
-                if x < self.rect.x0 + gutter_w {
-                    continue;
-                }
-                let caret_line =
-                    Line::new(Point::new(x, y + 2.0), Point::new(x, y + LINE_HEIGHT - 2.0));
-                scene.stroke(
-                    &Stroke::new(2.0),
+    /// Draw the caret(s) as a thin vertical stroke, blink-free for screenshot
+    /// determinism, for whichever carets fall in the visible line range.
+    /// No-op while the view isn't focused.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a draw pass threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
+    )]
+    fn draw_carets(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        first_line: usize,
+        n_visible: usize,
+        code_x0: f64,
+        gutter_w: f64,
+    ) {
+        if !self.is_focused {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        for caret in &self.carets {
+            if caret.line < first_line || caret.line >= first_line + n_visible {
+                continue;
+            }
+            let y = self.rect.y0 + (caret.line as f64 - self.scroll_y) * LINE_HEIGHT;
+            let x = code_x0 + caret.col as f64 * self.cell_w - self.scroll_x;
+            if x < self.rect.x0 + gutter_w {
+                continue;
+            }
+            let caret_line =
+                Line::new(Point::new(x, y + 2.0), Point::new(x, y + LINE_HEIGHT - 2.0));
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                c.border_focus,
+                None,
+                &caret_line,
+            );
+        }
+    }
+
+    /// Draw the completion popup: a floating, scrollable list anchored under
+    /// the caret, with the highlighted row filled and each item's kind glyph,
+    /// label and (space permitting) detail text. No-op when the popup isn't
+    /// showing.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a draw pass threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
+    )]
+    fn draw_completion_popup(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        gutter_w: f64,
+        caret_x: f64,
+        caret_top: f64,
+    ) {
+        const ROW_H: f64 = 20.0;
+        if !self.completion_active() {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let max_rows = 8usize;
+        let total = self.completions.len();
+        let shown = total.min(max_rows);
+        // Scroll the window so the selected row stays visible.
+        let offset = if self.completion_index >= max_rows {
+            self.completion_index - max_rows + 1
+        } else {
+            0
+        };
+        let width = 340.0_f64.min(self.rect.width() - (gutter_w + 20.0));
+        let height = shown as f64 * ROW_H + 8.0;
+        let px = caret_x
+            .min(self.rect.x1 - width - 8.0)
+            .max(self.rect.x0 + gutter_w + 2.0);
+        let py = (caret_top + LINE_HEIGHT + 2.0)
+            .min(self.rect.y1 - height - 4.0)
+            .max(self.rect.y0);
+        let popup = Rect::new(px, py, px + width, py + height);
+        let shape = RoundedRect::from_rect(popup, 6.0);
+        scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            c.border_standard,
+            None,
+            &shape,
+        );
+
+        for row in 0..shown {
+            let idx = offset + row;
+            let Some(item) = self.completions.get(idx) else {
+                break;
+            };
+            let ry = py + 4.0 + row as f64 * ROW_H;
+            if idx == self.completion_index {
+                let hl = Rect::new(px + 2.0, ry, px + width - 2.0, ry + ROW_H);
+                scene.fill(
+                    Fill::NonZero,
                     transform,
-                    c.border_focus,
+                    c.accent[5].multiply_alpha(0.30),
                     None,
-                    &caret_line,
+                    &hl,
+                );
+            }
+            // Kind glyph (compact hint at the identifier's type).
+            let glyph = completion_kind_glyph(item.kind);
+            text_renderer.draw_text_styled(
+                scene,
+                glyph,
+                FONT_SIZE,
+                c.accent[6],
+                transform * Affine::translate((px + 8.0, ry + 3.0)),
+                None,
+                TextWeight::Regular,
+                false,
+                true,
+            );
+            text_renderer.draw_text_styled(
+                scene,
+                &item.label,
+                FONT_SIZE,
+                c.text_primary,
+                transform * Affine::translate((px + 26.0, ry + 3.0)),
+                None,
+                TextWeight::Regular,
+                false,
+                true,
+            );
+            if let Some(detail) = &item.detail {
+                let (lw, _) = text_renderer.measure_styled(
+                    &item.label,
+                    FONT_SIZE,
+                    None,
+                    TextWeight::Regular,
+                    false,
+                    true,
+                );
+                text_renderer.draw_text_styled(
+                    scene,
+                    detail,
+                    FONT_SIZE - 1.0,
+                    c.text_dim,
+                    transform * Affine::translate((px + 34.0 + f64::from(lw), ry + 3.5)),
+                    Some((width - 40.0 - f64::from(lw)) as f32),
+                    TextWeight::Regular,
+                    false,
+                    true,
                 );
             }
         }
+    }
+
+    /// Draw the hover tooltip: a small box near the caret with the server's
+    /// text, preferring above the caret and dropping below when there's no
+    /// room. No-op when there is no hover text to show.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a draw pass threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
+    )]
+    fn draw_hover_tooltip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        gutter_w: f64,
+        caret_x: f64,
+        caret_top: f64,
+    ) {
+        let Some(hover) = self.hover_text.clone() else {
+            return;
+        };
+        let c = &theme.tokens.colors;
+        let first: String = hover.lines().take(4).collect::<Vec<_>>().join("\n");
+        let (tw, _) = text_renderer.measure(&first, FONT_SIZE, None);
+        let width = (f64::from(tw) + 20.0).min(self.rect.width() - (gutter_w + 20.0));
+        let lines = first.lines().count().max(1);
+        let height = lines as f64 * (f64::from(FONT_SIZE) + 4.0) + 12.0;
+        let px = caret_x
+            .min(self.rect.x1 - width - 8.0)
+            .max(self.rect.x0 + gutter_w + 2.0);
+        // Prefer above the caret; drop below if there's no room.
+        let py = if caret_top - height - 4.0 >= self.rect.y0 {
+            caret_top - height - 4.0
+        } else {
+            caret_top + LINE_HEIGHT + 2.0
+        };
+        let box_rect = Rect::new(px, py, px + width, py + height);
+        let shape = RoundedRect::from_rect(box_rect, 6.0);
+        scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            c.border_standard,
+            None,
+            &shape,
+        );
+        for (i, line) in first.lines().enumerate() {
+            text_renderer.draw_text(
+                scene,
+                line,
+                FONT_SIZE,
+                c.text_primary,
+                transform
+                    * Affine::translate((
+                        px + 10.0,
+                        py + 6.0 + i as f64 * (f64::from(FONT_SIZE) + 4.0),
+                    )),
+                Some((width - 20.0) as f32),
+            );
+        }
+    }
+}
+
+impl EditorView {
+    // ---- event helpers (split out of `Widget::handle_event`, which dispatches to them) ----
+
+    /// Left-click: add a caret (Ctrl/Cmd-click) or resolve the shared click
+    /// ladder (single/double/triple, shift-extend) into a char/word/line
+    /// selection anchored for the drag that may follow.
+    fn handle_mouse_press(&mut self, mods: winit::keyboard::ModifiersState, handled: &mut bool) {
+        if !self.rect.contains(self.last_cursor) {
+            return;
+        }
+        let (line, col) = self.point_to_caret(self.last_cursor);
+        let shift = mods.shift_key();
+        if (mods.control_key() || mods.super_key()) && !shift {
+            self.carets.push(Caret::at(line, col));
+        } else {
+            let intent = self.drag.press(self.last_cursor, shift);
+            self.drag_anchor = match intent.granularity {
+                Granularity::Word => self.select_word_at(line, col),
+                Granularity::Line => self.select_line_at(line),
+                Granularity::Char => {
+                    let flat = self.char_index(line, col);
+                    if intent.extend {
+                        // Shift-click: keep the existing anchor (or promote
+                        // the current caret) and extend.
+                        let primary = self.primary();
+                        let (al, ac) = primary.anchor.unwrap_or((primary.line, primary.col));
+                        let anchor = self.char_index(al, ac);
+                        self.set_primary_range(anchor, flat);
+                        (anchor, anchor)
+                    } else {
+                        self.carets = vec![Caret::at(line, col)];
+                        (flat, flat)
+                    }
+                }
+            };
+        }
+        self.is_focused = true;
+        self.dirty = true;
+        *handled = true;
+    }
+
+    /// Pointer motion: while dragging, extend the selection to the pointer at
+    /// the gesture's granularity — char follows the caret; word/line snap so
+    /// the original span the press selected stays covered.
+    fn handle_cursor_moved(&mut self, next: Point, handled: &mut bool) {
+        self.last_cursor = next;
+        let Some(gran) = self.drag.drag() else {
+            return;
+        };
+        let (line, col) = self.point_to_caret(self.last_cursor);
+        let q = self.char_index(line, col);
+        let (anchor, cursor) = match gran {
+            Granularity::Char => (self.drag_anchor.0, q),
+            Granularity::Word => {
+                let (ws, we) = word_boundaries_chars(&self.cached_text, q);
+                if q < self.drag_anchor.0 {
+                    (self.drag_anchor.1, ws)
+                } else {
+                    (self.drag_anchor.0, we)
+                }
+            }
+            Granularity::Line => {
+                let len = self.lines.get(line).map_or(0, |l| l.chars().count());
+                let (ls, le) = (self.char_index(line, 0), self.char_index(line, len));
+                if q < self.drag_anchor.0 {
+                    (self.drag_anchor.1, ls)
+                } else {
+                    (self.drag_anchor.0, le)
+                }
+            }
+        };
+        self.set_primary_range(anchor, cursor);
+        *handled = true;
+    }
+
+    /// Mouse wheel: scroll vertically, clamped to the buffer's line count.
+    fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta, handled: &mut bool) {
+        if !self.rect.contains(self.last_cursor) {
+            return;
+        }
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, y) => f64::from(y) * 3.0,
+            MouseScrollDelta::PixelDelta(p) => p.y / LINE_HEIGHT,
+        };
+        let max = (self.lines.len() as f64 - 1.0).max(0.0);
+        self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
+        self.dirty = true;
+        *handled = true;
+    }
+
+    /// A pressed key: completion-popup navigation, LSP request triggers, then
+    /// caret motion / editing / clipboard commands, then plain text input.
+    /// A pressed key: completion-popup navigation, LSP request triggers, then
+    /// caret motion / editing / clipboard commands, then plain text input.
+    fn handle_key_press(
+        &mut self,
+        key_event: &KeyEvent,
+        mods: winit::keyboard::ModifiersState,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        let logical_key = &key_event.logical_key;
+        let text = key_event.text.as_deref();
+        let ctrl = mods.control_key() || mods.super_key();
+        let shift = mods.shift_key();
+        let alt = mods.alt_key();
+
+        // Any keypress dismisses a stale hover tooltip.
+        if self.hover_text.is_some() {
+            self.hover_text = None;
+            self.dirty = true;
+        }
+
+        if self.handle_completion_popup_keys(logical_key, state, handled) {
+            return;
+        }
+        if self.handle_lsp_trigger_keys(logical_key, handled) {
+            return;
+        }
+        if self.handle_navigation_keys(logical_key, ctrl, shift, alt, state, handled) {
+            return;
+        }
+        if self.handle_ctrl_shortcut_keys(logical_key, ctrl, shift, state, handled) {
+            return;
+        }
+        self.handle_editing_keys(logical_key, text, ctrl, shift, state, handled);
+    }
+
+    /// While the completion popup is open, handle its navigation keys
+    /// (Up/Down/Enter/Tab/Escape) and consume the event. Any other key
+    /// dismisses the popup and falls through to normal handling. Returns
+    /// `true` when the event was fully handled here.
+    fn handle_completion_popup_keys(
+        &mut self,
+        logical_key: &Key,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.completion_active() {
+            return false;
+        }
+        match logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                let n = self.completions.len();
+                self.completion_index = (self.completion_index + 1) % n;
+                self.dirty = true;
+                *handled = true;
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                let n = self.completions.len();
+                self.completion_index = (self.completion_index + n - 1) % n;
+                self.dirty = true;
+                *handled = true;
+                true
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Tab) => {
+                self.accept_completion(state);
+                *handled = true;
+                true
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.hide_completions();
+                *handled = true;
+                true
+            }
+            _ => {
+                self.hide_completions();
+                false
+            }
+        }
+    }
+
+    /// F12 (go to definition) and F1 (hover — instant for an on-caret
+    /// diagnostic, plus an LSP request). Returns `true` when consumed.
+    fn handle_lsp_trigger_keys(&mut self, logical_key: &Key, handled: &mut bool) -> bool {
+        if let Key::Named(NamedKey::F12) = logical_key {
+            self.lsp_ask = Some(LspAsk::Definition);
+            *handled = true;
+            return true;
+        }
+        if let Key::Named(NamedKey::F1) = logical_key {
+            // Instant, server-free hover: if the caret sits on a diagnostic,
+            // show its message immediately. Also ask the LSP for a richer
+            // hover (which supersedes this when it arrives).
+            let (cl, cc) = self.primary_caret();
+            if let Some(msg) = self.diagnostic_message_at(cl, cc) {
+                self.set_hover(Some(msg));
+            }
+            self.lsp_ask = Some(LspAsk::Hover);
+            *handled = true;
+            return true;
+        }
+        false
+    }
+
+    /// Caret motion: arrows (plain, Ctrl-by-word, Alt for line move/duplicate,
+    /// Ctrl+Alt to add a caret below), Home/End, Page Up/Down. Returns `true`
+    /// when the key matched.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one key event's already-decoded fields threaded to the caret-motion match below; bundling them into a struct would not make the call clearer"
+    )]
+    fn handle_navigation_keys(
+        &mut self,
+        logical_key: &Key,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        match logical_key {
+            Key::Named(NamedKey::ArrowLeft) => {
+                // Ctrl+Left jumps a word; +Shift extends by a word.
+                if ctrl {
+                    self.word_move(false, shift);
+                } else {
+                    self.move_caret(-1, 0, shift);
+                }
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                if ctrl {
+                    self.word_move(true, shift);
+                } else {
+                    self.move_caret(1, 0, shift);
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                if ctrl && alt {
+                    self.add_caret_below();
+                } else if alt && shift {
+                    self.duplicate_lines(state, false);
+                } else if alt {
+                    self.move_lines(state, true);
+                } else {
+                    self.move_caret(0, -1, shift);
+                }
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                if ctrl && alt {
+                    self.add_caret_below();
+                } else if alt && shift {
+                    self.duplicate_lines(state, true);
+                } else if alt {
+                    self.move_lines(state, false);
+                } else {
+                    self.move_caret(0, 1, shift);
+                }
+            }
+            Key::Named(NamedKey::Home) => self.move_home(shift),
+            Key::Named(NamedKey::End) => self.move_end(shift),
+            Key::Named(NamedKey::PageUp) => {
+                let rows = (self.rect.height() / LINE_HEIGHT).floor() as isize;
+                self.move_caret(0, -rows, shift);
+            }
+            Key::Named(NamedKey::PageDown) => {
+                let rows = (self.rect.height() / LINE_HEIGHT).floor() as isize;
+                self.move_caret(0, rows, shift);
+            }
+            _ => return false,
+        }
+        *handled = true;
+        true
+    }
+
+    /// Ctrl+letter shortcuts: select-all, copy/cut/paste, add-caret-below,
+    /// delete-line, toggle-comment. Returns `true` when the key matched.
+    fn handle_ctrl_shortcut_keys(
+        &mut self,
+        logical_key: &Key,
+        ctrl: bool,
+        shift: bool,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        let Key::Character(s) = logical_key else {
+            return false;
+        };
+        if !ctrl {
+            return false;
+        }
+        match s.to_lowercase().as_str() {
+            "a" => self.select_all(),
+            "c" => self.copy_selection(),
+            "x" => self.cut_selection(state),
+            "v" => self.paste_clipboard(state),
+            "d" => self.add_caret_below(),
+            "k" if shift => self.delete_lines(state),
+            "/" => self.toggle_line_comment(state),
+            _ => return false,
+        }
+        *handled = true;
+        true
+    }
+
+    /// Backspace/Delete/Enter/Tab/Space, and — for anything else — plain
+    /// printable text insertion.
+    fn handle_editing_keys(
+        &mut self,
+        logical_key: &Key,
+        text: Option<&str>,
+        ctrl: bool,
+        shift: bool,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        match logical_key {
+            Key::Named(NamedKey::Backspace) => {
+                self.backspace(state);
+                *handled = true;
+            }
+            Key::Named(NamedKey::Delete) => {
+                self.delete_forward(state);
+                *handled = true;
+            }
+            Key::Named(NamedKey::Enter) => {
+                self.newline_with_indent(state);
+                *handled = true;
+            }
+            Key::Named(NamedKey::Tab) => {
+                // Shift+Tab outdents; Tab over a multi-line selection indents
+                // the whole block; otherwise it inserts one indent unit at
+                // the caret.
+                if shift {
+                    self.outdent_selection(state);
+                } else if self.selection_is_multiline() {
+                    self.indent_selection(state);
+                } else {
+                    self.insert_indent(state);
+                }
+                *handled = true;
+            }
+            Key::Named(NamedKey::Space) => {
+                // Ctrl+Space asks the app to fetch completions here.
+                if ctrl {
+                    self.lsp_ask = Some(LspAsk::Completion);
+                } else {
+                    self.insert(state, " ");
+                }
+                *handled = true;
+            }
+            _ => {
+                // Printable text insertion. `text` carries the resolved
+                // character(s) for the key (handles shift, layout, dead
+                // keys).
+                if !ctrl
+                    && let Some(s) = text
+                    && !s.is_empty()
+                    && !s.chars().any(char::is_control)
+                {
+                    self.insert(state, s);
+                    *handled = true;
+                }
+            }
+        }
+    }
+}
+
+impl Widget for EditorView {
+    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        // Pull remote/undo edits: if the buffer text differs from our cache,
+        // rebuild. Cheap string compare on the hot path.
+        if let Some(t) = self.text_obj.clone() {
+            use automerge::ReadDoc;
+            let text = state.text(&t).unwrap_or_default();
+            if text != self.cached_text {
+                self.rebuild(&text);
+            }
+        }
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Widget::build_layout is infallible by trait contract; inserting a single leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
+        )]
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "node was just created by this widget's own build_layout in the same tree; a lookup failure means the taffy tree is already corrupted and there is no meaningful layout to fall back to"
+        )]
+        let layout = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
+        );
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        let c = &theme.tokens.colors;
+        self.measure_cell_width(text_renderer);
+        let (gutter_w, code_x0, first_line, frac, n_visible) = self.layout_metrics();
+        self.draw_backgrounds(scene, transform, theme, gutter_w);
+
+        if self.text_obj.is_none() {
+            // A composed zero-state through the shared primitive: a hero icon,
+            // a title, a one-line invitation, and an actionable "Open File"
+            // pill that summons the portal picker.
+            self.empty_action_rect = EmptyState::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                self.rect,
+                Some(Icon::FileCode),
+                "No file open",
+                Some("Open a file from the tree, or pick one to start editing."),
+                Some("Open File"),
+                self.last_cursor,
+            )
+            .unwrap_or(Rect::ZERO);
+            return;
+        }
+
+        let primary_line = self.primary().line;
+        self.draw_line_backgrounds(
+            scene,
+            transform,
+            theme,
+            gutter_w,
+            code_x0,
+            first_line,
+            frac,
+            n_visible,
+            primary_line,
+        );
+        self.draw_line_text(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            gutter_w,
+            code_x0,
+            first_line,
+            frac,
+            n_visible,
+            primary_line,
+        );
+        self.draw_diagnostics(
+            scene, transform, theme, first_line, n_visible, code_x0, gutter_w,
+        );
+        self.draw_carets(
+            scene, transform, theme, first_line, n_visible, code_x0, gutter_w,
+        );
 
         // Right border separating from any side panel.
         let border = Line::new(
@@ -1531,142 +2285,24 @@ impl Widget for EditorView {
         let caret_x = code_x0 + caret_col as f64 * self.cell_w - self.scroll_x;
         let caret_top = self.rect.y0 + (caret_line as f64 - self.scroll_y) * LINE_HEIGHT;
 
-        // Completion popup — a floating list anchored under the caret.
-        if self.completion_active() {
-            const ROW_H: f64 = 20.0;
-            let max_rows = 8usize;
-            let total = self.completions.len();
-            let shown = total.min(max_rows);
-            // Scroll the window so the selected row stays visible.
-            let offset = if self.completion_index >= max_rows {
-                self.completion_index - max_rows + 1
-            } else {
-                0
-            };
-            let width = 340.0_f64.min(self.rect.width() - (gutter_w + 20.0));
-            let height = shown as f64 * ROW_H + 8.0;
-            let px = caret_x
-                .min(self.rect.x1 - width - 8.0)
-                .max(self.rect.x0 + gutter_w + 2.0);
-            let py = (caret_top + LINE_HEIGHT + 2.0)
-                .min(self.rect.y1 - height - 4.0)
-                .max(self.rect.y0);
-            let popup = Rect::new(px, py, px + width, py + height);
-            let shape = RoundedRect::from_rect(popup, 6.0);
-            scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                c.border_standard,
-                None,
-                &shape,
-            );
-
-            for row in 0..shown {
-                let idx = offset + row;
-                let Some(item) = self.completions.get(idx) else {
-                    break;
-                };
-                let ry = py + 4.0 + row as f64 * ROW_H;
-                if idx == self.completion_index {
-                    let hl = Rect::new(px + 2.0, ry, px + width - 2.0, ry + ROW_H);
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        c.accent[5].multiply_alpha(0.30),
-                        None,
-                        &hl,
-                    );
-                }
-                // Kind glyph (compact hint at the identifier's type).
-                let glyph = completion_kind_glyph(item.kind);
-                text_renderer.draw_text_styled(
-                    scene,
-                    glyph,
-                    FONT_SIZE,
-                    c.accent[6],
-                    transform * Affine::translate((px + 8.0, ry + 3.0)),
-                    None,
-                    TextWeight::Regular,
-                    false,
-                    true,
-                );
-                text_renderer.draw_text_styled(
-                    scene,
-                    &item.label,
-                    FONT_SIZE,
-                    c.text_primary,
-                    transform * Affine::translate((px + 26.0, ry + 3.0)),
-                    None,
-                    TextWeight::Regular,
-                    false,
-                    true,
-                );
-                if let Some(detail) = &item.detail {
-                    let (lw, _) = text_renderer.measure_styled(
-                        &item.label,
-                        FONT_SIZE,
-                        None,
-                        TextWeight::Regular,
-                        false,
-                        true,
-                    );
-                    text_renderer.draw_text_styled(
-                        scene,
-                        detail,
-                        FONT_SIZE - 1.0,
-                        c.text_dim,
-                        transform * Affine::translate((px + 34.0 + f64::from(lw), ry + 3.5)),
-                        Some((width - 40.0 - f64::from(lw)) as f32),
-                        TextWeight::Regular,
-                        false,
-                        true,
-                    );
-                }
-            }
-        }
-
-        // Hover tooltip — a small box near the caret with the server's text.
-        if let Some(hover) = self.hover_text.clone() {
-            let first: String = hover.lines().take(4).collect::<Vec<_>>().join("\n");
-            let (tw, _) = text_renderer.measure(&first, FONT_SIZE, None);
-            let width = (f64::from(tw) + 20.0).min(self.rect.width() - (gutter_w + 20.0));
-            let lines = first.lines().count().max(1);
-            let height = lines as f64 * (f64::from(FONT_SIZE) + 4.0) + 12.0;
-            let px = caret_x
-                .min(self.rect.x1 - width - 8.0)
-                .max(self.rect.x0 + gutter_w + 2.0);
-            // Prefer above the caret; drop below if there's no room.
-            let py = if caret_top - height - 4.0 >= self.rect.y0 {
-                caret_top - height - 4.0
-            } else {
-                caret_top + LINE_HEIGHT + 2.0
-            };
-            let box_rect = Rect::new(px, py, px + width, py + height);
-            let shape = RoundedRect::from_rect(box_rect, 6.0);
-            scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                c.border_standard,
-                None,
-                &shape,
-            );
-            for (i, line) in first.lines().enumerate() {
-                text_renderer.draw_text(
-                    scene,
-                    line,
-                    FONT_SIZE,
-                    c.text_primary,
-                    transform
-                        * Affine::translate((
-                            px + 10.0,
-                            py + 6.0 + i as f64 * (f64::from(FONT_SIZE) + 4.0),
-                        )),
-                    Some((width - 20.0) as f32),
-                );
-            }
-        }
+        self.draw_completion_popup(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            gutter_w,
+            caret_x,
+            caret_top,
+        );
+        self.draw_hover_tooltip(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            gutter_w,
+            caret_x,
+            caret_top,
+        );
     }
 
     fn handle_event(
@@ -1714,45 +2350,7 @@ impl Widget for EditorView {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if self.rect.contains(self.last_cursor) {
-                    let (line, col) = self.point_to_caret(self.last_cursor);
-                    let shift = mods.shift_key();
-                    // Ctrl/Cmd-click (without shift) adds a caret for
-                    // multi-cursor editing and does not start a drag-select.
-                    if (mods.control_key() || mods.super_key()) && !shift {
-                        self.carets.push(Caret::at(line, col));
-                    } else {
-                        // The shared click ladder resolves single/double/triple
-                        // and shift-extend; we map its granularity to a
-                        // char/word/line selection anchored for the drag.
-                        let intent = self.drag.press(self.last_cursor, shift);
-                        self.drag_anchor = match intent.granularity {
-                            Granularity::Word => self.select_word_at(line, col),
-                            Granularity::Line => self.select_line_at(line),
-                            Granularity::Char => {
-                                let flat = self.char_index(line, col);
-                                if intent.extend {
-                                    // Shift-click: keep the existing anchor (or
-                                    // promote the current caret) and extend.
-                                    let (al, ac) = self.carets[0]
-                                        .anchor
-                                        .unwrap_or((self.carets[0].line, self.carets[0].col));
-                                    let anchor = self.char_index(al, ac);
-                                    self.set_primary_range(anchor, flat);
-                                    (anchor, anchor)
-                                } else {
-                                    self.carets = vec![Caret::at(line, col)];
-                                    (flat, flat)
-                                }
-                            }
-                        };
-                    }
-                    self.is_focused = true;
-                    self.dirty = true;
-                    *handled = true;
-                }
-            }
+            } => self.handle_mouse_press(mods, handled),
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -1763,259 +2361,14 @@ impl Widget for EditorView {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-                // While dragging, extend the selection to the pointer at the
-                // gesture's granularity — char follows the caret; word/line snap
-                // so the original span the press selected stays covered.
-                if let Some(gran) = self.drag.drag() {
-                    let (line, col) = self.point_to_caret(self.last_cursor);
-                    let q = self.char_index(line, col);
-                    let (anchor, cursor) = match gran {
-                        Granularity::Char => (self.drag_anchor.0, q),
-                        Granularity::Word => {
-                            let (ws, we) = word_boundaries_chars(&self.cached_text, q);
-                            if q < self.drag_anchor.0 {
-                                (self.drag_anchor.1, ws)
-                            } else {
-                                (self.drag_anchor.0, we)
-                            }
-                        }
-                        Granularity::Line => {
-                            let len = self.lines[line].chars().count();
-                            let (ls, le) = (self.char_index(line, 0), self.char_index(line, len));
-                            if q < self.drag_anchor.0 {
-                                (self.drag_anchor.1, ls)
-                            } else {
-                                (self.drag_anchor.0, le)
-                            }
-                        }
-                    };
-                    self.set_primary_range(anchor, cursor);
-                    *handled = true;
-                }
+                let next = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.handle_cursor_moved(next, handled);
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                if self.rect.contains(self.last_cursor) {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 3.0,
-                        MouseScrollDelta::PixelDelta(p) => p.y / LINE_HEIGHT,
-                    };
-                    let max = (self.lines.len() as f64 - 1.0).max(0.0);
-                    self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
-                    self.dirty = true;
-                    *handled = true;
-                }
-            }
+            WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(*delta, handled),
             WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        text,
-                        ..
-                    },
-                ..
-            } => {
-                let ctrl = mods.control_key() || mods.super_key();
-                let shift = mods.shift_key();
-
-                // Any keypress dismisses a stale hover tooltip.
-                if self.hover_text.is_some() {
-                    self.hover_text = None;
-                    self.dirty = true;
-                }
-
-                // While the completion popup is open it captures navigation
-                // keys; anything else dismisses it and falls through to editing.
-                if self.completion_active() {
-                    match logical_key {
-                        Key::Named(NamedKey::ArrowDown) => {
-                            let n = self.completions.len();
-                            self.completion_index = (self.completion_index + 1) % n;
-                            self.dirty = true;
-                            *handled = true;
-                            return;
-                        }
-                        Key::Named(NamedKey::ArrowUp) => {
-                            let n = self.completions.len();
-                            self.completion_index = (self.completion_index + n - 1) % n;
-                            self.dirty = true;
-                            *handled = true;
-                            return;
-                        }
-                        Key::Named(NamedKey::Enter | NamedKey::Tab) => {
-                            self.accept_completion(state);
-                            *handled = true;
-                            return;
-                        }
-                        Key::Named(NamedKey::Escape) => {
-                            self.hide_completions();
-                            *handled = true;
-                            return;
-                        }
-                        _ => self.hide_completions(),
-                    }
-                }
-
-                // Language-server request triggers.
-                if let Key::Named(NamedKey::F12) = logical_key {
-                    self.lsp_ask = Some(LspAsk::Definition);
-                    *handled = true;
-                    return;
-                }
-                if let Key::Named(NamedKey::F1) = logical_key {
-                    // Instant, server-free hover: if the caret sits on a
-                    // diagnostic, show its message immediately. Also ask the LSP
-                    // for a richer hover (which supersedes this when it arrives).
-                    let (cl, cc) = self.primary_caret();
-                    if let Some(msg) = self.diagnostic_message_at(cl, cc) {
-                        self.set_hover(Some(msg));
-                    }
-                    self.lsp_ask = Some(LspAsk::Hover);
-                    *handled = true;
-                    return;
-                }
-
-                match logical_key {
-                    Key::Named(NamedKey::ArrowLeft) => {
-                        // Ctrl+Left jumps a word; +Shift extends by a word.
-                        if ctrl {
-                            self.word_move(false, shift);
-                        } else {
-                            self.move_caret(-1, 0, shift);
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowRight) => {
-                        if ctrl {
-                            self.word_move(true, shift);
-                        } else {
-                            self.move_caret(1, 0, shift);
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        let alt = mods.alt_key();
-                        if ctrl && alt {
-                            self.add_caret_below();
-                        } else if alt && shift {
-                            self.duplicate_lines(state, false);
-                        } else if alt {
-                            self.move_lines(state, true);
-                        } else {
-                            self.move_caret(0, -1, shift);
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowDown) => {
-                        let alt = mods.alt_key();
-                        if ctrl && alt {
-                            self.add_caret_below();
-                        } else if alt && shift {
-                            self.duplicate_lines(state, true);
-                        } else if alt {
-                            self.move_lines(state, false);
-                        } else {
-                            self.move_caret(0, 1, shift);
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Home) => {
-                        self.move_home(shift);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::End) => {
-                        self.move_end(shift);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::PageUp) => {
-                        let rows = (self.rect.height() / LINE_HEIGHT).floor() as isize;
-                        self.move_caret(0, -rows, shift);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::PageDown) => {
-                        let rows = (self.rect.height() / LINE_HEIGHT).floor() as isize;
-                        self.move_caret(0, rows, shift);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Backspace) => {
-                        self.backspace(state);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Delete) => {
-                        self.delete_forward(state);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Enter) => {
-                        self.newline_with_indent(state);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Tab) => {
-                        // Shift+Tab outdents; Tab over a multi-line selection
-                        // indents the whole block; otherwise it inserts one
-                        // indent unit at the caret.
-                        if shift {
-                            self.outdent_selection(state);
-                        } else if self.selection_is_multiline() {
-                            self.indent_selection(state);
-                        } else {
-                            self.insert_indent(state);
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Space) => {
-                        // Ctrl+Space asks the app to fetch completions here.
-                        if ctrl {
-                            self.lsp_ask = Some(LspAsk::Completion);
-                        } else {
-                            self.insert(state, " ");
-                        }
-                        *handled = true;
-                    }
-                    Key::Character(s) if ctrl => match s.to_lowercase().as_str() {
-                        "a" => {
-                            self.select_all();
-                            *handled = true;
-                        }
-                        "c" => {
-                            self.copy_selection();
-                            *handled = true;
-                        }
-                        "x" => {
-                            self.cut_selection(state);
-                            *handled = true;
-                        }
-                        "v" => {
-                            self.paste_clipboard(state);
-                            *handled = true;
-                        }
-                        "d" => {
-                            self.add_caret_below();
-                            *handled = true;
-                        }
-                        "k" if shift => {
-                            self.delete_lines(state);
-                            *handled = true;
-                        }
-                        "/" => {
-                            self.toggle_line_comment(state);
-                            *handled = true;
-                        }
-                        _ => {}
-                    },
-                    _ => {
-                        // Printable text insertion. `text` carries the
-                        // resolved character(s) for the key (handles shift,
-                        // layout, dead keys).
-                        if !ctrl && let Some(t) = text {
-                            let s: &str = t.as_str();
-                            if !s.is_empty() && !s.chars().any(char::is_control) {
-                                self.insert(state, s);
-                                *handled = true;
-                            }
-                        }
-                    }
-                }
+                event: key_event, ..
+            } if key_event.state == ElementState::Pressed => {
+                self.handle_key_press(key_event, mods, state, handled);
             }
             _ => {}
         }

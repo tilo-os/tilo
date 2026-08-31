@@ -6,6 +6,16 @@
 //! `SidebarRow` addressable by its category's display label via `test_id`,
 //! so the count is exact (the content pane contains no `SidebarRow`s).
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use settings::SettingsApp;
 use settings::categories::Category;
 use std::collections::HashMap;

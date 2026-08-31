@@ -3,6 +3,16 @@
 //! `NVENC -> VA-API -> openh264` in priority order. Session-start probe
 //! only — the tracker/encode loop lives in `flatpak_share_e2e.rs`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use shell::collab::encoder::EncoderKind;
 use shell::collab::flatpak_share::SharedFlatpakSession;
 use shell::config::{EncoderChoice, FlatpakShareConfig};
@@ -29,7 +39,7 @@ fn auto_resolves_to_openh264_on_stripped_host() {
         SURFACE,
         64,
         64,
-        cfg(EncoderChoice::Auto),
+        &cfg(EncoderChoice::Auto),
     )
     .expect("session should start");
     // Without the `vaapi` / `nvenc` features the probe walks past both
@@ -56,7 +66,7 @@ fn explicit_openh264_never_probes_hardware() {
         SURFACE,
         64,
         64,
-        cfg(EncoderChoice::Openh264),
+        &cfg(EncoderChoice::Openh264),
     )
     .expect("session should start");
     assert_eq!(session.chosen_encoder(), EncoderKind::Openh264);
@@ -73,7 +83,7 @@ fn requested_vaapi_falls_back_when_hardware_absent() {
         SURFACE,
         64,
         64,
-        cfg(EncoderChoice::Vaapi),
+        &cfg(EncoderChoice::Vaapi),
     )
     .expect("session should fall back rather than fail");
     #[cfg(not(feature = "vaapi"))]
@@ -98,7 +108,7 @@ fn requested_nvenc_falls_back_when_hardware_absent() {
         SURFACE,
         64,
         64,
-        cfg(EncoderChoice::Nvenc),
+        &cfg(EncoderChoice::Nvenc),
     )
     .expect("session should fall back rather than fail");
     #[cfg(not(feature = "nvenc"))]
@@ -146,7 +156,7 @@ fn auto_probe_picks_vaapi_when_hardware_present() {
             SURFACE,
             320,
             240,
-            cfg(EncoderChoice::Auto),
+            &cfg(EncoderChoice::Auto),
         )
         .expect("session should start");
         assert_eq!(

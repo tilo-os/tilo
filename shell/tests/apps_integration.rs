@@ -5,6 +5,16 @@
 //! first terminal grid line once the PTY delivers bytes, and at least one
 //! non-empty-named file-explorer entry.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use shell::shell::{Shell, tile::TileContent};
 use std::time::Duration;
 use ui::AppKind;
@@ -23,9 +33,9 @@ fn default_workspace_hosts_terminal_and_files_and_browser_stub() {
 
     let kinds: Vec<AppKind> = tabs
         .iter()
-        .filter_map(|t| match t {
-            TileContent::App(a) => Some(a.app_kind()),
-            TileContent::Stub { kind, .. } => Some(*kind),
+        .map(|t| match t {
+            TileContent::App(a) => a.app_kind(),
+            TileContent::Stub { kind, .. } => *kind,
         })
         .collect();
 

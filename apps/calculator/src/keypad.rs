@@ -302,7 +302,6 @@ impl CalcScreen {
         // the docked column / overlay flap slides instead of snapping.
         self.drawer.tick(theme.reduce_motion);
         self.layout(area, model);
-        let c = &theme.tokens.colors;
         let pad = 16.0;
 
         let left_x1 = if self.drawer.is_docked() {
@@ -321,6 +320,39 @@ impl CalcScreen {
 
         // ---- Display panel -------------------------------------------------
         let display = Rect::new(left.x0, display_top, left.x1, display_top + 124.0);
+        Self::draw_display(scene, t, tr, theme, model, display);
+
+        // ---- Memory bar ----------------------------------------------------
+        self.draw_memory_bar(scene, t, tr, theme, model, left);
+
+        // ---- Keypad --------------------------------------------------------
+        self.draw_keys(scene, t, tr, theme);
+
+        // ---- History sidebar ----------------------------------------------
+        // Overlay mode draws the drawer's dimming scrim over the keypad first,
+        // then the drawer floats on top; docked mode just paints the column in
+        // place. Both the scrim and its fade are owned by the primitive.
+        if self.drawer.is_overlay() {
+            self.drawer.draw_scrim(scene, t);
+        }
+        // Paint whenever the panel has any width (reveal > 0), so the history
+        // slides both opening and collapsing rather than blinking out.
+        if self.sidebar_rect != Rect::ZERO {
+            self.draw_history(scene, t, tr, theme, model);
+        }
+    }
+
+    /// The display panel: status line (angle mode + Ans), the expression
+    /// line, and the result/preview line.
+    fn draw_display(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        model: &CalcModel,
+        display: Rect,
+    ) {
+        let c = &theme.tokens.colors;
         draw::fill_rrect(scene, t, display, theme.radius_standard, c.neutral[0]);
         draw::stroke_rrect(
             scene,
@@ -363,6 +395,19 @@ impl CalcScreen {
             TextWeight::Regular,
         );
 
+        Self::draw_display_expr_and_result(scene, t, tr, theme, model, display);
+    }
+
+    /// The display panel's expression line and its result/preview line.
+    fn draw_display_expr_and_result(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        model: &CalcModel,
+        display: Rect,
+    ) {
+        let c = &theme.tokens.colors;
         // expression line
         let expr_rect = Rect::new(
             display.x0 + 16.0,
@@ -425,10 +470,23 @@ impl CalcScreen {
             Align::Right,
             weight,
         );
+    }
 
-        // ---- Memory bar ----------------------------------------------------
+    /// The memory-register buttons (MC/MR/M+/M-) and the "M = …" readout.
+    fn draw_memory_bar(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        model: &CalcModel,
+        left: Rect,
+    ) {
+        let c = &theme.tokens.colors;
         for (i, key) in MEM_KEYS.iter().enumerate() {
-            let r = self.mem_rects[i];
+            let Some(&r) = self.mem_rects.get(i) else {
+                continue;
+            };
             let hovered = self.hovered_mem == Some(i);
             let active = matches!(key, Key::MemRecall | Key::MemClear) && model.memory != 0.0;
             let fill = if hovered { c.neutral[3] } else { c.neutral[2] };
@@ -446,33 +504,35 @@ impl CalcScreen {
                 TextWeight::Semibold,
             );
         }
-        let mem_label = Rect::new(
-            self.mem_rects[3].x1 + 12.0,
-            self.mem_rects[3].y0,
-            left.x1,
-            self.mem_rects[3].y1,
-        );
-        let mem_txt = format!("M = {}", engine::format_number(model.memory));
-        let mem_col = if model.memory == 0.0 {
-            c.text_dim
-        } else {
-            c.accent[6]
-        };
-        draw::text_in(
-            scene,
-            tr,
-            t,
-            mem_label,
-            &mem_txt,
-            14.0,
-            mem_col,
-            Align::Right,
-            TextWeight::Medium,
-        );
+        if let Some(&mem3) = self.mem_rects.get(3) {
+            let mem_label = Rect::new(mem3.x1 + 12.0, mem3.y0, left.x1, mem3.y1);
+            let mem_txt = format!("M = {}", engine::format_number(model.memory));
+            let mem_col = if model.memory == 0.0 {
+                c.text_dim
+            } else {
+                c.accent[6]
+            };
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                mem_label,
+                &mem_txt,
+                14.0,
+                mem_col,
+                Align::Right,
+                TextWeight::Medium,
+            );
+        }
+    }
 
-        // ---- Keypad --------------------------------------------------------
+    /// The scientific keypad's key buttons.
+    fn draw_keys(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
         for (i, key) in self.keys.iter().enumerate() {
-            let r = self.key_rects[i];
+            let Some(&r) = self.key_rects.get(i) else {
+                continue;
+            };
             let hovered = self.hovered_key == Some(i);
             let pressed = self.pressed_key == Some(i);
             let (fill, text_col) = key_colors(theme, key.role(), hovered, pressed);
@@ -495,19 +555,6 @@ impl CalcScreen {
                 Align::Center,
                 TextWeight::Medium,
             );
-        }
-
-        // ---- History sidebar ----------------------------------------------
-        // Overlay mode draws the drawer's dimming scrim over the keypad first,
-        // then the drawer floats on top; docked mode just paints the column in
-        // place. Both the scrim and its fade are owned by the primitive.
-        if self.drawer.is_overlay() {
-            self.drawer.draw_scrim(scene, t);
-        }
-        // Paint whenever the panel has any width (reveal > 0), so the history
-        // slides both opening and collapsing rather than blinking out.
-        if self.sidebar_rect != Rect::ZERO {
-            self.draw_history(scene, t, tr, theme, model);
         }
     }
 
@@ -592,7 +639,9 @@ impl CalcScreen {
             );
         }
         for (i, r) in &self.history_rects {
-            let entry = &model.history[*i];
+            let Some(entry) = model.history.get(*i) else {
+                continue;
+            };
             let row = Rect::new(r.x0, r.y0 + 4.0, r.x1, r.y1 - 4.0);
             draw::fill_rrect(scene, t, row, 8.0, c.neutral[1]);
             let expr_r = Rect::new(row.x0 + 12.0, row.y0 + 6.0, row.x1 - 12.0, row.y0 + 26.0);

@@ -37,6 +37,11 @@ impl FloorPlan {
 /// not clamped — clamping would quietly repair an authoring mistake that testing should
 /// catch, and letting it through would raise the floor above every existing token, leaving a
 /// machine that boots and then asks for the recovery key forever.
+///
+/// # Errors
+///
+/// Returns an error if `retained_generations` is `0`, if `declared_floor` exceeds
+/// `confirmed`, or if `current_floor` already exceeds `confirmed`.
 pub fn plan_floor(
     confirmed: u64,
     current_floor: u64,
@@ -61,7 +66,7 @@ pub fn plan_floor(
              needs re-enrollment, not a further advance"
         );
     }
-    let window_floor = confirmed.saturating_sub(u64::from(retained_generations - 1));
+    let window_floor = confirmed.saturating_sub(u64::from(retained_generations.saturating_sub(1)));
     let target_floor = window_floor
         .max(current_floor)
         .max(declared_floor.unwrap_or(0));
@@ -125,6 +130,11 @@ pub fn drop_set(current: u64, present: &[u64], retained_generations: u32) -> Vec
 /// at least one *verified* generation slot survives it and the recovery key has been
 /// verified — both passed in as facts the caller already established by actually unlocking
 /// with them, not as intentions.
+///
+/// # Errors
+///
+/// Returns an error if `recovery_verified` is `false`, or if `verified_survivors` is empty
+/// while `drop` is not (pruning would leave nothing proven to unlock the device).
 pub fn prune_is_safe(
     drop: &[u64],
     verified_survivors: &[u64],

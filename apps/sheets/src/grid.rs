@@ -139,6 +139,19 @@ struct FillDrag {
     target: Addr,
 }
 
+/// Size + colour for one [`Grid::draw_cell_text`] call.
+struct CellTextStyle {
+    size: f32,
+    color: Color,
+}
+
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "selecting/point_selecting/show_formulas/needs_autofit/dirty are independent \
+              interaction and render-invalidation flags, not exclusive states an enum would \
+              simplify; consolidating them would touch this widget's many call sites for no \
+              behavioural gain"
+)]
 pub struct Grid {
     pub rect: Rect,
     scroll_x: f64,
@@ -995,12 +1008,31 @@ impl Grid {
         if !self.rect.contains(p) {
             return false;
         }
-        // Formula point mode: while editing a formula, a click on another cell
-        // inserts its reference (a drag inserts a range) rather than moving
-        // the selection or committing the edit. Only fires when the caret is
-        // ready for a reference (right after `=` / an operator, or replacing a
-        // previously click-inserted one); otherwise the click falls through to
-        // normal selection, which commits the edit.
+        if self.try_point_mode_click(p) {
+            return true;
+        }
+        if self.try_start_resize(p) {
+            return true;
+        }
+        if !ctrl && !shift && self.try_start_fill_drag(p, out) {
+            return true;
+        }
+        if self.try_column_header_click(p, ctrl, shift, out) {
+            return true;
+        }
+        if self.try_row_header_click(p, ctrl, shift, out) {
+            return true;
+        }
+        self.try_body_click(p, ctrl, shift, out)
+    }
+
+    /// Formula point mode: while editing a formula, a click on another cell
+    /// inserts its reference (a drag inserts a range) rather than moving
+    /// the selection or committing the edit. Only fires when the caret is
+    /// ready for a reference (right after `=` / an operator, or replacing a
+    /// previously click-inserted one); otherwise the click falls through to
+    /// normal selection, which commits the edit.
+    fn try_point_mode_click(&mut self, p: Point) -> bool {
         if self.editing_formula()
             && self.can_point()
             && let Some(addr) = self.cell_at(p)
@@ -1011,7 +1043,11 @@ impl Grid {
                 return true;
             }
         }
-        // Start a resize drag if near a header edge.
+        false
+    }
+
+    /// Start a resize drag if `p` is near a column/row header edge.
+    fn try_start_resize(&mut self, p: Point) -> bool {
         if let Some(target) = self.resize_target_at(p) {
             let origin_size = match target {
                 ResizeTarget::Col(c) => self.col_w(c),
@@ -1028,14 +1064,16 @@ impl Grid {
             });
             return true;
         }
-        // Fill handle: grab the selection's bottom-right corner and drag to
-        // extend the pattern. A plain press only (Ctrl/Shift keep their normal
-        // selection meaning). Checked before the body-click so a grab near the
-        // corner starts a fill rather than a new selection.
-        if !ctrl
-            && !shift
-            && let Some(hr) = self.fill_handle_rect()
-        {
+        false
+    }
+
+    /// Fill handle: grab the selection's bottom-right corner and drag to
+    /// extend the pattern. A plain press only (the caller gates on
+    /// Ctrl/Shift, which keep their normal selection meaning). Checked
+    /// before the body-click so a grab near the corner starts a fill rather
+    /// than a new selection.
+    fn try_start_fill_drag(&mut self, p: Point, out: &mut Vec<GridCmd>) -> bool {
+        if let Some(hr) = self.fill_handle_rect() {
             let grab = hr.inflate(FILL_HANDLE_GRAB, FILL_HANDLE_GRAB);
             if grab.contains(p) {
                 self.commit_edit(out);
@@ -1048,8 +1086,18 @@ impl Grid {
                 return true;
             }
         }
-        // Column header click → select the whole column (Ctrl adds it, Shift
-        // extends the column span from the current anchor).
+        false
+    }
+
+    /// Column header click → select the whole column (Ctrl adds it, Shift
+    /// extends the column span from the current anchor).
+    fn try_column_header_click(
+        &mut self,
+        p: Point,
+        ctrl: bool,
+        shift: bool,
+        out: &mut Vec<GridCmd>,
+    ) -> bool {
         if p.y >= self.rect.y0
             && p.y < self.grid_y0()
             && p.x >= self.grid_x0()
@@ -1071,7 +1119,17 @@ impl Grid {
             self.dirty = true;
             return true;
         }
-        // Row header click → select whole row (Ctrl adds, Shift extends).
+        false
+    }
+
+    /// Row header click → select whole row (Ctrl adds, Shift extends).
+    fn try_row_header_click(
+        &mut self,
+        p: Point,
+        ctrl: bool,
+        shift: bool,
+        out: &mut Vec<GridCmd>,
+    ) -> bool {
         if p.x >= self.rect.x0
             && p.x < self.grid_x0()
             && p.y >= self.grid_y0()
@@ -1093,7 +1151,17 @@ impl Grid {
             self.dirty = true;
             return true;
         }
-        // Body click → select / extend / add.
+        false
+    }
+
+    /// Body click → select / extend / add.
+    fn try_body_click(
+        &mut self,
+        p: Point,
+        ctrl: bool,
+        shift: bool,
+        out: &mut Vec<GridCmd>,
+    ) -> bool {
         if let Some(addr) = self.cell_at(p) {
             self.commit_edit(out);
             if ctrl {
@@ -1570,7 +1638,6 @@ impl Grid {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let colors = &theme.tokens.colors;
         // Refit columns to their content before laying anything out, so long
         // labels aren't truncated by an occupied neighbour.
         if self.needs_autofit {
@@ -1587,35 +1654,64 @@ impl Grid {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surfaces.base,
+            theme.tokens.colors.surfaces.base,
             None,
             &self.rect,
         );
+        self.draw_selection_fill(scene, transform, theme, body);
 
-        // Selection ranges (translucent accent fill) under the cells. Every
-        // discontiguous range paints; overlaps just deepen slightly. Iterate
-        // without allocating a ranges vector on the per-frame draw path.
-        // Read the accent from the theme so the selection wash tracks the OS
-        // palette / high-contrast, matching the name-box + tab accents nearby.
-        let fill = colors.accent[5].with_alpha_factor(0.15);
+        // --- cells + text (clipped to the body) ---
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
+        self.draw_cells(scene, transform, tr, theme, &cols, &rows);
+        self.draw_grid_lines(scene, transform, theme, &cols, &rows, body);
+        self.draw_active_highlight(scene, transform, theme, body);
+        self.draw_fill_handle(scene, transform, theme, body);
+        self.draw_reference_highlights(scene, transform, body);
+        scene.pop_layer();
+
+        // --- headers (painted on top, never clipped by the body) ---
+        self.draw_headers(scene, transform, tr, theme, &cols, &rows);
+
+        // --- in-cell editor overlay ---
+        if self.edit.is_some() {
+            self.draw_editor(scene, transform, tr, theme);
+        }
+    }
+
+    /// Selection ranges (translucent accent fill) under the cells. Every
+    /// discontiguous range paints; overlaps just deepen slightly. Iterate
+    /// without allocating a ranges vector on the per-frame draw path.
+    /// Read the accent from the theme so the selection wash tracks the OS
+    /// palette / high-contrast, matching the name-box + tab accents nearby.
+    fn draw_selection_fill(&self, scene: &mut Scene, transform: Affine, theme: &Theme, body: Rect) {
+        let fill = theme.tokens.colors.accent[5].with_alpha_factor(0.15);
         for range in self
             .extra_ranges
             .iter()
             .copied()
             .chain(std::iter::once(self.current_range()))
         {
-            if let Some(sr) = self.range_screen_rect(range)
-                && let Some(cr) = intersect(sr, body)
-            {
+            let sr = self.range_screen_rect(range);
+            if let Some(cr) = intersect(sr, body) {
                 scene.fill(Fill::NonZero, transform, fill, None, &cr);
             }
         }
+    }
 
-        // --- cells + text (clipped to the body) ---
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
+    /// Paint each visible cell's value/formula text.
+    fn draw_cells(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cols: &[u32],
+        rows: &[u32],
+    ) {
+        let colors = &theme.tokens.colors;
         let text_size = theme.tokens.typography.scale.base;
-        for &r in &rows {
-            for &c in &cols {
+        for &r in rows {
+            for &c in cols {
                 let cell = self.cell_screen_rect(c, r);
                 // Skip while editing this exact cell — the editor overlay
                 // paints it instead.
@@ -1636,7 +1732,18 @@ impl Grid {
                     } else {
                         colors.text_primary
                     };
-                    self.draw_cell_text(scene, transform, tr, raw, text_size, color, cell, false);
+                    Self::draw_cell_text(
+                        scene,
+                        transform,
+                        tr,
+                        raw,
+                        &CellTextStyle {
+                            size: text_size,
+                            color,
+                        },
+                        cell,
+                        false,
+                    );
                     continue;
                 }
                 if let Some(val) = self.values.get(&(c, r)) {
@@ -1650,31 +1757,42 @@ impl Grid {
                     }
                     let color = if val.is_error() {
                         colors.semantic.danger
-                    } else if matches!(val, CellValue::Text(_)) && fmt != CellFormat::Number {
-                        colors.text_primary
                     } else {
                         colors.text_primary
                     };
                     let right_align = val.is_numeric() && fmt != CellFormat::Text;
-                    self.draw_cell_text(
+                    Self::draw_cell_text(
                         scene,
                         transform,
                         tr,
                         &text,
-                        text_size,
-                        color,
+                        &CellTextStyle {
+                            size: text_size,
+                            color,
+                        },
                         cell,
                         right_align,
                     );
                 }
             }
         }
+    }
 
-        // Grid lines.
-        let line_color = colors.border_standard.with_alpha_factor(0.5);
+    /// Grid line strokes for the visible rows/columns, plus the trailing
+    /// right/bottom edges when they fall within `body`.
+    fn draw_grid_lines(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        cols: &[u32],
+        rows: &[u32],
+        body: Rect,
+    ) {
+        let line_color = theme.tokens.colors.border_standard.with_alpha_factor(0.5);
         let stroke = Stroke::new(1.0);
         // verticals
-        for &c in &cols {
+        for &c in cols {
             let x = (self.grid_x0() + self.col_left(c) - self.scroll_x).round() + 0.5;
             scene.stroke(
                 &stroke,
@@ -1699,7 +1817,7 @@ impl Grid {
                 );
             }
         }
-        for &r in &rows {
+        for &r in rows {
             let y = (self.grid_y0() + self.row_top(r) - self.scroll_y).round() + 0.5;
             scene.stroke(
                 &stroke,
@@ -1723,15 +1841,32 @@ impl Grid {
                 );
             }
         }
+    }
 
-        // Active-cell highlight border.
+    /// Active-cell highlight border.
+    fn draw_active_highlight(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        body: Rect,
+    ) {
         if let Some(ar) = intersect(self.cell_screen_rect(self.active.0, self.active.1), body) {
-            scene.stroke(&Stroke::new(2.0), transform, colors.accent[5], None, &ar);
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.tokens.colors.accent[5],
+                None,
+                &ar,
+            );
         }
+    }
 
-        // Fill handle + drag preview. While dragging, a dashed outline shows
-        // the region the pattern will extend into; at rest, a small solid
-        // square sits on the selection's bottom-right corner (Excel's handle).
+    /// Fill handle + drag preview. While dragging, a dashed outline shows
+    /// the region the pattern will extend into; at rest, a small solid
+    /// square sits on the selection's bottom-right corner (Excel's handle).
+    fn draw_fill_handle(&self, scene: &mut Scene, transform: Affine, theme: &Theme, body: Rect) {
+        let colors = &theme.tokens.colors;
         if let Some(fd) = self.fill_drag {
             if let Some((_, _, dtl, dbr)) = Self::fill_region(fd.src, fd.target) {
                 let tl = self.cell_screen_rect(dtl.0, dtl.1);
@@ -1755,11 +1890,13 @@ impl Grid {
             );
             scene.fill(Fill::NonZero, transform, colors.accent[5], None, &cr);
         }
+    }
 
-        // Referenced ranges of the formula being edited — coloured outlines
-        // matching the tinted references in the formula text, so it's clear
-        // which cells feed the result (and, in point mode, which range a click
-        // just inserted).
+    /// Referenced ranges of the formula being edited — coloured outlines
+    /// matching the tinted references in the formula text, so it's clear
+    /// which cells feed the result (and, in point mode, which range a click
+    /// just inserted).
+    fn draw_reference_highlights(&self, scene: &mut Scene, transform: Affine, body: Rect) {
         if let Some(body_text) = self.highlight_formula_body() {
             let spans = crate::formula::references(&body_text);
             let slots = crate::formula::ref_color_slots(&spans);
@@ -1780,34 +1917,23 @@ impl Grid {
                 }
             }
         }
-        scene.pop_layer();
-
-        // --- headers (painted on top, never clipped by the body) ---
-        self.draw_headers(scene, transform, tr, theme, &cols, &rows);
-
-        // --- in-cell editor overlay ---
-        if self.edit.is_some() {
-            self.draw_editor(scene, transform, tr, theme);
-        }
     }
 
     /// Absolute screen rect spanning one selection range (may lie off-body;
-    /// the caller clips it). `None` never happens but keeps the call site tidy.
-    fn range_screen_rect(&self, range: SelRange) -> Option<Rect> {
+    /// the caller clips it).
+    fn range_screen_rect(&self, range: SelRange) -> Rect {
         let (c0, r0, c1, r1) = range.bounds();
         let tl = self.cell_screen_rect(c0, r0);
         let br = self.cell_screen_rect(c1, r1);
-        Some(Rect::new(tl.x0, tl.y0, br.x1, br.y1))
+        Rect::new(tl.x0, tl.y0, br.x1, br.y1)
     }
 
     fn draw_cell_text(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         text: &str,
-        size: f32,
-        color: Color,
+        style: &CellTextStyle,
         cell: Rect,
         right_align: bool,
     ) {
@@ -1815,8 +1941,8 @@ impl Grid {
         if inner.width() <= 2.0 {
             return;
         }
-        let (tw, _) = tr.measure(text, size, None);
-        let ty = cell.y0 + (cell.height() - f64::from(size)) / 2.0;
+        let (tw, _) = tr.measure(text, style.size, None);
+        let ty = cell.y0 + (cell.height() - f64::from(style.size)) / 2.0;
         let tx = if right_align {
             cell.x1 - CELL_PAD_X - f64::from(tw)
         } else {
@@ -1826,8 +1952,8 @@ impl Grid {
         tr.draw_text(
             scene,
             text,
-            size,
-            color,
+            style.size,
+            style.color,
             transform * Affine::translate((tx, ty)),
             None,
         );
@@ -1843,10 +1969,33 @@ impl Grid {
         cols: &[u32],
         rows: &[u32],
     ) {
+        self.draw_col_headers(scene, transform, tr, theme, cols);
+        self.draw_row_headers(scene, transform, tr, theme, rows);
+
+        // Corner box.
+        let colors = &theme.tokens.colors;
+        let corner = Rect::new(self.rect.x0, self.rect.y0, self.grid_x0(), self.grid_y0());
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &corner,
+        );
+    }
+
+    /// Column header strip: letters, selection tint, bottom border.
+    fn draw_col_headers(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cols: &[u32],
+    ) {
         let colors = &theme.tokens.colors;
         let size = theme.tokens.typography.scale.sm;
 
-        // Column header strip.
         let col_strip = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.grid_y0());
         scene.fill(
             Fill::NonZero,
@@ -1906,8 +2055,20 @@ impl Grid {
                 (self.rect.x1, self.grid_y0()),
             ),
         );
+    }
 
-        // Row header strip.
+    /// Row header strip: numbers, selection tint, right border.
+    fn draw_row_headers(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rows: &[u32],
+    ) {
+        let colors = &theme.tokens.colors;
+        let size = theme.tokens.typography.scale.sm;
+
         let row_strip = Rect::new(self.rect.x0, self.grid_y0(), self.grid_x0(), self.rect.y1);
         scene.fill(
             Fill::NonZero,
@@ -1966,16 +2127,6 @@ impl Grid {
                 (self.grid_x0(), self.rect.y0),
                 (self.grid_x0(), self.rect.y1),
             ),
-        );
-
-        // Corner box.
-        let corner = Rect::new(self.rect.x0, self.rect.y0, self.grid_x0(), self.grid_y0());
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &corner,
         );
     }
 

@@ -161,6 +161,12 @@ struct Layout {
 }
 
 /// Root widget: the whole API tester.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the bools split across unrelated concerns (an in-flight send, one-time seed/adopt \
+              bookkeeping, and repaint/persist dirty flags), so grouping them would need a real \
+              design pass rather than a mechanical lint fix"
+)]
 pub struct ApiTesterApp {
     // --- Model ---
     collections: Vec<Collection>,
@@ -231,6 +237,29 @@ struct NavMeta {
     cmd: Cmd,
 }
 
+/// The model half of a freshly built [`ApiTesterApp`] — see
+/// [`ApiTesterApp::build_model`].
+struct BuiltModel {
+    collections: Vec<Collection>,
+    environments: Vec<Environment>,
+    active_env: Option<uuid::Uuid>,
+    request: Request,
+    history: Vec<HistoryEntry>,
+}
+
+/// The real child widgets of a freshly built [`ApiTesterApp`] — see
+/// [`ApiTesterApp::build_widgets`].
+struct BuiltWidgets {
+    method_dropdown: Dropdown,
+    env_dropdown: Dropdown,
+    url_input: TextInput,
+    body_input: TextInput,
+    send_button: Button,
+    request_tabs: ToggleGroup,
+    response_view_toggle: ToggleGroup,
+    sink: Sink,
+}
+
 impl ApiTesterApp {
     /// The live app: no fabricated saved collections/history and NO canned
     /// response — the response pane is empty until a real Send. It opens on a
@@ -247,6 +276,62 @@ impl ApiTesterApp {
 
     fn build(demo: bool) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
+        let model = Self::build_model(demo);
+        let widgets = Self::build_widgets(&model);
+
+        let mut app = Self {
+            collections: model.collections,
+            environments: model.environments,
+            active_env: model.active_env,
+            request: model.request,
+            history: model.history,
+            response: if demo {
+                Some(http::sample_response())
+            } else {
+                None
+            },
+            sending: false,
+            error: None,
+            active_tab: RequestTab::Params,
+            response_view: ResponseView::Pretty,
+            collapsed: std::collections::HashSet::new(),
+            body_scroll: 0.0,
+            selected: if demo { Some((0, 0)) } else { None },
+            method_dropdown: widgets.method_dropdown,
+            env_dropdown: widgets.env_dropdown,
+            url_input: widgets.url_input,
+            body_input: widgets.body_input,
+            send_button: widgets.send_button,
+            request_tabs: widgets.request_tabs,
+            response_view_toggle: widgets.response_view_toggle,
+            nav_rows: Vec::new(),
+            nav_meta: Vec::new(),
+            sink: widgets.sink,
+            actions: ui::ActionHost::new(),
+            tx,
+            rx,
+            rail: SidebarDrawer::new()
+                .left()
+                .docked_width(SIDEBAR_W)
+                .overlay_width(SIDEBAR_W)
+                .breakpoint(RAIL_BREAKPOINT),
+            rect: Rect::ZERO,
+            layout: Layout::default(),
+            last_cursor: Point::ZERO,
+            seeded: false,
+            adopted: false,
+            dirty: true,
+            last_sig: ChildSig::default(),
+            persisted_once: false,
+        };
+        app.rebuild_nav();
+        app
+    }
+
+    /// The model half of a fresh app: sample data when `demo`, otherwise
+    /// empty/blank. Split out of [`Self::build`] to keep it under the line
+    /// budget.
+    fn build_model(demo: bool) -> BuiltModel {
         let collections = if demo {
             crate::seed::collections()
         } else {
@@ -268,15 +353,26 @@ impl ApiTesterApp {
         } else {
             Vec::new()
         };
+        BuiltModel {
+            collections,
+            environments,
+            active_env,
+            request,
+            history,
+        }
+    }
 
+    /// The real child widgets for a fresh app, wired to `model`'s starting
+    /// values. Split out of [`Self::build`] to keep it under the line budget.
+    fn build_widgets(model: &BuiltModel) -> BuiltWidgets {
         let mut url_input = TextInput::local();
         url_input.set_plain_chrome(true);
-        url_input.set_text(&request.url);
+        url_input.set_text(&model.request.url);
         let url_input = url_input.with_id("api.url");
         let mut body_input = TextInput::local();
         body_input.set_plain_chrome(true);
         body_input.set_mono(true);
-        body_input.set_text(&request.body_text);
+        body_input.set_text(&model.request.body_text);
         let body_input = body_input.multiline(true).with_id("api.body");
 
         let sink: Sink = Rc::new(RefCell::new(Vec::new()));
@@ -293,7 +389,7 @@ impl ApiTesterApp {
 
         // Environment picker — "No Environment" plus each named environment.
         let mut env_options = vec![NO_ENV.to_string()];
-        env_options.extend(environments.iter().map(|e| e.name.clone()));
+        env_options.extend(model.environments.iter().map(|e| e.name.clone()));
         let env_dropdown = Dropdown::new(env_options, ENV_PATH).with_id("api.env");
 
         // Send — the accent primary action.
@@ -325,24 +421,7 @@ impl ApiTesterApp {
         )
         .on_change(move |i| view_sink.borrow_mut().push(Cmd::SetView(i)));
 
-        let mut app = Self {
-            collections,
-            environments,
-            active_env,
-            request,
-            history,
-            response: if demo {
-                Some(http::sample_response())
-            } else {
-                None
-            },
-            sending: false,
-            error: None,
-            active_tab: RequestTab::Params,
-            response_view: ResponseView::Pretty,
-            collapsed: std::collections::HashSet::new(),
-            body_scroll: 0.0,
-            selected: if demo { Some((0, 0)) } else { None },
+        BuiltWidgets {
             method_dropdown,
             env_dropdown,
             url_input,
@@ -350,28 +429,8 @@ impl ApiTesterApp {
             send_button,
             request_tabs,
             response_view_toggle,
-            nav_rows: Vec::new(),
-            nav_meta: Vec::new(),
             sink,
-            actions: ui::ActionHost::new(),
-            tx,
-            rx,
-            rail: SidebarDrawer::new()
-                .left()
-                .docked_width(SIDEBAR_W)
-                .overlay_width(SIDEBAR_W)
-                .breakpoint(RAIL_BREAKPOINT),
-            rect: Rect::ZERO,
-            layout: Layout::default(),
-            last_cursor: Point::ZERO,
-            seeded: false,
-            adopted: false,
-            dirty: true,
-            last_sig: ChildSig::default(),
-            persisted_once: false,
-        };
-        app.rebuild_nav();
-        app
+        }
     }
 
     /// Snap the rail to a settled open/closed state with no animation.
@@ -472,7 +531,7 @@ impl ApiTesterApp {
     }
 
     /// Push the whole workspace into the shared CRDT.
-    fn persist(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn persist(&self, state: &mut AutoCommit, root: &ObjId) {
         let mut snap = self.request.clone();
         snap.url = self.url_input.value().to_string();
         snap.body_text = self.body_input.value().to_string();
@@ -525,10 +584,9 @@ impl ApiTesterApp {
     /// encodes + applies it via the executor (one undo boundary, byte-identical
     /// replay on peers); we then re-adopt the mutated snapshots so the UI and the
     /// document agree on a single source of truth.
-    fn perform(&mut self, state: &mut AutoCommit, path: &ObjId, action: ApiTesterAction) {
+    fn perform(&mut self, state: &mut AutoCommit, path: &ObjId, action: &ApiTesterAction) {
         self.persist(state, path);
-        self.actions
-            .dispatch(state, API_TESTER_ACTION_TYPE, &action);
+        self.actions.dispatch(state, API_TESTER_ACTION_TYPE, action);
         self.adopt_workspace(state, path);
         self.dirty = true;
     }
@@ -671,11 +729,12 @@ impl ApiTesterApp {
     // -------------------------------------------------------------------
 
     fn children_ref(&self) -> Vec<&dyn Widget> {
-        let mut v: Vec<&dyn Widget> = Vec::new();
-        v.push(&self.method_dropdown);
-        v.push(&self.url_input);
-        v.push(&self.send_button);
-        v.push(&self.request_tabs);
+        let mut v: Vec<&dyn Widget> = vec![
+            &self.method_dropdown,
+            &self.url_input,
+            &self.send_button,
+            &self.request_tabs,
+        ];
         if self.body_field_visible() {
             v.push(&self.body_input);
         }
@@ -745,11 +804,13 @@ impl ApiTesterApp {
     /// and rail state. Pure geometry; called from both `apply_layout` and
     /// `draw`.
     fn compute_layout(&mut self) -> Layout {
-        let mut l = Layout::default();
         // The shared drawer resolves docked-vs-overlay from the rect and hands
         // back the sidebar / content / scrim rects: a docked column with inset
         // content when wide, or a slid-in overlay panel over a scrim when narrow.
-        l.main = self.rail.resolve(self.rect);
+        let mut l = Layout {
+            main: self.rail.resolve(self.rect),
+            ..Layout::default()
+        };
         let split = self.rail.layout();
         l.sidebar = self.rail.sidebar_rect();
         l.scrim = self.rail.scrim_rect();
@@ -913,8 +974,8 @@ impl ApiTesterApp {
             None,
             TextWeight::Bold,
         );
-        self.draw_section_label(scene, t, tr, theme, l.collections_label, "COLLECTIONS");
-        self.draw_section_label(scene, t, tr, theme, l.history_label, "HISTORY");
+        Self::draw_section_label(scene, t, tr, theme, l.collections_label, "COLLECTIONS");
+        Self::draw_section_label(scene, t, tr, theme, l.history_label, "HISTORY");
 
         // The env dropdown + every nav row draw themselves.
         self.env_dropdown.draw(scene, t, tr, theme, presence);
@@ -924,7 +985,6 @@ impl ApiTesterApp {
     }
 
     fn draw_section_label(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1074,19 +1134,19 @@ impl ApiTesterApp {
         match self.active_tab {
             RequestTab::Params => {
                 let rows = self.request.params.clone();
-                self.draw_kv_table(scene, t, tr, theme, area, &rows, "No query parameters");
+                Self::draw_kv_table(scene, t, tr, theme, area, &rows, "No query parameters");
             }
             RequestTab::Headers => {
                 let rows = self.request.headers.clone();
-                self.draw_kv_table(scene, t, tr, theme, area, &rows, "No headers");
+                Self::draw_kv_table(scene, t, tr, theme, area, &rows, "No headers");
             }
             RequestTab::Auth => self.draw_auth(scene, t, tr, theme, area),
             RequestTab::Body => self.draw_body(scene, t, tr, theme, presence, l),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_kv_table(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1097,7 +1157,35 @@ impl ApiTesterApp {
     ) {
         let c = &theme.tokens.colors;
         let x0 = area.x0 + PAD;
-        let mut y = area.y0 + 12.0;
+        let y = Self::draw_kv_table_header(scene, t, tr, theme, area);
+
+        if rows.iter().all(super::model::KeyValue::is_blank) {
+            tr.draw_text(
+                scene,
+                empty_msg,
+                theme.tokens.typography.scale.sm,
+                c.text_dim,
+                t * Affine::translate((x0, y + 8.0)),
+                None,
+            );
+            return;
+        }
+
+        let y = Self::draw_kv_rows(scene, t, tr, theme, area, rows, y);
+        Self::draw_kv_new_row_placeholder(scene, t, tr, theme, area, y);
+    }
+
+    /// The KEY / VALUE column headers. Returns the y of the first data row.
+    fn draw_kv_table_header(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let x0 = area.x0 + PAD;
+        let y = area.y0 + 12.0;
         let key_x = x0 + 30.0;
         let val_x = area.x0 + area.width() * 0.5;
         tr.draw_text_weighted(
@@ -1118,20 +1206,25 @@ impl ApiTesterApp {
             None,
             TextWeight::Bold,
         );
-        y += 22.0;
+        y + 22.0
+    }
 
-        if rows.iter().all(super::model::KeyValue::is_blank) {
-            tr.draw_text(
-                scene,
-                empty_msg,
-                theme.tokens.typography.scale.sm,
-                c.text_dim,
-                t * Affine::translate((x0, y + 8.0)),
-                None,
-            );
-            return;
-        }
-
+    /// One row per key/value pair, stopping once `area` runs out of room.
+    /// Returns the y below the last drawn row.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_kv_rows(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        rows: &[KeyValue],
+        mut y: f64,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let x0 = area.x0 + PAD;
+        let key_x = x0 + 30.0;
+        let val_x = area.x0 + area.width() * 0.5;
         for row in rows {
             if y + ROW_H > area.y1 {
                 break;
@@ -1156,7 +1249,7 @@ impl ApiTesterApp {
                 t * Affine::translate((key_x, y + 7.0)),
                 Some((val_x - key_x - 12.0) as f32),
             );
-            self.draw_value_with_vars(
+            Self::draw_value_with_vars(
                 scene,
                 t,
                 tr,
@@ -1177,44 +1270,60 @@ impl ApiTesterApp {
             );
             y += ROW_H;
         }
+        y
+    }
 
-        if y + ROW_H <= area.y1 {
-            let cb = Rect::new(x0, y + 4.0, x0 + 16.0, y + 20.0);
-            scene.stroke(
-                &Stroke::new(1.0),
-                t,
-                c.border_standard.with_alpha_factor(0.5),
-                None,
-                &RoundedRect::from_rect(cb, 4.0),
-            );
-            tr.draw_text(
-                scene,
-                "New key",
-                theme.tokens.typography.scale.sm,
-                c.text_dim.with_alpha_factor(0.6),
-                t * Affine::translate((key_x, y + 7.0)),
-                None,
-            );
-            tr.draw_text(
-                scene,
-                "New value",
-                theme.tokens.typography.scale.sm,
-                c.text_dim.with_alpha_factor(0.6),
-                t * Affine::translate((val_x, y + 7.0)),
-                None,
-            );
+    /// The trailing "New key" / "New value" placeholder row, when there is
+    /// still room for one below `y`.
+    fn draw_kv_new_row_placeholder(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        y: f64,
+    ) {
+        if y + ROW_H > area.y1 {
+            return;
         }
+        let c = &theme.tokens.colors;
+        let x0 = area.x0 + PAD;
+        let key_x = x0 + 30.0;
+        let val_x = area.x0 + area.width() * 0.5;
+        let cb = Rect::new(x0, y + 4.0, x0 + 16.0, y + 20.0);
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            c.border_standard.with_alpha_factor(0.5),
+            None,
+            &RoundedRect::from_rect(cb, 4.0),
+        );
+        tr.draw_text(
+            scene,
+            "New key",
+            theme.tokens.typography.scale.sm,
+            c.text_dim.with_alpha_factor(0.6),
+            t * Affine::translate((key_x, y + 7.0)),
+            None,
+        );
+        tr.draw_text(
+            scene,
+            "New value",
+            theme.tokens.typography.scale.sm,
+            c.text_dim.with_alpha_factor(0.6),
+            t * Affine::translate((val_x, y + 7.0)),
+            None,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
     fn draw_value_with_vars(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         value: &str,
-        x: f64,
+        start_x: f64,
         y: f64,
         max_w: f64,
         enabled: bool,
@@ -1222,9 +1331,9 @@ impl ApiTesterApp {
         let c = &theme.tokens.colors;
         let base_col = if enabled { c.text_primary } else { c.text_dim };
         let size = theme.tokens.typography.scale.sm;
-        let mut cx = x;
+        let mut cx = start_x;
         let mut rest = value;
-        let limit = x + max_w;
+        let limit = start_x + max_w;
         while !rest.is_empty() && cx < limit {
             if let Some(open) = rest.find("{{") {
                 if open > 0 {
@@ -1440,7 +1549,7 @@ impl ApiTesterApp {
             BodyMode::Form => {
                 let rows = self.request.form.clone();
                 let sub = Rect::new(area.x0, y - 8.0, area.x1, area.y1);
-                self.draw_kv_table(scene, t, tr, theme, sub, &rows, "No form fields");
+                Self::draw_kv_table(scene, t, tr, theme, sub, &rows, "No form fields");
             }
             BodyMode::Json | BodyMode::Raw => {
                 let field = l.body;
@@ -1552,7 +1661,7 @@ impl ApiTesterApp {
                 }
                 ResponseView::Raw => self.draw_raw_body(scene, t, tr, theme, &resp.body, body_area),
                 ResponseView::Preview => {
-                    self.draw_response_headers(scene, t, tr, theme, &resp, body_area);
+                    Self::draw_response_headers(scene, t, tr, theme, &resp, body_area);
                 }
             }
         } else if let Some(err) = &self.error {
@@ -1728,7 +1837,6 @@ impl ApiTesterApp {
     }
 
     fn draw_response_headers(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1863,14 +1971,18 @@ impl ApiTesterApp {
                     .map(|e| e.id)
             };
             if new_env != self.active_env {
-                self.perform(state, path, actions::set_active_environment_action(new_env));
+                self.perform(
+                    state,
+                    path,
+                    &actions::set_active_environment_action(new_env),
+                );
             }
         }
     }
 
     /// Seed the picker CRDT strings from the current model so the dropdowns
     /// display the right value.
-    fn seed_method_env(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn seed_method_env(&self, state: &mut AutoCommit, path: &ObjId) {
         ApiDoc::set_text(state, path, METHOD_PATH, self.request.method.as_str());
         let env_name = self
             .active_env
@@ -2184,11 +2296,13 @@ impl Widget for ApiTesterApp {
 
     fn take_structure_dirty(&mut self) -> bool {
         // Drain child structure-dirty flags per the trait contract, then add
-        // our own child-set changes.
-        let child_changed = self
-            .children_mut_ref()
-            .iter_mut()
-            .fold(false, |acc, c| c.take_structure_dirty() || acc);
+        // our own child-set changes. A plain loop, not `.any()`: every child
+        // must be drained regardless of an earlier `true`, which `.any()`
+        // would short-circuit past.
+        let mut child_changed = false;
+        for c in self.children_mut_ref() {
+            child_changed |= c.take_structure_dirty();
+        }
         let sig = self.child_sig();
         let self_changed = sig != self.last_sig;
         self.last_sig = sig;
@@ -2320,7 +2434,7 @@ mod tests {
 
     #[test]
     fn persist_then_adopt_round_trips_through_crdt() {
-        let mut a = app();
+        let a = app();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         a.persist(&mut doc, &root);

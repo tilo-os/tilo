@@ -27,6 +27,18 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 pub mod actions;
 pub mod app;
@@ -36,10 +48,13 @@ pub mod draw;
 pub mod geo;
 pub mod livetest;
 pub mod location;
+mod map_controls;
 pub mod model;
 pub mod net;
+mod offline_panel;
 pub mod rank;
 pub mod sample;
+mod search_box;
 pub mod tiles;
 pub mod traffic;
 

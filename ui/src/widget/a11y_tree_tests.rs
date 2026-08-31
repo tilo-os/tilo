@@ -45,8 +45,7 @@ fn by_label<'a>(nodes: &'a [(AkNodeId, AkNode)], role: AkRole, label: &str) -> &
     nodes
         .iter()
         .find(|(_, n)| n.role() == role && n.label() == Some(label))
-        .map(|(_, n)| n)
-        .unwrap_or_else(|| panic!("no {role:?} node labelled {label:?}"))
+        .map_or_else(|| panic!("no {role:?} node labelled {label:?}"), |(_, n)| n)
 }
 
 // segmented::TriStateControl -> Group + RadioButton children
@@ -353,35 +352,34 @@ fn composed_ui_reaches_every_new_widget_through_the_window_root() {
 // Screen-reader announcement path: focus + value-change narration on the
 // same AccessNodes the bridge consumes.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use tts::{NullSpeaker, Speaker, Utterance};
 
 /// A speaker that records what the reader pushes through it, for readback.
+/// `Arc<Mutex<_>>` rather than `Rc<RefCell<_>>` so `Rec` is genuinely
+/// `Send` (the [`Speaker`] trait requires it) with no `unsafe impl`.
 #[derive(Clone, Default)]
-struct Rec(Rc<RefCell<NullSpeaker>>);
+struct Rec(Arc<Mutex<NullSpeaker>>);
 impl Speaker for Rec {
     fn speak_utterance(&mut self, u: Utterance) {
-        self.0.borrow_mut().speak_utterance(u);
+        self.0.lock().unwrap().speak_utterance(u);
     }
     fn stop(&mut self) {
-        self.0.borrow_mut().stop();
+        self.0.lock().unwrap().stop();
     }
     fn set_rate(&mut self, r: f32) {
-        self.0.borrow_mut().set_rate(r);
+        self.0.lock().unwrap().set_rate(r);
     }
     fn set_voice(&mut self, v: &str) {
-        self.0.borrow_mut().set_voice(v);
+        self.0.lock().unwrap().set_voice(v);
     }
     fn is_speaking(&self) -> bool {
-        self.0.borrow().is_speaking()
+        self.0.lock().unwrap().is_speaking()
     }
     fn backend_name(&self) -> &'static str {
         "rec"
     }
 }
-// Test-only: Rec is single-threaded; satisfy the Send bound the trait needs.
-unsafe impl Send for Rec {}
 
 #[test]
 fn screen_reader_announces_focus_and_value_change_for_new_widgets() {
@@ -414,9 +412,8 @@ fn screen_reader_announces_focus_and_value_change_for_new_widgets() {
     let mut reader = ScreenReader::with_speaker(Box::new(rec.clone()));
     reader.announce_focus(&gnode);
     reader.announce_value_change("90%");
-    let spoken = rec.0.borrow();
     assert_eq!(
-        spoken.spoken(),
+        rec.0.lock().unwrap().spoken(),
         &["CPU, progress bar, 42%".to_string(), "90%".to_string()]
     );
 }

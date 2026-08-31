@@ -2,6 +2,8 @@
 name = "frame-link"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 description = "Configurable-latency / throughput / drop shim for encoded-frame streams. The reusable primitive behind flatpak-share-demo (encode → shim → decode → side-by-side MP4) and any future test that wants to feed a real encoder/decoder pair through a synthetic-network layer."
 
 [lib]

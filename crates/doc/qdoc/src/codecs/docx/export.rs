@@ -3,7 +3,7 @@
 //! numbering parts a from-scratch document lacks.
 
 use super::container::DocxContainer;
-use crate::document::MarkValue;
+use crate::export::InlinePlan;
 use crate::format::CodecError;
 use crate::model::DocRef;
 use crate::schema::{
@@ -53,6 +53,379 @@ const STYLES_REL: &str = r#"<Relationship Id="rIdQdocStyles" Type="http://schema
 const STYLES_XML_OPEN: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#;
 
+/// Which fixed-name parts a preserved `.docx` already declared, so export only injects a
+/// content-type override / relationship for parts it's newly adding.
+#[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent 'was this fixed-name part already present' flag, \
+              set by name in copy_preserved_parts, never positionally"
+)]
+struct PartFlags {
+    had_content_types: bool,
+    had_root_rels: bool,
+    had_doc_rels: bool,
+    had_numbering: bool,
+    had_styles_part: bool,
+    had_core: bool,
+    had_app: bool,
+    had_header_part: bool,
+    had_footer_part: bool,
+    had_footnotes_part: bool,
+    had_endnotes_part: bool,
+    had_comments_part: bool,
+}
+
+/// Copies every preserved part into `c` verbatim, recording which fixed-name parts were present
+/// and capturing the original `docProps/core.xml`/`app.xml` bytes for [`merge_styles_xml`]-style merging.
+fn copy_preserved_parts(
+    doc: &DocRef,
+    c: &mut DocxContainer,
+) -> (PartFlags, Option<Vec<u8>>, Option<Vec<u8>>) {
+    let mut flags = PartFlags::default();
+    let mut original_core: Option<Vec<u8>> = None;
+    let mut original_app: Option<Vec<u8>> = None;
+    for (key, bytes) in crate::model::preserved_parts(doc.doc, doc.c) {
+        if let Some(name) = key.strip_prefix("docx/part/") {
+            flags.had_content_types |= name == "[Content_Types].xml";
+            flags.had_root_rels |= name == "_rels/.rels";
+            flags.had_doc_rels |= name == "word/_rels/document.xml.rels";
+            flags.had_numbering |= name == "word/numbering.xml";
+            flags.had_styles_part |= name == "word/styles.xml";
+            flags.had_header_part |= name == super::headers::HEADER_PART;
+            flags.had_footer_part |= name == super::headers::FOOTER_PART;
+            flags.had_footnotes_part |= name == super::notes::FOOTNOTES_PART;
+            flags.had_endnotes_part |= name == super::notes::ENDNOTES_PART;
+            flags.had_comments_part |= name == super::comments::COMMENTS_PART;
+            if name == "docProps/core.xml" {
+                flags.had_core = true;
+                original_core = Some(bytes.clone());
+            }
+            if name == "docProps/app.xml" {
+                flags.had_app = true;
+                original_app = Some(bytes.clone());
+            }
+            c.set(name, bytes);
+        }
+    }
+    (flags, original_core, original_app)
+}
+
+/// Which optional parts this export is newly wiring up (synthesised but not already declared).
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent 'is this optional part newly wired up' flag, \
+              set by name where it's decided, never positionally"
+)]
+struct Wireups {
+    has_lists: bool,
+    has_styles: bool,
+    has_images: bool,
+    wrote_core: bool,
+    wrote_app: bool,
+    need_styles: bool,
+    need_core: bool,
+    need_app: bool,
+    need_header: bool,
+    need_footer: bool,
+    need_footnotes: bool,
+    need_endnotes: bool,
+    need_comments: bool,
+}
+
+/// Builds/extends `[Content_Types].xml` with an `Override`/`Default` for every newly-wired part.
+fn build_content_types(
+    c: &mut DocxContainer,
+    flags: &PartFlags,
+    w: &Wireups,
+    images: &ImageExport,
+) {
+    if flags.had_content_types {
+        let mut overrides: Vec<(&str, &str)> = Vec::new();
+        if w.has_lists && !flags.had_numbering {
+            overrides.push(("/word/numbering.xml", NUMBERING_OVERRIDE));
+        }
+        if w.need_styles {
+            overrides.push(("/word/styles.xml", STYLES_OVERRIDE));
+        }
+        if w.need_core {
+            overrides.push(("/docProps/core.xml", CORE_OVERRIDE));
+        }
+        if w.need_app {
+            overrides.push(("/docProps/app.xml", APP_OVERRIDE));
+        }
+        if w.need_header {
+            overrides.push(("/word/header1.xml", HEADER_OVERRIDE));
+        }
+        if w.need_footer {
+            overrides.push(("/word/footer1.xml", FOOTER_OVERRIDE));
+        }
+        if w.need_footnotes {
+            overrides.push(("/word/footnotes.xml", FOOTNOTES_OVERRIDE));
+        }
+        if w.need_endnotes {
+            overrides.push(("/word/endnotes.xml", ENDNOTES_OVERRIDE));
+        }
+        if w.need_comments {
+            overrides.push(("/word/comments.xml", COMMENTS_OVERRIDE));
+        }
+        let image_defaults = images.content_type_defaults();
+        if (!overrides.is_empty() || !image_defaults.is_empty())
+            && let Some(ct) = c.get("[Content_Types].xml")
+        {
+            let mut s = String::from_utf8_lossy(ct).into_owned();
+            for (part, ovr) in overrides {
+                if !s.contains(part) {
+                    inject_before(&mut s, "</Types>", ovr);
+                }
+            }
+            // Image content-type `Default`s — dedup on `Extension="<ext>"`.
+            for img in &images.images {
+                let probe = format!(r#"Extension="{}""#, img.ext);
+                if !s.contains(&probe) {
+                    let (_, media) = image_ext_and_media(&img.bytes);
+                    let def = format!(
+                        r#"<Default Extension="{}" ContentType="{}"/>"#,
+                        img.ext, media
+                    );
+                    inject_before(&mut s, "</Types>", &def);
+                }
+            }
+            c.set("[Content_Types].xml", s.into_bytes());
+        }
+    } else {
+        let mut ct = CONTENT_TYPES_BASE.to_string();
+        if w.has_lists {
+            ct.push_str(NUMBERING_OVERRIDE);
+        }
+        if w.has_styles {
+            ct.push_str(STYLES_OVERRIDE);
+        }
+        if w.wrote_core {
+            ct.push_str(CORE_OVERRIDE);
+        }
+        if w.wrote_app {
+            ct.push_str(APP_OVERRIDE);
+        }
+        if w.need_header {
+            ct.push_str(HEADER_OVERRIDE);
+        }
+        if w.need_footer {
+            ct.push_str(FOOTER_OVERRIDE);
+        }
+        if w.need_footnotes {
+            ct.push_str(FOOTNOTES_OVERRIDE);
+        }
+        if w.need_endnotes {
+            ct.push_str(ENDNOTES_OVERRIDE);
+        }
+        if w.need_comments {
+            ct.push_str(COMMENTS_OVERRIDE);
+        }
+        for def in images.content_type_defaults() {
+            ct.push_str(&def);
+        }
+        ct.push_str("</Types>");
+        c.set("[Content_Types].xml", ct.into_bytes());
+    }
+}
+
+/// docProps relationships live in the root rels, not the document's; generated fresh or injected into an existing part.
+fn build_root_rels(c: &mut DocxContainer, flags: &PartFlags, w: &Wireups) {
+    if !flags.had_root_rels {
+        let mut s = ROOT_RELS.to_string();
+        if w.wrote_core {
+            inject_before(&mut s, "</Relationships>", CORE_REL);
+        }
+        if w.wrote_app {
+            inject_before(&mut s, "</Relationships>", APP_REL);
+        }
+        c.set("_rels/.rels", s.into_bytes());
+    } else if (w.need_core || w.need_app)
+        && let Some(rels) = c.get("_rels/.rels")
+    {
+        let mut s = String::from_utf8_lossy(rels).into_owned();
+        if w.need_core && !s.contains("Target=\"docProps/core.xml\"") {
+            inject_before(&mut s, "</Relationships>", CORE_REL);
+        }
+        if w.need_app && !s.contains("Target=\"docProps/app.xml\"") {
+            inject_before(&mut s, "</Relationships>", APP_REL);
+        }
+        c.set("_rels/.rels", s.into_bytes());
+    }
+}
+
+/// Needed once there's a numbering, freshly-synthesised styles, a header/footer, and/or a notes part.
+fn build_document_rels(
+    c: &mut DocxContainer,
+    flags: &PartFlags,
+    w: &Wireups,
+    images: &ImageExport,
+) {
+    if !(w.has_lists
+        || w.need_styles
+        || w.need_header
+        || w.need_footer
+        || w.need_footnotes
+        || w.need_endnotes
+        || w.need_comments
+        || w.has_images)
+    {
+        return;
+    }
+    if !flags.had_doc_rels {
+        let mut inner = String::new();
+        if w.need_styles {
+            inner.push_str(STYLES_REL);
+        }
+        if w.has_lists {
+            inner.push_str(NUMBERING_REL);
+        }
+        if w.need_header {
+            inner.push_str(HEADER_REL);
+        }
+        if w.need_footer {
+            inner.push_str(FOOTER_REL);
+        }
+        if w.need_footnotes {
+            inner.push_str(FOOTNOTES_REL);
+        }
+        if w.need_endnotes {
+            inner.push_str(ENDNOTES_REL);
+        }
+        if w.need_comments {
+            inner.push_str(COMMENTS_REL);
+        }
+        inner.push_str(&images.relationships());
+        let rels = format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{inner}</Relationships>"#
+        );
+        c.set("word/_rels/document.xml.rels", rels.into_bytes());
+    } else if let Some(rels) = c.get("word/_rels/document.xml.rels") {
+        let mut s = String::from_utf8_lossy(rels).into_owned();
+        if w.has_lists && !s.contains("Target=\"numbering.xml\"") {
+            inject_before(&mut s, "</Relationships>", NUMBERING_REL);
+        }
+        if w.need_styles && !s.contains("Target=\"styles.xml\"") {
+            inject_before(&mut s, "</Relationships>", STYLES_REL);
+        }
+        if w.need_header && !s.contains("Target=\"header1.xml\"") {
+            inject_before(&mut s, "</Relationships>", HEADER_REL);
+        }
+        if w.need_footer && !s.contains("Target=\"footer1.xml\"") {
+            inject_before(&mut s, "</Relationships>", FOOTER_REL);
+        }
+        if w.need_footnotes && !s.contains("Target=\"footnotes.xml\"") {
+            inject_before(&mut s, "</Relationships>", FOOTNOTES_REL);
+        }
+        if w.need_endnotes && !s.contains("Target=\"endnotes.xml\"") {
+            inject_before(&mut s, "</Relationships>", ENDNOTES_REL);
+        }
+        if w.need_comments && !s.contains("Target=\"comments.xml\"") {
+            inject_before(&mut s, "</Relationships>", COMMENTS_REL);
+        }
+        // Image rels — unique ids (`rIdImgN`), so a simple id-presence check dedups.
+        for img in &images.images {
+            if !s.contains(&format!(r#"Id="{}""#, img.rel_id)) {
+                inject_before(
+                    &mut s,
+                    "</Relationships>",
+                    &format!(
+                        r#"<Relationship Id="{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="{}"/>"#,
+                        img.rel_id, img.target
+                    ),
+                );
+            }
+        }
+        c.set("word/_rels/document.xml.rels", s.into_bytes());
+    }
+}
+
+/// Copies each preserved-name-fixed part (header/footer/footnotes/endnotes/comments) that this
+/// export freshly synthesised into `c`; the content-types/rels overrides for them are wired up
+/// separately, once every "did we just add this part" flag is known.
+fn copy_fixed_parts(
+    c: &mut DocxContainer,
+    hf_parts: &super::headers::ExportedParts,
+    notes: &super::notes::ExportedNotes,
+    comments: &super::comments::ExportedComments,
+) {
+    if let Some(hdr) = hf_parts.header.clone() {
+        c.set(super::headers::HEADER_PART, hdr);
+    }
+    if let Some(ftr) = hf_parts.footer.clone() {
+        c.set(super::headers::FOOTER_PART, ftr);
+    }
+    if let Some(ftn) = notes.footnotes_xml.clone() {
+        c.set(super::notes::FOOTNOTES_PART, ftn);
+    }
+    if let Some(end) = notes.endnotes_xml.clone() {
+        c.set(super::notes::ENDNOTES_PART, end);
+    }
+    if let Some(cmt) = comments.comments_xml.clone() {
+        c.set(super::comments::COMMENTS_PART, cmt);
+    }
+}
+
+/// Regenerates `docProps/core.xml`/`app.xml` from canonical properties (merging any preserved
+/// original's unmodeled children) and writes them into `c`. Returns whether each was written.
+fn write_doc_props(
+    c: &mut DocxContainer,
+    doc: &DocRef,
+    original_core: Option<&[u8]>,
+    original_app: Option<&[u8]>,
+) -> (bool, bool) {
+    let wrote_core = if let Some(core_xml) = super::meta::export_core(doc, original_core) {
+        c.set("docProps/core.xml", core_xml);
+        true
+    } else {
+        false
+    };
+    let wrote_app = if let Some(app_xml) = super::meta::export_app(doc, original_app) {
+        c.set("docProps/app.xml", app_xml);
+        true
+    } else {
+        false
+    };
+    (wrote_core, wrote_app)
+}
+
+/// Writes `word/numbering.xml` (if the doc has any list) and merges referenced CRDT styles into
+/// `word/styles.xml` (if any named style is referenced or a doc-default language is set).
+fn write_lists_and_styles(
+    c: &mut DocxContainer,
+    has_lists: bool,
+    has_styles: bool,
+    numbering: &Numbering,
+    named_refs: &BTreeSet<String>,
+    snap: &DocSnapshot,
+    doc_lang: Option<&str>,
+) {
+    if has_lists {
+        // Ensures numbering maps numId 1→bullet, 2→decimal plus custom ordered numberings, so format+start round-trip.
+        let xml = if numbering.has_custom() {
+            numbering.numbering_xml()
+        } else {
+            NUMBERING_XML.to_string()
+        };
+        c.set("word/numbering.xml", xml.into_bytes());
+    }
+    // Merge referenced CRDT styles into the preserved styles.xml as `w:style` defs; already-declared styles are referenced, not redefined.
+    if has_styles {
+        let merged = merge_styles_xml(c.get("word/styles.xml"), named_refs, &snap.styles, doc_lang);
+        c.set("word/styles.xml", merged);
+    }
+}
+
+// `DocRef` is a two-pointer read-only view (like `&[T]`); `FormatProvider::export` hands one to
+// every codec by value, and `DocxCodec::export` (mod.rs) forwards its own owned copy here
+// unchanged, so re-borrowing it as `&DocRef` only to satisfy this lint adds an indirection with
+// no cost saved.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "DocRef is two Copy pointers handed down by value from FormatProvider::export; re-borrowing buys nothing"
+)]
 pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let snap = doc.materialize();
     let hf_parts = super::headers::export_parts(&doc);
@@ -83,43 +456,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let has_images = !images.images.is_empty();
 
     let mut c = DocxContainer { parts: Vec::new() };
-    let mut had_content_types = false;
-    let mut had_root_rels = false;
-    let mut had_doc_rels = false;
-    let mut had_numbering = false;
-    let mut had_styles_part = false;
-    let mut had_core = false;
-    let mut had_app = false;
-    let mut had_header_part = false;
-    let mut had_footer_part = false;
-    let mut had_footnotes_part = false;
-    let mut had_endnotes_part = false;
-    let mut had_comments_part = false;
-    let mut original_core: Option<Vec<u8>> = None;
-    let mut original_app: Option<Vec<u8>> = None;
-    for (key, bytes) in crate::model::preserved_parts(doc.doc, doc.c) {
-        if let Some(name) = key.strip_prefix("docx/part/") {
-            had_content_types |= name == "[Content_Types].xml";
-            had_root_rels |= name == "_rels/.rels";
-            had_doc_rels |= name == "word/_rels/document.xml.rels";
-            had_numbering |= name == "word/numbering.xml";
-            had_styles_part |= name == "word/styles.xml";
-            had_header_part |= name == super::headers::HEADER_PART;
-            had_footer_part |= name == super::headers::FOOTER_PART;
-            had_footnotes_part |= name == super::notes::FOOTNOTES_PART;
-            had_endnotes_part |= name == super::notes::ENDNOTES_PART;
-            had_comments_part |= name == super::comments::COMMENTS_PART;
-            if name == "docProps/core.xml" {
-                had_core = true;
-                original_core = Some(bytes.clone());
-            }
-            if name == "docProps/app.xml" {
-                had_app = true;
-                original_app = Some(bytes.clone());
-            }
-            c.set(name, bytes);
-        }
-    }
+    let (flags, original_core, original_app) = copy_preserved_parts(&doc, &mut c);
 
     c.set("word/document.xml", document.into_bytes());
 
@@ -128,261 +465,44 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         c.set(&img.part, img.bytes.clone());
     }
 
-    // Fixed header1.xml/footer1.xml names (sectPr references them by fixed rel ids); new parts need a content-type override + relationship.
-    if let Some(hdr) = hf_parts.header.clone() {
-        c.set(super::headers::HEADER_PART, hdr);
-    }
-    if let Some(ftr) = hf_parts.footer.clone() {
-        c.set(super::headers::FOOTER_PART, ftr);
-    }
-    let need_header_wireup = hf_parts.header.is_some() && !had_header_part;
-    let need_footer_wireup = hf_parts.footer.is_some() && !had_footer_part;
+    copy_fixed_parts(&mut c, &hf_parts, &notes, &comments);
 
-    // Fixed footnotes.xml/endnotes.xml names matching the docx ids used above; new parts need a content-type override + relationship.
-    if let Some(ftn) = notes.footnotes_xml.clone() {
-        c.set(super::notes::FOOTNOTES_PART, ftn);
-    }
-    if let Some(end) = notes.endnotes_xml.clone() {
-        c.set(super::notes::ENDNOTES_PART, end);
-    }
-    let need_footnotes_wireup = notes.footnotes_xml.is_some() && !had_footnotes_part;
-    let need_endnotes_wireup = notes.endnotes_xml.is_some() && !had_endnotes_part;
+    let (wrote_core, wrote_app) = write_doc_props(
+        &mut c,
+        &doc,
+        original_core.as_deref(),
+        original_app.as_deref(),
+    );
 
-    // Fixed comments.xml name matching the docx ids the body's range markers use; new parts need a content-type override + relationship.
-    if let Some(cmt) = comments.comments_xml.clone() {
-        c.set(super::comments::COMMENTS_PART, cmt);
-    }
-    let need_comments_wireup = comments.comments_xml.is_some() && !had_comments_part;
+    write_lists_and_styles(
+        &mut c,
+        has_lists,
+        has_styles,
+        &numbering,
+        &named_refs,
+        &snap,
+        doc_lang.as_deref(),
+    );
 
-    // Regenerated from canonical properties, merging unmodeled children of any preserved original; new parts need an override + root relationship.
-    let wrote_core =
-        if let Some(core_xml) = super::meta::export_core(&doc, original_core.as_deref()) {
-            c.set("docProps/core.xml", core_xml);
-            true
-        } else {
-            false
-        };
-    let wrote_app = if let Some(app_xml) = super::meta::export_app(&doc, original_app.as_deref()) {
-        c.set("docProps/app.xml", app_xml);
-        true
-    } else {
-        false
+    let w = Wireups {
+        has_lists,
+        has_styles,
+        has_images,
+        wrote_core,
+        wrote_app,
+        need_styles: has_styles && !flags.had_styles_part,
+        need_core: wrote_core && !flags.had_core,
+        need_app: wrote_app && !flags.had_app,
+        need_header: hf_parts.header.is_some() && !flags.had_header_part,
+        need_footer: hf_parts.footer.is_some() && !flags.had_footer_part,
+        need_footnotes: notes.footnotes_xml.is_some() && !flags.had_footnotes_part,
+        need_endnotes: notes.endnotes_xml.is_some() && !flags.had_endnotes_part,
+        need_comments: comments.comments_xml.is_some() && !flags.had_comments_part,
     };
-    let need_core_wireup = wrote_core && !had_core;
-    let need_app_wireup = wrote_app && !had_app;
 
-    if has_lists {
-        // Ensures numbering maps numId 1→bullet, 2→decimal plus custom ordered numberings, so format+start round-trip.
-        let xml = if numbering.has_custom() {
-            numbering.numbering_xml()
-        } else {
-            NUMBERING_XML.to_string()
-        };
-        c.set("word/numbering.xml", xml.into_bytes());
-    }
-
-    // Merge referenced CRDT styles into the preserved styles.xml as `w:style` defs; already-declared styles are referenced, not redefined.
-    if has_styles {
-        let merged = merge_styles_xml(
-            c.get("word/styles.xml"),
-            &named_refs,
-            &snap.styles,
-            doc_lang.as_deref(),
-        );
-        c.set("word/styles.xml", merged);
-    }
-    let need_styles_wireup = has_styles && !had_styles_part;
-
-    if had_content_types {
-        let mut overrides: Vec<(&str, &str)> = Vec::new();
-        if has_lists && !had_numbering {
-            overrides.push(("/word/numbering.xml", NUMBERING_OVERRIDE));
-        }
-        if need_styles_wireup {
-            overrides.push(("/word/styles.xml", STYLES_OVERRIDE));
-        }
-        if need_core_wireup {
-            overrides.push(("/docProps/core.xml", CORE_OVERRIDE));
-        }
-        if need_app_wireup {
-            overrides.push(("/docProps/app.xml", APP_OVERRIDE));
-        }
-        if need_header_wireup {
-            overrides.push(("/word/header1.xml", HEADER_OVERRIDE));
-        }
-        if need_footer_wireup {
-            overrides.push(("/word/footer1.xml", FOOTER_OVERRIDE));
-        }
-        if need_footnotes_wireup {
-            overrides.push(("/word/footnotes.xml", FOOTNOTES_OVERRIDE));
-        }
-        if need_endnotes_wireup {
-            overrides.push(("/word/endnotes.xml", ENDNOTES_OVERRIDE));
-        }
-        if need_comments_wireup {
-            overrides.push(("/word/comments.xml", COMMENTS_OVERRIDE));
-        }
-        let image_defaults = images.content_type_defaults();
-        if (!overrides.is_empty() || !image_defaults.is_empty())
-            && let Some(ct) = c.get("[Content_Types].xml")
-        {
-            let mut s = String::from_utf8_lossy(ct).into_owned();
-            for (part, ovr) in overrides {
-                if !s.contains(part) {
-                    inject_before(&mut s, "</Types>", ovr);
-                }
-            }
-            // Image content-type `Default`s — dedup on `Extension="<ext>"`.
-            for img in &images.images {
-                let probe = format!(r#"Extension="{}""#, img.ext);
-                if !s.contains(&probe) {
-                    let (_, media) = image_ext_and_media(&img.bytes);
-                    let def = format!(
-                        r#"<Default Extension="{}" ContentType="{}"/>"#,
-                        img.ext, media
-                    );
-                    inject_before(&mut s, "</Types>", &def);
-                }
-            }
-            c.set("[Content_Types].xml", s.into_bytes());
-        }
-    } else {
-        let mut ct = CONTENT_TYPES_BASE.to_string();
-        if has_lists {
-            ct.push_str(NUMBERING_OVERRIDE);
-        }
-        if has_styles {
-            ct.push_str(STYLES_OVERRIDE);
-        }
-        if wrote_core {
-            ct.push_str(CORE_OVERRIDE);
-        }
-        if wrote_app {
-            ct.push_str(APP_OVERRIDE);
-        }
-        if hf_parts.header.is_some() {
-            ct.push_str(HEADER_OVERRIDE);
-        }
-        if hf_parts.footer.is_some() {
-            ct.push_str(FOOTER_OVERRIDE);
-        }
-        if notes.footnotes_xml.is_some() {
-            ct.push_str(FOOTNOTES_OVERRIDE);
-        }
-        if notes.endnotes_xml.is_some() {
-            ct.push_str(ENDNOTES_OVERRIDE);
-        }
-        if comments.comments_xml.is_some() {
-            ct.push_str(COMMENTS_OVERRIDE);
-        }
-        for def in images.content_type_defaults() {
-            ct.push_str(&def);
-        }
-        ct.push_str("</Types>");
-        c.set("[Content_Types].xml", ct.into_bytes());
-    }
-
-    // docProps relationships live in the root rels, not the document's; generated fresh or injected into an existing part.
-    if !had_root_rels {
-        let mut s = ROOT_RELS.to_string();
-        if wrote_core {
-            inject_before(&mut s, "</Relationships>", CORE_REL);
-        }
-        if wrote_app {
-            inject_before(&mut s, "</Relationships>", APP_REL);
-        }
-        c.set("_rels/.rels", s.into_bytes());
-    } else if (need_core_wireup || need_app_wireup)
-        && let Some(rels) = c.get("_rels/.rels")
-    {
-        let mut s = String::from_utf8_lossy(rels).into_owned();
-        if need_core_wireup && !s.contains("Target=\"docProps/core.xml\"") {
-            inject_before(&mut s, "</Relationships>", CORE_REL);
-        }
-        if need_app_wireup && !s.contains("Target=\"docProps/app.xml\"") {
-            inject_before(&mut s, "</Relationships>", APP_REL);
-        }
-        c.set("_rels/.rels", s.into_bytes());
-    }
-
-    // Needed once there's a numbering, freshly-synthesised styles, a header/footer, and/or a notes part.
-    if has_lists
-        || need_styles_wireup
-        || need_header_wireup
-        || need_footer_wireup
-        || need_footnotes_wireup
-        || need_endnotes_wireup
-        || need_comments_wireup
-        || has_images
-    {
-        if !had_doc_rels {
-            let mut inner = String::new();
-            if need_styles_wireup {
-                inner.push_str(STYLES_REL);
-            }
-            if has_lists {
-                inner.push_str(NUMBERING_REL);
-            }
-            if need_header_wireup {
-                inner.push_str(HEADER_REL);
-            }
-            if need_footer_wireup {
-                inner.push_str(FOOTER_REL);
-            }
-            if need_footnotes_wireup {
-                inner.push_str(FOOTNOTES_REL);
-            }
-            if need_endnotes_wireup {
-                inner.push_str(ENDNOTES_REL);
-            }
-            if need_comments_wireup {
-                inner.push_str(COMMENTS_REL);
-            }
-            inner.push_str(&images.relationships());
-            let rels = format!(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{inner}</Relationships>"#
-            );
-            c.set("word/_rels/document.xml.rels", rels.into_bytes());
-        } else if let Some(rels) = c.get("word/_rels/document.xml.rels") {
-            let mut s = String::from_utf8_lossy(rels).into_owned();
-            if has_lists && !s.contains("Target=\"numbering.xml\"") {
-                inject_before(&mut s, "</Relationships>", NUMBERING_REL);
-            }
-            if need_styles_wireup && !s.contains("Target=\"styles.xml\"") {
-                inject_before(&mut s, "</Relationships>", STYLES_REL);
-            }
-            if need_header_wireup && !s.contains("Target=\"header1.xml\"") {
-                inject_before(&mut s, "</Relationships>", HEADER_REL);
-            }
-            if need_footer_wireup && !s.contains("Target=\"footer1.xml\"") {
-                inject_before(&mut s, "</Relationships>", FOOTER_REL);
-            }
-            if need_footnotes_wireup && !s.contains("Target=\"footnotes.xml\"") {
-                inject_before(&mut s, "</Relationships>", FOOTNOTES_REL);
-            }
-            if need_endnotes_wireup && !s.contains("Target=\"endnotes.xml\"") {
-                inject_before(&mut s, "</Relationships>", ENDNOTES_REL);
-            }
-            if need_comments_wireup && !s.contains("Target=\"comments.xml\"") {
-                inject_before(&mut s, "</Relationships>", COMMENTS_REL);
-            }
-            // Image rels — unique ids (`rIdImgN`), so a simple id-presence check dedups.
-            for img in &images.images {
-                if !s.contains(&format!(r#"Id="{}""#, img.rel_id)) {
-                    inject_before(
-                        &mut s,
-                        "</Relationships>",
-                        &format!(
-                            r#"<Relationship Id="{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="{}"/>"#,
-                            img.rel_id, img.target
-                        ),
-                    );
-                }
-            }
-            c.set("word/_rels/document.xml.rels", s.into_bytes());
-        }
-    }
+    build_content_types(&mut c, &flags, &w, &images);
+    build_root_rels(&mut c, &flags, &w);
+    build_document_rels(&mut c, &flags, &w, &images);
 
     c.write()
 }
@@ -455,9 +575,10 @@ fn merge_styles_xml(
 /// of every `<w:style>` as the schema requires.
 fn inject_after_styles_open(s: &mut String, frag: &str) {
     if let Some(open) = s.find("<w:styles")
-        && let Some(rel_close) = s[open..].find('>')
+        && let Some(tail) = s.get(open..)
+        && let Some(rel_close) = tail.find('>')
+        && let Some(pos) = open.checked_add(rel_close).and_then(|p| p.checked_add(1))
     {
-        let pos = open + rel_close + 1;
         s.insert_str(pos, frag);
     }
 }
@@ -469,10 +590,18 @@ fn style_ids_in(xml: &[u8]) -> BTreeSet<String> {
     let needle = "w:styleId=\"";
     let mut rest = s.as_ref();
     while let Some(p) = rest.find(needle) {
-        rest = &rest[p + needle.len()..];
+        let Some(after_needle) = p.checked_add(needle.len()).and_then(|i| rest.get(i..)) else {
+            break;
+        };
+        rest = after_needle;
         if let Some(end) = rest.find('"') {
-            out.insert(rest[..end].to_string());
-            rest = &rest[end + 1..];
+            if let Some(id) = rest.get(..end) {
+                out.insert(id.to_string());
+            }
+            let Some(after_quote) = end.checked_add(1).and_then(|i| rest.get(i..)) else {
+                break;
+            };
+            rest = after_quote;
         } else {
             break;
         }
@@ -485,7 +614,14 @@ fn style_ids_in(xml: &[u8]) -> BTreeSet<String> {
 fn para_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
     let getf = |k: &str| match props.get(k) {
         Some(AttrVal::Float(f)) => Some(*f),
-        Some(AttrVal::Int(n)) => Some(*n as f64),
+        Some(AttrVal::Int(n)) => {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "n is a small style measurement (px/pt); always far below f64's 2^53 exact-integer bound"
+            )]
+            let v = *n as f64;
+            Some(v)
+        }
         _ => None,
     };
     let gets = |k: &str| match props.get(k) {
@@ -537,7 +673,12 @@ fn para_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
         let _ = write!(rp, r#"<w:color w:val="{}"/>"#, color_hex(c));
     }
     if let Some(sz) = getf(STYLE_SIZE) {
-        let hp = (sz * 2.0).round() as i64;
+        let half_points = (sz * 2.0).round().clamp(0.0, 1_000_000.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "clamped to [0, 1_000_000] above; a font size in half-points never approaches i64 range"
+        )]
+        let hp = half_points as i64;
         let _ = write!(rp, r#"<w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/>"#);
     }
 
@@ -561,7 +702,13 @@ fn para_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
 
 /// Pixels (96 dpi) → OOXML twips: the inverse of `styles::twips_to_px`. 1 px = 15 twips.
 fn px_to_twips(px: f64) -> i64 {
-    (px * 15.0).round() as i64
+    let twips = (px * 15.0).round().clamp(-1_000_000_000.0, 1_000_000_000.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "clamped to ±1e9 above; a document measurement in twips never approaches i64 range"
+    )]
+    let twips = twips as i64;
+    twips
 }
 
 /// `#rrggbb` → OOXML `RRGGBB` (upper-case, no hash, as Word writes it); re-imports via `styles::normalize_color`.
@@ -606,20 +753,9 @@ fn font_name(generic: &str) -> &'static str {
     }
 }
 
-/// The active marks covering character `i`, sorted by name for stable grouping.
-fn marks_at(i: usize, marks: &[crate::document::MarkSpan]) -> Vec<(String, MarkValue)> {
-    let mut v: Vec<(String, MarkValue)> = marks
-        .iter()
-        .filter(|m| i >= m.start && i < m.end)
-        .map(|m| (m.name.clone(), m.value.clone()))
-        .collect();
-    v.sort_by(|a, b| a.0.cmp(&b.0));
-    v
-}
-
 /// Build the `<w:rPr>` body for an active mark set (empty if none modeled).
-fn run_props(marks: &[(String, MarkValue)]) -> String {
-    let (mut b, mut i, mut u, mut strike) = (false, false, false, false);
+fn run_props(marks: &[&crate::document::MarkSpan]) -> String {
+    let (mut bold, mut italic, mut underline, mut strike) = (false, false, false, false);
     let mut sz: Option<i64> = None;
     let mut font: Option<&str> = None;
     let mut color: Option<&str> = None;
@@ -628,17 +764,17 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
     let mut lang: Option<&str> = None;
     // Vertical alignment: `superscript`/`subscript` (super wins if both present).
     let mut vert_align: Option<&'static str> = None;
-    for (name, val) in marks {
-        match name.as_str() {
-            "strong" => b = true,
-            "em" => i = true,
-            "underline" => u = true,
+    for mark in marks {
+        match mark.name.as_str() {
+            "strong" => bold = true,
+            "em" => italic = true,
+            "underline" => underline = true,
             "strike" => strike = true,
-            "fontSize" => sz = val.as_int(),
-            "fontFamily" => font = val.as_str(),
-            "color" => color = val.as_str(),
-            "highlight" => highlight = val.as_str(),
-            "lang" => lang = val.as_str(),
+            "fontSize" => sz = mark.value.as_int(),
+            "fontFamily" => font = mark.value.as_str(),
+            "color" => color = mark.value.as_str(),
+            "highlight" => highlight = mark.value.as_str(),
+            "lang" => lang = mark.value.as_str(),
             "super" => vert_align = Some("superscript"),
             "sub" if vert_align.is_none() => vert_align = Some("subscript"),
             _ => {}
@@ -649,10 +785,10 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
         let n = font_name(f);
         let _ = write!(s, r#"<w:rFonts w:ascii="{n}" w:hAnsi="{n}"/>"#);
     }
-    if b {
+    if bold {
         s.push_str("<w:b/>");
     }
-    if i {
+    if italic {
         s.push_str("<w:i/>");
     }
     if strike {
@@ -670,14 +806,14 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
         );
     }
     if let Some(n) = sz {
-        let hp = n * 2;
+        let hp = n.saturating_mul(2);
         let _ = write!(s, r#"<w:sz w:val="{hp}"/><w:szCs w:val="{hp}"/>"#);
     }
     // BCP-47 tag emitted verbatim; Word uses it for spell-check locale and screen-reader language.
     if let Some(l) = lang {
         let _ = write!(s, r#"<w:lang w:val="{}"/>"#, escape_attr(l));
     }
-    if u {
+    if underline {
         s.push_str(r#"<w:u w:val="single"/>"#);
     }
     if let Some(va) = vert_align {
@@ -687,7 +823,7 @@ fn run_props(marks: &[(String, MarkValue)]) -> String {
 }
 
 /// Emit run content, turning `\t` → `<w:tab/>` and `\n` → `<w:br/>`.
-fn run_content(chars: &[char]) -> String {
+fn run_content(text: &str) -> String {
     let mut out = String::new();
     let mut buf = String::new();
     let flush = |out: &mut String, buf: &mut String| {
@@ -700,7 +836,7 @@ fn run_content(chars: &[char]) -> String {
             buf.clear();
         }
     };
-    for &c in chars {
+    for c in text.chars() {
         match c {
             '\t' => {
                 flush(&mut out, &mut buf);
@@ -715,13 +851,6 @@ fn run_content(chars: &[char]) -> String {
     }
     flush(&mut out, &mut buf);
     out
-}
-
-fn note_ref_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<String> {
-    marks
-        .iter()
-        .find(|m| m.name == crate::schema::MARK_NOTE_REF && m.start == i && m.end == i + 1)
-        .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
 }
 
 /// The footnote/endnote reference run, carrying the FootnoteReference/EndnoteReference character style so Word superscripts it.
@@ -744,101 +873,11 @@ fn note_reference_run(
     ))
 }
 
-/// The comment ids whose `comment` mark starts/ends exactly at `i` (sorted for determinism).
-fn comment_starts_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.start == i)
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
-fn comment_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| m.name == crate::schema::MARK_COMMENT && m.end == i)
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
-/// The bookmark names whose `bookmark` mark starts/ends exactly at `i` (sorted for determinism).
-fn bookmark_starts_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.start == i)
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
-fn bookmark_ends_at(marks: &[crate::document::MarkSpan], i: usize) -> Vec<String> {
-    let mut v: Vec<String> = marks
-        .iter()
-        .filter(|m| m.name == crate::schema::MARK_BOOKMARK && m.end == i)
-        .filter_map(|m| m.value.as_str().map(std::string::ToString::to_string))
-        .collect();
-    v.sort();
-    v
-}
-
-/// The internal cross-reference target of a `link` mark (`#name` → `name`); external URL links aren't modeled by this codec.
-fn cross_ref_at(marks: &[crate::document::MarkSpan], i: usize) -> Option<String> {
-    marks
-        .iter()
-        .find(|m| m.name == crate::schema::MARK_LINK && i >= m.start && i < m.end)
-        .and_then(|m| m.value.as_str())
-        .and_then(|v| {
-            v.strip_prefix(crate::schema::CROSS_REF_PREFIX)
-                .map(std::string::ToString::to_string)
-        })
-}
-
-/// Whether a run must break before `j`: any mark-set change, note-ref, comment/bookmark boundary, or cross-reference change.
-fn run_breaks_at(
-    chars: &[char],
-    marks: &[crate::document::MarkSpan],
-    active: &[(String, MarkValue)],
-    active_change: &Option<(crate::snapshot::ChangeKind, String)>,
-    active_xref: &Option<String>,
-    j: usize,
-) -> bool {
-    marks_at(j, marks) != active
-        || &change_at(marks, j) != active_change
-        || &cross_ref_at(marks, j) != active_xref
-        || is_note_ref_placeholder(chars, marks, j)
-        || !comment_starts_at(marks, j).is_empty()
-        || !comment_ends_at(marks, j).is_empty()
-        || !bookmark_starts_at(marks, j).is_empty()
-        || !bookmark_ends_at(marks, j).is_empty()
-}
-
 /// A change-id → `&ChangeView` lookup for wrapping runs in `<w:ins>`/`<w:del>` on export.
 type ChangeIndex<'a> = BTreeMap<String, &'a crate::snapshot::ChangeView>;
 
 fn change_index(snap: &DocSnapshot) -> ChangeIndex<'_> {
     snap.changes.iter().map(|c| (c.id.clone(), c)).collect()
-}
-
-/// The tracked change anchoring char `i`, if any; insertion wins if both somehow overlap.
-fn change_at(
-    marks: &[crate::document::MarkSpan],
-    i: usize,
-) -> Option<(crate::snapshot::ChangeKind, String)> {
-    let find = |name: &str| {
-        marks
-            .iter()
-            .find(|m| m.name == name && i >= m.start && i < m.end)
-            .and_then(|m| m.value.as_str().map(std::string::ToString::to_string))
-    };
-    if let Some(id) = find(crate::schema::MARK_INS) {
-        return Some((crate::snapshot::ChangeKind::Ins, id));
-    }
-    find(crate::schema::MARK_DEL).map(|id| (crate::snapshot::ChangeKind::Del, id))
 }
 
 /// The `<w:ins>`/`<w:del>` open tag for a tracked change (docx id + author/date), wrapping the affected `<w:r>` runs.
@@ -859,7 +898,7 @@ fn change_open_tag(change: &crate::snapshot::ChangeView, docx_id: i64) -> String
 }
 
 /// Emit a *deleted* run's content as `<w:delText>` (OOXML requires it, not `w:t`); `\t`/`\n` still map as usual.
-fn del_run_content(chars: &[char]) -> String {
+fn del_run_content(text: &str) -> String {
     let mut out = String::new();
     let mut buf = String::new();
     let flush = |out: &mut String, buf: &mut String| {
@@ -872,7 +911,7 @@ fn del_run_content(chars: &[char]) -> String {
             buf.clear();
         }
     };
-    for &c in chars {
+    for c in text.chars() {
         match c {
             '\t' => {
                 flush(&mut out, &mut buf);
@@ -889,89 +928,90 @@ fn del_run_content(chars: &[char]) -> String {
     out
 }
 
+/// The id-lookup tables `render_runs` needs to resolve marks into DOCX-side numeric/ref ids;
+/// bundled so the function itself stays under the argument-count bar.
+struct RunIds<'a, 'b> {
+    note_ids: &'a BTreeMap<String, i64>,
+    note_kinds: &'a BTreeMap<String, crate::model::NoteKind>,
+    comment_ids: &'a BTreeMap<String, i64>,
+    changes: &'a ChangeIndex<'b>,
+    change_ids: &'a BTreeMap<String, i64>,
+    bookmark_ids: &'a BTreeMap<String, i64>,
+}
+
 /// Render a block's text + marks as `<w:r>` runs, starting a new run whenever the active
 /// mark set changes. A `note-ref` placeholder becomes its reference-element run; a
 /// `comment` mark emits range-start/end + reference; an `ins`/`del` mark wraps the run in
 /// `<w:ins>`/`<w:del>` (deleted runs use `<w:delText>`).
-fn render_runs(
-    text: &str,
-    marks: &[crate::document::MarkSpan],
-    note_ids: &BTreeMap<String, i64>,
-    note_kinds: &BTreeMap<String, crate::model::NoteKind>,
-    comment_ids: &BTreeMap<String, i64>,
-    changes: &ChangeIndex,
-    change_ids: &BTreeMap<String, i64>,
-    bookmark_ids: &BTreeMap<String, i64>,
-) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
+fn render_runs(text: &str, marks: &[crate::document::MarkSpan], ids: &RunIds) -> String {
+    let plan = InlinePlan::new(text, marks);
     let mut out = String::new();
-    // Comment boundaries at `i`: ends (+ reference run) close before starts open, so adjacent ranges don't collide.
-    let emit_comment_boundaries = |out: &mut String, i: usize| {
-        for id in comment_ends_at(marks, i) {
-            if let Some(end) = super::comments::comment_range_end(&id, comment_ids) {
-                out.push_str(&end);
+    // Comment boundaries: ends (+ reference run) close before starts open, so
+    // adjacent ranges don't collide.
+    let emit_comment_boundaries =
+        |out: &mut String, boundary: &crate::export::RangeBoundary<'_>| {
+            for id in &boundary.ends {
+                if let Some(end) = super::comments::comment_range_end(id, ids.comment_ids) {
+                    out.push_str(&end);
+                }
+                if let Some(rf) = super::comments::comment_reference_run(id, ids.comment_ids) {
+                    out.push_str(&rf);
+                }
             }
-            if let Some(rf) = super::comments::comment_reference_run(&id, comment_ids) {
-                out.push_str(&rf);
+            for id in &boundary.starts {
+                if let Some(start) = super::comments::comment_range_start(id, ids.comment_ids) {
+                    out.push_str(&start);
+                }
             }
-        }
-        for id in comment_starts_at(marks, i) {
-            if let Some(start) = super::comments::comment_range_start(&id, comment_ids) {
-                out.push_str(&start);
+        };
+    // Bookmark boundaries: end (by id) before start (id + name) — empty
+    // elements sitting between runs.
+    let emit_bookmark_boundaries =
+        |out: &mut String, boundary: &crate::export::RangeBoundary<'_>| {
+            for name in &boundary.ends {
+                if let Some(id) = ids.bookmark_ids.get(*name) {
+                    let _ = write!(out, r#"<w:bookmarkEnd w:id="{id}"/>"#);
+                }
             }
-        }
-    };
-    // Bookmark boundaries at `i`: end (by id) before start (id + name) — empty elements sitting between runs.
-    let emit_bookmark_boundaries = |out: &mut String, i: usize| {
-        for name in bookmark_ends_at(marks, i) {
-            if let Some(id) = bookmark_ids.get(&name) {
-                let _ = write!(out, r#"<w:bookmarkEnd w:id="{id}"/>"#);
+            for name in &boundary.starts {
+                if let Some(id) = ids.bookmark_ids.get(*name) {
+                    let _ = write!(
+                        out,
+                        r#"<w:bookmarkStart w:id="{id}" w:name="{}"/>"#,
+                        escape_attr(name)
+                    );
+                }
             }
-        }
-        for name in bookmark_starts_at(marks, i) {
-            if let Some(id) = bookmark_ids.get(&name) {
-                let _ = write!(
-                    out,
-                    r#"<w:bookmarkStart w:id="{id}" w:name="{}"/>"#,
-                    escape_attr(&name)
-                );
-            }
-        }
-    };
-    let mut i = 0;
-    while i < n {
-        emit_comment_boundaries(&mut out, i);
-        emit_bookmark_boundaries(&mut out, i);
+        };
+
+    for point in plan.points() {
+        emit_comment_boundaries(&mut out, &point.boundary.comments);
+        emit_bookmark_boundaries(&mut out, &point.boundary.bookmarks);
+        let Some(run) = &point.run else {
+            continue;
+        };
         // A note-reference placeholder is its own run (no text), independent of the surrounding marks.
-        if chars[i] == crate::schema::FIELD_PLACEHOLDER
-            && let Some(note_id) = note_ref_at(marks, i)
-        {
-            if let Some(run) = note_reference_run(&note_id, note_ids, note_kinds) {
-                out.push_str(&run);
+        if let Some(note_id) = run.note_reference {
+            if let Some(reference) = note_reference_run(note_id, ids.note_ids, ids.note_kinds) {
+                out.push_str(&reference);
             }
-            i += 1;
             continue;
         }
-        let active = marks_at(i, marks);
-        let active_change = change_at(marks, i);
-        let active_xref = cross_ref_at(marks, i);
-        let mut j = i + 1;
-        while j < n && !run_breaks_at(&chars, marks, &active, &active_change, &active_xref, j) {
-            j += 1;
-        }
         // The `<w:ins>`/`<w:del>` wrapper (if any) for this run group; deleted text uses `<w:delText>`.
-        let (wrap_open, wrap_close, is_del) = match &active_change {
-            Some((kind, id)) => match (changes.get(id), change_ids.get(id)) {
+        let (wrap_open, wrap_close, is_del) = match run.change {
+            Some(active_change) => match (
+                ids.changes.get(active_change.id),
+                ids.change_ids.get(active_change.id),
+            ) {
                 (Some(ch), Some(docx_id)) => {
-                    let close = match kind {
+                    let close = match active_change.kind {
                         crate::snapshot::ChangeKind::Ins => "</w:ins>",
                         crate::snapshot::ChangeKind::Del => "</w:del>",
                     };
                     (
                         change_open_tag(ch, *docx_id),
                         close,
-                        *kind == crate::snapshot::ChangeKind::Del,
+                        active_change.kind == crate::snapshot::ChangeKind::Del,
                     )
                 }
                 _ => (String::new(), "", false),
@@ -979,14 +1019,14 @@ fn render_runs(
             None => (String::new(), "", false),
         };
         // A cross-reference wraps the whole run group in `<w:hyperlink w:anchor>`, the outermost wrapper.
-        let (xref_open, xref_close) = match &active_xref {
+        let (xref_open, xref_close) = match run.cross_reference() {
             Some(target) => (
                 format!(r#"<w:hyperlink w:anchor="{}">"#, escape_attr(target)),
                 "</w:hyperlink>",
             ),
             None => (String::new(), ""),
         };
-        let rpr = run_props(&active);
+        let rpr = run_props(&run.marks);
         out.push_str(&xref_open);
         out.push_str(&wrap_open);
         out.push_str("<w:r>");
@@ -994,26 +1034,15 @@ fn render_runs(
             let _ = write!(out, "<w:rPr>{rpr}</w:rPr>");
         }
         if is_del {
-            out.push_str(&del_run_content(&chars[i..j]));
+            out.push_str(&del_run_content(run.text));
         } else {
-            out.push_str(&run_content(&chars[i..j]));
+            out.push_str(&run_content(run.text));
         }
         out.push_str("</w:r>");
         out.push_str(wrap_close);
         out.push_str(xref_close);
-        i = j;
     }
-    for name in bookmark_ends_at(marks, n) {
-        if let Some(id) = bookmark_ids.get(&name) {
-            let _ = write!(out, r#"<w:bookmarkEnd w:id="{id}"/>"#);
-        }
-    }
-    emit_comment_boundaries(&mut out, n);
     out
-}
-
-fn is_note_ref_placeholder(chars: &[char], marks: &[crate::document::MarkSpan], j: usize) -> bool {
-    chars[j] == crate::schema::FIELD_PLACEHOLDER && note_ref_at(marks, j).is_some()
 }
 
 fn jc_xml(b: &BlockView) -> String {
@@ -1032,7 +1061,12 @@ fn jc_xml(b: &BlockView) -> String {
 fn spacing_xml(b: &BlockView) -> String {
     match b.attrs.get("line_spacing") {
         Some(AttrVal::Float(ls)) if *ls > 0.0 => {
-            let line = (ls * 240.0).round() as i64;
+            let line = (ls * 240.0).round().clamp(0.0, 1_000_000.0);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "clamped to [0, 1_000_000] above; a 240ths-of-a-line spacing value never approaches i64 range"
+            )]
+            let line = line as i64;
             format!(r#"<w:spacing w:line="{line}" w:lineRule="auto"/>"#)
         }
         _ => String::new(),
@@ -1048,7 +1082,7 @@ fn cell_table(b: &BlockView) -> Option<String> {
 
 fn cell_rc(b: &BlockView) -> (usize, usize) {
     let g = |k: &str| match b.attrs.get(k) {
-        Some(AttrVal::Int(n)) if *n >= 0 => *n as usize,
+        Some(AttrVal::Int(n)) => usize::try_from(*n).unwrap_or(0),
         _ => 0,
     };
     (g("row"), g("col"))
@@ -1094,7 +1128,9 @@ impl Numbering {
         if let Some((_, id)) = self.ids.iter().find(|(k, _)| *k == key) {
             return *id;
         }
-        let id = 3 + self.ids.len() as i64;
+        let id = i64::try_from(self.ids.len())
+            .unwrap_or(i64::MAX)
+            .saturating_add(3);
         self.ids.push((key, id));
         id
     }
@@ -1132,7 +1168,7 @@ impl Numbering {
 }
 
 /// EMUs per CSS pixel (914400 EMU/inch ÷ 96 px/inch).
-const EMU_PER_PX: f64 = 914400.0 / 96.0;
+const EMU_PER_PX: f64 = 914_400.0 / 96.0;
 
 /// A media part + relationship synthesised for an exported image block.
 struct ExportedImage {
@@ -1185,7 +1221,7 @@ impl ImageExport {
 
     /// Register an image blob, returning its rel id; stored once per occurrence (each drawing gets its own rel).
     fn add(&mut self, bytes: &[u8]) -> String {
-        let n = self.images.len() + 1;
+        let n = self.images.len().saturating_add(1);
         let (ext, _) = image_ext_and_media(bytes);
         let rel_id = format!("rIdImg{n}");
         let target = format!("media/image{n}.{ext}");
@@ -1235,16 +1271,29 @@ fn image_extent_emu(b: &BlockView) -> (i64, i64) {
         Some(AttrVal::Int(n)) if *n > 0 => *n,
         _ => dflt,
     };
-    let cx = (px("width", 96) as f64 * EMU_PER_PX).round() as i64;
-    let cy = (px("height", 96) as f64 * EMU_PER_PX).round() as i64;
-    (cx, cy)
+    // A document-supplied pixel dimension is clamped before the float round-trip, so neither
+    // cast can lose more than the clamp already discards; a real image never approaches this bound.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "px is clamped to ±1e12 below, an image dimension never approaches f64's exact-integer bound"
+    )]
+    let emu = |px_val: i64| -> i64 {
+        let px_val = px_val.clamp(-1_000_000_000_000, 1_000_000_000_000);
+        let emu = (px_val as f64 * EMU_PER_PX).round().clamp(-1e15, 1e15);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "clamped to ±1e15 above, far inside i64 range"
+        )]
+        let emu = emu as i64;
+        emu
+    };
+    (emu(px("width", 96)), emu(px("height", 96)))
 }
 
 /// Build the `w:drawing` XML, registering its blob with `imgs`; inline emits `wp:inline`, floating emits `wp:anchor` + `wp:wrap*`.
 fn image_drawing_xml(b: &BlockView, snap: &DocSnapshot, imgs: &mut ImageExport) -> Option<String> {
-    let hash = match b.attrs.get("blob") {
-        Some(AttrVal::Str(h)) => h,
-        _ => return None,
+    let Some(AttrVal::Str(hash)) = b.attrs.get("blob") else {
+        return None;
     };
     let bytes = snap.blobs.get(hash)?;
     let rel_id = imgs.add(bytes);
@@ -1280,6 +1329,147 @@ fn image_drawing_xml(b: &BlockView, snap: &DocSnapshot, imgs: &mut ImageExport) 
     }
 }
 
+/// A block-sequence index, widened to the `i64` these XML ids use; never realistically exceeds
+/// `i64::MAX` (a document would need over 9 quintillion blocks), so a fallback is unreachable in practice.
+fn index_to_i64(i: usize) -> i64 {
+    i64::try_from(i).unwrap_or(i64::MAX)
+}
+
+/// Renders one contiguous run of `cell` blocks sharing a `table` id as a `w:tbl`, returning the
+/// index just past the run.
+fn render_table_block(body: &mut String, snap: &DocSnapshot, i: usize, ids: &RunIds) -> usize {
+    let Some(b) = snap.blocks.get(i) else {
+        return i.saturating_add(1);
+    };
+    let tid = cell_table(b).unwrap_or_default();
+    let start = i;
+    let mut i = i;
+    while snap
+        .blocks
+        .get(i)
+        .is_some_and(|blk| cell_table(blk).as_deref() == Some(tid.as_str()))
+    {
+        i = i.saturating_add(1);
+    }
+    let Some(cells) = snap.blocks.get(start..i) else {
+        return i;
+    };
+    let nrows = cells
+        .iter()
+        .map(|c| cell_rc(c).0)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    let ncols = cells
+        .iter()
+        .map(|c| cell_rc(c).1)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    body.push_str(r#"<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid>"#);
+    for _ in 0..ncols {
+        body.push_str("<w:gridCol/>");
+    }
+    body.push_str("</w:tblGrid>");
+    for r in 0..nrows {
+        body.push_str("<w:tr>");
+        for c in 0..ncols {
+            let inner = cells
+                .iter()
+                .find(|cl| cell_rc(cl) == (r, c))
+                .map(|cl| render_runs(&cl.text, &cl.marks, ids))
+                .unwrap_or_default();
+            let _ = write!(
+                body,
+                r#"<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p>{inner}</w:p></w:tc>"#
+            );
+        }
+        body.push_str("</w:tr>");
+    }
+    body.push_str("</w:tbl>");
+    i
+}
+
+/// Renders one block (or, for `cell`, a whole contiguous table run) into `body`, returning the
+/// index of the next unprocessed block.
+fn render_block(
+    body: &mut String,
+    snap: &DocSnapshot,
+    i: usize,
+    numbering: &mut Numbering,
+    imgs: &mut ImageExport,
+    named_refs: &mut BTreeSet<String>,
+    ids: &RunIds,
+) -> usize {
+    let Some(b) = snap.blocks.get(i) else {
+        return i.saturating_add(1);
+    };
+    match b.kind.as_str() {
+        "heading" => {
+            let level = match b.attrs.get("level") {
+                Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
+                _ => 1,
+            };
+            let _ = write!(
+                body,
+                r#"<w:p><w:pPr><w:pStyle w:val="Heading{level}"/>{}{}</w:pPr>{}</w:p>"#,
+                jc_xml(b),
+                spacing_xml(b),
+                render_runs(&b.text, &b.marks, ids)
+            );
+            i.saturating_add(1)
+        }
+        "list_item" => {
+            let numid = numbering.num_id(b);
+            let _ = write!(
+                body,
+                r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{numid}"/></w:numPr>{}{}</w:pPr>{}</w:p>"#,
+                jc_xml(b),
+                spacing_xml(b),
+                render_runs(&b.text, &b.marks, ids)
+            );
+            i.saturating_add(1)
+        }
+        "image" => {
+            // Wrap the drawing run in a paragraph (Word images live in a `w:p`).
+            if let Some(drawing) = image_drawing_xml(b, snap, imgs) {
+                let _ = write!(body, "<w:p>{drawing}</w:p>");
+            }
+            i.saturating_add(1)
+        }
+        "fidelity" => {
+            if let Some(AttrVal::Str(xml)) = b.attrs.get("xml") {
+                body.push_str(xml);
+            }
+            i.saturating_add(1)
+        }
+        "cell" => render_table_block(body, snap, i, ids),
+        _ => {
+            // A plain paragraph: a `style` attr emits `<w:pStyle>`; a direct `align` attr still rides as `<w:jc>`.
+            let mut ppr_inner = String::new();
+            if let Some(AttrVal::Str(sid)) = b.attrs.get("style")
+                && snap.styles.contains_key(sid)
+            {
+                let _ = write!(ppr_inner, r#"<w:pStyle w:val="{}"/>"#, escape_attr(sid));
+                named_refs.insert(sid.clone());
+            }
+            ppr_inner.push_str(&jc_xml(b));
+            ppr_inner.push_str(&spacing_xml(b));
+            let ppr = if ppr_inner.is_empty() {
+                String::new()
+            } else {
+                format!("<w:pPr>{ppr_inner}</w:pPr>")
+            };
+            let _ = write!(
+                body,
+                "<w:p>{ppr}{}</w:p>",
+                render_runs(&b.text, &b.marks, ids)
+            );
+            i.saturating_add(1)
+        }
+    }
+}
+
 /// Build `word/document.xml`, collecting referenced style ids, the numbering plan, and each note id's docx id + kind.
 fn build_document_xml(
     snap: &DocSnapshot,
@@ -1298,10 +1488,8 @@ fn build_document_xml(
         .changes
         .iter()
         .enumerate()
-        .map(|(i, c)| (c.id.clone(), i as i64))
+        .map(|(i, c)| (c.id.clone(), index_to_i64(i)))
         .collect();
-    let changes = &changes;
-    let change_ids = &change_ids;
     // Bookmark ids are assigned from 0 in sorted-name order so output is deterministic.
     let bookmark_ids: BTreeMap<String, i64> = {
         let mut names: Vec<String> = snap.bookmarks.iter().map(|bm| bm.name.clone()).collect();
@@ -1310,149 +1498,28 @@ fn build_document_xml(
         names
             .into_iter()
             .enumerate()
-            .map(|(i, name)| (name, i as i64))
+            .map(|(i, name)| (name, index_to_i64(i)))
             .collect()
     };
-    let bookmark_ids = &bookmark_ids;
+    let ids = RunIds {
+        note_ids,
+        note_kinds,
+        comment_ids,
+        changes: &changes,
+        change_ids: &change_ids,
+        bookmark_ids: &bookmark_ids,
+    };
     let mut i = 0;
     while i < snap.blocks.len() {
-        let b = &snap.blocks[i];
-        match b.kind.as_str() {
-            "heading" => {
-                let level = match b.attrs.get("level") {
-                    Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
-                    _ => 1,
-                };
-                let _ = write!(
-                    body,
-                    r#"<w:p><w:pPr><w:pStyle w:val="Heading{level}"/>{}{}</w:pPr>{}</w:p>"#,
-                    jc_xml(b),
-                    spacing_xml(b),
-                    render_runs(
-                        &b.text,
-                        &b.marks,
-                        note_ids,
-                        note_kinds,
-                        comment_ids,
-                        changes,
-                        change_ids,
-                        bookmark_ids
-                    )
-                );
-                i += 1;
-            }
-            "list_item" => {
-                let numid = numbering.num_id(b);
-                let _ = write!(
-                    body,
-                    r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{numid}"/></w:numPr>{}{}</w:pPr>{}</w:p>"#,
-                    jc_xml(b),
-                    spacing_xml(b),
-                    render_runs(
-                        &b.text,
-                        &b.marks,
-                        note_ids,
-                        note_kinds,
-                        comment_ids,
-                        changes,
-                        change_ids,
-                        bookmark_ids
-                    )
-                );
-                i += 1;
-            }
-            "image" => {
-                // Wrap the drawing run in a paragraph (Word images live in a `w:p`).
-                if let Some(drawing) = image_drawing_xml(b, snap, &mut imgs) {
-                    let _ = write!(body, "<w:p>{drawing}</w:p>");
-                }
-                i += 1;
-            }
-            "fidelity" => {
-                if let Some(AttrVal::Str(xml)) = b.attrs.get("xml") {
-                    body.push_str(xml);
-                }
-                i += 1;
-            }
-            "cell" => {
-                let tid = cell_table(b).unwrap_or_default();
-                let start = i;
-                while i < snap.blocks.len()
-                    && cell_table(&snap.blocks[i]).as_deref() == Some(tid.as_str())
-                {
-                    i += 1;
-                }
-                let cells = &snap.blocks[start..i];
-                let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
-                let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
-                body.push_str(
-                    r#"<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid>"#,
-                );
-                for _ in 0..ncols {
-                    body.push_str("<w:gridCol/>");
-                }
-                body.push_str("</w:tblGrid>");
-                for r in 0..nrows {
-                    body.push_str("<w:tr>");
-                    for c in 0..ncols {
-                        let inner = cells
-                            .iter()
-                            .find(|cl| cell_rc(cl) == (r, c))
-                            .map(|cl| {
-                                render_runs(
-                                    &cl.text,
-                                    &cl.marks,
-                                    note_ids,
-                                    note_kinds,
-                                    comment_ids,
-                                    changes,
-                                    change_ids,
-                                    bookmark_ids,
-                                )
-                            })
-                            .unwrap_or_default();
-                        let _ = write!(
-                            body,
-                            r#"<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p>{inner}</w:p></w:tc>"#
-                        );
-                    }
-                    body.push_str("</w:tr>");
-                }
-                body.push_str("</w:tbl>");
-            }
-            _ => {
-                // A plain paragraph: a `style` attr emits `<w:pStyle>`; a direct `align` attr still rides as `<w:jc>`.
-                let mut ppr_inner = String::new();
-                if let Some(AttrVal::Str(sid)) = b.attrs.get("style")
-                    && snap.styles.contains_key(sid)
-                {
-                    let _ = write!(ppr_inner, r#"<w:pStyle w:val="{}"/>"#, escape_attr(sid));
-                    named_refs.insert(sid.clone());
-                }
-                ppr_inner.push_str(&jc_xml(b));
-                ppr_inner.push_str(&spacing_xml(b));
-                let ppr = if ppr_inner.is_empty() {
-                    String::new()
-                } else {
-                    format!("<w:pPr>{ppr_inner}</w:pPr>")
-                };
-                let _ = write!(
-                    body,
-                    "<w:p>{ppr}{}</w:p>",
-                    render_runs(
-                        &b.text,
-                        &b.marks,
-                        note_ids,
-                        note_kinds,
-                        comment_ids,
-                        changes,
-                        change_ids,
-                        bookmark_ids
-                    )
-                );
-                i += 1;
-            }
-        }
+        i = render_block(
+            &mut body,
+            snap,
+            i,
+            &mut numbering,
+            &mut imgs,
+            &mut named_refs,
+            &ids,
+        );
     }
 
     // sectPr is a direct child of `w:body`, placed after the last block.
@@ -1493,10 +1560,10 @@ mod tests {
             .collect()
     }
 
+    type NormRegion = Vec<(String, Vec<(usize, usize, String, MarkValue)>)>;
+
     /// Normalize a region's blocks, dropping the volatile per-import block id so imports compare equal.
-    fn norm_region(
-        blocks: &[crate::snapshot::BlockView],
-    ) -> Vec<(String, Vec<(usize, usize, String, MarkValue)>)> {
+    fn norm_region(blocks: &[crate::snapshot::BlockView]) -> NormRegion {
         blocks
             .iter()
             .map(|b| {
@@ -1564,7 +1631,12 @@ mod tests {
         let media = cont
             .parts
             .iter()
-            .find(|(n, _)| n.starts_with("word/media/") && n.ends_with(".png"))
+            .find(|(n, _)| {
+                n.starts_with("word/media/")
+                    && std::path::Path::new(n)
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+            })
             .expect("media part written");
         assert_eq!(media.1, &TINY_PNG[..], "image bytes written verbatim");
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
@@ -2511,27 +2583,32 @@ mod tests {
         assert_eq!(snap.notes[0].blocks[0].text, "the footnote");
     }
 
-    #[test]
-    fn footnote_and_endnote_roundtrip_through_docx() {
-        use crate::document::MarkValue;
-        use crate::schema::MARK_NOTE_REF;
-        // A footnote + an endnote built from scratch: export must write both note parts + refs
-        // + content-types/rels, re-importing the same markers/notes/kinds.
+    /// Builds the footnote+endnote fixture and exports it to `.docx` bytes
+    /// (part of [`footnote_and_endnote_roundtrip_through_docx`]).
+    fn export_footnote_endnote_fixture() -> Vec<u8> {
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "see ref");
-        let fid = d.insert_footnote(&p, 4);
-        let fb = d.insert_note_block(&fid, None, "paragraph").unwrap();
-        d.splice_note_text(&fid, &fb, 0, 0, "a footnote");
+        let footnote_id = d.insert_footnote(&p, 4);
+        let fb = d
+            .insert_note_block(&footnote_id, None, "paragraph")
+            .unwrap();
+        d.splice_note_text(&footnote_id, &fb, 0, 0, "a footnote");
 
         let p2 = d.insert_block(Some(&p), "paragraph");
         d.splice_text(&p2, 0, 0, "tail");
-        let eid = d.insert_endnote(&p2, 4);
-        let eb = d.insert_note_block(&eid, None, "paragraph").unwrap();
-        d.splice_note_text(&eid, &eb, 0, 0, "an endnote");
+        let endnote_id = d.insert_endnote(&p2, 4);
+        let eb = d.insert_note_block(&endnote_id, None, "paragraph").unwrap();
+        d.splice_note_text(&endnote_id, &eb, 0, 0, "an endnote");
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
-        let cont = DocxContainer::read(&exported).unwrap();
+        DocxCodec.export(d.as_ref()).unwrap()
+    }
+
+    /// Asserts the exported `.docx` carries both note parts, their refs, and
+    /// the content-types/rels registrations (part of
+    /// [`footnote_and_endnote_roundtrip_through_docx`]).
+    fn assert_footnote_endnote_docx_xml(exported: &[u8]) {
+        let cont = DocxContainer::read(exported).unwrap();
         let ftn = std::str::from_utf8(
             cont.get("word/footnotes.xml")
                 .expect("footnotes.xml written"),
@@ -2560,9 +2637,17 @@ mod tests {
             rels.contains(r#"Target="footnotes.xml""#) && rels.contains(r#"Target="endnotes.xml""#),
             "note rels registered: {rels}"
         );
+    }
+
+    /// Re-imports the exported `.docx`, asserting the ref marker and both
+    /// note bodies/kinds survive (part of
+    /// [`footnote_and_endnote_roundtrip_through_docx`]). Returns the
+    /// re-imported document for the caller's second round-trip check.
+    fn assert_footnote_endnote_reimport(exported: &[u8]) -> Document {
+        use crate::schema::MARK_NOTE_REF;
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        DocxCodec.import(exported, &mut d2.as_mut()).unwrap();
         let snap = d2.materialize();
         assert_eq!(
             snap.blocks[0]
@@ -2595,6 +2680,18 @@ mod tests {
             .find(|n| n.kind == "endnote")
             .expect("endnote present");
         assert_eq!(end_note.blocks[0].text, "an endnote");
+
+        d2
+    }
+
+    #[test]
+    fn footnote_and_endnote_roundtrip_through_docx() {
+        // A footnote + an endnote built from scratch: export must write both note parts + refs
+        // + content-types/rels, re-importing the same markers/notes/kinds.
+        let exported = export_footnote_endnote_fixture();
+        assert_footnote_endnote_docx_xml(&exported);
+
+        let d2 = assert_footnote_endnote_reimport(&exported);
 
         let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
         let mut d3 = Document::new();
@@ -2683,6 +2780,7 @@ mod tests {
     fn comment_roundtrips_through_docx() {
         use crate::document::MarkValue;
         use crate::schema::MARK_COMMENT;
+        type CommentTuple = (String, String, Option<(usize, usize)>);
         // A comment built from scratch over "this word" must export comments.xml + range markers
         // + reference + content-types/rels, re-importing intact.
         let mut d = Document::new();
@@ -2756,7 +2854,7 @@ mod tests {
         let mut d3 = Document::new();
         DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
         let authors_texts = |snap: &DocSnapshot| {
-            let mut v: Vec<(String, String, Option<(usize, usize)>)> = snap
+            let mut v: Vec<CommentTuple> = snap
                 .comments
                 .iter()
                 .map(|c| {
@@ -2777,22 +2875,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tracked_changes_roundtrip_through_docx() {
-        use crate::document::MarkValue;
-        use crate::schema::{MARK_DEL, MARK_INS};
-        // Tracked insertion + deletion (with author) export as <w:ins>/<w:del> wrappers (deleted
-        // text via <w:delText>), re-importing kind/author + anchored ranges.
-        let mut d = Document::new();
-        let p = d.insert_block(None, "paragraph");
-        d.splice_text(&p, 0, 0, "hello world");
-        let ins = d.track_insert(&p, 5, " there", "Ada", "2021-01-02T00:00:00Z");
-        let del = d.track_delete(&p, 12, 17, "Bob", "2021-03-04T00:00:00Z"); // "world"
-        let _ = (ins, del);
-
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
-        let cont = DocxContainer::read(&exported).unwrap();
-        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+    /// Asserts the exported `document.xml` carries the `<w:ins>`/`<w:del>` wrappers,
+    /// `<w:delText>`, and both change authors.
+    fn assert_docx_shows_tracked_changes(document: &str) {
         assert!(
             document.contains("<w:ins "),
             "ins wrapper emitted: {document}"
@@ -2813,10 +2898,11 @@ mod tests {
             document.contains(r#"w:author="Bob""#),
             "del author emitted: {document}"
         );
+    }
 
-        let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
-        let snap = d2.materialize();
+    /// Asserts a re-imported snapshot carries both marks at their original ranges and both
+    /// `ChangeView` records with the expected kind/author/range; returns the (ins, del) ids.
+    fn assert_import_recovers_changes(snap: &DocSnapshot) -> (String, String) {
         // The deleted text is retained (struck), the inserted text is present.
         assert_eq!(
             snap.blocks[0].text, "hello there world",
@@ -2826,7 +2912,7 @@ mod tests {
         let im = snap.blocks[0]
             .marks
             .iter()
-            .find(|m| m.name == MARK_INS)
+            .find(|m| m.name == crate::schema::MARK_INS)
             .expect("ins mark survives");
         assert_eq!(
             (im.start, im.end),
@@ -2837,7 +2923,7 @@ mod tests {
         let dm = snap.blocks[0]
             .marks
             .iter()
-            .find(|m| m.name == MARK_DEL)
+            .find(|m| m.name == crate::schema::MARK_DEL)
             .expect("del mark survives");
         assert_eq!(
             (dm.start, dm.end),
@@ -2875,6 +2961,30 @@ mod tests {
         assert_eq!(dc.kind, crate::snapshot::ChangeKind::Del);
         assert_eq!(dc.author, "Bob");
         assert_eq!(dc.range, Some((snap.blocks[0].id.clone(), 12, 17)));
+        (ins_id, del_id)
+    }
+
+    #[test]
+    fn tracked_changes_roundtrip_through_docx() {
+        type ChangeTuple = (crate::snapshot::ChangeKind, String, Option<(usize, usize)>);
+        // Tracked insertion + deletion (with author) export as <w:ins>/<w:del> wrappers (deleted
+        // text via <w:delText>), re-importing kind/author + anchored ranges.
+        let mut d = Document::new();
+        let p = d.insert_block(None, "paragraph");
+        d.splice_text(&p, 0, 0, "hello world");
+        let ins = d.track_insert(&p, 5, " there", "Ada", "2021-01-02T00:00:00Z");
+        let del = d.track_delete(&p, 12, 17, "Bob", "2021-03-04T00:00:00Z"); // "world"
+        let _ = (ins, del);
+
+        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let cont = DocxContainer::read(&exported).unwrap();
+        let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
+        assert_docx_shows_tracked_changes(document);
+
+        let mut d2 = Document::new();
+        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let snap = d2.materialize();
+        let (ins_id, del_id) = assert_import_recovers_changes(&snap);
 
         // accept_change on the insertion clears the mark; on the deletion removes text.
         d2.accept_change(&ins_id);
@@ -2890,7 +3000,7 @@ mod tests {
         let mut d3 = Document::new();
         DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
         let summary = |snap: &DocSnapshot| {
-            let mut v: Vec<(crate::snapshot::ChangeKind, String, Option<(usize, usize)>)> = snap
+            let mut v: Vec<ChangeTuple> = snap
                 .changes
                 .iter()
                 .map(|c| {

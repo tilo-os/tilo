@@ -9,7 +9,8 @@
 //! │   └── privkey.bin     # 32-byte Ed25519 secret seed (ONLY on primary devices)
 //! └── device/
 //!     ├── keypair.bin     # 32-byte Ed25519 secret seed (per-device, always present)
-//!     └── cert.bin        # postcard-encoded `DeviceCert` (present after enrollment)
+//!     ├── cert.bin        # legacy/default postcard-encoded `DeviceCert`
+//!     └── certs/          # one certificate per user identity trusted by this device
 //! ```
 //!
 //! All files are raw byte blobs; the on-disk format is deliberately
@@ -70,6 +71,10 @@ impl IdentityPaths {
 
     /// Ensure the two subdirectories exist (best-effort). Does not
     /// change their mode — that's the OS installer's job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either subdirectory cannot be created.
     pub fn ensure_directories(&self) -> io::Result<()> {
         if let Some(parent) = self.user_pubkey.parent() {
             fs::create_dir_all(parent)?;
@@ -78,6 +83,21 @@ impl IdentityPaths {
             fs::create_dir_all(parent)?;
         }
         Ok(())
+    }
+
+    /// Certificate issued to this device by `user_public_key`.
+    ///
+    /// A device has one keypair but may act for different local identities in
+    /// different workspaces. Keying certificates by their issuing user root
+    /// preserves that one-device invariant without crossing identities.
+    pub fn device_cert_for_user(&self, user_public_key: &[u8; 32]) -> std::path::PathBuf {
+        let device_dir = self
+            .device_privkey
+            .parent()
+            .unwrap_or_else(|| Path::new("device"));
+        device_dir
+            .join("certs")
+            .join(format!("{}.bin", hex_encode(user_public_key)))
     }
 }
 
@@ -109,6 +129,12 @@ pub enum PersistError {
 }
 
 /// Read a 32-byte Ed25519 public key from disk.
+///
+/// # Errors
+///
+/// Returns [`PersistError::Io`] if `path` cannot be read, or
+/// [`PersistError::WrongKeyLength`] if the file is not exactly 32
+/// bytes.
 pub fn read_public_key(path: &Path) -> Result<[u8; 32], PersistError> {
     let bytes = fs::read(path)?;
     if bytes.len() != 32 {
@@ -121,6 +147,10 @@ pub fn read_public_key(path: &Path) -> Result<[u8; 32], PersistError> {
 
 /// Write a 32-byte Ed25519 public key to disk. Mode is left at the
 /// filesystem default (typically 0644) — public keys are non-secret.
+///
+/// # Errors
+///
+/// Returns an error if writing to `path` fails.
 pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
     fs::write(path, pubkey)
 }
@@ -131,6 +161,13 @@ pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
 /// On non-Unix targets the permission check is a no-op (still
 /// checks length); qOS runs only on Linux, so this is the
 /// production path everywhere the compositor ships.
+///
+/// # Errors
+///
+/// Returns [`PersistError::InsecurePermissions`] if the file's mode
+/// is looser than 0600 (Unix only), [`PersistError::Io`] if it
+/// cannot be read, or [`PersistError::WrongKeyLength`] if it is not
+/// exactly 32 bytes.
 pub fn read_signing_key(path: &Path) -> Result<SigningKey, PersistError> {
     ensure_secret_mode(path)?;
     signing_key_from_file(path)
@@ -150,6 +187,11 @@ fn signing_key_from_file(path: &Path) -> Result<SigningKey, PersistError> {
 }
 
 /// Write a 32-byte Ed25519 signing key to disk with mode 0600.
+///
+/// # Errors
+///
+/// Returns an error if `path` has no parent directory, or if the
+/// atomic write fails.
 pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     // A partial write must leave the previous secret intact, and the mode is
     // set on the temp file so the key is never briefly world-readable at its
@@ -175,12 +217,24 @@ pub const DEVICE_KEY_MODE: u32 = 0o640;
 
 /// Read the device key, requiring that it not be accessible to users
 /// outside the device-trust group.
+///
+/// # Errors
+///
+/// Returns [`PersistError::InsecurePermissions`] if the file is
+/// accessible to users outside the device-trust group,
+/// [`PersistError::Io`] if it cannot be read, or
+/// [`PersistError::WrongKeyLength`] if it is not exactly 32 bytes.
 pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
     ensure_not_world_accessible(path)?;
     signing_key_from_file(path)
 }
 
 /// Write the device key with [`DEVICE_KEY_MODE`], atomically.
+///
+/// # Errors
+///
+/// Returns an error if `path` has no parent directory, or if the
+/// atomic write fails.
 pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
@@ -217,6 +271,14 @@ pub enum DeviceKeyOutcome {
 /// truncated file, or an I/O failure all surface as
 /// [`PersistError`] so an operator can decide whether to restore a
 /// backup or deliberately re-enrol.
+///
+/// # Errors
+///
+/// Returns [`PersistError::InsecurePermissions`] if an existing key
+/// file's permissions are too loose, [`PersistError::WrongKeyLength`]
+/// if an existing key file is not 32 bytes, or [`PersistError::Io`]
+/// if reading the existing key, creating the parent directories, or
+/// writing a freshly generated key fails.
 pub fn load_or_create_device_key(
     paths: &IdentityPaths,
 ) -> Result<(SigningKey, DeviceKeyOutcome), PersistError> {
@@ -240,6 +302,12 @@ pub fn load_or_create_device_key(
 /// already know it by. Refuses to overwrite an existing device key:
 /// that key is what everything else on the machine already derives
 /// from, so replacing it is not a migration, it is a rename.
+///
+/// # Errors
+///
+/// Returns [`PersistError::Io`] with [`io::ErrorKind::AlreadyExists`]
+/// if a device key already exists at the target path, or if creating
+/// the parent directories or writing the new key fails.
 pub fn adopt_device_key(
     paths: &IdentityPaths,
     seed: &[u8; 32],
@@ -258,6 +326,12 @@ pub fn adopt_device_key(
 }
 
 /// Read a signed device cert from disk.
+///
+/// # Errors
+///
+/// Returns [`PersistError::Io`] if `path` cannot be read, or
+/// [`PersistError::Canonical`] if the bytes do not decode as a
+/// `DeviceCert`.
 pub fn read_device_cert(path: &Path) -> Result<DeviceCert, PersistError> {
     let bytes = fs::read(path)?;
     let cert: DeviceCert = crate::canonical::from_canonical_bytes(&bytes)?;
@@ -266,10 +340,39 @@ pub fn read_device_cert(path: &Path) -> Result<DeviceCert, PersistError> {
 
 /// Write a signed device cert to disk. Public metadata; default
 /// permissions.
+///
+/// # Errors
+///
+/// Returns [`PersistError::Canonical`] if `cert` cannot be
+/// canonically encoded, or [`PersistError::Io`] if writing to `path`
+/// fails.
 pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistError> {
     let bytes = crate::canonical::canonical_bytes(cert)?;
-    fs::write(path, bytes)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    atomic_file::write(path, &bytes)?;
     Ok(())
+}
+
+/// # Panics
+/// Never in practice: `byte >> 4` and `byte & 0x0f` are both bounded to
+/// `0..16` by the bit operation itself (not by any external input), so
+/// indexing the 16-entry `HEX` table can never go out of range.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "byte >> 4 and byte & 0x0f are both unconditionally in 0..16, so HEX[..] cannot go out of range; see this fn's # Panics doc"
+)]
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 #[cfg(unix)]
@@ -384,6 +487,15 @@ mod tests {
         write_device_cert(&path, &cert).unwrap();
         let back = read_device_cert(&path).unwrap();
         assert_eq!(cert, back);
+    }
+
+    #[test]
+    fn identity_specific_cert_paths_do_not_collide() {
+        let paths = IdentityPaths::under("/var/lib/qos");
+        let alice = paths.device_cert_for_user(&[1; 32]);
+        let bob = paths.device_cert_for_user(&[2; 32]);
+        assert_ne!(alice, bob);
+        assert!(alice.starts_with("/var/lib/qos/device/certs"));
     }
 
     /// The device key is deliberately group-readable — two components

@@ -5,6 +5,16 @@
 //! it to a surface, and asserts the compositor's stored `Colorimetry`
 //! matches server-side.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -185,7 +195,9 @@ fn pump(
     predicate: impl Fn(&ClientAppState) -> bool,
     label: &str,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(3))
+        .unwrap_or_else(Instant::now);
     while Instant::now() < deadline {
         let _ = conn.flush();
         let _ = display.dispatch_clients(server_state);
@@ -340,7 +352,9 @@ fn client_attaches_bt2020_pq_image_description_and_surface_data_records_it() {
     // 4. Read the surface's `ColorManagementSurfaceData` server-side.
     let surface_protocol_id = surface.id().protocol_id();
     let _ = conn.flush();
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(3))
+        .unwrap_or_else(Instant::now);
     let mut server_saw_it = false;
     while Instant::now() < deadline {
         let _ = display.dispatch_clients(&mut server_state);

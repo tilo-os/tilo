@@ -41,13 +41,20 @@ type Archive = ZipArchive<Cursor<Vec<u8>>>;
 pub fn content_id(bytes: &[u8]) -> String {
     // 128 bits of the digest is ample to avoid collision across a personal
     // library while keeping the id short enough to read in a CRDT key.
-    let hex = blake3::hash(bytes).to_hex();
-    format!("book:{}", &hex[..32])
+    let full = blake3::hash(bytes).to_hex();
+    let hex = full.get(..32).unwrap_or(&full);
+    format!("book:{hex}")
 }
 
 /// Parse an in-memory EPUB into a [`Book`]. `cover_tint`/`subject` are cosmetic
 /// shelf hints supplied by the caller. The book's id is its content hash
 /// ([`content_id`]) so annotations and progress travel with the file.
+///
+/// # Errors
+///
+/// Returns an error if the bytes are not a readable ZIP, the container/OPF
+/// metadata cannot be located or parsed, or the spine resolves to no
+/// readable chapters.
 pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book> {
     let mut archive = ZipArchive::new(Cursor::new(bytes.to_vec())).context("open epub zip")?;
 
@@ -62,20 +69,19 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
 
     let mut chapters = Vec::with_capacity(pkg.spine.len());
     for href in &pkg.spine {
-        let bare = strip_fragment(href);
-        let src = match read_entry(&mut archive, bare) {
-            Ok(s) => s,
-            Err(_) => continue, // skip an unreadable spine item rather than fail
+        let spine_href = strip_fragment(href);
+        let Ok(src) = read_entry(&mut archive, spine_href) else {
+            continue; // skip an unreadable spine item rather than fail
         };
         let blocks = parse_xhtml(&src);
         let title = toc
-            .get(bare)
+            .get(spine_href)
             .cloned()
             .or_else(|| first_heading(&blocks))
             .unwrap_or_else(|| format!("Chapter {}", chapters.len() + 1));
         chapters.push(Chapter {
             title,
-            href: bare.to_string(),
+            href: spine_href.to_string(),
             blocks,
         });
     }
@@ -245,11 +251,17 @@ impl OpfPackage {
                 if props.split_whitespace().any(|p| p == "cover-image") {
                     cover_by_props = Some(resolved.clone());
                 }
-                if media.starts_with("image/")
+                // The id/href checks are deliberately symmetric (either one
+                // naming "cover" is a signal), not a copy-paste of one field.
+                #[allow(
+                    clippy::suspicious_operation_groupings,
+                    reason = "id and href are intentionally checked the same way, not swapped"
+                )]
+                let looks_like_cover = media.starts_with("image/")
                     && cover_by_name.is_none()
                     && (id.to_ascii_lowercase().contains("cover")
-                        || href.to_ascii_lowercase().contains("cover"))
-                {
+                        || href.to_ascii_lowercase().contains("cover"));
+                if looks_like_cover {
                     cover_by_name = Some(resolved.clone());
                 }
                 if media == "application/x-dtbncx+xml" {
@@ -441,7 +453,7 @@ fn strip_fragment(href: &str) -> &str {
 
 fn parent_dir(path: &str) -> String {
     match path.rfind('/') {
-        Some(i) => path[..i].to_string(),
+        Some(i) => path.get(..i).unwrap_or_default().to_string(),
         None => String::new(),
     }
 }

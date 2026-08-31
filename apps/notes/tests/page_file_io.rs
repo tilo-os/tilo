@@ -1,6 +1,16 @@
 //! Markdown body IO: round-trip a page body through disk, then
 //! delete it and assert the file is gone.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use notes::storage::{
     delete_page_file, ensure_layout, page_file_path, read_page_body, write_page_body,
 };

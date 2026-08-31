@@ -93,6 +93,12 @@ impl Registry {
     }
 
     /// Load from `path`. Missing file → empty registry (fresh install).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `path` exists but isn't valid UTF-8 / TOML,
+    /// or if reading it fails for any reason other than the file being
+    /// absent.
     pub fn load(path: &Path) -> Result<Self, RegistryError> {
         match fs::read(path) {
             Ok(bytes) => {
@@ -113,6 +119,12 @@ impl Registry {
 
     /// Persist to `path`. Atomic: writes `<path>.tmp` and renames.
     /// Creates parent directories as needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the parent directory cannot be created, the
+    /// entries cannot be serialized to TOML, or the atomic write/rename
+    /// fails.
     pub fn save(&self, path: &Path) -> Result<(), RegistryError> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;

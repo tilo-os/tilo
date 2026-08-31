@@ -10,6 +10,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+/// `is_hovered`, `is_checked`, `is_focused` and `enabled` are four
+/// independent state axes (pointer, CRDT-synced value, keyboard focus,
+/// build-time enablement), each set/read by name — not positional bool
+/// arguments — so bundling them into a bitflags type would touch every
+/// read/write site here for no behavioural change.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent state axes, all set/read by name, not positional bool args"
+)]
 pub struct Toggle {
     _id: String,
     rect: Rect,
@@ -43,11 +52,13 @@ impl Toggle {
         }
     }
 
+    #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
         self
     }
 
+    #[must_use]
     pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
         self.permission_scope = Some(scope);
         self
@@ -55,6 +66,7 @@ impl Toggle {
 
     /// Default `test_id()` is `"toggle"`; override to disambiguate multiple
     /// toggles in one surface.
+    #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id_override = Some(id.to_string());
         self
@@ -62,11 +74,13 @@ impl Toggle {
 
     /// Set the enabled state at build time. A disabled toggle is skipped
     /// by focus, rejects input and renders dimmed. Default `true`.
+    #[must_use]
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
     }
 
+    #[must_use]
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         self.accessible_name = Some(name.to_string());
         self
@@ -152,14 +166,17 @@ impl ToggleFace {
             on_color: None,
         }
     }
+    #[must_use]
     pub fn hovered(mut self, v: bool) -> Self {
         self.interact.hovered = v;
         self
     }
+    #[must_use]
     pub fn focused(mut self, v: bool) -> Self {
         self.interact.focused = v;
         self
     }
+    #[must_use]
     pub fn disabled(mut self, v: bool) -> Self {
         self.interact.disabled = v;
         self
@@ -167,6 +184,7 @@ impl ToggleFace {
     /// Override the active track for a semantic switch (for example a
     /// connection-status switch). Off, focus, hover, and contrast behavior
     /// remain shared.
+    #[must_use]
     pub fn on_color(mut self, color: vello::peniko::Color) -> Self {
         self.on_color = Some(color);
         self

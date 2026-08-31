@@ -26,11 +26,11 @@ pub const CARD_HEIGHT: f32 = 84.0;
 /// Build a single card widget.
 ///
 /// * `select_key`         — CRDT key the whole card body writes on
-///                          click to open the detail sheet.
+///   click to open the detail sheet.
 /// * `action_click_key`   — CRDT key the action button writes on
-///                          click. The app's `sync` reads it,
-///                          dispatches the action, and clears the
-///                          bit so it's a one-shot edge.
+///   click. The app's `sync` reads it,
+///   dispatches the action, and clears the
+///   bit so it's a one-shot edge.
 pub fn store_card(
     item: &StoreItem,
     action: ActionKind,

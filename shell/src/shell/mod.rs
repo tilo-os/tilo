@@ -28,12 +28,14 @@ pub mod collab_broker_capnp;
 pub mod collab_core;
 pub mod collab_outbound;
 pub mod collab_presence;
+mod collaborators_overlay;
 pub mod color_pipeline;
 pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
 pub mod doc_open;
 pub mod editor_app;
+mod file_picker_overlay;
 pub mod global_search;
 pub mod hdr_display;
 pub mod hdr_tonemap;
@@ -50,14 +52,21 @@ pub mod overlay_host;
 pub mod overview;
 pub mod peer_join_toast;
 pub mod peer_presence;
+pub mod peer_sync_overlay;
 pub mod peer_view;
 pub mod peer_windows;
 pub mod persist;
 pub mod placement;
+mod power_menu;
 pub mod projection;
+mod projection_overlay;
 pub mod qs_actions;
 pub mod qs_refresh;
 pub mod quick_settings;
+mod quick_settings_bluetooth;
+mod quick_settings_drill_in;
+mod quick_settings_vpn;
+mod quick_settings_wifi;
 pub mod remote_cursors;
 pub mod room_activity;
 pub mod room_records;
@@ -109,6 +118,15 @@ use terminal::TerminalWidget;
 /// `Box<dyn AppWidget>`s in [`tile::TileContent::App`] instead of
 /// `AppPlaceholder` symbols — and the single Automerge document shared
 /// across every hosted app.
+// Each overlay's visibility is toggled independently (they are not
+// mutually exclusive — e.g. quick settings can open over the overview),
+// so collapsing them into one enum/flags field would misrepresent the
+// state space rather than simplify it; 41 call sites across the crate
+// read/write these individually.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent overlay-visibility flags, not mutually exclusive states"
+)]
 pub struct Shell {
     tree: RuntimeTree,
     state: ui::state::State,
@@ -352,6 +370,14 @@ impl Shell {
     /// ([`shell::test_support::key_press`]) funnel through here. Returns
     /// `true` if the press matched a global binding, `false` if it should
     /// fall through to the focused widget tree.
+    // `press` is only ever read here, but narrowing to `&KeyPress` would
+    // touch `shell/tests/shell_chrome_test.rs`'s call sites, outside this
+    // pass's scope (only shell/src/shell/ is ours to edit).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "press is only ever borrowed here, but narrowing the signature would touch \
+                  shell/tests call sites outside this pass's scope"
+    )]
     pub fn dispatch_key(&mut self, press: test_support::KeyPress) -> bool {
         use test_support::Mods;
         // Normalize to lowercase so `Cmd+K` and `Cmd+k` hit the same branch.
@@ -495,8 +521,8 @@ impl Shell {
                 })
                 .collect(),
             active: active_ws,
-            active_strip: Default::default(),
-            active_group: Default::default(),
+            active_strip: std::collections::HashMap::default(),
+            active_group: std::collections::HashMap::default(),
             collaborators: vec![],
             ..Default::default()
         };
@@ -547,12 +573,14 @@ impl Shell {
         let mut scratch = state::WorkspaceTree {
             workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
             active: state::WorkspaceId::from(0),
-            active_strip: Default::default(),
-            active_group: Default::default(),
+            active_strip: std::collections::HashMap::default(),
+            active_group: std::collections::HashMap::default(),
             collaborators: vec![],
             ..Default::default()
         };
-        scratch.active = scratch.workspaces[0].id;
+        if let Some(w) = scratch.workspaces.first() {
+            scratch.active = w.id;
+        }
         self.sidebar.begin_overscroll(1);
         for _ in 0..30 {
             // 300px of pull, comfortably past the 240px threshold.
@@ -577,12 +605,14 @@ impl Shell {
         let mut scratch = state::WorkspaceTree {
             workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
             active: state::WorkspaceId::from(0),
-            active_strip: Default::default(),
-            active_group: Default::default(),
+            active_strip: std::collections::HashMap::default(),
+            active_group: std::collections::HashMap::default(),
             collaborators: vec![],
             ..Default::default()
         };
-        scratch.active = scratch.workspaces[0].id;
+        if let Some(w) = scratch.workspaces.first() {
+            scratch.active = w.id;
+        }
         let _ = self.sidebar.click_management_new_workspace(&mut scratch);
         self.toasts.push("Workspace created", ToastKind::Success);
     }
@@ -770,11 +800,10 @@ fn to_ui_kind(k: &ShellKind) -> UiKind {
         ShellKind::Terminal => UiKind::Terminal,
         ShellKind::FileExplorer => UiKind::Files,
         ShellKind::Browser => UiKind::Browser,
-        ShellKind::Settings => UiKind::Settings,
         // Apps hosted under `Other` are all text editors; without this
         // they wore the unknown-kind settings cog instead of the editor glyph.
         ShellKind::Other(s) if is_editor_label(s) => UiKind::Editor,
-        ShellKind::Other(_) => UiKind::Settings,
+        ShellKind::Settings | ShellKind::Other(_) => UiKind::Settings,
     }
 }
 
@@ -817,8 +846,7 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
 /// [`overlay_host::ShellOverlayHost`]'s per-revision resync.
 pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
     match t {
-        ShellTile::Stub { kind, .. } => to_ui_kind(kind),
-        ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
+        ShellTile::Stub { kind, .. } | ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
         // No `AppKind` describes "arbitrary external client", so both a
         // foreign surface and a peer window wear the catch-all `Settings`
         // glyph — and keep wearing it when a `PeerWindow` binds in and
@@ -1087,6 +1115,16 @@ pub fn build_workspace_root(
 
 /// As [`build_nirios_overlay_host_with_handle`], but with the store the
 /// open tabs' documents live in named by the caller.
+// `tree_handle` is only ever read here (`.clone()`/`.read()`), never
+// moved, so `&WorkspaceTreeHandle` would be the tighter signature — but
+// its callers outside this module (`compositor::frame`,
+// `compositor::hosted`) already hold their own owned handle at the call
+// site, so narrowing here is not this pass's call to make.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "tree_handle is only ever borrowed here, but narrowing the signature would touch \
+              call sites in shell::compositor, outside this pass's scope"
+)]
 pub fn build_nirios_overlay_host_with_records(
     tree_handle: state::WorkspaceTreeHandle,
     enable_peer_sync: bool,

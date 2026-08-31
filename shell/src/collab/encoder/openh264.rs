@@ -24,6 +24,13 @@ impl OpenH264Backend {
     /// Construct the backend. Bitrate + keyframe interval are advisory
     /// on the openh264 path — the SVC encoder handles GOP structure
     /// internally.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EncoderError::Unavailable`] if `init` requests a non-H.264
+    /// codec or HDR (openh264 is 8-bit H.264 only), or
+    /// [`EncoderError::ConfigFailed`] if constructing the underlying SVC
+    /// encoder fails.
     pub fn new(init: EncoderInit) -> Result<Self, EncoderError> {
         // Openh264 is H.264 8-bit only; HDR / HEVC pipelines never reach
         // us because probe() reports unavailable, but be defensive.
@@ -122,11 +129,17 @@ mod tests {
     use super::*;
 
     fn gradient(w: u32, h: u32) -> Vec<u8> {
-        let mut out = Vec::with_capacity((w * h * 4) as usize);
+        let mut out = Vec::with_capacity(w.saturating_mul(h).saturating_mul(4) as usize);
         for y in 0..h {
             for x in 0..w {
-                out.push(((x * 255) / w.max(1)) as u8);
-                out.push(((y * 255) / h.max(1)) as u8);
+                out.push(
+                    u8::try_from(x.saturating_mul(255).checked_div(w.max(1)).unwrap_or(0))
+                        .unwrap_or(255),
+                );
+                out.push(
+                    u8::try_from(y.saturating_mul(255).checked_div(h.max(1)).unwrap_or(0))
+                        .unwrap_or(255),
+                );
                 out.push(128);
                 out.push(255);
             }
@@ -174,7 +187,7 @@ mod tests {
                     plane_offsets: [0, 0, 0, 0],
                     plane_strides: [128, 0, 0, 0],
                     num_planes: 1,
-                    drm_fourcc: 0x34324152,
+                    drm_fourcc: 0x3432_4152,
                     drm_modifier: 0,
                     width: 32,
                     height: 32,

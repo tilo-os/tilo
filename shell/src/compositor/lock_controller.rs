@@ -279,7 +279,9 @@ mod tests {
     /// stuck worker fails the test instead of hanging). The injected
     /// verifiers here resolve in microseconds, so this returns immediately.
     fn poll_to_completion(c: &mut LockController) -> UnlockOutcome {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .unwrap_or_else(Instant::now);
         loop {
             if let Some(o) = c.poll_verification() {
                 return o;
@@ -425,6 +427,9 @@ mod tests {
             while !*released {
                 released = cvar.wait(released).unwrap();
             }
+            // Nothing below touches the mutex — drop the guard before the
+            // (lock-independent) clone rather than holding it needlessly.
+            drop(released);
             self.result.clone()
         }
     }

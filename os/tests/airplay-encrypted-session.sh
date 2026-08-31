@@ -4,11 +4,23 @@ set -euo pipefail
 test_root="$(mktemp -d)"
 receiver_pid=""
 cleanup() {
+  status=$?
+  trap - EXIT
   if [[ -n "$receiver_pid" ]]; then
     kill -TERM "$receiver_pid" 2>/dev/null || true
     wait "$receiver_pid" 2>/dev/null || true
   fi
+  if (( status != 0 )); then
+    echo "airplay encrypted-session test failed (status $status)" >&2
+    for log in "$receiver_log" "$sender_log"; do
+      if [[ -s "$log" ]]; then
+        echo "--- $(basename "$log") ---" >&2
+        sed 's/^/  /' "$log" >&2
+      fi
+    done
+  fi
   rm -rf -- "$test_root"
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -16,9 +28,8 @@ receiver_log="$test_root/receiver.log"
 sender_log="$test_root/sender.log"
 receiver_bin="${QOS_DOUBLETAKE_TEST_RECEIVER:-/usr/libexec/qos-doubletake-test-receiver}"
 sender_bin="${QOS_DOUBLETAKE:-/usr/libexec/qos-doubletake}"
-DOUBLETAKE_RECEIVER_CODE=4821 \
-  "$receiver_bin" \
-  -listen 127.0.0.1:17000 -profile modern -auth pin -stats-interval 1s \
+"$receiver_bin" \
+  -listen 127.0.0.1:17000 -profile modern -auth pin -code 4821 -stats-interval 1s \
   >"$receiver_log" 2>&1 &
 receiver_pid=$!
 
@@ -32,7 +43,7 @@ grep -q "listening on 127.0.0.1:17000" "$receiver_log"
 set +e
 DOUBLETAKE_CODE=4821 timeout --signal=TERM 12s \
   "$sender_bin" -target 127.0.0.1 -port 17000 \
-  -test -no-audio -hwaccel openh264 -fps 30 \
+  -test -no-audio -hwaccel openh264 -fps 30 -debug \
   -creds "$test_root/pairing.json" >"$sender_log" 2>&1
 sender_status=$?
 set -e

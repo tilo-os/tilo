@@ -74,7 +74,7 @@ pub const DEFAULT_DISMISS_AFTER: Duration = Duration::from_secs(5);
 /// `critical`-urgency (freedesktop spec: must not time out). A long
 /// finite duration rather than `Option<Duration>` keeps the expiry
 /// arithmetic a single code path.
-pub const PERSISTENT_DISMISS: Duration = Duration::from_hours(24);
+pub const PERSISTENT_DISMISS: Duration = Duration::from_secs(86400);
 
 /// In/out animation duration; matches `overlay_host.rs`'s modal entry timing.
 const ANIM_MS: u64 = 220;
@@ -177,7 +177,8 @@ impl Notification {
             match inc.expire_timeout {
                 t if t < 0 => DEFAULT_DISMISS_AFTER,
                 0 => PERSISTENT_DISMISS,
-                ms => Duration::from_millis(ms as u64),
+                // Safe: the two arms above already took every `t <= 0`.
+                ms => Duration::from_millis(u64::try_from(ms).unwrap_or(0)),
             }
         };
         Self {
@@ -212,31 +213,37 @@ impl Notification {
         self.actions.first().map(|(k, _)| k.clone())
     }
 
+    #[must_use]
     pub fn with_app_name(mut self, app: impl Into<String>) -> Self {
         self.app_name = Some(app.into());
         self
     }
 
+    #[must_use]
     pub fn with_dbus_id(mut self, id: u32) -> Self {
         self.dbus_id = Some(id);
         self
     }
 
+    #[must_use]
     pub fn with_severity(mut self, severity: NotificationSeverity) -> Self {
         self.severity = severity;
         self
     }
 
+    #[must_use]
     pub fn with_icon_kind(mut self, kind: NotificationIconKind) -> Self {
         self.icon_kind = kind;
         self
     }
 
+    #[must_use]
     pub fn with_dismiss_after(mut self, after: Duration) -> Self {
         self.dismiss_after = after;
         self
     }
 
+    #[must_use]
     pub fn bypassing_dnd(mut self) -> Self {
         self.bypass_dnd = true;
         self
@@ -244,6 +251,7 @@ impl Notification {
 
     /// Backdate `created_at` so a snapshot render skips the slide-in
     /// animation and shows the toast settled rather than mid-entry.
+    #[must_use]
     pub fn with_created_at(mut self, t: Instant) -> Self {
         self.created_at = t;
         self
@@ -299,11 +307,41 @@ pub struct NotificationStack {
 
 impl std::fmt::Debug for NotificationStack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `chrome` (`Rc<RefCell<ChromeState>>`) is deliberately omitted:
+        // formatting it would borrow the `RefCell`, and a Debug print
+        // triggered while chrome is already borrowed elsewhere in this
+        // panic=abort process would abort the session.
+        // `finish_non_exhaustive` marks that omission explicit.
         f.debug_struct("NotificationStack")
             .field("viewport", &self.viewport)
             .field("rect", &self.rect)
             .field("hit_rects_len", &self.hit_rects.len())
-            .finish()
+            .finish_non_exhaustive()
+    }
+}
+
+/// Bundles the render/theme handles [`Widget::draw`]'s per-section
+/// helpers need, so each helper takes one context argument instead of
+/// four positional ones (keeping them under clippy's argument-count cap
+/// without reaching for an `#[allow]`).
+struct PaintCtx<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text_renderer: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+/// Accumulates the y-extent of everything painted into the toast stack, so
+/// the caller can size `self.rect` to exactly what was drawn.
+struct StackBounds {
+    min_y: f64,
+    max_y: f64,
+}
+
+impl StackBounds {
+    fn expand(&mut self, y0: f64, y1: f64) {
+        self.min_y = self.min_y.min(y0);
+        self.max_y = self.max_y.max(y1);
     }
 }
 
@@ -350,6 +388,161 @@ impl NotificationStack {
         let slide_dx = (1.0 - f64::from(enter)) * TOAST_WIDTH;
         (alpha, slide_dx)
     }
+
+    /// Locked-session collapse: a single redacted card showing only
+    /// `count`, no dismiss hit-rects. Returns the card's rect (becomes
+    /// `self.rect`). Split out of [`Widget::draw`].
+    fn draw_locked_card(ctx: &mut PaintCtx, x0: f64, y: f64, radius: f64, count: usize) -> Rect {
+        let title_size = ctx.theme.tokens.typography.scale.sm;
+        let card_rect = Rect::new(x0, y, x0 + TOAST_WIDTH, y + TOAST_HEIGHT);
+        let shape = RoundedRect::from_rect(card_rect, radius);
+        ctx.scene.fill(
+            Fill::NonZero,
+            ctx.transform,
+            ctx.theme.tokens.colors.surfaces.raised,
+            None,
+            &shape,
+        );
+        ctx.scene.stroke(
+            &Stroke::new(1.0),
+            ctx.transform,
+            ctx.theme.tokens.colors.border_standard,
+            None,
+            &shape,
+        );
+        let label = lock_suppressed_label(count);
+        ctx.text_renderer.draw_text(
+            ctx.scene,
+            &label,
+            title_size,
+            ctx.theme.tokens.colors.text_dim,
+            ctx.transform.pre_translate(
+                (
+                    card_rect.x0 + CARD_PADDING_X,
+                    card_rect.y0 + (TOAST_HEIGHT - f64::from(title_size)) / 2.0,
+                )
+                    .into(),
+            ),
+            Some(f64_to_f32_lossy(TOAST_WIDTH - CARD_PADDING_X * 2.0)),
+        );
+        card_rect
+    }
+
+    /// Do-Not-Disturb status pill: muted, no hit-rect — reads as a
+    /// status chip, not a dismissible toast. Returns the pill's rect.
+    /// Split out of [`Widget::draw`].
+    fn draw_dnd_pill(
+        ctx: &mut PaintCtx,
+        x0: f64,
+        y: f64,
+        radius: f64,
+        history_count: usize,
+    ) -> Rect {
+        let body_size = ctx.theme.tokens.typography.scale.xs;
+        let pill_h = 30.0;
+        let pill_rect = Rect::new(x0, y, x0 + TOAST_WIDTH, y + pill_h);
+        let shape = RoundedRect::from_rect(pill_rect, radius);
+        ctx.scene.fill(
+            Fill::NonZero,
+            ctx.transform,
+            ctx.theme.tokens.colors.surfaces.base,
+            None,
+            &shape,
+        );
+        ctx.scene.stroke(
+            &Stroke::new(1.0),
+            ctx.transform,
+            ctx.theme.tokens.colors.border_standard,
+            None,
+            &shape,
+        );
+        // A `Point` rather than two `dot_c{x,y}` locals — same value,
+        // but doesn't read as two near-identical bindings in one scope.
+        let dot_center = Point::new(
+            pill_rect.x0 + CARD_PADDING_X + DOT_RADIUS,
+            pill_rect.y0 + pill_h / 2.0,
+        );
+        ctx.scene.fill(
+            Fill::NonZero,
+            ctx.transform,
+            ctx.theme.tokens.colors.text_dim,
+            None,
+            &Circle::new(dot_center, DOT_RADIUS),
+        );
+        let label = if history_count > 0 {
+            format!("Do Not Disturb · {history_count} held")
+        } else {
+            "Do Not Disturb".to_string()
+        };
+        let text_x = pill_rect.x0 + CARD_PADDING_X + DOT_RADIUS * 2.0 + DOT_GAP;
+        ctx.text_renderer.draw_text(
+            ctx.scene,
+            &label,
+            body_size,
+            ctx.theme.tokens.colors.text_dim,
+            ctx.transform.pre_translate(
+                (text_x, pill_rect.y0 + (pill_h - f64::from(body_size)) / 2.0).into(),
+            ),
+            Some(f64_to_f32_lossy(
+                TOAST_WIDTH - (text_x - pill_rect.x0) - CARD_PADDING_X,
+            )),
+        );
+        pill_rect
+    }
+
+    /// Paint each live toast card, top to bottom starting at `y`,
+    /// recording its dismiss hit-rect and folding its bounds into
+    /// `stack_min_y`/`stack_max_y`. Split out of [`Widget::draw`].
+    fn draw_toast_cards(
+        &mut self,
+        ctx: &mut PaintCtx,
+        snapshot: &[Notification],
+        now: Instant,
+        x0_rest: f64,
+        mut y: f64,
+        bounds: &mut StackBounds,
+    ) {
+        for n in snapshot {
+            let (alpha, slide_dx) = Self::animation_state(n, now);
+            if alpha <= 0.0 {
+                y += TOAST_HEIGHT + TOAST_GAP;
+                continue;
+            }
+            let card_x0 = x0_rest + slide_dx;
+            let card_rect = Rect::new(card_x0, y, card_x0 + TOAST_WIDTH, y + TOAST_HEIGHT);
+            bounds.expand(card_rect.y0, card_rect.y1);
+
+            // This stack owns what to show + click routing; the toast
+            // widget owns the card's look and hands back the dismiss rect.
+            let hit = ui::widget::toast::paint_card(
+                ctx.scene,
+                ctx.transform,
+                ctx.text_renderer,
+                ctx.theme,
+                card_rect,
+                &ToastCard::new(&n.title, n.severity.toast_kind())
+                    .body(if n.show_preview { &n.body } else { "" })
+                    .caption(n.app_name.as_deref().unwrap_or(""))
+                    .alpha(alpha)
+                    .closable(true)
+                    .actionable(!n.actions.is_empty()),
+            );
+
+            self.hit_rects.push((n.id, card_rect, hit.close_rect));
+            y += TOAST_HEIGHT + TOAST_GAP;
+        }
+    }
+}
+
+/// Text-wrap widths here are plain float pixel math for
+/// `TextRenderer::draw_text`'s `f32` wrap-width parameter; the
+/// precision this loses is imperceptible at UI scale.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "device-pixel wrap width; f32 is already the renderer's own unit"
+)]
+fn f64_to_f32_lossy(v: f64) -> f32 {
+    v as f32
 }
 
 impl Widget for NotificationStack {
@@ -369,15 +562,23 @@ impl Widget for NotificationStack {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // Absolutely positioned by the overlay host; a zero-sized leaf.
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = match taffy.new_leaf(Style {
+            size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::length(0.0),
+            },
+            ..Default::default()
+        }) {
+            Ok(node) => node,
+            Err(err) => {
+                // `TaffyTree::new_leaf` only ever returns `Ok` for a
+                // fresh, unattached leaf; this arm exists so a future
+                // upstream change degrades the notification stack
+                // instead of aborting the whole session.
+                tracing::error!("notification: leaf allocation failed: {err}");
+                NodeId::from(0u64)
+            }
+        };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -413,141 +614,44 @@ impl Widget for NotificationStack {
             snapshot.retain(|notification| notification.show_on_lock_screen);
         }
         // Nothing to paint unless DND is on and unlocked (show its status pill).
-        if snapshot.is_empty() && !(dnd && !locked) {
+        if snapshot.is_empty() && (!dnd || locked) {
             self.rect = Rect::ZERO;
             return;
         }
 
-        let title_size = theme.tokens.typography.scale.sm;
-        let body_size = theme.tokens.typography.scale.xs;
         let radius = f64::from(theme.tokens.radii.md);
-
         let x0_rest = self.viewport.x1 - EDGE_INSET - TOAST_WIDTH;
         let mut y = self.viewport.y0 + EDGE_INSET;
+        let mut ctx = PaintCtx {
+            scene,
+            transform,
+            text_renderer,
+            theme,
+        };
 
         // While locked, collapse into a single redacted card: count only,
         // no dismiss hit-rects.
         if locked {
-            let card_rect = Rect::new(x0_rest, y, x0_rest + TOAST_WIDTH, y + TOAST_HEIGHT);
-            let shape = RoundedRect::from_rect(card_rect, radius);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &shape,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.border_standard,
-                None,
-                &shape,
-            );
-            let label = lock_suppressed_label(snapshot.len());
-            text_renderer.draw_text(
-                scene,
-                &label,
-                title_size,
-                theme.tokens.colors.text_dim,
-                transform
-                    * Affine::translate((
-                        card_rect.x0 + CARD_PADDING_X,
-                        card_rect.y0 + (TOAST_HEIGHT - f64::from(title_size)) / 2.0,
-                    )),
-                Some((TOAST_WIDTH - CARD_PADDING_X * 2.0) as f32),
-            );
-            self.rect = card_rect;
+            self.rect = Self::draw_locked_card(&mut ctx, x0_rest, y, radius, snapshot.len());
             return;
         }
 
-        let mut stack_min_y = f64::INFINITY;
-        let mut stack_max_y = f64::NEG_INFINITY;
+        let mut bounds = StackBounds {
+            min_y: f64::INFINITY,
+            max_y: f64::NEG_INFINITY,
+        };
 
         // Muted, no hit-rect — reads as a status chip, not a dismissible toast.
         if dnd {
-            let pill_h = 30.0;
-            let pill_rect = Rect::new(x0_rest, y, x0_rest + TOAST_WIDTH, y + pill_h);
-            let shape = RoundedRect::from_rect(pill_rect, radius);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.base,
-                None,
-                &shape,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.border_standard,
-                None,
-                &shape,
-            );
-            let dot_cx = pill_rect.x0 + CARD_PADDING_X + DOT_RADIUS;
-            let dot_cy = pill_rect.y0 + pill_h / 2.0;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.text_dim,
-                None,
-                &Circle::new(Point::new(dot_cx, dot_cy), DOT_RADIUS),
-            );
-            let label = if history_count > 0 {
-                format!("Do Not Disturb · {history_count} held")
-            } else {
-                "Do Not Disturb".to_string()
-            };
-            let text_x = pill_rect.x0 + CARD_PADDING_X + DOT_RADIUS * 2.0 + DOT_GAP;
-            text_renderer.draw_text(
-                scene,
-                &label,
-                body_size,
-                theme.tokens.colors.text_dim,
-                transform
-                    * Affine::translate((
-                        text_x,
-                        pill_rect.y0 + (pill_h - f64::from(body_size)) / 2.0,
-                    )),
-                Some((TOAST_WIDTH - (text_x - pill_rect.x0) - CARD_PADDING_X) as f32),
-            );
-            stack_min_y = stack_min_y.min(pill_rect.y0);
-            stack_max_y = stack_max_y.max(pill_rect.y1);
-            y += pill_h + TOAST_GAP;
+            let pill_rect = Self::draw_dnd_pill(&mut ctx, x0_rest, y, radius, history_count);
+            bounds.expand(pill_rect.y0, pill_rect.y1);
+            y += pill_rect.height() + TOAST_GAP;
         }
 
-        for n in &snapshot {
-            let (alpha, slide_dx) = Self::animation_state(n, now);
-            if alpha <= 0.0 {
-                y += TOAST_HEIGHT + TOAST_GAP;
-                continue;
-            }
-            let card_x0 = x0_rest + slide_dx;
-            let card_rect = Rect::new(card_x0, y, card_x0 + TOAST_WIDTH, y + TOAST_HEIGHT);
-            stack_min_y = stack_min_y.min(card_rect.y0);
-            stack_max_y = stack_max_y.max(card_rect.y1);
+        self.draw_toast_cards(&mut ctx, &snapshot, now, x0_rest, y, &mut bounds);
 
-            // This stack owns what to show + click routing; the toast
-            // widget owns the card's look and hands back the dismiss rect.
-            let hit = ui::widget::toast::paint_card(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                card_rect,
-                &ToastCard::new(&n.title, n.severity.toast_kind())
-                    .body(if n.show_preview { &n.body } else { "" })
-                    .caption(n.app_name.as_deref().unwrap_or(""))
-                    .alpha(alpha)
-                    .closable(true)
-                    .actionable(!n.actions.is_empty()),
-            );
-
-            self.hit_rects.push((n.id, card_rect, hit.close_rect));
-            y += TOAST_HEIGHT + TOAST_GAP;
-        }
-
-        self.rect = if stack_min_y.is_finite() {
-            Rect::new(x0_rest, stack_min_y, x0_rest + TOAST_WIDTH, stack_max_y)
+        self.rect = if bounds.min_y.is_finite() {
+            Rect::new(x0_rest, bounds.min_y, x0_rest + TOAST_WIDTH, bounds.max_y)
         } else {
             Rect::ZERO
         };

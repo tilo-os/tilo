@@ -10,6 +10,16 @@
 //!    auth stage (user B's cert doesn't chain to user A's root);
 //!  - no state for any workspace leaks from B → A.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::Duration;
 
 use qos_relay::{Envelope, RelayClient};

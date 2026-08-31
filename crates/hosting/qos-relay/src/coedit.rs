@@ -94,8 +94,12 @@ pub enum CoeditPayload {
 
 impl CoeditPayload {
     /// Encode for carriage inside an `Envelope::Delta`.
-    pub fn encode(&self) -> Vec<u8> {
-        postcard::to_stdvec(self).expect("postcard cannot fail on CoeditPayload")
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if postcard fails to serialize `self`.
+    pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
+        postcard::to_stdvec(self)
     }
 
     /// Decode a body previously produced by [`Self::encode`]. Returns
@@ -125,8 +129,12 @@ pub struct AttributedPresence {
 
 impl AttributedPresence {
     /// Encode for carriage inside an `Envelope::Presence`.
-    pub fn encode(&self) -> Vec<u8> {
-        postcard::to_stdvec(self).expect("postcard cannot fail on AttributedPresence")
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if postcard fails to serialize `self`.
+    pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
+        postcard::to_stdvec(self)
     }
 
     /// Decode a body previously produced by [`Self::encode`]. Returns
@@ -187,12 +195,18 @@ pub enum CoeditError {
     /// channel was closed). Mirrors the toolkit's fire-and-forget
     /// contract: the caller re-syncs on reconnect.
     Disconnected,
+    /// The outgoing payload could not be postcard-encoded. In practice
+    /// this does not happen for the owned, self-describing types this
+    /// module encodes; surfaced rather than hidden so a future payload
+    /// shape that can't serialize fails loudly instead of panicking.
+    Encode(postcard::Error),
 }
 
 impl std::fmt::Display for CoeditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CoeditError::Disconnected => f.write_str("relay co-edit session disconnected"),
+            CoeditError::Encode(error) => write!(f, "co-edit payload encode failed: {error}"),
         }
     }
 }
@@ -215,6 +229,11 @@ impl RelayCoeditSession {
     /// session authored as `author` (the device public key). The host
     /// replies with a `Ready` (and flushes any queued deltas first);
     /// drain them with [`Self::recv`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if `client`'s outbound
+    /// channel is already closed.
     pub fn join(
         client: RelayClient,
         workspace_id: u64,
@@ -238,38 +257,63 @@ impl RelayCoeditSession {
     /// Publish a raw Automerge incremental delta — the toolkit
     /// `SyncIncremental` path. The host fans it out to online peers and
     /// queues it on disk for offline members.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the relay connection is
+    /// gone, or [`CoeditError::Encode`] if the payload can't be
+    /// postcard-encoded.
     pub fn publish_delta(&self, delta: Vec<u8>) -> Result<(), CoeditError> {
-        self.publish_payload(CoeditPayload::Unsigned(delta))
+        self.publish_payload(&CoeditPayload::Unsigned(delta))
     }
 
     /// Publish a signed op's postcard bytes — the toolkit
     /// `SignedSyncIncremental` path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the relay connection is
+    /// gone, or [`CoeditError::Encode`] if the payload can't be
+    /// postcard-encoded.
     pub fn publish_signed(&self, op_bytes: Vec<u8>) -> Result<(), CoeditError> {
-        self.publish_payload(CoeditPayload::Signed(op_bytes))
+        self.publish_payload(&CoeditPayload::Signed(op_bytes))
     }
 
     /// Publish and retain a complete checkpoint for `channel`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the relay connection is
+    /// gone, or [`CoeditError::Encode`] if the payload can't be
+    /// postcard-encoded.
     pub fn publish_checkpoint(&self, channel: [u8; 32], body: Vec<u8>) -> Result<(), CoeditError> {
-        self.publish_payload(CoeditPayload::Checkpoint { channel, body })
+        self.publish_payload(&CoeditPayload::Checkpoint { channel, body })
     }
 
     /// Publish an incremental update and retain it after the current channel
     /// checkpoint so a device that has never connected can catch up.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the relay connection is
+    /// gone, or [`CoeditError::Encode`] if the payload can't be
+    /// postcard-encoded.
     pub fn publish_retained_delta(
         &self,
         channel: [u8; 32],
         body: Vec<u8>,
     ) -> Result<(), CoeditError> {
-        self.publish_payload(CoeditPayload::RetainedDelta { channel, body })
+        self.publish_payload(&CoeditPayload::RetainedDelta { channel, body })
     }
 
-    fn publish_payload(&self, payload: CoeditPayload) -> Result<(), CoeditError> {
+    fn publish_payload(&self, payload: &CoeditPayload) -> Result<(), CoeditError> {
+        let delta = payload.encode().map_err(CoeditError::Encode)?;
         self.client
             .send(Envelope::Delta {
                 workspace_id: self.workspace_id,
                 author_device_public_key: self.author,
                 authored_at_ns: now_ns(),
-                delta: payload.encode(),
+                delta,
                 // The op-level signature (for the signed variant) lives
                 // inside the CoeditPayload; the envelope-level slot is
                 // unused on the co-edit path, matching how the durable
@@ -288,15 +332,22 @@ impl RelayCoeditSession {
     /// [`AttributedPresence`]) so the receiver can attribute the
     /// presence — the host's presence envelope carries no author of its
     /// own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the relay connection is
+    /// gone, or [`CoeditError::Encode`] if the wrapped payload can't be
+    /// postcard-encoded.
     pub fn publish_presence(&self, payload: Vec<u8>) -> Result<(), CoeditError> {
         let wrapped = AttributedPresence {
             author: self.author,
             body: payload,
         };
+        let encoded = wrapped.encode().map_err(CoeditError::Encode)?;
         self.client
             .send(Envelope::Presence {
                 workspace_id: self.workspace_id,
-                payload: wrapped.encode(),
+                payload: encoded,
             })
             .map_err(|_| CoeditError::Disconnected)
     }
@@ -318,7 +369,11 @@ impl RelayCoeditSession {
                     // plain workspace-directory delta from another tier
                     // won't decode — skip it rather than mis-apply.
                     match CoeditPayload::decode(&delta) {
-                        Some(CoeditPayload::Unsigned(data)) => {
+                        Some(
+                            CoeditPayload::Unsigned(data)
+                            | CoeditPayload::Checkpoint { body: data, .. }
+                            | CoeditPayload::RetainedDelta { body: data, .. },
+                        ) => {
                             return Some(Inbound::Delta {
                                 author: author_device_public_key,
                                 data,
@@ -330,16 +385,7 @@ impl RelayCoeditSession {
                                 op_bytes,
                             });
                         }
-                        Some(
-                            CoeditPayload::Checkpoint { body: data, .. }
-                            | CoeditPayload::RetainedDelta { body: data, .. },
-                        ) => {
-                            return Some(Inbound::Delta {
-                                author: author_device_public_key,
-                                data,
-                            });
-                        }
-                        None => continue,
+                        None => {}
                     }
                 }
                 Envelope::Presence { payload, .. } => {
@@ -347,14 +393,13 @@ impl RelayCoeditSession {
                     // envelope has no author of its own). A non-co-edit
                     // presence frame won't decode — skip it rather than
                     // surface it unattributed.
-                    match AttributedPresence::decode(&payload) {
-                        Some(AttributedPresence { author, body }) => {
-                            return Some(Inbound::Presence {
-                                author,
-                                payload: body,
-                            });
-                        }
-                        None => continue,
+                    if let Some(AttributedPresence { author, body }) =
+                        AttributedPresence::decode(&payload)
+                    {
+                        return Some(Inbound::Presence {
+                            author,
+                            payload: body,
+                        });
                     }
                 }
                 Envelope::Ready { pending_deltas, .. } => {
@@ -365,7 +410,7 @@ impl RelayCoeditSession {
                 Envelope::NotAuthorised { .. } => return None,
                 // Keep-alives and federation chatter carry no co-edit
                 // payload — keep waiting.
-                _ => continue,
+                _ => {}
             }
         }
     }
@@ -383,7 +428,10 @@ impl RelayCoeditSession {
 fn now_ns() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64)
+        // `u64` nanoseconds since the epoch doesn't overflow until the
+        // year 2554; clamp rather than panic on the (unreachable in
+        // practice) far side of that.
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
 }
 
 #[cfg(test)]
@@ -404,7 +452,10 @@ mod tests {
         };
 
         for payload in [unsigned, signed, checkpoint, retained] {
-            assert_eq!(CoeditPayload::decode(&payload.encode()), Some(payload));
+            assert_eq!(
+                CoeditPayload::decode(&payload.encode().unwrap()),
+                Some(payload)
+            );
         }
     }
 
@@ -417,13 +468,15 @@ mod tests {
             author: [7u8; 32],
             body: vec![10, 20, 30],
         };
-        let decoded = AttributedPresence::decode(&wrapped.encode()).unwrap();
+        let decoded = AttributedPresence::decode(&wrapped.encode().unwrap()).unwrap();
         assert_eq!(decoded.author, [7u8; 32]);
         assert_eq!(decoded.body, vec![10, 20, 30]);
     }
 
     #[test]
     fn non_coedit_bytes_do_not_masquerade_as_coedit() {
+        use automerge::transaction::Transactable;
+
         // Bodies that are not a CoeditPayload must not decode into a
         // bogus variant — `recv` skips such frames rather than mis-apply
         // them. Empty, an out-of-range enum tag, and a genuine Automerge
@@ -431,7 +484,6 @@ mod tests {
         assert!(CoeditPayload::decode(&[]).is_none());
         assert!(CoeditPayload::decode(&[5, 0, 0]).is_none());
 
-        use automerge::transaction::Transactable;
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "k", "v").unwrap();
         let raw_delta = doc.save_incremental();

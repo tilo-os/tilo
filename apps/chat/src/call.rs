@@ -139,6 +139,10 @@ impl ScreenPortal for FakePortal {
 /// joins a voice channel to start one. (The demo screenshot activates a call
 /// explicitly via the shot scenario.)
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent peer-local call toggle (active/expanded/participants_expanded/muted/deafened/audio_only/sharing) that the UI reads and writes individually — grouping them would just relocate the boolean soup, not remove it"
+)]
 pub struct CallState {
     /// True while connected to a voice channel.
     pub active: bool,
@@ -311,9 +315,11 @@ mod tests {
 
     #[test]
     fn join_and_leave_reset_overlay_layout() {
-        let mut c = CallState::default();
-        c.overlay_offset = Vec2::new(120.0, -30.0);
-        c.expanded = true;
+        let mut c = CallState {
+            overlay_offset: Vec2::new(120.0, -30.0),
+            expanded: true,
+            ..CallState::default()
+        };
         c.leave();
         assert!(!c.active && !c.expanded);
         assert_eq!(c.overlay_offset, Vec2::ZERO);
@@ -440,10 +446,10 @@ mod sound {
 
     #[cfg(feature = "live-media")]
     fn play_cue(live: bool, cue: Cue) {
+        use gstreamer::prelude::*;
         if !live {
             return;
         }
-        use gstreamer::prelude::*;
         let (a, b) = cue_tones(cue);
         // Two short audiotestsrc tones chained into the default sink. We
         // build a fresh throwaway pipeline per cue and tear it down on EOS so

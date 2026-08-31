@@ -19,7 +19,9 @@ impl FocusTrap {
             return None;
         }
         let idx = self.members.iter().position(|&x| x == id).unwrap_or(0);
-        Some(self.members[(idx + 1) % self.members.len()])
+        let len = self.members.len();
+        let next = idx.saturating_add(1);
+        self.members.get(if next < len { next } else { 0 }).copied()
     }
 
     /// The id Shift+Tab should move to from `id`, wrapping past the start back
@@ -30,7 +32,12 @@ impl FocusTrap {
         }
         let idx = self.members.iter().position(|&x| x == id).unwrap_or(0);
         let len = self.members.len();
-        Some(self.members[(idx + len - 1) % len])
+        let prev = if idx == 0 {
+            len.saturating_sub(1)
+        } else {
+            idx.saturating_sub(1)
+        };
+        self.members.get(prev).copied()
     }
 
     pub fn contains(&self, id: u64) -> bool {

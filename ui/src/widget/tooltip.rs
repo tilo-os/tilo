@@ -26,6 +26,43 @@ const CHIP_MARGIN: f64 = 6.0;
 /// Hard cap so a pathological label can't paint a chip wider than the window.
 const CHIP_MAX_W: f64 = 320.0;
 
+/// Rounds a channel-times-alpha-scale product into a colour byte. Every
+/// caller passes `channel * alpha_scale` where `channel` is a `u8`
+/// widened to `f32` and `alpha_scale` is at most `1.0`, so `value` is
+/// always in `[0.0, 255.0]` — the `.clamp` below makes that provably
+/// safe regardless.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "value is clamped into [0.0, 255.0] on the line above, so the \
+              cast can never truncate or flip sign"
+)]
+fn channel_byte(value: f32) -> u8 {
+    value.round().clamp(0.0, 255.0) as u8
+}
+
+/// `kurbo::Affine` composition is plain f64 matrix math with no panic
+/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
+              or overflows, unlike integer +/-/*"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
+}
+
+/// Narrows a screen-space length (`f64`) to the `f32` taffy consumes.
+/// The tooltip's fixed layout size never approaches `f32`'s range, so
+/// this never truncates in practice.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "tooltip layout dimensions are small fixed constants, far below f32's range"
+)]
+fn px_f32(v: f64) -> f32 {
+    v as f32
+}
+
 pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, text_size: f32) -> (f64, f64) {
     let (tw, _th) = text_renderer.measure(label, text_size, None);
     let w = (f64::from(tw) + 2.0 * CHIP_PAD_X).min(CHIP_MAX_W);
@@ -76,7 +113,7 @@ pub fn draw_chip(
     let elev = &theme.tokens.elevation.e2;
     let base = elev.color;
     for (inflate, dy, alpha_scale) in [(3.0_f64, 5.0_f64, 0.5_f32), (1.0, 2.0, 1.0)] {
-        let a = (f32::from(base.a()) * alpha_scale).round() as u8;
+        let a = channel_byte(f32::from(base.a()) * alpha_scale);
         let col = Color::from_rgba8(base.r(), base.g(), base.b(), a);
         let sr = Rect::new(
             rect.x0 - inflate,
@@ -116,7 +153,7 @@ pub fn draw_chip(
         label,
         text_size,
         theme.tokens.colors.text_primary,
-        transform * Affine::translate((rect.x0 + CHIP_PAD_X, text_y)),
+        translated(transform, rect.x0 + CHIP_PAD_X, text_y),
         None,
     );
 }
@@ -167,6 +204,9 @@ impl std::fmt::Debug for Tooltip {
             .field("delay", &self.delay)
             .field("elapsed", &self.elapsed)
             .field("is_visible", &self.is_visible)
+            .field("rect", &self.rect)
+            .field("anchor", &self.anchor)
+            .field("hover_since", &self.hover_since)
             .finish()
     }
 }
@@ -184,12 +224,14 @@ impl Tooltip {
         }
     }
 
+    #[must_use]
     pub fn with_delay(mut self, delay: Duration) -> Self {
         self.delay = delay;
         self
     }
 
     /// Enables self-routing in `handle_event`.
+    #[must_use]
     pub fn with_anchor(mut self, anchor: Rect) -> Self {
         self.anchor = anchor;
         self
@@ -247,7 +289,7 @@ impl Widget for Tooltip {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let (w, h) = if self.is_visible {
-            (TOOLTIP_WIDTH as f32, TOOLTIP_HEIGHT as f32)
+            (px_f32(TOOLTIP_WIDTH), px_f32(TOOLTIP_HEIGHT))
         } else {
             (0.0, 0.0)
         };
@@ -424,6 +466,7 @@ impl TooltipHost {
         }
     }
 
+    #[must_use]
     pub fn with_dwell(mut self, dwell: Duration) -> Self {
         self.dwell = dwell;
         self
@@ -457,12 +500,11 @@ impl TooltipHost {
                     anchor,
                     since: now,
                 });
-                let was = self.visible;
                 self.visible = false;
                 self.recompute_visible(now);
                 // A new target always warrants a redraw: it may clear a
                 // previously-shown chip.
-                true || self.visible != was
+                true
             }
         } else {
             let had = self.target.is_some() || self.visible;
@@ -507,15 +549,18 @@ impl TooltipHost {
 mod host_tests {
     use super::*;
 
-    fn tip(label: &str) -> Option<(Rect, String)> {
-        Some((Rect::new(0.0, 0.0, 40.0, 40.0), label.to_string()))
+    fn tip(label: &str) -> (Rect, String) {
+        (Rect::new(0.0, 0.0, 40.0, 40.0), label.to_string())
     }
 
     #[test]
     fn hovering_past_dwell_reveals_then_leaving_hides() {
         let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
         let t0 = Instant::now();
-        assert!(h.on_pointer(tip("Search"), t0), "new target changes state");
+        assert!(
+            h.on_pointer(Some(tip("Search")), t0),
+            "new target changes state"
+        );
         assert!(h.visible().is_none(), "not shown before the dwell elapses");
         assert!(h.needs_frame(), "a pending reveal pumps frames");
 
@@ -539,7 +584,7 @@ mod host_tests {
     fn click_scroll_or_key_dismisses_a_shown_tooltip() {
         let mut h = TooltipHost::new().with_dwell(Duration::ZERO);
         let t0 = Instant::now();
-        h.on_pointer(tip("Zoom in"), t0);
+        h.on_pointer(Some(tip("Zoom in")), t0);
         assert!(h.visible().is_some(), "zero-dwell shows on hover");
         assert!(h.dismiss(), "dismiss reports it was showing");
         assert!(h.visible().is_none(), "click/scroll/key hides it");
@@ -552,7 +597,7 @@ mod host_tests {
     fn moving_between_regions_restarts_the_dwell() {
         let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
         let t0 = Instant::now();
-        h.on_pointer(tip("Back"), t0);
+        h.on_pointer(Some(tip("Back")), t0);
         // Almost revealed on the first region…
         h.tick(t0 + Duration::from_millis(450));
         assert!(h.visible().is_none());
@@ -572,13 +617,13 @@ mod host_tests {
     fn jitter_within_one_region_keeps_the_dwell() {
         let mut h = TooltipHost::new().with_dwell(Duration::from_millis(500));
         let t0 = Instant::now();
-        h.on_pointer(tip("Search"), t0);
+        h.on_pointer(Some(tip("Search")), t0);
         // The pointer keeps reporting the same region (a stable rect+label)
         // as it jitters — the accumulated dwell must not reset.
-        h.on_pointer(tip("Search"), t0 + Duration::from_millis(200));
-        h.on_pointer(tip("Search"), t0 + Duration::from_millis(400));
+        h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(200));
+        h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(400));
         assert!(
-            h.on_pointer(tip("Search"), t0 + Duration::from_millis(550)),
+            h.on_pointer(Some(tip("Search")), t0 + Duration::from_millis(550)),
             "crossing the threshold on a jitter move flips to visible"
         );
         assert_eq!(h.visible().map(|(l, _)| l), Some("Search"));
@@ -644,7 +689,7 @@ mod tests {
         t.handle_event(
             &ev,
             1.0,
-            &Default::default(),
+            &winit::event::Modifiers::default(),
             &mut doc,
             &root,
             &mut handled,

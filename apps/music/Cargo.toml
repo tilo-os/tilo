@@ -2,6 +2,8 @@
 name = "music"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "music"
@@ -29,7 +31,7 @@ streaming = ["dep:reqwest"]
 #   * `zbus`      — MPRIS (`org.mpris.MediaPlayer2`) so media keys + GNOME's
 #                   media controls drive playback (see `src/mpris.rs`);
 #   * `ashpd`/`url` — the native XDG file-chooser portal for picking a
-#                   playlist cover image (see `src/portal.rs`).
+#                   playlist cover image through `ui::portal`.
 audio = ["dep:gstreamer", "dep:zbus", "dep:tokio", "ui/portal"]
 # Real YouTube-Music streaming via the pure-Rust `rustypipe` InnerTube client:
 # real search (`music_search_tracks`) and real audio-stream resolution
@@ -42,11 +44,9 @@ live = ["dep:rustypipe", "dep:tokio", "dep:reqwest"]
 # Live synced-lyrics fetch from lrclib.net over HTTP. Off by default; the
 # bundled sample lyrics keep the lyrics view populated offline / in `--shots`.
 lyrics = ["dep:reqwest"]
-# Live P2P library sync over iroh QUIC (the headless self-host transport).
-# Off by default so the default build + the headless relay still compile and
-# run in CI without an iroh/Tokio stack; the loopback transport demonstrates
-# the full convergence seam without it.
-p2p = ["dep:iroh", "dep:tokio"]
+# Async P2P library-sync seam. The current transport is the deterministic
+# loopback implementation, so only its Tokio executor is feature-gated.
+p2p = ["dep:tokio"]
 
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
@@ -69,7 +69,7 @@ taffy.workspace = true
 
 # Optional: enabled only by the `streaming` / `audio` / `lyrics` / `p2p`
 # features above. Versions pinned to match the workspace lock so no extra
-# copies resolve (iroh/tokio mirror the `chat` app + `fs` submodule pins).
+# copies resolve (tokio mirrors the `chat` app + `fs` submodule pins).
 reqwest = { workspace = true, optional = true, features = ["blocking", "json"], default-features = true }
 gstreamer = { workspace = true, optional = true }
 # MPRIS D-Bus media control (`org.mpris.MediaPlayer2` + `.Player`). Version
@@ -82,7 +82,6 @@ zbus = { workspace = true, optional = true, features = ["p2p"], default-features
 # and hosts the sandbox file-access prompt). `url` maps the returned file URIs.
 # `url` maps the portal's returned file URIs; kept non-optional so the pure
 # mapping + its tests build in the default (hermetic) configuration too.
-iroh = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 # Pure-Rust InnerTube (YouTube / YouTube Music) client: search + stream
 # resolution. Embeds `rquickjs` for signature deobfuscation — no ffmpeg /

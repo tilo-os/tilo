@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -53,7 +53,11 @@ impl SegChoice {
         Self {
             labels,
             select_paths,
-            selected: if n == 0 { 0 } else { selected.min(n - 1) },
+            selected: if n == 0 {
+                0
+            } else {
+                selected.min(n.saturating_sub(1))
+            },
             test_id: "filesystem_choice".to_string(),
             rect: Rect::ZERO,
             segment_rects: Vec::new(),
@@ -63,6 +67,7 @@ impl SegChoice {
     }
 
     /// Override the E2E `test_id` (default `filesystem_choice`).
+    #[must_use]
     pub fn with_test_id(mut self, id: &str) -> Self {
         self.test_id = id.to_string();
         self
@@ -84,6 +89,11 @@ impl Widget for SegChoice {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
+        // returns a bare `NodeId` across every implementor, so surfacing a
+        // theoretical error here would mean threading a `Result` through the
+        // whole toolkit for a branch that can't be taken.
+        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -99,6 +109,10 @@ impl Widget for SegChoice {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `layout` only errors for a `NodeId` from a different tree, which
+        // never happens here since `node` is always the id this same widget
+        // received from its own `build_layout` call.
+        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -111,13 +125,13 @@ impl Widget for SegChoice {
         if n == 0 {
             return;
         }
-        let seg_w = self.rect.width() / n as f64;
+        let seg_w = self.rect.width() / ui::num::f64_of_usize(n);
         for i in 0..n {
-            let sx0 = self.rect.x0 + (i as f64) * seg_w;
-            let sx1 = if i == n - 1 {
+            let sx0 = self.rect.x0 + ui::num::f64_of_usize(i) * seg_w;
+            let sx1 = if i == n.saturating_sub(1) {
                 self.rect.x1
             } else {
-                self.rect.x0 + ((i + 1) as f64) * seg_w
+                self.rect.x0 + ui::num::f64_of_usize(i.saturating_add(1)) * seg_w
             };
             self.segment_rects
                 .push(Rect::new(sx0, self.rect.y0, sx1, self.rect.y1));
@@ -151,8 +165,12 @@ impl Widget for SegChoice {
         scene.pop_layer();
 
         // Interior separators.
-        for i in 0..self.labels.len().saturating_sub(1) {
-            let x = self.segment_rects[i].x1;
+        for seg in self
+            .segment_rects
+            .iter()
+            .take(self.labels.len().saturating_sub(1))
+        {
+            let x = seg.x1;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -171,21 +189,26 @@ impl Widget for SegChoice {
         scene.stroke(&Stroke::new(bw), transform, bc, None, &outer);
 
         // Labels.
-        for (i, seg) in self.segment_rects.iter().enumerate() {
+        for (i, (seg, label)) in self
+            .segment_rects
+            .iter()
+            .zip(self.labels.iter())
+            .enumerate()
+        {
             let color = if i == self.selected {
                 Color::WHITE
             } else {
                 theme.text_primary
             };
-            let (tw, th) = text_renderer.measure(&self.labels[i], LABEL_SIZE, None);
+            let (tw, th) = text_renderer.measure(label, LABEL_SIZE, None);
             let tx = seg.center().x - f64::from(tw) / 2.0;
             let ty = seg.y0 + (seg.height() - f64::from(th)) / 2.0;
             text_renderer.draw_text(
                 scene,
-                &self.labels[i],
+                label,
                 LABEL_SIZE,
                 color,
-                transform * Affine::translate((tx, ty)),
+                transform.pre_translate(Vec2::new(tx, ty)),
                 None,
             );
         }
@@ -239,9 +262,11 @@ impl Widget for SegChoice {
                 // Left/Right move the selection; consume so the App's
                 // directional focus-nav fallback doesn't also fire.
                 let target = match key {
-                    NamedKey::ArrowLeft if self.selected > 0 => Some(self.selected - 1),
-                    NamedKey::ArrowRight if self.selected + 1 < self.labels.len() => {
-                        Some(self.selected + 1)
+                    NamedKey::ArrowLeft if self.selected > 0 => {
+                        Some(self.selected.saturating_sub(1))
+                    }
+                    NamedKey::ArrowRight if self.selected.saturating_add(1) < self.labels.len() => {
+                        Some(self.selected.saturating_add(1))
                     }
                     _ => None,
                 };

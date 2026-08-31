@@ -67,7 +67,9 @@ impl GridView {
         self.col_widths = vec![MIN_COL_W; ncols];
         for (ci, name) in result.columns.iter().enumerate() {
             let (w, _) = tr.measure(name, 13.0, None);
-            self.col_widths[ci] = (f64::from(w) + 2.0 * CELL_PAD + 16.0).max(MIN_COL_W);
+            if let Some(cw) = self.col_widths.get_mut(ci) {
+                *cw = (f64::from(w) + 2.0 * CELL_PAD + 16.0).max(MIN_COL_W);
+            }
         }
         // Sample up to 60 rows to size columns to content.
         for row in result.rows.iter().take(60) {
@@ -79,8 +81,11 @@ impl GridView {
                 let sample: String = s.chars().take(40).collect();
                 let (w, _) = tr.measure(&sample, 13.0, None);
                 let want = (f64::from(w) + 2.0 * CELL_PAD).max(MIN_COL_W);
-                if want > self.col_widths[ci] {
-                    self.col_widths[ci] = want.min(360.0);
+                let Some(cw) = self.col_widths.get_mut(ci) else {
+                    continue;
+                };
+                if want > *cw {
+                    *cw = want.min(360.0);
                 }
             }
         }
@@ -94,8 +99,8 @@ impl GridView {
         if let Some(col) = self.sort_col {
             let asc = self.sort_asc;
             order.sort_by(|&a, &b| {
-                let ca = result.rows[a].get(col);
-                let cb = result.rows[b].get(col);
+                let ca = result.rows.get(a).and_then(|row| row.get(col));
+                let cb = result.rows.get(b).and_then(|row| row.get(col));
                 let ord = compare_cells(ca, cb);
                 if asc { ord } else { ord.reverse() }
             });
@@ -203,14 +208,9 @@ impl GridView {
             return;
         }
 
-        let total_w = self.total_width();
-        // Base X, shifted left by the horizontal scroll offset. Everything
-        // inside is clipped to the grid rect so scrolled-off columns and any
-        // column straddling an edge never bleed outside the pane.
-        let x0 = r.x0 - self.scroll_x;
-        let content_right = (x0 + total_w).min(r.x1);
-        let body_bottom = (r.y0 + HEADER_H + self.visible_rows() as f64 * ROW_H).min(r.y1);
-
+        // Everything inside is clipped to the grid rect so scrolled-off
+        // columns and any column straddling an edge never bleed outside the
+        // pane.
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -218,6 +218,37 @@ impl GridView {
             transform,
             &r,
         );
+        self.draw_header(scene, transform, tr, theme, result);
+        self.draw_body(scene, transform, tr, theme, result);
+        scene.pop_layer();
+
+        self.draw_scrollbar(scene, transform, theme);
+
+        // Outer border.
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &r.to_rounded_rect(0.0),
+        );
+    }
+
+    /// Header background, column labels/dividers and the underline beneath
+    /// them. Base X is shifted left by the horizontal scroll offset.
+    fn draw_header(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        result: &QueryResult,
+    ) {
+        let p = theme.db();
+        let r = self.rect;
+        let x0 = r.x0 - self.scroll_x;
+        let body_bottom = (r.y0 + HEADER_H + self.visible_rows() as f64 * ROW_H).min(r.y1);
+        let content_right = (x0 + self.total_width()).min(r.x1);
 
         // Header background spans the full visible width.
         let header_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + HEADER_H);
@@ -226,7 +257,11 @@ impl GridView {
         // Column headers.
         let mut x = x0;
         for (ci, col) in result.columns.iter().enumerate() {
-            let w = self.col_widths[ci];
+            // A width missing for a column the driver reported degrades to
+            // stopping the header here rather than indexing past the end.
+            let Some(&w) = self.col_widths.get(ci) else {
+                break;
+            };
             if x + w < r.x0 {
                 x += w; // fully scrolled off the left
                 continue;
@@ -270,15 +305,34 @@ impl GridView {
                 Point::new(content_right, r.y0 + HEADER_H),
             ),
         );
+    }
 
-        // Body rows.
+    /// Visible body rows: zebra striping, hover highlight and cells.
+    fn draw_body(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        result: &QueryResult,
+    ) {
+        let p = theme.db();
+        let r = self.rect;
+        let x0 = r.x0 - self.scroll_x;
+        let content_right = (x0 + self.total_width()).min(r.x1);
+
         let vis = self.visible_rows();
         for vi in 0..vis {
             let oidx = self.scroll_row + vi;
-            if oidx >= self.order.len() {
+            // `order` is a permutation sized to the bound result; a stale
+            // mismatch degrades to stopping the body here rather than
+            // indexing past the end.
+            let Some(&row_idx) = self.order.get(oidx) else {
                 break;
-            }
-            let row_idx = self.order[oidx];
+            };
+            let Some(row) = result.rows.get(row_idx) else {
+                break;
+            };
             let y = r.y0 + HEADER_H + vi as f64 * ROW_H;
             let row_rect = Rect::new(r.x0, y, content_right, y + ROW_H);
 
@@ -289,7 +343,6 @@ impl GridView {
                 scene.fill(Fill::NonZero, transform, p.row_alt, None, &row_rect);
             }
 
-            let row = &result.rows[row_idx];
             let mut cx = x0;
             for (ci, w) in self.col_widths.iter().enumerate() {
                 if cx + w < r.x0 {
@@ -300,14 +353,18 @@ impl GridView {
                     break;
                 }
                 let cell = row.get(ci).cloned().unwrap_or(Cell::Null);
-                draw_cell(scene, transform, tr, theme, &p, &cell, cx, y, *w);
+                let cell_rect = Rect::new(cx, y, cx + w, y + ROW_H);
+                draw_cell(scene, transform, tr, theme, &p, &cell, cell_rect);
                 cx += w;
             }
         }
+    }
 
-        scene.pop_layer();
-
-        // Horizontal scrollbar when the result is wider than the pane.
+    /// Horizontal scrollbar, drawn only when the result is wider than the pane.
+    fn draw_scrollbar(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let p = theme.db();
+        let r = self.rect;
+        let total_w = self.total_width();
         let max_x = self.max_scroll_x();
         if max_x > 0.5 {
             let track_y = r.y1 - 4.0;
@@ -332,15 +389,6 @@ impl GridView {
                 &thumb.to_rounded_rect(1.5),
             );
         }
-
-        // Outer border.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &r.to_rounded_rect(0.0),
-        );
     }
 }
 
@@ -351,11 +399,9 @@ fn draw_cell(
     theme: &Theme,
     p: &crate::theme_ext::DbPalette,
     cell: &Cell,
-    x: f64,
-    y: f64,
-    w: f64,
+    cell_rect: Rect,
 ) {
-    let max_w = (w - 2.0 * CELL_PAD) as f32;
+    let max_w = (cell_rect.width() - 2.0 * CELL_PAD) as f32;
     let s = cell.display();
     let truncated: String = if s.chars().count() > 60 {
         let t: String = s.chars().take(57).collect();
@@ -371,11 +417,11 @@ fn draw_cell(
         theme.text_primary
     };
 
-    let ty = y + 6.0;
+    let ty = cell_rect.y0 + 6.0;
     if cell.is_numeric() {
         // Right-align numerics within the cell.
         let (tw, _) = tr.measure(&truncated, 13.0, None);
-        let tx = (x + w - CELL_PAD - f64::from(tw)).max(x + CELL_PAD);
+        let tx = (cell_rect.x1 - CELL_PAD - f64::from(tw)).max(cell_rect.x0 + CELL_PAD);
         tr.draw_text(
             scene,
             &truncated,
@@ -390,7 +436,7 @@ fn draw_cell(
             &truncated,
             13.0,
             color,
-            transform * Affine::translate((x + CELL_PAD, ty)),
+            transform * Affine::translate((cell_rect.x0 + CELL_PAD, ty)),
             Some(max_w),
         );
     }

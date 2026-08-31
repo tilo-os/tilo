@@ -28,6 +28,28 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::{LineEditState, RecoveryChallenge, ScreenOutcome};
 
+/// Narrows a grid row/column index (always `< 24`, the fixed word count)
+/// to `f64` for layout math. Bounded far below `f64`'s precision limit,
+/// so this never loses precision in practice.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "grid row/column indices are bounded to the fixed 24-word layout"
+)]
+fn grid_f64(v: usize) -> f64 {
+    v as f64
+}
+
+/// Composes `base` with a translation for text/element placement. Affine
+/// composition is floating-point matrix multiply — it cannot overflow or
+/// panic the way integer arithmetic can.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
+)]
+fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
+    base * Affine::translate((dx, dy))
+}
+
 /// Screen 2b: type-3-words verification.
 pub struct RecoveryVerifyScreen {
     rect: Rect,
@@ -111,8 +133,8 @@ impl RecoveryVerifyScreen {
     }
 
     pub fn set_answer(&mut self, slot: usize, value: impl Into<String>) {
-        if slot < 3 {
-            self.editors[slot] = LineEditState::with_text(value);
+        if let Some(editor) = self.editors.get_mut(slot) {
+            *editor = LineEditState::with_text(value);
             self.last_attempt_failed = false;
         }
     }
@@ -147,7 +169,7 @@ impl RecoveryVerifyScreen {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         _state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
@@ -209,7 +231,7 @@ impl RecoveryVerifyScreen {
                             self.focused_slot = Some(next_slot_in_visual_order(
                                 slot,
                                 &c.positions,
-                                _modifiers.state().shift_key(),
+                                modifiers.state().shift_key(),
                             ));
                         }
                         *handled = true;
@@ -222,8 +244,9 @@ impl RecoveryVerifyScreen {
                         self.last_attempt_failed = true;
                     }
                     _ => {
-                        let editor = &mut self.editors[slot];
-                        if editor.apply_key(logical_key, _modifiers, text.as_deref()) {
+                        if let Some(editor) = self.editors.get_mut(slot)
+                            && editor.apply_key(logical_key, modifiers, text.as_deref())
+                        {
                             self.last_attempt_failed = false;
                             *handled = true;
                         }
@@ -244,7 +267,9 @@ impl RecoveryVerifyScreen {
 /// Example: positions = [13, 12, 23], slot = 0 (position 13). Visual
 /// order is [12, 13, 23] → Tab goes to 23 (slot 2), Shift+Tab to 12 (slot 1).
 pub fn next_slot_in_visual_order(slot: usize, positions: &[usize; 3], backward: bool) -> usize {
-    let current_pos = positions[slot];
+    let Some(&current_pos) = positions.get(slot) else {
+        return slot;
+    };
     if backward {
         // Largest position smaller than current; wrap to largest.
         positions
@@ -328,14 +353,18 @@ impl Widget for RecoveryVerifyScreen {
                 let zero = pos1.saturating_sub(1);
                 let row = zero / 4;
                 let col = zero % 4;
-                let cell_x = grid_x + col as f64 * col_w + 28.0;
-                let cell_y = grid_y + row as f64 * row_h;
+                let cell_x = grid_x + grid_f64(col) * col_w + 28.0;
+                let cell_y = grid_y + grid_f64(row) * row_h;
                 // Editable slot is the "value area" of the grid cell.
-                let slot_x0 = cell_x;
-                let slot_y0 = cell_y - 4.0;
-                let slot_x1 = grid_x + (col as f64 + 1.0) * col_w - 8.0;
-                let slot_y1 = slot_y0 + 30.0;
-                self.slot_rects[slot_i] = Rect::new(slot_x0, slot_y0, slot_x1, slot_y1);
+                let Some(slot_rect) = self.slot_rects.get_mut(slot_i) else {
+                    continue;
+                };
+                *slot_rect = Rect::new(
+                    cell_x,
+                    cell_y - 4.0,
+                    grid_x + (grid_f64(col) + 1.0) * col_w - 8.0,
+                    cell_y - 4.0 + 30.0,
+                );
             }
         } else {
             self.slot_rects = [Rect::ZERO; 3];
@@ -363,223 +392,11 @@ impl Widget for RecoveryVerifyScreen {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let backdrop = Color::from_rgba8(0, 0, 0, 180);
-        scene.fill(Fill::NonZero, transform, backdrop, None, &self.rect);
-        let card_w = 680.0;
-        let card_h = 540.0;
-        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
-        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
-        let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
         let pad = 32.0;
-        let radius = 12.0;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-
-        text_renderer.draw_text(
-            scene,
-            "Confirm your recovery words",
-            22.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + pad, card.y0 + pad)),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            "Compare with your written list. Fill in the highlighted blanks to confirm.",
-            13.0,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((card.x0 + pad, card.y0 + pad + 32.0)),
-            None,
-        );
-
-        // 24-word grid mirroring `recovery_share`. Three positions are
-        // blanked for the user to fill; the other 21 stay read-only so the
-        // user can scan the full list against their written-down copy.
-        let challenge_positions: [usize; 3] =
-            self.challenge.as_ref().map_or([0, 0, 0], |c| c.positions);
-        let words: Vec<&str> = self.mnemonic.split_whitespace().collect();
-        let grid_x = card.x0 + pad;
-        let grid_y = card.y0 + 110.0;
-        let col_w = (card_w - 2.0 * pad) / 4.0;
-        let row_h = 50.0;
-        for i in 0..24usize {
-            let row = i / 4;
-            let col = i % 4;
-            let pos1 = i + 1;
-            let x = grid_x + col as f64 * col_w;
-            let y = grid_y + row as f64 * row_h;
-
-            let num = format!("{pos1:>2}.");
-            text_renderer.draw_text(
-                scene,
-                &num,
-                12.0,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x, y + 8.0)),
-                None,
-            );
-
-            let slot = challenge_positions.iter().position(|&p| p == pos1);
-            if let Some(slot_i) = slot {
-                let r = self.slot_rects[slot_i];
-                let focused = self.focused_slot == Some(slot_i);
-                let answer_text = self.editors[slot_i].text.as_str();
-                let filled_correct = self.challenge.as_ref().is_some_and(|c| {
-                    answer_text
-                        .trim()
-                        .eq_ignore_ascii_case(&c.expected_word(slot_i))
-                });
-                let border = if focused {
-                    theme.border_focus
-                } else if filled_correct {
-                    theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-                } else if self.last_attempt_failed && !answer_text.is_empty() {
-                    Color::from_rgb8(220, 60, 60)
-                } else {
-                    theme.tokens.colors.border_standard
-                };
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.base,
-                    None,
-                    &RoundedRect::from_rect(r, 6.0),
-                );
-                scene.stroke(
-                    &Stroke::new(if focused { 2.0 } else { 1.0 }),
-                    transform,
-                    border,
-                    None,
-                    &RoundedRect::from_rect(r, 6.0),
-                );
-                if let Some((lo, hi)) = self.editors[slot_i].selection_range() {
-                    let (pre_w, _) = text_renderer.measure(&answer_text[..lo], 14.0, None);
-                    let (mid_w, _) = text_renderer.measure(&answer_text[lo..hi], 14.0, None);
-                    let sel_color = theme.accent_primary.with_alpha_factor(0.30);
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        sel_color,
-                        None,
-                        &Rect::new(
-                            r.x0 + 8.0 + f64::from(pre_w),
-                            r.y0 + 5.0,
-                            r.x0 + 8.0 + f64::from(pre_w) + f64::from(mid_w),
-                            r.y0 + r.height() - 5.0,
-                        ),
-                    );
-                }
-                text_renderer.draw_text(
-                    scene,
-                    answer_text,
-                    14.0,
-                    theme.tokens.colors.text_primary,
-                    transform * Affine::translate((r.x0 + 8.0, r.y0 + 7.0)),
-                    None,
-                );
-                // Caret if focused. Painted over the selection.
-                if focused {
-                    let cursor_byte = self.editors[slot_i].cursor.min(answer_text.len());
-                    let prefix = &answer_text[..cursor_byte];
-                    let (prefix_w, _) = text_renderer.measure(prefix, 14.0, None);
-                    let caret_x = r.x0 + 8.0 + f64::from(prefix_w);
-                    let caret_top = r.y0 + 5.0;
-                    let caret_bottom = r.y0 + r.height() - 5.0;
-                    let caret_rect = Rect::new(caret_x, caret_top, caret_x + 1.5, caret_bottom);
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-                        None,
-                        &caret_rect,
-                    );
-                }
-            } else {
-                let word = words.get(i).copied().unwrap_or("");
-                text_renderer.draw_text(
-                    scene,
-                    word,
-                    14.0,
-                    theme.tokens.colors.text_primary,
-                    transform * Affine::translate((x + 28.0, y + 6.0)),
-                    None,
-                );
-            }
-        }
-
-        // Reseed button: picks DIFFERENT blanks against the same mnemonic;
-        // does not regenerate the recovery share itself.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &RoundedRect::from_rect(self.reseed_rect, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.reseed_rect, 8.0),
-        );
-        let (rw, _) = text_renderer.measure("Pick different blanks", 13.0, None);
-        text_renderer.draw_text(
-            scene,
-            "Pick different blanks",
-            13.0,
-            theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((
-                    self.reseed_rect.x0 + (self.reseed_rect.width() - f64::from(rw)) / 2.0,
-                    self.reseed_rect.y0 + (self.reseed_rect.height() - 13.0) / 2.0,
-                )),
-            None,
-        );
-
-        let ready = self.is_correct();
-        let bg = if ready {
-            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
-        let text_color = if ready {
-            Color::from_rgb8(255, 255, 255)
-        } else {
-            theme.tokens.colors.text_dim
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            bg,
-            None,
-            &RoundedRect::from_rect(self.continue_rect, 8.0),
-        );
-        let (lw, _) = text_renderer.measure("Finish setup", 14.0, None);
-        text_renderer.draw_text(
-            scene,
-            "Finish setup",
-            14.0,
-            text_color,
-            transform
-                * Affine::translate((
-                    self.continue_rect.x0 + (self.continue_rect.width() - f64::from(lw)) / 2.0,
-                    self.continue_rect.y0 + (self.continue_rect.height() - 14.0) / 2.0,
-                )),
-            None,
-        );
+        let card = self.draw_backdrop_and_header(scene, transform, text_renderer, theme, pad);
+        self.draw_word_grid(scene, transform, text_renderer, theme, card, pad);
+        self.draw_reseed_button(scene, transform, text_renderer, theme);
+        self.draw_continue_button(scene, transform, text_renderer, theme);
 
         if self.last_attempt_failed {
             text_renderer.draw_text(
@@ -587,7 +404,7 @@ impl Widget for RecoveryVerifyScreen {
                 "One or more words didn't match. Try again or pick new words.",
                 12.0,
                 Color::from_rgb8(220, 80, 80),
-                transform * Affine::translate((card.x0 + pad, self.continue_rect.y0 - 24.0)),
+                translated(transform, card.x0 + pad, self.continue_rect.y0 - 24.0),
                 None,
             );
         }
@@ -625,6 +442,325 @@ impl Widget for RecoveryVerifyScreen {
 
     fn is_layout_dirty(&self) -> bool {
         true
+    }
+}
+
+impl RecoveryVerifyScreen {
+    /// Backdrop scrim, the card surface, and the two header lines. Returns
+    /// the card's `Rect` so the grid and buttons can lay out against it.
+    fn draw_backdrop_and_header(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        pad: f64,
+    ) -> Rect {
+        let backdrop = Color::from_rgba8(0, 0, 0, 180);
+        scene.fill(Fill::NonZero, transform, backdrop, None, &self.rect);
+        let card_w = 680.0;
+        let card_h = 540.0;
+        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
+        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
+        let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
+        let radius = 12.0;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(card, radius),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(card, radius),
+        );
+
+        text_renderer.draw_text(
+            scene,
+            "Confirm your recovery words",
+            22.0,
+            theme.tokens.colors.text_primary,
+            translated(transform, card.x0 + pad, card.y0 + pad),
+            None,
+        );
+        text_renderer.draw_text(
+            scene,
+            "Compare with your written list. Fill in the highlighted blanks to confirm.",
+            13.0,
+            theme.tokens.colors.text_dim,
+            translated(transform, card.x0 + pad, card.y0 + pad + 32.0),
+            None,
+        );
+        card
+    }
+
+    /// The 24-word grid mirroring `recovery_share`. Three positions are
+    /// blanked for the user to fill; the other 21 stay read-only so the
+    /// user can scan the full list against their written-down copy.
+    fn draw_word_grid(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        pad: f64,
+    ) {
+        let challenge_positions: [usize; 3] =
+            self.challenge.as_ref().map_or([0, 0, 0], |c| c.positions);
+        let words: Vec<&str> = self.mnemonic.split_whitespace().collect();
+        let grid_x = card.x0 + pad;
+        let grid_y = card.y0 + 110.0;
+        let col_w = (card.width() - 2.0 * pad) / 4.0;
+        let row_h = 50.0;
+        for i in 0..24usize {
+            self.draw_grid_cell(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                i,
+                &words,
+                challenge_positions,
+                grid_x,
+                grid_y,
+                col_w,
+                row_h,
+            );
+        }
+    }
+
+    /// One square of the grid: the row/col number label, and either the
+    /// read-only word or (for a blanked position) the editable slot.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal grid-layout helper, not a public surface"
+    )]
+    fn draw_grid_cell(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        i: usize,
+        words: &[&str],
+        challenge_positions: [usize; 3],
+        grid_x: f64,
+        grid_y: f64,
+        col_w: f64,
+        row_h: f64,
+    ) {
+        let row = i / 4;
+        let col = i % 4;
+        let pos1 = i.saturating_add(1);
+        let x = grid_x + grid_f64(col) * col_w;
+        let y = grid_y + grid_f64(row) * row_h;
+
+        let num = format!("{pos1:>2}.");
+        text_renderer.draw_text(
+            scene,
+            &num,
+            12.0,
+            theme.tokens.colors.text_dim,
+            translated(transform, x, y + 8.0),
+            None,
+        );
+
+        let slot = challenge_positions.iter().position(|&p| p == pos1);
+        if let Some(slot_i) = slot {
+            self.draw_blank_slot(scene, transform, text_renderer, theme, slot_i);
+        } else {
+            let word = words.get(i).copied().unwrap_or("");
+            text_renderer.draw_text(
+                scene,
+                word,
+                14.0,
+                theme.tokens.colors.text_primary,
+                translated(transform, x + 28.0, y + 6.0),
+                None,
+            );
+        }
+    }
+
+    /// The editable blank at `slot_i`: border/selection/caret state and
+    /// the current answer text. Does nothing if `slot_i` is out of range
+    /// — structurally unreachable since it always comes from indexing the
+    /// fixed 3-element challenge, but checked rather than indexed so a
+    /// future refactor can't silently reintroduce a panic.
+    fn draw_blank_slot(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        slot_i: usize,
+    ) {
+        let (Some(&r), Some(editor)) = (self.slot_rects.get(slot_i), self.editors.get(slot_i))
+        else {
+            return;
+        };
+        let answer_text = editor.text.as_str();
+        let focused = self.focused_slot == Some(slot_i);
+        let filled_correct = self.challenge.as_ref().is_some_and(|c| {
+            answer_text
+                .trim()
+                .eq_ignore_ascii_case(&c.expected_word(slot_i))
+        });
+        let border = if focused {
+            theme.border_focus
+        } else if filled_correct {
+            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+        } else if self.last_attempt_failed && !answer_text.is_empty() {
+            Color::from_rgb8(220, 60, 60)
+        } else {
+            theme.tokens.colors.border_standard
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &RoundedRect::from_rect(r, 6.0),
+        );
+        scene.stroke(
+            &Stroke::new(if focused { 2.0 } else { 1.0 }),
+            transform,
+            border,
+            None,
+            &RoundedRect::from_rect(r, 6.0),
+        );
+        if let Some((lo, hi)) = editor.selection_range() {
+            // `.get` rather than byte-slicing directly: `lo`/`hi` are a
+            // caret-driven selection and should always land on char
+            // boundaries, but a misaligned value degrades to "no
+            // highlight" instead of panicking the whole compositor.
+            let pre = answer_text.get(..lo).unwrap_or("");
+            let mid = answer_text.get(lo..hi).unwrap_or("");
+            let (pre_w, _) = text_renderer.measure(pre, 14.0, None);
+            let (mid_w, _) = text_renderer.measure(mid, 14.0, None);
+            let sel_color = theme.accent_primary.with_alpha_factor(0.30);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                sel_color,
+                None,
+                &Rect::new(
+                    r.x0 + 8.0 + f64::from(pre_w),
+                    r.y0 + 5.0,
+                    r.x0 + 8.0 + f64::from(pre_w) + f64::from(mid_w),
+                    r.y0 + r.height() - 5.0,
+                ),
+            );
+        }
+        text_renderer.draw_text(
+            scene,
+            answer_text,
+            14.0,
+            theme.tokens.colors.text_primary,
+            translated(transform, r.x0 + 8.0, r.y0 + 7.0),
+            None,
+        );
+        // Caret if focused. Painted over the selection.
+        if focused {
+            let cursor_byte = editor.cursor.min(answer_text.len());
+            // Same rationale as the selection slice above.
+            let prefix = answer_text.get(..cursor_byte).unwrap_or("");
+            let (prefix_w, _) = text_renderer.measure(prefix, 14.0, None);
+            let caret_x = r.x0 + 8.0 + f64::from(prefix_w);
+            let caret_top = r.y0 + 5.0;
+            let caret_bottom = r.y0 + r.height() - 5.0;
+            let caret_rect = Rect::new(caret_x, caret_top, caret_x + 1.5, caret_bottom);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+                None,
+                &caret_rect,
+            );
+        }
+    }
+
+    /// "Pick different blanks" — reseeds the challenge against the same
+    /// mnemonic without regenerating the recovery share itself.
+    fn draw_reseed_button(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &RoundedRect::from_rect(self.reseed_rect, 8.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &RoundedRect::from_rect(self.reseed_rect, 8.0),
+        );
+        let (rw, _) = text_renderer.measure("Pick different blanks", 13.0, None);
+        text_renderer.draw_text(
+            scene,
+            "Pick different blanks",
+            13.0,
+            theme.tokens.colors.text_primary,
+            translated(
+                transform,
+                self.reseed_rect.x0 + (self.reseed_rect.width() - f64::from(rw)) / 2.0,
+                self.reseed_rect.y0 + (self.reseed_rect.height() - 13.0) / 2.0,
+            ),
+            None,
+        );
+    }
+
+    /// "Finish setup" — highlighted once all three slots match.
+    fn draw_continue_button(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let ready = self.is_correct();
+        let bg = if ready {
+            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+        } else {
+            theme.tokens.colors.surfaces.base
+        };
+        let text_color = if ready {
+            Color::from_rgb8(255, 255, 255)
+        } else {
+            theme.tokens.colors.text_dim
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            bg,
+            None,
+            &RoundedRect::from_rect(self.continue_rect, 8.0),
+        );
+        let (lw, _) = text_renderer.measure("Finish setup", 14.0, None);
+        text_renderer.draw_text(
+            scene,
+            "Finish setup",
+            14.0,
+            text_color,
+            translated(
+                transform,
+                self.continue_rect.x0 + (self.continue_rect.width() - f64::from(lw)) / 2.0,
+                self.continue_rect.y0 + (self.continue_rect.height() - 14.0) / 2.0,
+            ),
+            None,
+        );
     }
 }
 
@@ -683,7 +819,7 @@ mod tests {
         s.seed_challenge([1, 12, 24]);
         let words: Vec<String> = fixture_mnemonic()
             .split_whitespace()
-            .map(|s| s.to_string())
+            .map(str::to_string)
             .collect();
         s.set_answer(0, &words[0]);
         s.set_answer(1, &words[11]);

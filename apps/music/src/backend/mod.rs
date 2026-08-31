@@ -316,11 +316,22 @@ pub trait MusicBackend: Send + Sync {
 
     /// Real full-text track search. Offline returns an empty list (the app
     /// shows the bundled library instead); live hits `YouTube` Music.
+    ///
+    /// # Errors
+    ///
+    /// Live: returns a [`BackendError`] on a network failure or an
+    /// unparseable `YouTube` Music response.
     fn search_tracks(&self, query: &str) -> SearchOutcome;
 
     /// A real multi-type search: the mixed "top result" plus songs, albums,
     /// artists and playlists in one call (`YouTube` Music's main results page).
     /// Offline returns an empty bundle; live fills every bucket.
+    ///
+    /// # Errors
+    ///
+    /// Live: returns a [`BackendError`] on a network failure or an
+    /// unparseable `YouTube` Music response. The default (offline) body never
+    /// errors.
     fn search_all(&self, _query: &str) -> Result<SearchBundle, BackendError> {
         Ok(SearchBundle::default())
     }
@@ -328,33 +339,65 @@ pub trait MusicBackend: Send + Sync {
     /// Deep per-type search ("see all Albums / Artists / Playlists"). Offline
     /// returns an empty bundle; live fills just the requested bucket with a
     /// fuller list than the mixed [`Self::search_all`] surfaces.
+    ///
+    /// # Errors
+    ///
+    /// Live: returns a [`BackendError`] on a network failure or an
+    /// unparseable `YouTube` Music response. The default (offline) body never
+    /// errors.
     fn search_more(&self, _query: &str, _kind: SearchKind) -> Result<SearchBundle, BackendError> {
         Ok(SearchBundle::default())
     }
 
     /// Resolve a video id to a directly-playable audio stream. Offline errors;
     /// live returns a real googlevideo media URL.
+    ///
+    /// # Errors
+    ///
+    /// Offline: always errors (there is no stream to resolve). Live: returns
+    /// a [`BackendError`] if the video id is unknown/unplayable or the
+    /// resolution request fails.
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome;
 
     /// Fetch the real Home page: charts, trending, new releases, top artists —
     /// with real cover art URLs. Offline returns an error (the app then shows
     /// the bundled sample home).
+    ///
+    /// # Errors
+    ///
+    /// The default (offline) body always errors. Live: returns a
+    /// [`BackendError`] on a network failure or an unparseable response.
     fn home(&self) -> Result<HomeContent, BackendError> {
         Err(BackendError("home content needs the live backend".into()))
     }
 
     /// Fetch a real artist page (top songs, albums, subscriber count). Offline
     /// errors.
+    ///
+    /// # Errors
+    ///
+    /// The default (offline) body always errors. Live: returns a
+    /// [`BackendError`] if the artist id is unknown or the request fails.
     fn artist(&self, _artist_id: &str) -> Result<ArtistPage, BackendError> {
         Err(BackendError("artist pages need the live backend".into()))
     }
 
     /// Fetch a real album's ordered track list + cover. Offline errors.
+    ///
+    /// # Errors
+    ///
+    /// The default (offline) body always errors. Live: returns a
+    /// [`BackendError`] if the album id is unknown or the request fails.
     fn album(&self, _album_id: &str) -> Result<AlbumPage, BackendError> {
         Err(BackendError("album pages need the live backend".into()))
     }
 
     /// Fetch a real playlist's ordered track list + cover. Offline errors.
+    ///
+    /// # Errors
+    ///
+    /// The default (offline) body always errors. Live: returns a
+    /// [`BackendError`] if the playlist id is unknown or the request fails.
     fn playlist(&self, _playlist_id: &str) -> Result<PlaylistPage, BackendError> {
         Err(BackendError("playlist pages need the live backend".into()))
     }

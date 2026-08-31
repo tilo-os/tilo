@@ -5,6 +5,16 @@
 //! See `ui/src/widget/slash_menu.rs` and `block_editor.rs` for the
 //! unit-level pins on each part of the flow.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use ui::widget::{BlockEditor, BlockKind};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey, SmolStr};

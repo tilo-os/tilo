@@ -7,6 +7,16 @@
 //! is unit-tested separately in `ui::widget::rich_text_line` via
 //! `link_at_byte`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use notes::NotesApp;
 use notes::sidebar::OutEvent;
 use tempfile::TempDir;

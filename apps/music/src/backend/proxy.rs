@@ -301,7 +301,7 @@ pub fn content_type_is_media(ct: &str) -> bool {
 /// masquerading as a media response). Cheap prefix check over the first bytes.
 pub fn body_sniffs_as_html(bytes: &[u8]) -> bool {
     let n = bytes.len().min(256);
-    let head = String::from_utf8_lossy(&bytes[..n]);
+    let head = String::from_utf8_lossy(bytes.get(..n).unwrap_or(bytes));
     let head = head.trim_start().to_ascii_lowercase();
     head.starts_with("<!doctype html")
         || head.starts_with("<html")
@@ -379,25 +379,21 @@ mod tests {
         };
         assert!(
             stream.url.contains("local=true"),
-            "resolved a proxied URL: {}",
-            stream.url
+            "resolved a proxied URL without the required local=true flag"
         );
-        let client = match reqwest::blocking::Client::builder()
+        let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
             .build()
-        {
-            Ok(c) => c,
-            Err(_) => return,
+        else {
+            return;
         };
         // Request a range well past the first-segment boundary raw googlevideo
         // URLs refuse (~1.5 MB in).
-        let resp = if let Ok(r) = client
+        let Ok(resp) = client
             .get(&stream.url)
             .header(reqwest::header::RANGE, "bytes=1500000-1600000")
             .send()
-        {
-            r
-        } else {
+        else {
             eprintln!("[proxy test] skipped — proxy fetch failed");
             return;
         };

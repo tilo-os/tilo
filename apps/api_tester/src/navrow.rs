@@ -118,6 +118,15 @@ impl Widget for NavRow {
         // A leaf node so the row is registered in `node_map` (for focus
         // order + the a11y tree); its taffy geometry is unused because the
         // app hand-positions it via `apply_layout_external`.
+        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
+        // cannot actually return `Err` for a fresh leaf (see
+        // `ui::widget::TaffyTreeExt`'s doc comment), and `Widget::build_layout`
+        // returns a bare `NodeId` across every implementor, so there is
+        // nowhere to surface a theoretical error.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -132,7 +141,12 @@ impl Widget for NavRow {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        // A missing layout entry for our own node would be a taffy bug, not a
+        // recoverable app condition — skip this frame's rect update rather
+        // than panic; the next frame's layout pass will have one.
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -149,7 +163,6 @@ impl Widget for NavRow {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let c = &theme.tokens.colors;
         let r = self.rect;
         let y = r.y0;
         let inner_w = r.width();
@@ -166,99 +179,45 @@ impl Widget for NavRow {
 
         match &self.kind {
             NavKind::Collection { expanded, count } => {
-                let caret = if *expanded { "\u{25BE}" } else { "\u{25B8}" };
-                tr.draw_text(
+                Self::draw_collection_row(
                     scene,
-                    caret,
-                    12.0,
-                    c.text_dim,
-                    t * Affine::translate((r.x0 + 6.0, y + 7.0)),
-                    None,
-                );
-                tr.draw_text_weighted(
-                    scene,
+                    t,
+                    tr,
+                    theme,
+                    r,
+                    y,
+                    inner_w,
                     &self.label,
-                    theme.tokens.typography.scale.base,
-                    c.text_primary,
-                    t * Affine::translate((r.x0 + 24.0, y + 6.0)),
-                    Some((inner_w - 60.0) as f32),
-                    TextWeight::Semibold,
-                );
-                let cs = count.to_string();
-                let (cw, _) = tr.measure(&cs, 11.0, None);
-                tr.draw_text(
-                    scene,
-                    &cs,
-                    11.0,
-                    c.text_dim,
-                    t * Affine::translate((r.x1 - f64::from(cw) - 6.0, y + 8.0)),
-                    None,
+                    *expanded,
+                    *count,
                 );
             }
             NavKind::Request { method, selected } => {
-                if *selected {
-                    let shape = RoundedRect::from_rect(
-                        Rect::new(r.x0, r.y0 + 2.0, r.x1, r.y1 - 2.0),
-                        f64::from(theme.tokens.radii.md),
-                    );
-                    scene.fill(
-                        Fill::NonZero,
-                        t,
-                        theme.accent_primary.with_alpha_factor(0.18),
-                        None,
-                        &shape,
-                    );
-                }
-                tr.draw_text_weighted(
+                Self::draw_request_row(
                     scene,
-                    method_short(*method),
-                    10.0,
-                    method_color(theme, *method),
-                    t * Affine::translate((r.x0 + 28.0, y + 9.0)),
-                    None,
-                    TextWeight::Bold,
-                );
-                tr.draw_text(
-                    scene,
+                    t,
+                    tr,
+                    theme,
+                    r,
+                    y,
+                    inner_w,
                     &self.label,
-                    theme.tokens.typography.scale.sm,
-                    if *selected {
-                        c.text_primary
-                    } else {
-                        c.text_dim
-                    },
-                    t * Affine::translate((r.x0 + 64.0, y + 8.0)),
-                    Some((inner_w - 72.0) as f32),
+                    *method,
+                    *selected,
                 );
             }
             NavKind::History { method, status } => {
-                tr.draw_text_weighted(
+                Self::draw_history_row(
                     scene,
-                    method_short(*method),
-                    10.0,
-                    method_color(theme, *method),
-                    t * Affine::translate((r.x0 + 6.0, y + 9.0)),
-                    None,
-                    TextWeight::Bold,
-                );
-                tr.draw_text(
-                    scene,
+                    t,
+                    tr,
+                    theme,
+                    r,
+                    y,
+                    inner_w,
                     &self.label,
-                    theme.tokens.typography.scale.sm,
-                    c.text_dim,
-                    t * Affine::translate((r.x0 + 46.0, y + 8.0)),
-                    Some((inner_w - 90.0) as f32),
-                );
-                let st = status.to_string();
-                let (sw, _) = tr.measure(&st, 11.0, None);
-                tr.draw_text_weighted(
-                    scene,
-                    &st,
-                    11.0,
-                    status_color(theme, status_class(*status)),
-                    t * Affine::translate((r.x1 - f64::from(sw) - 6.0, y + 8.0)),
-                    None,
-                    TextWeight::Semibold,
+                    *method,
+                    *status,
                 );
             }
         }
@@ -368,6 +327,145 @@ impl Widget for NavRow {
         } else {
             false
         }
+    }
+}
+
+impl NavRow {
+    /// A foldable collection header: disclosure caret + name + request count.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_collection_row(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        y: f64,
+        inner_w: f64,
+        label: &str,
+        expanded: bool,
+        count: usize,
+    ) {
+        let c = &theme.tokens.colors;
+        let caret = if expanded { "\u{25BE}" } else { "\u{25B8}" };
+        tr.draw_text(
+            scene,
+            caret,
+            12.0,
+            c.text_dim,
+            t * Affine::translate((r.x0 + 6.0, y + 7.0)),
+            None,
+        );
+        tr.draw_text_weighted(
+            scene,
+            label,
+            theme.tokens.typography.scale.base,
+            c.text_primary,
+            t * Affine::translate((r.x0 + 24.0, y + 6.0)),
+            Some((inner_w - 60.0) as f32),
+            TextWeight::Semibold,
+        );
+        let cs = count.to_string();
+        let (cw, _) = tr.measure(&cs, 11.0, None);
+        tr.draw_text(
+            scene,
+            &cs,
+            11.0,
+            c.text_dim,
+            t * Affine::translate((r.x1 - f64::from(cw) - 6.0, y + 8.0)),
+            None,
+        );
+    }
+
+    /// A saved request: coloured method tag + name, highlighted when active.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_request_row(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        y: f64,
+        inner_w: f64,
+        label: &str,
+        method: HttpMethod,
+        selected: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        if selected {
+            let shape = RoundedRect::from_rect(
+                Rect::new(r.x0, r.y0 + 2.0, r.x1, r.y1 - 2.0),
+                f64::from(theme.tokens.radii.md),
+            );
+            scene.fill(
+                Fill::NonZero,
+                t,
+                theme.accent_primary.with_alpha_factor(0.18),
+                None,
+                &shape,
+            );
+        }
+        tr.draw_text_weighted(
+            scene,
+            method_short(method),
+            10.0,
+            method_color(theme, method),
+            t * Affine::translate((r.x0 + 28.0, y + 9.0)),
+            None,
+            TextWeight::Bold,
+        );
+        tr.draw_text(
+            scene,
+            label,
+            theme.tokens.typography.scale.sm,
+            if selected { c.text_primary } else { c.text_dim },
+            t * Affine::translate((r.x0 + 64.0, y + 8.0)),
+            Some((inner_w - 72.0) as f32),
+        );
+    }
+
+    /// A history entry: coloured method tag + path + coloured status code.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_history_row(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        y: f64,
+        inner_w: f64,
+        label: &str,
+        method: HttpMethod,
+        status: u16,
+    ) {
+        let c = &theme.tokens.colors;
+        tr.draw_text_weighted(
+            scene,
+            method_short(method),
+            10.0,
+            method_color(theme, method),
+            t * Affine::translate((r.x0 + 6.0, y + 9.0)),
+            None,
+            TextWeight::Bold,
+        );
+        tr.draw_text(
+            scene,
+            label,
+            theme.tokens.typography.scale.sm,
+            c.text_dim,
+            t * Affine::translate((r.x0 + 46.0, y + 8.0)),
+            Some((inner_w - 90.0) as f32),
+        );
+        let st = status.to_string();
+        let (sw, _) = tr.measure(&st, 11.0, None);
+        tr.draw_text_weighted(
+            scene,
+            &st,
+            11.0,
+            status_color(theme, status_class(status)),
+            t * Affine::translate((r.x1 - f64::from(sw) - 6.0, y + 8.0)),
+            None,
+            TextWeight::Semibold,
+        );
     }
 }
 

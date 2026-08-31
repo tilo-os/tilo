@@ -34,9 +34,16 @@ pub struct VersionManifest {
 }
 
 impl VersionManifest {
-    pub fn encode(&self) -> Vec<u8> {
-        postcard::to_allocvec(self).expect("serialize version manifest")
+    /// # Errors
+    ///
+    /// Returns an error if postcard serialization fails.
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        Ok(postcard::to_allocvec(self)?)
     }
+
+    /// # Errors
+    ///
+    /// Returns an error if `bytes` is not a valid postcard-encoded [`VersionManifest`].
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         Ok(postcard::from_bytes(bytes)?)
     }
@@ -79,6 +86,10 @@ impl<'a> DocStore<'a> {
 
     /// Persist the current state of `doc` as a new version: each automerge
     /// change is ingested as a content-addressed blob (already-stored changes dedup), chained to the previous version via a [`VersionManifest`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a change or the manifest fails to ingest, or the manifest fails to serialize.
     pub async fn commit(&mut self, doc: &mut AutoCommit, author: &str) -> Result<VersionRef> {
         let changes = doc.get_changes(&[]);
         let mut change_hashes = Vec::with_capacity(changes.len());
@@ -106,7 +117,7 @@ impl<'a> DocStore<'a> {
             parent,
         };
         let change_count = manifest.change_hashes.len();
-        let manifest_hash = self.store.ingest(Bytes::from(manifest.encode())).await?;
+        let manifest_hash = self.store.ingest(Bytes::from(manifest.encode()?)).await?;
         let vref = VersionRef {
             version,
             manifest_hash,
@@ -120,6 +131,10 @@ impl<'a> DocStore<'a> {
     }
 
     /// Convenience: commit a `qdoc::Document` (the ergonomic office-doc handle).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the document fails to reload as an automerge document, or [`Self::commit`] fails.
     pub async fn commit_document(
         &mut self,
         doc: &mut qdoc::Document,
@@ -130,6 +145,10 @@ impl<'a> DocStore<'a> {
     }
 
     /// Convenience: commit a `qdoc::Workbook` — also an automerge document, so `.xlsx`/`.ods` version the same way `.docx`/`.odt` do.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the workbook fails to reload as an automerge document, or [`Self::commit`] fails.
     pub async fn commit_workbook(
         &mut self,
         wb: &mut qdoc::Workbook,
@@ -139,6 +158,9 @@ impl<'a> DocStore<'a> {
         self.commit(&mut ac, author).await
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the manifest is not stored locally or fails to decode.
     pub async fn load_manifest(&self, manifest_hash: Hash) -> Result<VersionManifest> {
         let bytes = self
             .store
@@ -149,11 +171,18 @@ impl<'a> DocStore<'a> {
     }
 
     /// Reconstruct the document at a stored manifest by replaying its change blobs (exact time-travel).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest or any of its change blobs can't be loaded, or a change is corrupt.
     pub async fn checkout(&self, manifest_hash: Hash) -> Result<AutoCommit> {
         let manifest = self.load_manifest(manifest_hash).await?;
         self.replay(&manifest).await
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `version` is out of range, or [`Self::checkout`] fails.
     pub async fn checkout_version(&self, version: usize) -> Result<AutoCommit> {
         let vref = self
             .history
@@ -163,6 +192,10 @@ impl<'a> DocStore<'a> {
     }
 
     /// As [`Self::checkout_version`], wrapped into the ergonomic `qdoc::Document` handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::checkout_version`] fails or the replayed document can't be rewrapped.
     pub async fn checkout_document(&self, version: usize) -> Result<qdoc::Document> {
         let mut ac = self.checkout_version(version).await?;
         let bytes = ac.save();
@@ -170,6 +203,10 @@ impl<'a> DocStore<'a> {
     }
 
     /// As [`Self::checkout_version`], wrapped into the ergonomic `qdoc::Workbook` handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::checkout_version`] fails or the replayed document can't be rewrapped.
     pub async fn checkout_workbook(&self, version: usize) -> Result<qdoc::Workbook> {
         let mut ac = self.checkout_version(version).await?;
         let bytes = ac.save();
@@ -195,6 +232,10 @@ impl<'a> DocStore<'a> {
     }
 
     /// Structural diff between two committed versions — both share block identities, so the diff aligns by id (see [`qdoc::diff`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either version fails to check out or open as a document.
     pub async fn diff_versions(&self, from: usize, to: usize) -> Result<qdoc::DocDiff> {
         let a = self.checkout_version(from).await?;
         let b = self.checkout_version(to).await?;
@@ -206,6 +247,10 @@ impl<'a> DocStore<'a> {
     }
 
     /// Structural spreadsheet diff — sheets align by id, cells by A1 ref (see [`qdoc::diff_workbooks`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either version fails to check out or open as a workbook.
     pub async fn diff_workbook_versions(&self, from: usize, to: usize) -> Result<qdoc::SheetDiff> {
         let a = self.checkout_version(from).await?;
         let b = self.checkout_version(to).await?;
@@ -222,7 +267,7 @@ impl<'a> DocStore<'a> {
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 #[cfg(test)]

@@ -130,6 +130,12 @@ pub enum RevertError {
 /// Both returned head sets are prefix frontiers of the document's own causal
 /// order, so they are valid arguments to `AutoCommit::diff` and mean the
 /// same thing on every peer holding the same changes.
+///
+/// # Errors
+///
+/// [`RevertError::UnknownRun`] when neither end of `run` names a change in
+/// `doc` — the usual cause is a run recorded against a different document.
+/// [`RevertError::Inverted`] when the run's end precedes its start.
 pub fn run_bounds(
     doc: &mut AutoCommit,
     run: &ChangeRun,
@@ -157,10 +163,13 @@ pub fn run_bounds(
     let before = if i0 == 0 {
         Vec::new()
     } else {
-        qdoc::history::prefix_heads(doc, i0 - 1)
+        // `i0 != 0` in this branch, so this matches plain subtraction.
+        qdoc::history::prefix_heads(doc, i0.saturating_sub(1))
     };
     let after = qdoc::history::prefix_heads(doc, i1);
-    Ok((before, after, i1 - i0 + 1))
+    // `i1 >= i0` was just checked above, so the subtraction never
+    // saturates and the result matches `i1 - i0 + 1` exactly.
+    Ok((before, after, i1.saturating_sub(i0).saturating_add(1)))
 }
 
 /// Structural sequence work returns `None` on purpose: `write_patches`
@@ -196,7 +205,8 @@ fn first_index_after(doc: &mut AutoCommit, after: &[ChangeHash], total: usize) -
     for i in 0..total {
         let hs: HashSet<ChangeHash> = qdoc::history::prefix_heads(doc, i).into_iter().collect();
         if hs == after_set {
-            return i + 1;
+            // `i < total` inside this loop, so this never saturates.
+            return i.saturating_add(1);
         }
     }
     total
@@ -256,14 +266,19 @@ fn later_writers(
     // enumerated offset for no clarity gain.
     #[allow(clippy::needless_range_loop)]
     for i in start_at..versions.len() {
-        let v = versions[i].clone();
+        // `i` is always `< versions.len()` by the loop bound, so this is
+        // never actually `None`; `continue` just keeps that provable.
+        let Some(v) = versions.get(i).cloned() else {
+            continue;
+        };
         if by.is_some_and(|b| b.eq_ignore_ascii_case(&v.actor_hex)) {
             continue;
         }
         let lo = if i == 0 {
             Vec::new()
         } else {
-            qdoc::history::prefix_heads(doc, i - 1)
+            // `i != 0` in this branch, so this matches plain subtraction.
+            qdoc::history::prefix_heads(doc, i.saturating_sub(1))
         };
         let hi = qdoc::history::prefix_heads(doc, i);
         let patches = doc.diff(&lo, &hi);
@@ -335,7 +350,7 @@ fn classify(
                 let mut removable = Vec::new();
                 let mut blocked = false;
                 for k in 0..*length {
-                    let at = index + k;
+                    let at = index.saturating_add(k);
                     match blocked_container(doc, after, &p.obj, at, later) {
                         Some((slot, actor)) => {
                             blocked = true;
@@ -354,7 +369,7 @@ fn classify(
                     // Each surviving removal is anchored on its own element, so
                     // splitting the run does not disturb the others.
                     for at in removable {
-                        structural += 1;
+                        structural = structural.saturating_add(1);
                         writable.push(Patch {
                             obj: p.obj.clone(),
                             path: p.path.clone(),
@@ -365,7 +380,7 @@ fn classify(
                         });
                     }
                 } else {
-                    structural += 1;
+                    structural = structural.saturating_add(1);
                     writable.push(p);
                 }
                 continue;
@@ -401,14 +416,14 @@ fn classify(
                 writable.push(p);
             }
         } else {
-            structural += 1;
+            structural = structural.saturating_add(1);
             writable.push(p);
         }
     }
 
     let outcome = RevertOutcome {
         covered,
-        reverted: reverted_slots.len() + structural,
+        reverted: reverted_slots.len().saturating_add(structural),
         kept,
         wrote: false,
     };
@@ -420,6 +435,11 @@ fn classify(
 /// The dry run behind an affordance that has to be honest *before* the user
 /// commits to it — a menu item saying "undo, except the paragraph you edited"
 /// needs this, and so does a caller deciding whether to refuse.
+///
+/// # Errors
+///
+/// Propagates [`RevertError`] from [`run_bounds`] when `run` cannot be
+/// addressed in `doc`.
 pub fn plan_revert(
     doc: &mut AutoCommit,
     run: &ChangeRun,
@@ -442,6 +462,11 @@ pub fn plan_revert(
 /// The transaction is left **open**: the caller commits, so the undo lands
 /// stamped and attributed under whoever asked for it, exactly like a typed
 /// edit. A caller that forgets to commit has written nothing.
+///
+/// # Errors
+///
+/// Propagates [`RevertError`] from [`run_bounds`] when `run` cannot be
+/// addressed in `doc`.
 pub fn revert_run(
     doc: &mut AutoCommit,
     run: &ChangeRun,
@@ -482,11 +507,20 @@ pub fn latest_run_by(doc: &mut AutoCommit, actor_hex: &str) -> Option<ChangeRun>
     };
     let last = versions.iter().rposition(mine)?;
     let mut first = last;
-    while first > 0 && mine(&versions[first - 1]) {
-        first -= 1;
+    while first > 0 {
+        // `first > 0` here, so this matches plain subtraction; `first` only
+        // ever holds an in-bounds index, so `get` is always `Some` — the
+        // `else` branch exists only to avoid an unchecked index.
+        let prev = first.saturating_sub(1);
+        if !versions.get(prev).is_some_and(mine) {
+            break;
+        }
+        first = prev;
     }
+    let start_hash = &versions.get(first)?.change_hash;
+    let end_hash = &versions.get(last)?.change_hash;
     Some(ChangeRun::new(
-        entry_id_from_hash(&versions[first].change_hash),
-        entry_id_from_hash(&versions[last].change_hash),
+        entry_id_from_hash(start_hash),
+        entry_id_from_hash(end_hash),
     ))
 }

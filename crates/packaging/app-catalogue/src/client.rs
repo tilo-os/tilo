@@ -113,6 +113,11 @@ fn client() -> Result<reqwest::blocking::Client, RegistryError> {
 
 /// Fetch and parse the handshake — used to discover the owner pubkey
 /// on first contact (or to detect an owner-key rotation).
+///
+/// # Errors
+///
+/// Returns an error if the request fails, the response is empty, or
+/// the body doesn't decode as a [`RegistryHandshake`].
 pub fn fetch_handshake(reg: &RegistryConfig) -> Result<RegistryHandshake, RegistryError> {
     let url = format!("{}/registry", reg.base_url.trim_end_matches('/'));
     let c = client()?;
@@ -129,6 +134,12 @@ pub fn fetch_handshake(reg: &RegistryConfig) -> Result<RegistryHandshake, Regist
 }
 
 /// Fetch `/entries` and classify each result.
+///
+/// # Errors
+///
+/// Returns an error if the request fails or the body doesn't decode
+/// as the expected entries shape. An empty response is not an error —
+/// it yields an empty list.
 pub fn fetch_entries(reg: &RegistryConfig) -> Result<Vec<VerifiedEntry>, RegistryError> {
     let url = format!("{}/entries", reg.base_url.trim_end_matches('/'));
     let c = client()?;

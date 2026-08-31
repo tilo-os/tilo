@@ -91,6 +91,12 @@ pub struct Session {
     worker: DbWorker,
 }
 
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Session {
     /// The live session: it starts empty (the saved connections are read from
     /// the shared document by the widget and pushed in via

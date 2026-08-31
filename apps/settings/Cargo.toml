@@ -4,6 +4,8 @@ autotests = false
 name = "settings"
 version = "0.1.0"
 edition = "2024"
+publish.workspace = true
+license.workspace = true
 
 [lib]
 name = "settings"
@@ -56,7 +58,6 @@ winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
-tracing-subscriber.workspace = true
 # The shared account + region/format stores Settings owns are plain
 # serde-serialisable JSON documents that other apps (Mail, Calendar,
 # Sheets, Weather) read. serde/serde_json render them; dirs resolves the

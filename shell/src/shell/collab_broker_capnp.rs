@@ -8,12 +8,11 @@
 //! Answers the `runtime-collab` schema on the shell's collaboration socket.
 //!
 //! `join_channel` uses the caller's `channel_id` verbatim as the routing
-//! key. `sendUnsigned*` skip role enforcement —
-//! use `send` with a signed op for that. `fetchScrollback*` answer from
-//! the in-memory op log; an exhausted-but-empty batch triggers no
-//! fallback push, callers repeat the fetch instead.
+//! key. `sendUnsigned*` skip role enforcement — use `send` with a signed op
+//! for that. `fetchScrollbackFor` answers from the in-memory op log; an
+//! exhausted-but-empty batch triggers no fallback push, callers repeat the
+//! fetch instead.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -24,6 +23,7 @@ use std::time::Duration;
 
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -31,8 +31,8 @@ use collab_types::{
     ArtifactId, OpClass, RedactedMarker, SignedOp, ValidationError, validate_inbound_op,
 };
 use runtime_collab::raw::{
-    OpKind, channel_handle, collab_service, context_stream, cursor_stream, presence_event,
-    presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
+    OpKind, channel_handle, collab_service, context_stream, presence_event, presence_handle,
+    presence_payload, presence_stream, scrollback_batch, stream,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -62,14 +62,6 @@ struct PresenceEnvelope {
     payload: PresencePayload,
 }
 
-/// Envelope pushed onto a [`CursorStreamServer`]'s queue.
-#[derive(Clone, Debug)]
-struct CursorEnvelope {
-    user_id: String,
-    x: f32,
-    y: f32,
-}
-
 /// Envelope pushed onto a [`ContextStreamServer`]'s queue.
 #[derive(Clone, Debug)]
 struct ContextEnvelope {
@@ -88,10 +80,6 @@ struct PresenceSub {
     peer_id: u64,
     tx: mpsc::UnboundedSender<PresenceEnvelope>,
 }
-struct CursorSub {
-    peer_id: u64,
-    tx: mpsc::UnboundedSender<CursorEnvelope>,
-}
 struct ContextSub {
     peer_id: u64,
     tx: mpsc::UnboundedSender<ContextEnvelope>,
@@ -105,7 +93,6 @@ struct ContextSub {
 struct ChannelSubscribers {
     op: Vec<OpSub>,
     presence: Vec<PresenceSub>,
-    cursor: Vec<CursorSub>,
     context: Vec<ContextSub>,
 }
 
@@ -158,8 +145,8 @@ impl CapnpBrokerState {
 
     /// Converts once into the transport-neutral peer presence envelope.
     /// Peer replication does not embed either local RPC dialect.
-    fn publish_presence(&self, route: &CrdtRoute, key: PresenceKey, payload: PresencePayload) {
-        let Some(presence) = crate::shell::collab_presence::to_peer(&key, &payload) else {
+    fn publish_presence(&self, route: &CrdtRoute, key: &PresenceKey, payload: &PresencePayload) {
+        let Some(presence) = crate::shell::collab_presence::to_peer(key, payload) else {
             tracing::warn!(
                 channel = %route.channel_key(),
                 "capnp broker: presence would not encode; peers will \
@@ -197,118 +184,27 @@ impl CapnpBrokerState {
             CollabEvent::SignedCRDTIncremental {
                 envelope,
                 from_user_id,
-            } => {
-                let op_bytes = match postcard::to_stdvec(&**envelope) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "capnp fanout: postcard(SignedOp) failed");
-                        return;
-                    }
-                };
-                let env = OpEnvelope {
-                    op_bytes,
-                    from_user_id: from_user_id.clone(),
-                    kind: OpKind::Signed,
-                };
-                for subs in channels {
-                    subs.op.retain(|s| {
-                        if s.peer_id == except {
-                            return true;
-                        }
-                        s.tx.send(env.clone()).is_ok()
-                    });
-                }
-            }
+            } => Self::fanout_signed_incremental(channels, except, envelope, from_user_id),
             CollabEvent::CRDTIncremental { data } | CollabEvent::CRDTUpdate { data } => {
                 // Unsigned updates have no author; kind tags delta vs snapshot.
                 let kind = match event {
                     CollabEvent::CRDTUpdate { .. } => OpKind::UnsignedSnapshot,
                     _ => OpKind::UnsignedIncremental,
                 };
-                let env = OpEnvelope {
-                    op_bytes: data.clone(),
-                    from_user_id: String::new(),
-                    kind,
-                };
-                for subs in channels {
-                    subs.op.retain(|s| {
-                        if s.peer_id == except {
-                            return true;
-                        }
-                        s.tx.send(env.clone()).is_ok()
-                    });
-                }
+                Self::fanout_unsigned_op(channels, except, data, kind);
             }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
-                let key_bytes = default_pointer_key_bytes();
-                let presence_env = PresenceEnvelope {
-                    user_id: user_id.clone(),
-                    key_bytes,
-                    payload: PresencePayload::Pointer { x: *x, y: *y },
-                };
-                let cursor_env = CursorEnvelope {
-                    user_id: user_id.clone(),
-                    x: *x,
-                    y: *y,
-                };
-                for subs in channels {
-                    subs.presence.retain(|s| {
-                        if s.peer_id == except {
-                            return true;
-                        }
-                        s.tx.send(presence_env.clone()).is_ok()
-                    });
-                    subs.cursor.retain(|s| {
-                        if s.peer_id == except {
-                            return true;
-                        }
-                        s.tx.send(cursor_env.clone()).is_ok()
-                    });
-                }
+                Self::fanout_cursor_moved(channels, except, user_id, *x, *y);
             }
             CollabEvent::RemotePresenceUpdate {
                 user_id,
                 key,
                 payload,
-            } => {
-                let key_bytes = match postcard::to_stdvec(key) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "capnp fanout: postcard(PresenceKey) failed");
-                        return;
-                    }
-                };
-                let env = PresenceEnvelope {
-                    user_id: user_id.clone(),
-                    key_bytes,
-                    payload: payload.clone(),
-                };
-                for subs in channels {
-                    subs.presence.retain(|s| {
-                        if s.peer_id == except {
-                            return true;
-                        }
-                        s.tx.send(env.clone()).is_ok()
-                    });
-                }
-            }
+            } => Self::fanout_presence_update(channels, except, user_id, key, payload),
             CollabEvent::Context {
                 collaborators,
                 permissions,
-            } => {
-                let env = ContextEnvelope {
-                    collaborators: collaborators.clone(),
-                    permissions: permissions.clone(),
-                };
-                for subs in channels {
-                    subs.context.retain(|s| {
-                        if s.peer_id == except {
-                            return true;
-                        }
-                        s.tx.send(env.clone()).is_ok()
-                    });
-                }
-            }
+            } => Self::fanout_context(channels, except, collaborators, permissions),
             CollabEvent::ActionArrived { type_id, .. } => {
                 // Unreachable today; said out loud, not silently dropped.
                 tracing::warn!(
@@ -320,6 +216,135 @@ impl CapnpBrokerState {
                 // Per-request in the capnp schema, not a stream; apps
                 // wanting late history repeat `fetchScrollbackFor`.
             }
+        }
+    }
+
+    /// One arm of [`Self::fanout_to_route`]: a validated signed op.
+    fn fanout_signed_incremental<'a>(
+        channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
+        except: u64,
+        envelope: &SignedOp,
+        from_user_id: &str,
+    ) {
+        let op_bytes = match postcard::to_stdvec(envelope) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "capnp fanout: postcard(SignedOp) failed");
+                return;
+            }
+        };
+        let env = OpEnvelope {
+            op_bytes,
+            from_user_id: from_user_id.to_owned(),
+            kind: OpKind::Signed,
+        };
+        for subs in channels {
+            subs.op.retain(|s| {
+                if s.peer_id == except {
+                    return true;
+                }
+                s.tx.send(env.clone()).is_ok()
+            });
+        }
+    }
+
+    /// One arm of [`Self::fanout_to_route`]: an unsigned delta or snapshot.
+    fn fanout_unsigned_op<'a>(
+        channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
+        except: u64,
+        data: &[u8],
+        kind: OpKind,
+    ) {
+        let env = OpEnvelope {
+            op_bytes: data.to_vec(),
+            from_user_id: String::new(),
+            kind,
+        };
+        for subs in channels {
+            subs.op.retain(|s| {
+                if s.peer_id == except {
+                    return true;
+                }
+                s.tx.send(env.clone()).is_ok()
+            });
+        }
+    }
+
+    /// One arm of [`Self::fanout_to_route`]: a keyless cursor move, translated
+    /// onto the sole general presence stream.
+    fn fanout_cursor_moved<'a>(
+        channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
+        except: u64,
+        user_id: &str,
+        x: f32,
+        y: f32,
+    ) {
+        let key_bytes = default_pointer_key_bytes();
+        let presence_env = PresenceEnvelope {
+            user_id: user_id.to_owned(),
+            key_bytes,
+            payload: PresencePayload::Pointer { x, y },
+        };
+        for subs in channels {
+            subs.presence.retain(|s| {
+                if s.peer_id == except {
+                    return true;
+                }
+                s.tx.send(presence_env.clone()).is_ok()
+            });
+        }
+    }
+
+    /// One arm of [`Self::fanout_to_route`]: a keyed presence update
+    /// (caret, selection, arrived, left, ...).
+    fn fanout_presence_update<'a>(
+        channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
+        except: u64,
+        user_id: &str,
+        key: &PresenceKey,
+        payload: &PresencePayload,
+    ) {
+        let key_bytes = match postcard::to_stdvec(key) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "capnp fanout: postcard(PresenceKey) failed");
+                return;
+            }
+        };
+        let env = PresenceEnvelope {
+            user_id: user_id.to_owned(),
+            key_bytes,
+            payload: payload.clone(),
+        };
+        for subs in channels {
+            subs.presence.retain(|s| {
+                if s.peer_id == except {
+                    return true;
+                }
+                s.tx.send(env.clone()).is_ok()
+            });
+        }
+    }
+
+    /// One arm of [`Self::fanout_to_route`]: the room's collaborator +
+    /// permission context.
+    fn fanout_context<'a>(
+        channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
+        except: u64,
+        collaborators: &[ui::collaboration::Collaborator],
+        permissions: &[String],
+    ) {
+        let env = ContextEnvelope {
+            collaborators: collaborators.to_vec(),
+            permissions: permissions.to_vec(),
+        };
+        for subs in channels {
+            subs.context.retain(|s| {
+                if s.peer_id == except {
+                    return true;
+                }
+                s.tx.send(env.clone()).is_ok()
+            });
         }
     }
 
@@ -352,21 +377,6 @@ impl CapnpBrokerState {
                 .or_insert_with(ChannelSubscribers::default)
                 .presence
                 .push(PresenceSub { peer_id, tx });
-        }
-        rx
-    }
-
-    fn subscribe_cursors(
-        &self,
-        channel_id: &str,
-        peer_id: u64,
-    ) -> mpsc::UnboundedReceiver<CursorEnvelope> {
-        let (tx, rx) = mpsc::unbounded_channel();
-        if let Ok(mut m) = self.channels.lock() {
-            m.entry(channel_id.to_owned())
-                .or_insert_with(ChannelSubscribers::default)
-                .cursor
-                .push(CursorSub { peer_id, tx });
         }
         rx
     }
@@ -501,7 +511,7 @@ impl channel_handle::Server for CapnpChannelHandle {
     ) -> Promise<(), capnp::Error> {
         let rx = self.state.subscribe_ops(&self.channel_id, self.peer_id);
         let server = OpStreamServer {
-            rx: Rc::new(RefCell::new(rx)),
+            rx: Rc::new(AsyncMutex::new(rx)),
         };
         let client: stream::Client = capnp_rpc::new_client(server);
         results.get().set_stream(client);
@@ -567,30 +577,11 @@ impl channel_handle::Server for CapnpChannelHandle {
     ) -> Promise<(), capnp::Error> {
         let rx = self.state.subscribe_context(&self.channel_id, self.peer_id);
         let server = ContextStreamServer {
-            rx: Rc::new(RefCell::new(rx)),
+            rx: Rc::new(AsyncMutex::new(rx)),
         };
         let client: context_stream::Client = capnp_rpc::new_client(server);
         results.get().set_stream(client);
         Promise::ok(())
-    }
-
-    fn fetch_scrollback(
-        self: Rc<Self>,
-        params: channel_handle::FetchScrollbackParams,
-        mut results: channel_handle::FetchScrollbackResults,
-    ) -> Promise<(), capnp::Error> {
-        // Schema v1 method: no artifact id, so nil-uuid stands in.
-        let broker_channels = self.state.broker_channels.clone();
-        Promise::from_future(async move {
-            let p = params.get()?;
-            let before_seq = p.get_before_seq();
-            let max = p.get_max();
-            let artifact = ArtifactId(uuid::Uuid::nil());
-            let (ops, exhausted) = read_scrollback(&broker_channels, artifact, before_seq, max);
-            let batch = results.get().init_batch();
-            fill_scrollback_batch(batch, ops, exhausted);
-            Ok(())
-        })
     }
 
     fn fetch_scrollback_for(
@@ -612,7 +603,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             let artifact = ArtifactId(uuid);
             let (ops, exhausted) = read_scrollback(&broker_channels, artifact, before_seq, max);
             let batch = results.get().init_batch();
-            fill_scrollback_batch(batch, ops, exhausted);
+            fill_scrollback_batch(batch, &ops, exhausted)?;
             Ok(())
         })
     }
@@ -717,7 +708,11 @@ fn read_scrollback(
         return (Vec::new(), true);
     };
     let ch_state = ch.state_for(artifact);
-    let (ops, exhausted) = ch_state.scrollback_for(artifact, before_seq, max as u16);
+    // `max` is a peer-supplied page size; clamp rather than wrap so an
+    // oversized request degrades to "as many as the u16 cap allows"
+    // instead of silently truncating to an unrelated smaller number.
+    let capped_max = u16::try_from(max).unwrap_or(u16::MAX);
+    let (ops, exhausted) = ch_state.scrollback_for(artifact, before_seq, capped_max);
     let encoded: Vec<Vec<u8>> = ops
         .into_iter()
         .filter_map(|op| postcard::to_stdvec(&op).ok())
@@ -725,16 +720,32 @@ fn read_scrollback(
     (encoded, exhausted)
 }
 
-fn fill_scrollback_batch(mut b: scrollback_batch::Builder<'_>, ops: Vec<Vec<u8>>, exhausted: bool) {
-    let n = ops.len() as u32;
+/// Encode a scrollback page into the capnp response.
+///
+/// # Errors
+///
+/// Returns an error if `ops` holds more entries than fit in a capnp
+/// `List` count (`u32`) — unreachable in practice since `ops` is always
+/// capped by the `u16` `max` accepted in [`read_scrollback`], but checked
+/// rather than assumed since this is peer-request-shaped data.
+fn fill_scrollback_batch(
+    mut b: scrollback_batch::Builder<'_>,
+    ops: &[Vec<u8>],
+    exhausted: bool,
+) -> Result<(), capnp::Error> {
+    let n = u32::try_from(ops.len())
+        .map_err(|_| capnp::Error::failed("scrollback batch too large to encode".into()))?;
     let mut list = b.reborrow().init_ops(n);
     for (i, op) in ops.iter().enumerate() {
-        list.set(i as u32, op);
+        let idx = u32::try_from(i)
+            .map_err(|_| capnp::Error::failed("scrollback batch index overflow".into()))?;
+        list.set(idx, op);
     }
     // Bracket seq isn't tracked; consumers needing bounds decode the ops.
     b.set_earliest_seq(0);
     b.set_latest_seq(0);
     b.set_done(exhausted);
+    Ok(())
 }
 
 // Presence handle + streams
@@ -781,28 +792,14 @@ impl presence_handle::Server for CapnpPresenceHandle {
             };
             state.publish_presence(
                 &full_route,
-                PresenceKey::pointer_default(),
-                PresencePayload::Pointer { x, y },
+                &PresenceKey::pointer_default(),
+                &PresencePayload::Pointer { x, y },
             );
             if let Some(t) = state.fanout.upgrade() {
                 t.fanout_to_route(&event, peer_id, &route);
             }
             Ok(())
         })
-    }
-
-    fn subscribe_remote_cursors(
-        self: Rc<Self>,
-        _params: presence_handle::SubscribeRemoteCursorsParams,
-        mut results: presence_handle::SubscribeRemoteCursorsResults,
-    ) -> Promise<(), capnp::Error> {
-        let rx = self.state.subscribe_cursors(&self.channel_id, self.peer_id);
-        let server = CursorStreamServer {
-            rx: Rc::new(RefCell::new(rx)),
-        };
-        let client: cursor_stream::Client = capnp_rpc::new_client(server);
-        results.get().set_stream(client);
-        Promise::ok(())
     }
 
     fn publish_caret(
@@ -817,15 +814,19 @@ impl presence_handle::Server for CapnpPresenceHandle {
         Promise::from_future(async move {
             let r = params.get()?;
             let key_bytes = r.get_key_bytes()?.to_vec();
-            let pos = r.get_pos();
+            // `pos` is a peer-supplied offset; reject rather than wrap it
+            // onto an unrelated position on a 32-bit target.
+            let pos = usize::try_from(r.get_pos()).map_err(|_| {
+                capnp::Error::failed("publishCaret: pos overflows usize on this platform".into())
+            })?;
             publish_keyed_presence(
                 &state,
                 peer_id,
                 &route,
                 &full_route,
                 self.announced_handle.as_deref(),
-                key_bytes,
-                PresencePayload::Caret { pos: pos as usize },
+                &key_bytes,
+                PresencePayload::Caret { pos },
             );
             Ok(())
         })
@@ -843,19 +844,26 @@ impl presence_handle::Server for CapnpPresenceHandle {
         Promise::from_future(async move {
             let r = params.get()?;
             let key_bytes = r.get_key_bytes()?.to_vec();
-            let start = r.get_start();
-            let end = r.get_end();
+            // Both are peer-supplied offsets; reject rather than wrap
+            // them onto an unrelated range on a 32-bit target.
+            let start = usize::try_from(r.get_start()).map_err(|_| {
+                capnp::Error::failed(
+                    "publishSelection: start overflows usize on this platform".into(),
+                )
+            })?;
+            let end = usize::try_from(r.get_end()).map_err(|_| {
+                capnp::Error::failed(
+                    "publishSelection: end overflows usize on this platform".into(),
+                )
+            })?;
             publish_keyed_presence(
                 &state,
                 peer_id,
                 &route,
                 &full_route,
                 self.announced_handle.as_deref(),
-                key_bytes,
-                PresencePayload::Selection {
-                    start: start as usize,
-                    end: end as usize,
-                },
+                &key_bytes,
+                PresencePayload::Selection { start, end },
             );
             Ok(())
         })
@@ -879,7 +887,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 &route,
                 &full_route,
                 self.announced_handle.as_deref(),
-                key_bytes,
+                &key_bytes,
                 PresencePayload::Arrived,
             );
             Ok(())
@@ -904,7 +912,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 &route,
                 &full_route,
                 self.announced_handle.as_deref(),
-                key_bytes,
+                &key_bytes,
                 PresencePayload::Left,
             );
             Ok(())
@@ -920,7 +928,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
             .state
             .subscribe_presence(&self.channel_id, self.peer_id);
         let server = PresenceStreamServer {
-            rx: Rc::new(RefCell::new(rx)),
+            rx: Rc::new(AsyncMutex::new(rx)),
         };
         let client: presence_stream::Client = capnp_rpc::new_client(server);
         results.get().set_stream(client);
@@ -936,17 +944,17 @@ fn publish_keyed_presence(
     route: &CrdtRoute,
     full_route: &CrdtRoute,
     announced_handle: Option<&str>,
-    key_bytes: Vec<u8>,
+    key_bytes: &[u8],
     payload: PresencePayload,
 ) {
-    let Ok(key) = postcard::from_bytes::<PresenceKey>(&key_bytes) else {
+    let Ok(key) = postcard::from_bytes::<PresenceKey>(key_bytes) else {
         tracing::debug!(
             len = key_bytes.len(),
             "capnp presence publish: key bytes not decodable — dropping",
         );
         return;
     };
-    state.publish_presence(full_route, key.clone(), payload.clone());
+    state.publish_presence(full_route, &key, &payload);
     let event = CollabEvent::RemotePresenceUpdate {
         user_id: state.participant_id(route, announced_handle),
         key,
@@ -959,8 +967,16 @@ fn publish_keyed_presence(
 
 // Stream servers
 
+// The four stream servers below share a shape: an `Rc<AsyncMutex<mpsc::UnboundedReceiver<_>>>`
+// rather than an `Rc<RefCell<_>>`. capnp-rpc will happily dispatch a second
+// pipelined `read()` on the same stream before the first one's `recv().await`
+// resolves; a `RefCell` would then panic on the second `borrow_mut()` (and
+// this crate is `panic = "abort"`, so that panic takes the whole desktop
+// session down). The async mutex instead makes the second reader simply wait
+// its turn — the two calls serialize instead of racing.
+
 struct OpStreamServer {
-    rx: Rc<RefCell<mpsc::UnboundedReceiver<OpEnvelope>>>,
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<OpEnvelope>>>,
 }
 
 impl stream::Server for OpStreamServer {
@@ -971,12 +987,11 @@ impl stream::Server for OpStreamServer {
     ) -> Promise<(), capnp::Error> {
         let rx = self.rx.clone();
         Promise::from_future(async move {
-            let env = match rx.borrow_mut().recv().await {
-                Some(e) => e,
-                None => {
-                    return Err(capnp::Error::disconnected("op stream fanout closed".into()));
-                }
+            let mut guard = rx.lock().await;
+            let Some(env) = guard.recv().await else {
+                return Err(capnp::Error::disconnected("op stream fanout closed".into()));
             };
+            drop(guard);
             let mut r = results.get();
             r.set_op(&env.op_bytes);
             r.set_from_user_id(&env.from_user_id);
@@ -987,7 +1002,7 @@ impl stream::Server for OpStreamServer {
 }
 
 struct PresenceStreamServer {
-    rx: Rc<RefCell<mpsc::UnboundedReceiver<PresenceEnvelope>>>,
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<PresenceEnvelope>>>,
 }
 
 impl presence_stream::Server for PresenceStreamServer {
@@ -998,14 +1013,13 @@ impl presence_stream::Server for PresenceStreamServer {
     ) -> Promise<(), capnp::Error> {
         let rx = self.rx.clone();
         Promise::from_future(async move {
-            let env = match rx.borrow_mut().recv().await {
-                Some(e) => e,
-                None => {
-                    return Err(capnp::Error::disconnected(
-                        "presence stream fanout closed".into(),
-                    ));
-                }
+            let mut guard = rx.lock().await;
+            let Some(env) = guard.recv().await else {
+                return Err(capnp::Error::disconnected(
+                    "presence stream fanout closed".into(),
+                ));
             };
+            drop(guard);
             let mut ev: presence_event::Builder = results.get().init_event();
             ev.set_user_id(&env.user_id);
             ev.set_key_bytes(&env.key_bytes);
@@ -1019,13 +1033,10 @@ impl presence_stream::Server for PresenceStreamServer {
                 PresencePayload::Caret { pos } => {
                     payload.init_caret().set_pos(pos as u64);
                 }
-                PresencePayload::Selection { start, end } => {
-                    let mut s = payload.init_selection();
-                    s.set_start(start as u64);
-                    s.set_end(end as u64);
-                }
-                // No dedicated "typing" case in the capnp union yet.
-                PresencePayload::Typing { start, end } => {
+                // No dedicated "typing" case in the capnp union yet; it
+                // shares the selection wire shape.
+                PresencePayload::Selection { start, end }
+                | PresencePayload::Typing { start, end } => {
                     let mut s = payload.init_selection();
                     s.set_start(start as u64);
                     s.set_end(end as u64);
@@ -1038,37 +1049,8 @@ impl presence_stream::Server for PresenceStreamServer {
     }
 }
 
-struct CursorStreamServer {
-    rx: Rc<RefCell<mpsc::UnboundedReceiver<CursorEnvelope>>>,
-}
-
-impl cursor_stream::Server for CursorStreamServer {
-    fn read(
-        self: Rc<Self>,
-        _params: cursor_stream::ReadParams,
-        mut results: cursor_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let rx = self.rx.clone();
-        Promise::from_future(async move {
-            let env = match rx.borrow_mut().recv().await {
-                Some(e) => e,
-                None => {
-                    return Err(capnp::Error::disconnected(
-                        "cursor stream fanout closed".into(),
-                    ));
-                }
-            };
-            let mut r = results.get();
-            r.set_user_id(&env.user_id);
-            r.set_x(env.x);
-            r.set_y(env.y);
-            Ok(())
-        })
-    }
-}
-
 struct ContextStreamServer {
-    rx: Rc<RefCell<mpsc::UnboundedReceiver<ContextEnvelope>>>,
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<ContextEnvelope>>>,
 }
 
 impl context_stream::Server for ContextStreamServer {
@@ -1079,30 +1061,37 @@ impl context_stream::Server for ContextStreamServer {
     ) -> Promise<(), capnp::Error> {
         let rx = self.rx.clone();
         Promise::from_future(async move {
-            let env = match rx.borrow_mut().recv().await {
-                Some(e) => e,
-                None => {
-                    return Err(capnp::Error::disconnected(
-                        "context stream fanout closed".into(),
-                    ));
-                }
+            let mut guard = rx.lock().await;
+            let Some(env) = guard.recv().await else {
+                return Err(capnp::Error::disconnected(
+                    "context stream fanout closed".into(),
+                ));
             };
+            drop(guard);
             let mut ctx = results.get().init_ctx();
+            let collab_count = u32::try_from(env.collaborators.len()).map_err(|_| {
+                capnp::Error::failed("context: too many collaborators to encode".into())
+            })?;
             {
-                let mut collabs = ctx
-                    .reborrow()
-                    .init_collaborators(env.collaborators.len() as u32);
+                let mut collabs = ctx.reborrow().init_collaborators(collab_count);
                 for (i, c) in env.collaborators.iter().enumerate() {
-                    let mut slot = collabs.reborrow().get(i as u32);
+                    // `i < env.collaborators.len()`, already proven to fit
+                    // in `u32` above; `u32::MAX` is unreachable here.
+                    let idx = u32::try_from(i).unwrap_or(u32::MAX);
+                    let mut slot = collabs.reborrow().get(idx);
                     slot.set_user_id(&c.id);
                     slot.set_display_name(&c.name);
                     slot.set_color(pack_color(c.color));
                 }
             }
+            let perm_count = u32::try_from(env.permissions.len()).map_err(|_| {
+                capnp::Error::failed("context: too many permissions to encode".into())
+            })?;
             {
-                let mut perms = ctx.init_permissions(env.permissions.len() as u32);
+                let mut perms = ctx.init_permissions(perm_count);
                 for (i, p) in env.permissions.iter().enumerate() {
-                    perms.set(i as u32, p.as_str());
+                    let idx = u32::try_from(i).unwrap_or(u32::MAX);
+                    perms.set(idx, p.as_str());
                 }
             }
             Ok(())
@@ -1112,7 +1101,18 @@ impl context_stream::Server for ContextStreamServer {
 
 /// Convert `[f32; 3]` RGB in 0..=1 to the wire's `0x00RRGGBB`.
 fn pack_color(rgb: [f32; 3]) -> u32 {
-    let clamp = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let clamp = |c: f32| -> u32 {
+        let scaled = (c.clamp(0.0, 1.0) * 255.0).round();
+        // `scaled` is clamped to 0.0..=255.0 immediately above, so this
+        // cast is always exact and never negative.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "scaled is clamped to 0.0..=255.0 on the line above, so the u32 cast is always exact and non-negative"
+        )]
+        let result = scaled as u32;
+        result
+    };
     let r = clamp(rgb[0]);
     let g = clamp(rgb[1]);
     let b = clamp(rgb[2]);
@@ -1131,9 +1131,16 @@ fn pack_color(rgb: [f32; 3]) -> u32 {
 ///
 /// The accept thread runs a `current_thread` tokio runtime + `LocalSet`
 /// (capnp-rpc futures are `!Send`), polling `quit` on a 100 ms cadence.
+///
+/// # Errors
+///
+/// Returns an error if `socket_path` cannot be bound as a Unix listener
+/// (e.g. a stale socket file blocks it, permissions are wrong, or the
+/// parent directory does not exist) or if spawning the accept thread
+/// fails.
 pub fn spawn(
     socket_path: PathBuf,
-    fanout: Arc<FanoutState>,
+    fanout: &Arc<FanoutState>,
     broker_channels: Arc<Mutex<BrokerChannels>>,
     publisher: Arc<PeerPublisher>,
     identity: Arc<LocalIdentity>,
@@ -1141,7 +1148,7 @@ pub fn spawn(
 ) -> std::io::Result<JoinHandle<()>> {
     let _ = std::fs::remove_file(&socket_path);
     let wired = publisher.is_wired();
-    let state = CapnpBrokerState::new(&fanout, broker_channels, publisher, identity);
+    let state = CapnpBrokerState::new(fanout, broker_channels, publisher, identity);
     fanout.attach_capnp(Arc::clone(&state));
 
     // Bind on the caller's thread: from the worker thread, a bind
@@ -1218,6 +1225,12 @@ pub fn spawn(
 /// Dial the capnp socket at `path` for tests. Production apps go through
 /// `runtime_collab::try_connect` (launcher-passed fd). Public so
 /// out-of-tree integration tests can reach it too.
+///
+/// # Errors
+///
+/// Returns an error if the socket at `path` does not appear and accept a
+/// connection within about 2 seconds — the accept loop in [`spawn`] may
+/// not have bound yet, or the broker never started.
 pub async fn dial_capnp_for_test(
     path: PathBuf,
 ) -> Result<
@@ -1260,7 +1273,7 @@ pub async fn dial_capnp_for_test(
         futures::io::BufReader::new(r.compat()),
         futures::io::BufWriter::new(w.compat_write()),
         rpc_twoparty_capnp::Side::Client,
-        Default::default(),
+        capnp::message::ReaderOptions::default(),
     ));
     let mut rpc = RpcSystem::new(network, None);
     let client: runtime_collab::raw::collab_service::Client =
@@ -1271,6 +1284,16 @@ pub async fn dial_capnp_for_test(
     Ok((client, driver))
 }
 
+// Every `*::Server` impl in this file takes `self: Rc<Self>` (capnp-rpc's
+// dispatch convention), so the client/capability chain built here and the
+// `RpcSystem` future it drives are inherently `!Send`. That is fine: this
+// future is only ever polled via `tokio::task::spawn_local` inside the
+// single-threaded `LocalSet` set up in `spawn`, never via `tokio::spawn`,
+// so nothing here needs to cross threads.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc's Rc-based server dispatch (self: Rc<Self> throughout this file) makes this future !Send by construction; it is only ever driven via spawn_local on the single-threaded LocalSet in `spawn`, never tokio::spawn"
+)]
 async fn drive_connection(
     stream: tokio::net::UnixStream,
     state: Arc<CapnpBrokerState>,
@@ -1283,7 +1306,7 @@ async fn drive_connection(
         futures::io::BufReader::new(reader),
         futures::io::BufWriter::new(writer),
         rpc_twoparty_capnp::Side::Server,
-        Default::default(),
+        capnp::message::ReaderOptions::default(),
     ));
     let service = CapnpCollabService { state, peer_id };
     let client: collab_service::Client = capnp_rpc::new_client(service);
@@ -1292,6 +1315,14 @@ async fn drive_connection(
 }
 
 #[cfg(test)]
+// Test helpers throughout this module pair `_sk`/`_pk` (secret/public
+// key) and `owner`/`editor` role names — the clearest naming for this
+// domain, and renaming would obscure the keypair relationship rather
+// than clarify it.
+#[allow(
+    clippy::similar_names,
+    reason = "sk/pk and owner/editor pairings are the conventional, intentional names for a keypair and a two-role fixture"
+)]
 mod tests {
     use super::*;
     use std::time::{Duration, Instant, SystemTime};
@@ -1308,10 +1339,19 @@ mod tests {
         let pid = std::process::id();
         let nanos = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         std::env::temp_dir().join(format!("qos-broker-{label}-{pid}-{nanos}.capnp.sock"))
     }
+
+    /// One non-leap year, in seconds — used to build the fixed validity
+    /// window below without a magic-number multiplication at the call site.
+    #[allow(
+        clippy::duration_suboptimal_units,
+        reason = "Duration::from_days would read better, but it's still behind the unstable \
+                  duration_constructors feature (rust-lang/rust#120301) on this pinned stable \
+                  toolchain"
+    )]
+    const ONE_YEAR: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
     /// A `ChannelState` authorising one Editor; returns the artifact +
     /// editor keys + attestation id.
@@ -1329,8 +1369,13 @@ mod tests {
             issued_by: owner_pk,
             subject: editor_pk,
             claims: vec![],
-            valid_from: now - Duration::from_secs(365 * 24 * 3600),
-            valid_until: now + Duration::from_secs(10 * 365 * 24 * 3600),
+            valid_from: now
+                .checked_sub(ONE_YEAR)
+                .expect("a fixed one-year offset from now is always representable"),
+            valid_until: ONE_YEAR
+                .checked_mul(10)
+                .and_then(|ten_years| now.checked_add(ten_years))
+                .expect("a fixed ten-year offset from now is always representable"),
             signature: Signature::from_bytes([0u8; 64]),
         };
         let sb = att.signing_bytes().expect("attestation signing_bytes");
@@ -1395,7 +1440,9 @@ mod tests {
     }
 
     fn wait_for_publish(sink: &RecordingSink, within: Duration) -> Vec<Sent> {
-        let deadline = Instant::now() + within;
+        let deadline = Instant::now()
+            .checked_add(within)
+            .unwrap_or_else(Instant::now);
         loop {
             let seen = sink.snapshot();
             if !seen.is_empty() || Instant::now() > deadline {
@@ -1413,7 +1460,7 @@ mod tests {
             sink.clone() as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>
         );
         let handle =
-            spawn_native_with_publisher(capnp_path.clone(), publisher).expect("spawn broker");
+            spawn_native_with_publisher(capnp_path.clone(), &publisher).expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4().to_string();
         let channel_id = cluster.clone();
@@ -1455,7 +1502,7 @@ mod tests {
             sink.clone() as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>
         );
         let handle =
-            spawn_native_with_publisher(capnp_path.clone(), publisher).expect("spawn broker");
+            spawn_native_with_publisher(capnp_path.clone(), &publisher).expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4().to_string();
         let channel_id = format!("{cluster}#record:report.md");
@@ -1492,7 +1539,7 @@ mod tests {
             sink.clone() as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>
         );
         let handle =
-            spawn_native_with_publisher(capnp_path.clone(), publisher).expect("spawn broker");
+            spawn_native_with_publisher(capnp_path.clone(), &publisher).expect("spawn broker");
         let (artifact, editor_sk, editor_pk, editor_att_id) = setup_role_table(&handle);
         let op = build_signed_op(
             &editor_sk,
@@ -1531,9 +1578,14 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "channels' only use is the assert_eq! immediately below; the block \
+                  already ends right after it"
+    )]
     fn capnp_signed_op_rejections_are_dropped_and_audited() {
         let capnp_path = unique_path("capnp-signed-rejections");
-        let handle = spawn_native(capnp_path.clone(), None).expect("spawn broker");
+        let handle = spawn_native(capnp_path.clone(), &None).expect("spawn broker");
         let (artifact, editor_sk, editor_pk, editor_att_id) = setup_role_table(&handle);
         let valid = build_signed_op(&editor_sk, editor_pk, artifact, editor_att_id, 1, b"valid");
         let mut invalid = build_signed_op(
@@ -1576,15 +1628,17 @@ mod tests {
                 .any(|entry| matches!(entry.rejection, Some(ValidationError::BadOpSignature(_))))
         );
         let channels = handle.channels();
-        let mut channels = channels.lock().expect("channels");
-        assert_eq!(
-            channels
-                .state_for(artifact)
-                .scrollback_for(artifact, u64::MAX, 10)
-                .0,
-            vec![valid],
-            "only the valid operation enters scrollback",
-        );
+        {
+            let mut channels = channels.lock().expect("channels");
+            assert_eq!(
+                channels
+                    .state_for(artifact)
+                    .scrollback_for(artifact, u64::MAX, 10)
+                    .0,
+                vec![valid],
+                "only the valid operation enters scrollback",
+            );
+        }
     }
 
     #[test]
@@ -1597,7 +1651,7 @@ mod tests {
             sink.clone() as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>
         );
         let handle =
-            spawn_native_with_publisher(capnp_path.clone(), publisher).expect("spawn broker");
+            spawn_native_with_publisher(capnp_path.clone(), &publisher).expect("spawn broker");
 
         with_capnp_client(capnp_path, move |sdk| {
             Box::pin(async move {
@@ -1633,7 +1687,7 @@ mod tests {
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
         let net = Arc::new(net);
         let net_for_arrival = Arc::clone(&net);
-        let handle = spawn_native(capnp_path.clone(), Some(net)).expect("spawn broker");
+        let handle = spawn_native(capnp_path.clone(), &Some(net)).expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4();
         let channel_id =
@@ -1641,8 +1695,8 @@ mod tests {
 
         net_for_arrival.note_snapshot_request(&cluster.to_string());
 
-        let capnp_path_clone = capnp_path.clone();
-        let joined = channel_id.clone();
+        let capnp_path_clone = capnp_path;
+        let joined = channel_id;
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1667,7 +1721,7 @@ mod tests {
         let published = loop {
             match cmd_rx.try_recv() {
                 Ok(crate::network::actor::NetCmd::Publish { msg, .. }) => break Some(msg),
-                Ok(_) => continue,
+                Ok(_) => {}
                 Err(_) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(25));
                 }
@@ -1700,14 +1754,14 @@ mod tests {
         let capnp_path = unique_path("capnp-outbound");
         let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
-        let handle = spawn_native(capnp_path.clone(), Some(Arc::new(net))).expect("spawn broker");
+        let handle = spawn_native(capnp_path.clone(), &Some(Arc::new(net))).expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4();
         let channel_id =
             CrdtRoute::record("dev.qos.words", cluster.to_string(), "/notes/a.md").channel_key();
 
-        let capnp_path_clone = capnp_path.clone();
-        let joined = channel_id.clone();
+        let capnp_path_clone = capnp_path;
+        let joined = channel_id;
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1732,7 +1786,7 @@ mod tests {
         let published = loop {
             match cmd_rx.try_recv() {
                 Ok(crate::network::actor::NetCmd::Publish { msg, .. }) => break Some(msg),
-                Ok(_) => continue,
+                Ok(_) => {}
                 Err(_) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(25));
                 }
@@ -1784,7 +1838,7 @@ mod tests {
         let capnp_path = unique_path("capnp-unaddressed");
         let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
-        let handle = spawn_native(capnp_path.clone(), Some(Arc::new(net))).expect("spawn broker");
+        let handle = spawn_native(capnp_path.clone(), &Some(Arc::new(net))).expect("spawn broker");
 
         let channel_id = CrdtRoute::record(
             "dev.qos.words",
@@ -1793,7 +1847,7 @@ mod tests {
         )
         .channel_key();
 
-        let capnp_path_clone = capnp_path.clone();
+        let capnp_path_clone = capnp_path;
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1829,7 +1883,7 @@ mod tests {
     #[test]
     fn an_unsigned_frame_reaches_a_subscriber_tagged_with_its_kind() {
         let capnp_path = unique_path("capnp-unsigned-kind");
-        let handle = spawn_native(capnp_path.clone(), None).expect("spawn typed broker");
+        let handle = spawn_native(capnp_path.clone(), &None).expect("spawn typed broker");
         let channel_id = CrdtRoute::record(
             "dev.qos.words",
             uuid::Uuid::new_v4().to_string(),
@@ -1838,7 +1892,7 @@ mod tests {
         .channel_key();
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let capnp_path_clone = capnp_path.clone();
+        let capnp_path_clone = capnp_path;
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1916,15 +1970,15 @@ mod tests {
     #[test]
     fn a_documents_delta_reaches_its_own_app_and_not_the_app_beside_it() {
         let capnp_path = unique_path("capnp-app-scoped");
-        let handle = spawn_native(capnp_path.clone(), None).expect("spawn broker");
+        let handle = spawn_native(capnp_path.clone(), &None).expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4().to_string();
         let words = CrdtRoute::app("dev.qos.word-processor", cluster.clone()).channel_key();
         let files = CrdtRoute::app("dev.qos.file-explorer", cluster.clone()).channel_key();
-        let room = CrdtRoute::cluster(cluster.clone()).channel_key();
+        let room = CrdtRoute::cluster(cluster).channel_key();
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let capnp_path_clone = capnp_path.clone();
+        let capnp_path_clone = capnp_path;
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

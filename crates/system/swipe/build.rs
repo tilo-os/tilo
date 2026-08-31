@@ -14,6 +14,10 @@
 use std::path::PathBuf;
 
 fn main() {
+    // (lib name, dir, whole-archive?) — hoisted here so it's declared
+    // before any statement in this block, not just before its first use.
+    type Lib<'a> = (&'a str, PathBuf, bool);
+
     println!("cargo:rerun-if-env-changed=QOS_SWIPE_LIB");
     println!("cargo:rerun-if-changed=csrc/swipe_ffi.cpp");
     // Declare the custom cfg so rustc's unexpected_cfgs lint stays quiet.
@@ -56,8 +60,7 @@ fn main() {
     // without needing an explicit --start-group.
     //
     // Whole-archive libs register ops/backends via static initializers and
-    // must not be dead-stripped. (lib name, dir, whole-archive?)
-    type Lib<'a> = (&'a str, PathBuf, bool);
+    // must not be dead-stripped.
     let libs: &[Lib] = &[
         // whole-archive (registration)
         ("executorch", et.clone(), true),

@@ -4,6 +4,15 @@
 //! so a future spec edit is one place away.
 
 #![allow(dead_code)] // each test file pulls a different subset
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 
 use std::path::Path;
 

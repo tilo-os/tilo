@@ -48,6 +48,18 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -74,6 +86,12 @@ use vello::peniko::Color;
 /// (48 + 40 + 4×56 = 312, rounded up).
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (720, 360);
 
+/// # Errors
+///
+/// Returns an error when `--input-method` is explicitly requested but the
+/// compositor does not advertise `zwp_input_method_manager_v2`, or when
+/// `--shots` fails to render (taffy layout failure, e.g. the tree exceeds its
+/// node capacity).
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -182,7 +200,7 @@ fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
         // commit string; the guarded virtual keyboard path above handles the
         // latter until winit consumes delete_surrounding_text.
         if let Some(text) = osk::inject::action_symbols(&action)
-            .iter()
+            .into_iter()
             .map(symbol_to_commit_text)
             .collect::<Option<String>>()
             && !text.is_empty()
@@ -248,9 +266,9 @@ fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
 /// method, or `None` for symbols that aren't a plain inserted character (so the
 /// whole commit is skipped — e.g. Backspace, handled by the guarded virtual
 /// keyboard fallback).
-fn symbol_to_commit_text(sym: &osk::Symbol) -> Option<char> {
+fn symbol_to_commit_text(sym: osk::Symbol) -> Option<char> {
     match sym {
-        osk::Symbol::Unicode(c) => Some(*c),
+        osk::Symbol::Unicode(c) => Some(c),
         osk::Symbol::Space => Some(' '),
         osk::Symbol::Return => Some('\n'),
         osk::Symbol::Tab => Some('\t'),

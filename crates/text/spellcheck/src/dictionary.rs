@@ -108,9 +108,12 @@ impl Dictionary {
             if set.insert(normalized.clone()) {
                 let len = normalized.chars().count();
                 if by_len.len() <= len {
-                    by_len.resize(len + 1, Vec::new());
+                    by_len.resize(len.saturating_add(1), Vec::new());
                 }
-                by_len[len].push(normalized);
+                // The resize above guarantees `len` is now in bounds.
+                if let Some(bucket) = by_len.get_mut(len) {
+                    bucket.push(normalized);
+                }
             }
         }
         Dictionary {
@@ -155,6 +158,12 @@ impl Dictionary {
     /// (`$XDG_CONFIG_HOME/qos/userdict.txt`). Best-effort: returns `Ok(())` and
     /// no-ops when no config path is resolvable; surfaces I/O errors otherwise so
     /// a caller *can* report them, but the typical caller ignores the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying [`std::io::Error`] if the config directory cannot
+    /// be created (`create_dir_all`) or the word list cannot be written
+    /// (`write`) — e.g. permission denied, or a read-only filesystem.
     pub fn save_user_dict(&self) -> std::io::Result<()> {
         let Some(path) = user_dict_path() else {
             return Ok(());
@@ -193,8 +202,7 @@ impl Dictionary {
     ) -> impl Iterator<Item = &str> {
         let hi = max_len.min(self.by_len.len().saturating_sub(1));
         (min_len..=hi)
-            .filter(move |&n| n < self.by_len.len())
-            .flat_map(move |n| self.by_len[n].iter().map(String::as_str))
+            .flat_map(move |n| self.by_len.get(n).into_iter().flatten().map(String::as_str))
     }
 }
 

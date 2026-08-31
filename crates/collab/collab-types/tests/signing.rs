@@ -6,6 +6,16 @@
 //! Validator-level concerns (replay, role lookup, etc.) live in
 //! `validator.rs`.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::time::{Duration, SystemTime};
 
 use collab_types::crypto::VerifyError;
@@ -15,7 +25,9 @@ use collab_types::{
 };
 
 fn t(secs: u64) -> SystemTime {
-    SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(secs))
+        .unwrap()
 }
 
 #[test]

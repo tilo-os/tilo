@@ -26,7 +26,7 @@ use std::sync::mpsc::Receiver;
 
 use vello::Scene;
 
-use paint::{copy_rgba_subrect, swizzle_subrect_rgba_to_xrgb8888_transformed};
+use paint::{SubrectSource, copy_rgba_subrect, swizzle_subrect_rgba_to_xrgb8888_transformed};
 
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry};
 use crate::compositor::present::Presenter;
@@ -55,6 +55,12 @@ pub struct DrmBackend {
 impl DrmBackend {
     /// Acquire the seat, enumerate DRM devices + connectors, attach libinput, and return a `Backend`
     /// ready for the compositor loop. Returns `DrmBackendError` on failure (never panics) — the binary catches it and prints a friendly message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the seat can't be acquired (e.g. already held by
+    /// another session), DRM device/connector enumeration fails, or
+    /// libinput initialisation fails.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let mut inner = runtime::DrmRuntime::new()?;
         let commands = inner.commands.take();
@@ -131,132 +137,16 @@ impl DrmPresenter {
     /// Frame-production body, identical to the pre-split `submit_frame`.
     fn render(&mut self, scene: &Scene) {
         self.drain_commands();
-        if self.blanked || self.paused || self.scanouts.is_empty() {
+        if self.blanked || self.paused {
             return;
         }
-        let target_size = combined_geometry(&self.outputs);
-        if target_size.0 == 0 || target_size.1 == 0 {
-            return;
-        }
-        if self.paint.is_none() {
-            match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
-                Ok(b) => self.paint = Some(b),
-                Err(e) => {
-                    tracing::error!("DRM backend: VelloDrmBridge::new: {e}");
-                    return;
-                }
-            }
-        }
-        {
-            let bridge = self.paint.as_mut().expect("paint just initialised");
-            if bridge.size() != target_size
-                && let Err(e) = bridge.resize(target_size.0, target_size.1)
-            {
-                tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
-                return;
-            }
-        }
-
-        if self.scanouts.len() == 1
-            && self.scanouts[0].transform == settings_store::hardware::OutputTransform::Normal
-            && self.scanouts[0].color_transform.is_none()
-        {
-            let bridge = self.paint.as_mut().expect("paint allocated above");
-            let cursor = Some(self.pointer);
-            self.scanouts[0].scanout.present_into(cursor, |dst, pitch| {
-                if let Err(e) = bridge.paint_into_xrgb8888(scene, dst, pitch) {
-                    tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
-                }
-            });
-            return;
-        }
-
-        let completed = self.scanouts[0].scanout.poll_flip_completions();
-        for c in &completed {
-            for e in &mut self.scanouts {
-                e.scanout.mark_flip_complete(*c);
-            }
-        }
-
-        let bridge = self.paint.as_mut().expect("paint allocated above");
-        let rgba = match bridge.paint(scene) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::error!("DRM backend: paint (combined): {e}");
-                return;
-            }
-        };
-        let pointer = self.pointer;
-        let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
-        for e in &mut self.scanouts {
-            let (px, py) = e.position;
-            let (physical_w, physical_h) = e.scanout.size();
-            let logical_size = self
-                .outputs
-                .iter()
-                .find(|output| output.id == e.id)
-                .map_or((physical_w, physical_h), |output| output.size);
-            let local_cursor = if pointer.0 >= f64::from(px)
-                && pointer.0 < f64::from(px + logical_size.0 as i32)
-                && pointer.1 >= f64::from(py)
-                && pointer.1 < f64::from(py + logical_size.1 as i32)
-            {
-                let (x, y) = scanout::logical_to_physical_point(
-                    (pointer.0 - f64::from(px)) as i32,
-                    (pointer.1 - f64::from(py)) as i32,
-                    logical_size.0,
-                    logical_size.1,
-                    e.transform,
-                );
-                Some((f64::from(x), f64::from(y)))
-            } else {
-                None
-            };
-            let sx = px.max(0) as usize;
-            let sy = py.max(0) as usize;
-            let (source, source_w, source_h, source_x, source_y): (
-                &[u8],
-                usize,
-                usize,
-                usize,
-                usize,
-            ) = if let Some(transform) = &e.color_transform {
-                copy_rgba_subrect(
-                    rgba,
-                    cw,
-                    ch,
-                    sx,
-                    sy,
-                    logical_size.0 as usize,
-                    logical_size.1 as usize,
-                    &mut e.color_buffer,
-                );
-                transform.apply(&mut e.color_buffer);
-                (
-                    &e.color_buffer,
-                    logical_size.0 as usize,
-                    logical_size.1 as usize,
-                    0,
-                    0,
-                )
-            } else {
-                (rgba, cw, ch, sx, sy)
-            };
-            e.scanout.present_no_drain(local_cursor, |dst, pitch| {
-                swizzle_subrect_rgba_to_xrgb8888_transformed(
-                    source,
-                    source_w,
-                    source_h,
-                    source_x,
-                    source_y,
-                    dst,
-                    pitch,
-                    physical_w as usize,
-                    physical_h as usize,
-                    e.transform,
-                );
-            });
-        }
+        paint_scanouts(
+            &mut self.scanouts,
+            &self.outputs,
+            &mut self.paint,
+            self.pointer,
+            scene,
+        );
     }
 
     /// Apply every reconfiguration the loop thread has queued.
@@ -338,6 +228,212 @@ fn apply_scanout_command(
     }
 }
 
+/// Render `scene` into `scanouts`, sized to the combined geometry of
+/// `outputs`; lazily (re)allocates `*paint` to that size. Shared by
+/// [`DrmPresenter::render`] (post-split, render thread) and
+/// [`Backend::submit_frame`] for [`DrmBackend`] (inline path, pre-split) —
+/// same painting logic, different owner of the scanouts and the pointer.
+fn paint_scanouts(
+    scanouts: &mut [ScanoutEntry],
+    outputs: &[Output],
+    paint: &mut Option<paint::VelloDrmBridge>,
+    pointer: (f64, f64),
+    scene: &Scene,
+) {
+    if scanouts.is_empty() {
+        return;
+    }
+    let target_size = combined_geometry(outputs);
+    if target_size.0 == 0 || target_size.1 == 0 {
+        return;
+    }
+    if paint.is_none() {
+        match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
+            Ok(b) => *paint = Some(b),
+            Err(e) => {
+                tracing::error!("DRM backend: VelloDrmBridge::new: {e}");
+                return;
+            }
+        }
+    }
+    {
+        // The block above just initialised `*paint` if it was `None`, or
+        // already returned on failure — a miss here would mean that
+        // silently didn't stick, so skip this frame rather than panic.
+        let Some(bridge) = paint.as_mut() else {
+            return;
+        };
+        if bridge.size() != target_size
+            && let Err(e) = bridge.resize(target_size.0, target_size.1)
+        {
+            tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
+            return;
+        }
+    }
+
+    // Single-output fast path: render the scene and swizzle it straight into
+    // the one scanout's back dumb buffer (XRGB8888) in a single fused pass —
+    // no intermediate RGBA copy — then page-flip (or dirty_framebuffer
+    // fallback). The cursor is only consulted by the software-cursor
+    // fallback.
+    let fast_path = scanouts.len() == 1
+        && scanouts.first().is_some_and(|s| {
+            s.transform == settings_store::hardware::OutputTransform::Normal
+                && s.color_transform.is_none()
+        });
+    if fast_path {
+        // `fast_path` only goes true when `scanouts.first()` matched above,
+        // so neither `first_mut()` nor `paint.as_mut()` can miss here.
+        let (Some(entry), Some(bridge)) = (scanouts.first_mut(), paint.as_mut()) else {
+            return;
+        };
+        let cursor = Some(pointer);
+        entry.scanout.present_into(cursor, |dst, pitch| {
+            if let Err(e) = bridge.paint_into_xrgb8888(scene, dst, pitch) {
+                tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
+            }
+        });
+        return;
+    }
+
+    // Multi-output path: all per-connector scanouts dup the one card fd, so
+    // every crtc's flip completion lands on a single event stream — drain it
+    // ONCE (on the primary) and route by crtc; draining per scanout would
+    // let the primary swallow its siblings' completions and wedge their
+    // `flip_pending`.
+    let Some(completed) = scanouts
+        .first_mut()
+        .map(|e| e.scanout.poll_flip_completions())
+    else {
+        return;
+    };
+    for c in &completed {
+        for e in scanouts.iter_mut() {
+            e.scanout.mark_flip_complete(*c);
+        }
+    }
+
+    // Render the combined scene ONCE into a tight RGBA buffer, then swizzle
+    // each output's sub-rect into its own scanout's dumb buffer (fused
+    // single-pass, per output).
+    let Some(bridge) = paint.as_mut() else {
+        return;
+    };
+    let rgba = match bridge.paint(scene) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("DRM backend: paint (combined): {e}");
+            return;
+        }
+    };
+    let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
+    for e in scanouts.iter_mut() {
+        paint_one_scanout(e, outputs, rgba, cw, ch, pointer);
+    }
+}
+
+/// Body of [`paint_scanouts`]'s per-scanout multi-output loop, split out to
+/// keep that function short. Computes the software-cursor position and the
+/// (possibly colour-transformed) sub-rect for `e`, then presents it —
+/// unchanged from the inline version, so the present call still lands at
+/// exactly the same point in the per-output iteration.
+fn paint_one_scanout(
+    e: &mut ScanoutEntry,
+    outputs: &[Output],
+    rgba: &[u8],
+    cw: usize,
+    ch: usize,
+    pointer: (f64, f64),
+) {
+    let (px, py) = e.position;
+    let (physical_w, physical_h) = e.scanout.size();
+    let logical_size = outputs
+        .iter()
+        .find(|output| output.id == e.id)
+        .map_or((physical_w, physical_h), |output| output.size);
+    // Widths/heights come from the connector's mode; clamp rather than
+    // wrap on the (unreachable in practice) case of a driver-reported
+    // extent past `i32::MAX`.
+    let width_i32 = i32::try_from(logical_size.0).unwrap_or(i32::MAX);
+    let height_i32 = i32::try_from(logical_size.1).unwrap_or(i32::MAX);
+    let right = px.saturating_add(width_i32);
+    let bottom = py.saturating_add(height_i32);
+    // Software-cursor fallback only: draw the cursor (output-local
+    // coords) on the output it's over. The hardware cursor plane, when
+    // active, ignores this and is driven from the input path via
+    // `CursorPlanes`.
+    let local_cursor = if pointer.0 >= f64::from(px)
+        && pointer.0 < f64::from(right)
+        && pointer.1 >= f64::from(py)
+        && pointer.1 < f64::from(bottom)
+    {
+        // Sub-pixel pointer position intentionally truncates to a pixel
+        // coordinate (a hardware cursor plane snaps to a whole pixel
+        // anyway); bounded to on-screen extents, well within `i32`.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "sub-pixel pointer position intentionally truncates to a pixel coordinate; bounded to on-screen extents"
+        )]
+        let (local_x, local_y) = (
+            (pointer.0 - f64::from(px)) as i32,
+            (pointer.1 - f64::from(py)) as i32,
+        );
+        let (x, y) = scanout::logical_to_physical_point(
+            local_x,
+            local_y,
+            logical_size.0,
+            logical_size.1,
+            e.transform,
+        );
+        Some((f64::from(x), f64::from(y)))
+    } else {
+        None
+    };
+    let sx = usize::try_from(px.max(0)).unwrap_or(0);
+    let sy = usize::try_from(py.max(0)).unwrap_or(0);
+    let (source, source_w, source_h, source_x, source_y): (&[u8], usize, usize, usize, usize) =
+        if let Some(transform) = &e.color_transform {
+            copy_rgba_subrect(
+                SubrectSource {
+                    src_rgba: rgba,
+                    src_w: cw,
+                    src_h: ch,
+                    src_x: sx,
+                    src_y: sy,
+                },
+                logical_size.0 as usize,
+                logical_size.1 as usize,
+                &mut e.color_buffer,
+            );
+            transform.apply(&mut e.color_buffer);
+            (
+                &e.color_buffer,
+                logical_size.0 as usize,
+                logical_size.1 as usize,
+                0,
+                0,
+            )
+        } else {
+            (rgba, cw, ch, sx, sy)
+        };
+    e.scanout.present_no_drain(local_cursor, |dst, pitch| {
+        swizzle_subrect_rgba_to_xrgb8888_transformed(
+            SubrectSource {
+                src_rgba: source,
+                src_w: source_w,
+                src_h: source_h,
+                src_x: source_x,
+                src_y: source_y,
+            },
+            dst,
+            pitch,
+            physical_w as usize,
+            physical_h as usize,
+            e.transform,
+        );
+    });
+}
+
 impl Presenter for DrmPresenter {
     fn present(&mut self, scene: &Scene, _output: OutputId) {
         self.render(scene);
@@ -365,148 +461,14 @@ impl Backend for DrmBackend {
         if self.blanked || self.paused {
             return;
         }
-        // No live outputs (modeset failed at construction): nothing to paint into; the compositor still serves its wayland socket headless.
-        if self.inner.scanouts.is_empty() {
-            return;
-        }
-
-        // The compositor paints one scene spanning the bounding box of every output; each output presents its own sub-rect (equals the output's size for a single output).
-        let target_size = combined_geometry(&self.outputs);
-        if target_size.0 == 0 || target_size.1 == 0 {
-            return;
-        }
-
-        // Lazily (re)allocate the bridge to the combined geometry.
-        if self.paint.is_none() {
-            match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
-                Ok(b) => self.paint = Some(b),
-                Err(e) => {
-                    tracing::error!("DRM backend: VelloDrmBridge::new: {e}");
-                    return;
-                }
-            }
-        }
-        {
-            let bridge = self.paint.as_mut().expect("paint just initialised");
-            if bridge.size() != target_size
-                && let Err(e) = bridge.resize(target_size.0, target_size.1)
-            {
-                tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
-                return;
-            }
-        }
-
-        // Single-output fast path: render the scene and swizzle it straight into the one scanout's
-        // back dumb buffer (XRGB8888) in a single fused pass — no intermediate RGBA copy — then
-        // page-flip (or dirty_framebuffer fallback). The cursor is only consulted by the software-cursor fallback.
-        if self.inner.scanouts.len() == 1
-            && self.inner.scanouts[0].transform == settings_store::hardware::OutputTransform::Normal
-            && self.inner.scanouts[0].color_transform.is_none()
-        {
-            let bridge = self.paint.as_mut().expect("paint allocated above");
-            let cursor = Some(self.inner.dispatch.pointer);
-            self.inner.scanouts[0]
-                .scanout
-                .present_into(cursor, |dst, pitch| {
-                    if let Err(e) = bridge.paint_into_xrgb8888(scene, dst, pitch) {
-                        tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
-                    }
-                });
-            return;
-        }
-
-        // Multi-output path: all per-connector scanouts dup the one card fd, so every crtc's flip
-        // completion lands on a single event stream — drain it ONCE (on the primary) and route by crtc;
-        // draining per scanout would let the primary swallow its siblings' completions and wedge their `flip_pending`.
-        let completed = self.inner.scanouts[0].scanout.poll_flip_completions();
-        for c in &completed {
-            for e in &mut self.inner.scanouts {
-                e.scanout.mark_flip_complete(*c);
-            }
-        }
-
-        // Render the combined scene ONCE into a tight RGBA buffer, then swizzle each output's sub-rect into its own scanout's dumb buffer (fused single-pass, per output).
-        let bridge = self.paint.as_mut().expect("paint allocated above");
-        let rgba = match bridge.paint(scene) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::error!("DRM backend: paint (combined): {e}");
-                return;
-            }
-        };
         let pointer = self.inner.dispatch.pointer;
-        let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
-        for e in &mut self.inner.scanouts {
-            let (px, py) = e.position;
-            let (physical_w, physical_h) = e.scanout.size();
-            let logical_size = self
-                .outputs
-                .iter()
-                .find(|output| output.id == e.id)
-                .map_or((physical_w, physical_h), |output| output.size);
-            // Software-cursor fallback only: draw the cursor (output-local coords) on the output it's over.
-            // The hardware cursor plane, when active, ignores this and is driven from the input path via `CursorPlanes`.
-            let local_cursor = if pointer.0 >= f64::from(px)
-                && pointer.0 < f64::from(px + logical_size.0 as i32)
-                && pointer.1 >= f64::from(py)
-                && pointer.1 < f64::from(py + logical_size.1 as i32)
-            {
-                let (x, y) = scanout::logical_to_physical_point(
-                    (pointer.0 - f64::from(px)) as i32,
-                    (pointer.1 - f64::from(py)) as i32,
-                    logical_size.0,
-                    logical_size.1,
-                    e.transform,
-                );
-                Some((f64::from(x), f64::from(y)))
-            } else {
-                None
-            };
-            let sx = px.max(0) as usize;
-            let sy = py.max(0) as usize;
-            let (source, source_w, source_h, source_x, source_y): (
-                &[u8],
-                usize,
-                usize,
-                usize,
-                usize,
-            ) = if let Some(transform) = &e.color_transform {
-                copy_rgba_subrect(
-                    rgba,
-                    cw,
-                    ch,
-                    sx,
-                    sy,
-                    logical_size.0 as usize,
-                    logical_size.1 as usize,
-                    &mut e.color_buffer,
-                );
-                transform.apply(&mut e.color_buffer);
-                (
-                    &e.color_buffer,
-                    logical_size.0 as usize,
-                    logical_size.1 as usize,
-                    0,
-                    0,
-                )
-            } else {
-                (rgba, cw, ch, sx, sy)
-            };
-            e.scanout.present_no_drain(local_cursor, |dst, pitch| {
-                swizzle_subrect_rgba_to_xrgb8888_transformed(
-                    source,
-                    source_w,
-                    source_h,
-                    source_x,
-                    source_y,
-                    dst,
-                    pitch,
-                    physical_w as usize,
-                    physical_h as usize,
-                    e.transform,
-                );
-            });
-        }
+        paint_scanouts(
+            &mut self.inner.scanouts,
+            &self.outputs,
+            &mut self.paint,
+            pointer,
+            scene,
+        );
     }
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {

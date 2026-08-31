@@ -36,6 +36,28 @@ const ZOOM_MAX: f32 = 10.0;
 /// over detail — `1.1` per notch matches Krita/Inkscape defaults.
 const ZOOM_STEP: f32 = 1.1;
 
+/// `kurbo::Affine` composition is plain f64 matrix math with no panic
+/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
+              or overflows, unlike integer +/-/*"
+)]
+fn translated_and_scaled(transform: Affine, x: f64, y: f64, scale: f64) -> Affine {
+    transform * Affine::translate((x, y)) * Affine::scale_non_uniform(scale, scale)
+}
+
+/// Narrows a scroll delta (`f64`, from winit's `PixelDelta`) to the `f32`
+/// this widget's zoom math uses. Real trackpad/mouse deltas never
+/// approach `f32`'s range, so this never truncates in practice.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "scroll deltas are always far below f32's range"
+)]
+fn delta_f32(v: f64) -> f32 {
+    v as f32
+}
+
 /// Interactive viewer for a pre-decoded [`peniko::ImageData`]. See module
 /// docs for the contract.
 pub struct ImageViewer {
@@ -213,14 +235,19 @@ impl Widget for ImageViewer {
 
         // `draw_image` maps the image's unit pixel space directly into
         // world space, so scale-then-translate composes the quad.
-        let img_transform = transform
-            * Affine::translate((dx, dy))
-            * Affine::scale_non_uniform(total_scale, total_scale);
+        let img_transform = translated_and_scaled(transform, dx, dy, total_scale);
         scene.draw_image(&self.image, img_transform);
 
         scene.pop_layer();
     }
 
+    /// `kurbo::Vec2`'s `Sub`/`AddAssign` below are plain f64 component-wise
+    /// math with no panic path; `arithmetic_side_effects` flags the
+    /// operator overloads anyway.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "kurbo::Vec2 arithmetic is f64 component-wise math; it never panics or overflows, unlike integer +/-/*"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -274,11 +301,10 @@ impl Widget for ImageViewer {
                 }
             },
             WindowEvent::MouseWheel { delta, .. } => {
-                let inside = match self.cursor {
-                    Some(c) => self.rect.contains(Point::new(c.x, c.y)),
-                    None => false,
+                let Some(cursor) = self.cursor else {
+                    return;
                 };
-                if !inside {
+                if !self.rect.contains(Point::new(cursor.x, cursor.y)) {
                     return;
                 }
                 // PixelDelta is normalised to a "lines scrolled" scalar
@@ -286,7 +312,7 @@ impl Widget for ImageViewer {
                 // platforms that report pixel deltas for trackpads.
                 let scroll_y = match delta {
                     MouseScrollDelta::LineDelta(_, y) => *y,
-                    MouseScrollDelta::PixelDelta(pp) => (pp.y as f32) / 100.0,
+                    MouseScrollDelta::PixelDelta(pp) => delta_f32(pp.y) / 100.0,
                 };
                 if scroll_y == 0.0 {
                     return;
@@ -295,7 +321,6 @@ impl Widget for ImageViewer {
                 // The image-space point under the cursor is re-projected
                 // after the zoom change; `pan` is counter-translated by
                 // the difference to keep it fixed on screen.
-                let cursor = self.cursor.expect("cursor inside-check passed");
                 let before = self.screen_to_image(cursor);
                 let factor = ZOOM_STEP.powf(scroll_y);
                 let new_zoom = (self.zoom * factor).clamp(ZOOM_MIN, ZOOM_MAX);

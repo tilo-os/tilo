@@ -17,11 +17,22 @@
 // return; nothing outside this file constructs these servers, so the
 // refinement stays where it is written.
 #![allow(refining_impl_trait_internal)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::cell::RefCell;
 use std::os::fd::IntoRawFd;
 use std::rc::Rc;
 
 use capnp::capability::Promise;
+use capnp::message::ReaderOptions;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use tokio::net::UnixStream;
 use tokio::task::LocalSet;
@@ -66,17 +77,6 @@ impl presence_handle::Server for FakePresence {
         _results: presence_handle::PublishCursorResults,
     ) -> Promise<(), capnp::Error> {
         Promise::ok(())
-    }
-
-    fn subscribe_remote_cursors(
-        self: Rc<Self>,
-        _params: presence_handle::SubscribeRemoteCursorsParams,
-        _results: presence_handle::SubscribeRemoteCursorsResults,
-    ) -> Promise<(), capnp::Error> {
-        // Not exercised in this test.
-        Promise::err(capnp::Error::unimplemented(
-            "subscribe_remote_cursors".into(),
-        ))
     }
 }
 
@@ -126,8 +126,11 @@ impl channel_handle::Server for FakeChannel {
     }
 }
 
+/// `(channel_id, identity bytes)` pairs captured from every `join_channel` call.
+type CapturedJoins = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
+
 struct FakeBroker {
-    captured_joins: Rc<RefCell<Vec<(String, Vec<u8>)>>>,
+    captured_joins: CapturedJoins,
     captured_ops: Rc<RefCell<Vec<Vec<u8>>>>,
     seed_backlog: Vec<Vec<u8>>,
 }
@@ -194,7 +197,7 @@ async fn round_trip_join_send_subscribe_read() {
                 server_read.compat(),
                 server_write.compat_write(),
                 rpc_twoparty_capnp::Side::Server,
-                capnp::message::ReaderOptions::default(),
+                ReaderOptions::default(),
             ));
             let server_rpc = RpcSystem::new(server_network, Some(broker_client.client));
             tokio::task::spawn_local(async move {

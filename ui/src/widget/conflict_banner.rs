@@ -45,6 +45,17 @@ const CHIP_GAP: f64 = 6.0;
 /// "warning-tinted neutral", not a fluorescent panel.
 const BANNER_BG_ALPHA: u8 = 51; // ~ 20%
 
+/// Composes `base` with a translation for text placement. Affine
+/// composition is floating-point matrix multiply — it cannot overflow or
+/// panic the way integer arithmetic can.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
+)]
+fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
+    base * Affine::translate((dx, dy))
+}
+
 /// Callbacks fired when the user clicks one of the trailing chips.
 pub type ReviewCallback = Box<dyn FnMut()>;
 pub type DismissCallback = Box<dyn FnMut()>;
@@ -109,6 +120,7 @@ impl ConflictBanner {
 
     /// Install the `[Review]` callback. Typically opens a `ConflictPicker`
     /// over the same artifact.
+    #[must_use]
     pub fn on_review<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_review = Some(Box::new(f));
         self
@@ -116,6 +128,7 @@ impl ConflictBanner {
 
     /// Install the `[Dismiss]` callback. Typically hides the banner for
     /// the session.
+    #[must_use]
     pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_dismiss = Some(Box::new(f));
         self
@@ -174,7 +187,6 @@ impl ConflictBanner {
     /// Paint one trailing chip (`Review` / `Dismiss`).
     #[allow(clippy::too_many_arguments)]
     fn draw_chip(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -204,11 +216,11 @@ impl ConflictBanner {
             label,
             text_size,
             theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((
-                    rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
-                    rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
-                )),
+            translated(
+                transform,
+                rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
+                rect.y0 + (rect.height() - f64::from(lh)) / 2.0,
+            ),
             None,
         );
     }
@@ -228,6 +240,12 @@ impl Widget for ConflictBanner {
     ) -> NodeId {
         // In zero-conflict mode we collapse to height 0 so the
         // banner doesn't reserve room in the column it sits inside.
+        // Safe: BANNER_HEIGHT is a fixed 36.0px layout constant, far below
+        // f32's range.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "BANNER_HEIGHT is a fixed small layout constant (36.0px)"
+        )]
         let h: f32 = if self.conflict_count == 0 {
             0.0
         } else {
@@ -294,7 +312,7 @@ impl Widget for ConflictBanner {
             glyph,
             text_size + 2.0,
             warn,
-            transform * Affine::translate((glyph_x, cy - f64::from(gh) / 2.0)),
+            translated(transform, glyph_x, cy - f64::from(gh) / 2.0),
             None,
         );
 
@@ -306,12 +324,12 @@ impl Widget for ConflictBanner {
             &label,
             text_size,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((label_x, cy - f64::from(lh) / 2.0)),
+            translated(transform, label_x, cy - f64::from(lh) / 2.0),
             None,
         );
 
         if let Some(rect) = self.review_chip_rect() {
-            self.draw_chip(
+            Self::draw_chip(
                 scene,
                 transform,
                 text_renderer,
@@ -322,7 +340,7 @@ impl Widget for ConflictBanner {
             );
         }
         if let Some(rect) = self.dismiss_chip_rect() {
-            self.draw_chip(
+            Self::draw_chip(
                 scene,
                 transform,
                 text_renderer,

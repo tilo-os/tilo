@@ -8,8 +8,19 @@
 //! `QOS_LAUNCHER_BIN` (the launcher's documented seam) points at a script
 //! that records its argv.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
@@ -94,13 +105,13 @@ impl Session {
         host: &mut ShellOverlayHost,
         layout: &Layout,
         modifiers: ModifiersState,
-        event: WindowEvent,
+        event: &WindowEvent,
     ) {
         let modifiers = Modifiers::from(modifiers);
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
         host.handle_event(
-            &event,
+            event,
             1.0,
             &modifiers,
             &mut self.doc,
@@ -117,10 +128,10 @@ impl Session {
         host: &mut ShellOverlayHost,
         layout: &Layout,
         modifiers: ModifiersState,
-        key: Key,
+        key: &Key,
     ) {
         let event = key_press_event(key);
-        self.dispatch(host, layout, modifiers, event);
+        self.dispatch(host, layout, modifiers, &event);
     }
 
     fn type_str(&mut self, host: &mut ShellOverlayHost, layout: &Layout, s: &str) {
@@ -129,7 +140,7 @@ impl Session {
                 host,
                 layout,
                 ModifiersState::empty(),
-                Key::Character(winit::keyboard::SmolStr::new(c.to_string())),
+                &Key::Character(winit::keyboard::SmolStr::new(c.to_string())),
             );
         }
     }
@@ -138,7 +149,7 @@ impl Session {
 /// winit 0.30 exposes no `KeyEvent` constructor (`platform_specific` is
 /// `pub(crate)`), so zero-init and overwrite the fields the shell reads —
 /// as `e2e_shell_flows.rs::escape_event` does.
-fn key_press_event(key: Key) -> WindowEvent {
+fn key_press_event(key: &Key) -> WindowEvent {
     // SAFETY: every public field of `KeyEvent` has a valid all-zero bit
     // pattern (`Option` → `None`, the enums' first variants, `bool` →
     // `false`) and the fields the shell reads are overwritten below.
@@ -148,7 +159,7 @@ fn key_press_event(key: Key) -> WindowEvent {
     ev.location = KeyLocation::Standard;
     ev.state = ElementState::Pressed;
     ev.repeat = false;
-    ev.text = if let Key::Character(s) = &key {
+    ev.text = if let Key::Character(s) = key {
         Some(s.clone())
     } else {
         None
@@ -182,11 +193,12 @@ fn install(dir: &Path, package_id: &str, name: &str, exts: &[&str]) {
     .unwrap();
     let registry = dir.join("registry.toml");
     let mut existing = std::fs::read_to_string(&registry).unwrap_or_default();
-    existing.push_str(&format!(
+    let _ = write!(
+        existing,
         "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
         payload.display().to_string(),
         manifest_path.display().to_string()
-    ));
+    );
     std::fs::write(&registry, existing).unwrap();
 }
 
@@ -221,6 +233,11 @@ fn launched_commands(log: &Path, want: usize) -> Vec<String> {
 
 #[test]
 #[serial_test::serial(process_env)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing tree via tree(), read from through the inner \
+              block's final assert_eq!; nothing to drop earlier"
+)]
 fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let home = tmp.path().join("home");
@@ -263,7 +280,7 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
         &mut host,
         &layout,
         ModifiersState::SUPER,
-        Key::Character(winit::keyboard::SmolStr::new("k")),
+        &Key::Character(winit::keyboard::SmolStr::new("k")),
     );
     assert!(
         host.palette_visible(),
@@ -281,7 +298,7 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
             &mut host,
             &layout,
             ModifiersState::empty(),
-            Key::Named(NamedKey::Backspace),
+            &Key::Named(NamedKey::Backspace),
         );
         let (_, query, _, entries) = host.palette_snapshot();
         assert_eq!(query, "quarterly-repor", "the query must be what was typed");
@@ -316,7 +333,7 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
         &mut host,
         &layout,
         ModifiersState::empty(),
-        Key::Named(NamedKey::Enter),
+        &Key::Named(NamedKey::Enter),
     );
 
     let commands = launched_commands(&log, 1);
@@ -409,7 +426,7 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
         &mut host,
         &layout,
         ModifiersState::empty(),
-        WindowEvent::CursorMoved {
+        &WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: winit::dpi::PhysicalPosition::new(over.x, over.y),
         },
@@ -418,7 +435,7 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
         &mut host,
         &layout,
         ModifiersState::empty(),
-        WindowEvent::DroppedFile(doc_path.clone()),
+        &WindowEvent::DroppedFile(doc_path.clone()),
     );
 
     let commands = launched_commands(&log, 1);

@@ -24,7 +24,7 @@
 //!   deterministically.
 //! * **Importing a system config** — the XDG-portal file pick, reading and
 //!   parsing the `.conf` / `.ovpn`, and persisting it to the data dir are
-//!   external steps ([`crate::portal`], [`crate::config`]). Only the resulting
+//!   external steps ([`ui::portal`], [`crate::config`]). Only the resulting
 //!   parsed [`Connection`] is added to the document, and that add is the same
 //!   [`VpnAction::AddConnection`] the add form dispatches.
 //! * **Presentation** — which connection is selected, the detail tab, hover,
@@ -68,8 +68,10 @@ pub const VPN_ACTION_TYPE: &str = "vpn.action";
 pub enum VpnAction {
     /// Add a saved connection profile. The connection (including its uuid) is
     /// minted at authoring time and carried whole; a re-add of the same id is a
-    /// no-op so a double-applied envelope can't duplicate it.
-    AddConnection { conn: Connection },
+    /// no-op so a double-applied envelope can't duplicate it. Boxed: a full
+    /// [`Connection`] (many `String` fields) dwarfs every other variant, which
+    /// would otherwise size every `VpnAction` to the largest payload.
+    AddConnection { conn: Box<Connection> },
     /// Remove a saved connection by id. Absent id → no-op.
     RemoveConnection { id: ConnId },
     /// Rename a saved connection (config field only — never touches the live
@@ -143,6 +145,16 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`VpnAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a VPN action into a
 /// replayable envelope.
+///
+/// # Panics
+/// Never in practice: every `VpnAction` field is a `String`, `bool`, `ConnId`
+/// (`Uuid`) or a `Connection` of the same, all of which `serde_json` always
+/// serializes; this only panics if a future field type introduces a case
+/// JSON can't represent (e.g. a non-string map key or a non-finite float).
+#[allow(
+    clippy::expect_used,
+    reason = "VpnAction's fields are all JSON-safe primitives; see this function's # Panics doc"
+)]
 pub fn encode(action: &VpnAction) -> EncodedAction {
     EncodedAction::encode(VPN_ACTION_TYPE, action).expect("VpnAction is always serializable")
 }
@@ -153,7 +165,9 @@ pub fn encode(action: &VpnAction) -> EncodedAction {
 // ===========================================================================
 
 pub fn add_connection_action(conn: Connection) -> VpnAction {
-    VpnAction::AddConnection { conn }
+    VpnAction::AddConnection {
+        conn: Box::new(conn),
+    }
 }
 
 pub fn remove_connection_action(id: ConnId) -> VpnAction {
@@ -176,6 +190,10 @@ pub fn set_tor_global_action(on: bool) -> VpnAction {
 // Resource tree
 // ===========================================================================
 
+#[allow(
+    clippy::expect_used,
+    reason = "VpnAction's fields are all JSON-safe primitives; see encode()'s # Panics doc"
+)]
 fn immediate_spec(id: &str, label: &str, action: &VpnAction) -> ActionSpec {
     ActionSpec::immediate(id, label, VPN_ACTION_TYPE, action).expect("encode vpn action")
 }
@@ -295,14 +313,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 

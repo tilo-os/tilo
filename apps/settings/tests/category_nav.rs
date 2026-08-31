@@ -14,6 +14,16 @@
 //!
 //! A test runs per category, so every entry is exercised end to end.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::collections::HashMap;
 
 use automerge::AutoCommit;
@@ -131,7 +141,7 @@ fn renders_something(app: &mut SettingsApp) -> bool {
 fn active_row_count(app: &SettingsApp) -> usize {
     fn walk(w: &dyn Widget, n: &mut usize) {
         if w.name() == "SidebarRow" && w.get_state().as_deref() == Some("active") {
-            *n += 1;
+            *n = n.saturating_add(1);
         }
         for c in w.children() {
             walk(c, n);

@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 
 /// The value type of a cell's stored/cached value; orthogonal to whether it's a
 /// formula (a formula cell still carries a `cell_type` for its cached result).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum CellType {
+    #[default]
     Empty,
     Number,
     Text,
@@ -30,6 +31,10 @@ impl CellType {
         }
     }
     /// Parses a schema string back into a [`CellType`] (unknown → `Text`, the safe default).
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "returns Self infallibly by design, not std::str::FromStr's fallible contract"
+    )]
     pub fn from_str(s: &str) -> Self {
         use crate::sheet::schema::{
             CELL_TYPE_BOOL, CELL_TYPE_EMPTY, CELL_TYPE_ERROR, CELL_TYPE_NUMBER,

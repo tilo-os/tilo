@@ -10,6 +10,16 @@
 //! the developer's real installs — and so what is asserted is the
 //! production code path, not a library call that resembles it.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -71,15 +81,16 @@ fn fresh_key() -> (SigningKey, String) {
 
 /// Build a `.qpkg` with the layout `qos-pkg pack` writes.
 fn build_qpkg(qpkg_path: &Path, manifest: &Manifest, sk: &SigningKey, payload_dir: &Path) {
-    let mut store = MemoryBlobStore::new();
-    let identity = SigningIdentity::from_signing_key(sk.clone());
-    let id = pack(payload_dir, manifest, &identity, &mut store).expect("pack");
-
     #[derive(Serialize)]
     struct QpkgHeader {
         package_id: String,
         format: u32,
     }
+
+    let mut store = MemoryBlobStore::new();
+    let identity = SigningIdentity::from_signing_key(sk.clone());
+    let id = pack(payload_dir, manifest, &identity, &mut store).expect("pack");
+
     let header_toml = toml::to_string(&QpkgHeader {
         package_id: id.to_string(),
         format: 1,

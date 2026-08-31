@@ -4,6 +4,16 @@
 //! signature that verifies through `collab_types::verify_event` — the
 //! canonical first-enrolment flow.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 use collab_types::{canonical_bytes, verify_event};
 use threshold_identity::{
     EnrolmentRound2, ThresholdIdentity, signing::SigningRound1, signing::SigningRound1Commitment,
@@ -14,6 +24,13 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 
 /// Run a 2-of-2 DKG in-memory. Returns the two device identities.
+// `_a`/`_b` names two independent DKG devices — the clearest available
+// convention for a 2-device protocol test, used the same way across
+// every multi-device test in this crate.
+#[allow(
+    clippy::similar_names,
+    reason = "_a/_b device-pair naming is deliberate and used throughout this crate's multi-device tests"
+)]
 fn run_two_device_dkg() -> (ThresholdIdentity, ThresholdIdentity) {
     let mut rng_a = ChaCha20Rng::from_seed([1u8; 32]);
     let mut rng_b = ChaCha20Rng::from_seed([2u8; 32]);
@@ -87,6 +104,10 @@ fn dkg_produces_matching_group_public_key_on_both_devices() {
     assert!(!b.is_single_device());
 }
 
+#[allow(
+    clippy::similar_names,
+    reason = "_a/_b device-pair naming is deliberate and used throughout this crate's multi-device tests"
+)]
 #[test]
 fn dkg_rotates_group_public_key_away_from_bootstrap() {
     // The 1-of-1 bootstrap key MUST differ from the 2-of-2 DKG key —

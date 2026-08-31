@@ -81,12 +81,13 @@ impl PdfDoc {
         }
     }
 
-    fn list(doc: &mut AutoCommit, key: &str) -> ObjId {
+    /// The `List` object at root `key`, creating it if missing. `None` only
+    /// if `key` already names a non-list value on this document — every
+    /// write below then no-ops rather than corrupting that value.
+    fn list(doc: &mut AutoCommit, key: &str) -> Option<ObjId> {
         match doc.get(&ROOT, key) {
-            Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => doc
-                .put_object(&ROOT, key, ObjType::List)
-                .expect("put_object list on root never fails"),
+            Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
+            _ => doc.put_object(&ROOT, key, ObjType::List).ok(),
         }
     }
 
@@ -99,22 +100,26 @@ impl PdfDoc {
 
     // ---- meta -------------------------------------------------------
 
-    pub fn meta(doc: &mut AutoCommit) -> ObjId {
+    /// The document's `meta` map, creating it if missing. `None` only if
+    /// `"meta"` already names a non-map value on this document.
+    pub fn meta(doc: &mut AutoCommit) -> Option<ObjId> {
         match doc.get(&ROOT, "meta") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&ROOT, "meta", ObjType::Map)
-                .expect("put_object meta never fails"),
+            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+            _ => doc.put_object(&ROOT, "meta", ObjType::Map).ok(),
         }
     }
 
     pub fn is_seeded(doc: &mut AutoCommit) -> bool {
-        let m = Self::meta(doc);
+        let Some(m) = Self::meta(doc) else {
+            return false;
+        };
         Self::get_bool(doc, &m, "seeded").unwrap_or(false)
     }
 
     pub fn set_meta(doc: &mut AutoCommit, title: &str, author: &str) {
-        let m = Self::meta(doc);
+        let Some(m) = Self::meta(doc) else {
+            return;
+        };
         let _ = doc.put(&m, "title", title);
         let _ = doc.put(&m, "author", author);
         let _ = doc.put(&m, "seeded", true);
@@ -142,11 +147,13 @@ impl PdfDoc {
     }
 
     pub fn add_annotation(doc: &mut AutoCommit, a: &Annotation) {
-        let list = Self::list(doc, "annotations");
+        let Some(list) = Self::list(doc, "annotations") else {
+            return;
+        };
         let idx = doc.length(&list);
-        let m = doc
-            .insert_object(&list, idx, ObjType::Map)
-            .expect("insert annotation map never fails");
+        let Ok(m) = doc.insert_object(&list, idx, ObjType::Map) else {
+            return;
+        };
         let _ = doc.put(&m, "id", a.id.as_str());
         let _ = doc.put(&m, "page", a.page as i64);
         let _ = doc.put(&m, "kind", a.kind.type_key());
@@ -224,7 +231,9 @@ impl PdfDoc {
     }
 
     pub fn set_annotation_color(doc: &mut AutoCommit, id: &str, color: Swatch) {
-        let list = Self::list(doc, "annotations");
+        let Some(list) = Self::list(doc, "annotations") else {
+            return;
+        };
         if let Some(i) = Self::index_of(doc, &list, id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
         {
@@ -237,7 +246,9 @@ impl PdfDoc {
     /// keep their width/height and shift; notes carry only a point. A no-op for
     /// ink (its geometry is the polyline, not a single anchor).
     pub fn set_annotation_position(doc: &mut AutoCommit, id: &str, x: f64, y: f64) {
-        let list = Self::list(doc, "annotations");
+        let Some(list) = Self::list(doc, "annotations") else {
+            return;
+        };
         if let Some(i) = Self::index_of(doc, &list, id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
             && Self::get_str(doc, &m, "kind").as_deref() != Some("ink")
@@ -248,13 +259,16 @@ impl PdfDoc {
     }
 
     pub fn delete_annotation(doc: &mut AutoCommit, id: &str) {
-        let list = Self::list(doc, "annotations");
-        if let Some(i) = Self::index_of(doc, &list, id) {
+        if let Some(list) = Self::list(doc, "annotations")
+            && let Some(i) = Self::index_of(doc, &list, id)
+        {
             let _ = doc.delete(&list, i);
         }
         // Any comments anchored to this annotation are removed with it so a
         // deleted note never leaves a dangling thread behind in the rail.
-        let comments = Self::list(doc, "comments");
+        let Some(comments) = Self::list(doc, "comments") else {
+            return;
+        };
         let mut i = 0;
         while i < doc.length(&comments) {
             let anchored = matches!(
@@ -273,11 +287,13 @@ impl PdfDoc {
     // ---- comments ---------------------------------------------------
 
     pub fn add_comment(doc: &mut AutoCommit, c: &Comment) {
-        let list = Self::list(doc, "comments");
+        let Some(list) = Self::list(doc, "comments") else {
+            return;
+        };
         let idx = doc.length(&list);
-        let m = doc
-            .insert_object(&list, idx, ObjType::Map)
-            .expect("insert comment map never fails");
+        let Ok(m) = doc.insert_object(&list, idx, ObjType::Map) else {
+            return;
+        };
         let _ = doc.put(&m, "id", c.id.as_str());
         if let Some(a) = &c.anno_id {
             let _ = doc.put(&m, "anno", a.as_str());
@@ -287,13 +303,13 @@ impl PdfDoc {
         let _ = doc.put(&m, "body", c.body.as_str());
         let _ = doc.put(&m, "created", c.created);
         let _ = doc.put(&m, "resolved", c.resolved);
-        let replies = doc
-            .put_object(&m, "replies", ObjType::List)
-            .expect("put replies list never fails");
+        let Ok(replies) = doc.put_object(&m, "replies", ObjType::List) else {
+            return;
+        };
         for (ri, r) in c.replies.iter().enumerate() {
-            let rm = doc
-                .insert_object(&replies, ri, ObjType::Map)
-                .expect("insert reply map never fails");
+            let Ok(rm) = doc.insert_object(&replies, ri, ObjType::Map) else {
+                continue;
+            };
             let _ = doc.put(&rm, "author", r.author.as_str());
             let _ = doc.put(&rm, "body", r.body.as_str());
         }
@@ -342,7 +358,9 @@ impl PdfDoc {
     }
 
     pub fn set_comment_resolved(doc: &mut AutoCommit, id: &str, resolved: bool) {
-        let list = Self::list(doc, "comments");
+        let Some(list) = Self::list(doc, "comments") else {
+            return;
+        };
         if let Some(i) = Self::index_of(doc, &list, id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
         {
@@ -353,7 +371,9 @@ impl PdfDoc {
     /// Replace a comment's body text. Used by the inline editor when the user
     /// types into a note or comment thread.
     pub fn set_comment_body(doc: &mut AutoCommit, id: &str, body: &str) {
-        let list = Self::list(doc, "comments");
+        let Some(list) = Self::list(doc, "comments") else {
+            return;
+        };
         if let Some(i) = Self::index_of(doc, &list, id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
         {
@@ -362,27 +382,31 @@ impl PdfDoc {
     }
 
     pub fn delete_comment(doc: &mut AutoCommit, id: &str) {
-        let list = Self::list(doc, "comments");
-        if let Some(i) = Self::index_of(doc, &list, id) {
+        if let Some(list) = Self::list(doc, "comments")
+            && let Some(i) = Self::index_of(doc, &list, id)
+        {
             let _ = doc.delete(&list, i);
         }
     }
 
     pub fn add_reply(doc: &mut AutoCommit, comment_id: &str, reply: &Reply) {
-        let list = Self::list(doc, "comments");
+        let Some(list) = Self::list(doc, "comments") else {
+            return;
+        };
         if let Some(i) = Self::index_of(doc, &list, comment_id)
             && let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
         {
             let replies = match doc.get(&m, "replies") {
-                Ok(Some((Value::Object(ObjType::List), rl))) => rl,
-                _ => doc
-                    .put_object(&m, "replies", ObjType::List)
-                    .expect("put replies list never fails"),
+                Ok(Some((Value::Object(ObjType::List), rl))) => Some(rl),
+                _ => doc.put_object(&m, "replies", ObjType::List).ok(),
+            };
+            let Some(replies) = replies else {
+                return;
             };
             let idx = doc.length(&replies);
-            let rm = doc
-                .insert_object(&replies, idx, ObjType::Map)
-                .expect("insert reply map never fails");
+            let Ok(rm) = doc.insert_object(&replies, idx, ObjType::Map) else {
+                return;
+            };
             let _ = doc.put(&rm, "author", reply.author.as_str());
             let _ = doc.put(&rm, "body", reply.body.as_str());
         }
@@ -409,11 +433,13 @@ impl PdfDoc {
     }
 
     pub fn add_signature(doc: &mut AutoCommit, s: &Signature) {
-        let list = Self::list(doc, "signatures");
+        let Some(list) = Self::list(doc, "signatures") else {
+            return;
+        };
         let idx = doc.length(&list);
-        let m = doc
-            .insert_object(&list, idx, ObjType::Map)
-            .expect("insert signature map never fails");
+        let Ok(m) = doc.insert_object(&list, idx, ObjType::Map) else {
+            return;
+        };
         let _ = doc.put(&m, "id", s.id.as_str());
         let _ = doc.put(&m, "page", s.page as i64);
         let _ = doc.put(&m, "x", s.rect.x);
@@ -470,8 +496,9 @@ impl PdfDoc {
     }
 
     pub fn delete_signature(doc: &mut AutoCommit, id: &str) {
-        let list = Self::list(doc, "signatures");
-        if let Some(i) = Self::index_of(doc, &list, id) {
+        if let Some(list) = Self::list(doc, "signatures")
+            && let Some(i) = Self::index_of(doc, &list, id)
+        {
             let _ = doc.delete(&list, i);
         }
     }
@@ -698,7 +725,7 @@ mod tests {
                 assert!((back[0][1].0 - 0.3).abs() < 1e-2 && (back[0][1].1 - 0.2).abs() < 1e-2);
                 assert_eq!(back[1].len(), 2);
             }
-            other => panic!("expected drawn ink, got {other:?}"),
+            crate::model::SignatureInk::Typed => panic!("expected drawn ink, got Typed"),
         }
     }
 
