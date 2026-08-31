@@ -1232,6 +1232,8 @@ impl ShellNetwork {
             // tells it a session went quiet.
             NetEvent::PeerLeft { peer, .. } => {
                 let handle = crate::network::behaviour::peer_liveness_handle(&peer);
+                self.peer_identities
+                    .remove(&crate::shell::state::PeerOrigin::peer(&peer));
                 if let Ok(replica) = self.replica.lock() {
                     replica.tree.write().retire_session(handle);
                 }
@@ -1307,6 +1309,15 @@ impl ShellNetwork {
             );
             return;
         }
+        let origin = crate::shell::state::PeerOrigin::peer(&peer);
+        if let NeighbourMsg::IdentityHello { cert, revocations } = &msg {
+            self.accept_identity_hello(ws, &origin, &peer, cert, revocations);
+            return;
+        }
+        if self.require_peer_identity && self.peer_identities.get(&origin).is_none() {
+            tracing::warn!(peer = %peer, "dropping collaboration message from an unauthenticated device");
+            return;
+        }
         match msg {
             // Ephemeral overlay state, not CRDT state — skips the replica entirely.
             NeighbourMsg::PresenceMoved {
@@ -1325,7 +1336,9 @@ impl ShellNetwork {
                 record_id,
                 data,
             } => {
-                self.dispatch_app_crdt_incremental(peer_hash, app_id, cluster_id, record_id, data);
+                self.dispatch_app_crdt_incremental(
+                    &origin, peer_hash, app_id, cluster_id, record_id, data,
+                );
             }
             NeighbourMsg::AppCrdtSnapshot {
                 peer: peer_hash,
@@ -1334,7 +1347,9 @@ impl ShellNetwork {
                 record_id,
                 data,
             } => {
-                self.dispatch_app_crdt_snapshot(peer_hash, app_id, cluster_id, record_id, data);
+                self.dispatch_app_crdt_snapshot(
+                    &origin, peer_hash, app_id, cluster_id, record_id, data,
+                );
             }
             // Signed path, same routing as the plain increment.
             NeighbourMsg::AppCrdtIncrementalSigned {
@@ -1425,6 +1440,7 @@ impl ShellNetwork {
     /// [`Self::dispatch_neighbour_msg`].
     fn dispatch_app_crdt_incremental(
         &self,
+        origin: &crate::shell::state::PeerOrigin,
         peer_hash: u64,
         app_id: String,
         cluster_id: String,
@@ -1441,7 +1457,11 @@ impl ShellNetwork {
             bytes = data.len(),
             "PROBE gossip recv AppCrdtIncremental",
         );
-        if peer_hash != self.local_peer_hash && self.is_in_room(&cluster_id) {
+        if peer_hash != self.local_peer_hash
+            && self.is_in_room(&cluster_id)
+            && (!self.require_peer_identity
+                || self.peer_may_write_app(origin, &cluster_id, &app_id))
+        {
             self.handle_app_crdt_message(peer_hash, app_id, cluster_id, record_id, data);
         }
     }
@@ -1453,6 +1473,7 @@ impl ShellNetwork {
     /// [`Self::dispatch_neighbour_msg`].
     fn dispatch_app_crdt_snapshot(
         &self,
+        origin: &crate::shell::state::PeerOrigin,
         peer_hash: u64,
         app_id: String,
         cluster_id: String,
@@ -1469,7 +1490,11 @@ impl ShellNetwork {
             bytes = data.len(),
             "PROBE gossip recv AppCrdtSnapshot",
         );
-        if peer_hash != self.local_peer_hash && self.is_in_room(&cluster_id) {
+        if peer_hash != self.local_peer_hash
+            && self.is_in_room(&cluster_id)
+            && (!self.require_peer_identity
+                || self.peer_may_write_app(origin, &cluster_id, &app_id))
+        {
             self.handle_app_crdt_snapshot_message(peer_hash, app_id, cluster_id, record_id, data);
         }
     }

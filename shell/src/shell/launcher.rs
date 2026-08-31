@@ -687,6 +687,7 @@ pub fn build_launch_command(
         room,
         LaunchExtras {
             capabilities_file,
+            identity_path,
             render_node,
             document,
             uri: None,
@@ -703,6 +704,7 @@ pub fn build_launch_command(
 /// [`launch_with_uri`].
 struct LaunchExtras<'a> {
     capabilities_file: Option<&'a Path>,
+    identity_path: Option<&'a Path>,
     render_node: Option<&'a Path>,
     document: Option<&'a Path>,
     uri: Option<&'a str>,
@@ -717,6 +719,7 @@ fn build_launch_command_for(
 ) -> LaunchCommand {
     let LaunchExtras {
         capabilities_file,
+        identity_path,
         render_node,
         document,
         uri,
@@ -882,6 +885,7 @@ fn launch_with_context(
         room,
         LaunchExtras {
             capabilities_file: capabilities_file.as_deref(),
+            identity_path: identity_path.as_deref(),
             render_node: crate::compositor::render_node::resolved(),
             document,
             uri,
