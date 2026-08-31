@@ -1016,8 +1016,8 @@ impl InstallerApp {
 
         match self.step {
             Step::Disk => self.compose_disk_step(theme, &mut children),
-            Step::Account => self.compose_account_step(theme, &mut children),
-            Step::Keyboard => self.compose_keyboard_step(theme, &mut children),
+            Step::Account => Self::compose_account_step(theme, &mut children),
+            Step::Keyboard => Self::compose_keyboard_step(theme, &mut children),
             Step::Options => self.compose_options_step(theme, &mut children),
             Step::Review => self.compose_review_step(theme, &mut children),
             Step::Install => self.compose_install_step(theme, &mut children),
@@ -1071,7 +1071,7 @@ impl InstallerApp {
         ));
     }
 
-    fn compose_account_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_account_step(theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
         let xl = theme.tokens.typography.scale.xl;
         let base = theme.tokens.typography.scale.base;
@@ -1104,7 +1104,7 @@ impl InstallerApp {
         children.push(nav_row(Step::Account, NEXT_PATH, "Next", false));
     }
 
-    fn compose_keyboard_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_keyboard_step(theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
         let xl = theme.tokens.typography.scale.xl;
         let sm = theme.tokens.typography.scale.sm;
@@ -1463,7 +1463,7 @@ fn sample_install_log() -> Vec<String> {
 
 impl InstallerApp {
     /// Cache the editable text fields for display / backend argv.
-    fn sync_cached_fields(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync_cached_fields(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(u) = Self::read_text(state, root, USERNAME_PATH) {
             self.username = u;
         }

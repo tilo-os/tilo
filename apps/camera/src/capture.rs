@@ -106,8 +106,7 @@ impl Capture {
                         width: info.width(),
                         height: info.height(),
                     };
-                    let sender = tx.lock().map_err(|_| gst::FlowError::Error)?;
-                    let _ = sender.send(frame);
+                    let _ = tx.lock().map_err(|_| gst::FlowError::Error)?.send(frame);
                     Ok(gst::FlowSuccess::Ok)
                 })
                 .build(),

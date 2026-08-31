@@ -11,7 +11,10 @@
     clippy::string_slice,
     clippy::panic,
     clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard; the arithmetic \
+              here is wall-clock timeout deadlines bounded by a short-lived \
+              test run, not real user data"
 )]
 
 use std::time::{Duration, Instant};

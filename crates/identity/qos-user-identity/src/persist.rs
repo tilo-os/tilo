@@ -356,8 +356,16 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
     Ok(())
 }
 
+/// # Panics
+/// Never in practice: `byte >> 4` and `byte & 0x0f` are both bounded to
+/// `0..16` by the bit operation itself (not by any external input), so
+/// indexing the 16-entry `HEX` table can never go out of range.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "byte >> 4 and byte & 0x0f are both unconditionally in 0..16, so HEX[..] cannot go out of range; see this fn's # Panics doc"
+)]
 fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     const HEX: &[u8; 16] = b"0123456789abcdef";
     for byte in bytes {
         out.push(HEX[(byte >> 4) as usize] as char);

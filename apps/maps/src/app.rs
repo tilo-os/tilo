@@ -2176,6 +2176,30 @@ impl MapsApp {
             clip
         };
 
+        let painted_tiles = self.draw_map_layers(scene, t, tr, theme, pal, proj, clip, map_clip);
+        self.draw_panel_and_scale(scene, t, tr, theme, overlay, clip, painted_tiles);
+        self.draw_chrome(scene, t, tr, theme);
+    }
+
+    /// Map layers only: real tiles or their vector/grid fallback, traffic,
+    /// route, transit, POIs and markers. Returns whether real imagery painted,
+    /// which the caller needs to decide whether the offline/loading hint is due.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the frame's shared draw context (scene/transform/theme/palette/projection/clip \
+                  rects), computed once in draw_app and threaded through unchanged"
+    )]
+    fn draw_map_layers(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        pal: MapPalette,
+        proj: Projection,
+        clip: Rect,
+        map_clip: Rect,
+    ) -> bool {
         // Map layers. Real OSM raster tiles paint first (non-blocking); the
         // stylised vector basemap is the fallback shown only until imagery is
         // available (headless `--shots`, or the very first offline frame).
@@ -2234,7 +2258,26 @@ impl MapsApp {
             map_clip,
         );
         canvas::draw_markers(scene, t, tr, &proj, &self.model, theme, &pal, map_clip);
+        painted_tiles
+    }
 
+    /// Side panel (docked or overlay drawer + scrim), the scale bar, and the
+    /// offline/loading hint that only shows while no real imagery has painted.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the frame's shared draw context plus the two map-layer outcomes \
+                  (`overlay`, `painted_tiles`) this section's branches depend on"
+    )]
+    fn draw_panel_and_scale(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        overlay: bool,
+        clip: Rect,
+        painted_tiles: bool,
+    ) {
         // Side panel: docked when wide, an overlay drawer (with a dimming
         // scrim over the map) when narrow. While the floating search-results
         // overlay is up it stands in for the panel — suppress the list behind it
@@ -2269,7 +2312,11 @@ impl MapsApp {
         if !painted_tiles && self.basemap.is_empty() && !(overlay && self.nav_open) {
             self.draw_imagery_hint(scene, t, tr, theme);
         }
+    }
 
+    /// Chrome: controls, menus, search, floating cards/dropdowns, the offline
+    /// panel, the overflow menu + info sheet, and the hover tooltip on top.
+    fn draw_chrome(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         // Chrome on top of the scrim so it stays bright and usable.
         self.map_controls.draw(scene, t, tr, theme);
         self.draw_traffic_status(scene, t, tr, theme);

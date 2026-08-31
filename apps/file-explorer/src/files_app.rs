@@ -3380,13 +3380,13 @@ mod open_with_tests {
         w.apply_command(crate::command::FileCommand::Copy);
         assert_eq!(w.clipboard.len(), 1);
         w.open_context_menu(Point::new(10.0, 10.0));
-        let labels: Vec<String> = w
-            .context_menu
-            .items()
-            .iter()
-            .filter_map(|i| i.label().map(std::string::ToString::to_string))
-            .collect();
-        assert!(labels.contains(&"Paste".to_string()));
+        assert!(
+            w.context_menu
+                .items()
+                .iter()
+                .filter_map(|i| i.label().map(std::string::ToString::to_string))
+                .any(|label| label == "Paste")
+        );
     }
 }
 

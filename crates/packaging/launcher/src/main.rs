@@ -224,47 +224,24 @@ fn main() -> ExitCode {
             render_node,
             open,
             open_uri,
-        } => {
-            if minimal_libs {
-                eprintln!(
-                    "qos-launcher: --minimal-libs is deprecated. \
-                     Prefer a manifest `runtime = \"qos-runtime/<v>\"` declaration \
-                     plus `qos-install runtime install --version <v> --from-host`."
-                );
-            }
-            let opts = RunOptions {
-                no_services,
-                runtime_root: runtime,
-                bwrap_bin: None,
-                minimal_libs,
-                landlock_enforce: true,
-                mode: LaunchMode::Gui,
-                allow_missing_runtime,
-                allow_unsigned_runtime,
-                require_runtime_publisher,
-                identity_host_path: identity,
-                wayland_socket,
-                workspace_id,
-                capabilities_path: capabilities,
-                app_id,
-                render_node,
-                open_document: open,
-                open_uri,
-            };
-            match run(&manifest, &payload_root, &opts) {
-                Ok(status) => {
-                    if let Some(code) = status.code() {
-                        exit_code(code)
-                    } else {
-                        ExitCode::from(1)
-                    }
-                }
-                Err(e) => {
-                    eprintln!("qos-launcher: {e}");
-                    exit_code(e.to_exit_code())
-                }
-            }
-        }
+        } => run_gui_command(RunCliArgs {
+            manifest,
+            payload_root,
+            runtime,
+            no_services,
+            minimal_libs,
+            allow_missing_runtime,
+            allow_unsigned_runtime,
+            require_runtime_publisher,
+            wayland_socket,
+            workspace_id,
+            capabilities,
+            app_id,
+            identity,
+            render_node,
+            open,
+            open_uri,
+        }),
         Cmd::RunInstalled {
             package,
             command,
@@ -306,6 +283,72 @@ fn main() -> ExitCode {
             open_url,
             dry_run,
         ),
+    }
+}
+
+/// Every field of [`Cmd::Run`], bundled so [`run_gui_command`] doesn't count
+/// against clippy's argument limit — this is argv plumbing, not a sandbox
+/// policy struct (see [`ExecArgs`] below for the same pattern).
+struct RunCliArgs {
+    manifest: PathBuf,
+    payload_root: PathBuf,
+    runtime: Option<PathBuf>,
+    no_services: bool,
+    minimal_libs: bool,
+    allow_missing_runtime: bool,
+    allow_unsigned_runtime: bool,
+    require_runtime_publisher: Option<String>,
+    wayland_socket: Option<PathBuf>,
+    workspace_id: Option<String>,
+    capabilities: Option<PathBuf>,
+    app_id: Option<String>,
+    identity: Option<PathBuf>,
+    render_node: Option<PathBuf>,
+    open: Option<PathBuf>,
+    open_uri: Option<String>,
+}
+
+/// Build [`RunOptions`] from the `run` subcommand's flags and launch the
+/// package's GUI entrypoint.
+fn run_gui_command(args: RunCliArgs) -> ExitCode {
+    if args.minimal_libs {
+        eprintln!(
+            "qos-launcher: --minimal-libs is deprecated. \
+             Prefer a manifest `runtime = \"qos-runtime/<v>\"` declaration \
+             plus `qos-install runtime install --version <v> --from-host`."
+        );
+    }
+    let opts = RunOptions {
+        no_services: args.no_services,
+        runtime_root: args.runtime,
+        bwrap_bin: None,
+        minimal_libs: args.minimal_libs,
+        landlock_enforce: true,
+        mode: LaunchMode::Gui,
+        allow_missing_runtime: args.allow_missing_runtime,
+        allow_unsigned_runtime: args.allow_unsigned_runtime,
+        require_runtime_publisher: args.require_runtime_publisher,
+        identity_host_path: args.identity,
+        wayland_socket: args.wayland_socket,
+        workspace_id: args.workspace_id,
+        capabilities_path: args.capabilities,
+        app_id: args.app_id,
+        render_node: args.render_node,
+        open_document: args.open,
+        open_uri: args.open_uri,
+    };
+    match run(&args.manifest, &args.payload_root, &opts) {
+        Ok(status) => {
+            if let Some(code) = status.code() {
+                exit_code(code)
+            } else {
+                ExitCode::from(1)
+            }
+        }
+        Err(e) => {
+            eprintln!("qos-launcher: {e}");
+            exit_code(e.to_exit_code())
+        }
     }
 }
 

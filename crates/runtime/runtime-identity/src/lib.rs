@@ -825,12 +825,25 @@ pub struct SigningIdentity {
     single_device: bool,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Local carries a bare signing key while Broker/ActionBroker carry a live socket \
+              behind a Mutex; boxing the socket variants would touch every match arm across \
+              this file (11 call sites) for a few dozen bytes of stack that never round-trips \
+              through a hot path — this type is constructed once per identity, not per message"
+)]
 enum SigningSource {
     Local(Option<SigningKey>),
     Broker(Mutex<std::os::unix::net::UnixStream>),
     ActionBroker(Mutex<UnixStream>),
 }
 
+#[allow(
+    clippy::missing_fields_in_debug,
+    reason = "`source` is deliberately never printed by field name — it carries a signing key \
+              or a live socket, and the redacted \"signing_source\" entry below stands in for \
+              it on purpose, not by omission"
+)]
 impl std::fmt::Debug for SigningIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SigningIdentity")
@@ -1030,7 +1043,7 @@ fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvail
         wire::Response::Denied(reason) | wire::Response::Error(reason) => Err(
             NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::PermissionDenied, reason)),
         ),
-        _ => Err(NotAvailable::ConnectionFailed(io::Error::new(
+        wire::Response::Signature(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
             io::ErrorKind::InvalidData,
             "identity broker returned an invalid metadata response",
         ))),

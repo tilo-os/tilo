@@ -1741,7 +1741,7 @@ impl SlidesApp {
 
         let font_input_rect = if el.kind == ElementKind::Text {
             let (new_y, rect) =
-                self.build_inspector_type_row(el, x0, x1, inner_w, y, buttons, labels);
+                Self::build_inspector_type_row(el, x0, x1, inner_w, y, buttons, labels);
             y = new_y;
             rect
         } else {
@@ -1822,7 +1822,6 @@ impl SlidesApp {
                   this argument list as a throwaway struct"
     )]
     fn build_inspector_type_row(
-        &self,
         el: &Element,
         x0: f64,
         x1: f64,
