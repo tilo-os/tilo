@@ -74,7 +74,11 @@ fn apply_decoder_ranks(policy: HwPolicy) {
         // Safety: `Rank` is a transparent wrapper over the C `gint` rank, and
         // any value is meaningful — GStreamer's own constants are just points
         // on that scale.
-        let want = unsafe { gst::Rank::from_glib(rank_for(policy, kind) as i32) };
+        // Ranks are a small scale (`GST_RANK_PRIMARY` is 256), so the
+        // conversion is exact; a rank that somehow did not fit would be
+        // "rank this as high as possible", which is what saturating gives.
+        let rank = i32::try_from(rank_for(policy, kind)).unwrap_or(i32::MAX);
+        let want = unsafe { gst::Rank::from_glib(rank) };
         if feature.rank() != want {
             feature.set_rank(want);
         }
@@ -82,7 +86,7 @@ fn apply_decoder_ranks(policy: HwPolicy) {
     tracing::debug!("media: decoder ranks applied for policy {policy:?}");
 }
 
-/// Every video decoder in the GStreamer registry, with the rank it currently
+/// Every video decoder in the `GStreamer` registry, with the rank it currently
 /// carries.
 ///
 /// This is what makes "no hardware decode happened" a *checkable* statement
@@ -90,7 +94,7 @@ fn apply_decoder_ranks(policy: HwPolicy) {
 /// decoder for the stream even exists on this machine before concluding
 /// anything about why a software one was chosen.
 ///
-/// Initialises GStreamer if it is not already up; returns an empty list if it
+/// Initialises `GStreamer` if it is not already up; returns an empty list if it
 /// cannot be initialised at all.
 pub fn available_video_decoders() -> Vec<DecoderEntry> {
     if gst::init().is_err() {
@@ -107,7 +111,9 @@ pub fn available_video_decoders() -> Vec<DecoderEntry> {
             }
             Some(DecoderEntry {
                 kind: DecoderKind::classify(&name),
-                rank: f.rank().into_glib() as u32,
+                // `GstRank` is a `gint`. A negative rank means "below
+                // `GST_RANK_NONE`", which this scale expresses as zero.
+                rank: u32::try_from(f.rank().into_glib()).unwrap_or(0),
                 name,
             })
         })
@@ -131,17 +137,13 @@ pub fn decoders_for(media_type: &str) -> Vec<DecoderEntry> {
     };
     available_video_decoders()
         .into_iter()
-        .filter(|d| {
-            gst::ElementFactory::find(&d.name)
-                .map(|f| f.can_sink_any_caps(&caps))
-                .unwrap_or(false)
-        })
+        .filter(|d| gst::ElementFactory::find(&d.name).is_some_and(|f| f.can_sink_any_caps(&caps)))
         .collect()
 }
 
 /// The caps an appsink advertises for a given [`FrameAcceptance`].
 ///
-/// Structures are ordered best-first: GStreamer negotiates the first one both
+/// Structures are ordered best-first: `GStreamer` negotiates the first one both
 /// sides can satisfy, so a decoder that can export dmabufs will, and one that
 /// cannot falls through to planar system memory without a colour conversion.
 fn sink_caps(acceptance: FrameAcceptance) -> gst::Caps {
@@ -155,7 +157,14 @@ fn sink_caps(acceptance: FrameAcceptance) -> gst::Caps {
             "video/x-raw(memory:DMABuf); \
              video/x-raw, format = (string) { NV12, P010_10LE, RGBA, BGRA, BGRx, RGBx }",
         )
-        .expect("static caps string parses"),
+        .unwrap_or_else(|_| {
+            // Unreachable: the argument is a string literal. Falling back to
+            // the RGBA surface rather than panicking means a parse failure
+            // costs the zero-copy path, not the process.
+            gst::Caps::builder("video/x-raw")
+                .field("format", "RGBA")
+                .build()
+        }),
     }
 }
 
@@ -236,6 +245,14 @@ struct Observed {
     report: HwReport,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four unrelated facts about a live pipeline — transport state, \
+              whether one event has been emitted, whether a flushing seek is \
+              outstanding, and whether audio is muted. They are independent, \
+              so an enum over them would enumerate combinations that all \
+              legitimately occur"
+)]
 pub struct GstState {
     playbin: gst::Element,
     appsink: gst_app::AppSink,
@@ -276,7 +293,7 @@ pub struct GstState {
 }
 
 impl GstState {
-    /// Build the pipeline with no source yet. `None` when GStreamer cannot
+    /// Build the pipeline with no source yet. `None` when `GStreamer` cannot
     /// initialise or the sink chain cannot be built, so the engine falls back
     /// to the synthesized backend.
     pub fn new(acceptance: FrameAcceptance, policy: HwPolicy) -> Option<Self> {
@@ -323,19 +340,19 @@ impl GstState {
             playbin.connect("deep-element-added", false, move |vals| {
                 if let Some(element) = vals.get(2).and_then(|v| v.get::<gst::Element>().ok()) {
                     let name = element.name().to_string();
-                    if let Ok(mut o) = observed.lock() {
-                        if o.report.note_element(&name) {
-                            let kind = o.report.decoder_kind.unwrap_or(DecoderKind::Software);
-                            tracing::info!(
-                                "media: decoder {name} ({}, {})",
-                                kind.as_str(),
-                                if kind.is_hardware() {
-                                    "hardware"
-                                } else {
-                                    "software"
-                                }
-                            );
-                        }
+                    if let Ok(mut o) = observed.lock()
+                        && o.report.note_element(&name)
+                    {
+                        let kind = o.report.decoder_kind.unwrap_or(DecoderKind::Software);
+                        tracing::info!(
+                            "media: decoder {name} ({}, {})",
+                            kind.as_str(),
+                            if kind.is_hardware() {
+                                "hardware"
+                            } else {
+                                "software"
+                            }
+                        );
                     }
                 }
                 None
@@ -421,11 +438,12 @@ impl GstState {
     /// Used by the frame-exact path: after a flushing seek the new preroll is
     /// only guaranteed to be present once the state change completes.
     pub fn wait_settled(&mut self, timeout: std::time::Duration) -> bool {
+        // `as_millis` is `u128`; a timeout that does not fit `u64` is
+        // "wait effectively forever", which is what saturating gives.
+        let wait_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
         let settled = matches!(
-            self.playbin
-                .state(gst::ClockTime::from_mseconds(timeout.as_millis() as u64))
-                .0,
-            Ok(gst::StateChangeSuccess::Success) | Ok(gst::StateChangeSuccess::NoPreroll)
+            self.playbin.state(gst::ClockTime::from_mseconds(wait_ms)).0,
+            Ok(gst::StateChangeSuccess::Success | gst::StateChangeSuccess::NoPreroll)
         );
         if settled {
             self.seek_in_flight = false;
@@ -527,7 +545,11 @@ impl GstState {
     /// element in the audio bin; falls back to playbin's own property when the
     /// bin could not be built.
     fn apply_gain(&self) {
-        let level = if self.muted { 0.0 } else { self.volume as f64 };
+        let level = if self.muted {
+            0.0
+        } else {
+            f64::from(self.volume)
+        };
         if let Some(gain) = self.gain_element() {
             gain.set_property("volume", level);
         } else {
@@ -545,7 +567,7 @@ impl GstState {
     }
 
     /// The audio sink element, the entry point for routing or monitoring the
-    /// output (its `device` property, a PipeWire target node, a tee for a
+    /// output (its `device` property, a `PipeWire` target node, a tee for a
     /// meter). `None` when the audio bin could not be built.
     pub fn audio_sink(&self) -> Option<gst::Element> {
         let sink = self
@@ -563,7 +585,7 @@ impl GstState {
         }
         self.playbin
             .query_position::<gst::ClockTime>()
-            .map(|p| p.mseconds())
+            .map(gst::ClockTime::mseconds)
             .or(self.seek_target_ms)
             .or(self.last_position)
             .or_else(|| self.latest.as_ref().map(|f| f.pts_ms))
@@ -573,7 +595,7 @@ impl GstState {
     pub fn duration_ms(&self) -> Option<u64> {
         self.playbin
             .query_duration::<gst::ClockTime>()
-            .map(|d| d.mseconds())
+            .map(gst::ClockTime::mseconds)
     }
 
     pub fn buffering_percent(&self) -> u8 {
@@ -628,14 +650,13 @@ impl GstState {
         let mut got = false;
 
         // Paused, or playing but not yet seeded: the preroll is the picture.
-        if !self.playing || self.latest.is_none() {
-            if let Some(sample) = self.appsink.try_pull_preroll(gst::ClockTime::ZERO) {
-                if let Some(frame) = frame_from_sample(&sample, self.acceptance) {
-                    self.record_caps(&sample);
-                    self.store(frame);
-                    got = true;
-                }
-            }
+        if (!self.playing || self.latest.is_none())
+            && let Some(sample) = self.appsink.try_pull_preroll(gst::ClockTime::ZERO)
+            && let Some(frame) = frame_from_sample(&sample, self.acceptance)
+        {
+            self.record_caps(&sample);
+            self.store(frame);
+            got = true;
         }
 
         // Playing: drain to the newest so the surface never lags the pipeline.
@@ -661,7 +682,10 @@ impl GstState {
     /// [`Self::latest`], and converting behind its back would reintroduce the
     /// per-frame CPU cost this path removes.
     fn store(&mut self, frame: Frame) {
-        self.frames_stored += 1;
+        // Saturating: this counter only ever answers "is the picture newer
+        // than the last seek", and a wrap would make a fresh frame look
+        // stale forever. 2^64 frames is 24 billion years at 24fps.
+        self.frames_stored = self.frames_stored.saturating_add(1);
         self.latest_rgba = match frame.payload {
             FramePayload::Rgba(_) => frame.to_video_frame(),
             _ => None,
@@ -672,30 +696,32 @@ impl GstState {
     /// Record the caps the sink negotiated — the proof of which memory the
     /// frames actually arrive in.
     fn record_caps(&self, sample: &gst::Sample) {
-        if let Some(caps) = sample.caps() {
-            if let Ok(mut o) = self.observed.lock() {
-                if o.report.negotiated_caps.is_none() {
-                    o.report.negotiated_caps = Some(caps.to_string());
-                }
-            }
+        if let Some(caps) = sample.caps()
+            && let Ok(mut o) = self.observed.lock()
+            && o.report.negotiated_caps.is_none()
+        {
+            o.report.negotiated_caps = Some(caps.to_string());
         }
     }
 
     pub fn poll(&mut self) -> Vec<MediaEvent> {
         let mut events: Vec<MediaEvent> = self.pending.drain(..).collect();
 
-        if !self.duration_announced {
-            if let Some(ms) = self.duration_ms() {
-                events.push(MediaEvent::DurationKnown { ms });
-                self.duration_announced = true;
-            }
+        if !self.duration_announced
+            && let Some(ms) = self.duration_ms()
+        {
+            events.push(MediaEvent::DurationKnown { ms });
+            self.duration_announced = true;
         }
 
         while let Some(msg) = self.bus.pop() {
             use gst::MessageView;
             match msg.view() {
                 MessageView::Buffering(b) => {
-                    let pct = b.percent().clamp(0, 100) as u8;
+                    // Clamped to 0..=100 on the same line, so the
+                    // conversion cannot fail; 0 would be the honest reading
+                    // of a percentage that somehow was not one.
+                    let pct = u8::try_from(b.percent().clamp(0, 100)).unwrap_or(0);
                     self.buffering = pct;
                     if self.last_buffering != Some(pct) {
                         self.last_buffering = Some(pct);
@@ -745,14 +771,13 @@ impl Drop for GstState {
 fn frame_from_sample(sample: &gst::Sample, acceptance: FrameAcceptance) -> Option<Frame> {
     let caps = sample.caps()?;
     let buffer = sample.buffer()?;
-    let pts_ms = buffer.pts().map(|p| p.mseconds()).unwrap_or(0);
+    let pts_ms = buffer.pts().map_or(0, gst::ClockTime::mseconds);
 
     // A dmabuf sample carries `memory:DMABuf` in its caps features and a
     // `DMA_DRM` format described by `drm-format`.
     if caps
         .features(0)
-        .map(|f| f.contains("memory:DMABuf"))
-        .unwrap_or(false)
+        .is_some_and(|f| f.contains("memory:DMABuf"))
     {
         if acceptance == FrameAcceptance::Native {
             if let Some(img) = dmabuf_from_sample(sample, caps) {
@@ -784,18 +809,22 @@ fn frame_from_sample(sample: &gst::Sample, acceptance: FrameAcceptance) -> Optio
             } else {
                 PlanarFormat::P010
             };
-            let planes = (0..2)
+            let planes = (0..2u32)
                 .map(|i| {
                     let data = vframe.plane_data(i).ok()?;
+                    // `VideoInfo` strides are signed — `GStreamer` spells a
+                    // bottom-up image as a negative one. Reading that as a
+                    // colossal unsigned row length is how a flipped frame
+                    // turns into an out-of-range read downstream, so refuse
+                    // the plane instead and let the frame be dropped.
+                    let stride = *info.stride().get(i as usize)?;
+                    let luma = i == 0;
                     Some(PlaneData {
                         bytes: Arc::new(data.to_vec()),
-                        stride: info.stride()[i as usize] as u32,
-                        width: if i == 0 {
-                            info.width()
-                        } else {
-                            info.width() / 2
-                        },
-                        height: if i == 0 {
+                        stride: u32::try_from(stride).ok()?,
+                        // 4:2:0 chroma is half resolution in both axes.
+                        width: if luma { info.width() } else { info.width() / 2 },
+                        height: if luma {
                             info.height()
                         } else {
                             info.height() / 2
@@ -827,47 +856,86 @@ fn frame_from_sample(sample: &gst::Sample, acceptance: FrameAcceptance) -> Optio
     }
 }
 
-/// Repack a packed 8-bit sample (RGBA / BGRA / BGRx / RGBx) into tight RGBA8.
+/// Repack a packed 8-bit sample (`RGBA` / `BGRA` / `BGRx` / `RGBx`) into tight
+/// RGBA8.
 fn packed_to_rgba(
     vframe: &gst_video::VideoFrameRef<&gst::BufferRef>,
     info: &gst_video::VideoInfo,
 ) -> Option<Vec<u8>> {
-    let w = info.width() as usize;
-    let h = info.height() as usize;
-    let stride = info.stride()[0] as usize;
     let data = vframe.plane_data(0).ok()?;
-    let row = w * 4;
-    if stride < row || data.len() < stride * h {
-        return None;
+    let (row, stride, height) = packed_row_geometry(
+        info.width(),
+        info.height(),
+        *info.stride().first()?,
+        data.len(),
+    )?;
+    if row == 0 || height == 0 {
+        return Some(Vec::new());
     }
-    // Which source byte feeds each destination channel.
-    let swizzle: [usize; 4] = match info.format() {
-        gst_video::VideoFormat::Rgba | gst_video::VideoFormat::Rgbx => [0, 1, 2, 3],
-        gst_video::VideoFormat::Bgra | gst_video::VideoFormat::Bgrx => [2, 1, 0, 3],
-        _ => [0, 1, 2, 3],
-    };
+
+    // Source byte order. `BGRA`/`BGRx` carry blue first; everything else is
+    // taken as already-RGB, which is what the caps this sink advertises can
+    // negotiate. `x` formats have no alpha channel to read, so it is forced
+    // opaque rather than copied from a byte that means nothing.
+    let bgr = matches!(
+        info.format(),
+        gst_video::VideoFormat::Bgra | gst_video::VideoFormat::Bgrx
+    );
     let opaque = matches!(
         info.format(),
         gst_video::VideoFormat::Rgbx | gst_video::VideoFormat::Bgrx
     );
-    let mut out = vec![0u8; row * h];
-    for y in 0..h {
-        let src = &data[y * stride..y * stride + row];
-        let dst = &mut out[y * row..(y + 1) * row];
-        if swizzle == [0, 1, 2, 3] && !opaque {
-            dst.copy_from_slice(src);
-        } else {
-            for x in 0..w {
-                let s = &src[x * 4..x * 4 + 4];
-                let d = &mut dst[x * 4..x * 4 + 4];
-                d[0] = s[swizzle[0]];
-                d[1] = s[swizzle[1]];
-                d[2] = s[swizzle[2]];
-                d[3] = if opaque { 255 } else { s[swizzle[3]] };
-            }
+
+    let mut out = vec![0u8; row.checked_mul(height)?];
+    // `packed_row_geometry` proved `stride * height` fits the source buffer,
+    // so zipping the two chunk iterators walks exactly `height` rows and no
+    // offset is computed by hand.
+    for (src_row, dst_row) in data.chunks_exact(stride).zip(out.chunks_exact_mut(row)) {
+        // `stride >= row`, so the padding past the visible pixels is dropped
+        // here rather than copied.
+        let Some(src) = src_row.get(..row) else {
+            continue;
+        };
+        if !bgr && !opaque {
+            dst_row.copy_from_slice(src);
+            continue;
+        }
+        for (s, d) in src.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+            let &[b0, b1, b2, b3] = s else { continue };
+            let (r, g, b) = if bgr { (b2, b1, b0) } else { (b0, b1, b2) };
+            d.copy_from_slice(&[r, g, b, if opaque { 255 } else { b3 }]);
         }
     }
     Some(out)
+}
+
+/// Row geometry for a packed repack: `(visible bytes per row, source stride,
+/// rows)`, or `None` when the buffer cannot be walked forward row by row.
+///
+/// Split out from [`packed_to_rgba`] because it is the whole of the bounds
+/// reasoning and needs no `GStreamer` buffer to test. It refuses three things:
+///
+/// * a **negative stride**, which `GStreamer` uses for a bottom-up image.
+///   Reading the sign as magnitude (what `as usize` does) yields a row length
+///   of billions, which sails past the `stride < row` check and indexes off
+///   the end of the buffer;
+/// * geometry whose byte counts do not fit `usize`, so the `stride * height`
+///   bound cannot silently wrap and turn the length check into a no-op;
+/// * a buffer shorter than the geometry claims.
+fn packed_row_geometry(
+    width: u32,
+    height: u32,
+    stride: i32,
+    data_len: usize,
+) -> Option<(usize, usize, usize)> {
+    let width = width as usize;
+    let height = height as usize;
+    let stride = usize::try_from(stride).ok()?;
+    let row = width.checked_mul(4)?;
+    if stride < row || data_len < stride.checked_mul(height)? {
+        return None;
+    }
+    Some((row, stride, height))
 }
 
 /// The colour convention the caps declare, defaulting to BT.709 limited —
@@ -876,9 +944,10 @@ fn colorimetry_from_info(info: &gst_video::VideoInfo) -> Colorimetry {
     let c = info.colorimetry();
     let matrix = match c.matrix() {
         gst_video::VideoColorMatrix::Bt601 => YuvMatrix::Bt601,
-        gst_video::VideoColorMatrix::Bt709 => YuvMatrix::Bt709,
         gst_video::VideoColorMatrix::Bt2020 => YuvMatrix::Bt2020,
         gst_video::VideoColorMatrix::Rgb => YuvMatrix::Identity,
+        // BT.709 is both a named matrix and the default: it is what HD video
+        // carries when the caps decline to say.
         _ => YuvMatrix::Bt709,
     };
     let range = match c.range() {
@@ -916,23 +985,38 @@ fn dmabuf_from_sample(sample: &gst::Sample, caps: &gst::CapsRef) -> Option<Dmabu
 
     // Plane geometry: prefer the buffer's VideoMeta (authoritative for the
     // actual allocation), fall back to the caps-derived info.
+    //
+    // Both sources are fallible per plane: a `VideoMeta` offset is a `usize`
+    // and a stride is a signed `gint`, and a negative stride (a bottom-up
+    // image) or an offset past 4 GiB describes a layout an importer cannot
+    // bind. Those planes drop out here, and the length check below turns a
+    // partial answer into "cannot describe the frame" rather than a plane
+    // list that is silently short.
     let meta = buffer.meta::<gst_video::VideoMeta>();
     let (offsets, strides): (Vec<u32>, Vec<u32>) = match &meta {
         Some(m) => (
             m.offset()
                 .iter()
                 .take(n_planes)
-                .map(|o| *o as u32)
+                .filter_map(|o| u32::try_from(*o).ok())
                 .collect(),
             m.stride()
                 .iter()
                 .take(n_planes)
-                .map(|s| *s as u32)
+                .filter_map(|s| u32::try_from(*s).ok())
                 .collect(),
         ),
         None => (
-            (0..n_planes).map(|i| info.offset()[i] as u32).collect(),
-            (0..n_planes).map(|i| info.stride()[i] as u32).collect(),
+            info.offset()
+                .iter()
+                .take(n_planes)
+                .filter_map(|o| u32::try_from(*o).ok())
+                .collect(),
+            info.stride()
+                .iter()
+                .take(n_planes)
+                .filter_map(|s| u32::try_from(*s).ok())
+                .collect(),
         ),
     };
     if offsets.len() < n_planes || strides.len() < n_planes {
@@ -943,13 +1027,23 @@ fn dmabuf_from_sample(sample: &gst::Sample, caps: &gst::CapsRef) -> Option<Dmabu
     // One GstMemory may back several planes (offsets into one fd), or each
     // plane may have its own. Map plane → memory by GStreamer's own rule.
     let n_mem = buffer.n_memory();
+    // A buffer with no memory at all (a GAP buffer, say) describes no picture.
+    // Saying so here is what keeps the plane→memory mapping below from
+    // computing `n_mem - 1` on zero.
+    let Some(last_mem) = n_mem.checked_sub(1) else {
+        tracing::warn!("media: dmabuf sample carries no memory; cannot describe frame");
+        return None;
+    };
     let mut planes = Vec::with_capacity(n_planes);
-    for i in 0..n_planes {
-        let mem_idx = if n_mem == 1 { 0 } else { i.min(n_mem - 1) };
+    for (i, (offset, stride)) in offsets.iter().zip(&strides).enumerate() {
+        // One `GstMemory` may back several planes at different offsets, or
+        // each plane may carry its own; clamping is `GStreamer`'s own rule for
+        // the first case.
+        let mem_idx = i.min(last_mem);
         let mem = buffer.peek_memory(mem_idx);
         // Safety: `mem` is a live `&MemoryRef` borrowed from the buffer for
         // the duration of this call; both C entry points only read from it.
-        let raw = mem.as_ptr() as *mut gst::ffi::GstMemory;
+        let raw = mem.as_ptr().cast_mut();
         let is_dmabuf = unsafe { gst_is_dmabuf_memory(raw) } != 0;
         if !is_dmabuf {
             tracing::warn!("media: caps claimed memory:DMABuf but memory {mem_idx} is not one");
@@ -966,8 +1060,8 @@ fn dmabuf_from_sample(sample: &gst::Sample, caps: &gst::CapsRef) -> Option<Dmabu
         let fd = borrowed.try_clone_to_owned().ok()?;
         planes.push(DmabufPlane {
             fd,
-            offset: offsets[i],
-            stride: strides[i],
+            offset: *offset,
+            stride: *stride,
         });
     }
 
@@ -993,6 +1087,45 @@ mod tests {
     /// safe to call from every test.
     fn init() {
         gst::init().expect("GStreamer initialises in the test environment");
+    }
+
+    #[test]
+    fn a_negative_stride_is_refused_rather_than_read_as_a_huge_row() {
+        // `GStreamer` spells a bottom-up image as a negative stride. Reading
+        // the sign as magnitude — what `stride as usize` does — turns -4096
+        // into 18 446 744 073 709 547 520, which sails past a `stride < row`
+        // check and then indexes billions of bytes off the end of the buffer.
+        // This repacker only walks rows forward, so the honest answer is that
+        // it cannot describe the frame.
+        assert_eq!(
+            packed_row_geometry(64, 4, -256, 4096),
+            None,
+            "a bottom-up buffer must be refused, not reinterpreted"
+        );
+        // The same geometry with the stride the right way up is fine.
+        assert_eq!(
+            packed_row_geometry(64, 4, 256, 4096),
+            Some((256, 256, 4)),
+            "a normal top-down buffer still works"
+        );
+    }
+
+    #[test]
+    fn packed_geometry_refuses_a_buffer_that_cannot_supply_the_rows_claimed() {
+        // A buffer one byte short of four rows cannot supply four rows.
+        assert_eq!(
+            packed_row_geometry(64, 4, 256, 1023),
+            None,
+            "a short buffer is refused rather than read past its end"
+        );
+        // A stride narrower than the visible row is not padding, it is wrong.
+        assert_eq!(packed_row_geometry(64, 4, 128, 4096), None, "stride < row");
+        // Padding past the visible pixels is normal and must be accepted.
+        assert_eq!(
+            packed_row_geometry(60, 4, 256, 1024),
+            Some((240, 256, 4)),
+            "a padded row is accepted, and the padding is not part of the row"
+        );
     }
 
     #[test]
