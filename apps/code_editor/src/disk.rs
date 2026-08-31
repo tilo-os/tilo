@@ -260,8 +260,11 @@ mod tests {
         let d = tmpdir();
         let p = d.path().join("a.rs");
         let s1 = save(&p, "one", None).unwrap();
-        let s2 = save(&p, "two", Some(&s1)).expect("we are still in agreement with the file");
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "two");
+        // Change the length as well as the contents so the new stamp is
+        // observably different even on filesystems whose mtimes have coarse
+        // resolution (or when both atomic renames land in the same clock tick).
+        let s2 = save(&p, "two!", Some(&s1)).expect("we are still in agreement with the file");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "two!");
         assert_ne!(s1, s2, "the stamp advances with the content");
     }
 
