@@ -29,7 +29,13 @@ grep -q -- '--firstboot' "$(path /usr/libexec/qos-session)"
 [[ ! -e $(path /usr/lib/systemd/user/qos-portal.service) ]]
 
 for elf in /usr/bin/qos-shell /usr/bin/qos-launcher /usr/libexec/qos-unlock-helper; do
-    file "$(path "$elf")" | grep -Eq 'ELF 64-bit.*(x86-64|ARM aarch64)'
+    elf_description=$(file "$(path "$elf")")
+    case ${QOS_EXPECT_ARCH:-} in
+        amd64) grep -Eq 'ELF 64-bit.*x86-64' <<<"$elf_description" ;;
+        arm64) grep -Eq 'ELF 64-bit.*ARM aarch64' <<<"$elf_description" ;;
+        "") grep -Eq 'ELF 64-bit.*(x86-64|ARM aarch64)' <<<"$elf_description" ;;
+        *) echo "unsupported QOS_EXPECT_ARCH: $QOS_EXPECT_ARCH" >&2; exit 2 ;;
+    esac
     if ldd "$(path "$elf")" | tee /dev/stderr | grep -q 'not found'; then
         echo "unresolved shared library in $elf" >&2
         exit 1

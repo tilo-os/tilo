@@ -9,7 +9,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-out=$repo_root/dist/rpm/build
+out=${QOS_PACKAGE_OUT:-$repo_root/dist/rpm/build}
 name=qos-session
 version=$(<"$repo_root/dist/VERSION")
 
