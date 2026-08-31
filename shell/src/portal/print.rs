@@ -395,6 +395,10 @@ fn random_token() -> u32 {
 impl PrintBackend {
     /// Interface version. Named lowercase to match the spec's `version` property (zbus would otherwise `PascalCase` it to `Version`).
     #[zbus(property, name = "version")]
+    #[allow(
+        clippy::unused_self,
+        reason = "zbus's #[interface] macro dispatches D-Bus property getters as instance methods, even though this constant value doesn't depend on self"
+    )]
     fn version(&self) -> u32 {
         PRINT_VERSION
     }
@@ -409,7 +413,8 @@ impl PrintBackend {
     /// Costs the honest app nothing: `flow::resolve` fast-paths a standing `Always` grant.
     #[allow(
         clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Print.PreparePrint D-Bus signature"
+        clippy::used_underscore_binding,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Print.PreparePrint D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
     )]
     async fn prepare_print(
         &self,
@@ -468,7 +473,8 @@ impl PrintBackend {
     /// treat every property as a claim: read only after consent, only if a regular file, only up to [`MAX_SPOOL_BYTES`].
     #[allow(
         clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Print.Print D-Bus signature"
+        clippy::used_underscore_binding,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.Print.Print D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
     )]
     async fn print(
         &self,

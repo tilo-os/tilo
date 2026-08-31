@@ -873,7 +873,7 @@ fn full_root_click_toggles_overview_via_topbar_button() {
     let mut focus: Option<NodeId> = None;
 
     click_full_root(
-        &mut root, &taffy, root_node, &mut state, &root_path, &mut focus, &modifiers, hit,
+        &mut root, &taffy, root_node, &mut state, &root_path, &mut focus, modifiers, hit,
     );
     assert!(
         chrome.borrow().overlays.overview,
@@ -884,7 +884,7 @@ fn full_root_click_toggles_overview_via_topbar_button() {
     // `ShellOverlayHost` currently swallows any click while `flags.overview`
     // is set, so only the end effect matters.
     click_full_root(
-        &mut root, &taffy, root_node, &mut state, &root_path, &mut focus, &modifiers, hit,
+        &mut root, &taffy, root_node, &mut state, &root_path, &mut focus, modifiers, hit,
     );
     assert!(
         !chrome.borrow().overlays.overview,
@@ -973,7 +973,7 @@ fn click_full_root(
     state: &mut automerge::AutoCommit,
     root_path: &automerge::ObjId,
     focus: &mut Option<taffy::NodeId>,
-    modifiers: &winit::event::Modifiers,
+    modifiers: winit::event::Modifiers,
     hit: vello::kurbo::Point,
 ) {
     use winit::dpi::PhysicalPosition;
@@ -987,7 +987,7 @@ fn click_full_root(
     root.handle_event(
         &cm,
         1.0,
-        modifiers,
+        &modifiers,
         state,
         root_path,
         &mut handled,
@@ -1005,7 +1005,7 @@ fn click_full_root(
     root.handle_event(
         &mi,
         1.0,
-        modifiers,
+        &modifiers,
         state,
         root_path,
         &mut handled,

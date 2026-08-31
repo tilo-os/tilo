@@ -1578,6 +1578,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "channels' only use is the assert_eq! immediately below; the block \
+                  already ends right after it"
+    )]
     fn capnp_signed_op_rejections_are_dropped_and_audited() {
         let capnp_path = unique_path("capnp-signed-rejections");
         let handle = spawn_native(capnp_path.clone(), &None).expect("spawn broker");
@@ -1623,11 +1628,6 @@ mod tests {
                 .any(|entry| matches!(entry.rejection, Some(ValidationError::BadOpSignature(_))))
         );
         let channels = handle.channels();
-        #[allow(
-            clippy::significant_drop_tightening,
-            reason = "channels' only use is the assert_eq! immediately below; the block \
-                      already ends right after it"
-        )]
         {
             let mut channels = channels.lock().expect("channels");
             assert_eq!(

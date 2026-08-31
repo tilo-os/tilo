@@ -411,7 +411,7 @@ impl channel_handle::Server for FakeChannel {
         };
         self.captures.borrow_mut().scrollback_requests.push((
             p.get_artifact_id()
-                .map_or_else(|_| Vec::new(), |id| id.to_vec()),
+                .map_or_else(|_| Vec::new(), <[u8]>::to_vec),
             p.get_before_seq(),
             p.get_max(),
         ));

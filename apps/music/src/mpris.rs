@@ -263,6 +263,13 @@ pub fn track_object_path(track_id: &str) -> String {
 
 #[cfg(feature = "audio")]
 mod imp {
+    #![allow(
+        clippy::used_underscore_binding,
+        reason = "zbus's #[interface] macro re-binds set_position's _track_id and open_uri's \
+                  _uri by their literal names in generated dispatch code that lands in this \
+                  module but outside the annotated impl/fn, so neither an impl- nor fn-level \
+                  allow reaches it; the method bodies never read either parameter"
+    )]
     use std::collections::HashMap;
     use std::sync::mpsc::{Receiver, Sender};
 
@@ -366,13 +373,6 @@ mod imp {
     }
 
     #[interface(name = "org.mpris.MediaPlayer2.Player")]
-    #[allow(
-        clippy::used_underscore_binding,
-        reason = "zbus's #[interface] macro re-binds set_position's _track_id and open_uri's \
-                  _uri by their literal names in generated dispatch code, which trips the lint \
-                  even though neither method body reads them; dropping the underscore would \
-                  instead warn as an unused variable"
-    )]
     impl PlayerIface {
         fn play(&self) {
             let _ = self.cmd.send(MprisCommand::Play);

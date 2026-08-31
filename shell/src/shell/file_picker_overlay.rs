@@ -163,6 +163,12 @@ pub fn file_picker_rect(viewport: Rect) -> Rect {
     Rect::new(x0, y0, x0 + w, y0 + h)
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "both guards already end at the block that binds them, right where `granted` \
+              (the value built from them) is handed back to with_granted_paths; nothing to \
+              tighten without cloning the tree/capabilities out for no real gain"
+)]
 fn picker_scope_for(
     chrome: Option<&Chrome>,
     caller: &crate::portal::PortalCaller,

@@ -195,7 +195,7 @@ impl Harness {
 
     /// The way `ForeignSurfaceWidget::apply_layout` publishes once the strip
     /// has laid the tab out.
-    fn lay_tabs_out(&mut self, tile: Rect) {
+    fn lay_tabs_out(&self, tile: Rect) {
         for toplevel in self.state.xdg_shell_state.toplevel_surfaces().to_vec() {
             let id = shell::compositor::state::surface_id(toplevel.wl_surface());
             shell::compositor::foreign::store().note_placement(id, tile);

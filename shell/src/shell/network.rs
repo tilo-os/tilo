@@ -1001,6 +1001,12 @@ impl ShellNetwork {
         self.issue_invite_for(local, expiry_seconds_from_now, Some(invitee))
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "ws is fully chained from tree (via replica's lock); nothing to drop \
+                  earlier without cloning the tree data out for no real gain, and the \
+                  block already ends right after ws is cloned out"
+    )]
     fn issue_invite_for(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -1011,12 +1017,6 @@ impl ShellNetwork {
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
         let (token, room) = {
-            #[allow(
-                clippy::significant_drop_tightening,
-                reason = "ws is fully chained from tree (via replica's lock); nothing to drop \
-                          earlier without cloning the tree data out for no real gain, and the \
-                          block already ends right after ws is cloned out"
-            )]
             let ws = {
                 let replica = self
                     .replica
@@ -1604,11 +1604,12 @@ impl ShellNetwork {
             .ok()
             .and_then(|pending| pending.get(&room).cloned());
         let Some(name) = name else { return };
-        let person = match collab_types::caps::Principal::person_from_key(
-            collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
-        ) {
-            collab_types::caps::Principal::Person(person) => person,
-            _ => return,
+        let collab_types::caps::Principal::Person(person) =
+            collab_types::caps::Principal::person_from_key(
+                collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
+            )
+        else {
+            return;
         };
         let Ok(replica) = self.replica.lock() else {
             return;
@@ -1651,6 +1652,11 @@ impl ShellNetwork {
         }
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "replica and tree (read from replica) are both read from through the \
+                  function's last statement (workspace/actor/allows); nothing to drop earlier"
+    )]
     fn peer_may_write_app(
         &self,
         origin: &crate::shell::state::PeerOrigin,
@@ -1660,11 +1666,12 @@ impl ShellNetwork {
         let Some(identity) = self.peer_identities.get(origin) else {
             return false;
         };
-        let person = match collab_types::caps::Principal::person_from_key(
-            collab_types::crypto::Ed25519PublicKey::from_bytes(identity.user_pubkey),
-        ) {
-            collab_types::caps::Principal::Person(person) => person,
-            _ => return false,
+        let collab_types::caps::Principal::Person(person) =
+            collab_types::caps::Principal::person_from_key(
+                collab_types::crypto::Ed25519PublicKey::from_bytes(identity.user_pubkey),
+            )
+        else {
+            return false;
         };
         let Some(room) = RoomId::parse(cluster_id) else {
             return false;
@@ -1672,7 +1679,9 @@ impl ShellNetwork {
         let Ok(replica) = self.replica.lock() else {
             return false;
         };
-        let tree = replica.tree.read();
+        let tree_handle = replica.tree.clone();
+        drop(replica);
+        let tree = tree_handle.read();
         let Some(workspace) = tree
             .workspaces
             .iter()
@@ -1720,8 +1729,8 @@ fn host_identity_for_key(
     keypair: &iroh::SecretKey,
     keypair_path: &std::path::Path,
 ) -> Option<HostIdentity> {
-    let root = keypair_path.parent()?.parent()?;
-    let paths = qos_user_identity::IdentityPaths::under(root);
+    let identity_root = keypair_path.parent()?.parent()?;
+    let paths = qos_user_identity::IdentityPaths::under(identity_root);
     let user_public_key = qos_user_identity::persist::read_public_key(&paths.user_pubkey).ok()?;
     let device_cert = qos_user_identity::persist::read_device_cert(&paths.device_cert).ok()?;
     if qos_user_identity::verify_device_cert(&device_cert).is_err()
@@ -1740,13 +1749,13 @@ fn host_identity_for_key(
             let Some(profile) = registry.identities.get(identity_id) else {
                 continue;
             };
-            let Some(room) = RoomId::parse(room) else {
+            let Some(room_id) = RoomId::parse(room) else {
                 continue;
             };
             let cert_path = paths.device_cert_for_user(&profile.user_public_key);
             let Ok(cert) = qos_user_identity::persist::read_device_cert(&cert_path) else {
                 tracing::warn!(
-                    room = %room,
+                    room = %room_id,
                     identity = %identity_id,
                     "workspace identity has no device certificate"
                 );
@@ -1759,11 +1768,11 @@ fn host_identity_for_key(
                     .and_then(|store| store.load(identity_id))
                     .is_ok_and(|fleet| fleet.is_revoked(&cert.device_public_key))
             {
-                workspace_device_certs.insert(room_topic_id(room), cert);
+                workspace_device_certs.insert(room_topic_id(room_id), cert);
                 if let Ok(fleet) = crate::device_fleet::DeviceFleetStore::from_env()
                     .and_then(|store| store.load(identity_id))
                 {
-                    workspace_revocations.insert(room_topic_id(room), fleet.revocations);
+                    workspace_revocations.insert(room_topic_id(room_id), fleet.revocations);
                 }
             }
         }
@@ -1872,11 +1881,12 @@ mod tests {
 
         let origin = crate::shell::state::PeerOrigin::peer(&device.public());
         net.accept_identity_hello(room_topic_id(room), &origin, &device.public(), &cert, &[]);
-        let person = match collab_types::caps::Principal::person_from_key(
-            collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
-        ) {
-            collab_types::caps::Principal::Person(person) => person,
-            _ => unreachable!(),
+        let collab_types::caps::Principal::Person(person) =
+            collab_types::caps::Principal::person_from_key(
+                collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
+            )
+        else {
+            unreachable!()
         };
         let replica = net.replica.lock().expect("replica");
         let tree = replica.tree.read();

@@ -768,8 +768,8 @@ impl BackupsApp {
         let cols = card_columns(main.width(), 156.0, 12.0).clamp(1, 4);
         let rows = 4usize.div_ceil(cols);
         let tile_h = 82.0;
-        let tiles_h = rows as f64 * tile_h + (rows as f64 - 1.0) * 12.0;
-        let tiles = Rect::new(main.x0, main.y0, main.x1, main.y0 + tiles_h);
+        let tile_block_h = rows as f64 * tile_h + (rows as f64 - 1.0) * 12.0;
+        let tiles = Rect::new(main.x0, main.y0, main.x1, main.y0 + tile_block_h);
         self.draw_summary_tiles(scene, t, tr, theme, tiles, cols);
 
         // Timeline header.

@@ -65,7 +65,8 @@ impl FileChooserBackend {
     /// `OpenFile` — request one or more existing files.
     #[allow(
         clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.OpenFile D-Bus signature"
+        clippy::used_underscore_binding,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.OpenFile D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
     )]
     async fn open_file(
         &self,
@@ -93,7 +94,8 @@ impl FileChooserBackend {
     /// `SaveFile` — request a destination for one new file.
     #[allow(
         clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFile D-Bus signature"
+        clippy::used_underscore_binding,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFile D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
     )]
     async fn save_file(
         &self,
@@ -121,7 +123,8 @@ impl FileChooserBackend {
     /// `SaveFiles` — request a folder + multiple destination filenames.
     #[allow(
         clippy::too_many_arguments,
-        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFiles D-Bus signature"
+        clippy::used_underscore_binding,
+        reason = "argument list mirrors the fixed org.freedesktop.impl.portal.FileChooser.SaveFiles D-Bus signature; zbus's #[interface] dispatch wraps every call in an async task that captures unused underscore-prefixed parameters, tripping used_underscore_binding on the desugared code"
     )]
     async fn save_files(
         &self,
@@ -424,6 +427,11 @@ mod tests {
     /// names only the picked path, on the production path
     /// (`pick_and_grant`), against the real grant store.
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the read guard protects `ws`, which the closure below needs through the \
+                  block's final `.collect()` — already dropped at the earliest possible point"
+    )]
     fn the_grant_names_the_picked_path_and_never_the_filesystem_root() {
         use crate::shell::state::Capability;
 
@@ -486,6 +494,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the read guard protects `ws`, which the closure below needs through the \
+                  block's final `.count()` — already dropped at the earliest possible point"
+    )]
     fn a_cancelled_dialog_grants_nothing() {
         use crate::shell::state::Capability;
 
@@ -572,6 +585,11 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the read guard protects `ws`, which the closure below needs through the \
+                  block's final `.any()` — already dropped at the earliest possible point"
+    )]
     fn a_save_grant_is_writable_and_an_open_grant_is_not() {
         use crate::shell::state::Capability;
 

@@ -388,8 +388,8 @@ impl SearchRegistry {
     /// ~10 rows, and an outscoring kind (forty file hits) can otherwise
     /// push a correctly-ranked app off the bottom. A lone group is exempt
     /// — narrowing to one kind means "show me all of these".
-    pub fn query_grouped(&self, args: QueryArgs<'_>, row_budget: usize) -> Vec<KindGroup> {
-        let ranked = self.query(&args);
+    pub fn query_grouped(&self, args: &QueryArgs<'_>, row_budget: usize) -> Vec<KindGroup> {
+        let ranked = self.query(args);
         let mut groups: Vec<KindGroup> = Vec::new();
         for r in ranked {
             match groups.last_mut() {
@@ -1020,7 +1020,7 @@ mod tests {
         // "editor" is a leaf-name prefix for all forty files but only a
         // substring of "Hex Editor", so Files legitimately outranks it.
         let groups = reg.query_grouped(
-            QueryArgs {
+            &QueryArgs {
                 needle: "editor",
                 scope: SearchScope::Workspace,
                 active_provider_id: None,
@@ -1109,7 +1109,7 @@ mod tests {
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
         let groups = reg.query_grouped(
-            QueryArgs {
+            &QueryArgs {
                 needle: "x",
                 scope: SearchScope::Workspace,
                 active_provider_id: None,

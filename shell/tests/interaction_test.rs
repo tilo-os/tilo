@@ -20,6 +20,33 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+/// Kills and reaps the sandboxed client on drop. The explicit `kill`/`wait`
+/// right before [`test_click_interaction_in_sandbox`]'s final assertion is
+/// the happy-path early reap (so a failing assert doesn't have to wait on
+/// this guard); this is the safety net for every other exit, including a
+/// panicking `.expect()` earlier in the test.
+struct ChildGuard(std::process::Child);
+
+impl std::ops::Deref for ChildGuard {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Run the headless `WaylandServer` on a background thread until it's 20s
 /// old, forwarding queued `input_tx_rx` events into it each tick. Split out
 /// of [`test_click_interaction_in_sandbox`] to keep that test short.
@@ -145,9 +172,11 @@ fn test_click_interaction_in_sandbox() {
     let tab_id = Uuid::new_v4();
 
     // 3. Spawn Client
-    let _child = container
-        .spawn("./click_test_client", &socket_name, tab_id)
-        .expect("Failed to spawn client");
+    let mut child = ChildGuard(
+        container
+            .spawn("./click_test_client", &socket_name, tab_id)
+            .expect("Failed to spawn client"),
+    );
 
     // 4. Wait for Window/Frame
     let surface_id = wait_for_ready_surface(&mut rx, Duration::from_secs(10))
@@ -197,6 +226,11 @@ fn test_click_interaction_in_sandbox() {
     let log_content = fs::read_to_string(&log_path).unwrap_or_default();
     let expected_pattern = format!("EVENT:CLICK AT {test_x:.1},{test_y:.1}");
     println!("DEBUG: Final Client Log:\n{log_content}");
+
+    // Reap the sandboxed client before asserting, so a failing assert can't
+    // skip cleanup and leak the process.
+    let _ = child.kill();
+    let _ = child.wait();
 
     assert!(
         log_content.contains(&expected_pattern),
