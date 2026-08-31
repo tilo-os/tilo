@@ -24,19 +24,19 @@ first — see [ui gaps](#ui-gaps)).
 
 | Category | Canonical widget | Current high-value remainder | Important caveat |
 |---|---|---|---|
-| 1. Text input (HIGH) | `TextInput` / `SearchField` / `NumberInput` / `EditableLabel` | containers create form; chat inline edit/rename; slides speaker notes | Sheets cells and on-canvas slide text need domain-aware editors, not a plain-input swap |
+| 1. Text input (HIGH) | `TextInput` / `SearchField` / `NumberInput` / `EditableLabel` | mail rich text; Sheets cells; transformed slide-canvas text | these are domain-aware editors, not plain-input swaps |
 | 2. Buttons (MED) | `Button` / `Toolbar` | exact create/restore footer faces; several retained-tree conversions | progress, ghost, keypad, canvas, and media surfaces are not ordinary buttons |
 | 3. Modals (MED) | `ModalDialog` | dynamic multi-field and export bodies | use shared framing without flattening app-specific validation/content |
 | 4. Other controls (MED) | `Dropdown`/`Toggle`/`Slider`/`ToggleGroup`/`ContextMenu`/`Popover`/`Chart` | targeted app-specific rows below | preserve semantic controls whose behavior exceeds the generic primitive |
 | 5. Hard-coded colors (LOW) | `Theme` tokens | genuine chrome literals only | document, media-overlay, on-accent, and color-content literals are often intentional |
 
 **Structural finding.** The straightforward text fields are mostly migrated.
-The remaining debt is increasingly either a dynamic form (containers), an
-inline/domain editor (chat, slides, sheets), or immediate-mode app chrome. The
-next useful work is therefore smaller and more contextual: reuse the editor
-core while retaining app policy, and extract real components that own state,
-drawing, hit-testing, and tests. Raw occurrence counts were removed because
-they had become stale and encouraged mechanical conversions.
+The remaining debt is increasingly a domain editor (mail, slides, sheets) or
+immediate-mode app chrome. The next useful work is therefore smaller and more
+contextual: reuse the editor core while retaining app policy, and extract real
+components that own state, drawing, hit-testing, and tests. Raw occurrence
+counts were removed because they had become stale and encouraged mechanical
+conversions.
 
 **2026-07-30 — Ctrl+K unified on the shared search widgets.** The app-level Ctrl+K
 palette (`ui::ActionPalette`) previously bridged the resource/action model into
@@ -111,6 +111,10 @@ input. **chat** composers, sent-message editing, and structural rename now use
 shared inputs. The composers retain their distinct per-keystroke CRDT draft
 binding; message edits and renames stay local until Save/Enter so peers never
 observe an incomplete revision. The rows below record the narrowed boundaries.
+**containers** now binds all six create-form fields to shared inputs without
+flattening its image suggestions, field order, validation, or Podman policy.
+**slides** now binds speaker notes directly to a shared multiline editor while
+leaving transformed on-canvas text to its geometry-aware editing path.
 
 ### Pure non-adoption — a fitting widget already exists (do these first)
 
@@ -133,7 +137,7 @@ observe an incomplete revision. The rows below record the narrowed boundaries.
 | `apps/remote/src/app.rs` search + connection form | remote ✅ | **DONE** — six shared inputs; connection and validation policy stays local | `TextInput`/`NumberInput`/`SearchField` | L | HIGH |
 | `apps/store/src/app.rs` search input | store | **DONE** — shared `TextInput`, bound to the store search document | `TextInput` | M | HIGH |
 | `apps/chat/src/events.rs` inline message edit + rename | chat ✅ | **DONE** — shared local single/multiline `TextInput`s own caret, selection, clipboard, pointer placement, and IME; Chat retains ownership checks and explicit CRDT commit policy | `TextInput` | M | HIGH |
-| `apps/containers/src/panels.rs` transient prompts | containers ✅ | **DONE** — `ModalDialog<PromptBody>`; the separate six-field create form remains below | `TextInput` | S | HIGH |
+| `apps/containers/src/panels.rs` prompts + six-field create form | containers ✅ | **DONE** — shared `PromptBody` plus six CRDT-bound `TextInput`s; image suggestions, validation, form order, and Podman assembly remain app policy | `TextInput` | M | HIGH |
 
 ### Forced by a missing widget capability (extend `ui` first — see [ui gaps](#ui-gaps))
 
@@ -143,7 +147,7 @@ observe an incomplete revision. The rows below record the narrowed boundaries.
 | `apps/imager/src/customize.rs`, `app.rs` confirmation | imager ✅ | **DONE** — all six customization fields plus peer-local destructive confirmation use shared inputs; password is protected | `TextInput` secret mode | L | HIGH |
 | `apps/mail/src/compose.rs` `plain_body`, `wysiwyg.rs:740` | mail | **plain body DONE** — the hand-rolled multiline `String` is now a multiline `TextInput`. `Wysiwyg` (HTML mode) is still a forked rich editor (own `caret`, insert/backspace/split/select) | multiline `TextInput` (gap 1) done; rich editor = gap 3 | M/L | HIGH |
 | `apps/chat/src/app.rs` composers | chat ✅ | **DONE** — shared CRDT-aware multiline inputs; their live collaborative-draft semantics intentionally remain separate from local-until-save edit/rename inputs | multiline `TextInput` | L | HIGH |
-| `apps/slides/src/app.rs` speaker notes + canvas text | slides | title rename is **DONE**; speaker notes fit shared multiline input, while transformed canvas text needs a geometry-aware editor | multiline input / canvas editor | M/L | HIGH |
+| `apps/slides/src/app.rs` speaker notes + canvas text | slides ✅ (notes) | title rename and directly-bound multiline speaker notes are **DONE**; transformed on-canvas text remains a geometry-aware domain editor | multiline input / canvas editor | M/L | HIGH |
 | `apps/sheets/src/grid.rs:48` `EditState{chars,caret,sel}` | sheets | cell/formula body editor fully reimplements caret+selection; formula bar is a 2nd view | formula-aware single-line editor | L | HIGH |
 | `apps/code_editor/src/editor_view.rs` (1999 LOC) | code_editor | full multiline editor (caret/selection/completion). **Palette DONE** — the app-specific painter was replaced by a thin typed adapter over `ui::CommandPalette`, including shared IME/selection/clipboard and direct go-to-line arguments | `ui::CodeEditor` (gap 2, **built**) | L | HIGH |
 | ~~`apps/db_client/src/editor.rs` SQL editor~~ | db_client ✅ | **DONE** — CRDT-bound `ui::CodeEditor` with `Language::Sql`; app-local editor + lexer deleted, while query/snippet/results policy stays in the app | `ui::CodeEditor` (gap 2, **built**) | L | HIGH |
@@ -258,6 +262,7 @@ also use the widget elsewhere.
 | `apps/vpn/src/app.rs:1163` `draw_confirm_modal` | vpn | **DONE** — `ModalDialog<ConfirmBody>` (keeps the command-preview box), destructive primary for disconnect. `draw_modal` (the Add multi-field form) left for the text-input wave |
 | `apps/store/src/app.rs` reference detail | store ✅ | **DONE** — retained shared controls replaced the retired store's scrim-only reference sheet |
 | `apps/feeds/src/app.rs` (was `draw_input_modal`) | feeds | **DONE (prior)** — `ModalDialog<ModalBody>` with a real `TextInput` |
+| `apps/maps/src/map_info_sheet.rs` attribution/licences | maps ✅ | **DONE** — extracted component owns state and event routing while shared `ModalDialog<Text>` supplies the focus trap, a11y dialog role, backdrop/Escape dismissal, and Close action |
 | `apps/db_client/src/connect_modal.rs` | db_client | **DEFER framing only** — all fields and buttons are shared and the password is protected; the engine-dependent body/validation remains a custom modal surface |
 | `apps/disks/src/app.rs:1275` `draw_modal` | disks | **DEFER** — a gated *type-the-device-name-to-confirm* dialog with a locked primary; needs a gated-primary `ModalDialog` capability first |
 | `apps/music/src/app/render.rs` `draw_name_prompt` | music | **DONE** — create/rename playlist prompt → `ModalDialog<PromptBody>` (real `TextInput`, kills the hand-rolled `name_input` char-splice); `name_input` kept only as the submit value-carrier |
@@ -552,17 +557,13 @@ themed, clipboard-correct version — do **not** keep forking.
 The broad mechanical waves are complete enough that a shorter, contextual
 queue is safer than old app counts:
 
-1. **Containers create form:** six existing Automerge text objects can host six
-   shared inputs. Preserve image completion, dynamic fields, and validation.
-2. **Slides speaker notes:** adopt a shared multiline input independently of
-   transformed on-canvas text, which needs a geometry-aware editor.
-3. **Exact button faces:** containers Create/Cancel and backups Restore/Cancel
+1. **Exact button faces:** containers Create/Cancel and backups Restore/Cancel
    fit `ButtonFace` without semantic loss. Do not fold progress, ghost, keypad,
    canvas, or media controls into an ordinary button merely to lower a count.
-4. **Component boundaries:** continue extracting cohesive surfaces from large
+2. **Component boundaries:** continue extracting cohesive surfaces from large
    app modules. The component must own its state, layout/drawing, hit-testing,
    event routing, and focused tests; domain persistence stays in the host.
-5. **Domain editors:** design formula-aware Sheets and transformed-canvas Slides
+3. **Domain editors:** design formula-aware Sheets and transformed-canvas Slides
    adapters around the shared editor core. These are not plain `TextInput`
    migrations.
 
