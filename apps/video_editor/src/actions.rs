@@ -46,8 +46,8 @@ use qos_actions::{
 
 use crate::doc::VideoDoc;
 use crate::model::{
-    Clip, EffectKind, Filters, MediaItem, MediaKind, Project, TextSource, Track, TrackKind,
-    Transition,
+    Clip, EffectKind, Filters, MaskShape, MediaItem, MediaKind, Project, TextSource, Track,
+    TrackKind, Transition,
 };
 use crate::param::{Interp, Param};
 
@@ -292,6 +292,18 @@ pub struct ProjectMeta {
     pub fps: f64,
     pub width: u32,
     pub height: u32,
+    /// Whether the size and rate above were chosen rather than defaulted.
+    /// Absent on the wire for a peer that predates project settings, which
+    /// `serde(default)` reads as "not chosen" — the state that peer is
+    /// already in, so the two do not diverge.
+    #[serde(default)]
+    pub format_explicit: bool,
+    /// Timeline in / out marks, in absolute seconds. Absent means unmarked,
+    /// which is the whole timeline.
+    #[serde(default)]
+    pub mark_in: Option<f64>,
+    #[serde(default)]
+    pub mark_out: Option<f64>,
     /// Timeline markers, in absolute seconds. They live with the project
     /// settings because that is the document map they are stored in.
     #[serde(default)]
@@ -305,6 +317,9 @@ impl ProjectMeta {
             fps: p.fps,
             width: p.width,
             height: p.height,
+            format_explicit: p.format_explicit,
+            mark_in: p.mark_in,
+            mark_out: p.mark_out,
             markers: p.markers.clone(),
         }
     }
@@ -314,6 +329,9 @@ impl ProjectMeta {
         p.fps = self.fps;
         p.width = self.width;
         p.height = self.height;
+        p.format_explicit = self.format_explicit;
+        p.mark_in = self.mark_in;
+        p.mark_out = self.mark_out;
         p.markers = self.markers.clone();
         p
     }
@@ -688,6 +706,138 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         ));
     }
 
+    // Project-level: the format. A project shot vertically, square or in 4K
+    // had no way to say so — the frame was fixed at 1920×1080 at 30 from the
+    // moment it was created, and the export dialog's own pickers scale a
+    // preset height by the *project's* aspect, so vertical footage came out
+    // letterboxed into 16:9 with no exit.
+    {
+        let snap = p.clone();
+        root = root.with_action(ActionSpec::typed(
+            "set-frame-size",
+            "Set frame size",
+            "1080 1920",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required(
+                    "width",
+                    ParamType::Number,
+                    "frame width in pixels; clamped to 16..8192 and rounded even",
+                ),
+                ActionParam::required(
+                    "height",
+                    ParamType::Number,
+                    "frame height in pixels; clamped to 16..8192 and rounded even",
+                ),
+            ],
+            move |args: &ActionArgs| {
+                let mut next = snap.clone();
+                // An unbound argument leaves that dimension as it is rather
+                // than collapsing the frame: half a declared pair is still a
+                // legible intent ("make it 1080 wide"), and a project with no
+                // width is not one anyone can render.
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "clamped into u32 range by set_frame_size, and a \
+                              negative or NaN dimension falls back to the current one"
+                )]
+                let px = |v: Option<f64>, current: u32| -> u32 {
+                    match v {
+                        Some(v) if v.is_finite() && v >= 1.0 => v.round() as u32,
+                        _ => current,
+                    }
+                };
+                let w = px(args.number("width"), next.width);
+                let h = px(args.number("height"), next.height);
+                next.set_frame_size(w, h);
+                encode(&set_project_meta_action(&next))
+            },
+        ));
+        let snap = p.clone();
+        root = root.with_action(ActionSpec::typed(
+            "set-frame-rate",
+            "Set frame rate",
+            "24",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required(
+                "fps",
+                ParamType::Number,
+                "project frames per second; clamped to 1..240",
+            )],
+            move |args: &ActionArgs| {
+                let mut next = snap.clone();
+                // Clamped rather than refused, like every other ranged number
+                // here; an unbound one keeps the rate the project has.
+                next.set_fps(args.number("fps").unwrap_or(next.fps));
+                encode(&set_project_meta_action(&next))
+            },
+        ));
+    }
+
+    // Project-level: the render range. The export loop used to run the whole
+    // timeline unconditionally, so checking a ten-second fix meant
+    // re-rendering everything.
+    {
+        let snap = p.clone();
+        let at = ctx.playhead;
+        let mut marked = snap.clone();
+        marked.set_mark_in(at);
+        root = root.with_action(immediate(
+            "mark-in",
+            "Mark in at playhead",
+            &set_project_meta_action(&marked),
+        ));
+        let mut marked = snap.clone();
+        marked.set_mark_out(at);
+        root = root.with_action(immediate(
+            "mark-out",
+            "Mark out at playhead",
+            &set_project_meta_action(&marked),
+        ));
+        if p.has_marks() {
+            let mut cleared = snap.clone();
+            cleared.clear_marks();
+            root = root.with_action(immediate(
+                "clear-marks",
+                "Clear in / out marks",
+                &set_project_meta_action(&cleared),
+            ));
+        }
+        let snap = p.clone();
+        root = root.with_action(ActionSpec::typed(
+            "set-render-range",
+            "Set render range",
+            "0 10",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required(
+                    "start",
+                    ParamType::Number,
+                    "seconds on the timeline where a render begins",
+                ),
+                ActionParam::required(
+                    "end",
+                    ParamType::Number,
+                    "seconds where it ends; must be later than the start",
+                ),
+            ],
+            move |args: &ActionArgs| {
+                let mut next = snap.clone();
+                // Set out first: `set_mark_in` drops an out mark that would
+                // sit at or before it, and doing it the other way round would
+                // throw away the value that was just asked for.
+                if let Some(end) = args.number("end") {
+                    next.set_mark_out(end);
+                }
+                if let Some(start) = args.number("start") {
+                    next.set_mark_in(start);
+                }
+                encode(&set_project_meta_action(&next))
+            },
+        ));
+    }
+
     // Project-level: a timeline marker at the playhead, named.
     {
         let snap = p.clone();
@@ -938,6 +1088,115 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     },
                 ));
             }
+
+            // Level: opacity and volume. Both had a slider in the inspector
+            // and no action at all, so the one thing an automation or an
+            // agent most often wants of a clip — turn it down — was
+            // reachable only by dragging.
+            for (id, label, axis) in [
+                ("set-opacity", "Set opacity", LevelAxis::Opacity),
+                ("set-volume", "Set volume", LevelAxis::Volume),
+            ] {
+                let base = clip.clone();
+                cr = cr.with_action(ActionSpec::typed(
+                    id,
+                    label,
+                    "0.5",
+                    ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required(
+                        "value",
+                        ParamType::Number,
+                        "0 to 1; 1 is full, 0 is silent or invisible",
+                    )],
+                    move |args: &ActionArgs| {
+                        let mut next = base.clone();
+                        let current = match axis {
+                            LevelAxis::Opacity => next.opacity,
+                            LevelAxis::Volume => next.volume,
+                        };
+                        let v = args.number("value").unwrap_or(current).clamp(0.0, 1.0);
+                        match axis {
+                            LevelAxis::Opacity => next.opacity = v,
+                            LevelAxis::Volume => next.volume = v,
+                        }
+                        encode(&upsert_clip_action(&next))
+                    },
+                ));
+            }
+
+            // Fades, in seconds and clamped to the clip: a fade longer than
+            // the clip it is on is not a fade.
+            for (id, label, head) in [
+                ("set-fade-in", "Set fade in", true),
+                ("set-fade-out", "Set fade out", false),
+            ] {
+                let base = clip.clone();
+                cr = cr.with_action(ActionSpec::typed(
+                    id,
+                    label,
+                    "1",
+                    ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required(
+                        "seconds",
+                        ParamType::Number,
+                        "how long the ramp runs, in seconds; 0 removes it",
+                    )],
+                    move |args: &ActionArgs| {
+                        let mut next = base.clone();
+                        let current = if head { next.fade_in } else { next.fade_out };
+                        let max = next.duration();
+                        let v = args.number("seconds").unwrap_or(current).clamp(0.0, max);
+                        if head {
+                            next.fade_in = v;
+                        } else {
+                            next.fade_out = v;
+                        }
+                        encode(&upsert_clip_action(&next))
+                    },
+                ));
+            }
+
+            // The chroma key's switch, and the mask's shape. Both are the
+            // *gate* on a set of sliders that only exist once they are on, so
+            // an action surface without them could describe the sliders and
+            // never reach them.
+            let mut keyed = clip.clone();
+            keyed.key.enabled = !keyed.key.enabled;
+            cr = cr.with_action(immediate(
+                "toggle-key",
+                if clip.key.enabled {
+                    "Switch chroma key off"
+                } else {
+                    "Switch chroma key on"
+                },
+                &upsert_clip_action(&keyed),
+            ));
+            let mask_base = clip.clone();
+            cr = cr.with_action(ActionSpec::typed(
+                "set-mask-shape",
+                "Set mask shape",
+                "ellipse",
+                ExecutionLocus::ClientLocal,
+                vec![
+                    ActionParam::required(
+                        "shape",
+                        ParamType::Text,
+                        "the shape the mask cuts; \u{201c}none\u{201d} removes it",
+                    )
+                    .with_choices(crate::model::MaskShape::ALL.map(MaskShape::as_str)),
+                ],
+                move |args: &ActionArgs| {
+                    let mut next = mask_base.clone();
+                    // `MaskShape::from_str` reads everything it does not know
+                    // as `None` — which would silently *remove* a mask — so
+                    // the vocabulary is declared and an unbound value leaves
+                    // the shape alone.
+                    if let Some(name) = args.text("shape") {
+                        next.mask.shape = MaskShape::from_str(name);
+                    }
+                    encode(&upsert_clip_action(&next))
+                },
+            ));
 
             // Effects stack — add one by name, or clear them all.
             let add_base = clip.clone();
@@ -1394,6 +1653,21 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 encode(&upsert_media_action(&next))
             },
         ));
+        // Take this source's shape as the project's. Offered only for a
+        // source that has one — audio and titles carry no frame — so the
+        // action is absent rather than present and inert.
+        if m.width > 0 && m.height > 0 {
+            let mut next = p.clone();
+            next.set_frame_size(m.width, m.height);
+            if m.fps > 0.0 {
+                next.set_fps(m.fps);
+            }
+            mr = mr.with_action(immediate(
+                "use-as-project-format",
+                "Use this shape for the project",
+                &set_project_meta_action(&next),
+            ));
+        }
         let clip_ids: Vec<Uuid> = p
             .clips
             .iter()
@@ -1416,6 +1690,15 @@ enum FilterAxis {
     Brightness,
     Contrast,
     Saturation,
+}
+
+/// Which `0..1` level a prompted action drives. Not a `FilterAxis`: neither
+/// is a grade — one is how much of the picture is composited, the other how
+/// loud it is.
+#[derive(Clone, Copy)]
+enum LevelAxis {
+    Opacity,
+    Volume,
 }
 
 /// Which geometric channel a prompted transform action drives.
@@ -2238,36 +2521,67 @@ mod tests {
             .expect("a title in the bin")
     }
 
-    /// Every action that takes an argument, with the name and type it
-    /// declares. One table, so a new parameterised action has to be added
-    /// here — and the test below proves nothing parameterised is missing.
-    const DECLARED: [(&str, &str, ParamType); 25] = [
-        ("rename-project", "name", ParamType::Text),
-        ("add-marker", "name", ParamType::Text),
-        ("add-title", "text", ParamType::Text),
-        ("rename-track", "name", ParamType::Text),
-        ("set-brightness", "value", ParamType::Number),
-        ("set-contrast", "value", ParamType::Number),
-        ("set-saturation", "value", ParamType::Number),
-        ("add-effect", "effect", ParamType::Text),
-        ("set-speed", "rate", ParamType::Number),
-        ("set-scale", "factor", ParamType::Number),
-        ("set-pos-x", "offset", ParamType::Number),
-        ("set-pos-y", "offset", ParamType::Number),
-        ("set-rotation", "degrees", ParamType::Number),
-        ("crop-left", "fraction", ParamType::Number),
-        ("crop-right", "fraction", ParamType::Number),
-        ("crop-top", "fraction", ParamType::Number),
-        ("crop-bottom", "fraction", ParamType::Number),
-        ("add-clip-marker", "name", ParamType::Text),
-        ("set-transition", "transition", ParamType::Text),
-        ("set-title-text", "text", ParamType::Text),
-        ("set-title-size", "size", ParamType::Number),
-        ("set-title-align", "align", ParamType::Text),
-        ("set-title-colour", "colour", ParamType::Text),
-        ("set-title-backdrop", "opacity", ParamType::Number),
-        ("rename-media", "name", ParamType::Text),
+    /// Every action that takes an argument, with the names and types it
+    /// declares **in order**. One table, so a new parameterised action has to
+    /// be added here — and the test below proves nothing parameterised is
+    /// missing.
+    ///
+    /// A parameter *list* rather than a single pair: the project's frame size
+    /// is one decision carried by two numbers, and an action that took a
+    /// width without a height would be a shape nobody asked for. Every
+    /// assertion the single-pair table made is still made, once per declared
+    /// parameter.
+    const DECLARED: [(&str, &[(&str, ParamType)]); 28] = [
+        ("rename-project", &[("name", ParamType::Text)]),
+        (
+            "set-frame-size",
+            &[("width", ParamType::Number), ("height", ParamType::Number)],
+        ),
+        ("set-frame-rate", &[("fps", ParamType::Number)]),
+        (
+            "set-render-range",
+            &[("start", ParamType::Number), ("end", ParamType::Number)],
+        ),
+        ("add-marker", &[("name", ParamType::Text)]),
+        ("add-title", &[("text", ParamType::Text)]),
+        ("rename-track", &[("name", ParamType::Text)]),
+        ("set-brightness", &[("value", ParamType::Number)]),
+        ("set-contrast", &[("value", ParamType::Number)]),
+        ("set-saturation", &[("value", ParamType::Number)]),
+        ("set-opacity", &[("value", ParamType::Number)]),
+        ("set-volume", &[("value", ParamType::Number)]),
+        ("set-fade-in", &[("seconds", ParamType::Number)]),
+        ("set-fade-out", &[("seconds", ParamType::Number)]),
+        ("add-effect", &[("effect", ParamType::Text)]),
+        ("set-speed", &[("rate", ParamType::Number)]),
+        ("set-scale", &[("factor", ParamType::Number)]),
+        ("set-pos-x", &[("offset", ParamType::Number)]),
+        ("set-pos-y", &[("offset", ParamType::Number)]),
+        ("set-rotation", &[("degrees", ParamType::Number)]),
+        ("crop-left", &[("fraction", ParamType::Number)]),
+        ("crop-right", &[("fraction", ParamType::Number)]),
+        ("crop-top", &[("fraction", ParamType::Number)]),
+        ("crop-bottom", &[("fraction", ParamType::Number)]),
+        ("add-clip-marker", &[("name", ParamType::Text)]),
+        ("set-transition", &[("transition", ParamType::Text)]),
+        ("set-mask-shape", &[("shape", ParamType::Text)]),
+        ("set-title-text", &[("text", ParamType::Text)]),
     ];
+
+    /// The rest of the table. Split only because a single array literal past
+    /// thirty entries stopped being readable; the test walks both.
+    const DECLARED_MORE: [(&str, &[(&str, ParamType)]); 5] = [
+        ("set-title-size", &[("size", ParamType::Number)]),
+        ("set-title-align", &[("align", ParamType::Text)]),
+        ("set-title-colour", &[("colour", ParamType::Text)]),
+        ("set-title-backdrop", &[("opacity", ParamType::Number)]),
+        ("rename-media", &[("name", ParamType::Text)]),
+    ];
+
+    /// Both halves of the table, as one list.
+    fn declared() -> Vec<(&'static str, &'static [(&'static str, ParamType)])> {
+        DECLARED.into_iter().chain(DECLARED_MORE).collect()
+    }
 
     /// Every action that takes an argument names it and declares its type.
     ///
@@ -2281,25 +2595,29 @@ mod tests {
     #[test]
     fn every_parameterised_action_declares_its_argument() {
         let ctx = ctx_with_title();
-        for (id, name, ty) in DECLARED {
+        for (id, params) in declared() {
             let sp = spec(&ctx, id);
-            assert_eq!(sp.params().len(), 1, "{id} declares exactly one parameter");
-            let p = &sp.params()[0];
-            assert_eq!(p.name.as_ref(), name, "{id} names its argument");
-            assert_eq!(p.ty, ty, "{id} declares its type");
-            assert!(p.required, "{id} needs its argument");
-            assert!(
-                !p.description.is_empty(),
-                "{id} says what the argument means",
+            assert_eq!(
+                sp.params().len(),
+                params.len(),
+                "{id} declares exactly the parameters this test has read",
             );
+            for (i, (name, ty)) in params.iter().enumerate() {
+                let p = &sp.params()[i];
+                assert_eq!(p.name.as_ref(), *name, "{id} names its argument {i}");
+                assert_eq!(p.ty, *ty, "{id} declares the type of {name}");
+                assert!(p.required, "{id} needs {name}");
+                assert!(!p.description.is_empty(), "{id} says what {name} means",);
+            }
         }
 
+        let known = declared();
         for (id, sp) in all_specs(&ctx) {
             if sp.params().is_empty() {
                 continue;
             }
             assert!(
-                DECLARED.iter().any(|(known, ..)| *known == id),
+                known.iter().any(|(k, _)| *k == id),
                 "{id} takes an argument but declares nothing this test has read",
             );
         }
@@ -2318,35 +2636,55 @@ mod tests {
         use qos_actions::params::ArgValue;
 
         let ctx = ctx_with_title();
-        for (id, name, ty) in DECLARED {
-            if ty != ParamType::Number {
-                continue;
+        for (id, params) in declared() {
+            for (target, ty) in params {
+                if *ty != ParamType::Number {
+                    continue;
+                }
+                let sp = spec(&ctx, id);
+                // Every declared argument supplied, so what is under test is
+                // the *type* of one of them and not a missing sibling. An
+                // action carrying two numbers has to refuse a word in either
+                // position, not only the first.
+                let with = |bad: Option<&str>| -> Vec<(String, ArgValue)> {
+                    params
+                        .iter()
+                        .map(|(name, _)| {
+                            let v = match bad {
+                                Some(word) if name == target => ArgValue::Text(word.into()),
+                                _ => ArgValue::Number(0.25),
+                            };
+                            ((*name).to_string(), v)
+                        })
+                        .collect()
+                };
+                assert!(
+                    ActionArgs::bind(sp.params(), with(Some("banana"))).is_err(),
+                    "{id} must refuse a word where {target} declares a number",
+                );
+                let bound = ActionArgs::bind(sp.params(), with(None))
+                    .unwrap_or_else(|e| panic!("{id} takes a number for {target}: {e}"));
+                assert_eq!(bound.number(target), Some(0.25));
+                // An integer widens — JSON spells 1.0 as 1, and a rate of 1
+                // has to stay passable.
+                let ints: Vec<(String, ArgValue)> = params
+                    .iter()
+                    .map(|(name, _)| ((*name).to_string(), ArgValue::Integer(1)))
+                    .collect();
+                assert!(
+                    ActionArgs::bind(sp.params(), ints).is_ok(),
+                    "{id} takes an integer literal as a number",
+                );
+                // And an argument by a name it never declared is refused
+                // rather than dropped, so a caller cannot believe it asked
+                // for something it did not get.
+                let mut stray = with(None);
+                stray.push(("v".to_string(), ArgValue::Number(0.25)));
+                assert!(
+                    ActionArgs::bind(sp.params(), stray).is_err(),
+                    "{id} refuses an argument it never declared",
+                );
             }
-            let sp = spec(&ctx, id);
-            assert!(
-                ActionArgs::bind(
-                    sp.params(),
-                    [(name.to_string(), ArgValue::Text("banana".into()))],
-                )
-                .is_err(),
-                "{id} must refuse a word where it declares a number",
-            );
-            let bound = ActionArgs::bind(sp.params(), [(name.to_string(), ArgValue::Number(0.25))])
-                .unwrap_or_else(|e| panic!("{id} takes a number: {e}"));
-            assert_eq!(bound.number(name), Some(0.25));
-            // An integer widens — JSON spells 1.0 as 1, and a rate of 1 has
-            // to stay passable.
-            assert!(
-                ActionArgs::bind(sp.params(), [(name.to_string(), ArgValue::Integer(1))]).is_ok(),
-                "{id} takes an integer literal as a number",
-            );
-            // And an argument by a name it never declared is refused rather
-            // than dropped, so a caller cannot believe it asked for something
-            // it did not get.
-            assert!(
-                ActionArgs::bind(sp.params(), [("v".to_string(), ArgValue::Number(0.25))]).is_err(),
-                "{id} refuses an argument it never declared",
-            );
         }
     }
 
