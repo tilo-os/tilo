@@ -193,6 +193,7 @@ impl SnippetsApp {
             library,
             selection: Selection::default(),
             search_input: TextInput::local()
+                .with_kind(ui::widget::TextInputKind::Search)
                 .with_id("snippets.search")
                 .with_placeholder("Search  ·  try language:rust  or  tag:k8s")
                 .with_font_size(14.0)

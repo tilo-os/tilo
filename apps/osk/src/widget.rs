@@ -587,7 +587,10 @@ impl OskWidget {
     /// refilled with predictions.
     fn commit_current_word(&mut self) {
         if !self.current_word.is_empty() {
-            self.prev_word = Some(self.current_word.to_lowercase());
+            let committed = self.current_word.to_lowercase();
+            self.predictor
+                .learn_transition(self.prev_word.as_deref(), &committed);
+            self.prev_word = Some(committed);
             self.current_word.clear();
         }
         self.refresh_next_word_suggestions();
@@ -634,7 +637,10 @@ impl OskWidget {
         }
         self.pending_text.push_str(word);
         self.current_word.clear();
-        self.prev_word = Some(word.to_lowercase());
+        let committed = word.to_lowercase();
+        self.predictor
+            .learn_transition(self.prev_word.as_deref(), &committed);
+        self.prev_word = Some(committed);
         self.refresh_next_word_suggestions();
     }
 
@@ -652,7 +658,10 @@ impl OskWidget {
             // Next-word pick: insert "word ".
             self.pending_text.push_str(&s.word);
             self.pending_text.push(' ');
-            self.prev_word = Some(s.word.to_lowercase());
+            let committed = s.word.to_lowercase();
+            self.predictor
+                .learn_transition(self.prev_word.as_deref(), &committed);
+            self.prev_word = Some(committed);
             self.refresh_next_word_suggestions();
         } else {
             self.replace_current_word(&s.word);

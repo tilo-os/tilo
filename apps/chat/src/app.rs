@@ -797,7 +797,8 @@ impl ChatApp {
                 self.shot_composer_draft = Some(
                     "Shipping the composer on the shared TextInput — real caret, \
                      selection, and Ctrl+C/V now.\nEnter sends, Shift+Enter for a new line."
-                        .into(),
+                        .to_string()
+                        + "\nPlease check teh adress",
                 );
             }
             "msgmenu" => {

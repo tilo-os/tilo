@@ -473,6 +473,7 @@ impl MonitorApp {
             sort_key: SortKey::Cpu,
             sort_desc: true,
             search_input: TextInput::local()
+                .with_kind(ui::widget::TextInputKind::Search)
                 .with_id("monitor.search")
                 .with_placeholder("Search processes…")
                 .with_plain_chrome(),
