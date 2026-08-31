@@ -27,13 +27,12 @@ use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
-use ui::dnd::DRAG_START_THRESHOLD_PX;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -45,17 +44,19 @@ use crate::agenda::{AgendaAction, AgendaView};
 use crate::caldav::{self, SyncOutcome};
 use crate::date;
 use crate::doc::CalDoc;
+use crate::draw_util::{elide_to_width, fill_rect, fill_round, stroke_line, stroke_round};
 use crate::event_popovers::{
     EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover,
 };
 use crate::ics;
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
 use crate::sidebar::{Action as SidebarAction, Mode as SidebarMode, Sidebar};
+use crate::timeline_interaction::{
+    TIMELINE_SNAP_MIN, TimelineEffect, TimelineEventCtx, TimelineInteraction, TimelineRenderEvent,
+    TimelineRenderModel, TimelineSpan,
+};
 #[cfg(test)]
 use crate::timeline_viewport::TIMELINE_MIN_HOUR_H;
-use crate::timeline_viewport::{
-    TIMELINE_ALLDAY_H, TIMELINE_HEAD_H, TimelineGeom, TimelineViewport,
-};
 use crate::topbar::{Action as TopbarAction, LeadingControl, Topbar};
 
 /// Placeholder shown in the empty title field of a new event.
@@ -75,8 +76,6 @@ const NOTES_TOP_OFFSET: f64 = 296.0;
 /// Hour the timeline first scrolls to when the day doesn't fit — the start of a
 /// typical work day, rather than opening at midnight.
 const TIMELINE_INITIAL_HOUR: f64 = 7.0;
-/// Grid snap (minutes) for drag-to-create and drag-to-move on the timeline.
-const TIMELINE_SNAP_MIN: i64 = 15;
 
 /// Width at/above which the sidebar is an inline persistent panel. Below it the
 /// sidebar becomes an overlay drawer (see [`SidebarMode`] and
@@ -213,60 +212,6 @@ struct FormRects {
     notes_top: f64,
 }
 
-/// An in-progress pointer drag on the week/day timeline. Both variants use the
-/// shared drag-start threshold ([`DRAG_START_THRESHOLD_PX`]): a press that never
-/// travels past it stays a plain click (open the event / no-op), while crossing
-/// it promotes to a live drag with on-canvas feedback, committed on release
-/// through the action model.
-#[derive(Clone, Copy, Debug)]
-enum TimelineDrag {
-    /// Dragging across empty grid to carve out a new event. `day` is the column
-    /// grabbed in; `origin`/`current` are logical screen points.
-    Create {
-        day: NaiveDate,
-        origin: Point,
-        current: Point,
-        active: bool,
-    },
-    /// Dragging an existing event to a new time (and, in week view, day).
-    /// `grab_off_min` is the pointer's offset within the block at grab time
-    /// (minutes past the event's start), so the block keeps that point under the
-    /// cursor; `dur_min` preserves the event's duration across the move.
-    Move {
-        id: Id,
-        origin: Point,
-        current: Point,
-        grab_off_min: i64,
-        dur_min: i64,
-        active: bool,
-    },
-}
-
-impl TimelineDrag {
-    fn is_active(&self) -> bool {
-        match self {
-            TimelineDrag::Create { active, .. } | TimelineDrag::Move { active, .. } => *active,
-        }
-    }
-    fn origin(&self) -> Point {
-        match self {
-            TimelineDrag::Create { origin, .. } | TimelineDrag::Move { origin, .. } => *origin,
-        }
-    }
-    fn set_current(&mut self, p: Point) {
-        match self {
-            TimelineDrag::Create { current, .. } | TimelineDrag::Move { current, .. } => {
-                *current = p;
-            }
-        }
-    }
-    fn set_active(&mut self, a: bool) {
-        match self {
-            TimelineDrag::Create { active, .. } | TimelineDrag::Move { active, .. } => *active = a,
-        }
-    }
-}
-
 /// Payload delivered by a finished background `CalDAV` sync worker: the pull
 /// result, the merged outcome, the ids that uploaded successfully, and the
 /// ids the server confirmed deleted.
@@ -365,15 +310,12 @@ pub struct CalendarApp {
     /// (the timeline is painted imperatively, not through a child widget), it
     /// still reuses the shared [`Scrollable`] for offset clamping, wheel /
     /// keyboard / momentum, and the overlay bar.
-    timeline: TimelineViewport,
+    timeline: TimelineInteraction,
     /// Vertical scroll of the agenda list, so a short window pages through the
     /// upcoming days instead of clipping them.
     /// Self-contained upcoming-list view: scroll state, input, drawing and row
     /// actions live together instead of leaking into the root widget.
     agenda: AgendaView,
-    /// An in-progress drag on the week/day timeline (create or move).
-    timeline_drag: Option<TimelineDrag>,
-
     /// Receiver for an in-flight background `CalDAV` pull. The live sync runs on a
     /// worker thread (the `ui` event loop is synchronous and must never block on
     /// the network); its result is drained here on the next `sync` pass.
@@ -488,9 +430,8 @@ impl CalendarApp {
             last_mouse: Point::ZERO,
             status: None,
             dirty: true,
-            timeline: TimelineViewport::new(),
+            timeline: TimelineInteraction::new(),
             agenda: AgendaView::new(),
-            timeline_drag: None,
             sync_rx: None,
             syncing: false,
             actions: ui::ActionHost::new(),
@@ -1318,39 +1259,8 @@ impl CalendarApp {
             && !(matches!(self.sidebar.mode(), SidebarMode::Overlay) && self.sidebar.is_open())
     }
 
-    /// Forward a raw event to the timeline scroll container. Returns whether it
-    /// was consumed (a wheel that moved, or a scrollbar interaction).
-    #[allow(clippy::too_many_arguments)]
-    fn forward_to_scroll(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let handled = self.timeline.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        );
-        if handled {
-            self.dirty = true;
-        }
-        handled
-    }
-
-    /// Route mouse input to the active view's scroll container and — in the
-    /// week/day timeline — its drag-to-create / drag-to-move machine. Returns
-    /// `true` when the event was consumed.
+    /// Route input to the Agenda scroller or the self-contained week/day
+    /// controller. Typed timeline effects return here for domain/CRDT mutation.
     #[allow(clippy::too_many_arguments)]
     fn handle_timeline_input(
         &mut self,
@@ -1363,17 +1273,12 @@ impl CalendarApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) -> bool {
-        // A view/layout change out from under a live drag abandons it (no
-        // mutation happens until commit, so this is a clean cancel).
-        if self.timeline_drag.is_some() && !matches!(self.view, View::Week | View::Day) {
-            self.timeline_drag = None;
+        if !matches!(self.view, View::Week | View::Day) {
+            self.timeline.cancel_drag();
         }
         if !self.calendar_content_interactive() {
             return false;
         }
-
-        // Agenda: scroll only (no drag). A press that misses the bar falls
-        // through so the row hit-map still opens the event/task.
         if matches!(self.view, View::Agenda) {
             return self.handle_agenda_timeline_input(
                 event,
@@ -1386,74 +1291,52 @@ impl CalendarApp {
                 taffy,
             );
         }
-
         if !matches!(self.view, View::Week | View::Day) {
             return false;
         }
 
         let area = self.view_rect();
         let days = self.timeline_days();
-        let g = TimelineViewport::geometry(area);
-        let body = g.body(area.x0, area.x1);
+        let spans = self.timeline_spans(&days);
+        let outcome = self.timeline.handle_event(
+            TimelineEventCtx {
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            },
+            area,
+            &days,
+            &spans,
+        );
+        if let Some(effect) = outcome.effect {
+            self.apply_timeline_effect(effect, state);
+        }
+        if outcome.handled {
+            self.dirty = true;
+        }
+        outcome.handled
+    }
 
-        match event {
-            WindowEvent::MouseWheel { .. } => self.handle_timeline_wheel(
-                area,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            WindowEvent::CursorMoved { .. } => self.handle_timeline_cursor_moved(
-                area,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => self.handle_timeline_press(
-                area,
-                &days,
-                g,
-                body,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => self.handle_timeline_release(
-                area,
-                &days,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            _ => false,
+    fn apply_timeline_effect(&mut self, effect: TimelineEffect, doc: &mut AutoCommit) {
+        match effect {
+            TimelineEffect::Create {
+                day,
+                start_min,
+                end_min,
+            } => self.create_event_in_range(day, start_min, end_min, doc),
+            TimelineEffect::Move {
+                id,
+                day,
+                start_min,
+                dur_min,
+            } => self.move_event(id, day, start_min, dur_min, doc),
+            TimelineEffect::Select(id) => self.apply_action(Action::OpenEvent(id), doc),
+            TimelineEffect::OpenDay(day) => self.apply_action(Action::OpenDay(day), doc),
         }
     }
 
@@ -1499,237 +1382,6 @@ impl CalendarApp {
             }
         }
         false
-    }
-
-    /// `MouseWheel` over the week/day timeline. Split out of
-    /// `handle_timeline_input` to keep it within the line-count lint.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_timeline_wheel(
-        &mut self,
-        area: Rect,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let p = self.last_mouse;
-        if area.contains(p) {
-            return self.forward_to_scroll(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            );
-        }
-        false
-    }
-
-    /// `CursorMoved` over the week/day timeline: scrollbar drag, live
-    /// calendar drag, or bar-hover tracking. Split out of
-    /// `handle_timeline_input` to keep it within the line-count lint.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_timeline_cursor_moved(
-        &mut self,
-        area: Rect,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let p = self.last_mouse;
-        // A scrollbar thumb drag owns every move until release.
-        if self.timeline.wants_pointer_capture() {
-            return self.forward_to_scroll(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            );
-        }
-        // A live calendar drag updates its target.
-        if self.timeline_drag.is_some() {
-            self.update_timeline_drag();
-            self.dirty = true;
-            return true;
-        }
-        // Otherwise let the bar track hover near the edge (never consumes).
-        if area.contains(p) {
-            self.forward_to_scroll(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            );
-        }
-        false
-    }
-
-    /// A left press on the week/day timeline: scrollbar, grab-to-move an
-    /// existing block, or carve a new event. Split out of
-    /// `handle_timeline_input` to keep it within the line-count lint.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_timeline_press(
-        &mut self,
-        area: Rect,
-        days: &[NaiveDate],
-        g: TimelineGeom,
-        body: Rect,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let p = self.last_mouse;
-        // Presses outside the scrolling grid (headers, gutter top) fall
-        // through to the normal hit-map path.
-        if !body.contains(p) {
-            return false;
-        }
-        // Offer the press to the scrollbar first.
-        if self.forward_to_scroll(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            return true;
-        }
-        // Grab an existing block to move it, else carve a new event.
-        if let Some((id, s, en)) = self.timeline_event_at(area, days, p) {
-            let press_min = self.timeline.minute_at(g, p.y);
-            self.timeline_drag = Some(TimelineDrag::Move {
-                id,
-                origin: p,
-                current: p,
-                grab_off_min: (press_min - s).clamp(0, en - s),
-                dur_min: (en - s).max(TIMELINE_SNAP_MIN),
-                active: false,
-            });
-            self.dirty = true;
-            return true;
-        }
-        // Empty grid (in a day column, not the hour gutter) → carve a new
-        // event by dragging.
-        if p.x >= area.x0 + g.gutter {
-            let col = TimelineViewport::column_at(area, days.len(), g, p.x);
-            if let Some(&day) = days.get(col) {
-                self.timeline_drag = Some(TimelineDrag::Create {
-                    day,
-                    origin: p,
-                    current: p,
-                    active: false,
-                });
-                self.dirty = true;
-                return true;
-            }
-        }
-        false
-    }
-
-    /// A left release on the week/day timeline: scrollbar, drag commit, or a
-    /// plain click. Split out of `handle_timeline_input` to keep it within
-    /// the line-count lint.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_timeline_release(
-        &mut self,
-        area: Rect,
-        days: &[NaiveDate],
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let p = self.last_mouse;
-        if self.timeline.wants_pointer_capture() {
-            return self.forward_to_scroll(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            );
-        }
-        if let Some(drag) = self.timeline_drag.take() {
-            if drag.is_active() {
-                self.commit_timeline_drag(drag, area, days, state);
-            } else if let Some(a) = self.hit_action_at(p) {
-                // A press that never dragged is a plain click.
-                self.apply_action(a, state);
-            }
-            self.dirty = true;
-            return true;
-        }
-        false
-    }
-
-    /// Advance a pending timeline drag to the latest pointer position, promoting
-    /// it to a live drag once it clears [`DRAG_START_THRESHOLD_PX`].
-    fn update_timeline_drag(&mut self) {
-        let p = self.last_mouse;
-        let Some(drag) = &mut self.timeline_drag else {
-            return;
-        };
-        drag.set_current(p);
-        if !drag.is_active() && drag.origin().distance(p) >= DRAG_START_THRESHOLD_PX {
-            drag.set_active(true);
-        }
-    }
-
-    /// Commit a completed (active) timeline drag through the action model.
-    fn commit_timeline_drag(
-        &mut self,
-        drag: TimelineDrag,
-        area: Rect,
-        days: &[NaiveDate],
-        doc: &mut AutoCommit,
-    ) {
-        match drag {
-            TimelineDrag::Create { .. } => {
-                if let Some((day, s, e)) = self.timeline_create_range(area, days, &drag) {
-                    self.create_event_in_range(day, s, e, doc);
-                }
-            }
-            TimelineDrag::Move { .. } => {
-                if let Some((day, s, dur, id)) = self.timeline_move_target(area, days, &drag) {
-                    self.move_event(id, day, s, dur, doc);
-                }
-            }
-        }
     }
 
     // --- event form model edits -----------------------------------------
@@ -3276,536 +2928,54 @@ impl CalendarApp {
         }
     }
 
-    /// The timed event whose block contains `p`, with its minute-of-day span —
-    /// the grab target for a move drag. All-day events (which live in the fixed
-    /// header strip, not the scrolling grid) are excluded.
-    fn timeline_event_at(
-        &self,
-        area: Rect,
-        days: &[NaiveDate],
-        p: Point,
-    ) -> Option<(Id, i64, i64)> {
-        let g = TimelineViewport::geometry(area);
-        let grid_x0 = area.x0 + g.gutter;
-        if p.x < grid_x0 || p.x > area.x1 {
-            return None;
-        }
-        let col = TimelineViewport::column_at(area, days.len(), g, p.x);
-        let day = *days.get(col)?;
-        let spans: Vec<(Id, i64, i64)> = self
-            .visible_events_on(day)
-            .iter()
-            .filter(|e| !e.all_day)
-            .map(|e| {
-                let s = i64::from(e.start.hour()) * 60 + i64::from(e.start.minute());
-                let en = i64::from(e.end.hour()) * 60 + i64::from(e.end.minute());
-                (e.id, s, en.max(s + TIMELINE_SNAP_MIN))
-            })
-            .collect();
-        // Reverse so the topmost (last-drawn) block wins, matching the hit-map.
-        for (id, s, en) in spans.into_iter().rev() {
-            if self
-                .timeline
-                .block_rect(area, days.len(), g, col, s, en)
-                .contains(p)
-            {
-                return Some((id, s, en));
-            }
-        }
-        None
-    }
-
-    /// Resolve a live create drag to `(day, start_min, end_min)` — snapped to the
-    /// drag grid and ordered so `start <= end`, with a one-slot minimum span.
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "g is the timeline geometry and a/b/s/e are the raw/ordered minute \
-                  endpoints being snapped — conventional short names for this kind of \
-                  interval math"
-    )]
-    fn timeline_create_range(
-        &self,
-        area: Rect,
-        _days: &[NaiveDate],
-        drag: &TimelineDrag,
-    ) -> Option<(NaiveDate, i64, i64)> {
-        let TimelineDrag::Create {
-            day,
-            origin,
-            current,
-            ..
-        } = drag
-        else {
-            return None;
-        };
-        let g = TimelineViewport::geometry(area);
-        let a = snap_minute(self.timeline.minute_at(g, origin.y));
-        let b = snap_minute(self.timeline.minute_at(g, current.y));
-        let (s, mut e) = (a.min(b), a.max(b));
-        if e - s < TIMELINE_SNAP_MIN {
-            e = (s + TIMELINE_SNAP_MIN).min(24 * 60);
-        }
-        Some((*day, s, e))
-    }
-
-    /// Resolve a live move drag to `(new_day, new_start_min, dur_min, id)` —
-    /// column under the cursor, start snapped, duration preserved and clamped
-    /// so the whole event stays within the day.
-    fn timeline_move_target(
-        &self,
-        area: Rect,
-        days: &[NaiveDate],
-        drag: &TimelineDrag,
-    ) -> Option<(NaiveDate, i64, i64, Id)> {
-        let TimelineDrag::Move {
-            id,
-            current,
-            grab_off_min,
-            dur_min,
-            ..
-        } = drag
-        else {
-            return None;
-        };
-        let g = TimelineViewport::geometry(area);
-        let col = TimelineViewport::column_at(area, days.len(), g, current.x);
-        let cursor_min = self.timeline.minute_at(g, current.y);
-        let start = snap_minute(cursor_min - grab_off_min).clamp(0, (24 * 60 - dur_min).max(0));
-        Some((*days.get(col)?, start, *dur_min, *id))
-    }
-
-    fn draw_timeline(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        days: &[NaiveDate],
-    ) -> Vec<(Rect, Action)> {
-        let c = &theme.tokens.colors;
-        let mut hits = Vec::new();
-        fill_rect(scene, t, c.surfaces.base, area);
-
-        let g = TimelineViewport::geometry(area);
-        let grid_x0 = area.x0 + g.gutter;
-        let col_w = TimelineViewport::column_width(area, days.len(), g);
-
-        // Day headers + all-day strip — fixed; they do not scroll with the grid.
-        self.draw_timeline_headers(scene, t, tr, theme, area, days, grid_x0, col_w, &mut hits);
-        // Separator under the fixed header band.
-        stroke_line(
-            scene,
-            t,
-            c.border_standard,
-            Point::new(area.x0, g.body_top),
-            Point::new(g.grid_right, g.body_top),
-            0.5,
-        );
-
-        // ── scrolling body: hour grid + timed blocks + now-line + drag ghost ──
-        let body = g.body(area.x0, area.x1);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &body,
-        );
-
-        self.draw_timeline_grid(scene, t, tr, theme, area, days, &g, grid_x0, col_w);
-        self.draw_timeline_events(scene, t, tr, theme, area, days, &g, body, &mut hits);
-
-        // Live drag preview (create / move), inside the body clip.
-        self.draw_timeline_drag_ghost(scene, t, tr, theme, area, days, &g);
-
-        scene.pop_layer();
-
-        // Shared overlay scrollbar composited on top of the clipped body.
-        self.timeline.draw(scene, t, theme);
-
-        hits
-    }
-
-    /// The fixed day headers + all-day chip strip, which do not scroll with
-    /// the hour grid (part of [`Self::draw_timeline`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    fn draw_timeline_headers(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        days: &[NaiveDate],
-        grid_x0: f64,
-        col_w: f64,
-        hits: &mut Vec<(Rect, Action)>,
-    ) {
-        let c = &theme.tokens.colors;
-        for (i, day) in days.iter().enumerate() {
-            let x0 = grid_x0 + col_w * i as f64;
-            let head = Rect::new(x0, area.y0, x0 + col_w, area.y0 + TIMELINE_HEAD_H);
-            let is_today = *day == self.today;
-            let weekend = day.weekday().num_days_from_monday() >= 5;
-            if is_today {
-                fill_rect(scene, t, c.accent[5].with_alpha(0.10), head);
-            }
-            tr.draw_text(
-                scene,
-                date::WEEKDAY_SHORT
-                    .get(day.weekday().num_days_from_monday() as usize)
-                    .copied()
-                    .unwrap_or(""),
-                11.0,
-                if weekend { c.text_dim } else { c.neutral[7] },
-                t * Affine::translate((x0 + 10.0, area.y0 + 8.0)),
-                None,
-            );
-            let num = format!("{}", day.day());
-            let ncol = if is_today { c.accent[5] } else { c.neutral[9] };
-            tr.draw_text(
-                scene,
-                &num,
-                20.0,
-                ncol,
-                t * Affine::translate((x0 + 10.0, area.y0 + 24.0)),
-                None,
-            );
-            hits.push((head, Action::OpenDay(*day)));
-
-            // all-day chips (first shown in the fixed strip).
-            let allday: Vec<(Id, String, Palette)> = self
-                .visible_events_on(*day)
-                .iter()
-                .filter(|e| e.all_day)
-                .map(|e| (e.id, e.display_title().to_string(), e.color))
-                .collect();
-            let strip = Rect::new(
-                x0 + 2.0,
-                area.y0 + TIMELINE_HEAD_H + 2.0,
-                x0 + col_w - 2.0,
-                area.y0 + TIMELINE_HEAD_H + TIMELINE_ALLDAY_H - 2.0,
-            );
-            if let Some((id, title, color)) = allday.first() {
-                fill_round(scene, t, color.color(theme), strip, 4.0);
-                let line = elide_to_width(tr, title, 10.0, strip.width() - 12.0);
-                tr.draw_text(
-                    scene,
-                    &line,
-                    10.0,
-                    Color::WHITE,
-                    t * Affine::translate((strip.x0 + 6.0, strip.y0 + 4.0)),
-                    None,
-                );
-                hits.push((strip, Action::OpenEvent(*id)));
-            }
-        }
-    }
-
-    /// The hour gridlines + gutter labels, vertical column separators, and
-    /// the "now" line, inside the scrolling body clip (part of
-    /// [`Self::draw_timeline`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t is the paint transform, g is the timeline geometry, c is the theme's \
-                  colour set, and h/i/x/y are the gridline hour/index/position — \
-                  conventional short names for this draw step"
-    )]
-    fn draw_timeline_grid(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        days: &[NaiveDate],
-        g: &TimelineGeom,
-        grid_x0: f64,
-        col_w: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let offset = f64::from(self.timeline.offset_y());
-        // content minute-of-day → screen y.
-        let y_at = |min: f64| g.body_top + (min / 60.0) * g.hour_h - offset;
-        let body = g.body(area.x0, area.x1);
-
-        // Hour gridlines + gutter labels (00:00 … 24:00).
-        for h in 0..=24 {
-            let y = y_at(f64::from(h) * 60.0);
-            stroke_line(
-                scene,
-                t,
-                c.border_standard.with_alpha(0.5),
-                Point::new(grid_x0, y),
-                Point::new(g.grid_right, y),
-                0.5,
-            );
-            if h < 24 {
-                tr.draw_text(
-                    scene,
-                    &format!("{h:02}:00"),
-                    10.0,
-                    c.text_dim,
-                    t * Affine::translate((area.x0 + 12.0, y + 2.0)),
-                    None,
-                );
-            }
-        }
-        // Vertical column separators, spanning the body viewport.
-        for i in 0..=days.len() {
-            let x = grid_x0 + col_w * i as f64;
-            stroke_line(
-                scene,
-                t,
-                c.border_standard.with_alpha(0.5),
-                Point::new(x, body.y0),
-                Point::new(x, body.y1),
-                0.5,
-            );
-        }
-
-        // "now" line if today is in range.
-        let now = Local::now().naive_local();
-        if let Some(i) = days.iter().position(|d| *d == self.today) {
-            let y = y_at(f64::from(now.hour()) * 60.0 + f64::from(now.minute()));
-            let x0 = grid_x0 + col_w * i as f64;
-            stroke_line(
-                scene,
-                t,
-                c.semantic.danger,
-                Point::new(x0, y),
-                Point::new(x0 + col_w, y),
-                2.0,
-            );
-            scene.fill(
-                Fill::NonZero,
-                t,
-                c.semantic.danger,
-                None,
-                &Circle::new(Point::new(x0, y), 3.5),
-            );
-        }
-    }
-
-    /// The timed event blocks, one column per day, inside the scrolling
-    /// body clip (part of [`Self::draw_timeline`]). The event currently
-    /// being dragged is skipped — it is drawn only as its drag ghost.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t is the paint transform, g is the timeline geometry, c is the theme's \
-                  colour set, and i is the day-column index — conventional short names \
-                  for this draw step"
-    )]
-    fn draw_timeline_events(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        days: &[NaiveDate],
-        g: &TimelineGeom,
-        body: Rect,
-        hits: &mut Vec<(Rect, Action)>,
-    ) {
-        let c = &theme.tokens.colors;
-        let moving_id = match self.timeline_drag {
-            Some(TimelineDrag::Move {
-                id, active: true, ..
-            }) => Some(id),
-            _ => None,
-        };
-
-        for (i, day) in days.iter().enumerate() {
-            let timed: Vec<(Id, String, String, Palette, NaiveDateTime, NaiveDateTime)> = self
-                .visible_events_on(*day)
-                .iter()
-                .filter(|e| !e.all_day)
-                .map(|e| {
-                    (
-                        e.id,
-                        e.display_title().to_string(),
-                        e.location.clone(),
-                        e.color,
-                        e.start,
-                        e.end,
-                    )
-                })
-                .collect();
-            for (id, title, loc, color, start, end) in timed {
-                if Some(id) == moving_id {
+    /// Timed event spans supplied to the interaction controller. The host owns
+    /// event visibility policy; the controller owns block hit-testing.
+    fn timeline_spans(&self, days: &[NaiveDate]) -> Vec<TimelineSpan> {
+        let mut spans = Vec::new();
+        for day in days {
+            for event in self.visible_events_on(*day) {
+                if event.all_day {
                     continue;
                 }
-                let s_min = i64::from(start.hour()) * 60 + i64::from(start.minute());
-                let e_min = (i64::from(end.hour()) * 60 + i64::from(end.minute()))
-                    .max(s_min + TIMELINE_SNAP_MIN);
-                let block = self
-                    .timeline
-                    .block_rect(area, days.len(), *g, i, s_min, e_min);
-                let col = color.color(theme);
-                fill_round(scene, t, col.with_alpha(0.22), block, 6.0);
-                fill_round(
-                    scene,
-                    t,
-                    col,
-                    Rect::new(block.x0, block.y0, block.x0 + 3.0, block.y1),
-                    2.0,
-                );
-                scene.push_layer(
-                    Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    t,
-                    &block,
-                );
-                let text_w = block.width() - 20.0;
-                let title_line = elide_to_width(tr, &title, 11.0, text_w);
-                tr.draw_text(
-                    scene,
-                    &title_line,
-                    11.0,
-                    c.neutral[9],
-                    t * Affine::translate((block.x0 + 10.0, block.y0 + 4.0)),
-                    None,
-                );
-                if block.height() > 34.0 {
-                    let sub = format!(
-                        "{}–{} {}",
-                        date::fmt_time(&start),
-                        date::fmt_time(&end),
-                        loc
-                    );
-                    let sub_line = elide_to_width(tr, &sub, 10.0, text_w);
-                    tr.draw_text(
-                        scene,
-                        &sub_line,
-                        10.0,
-                        c.text_dim,
-                        t * Affine::translate((block.x0 + 10.0, block.y0 + 18.0)),
-                        None,
-                    );
-                }
-                scene.pop_layer();
-                // Clamp the click target to the visible body so a block scrolled
-                // up under the header can't be clicked through it.
-                let vis = block.intersect(body);
-                if vis.width() > 0.0 && vis.height() > 0.0 {
-                    hits.push((vis, Action::OpenEvent(id)));
-                }
+                let start_min =
+                    i64::from(event.start.hour()) * 60 + i64::from(event.start.minute());
+                let end_min = (i64::from(event.end.hour()) * 60 + i64::from(event.end.minute()))
+                    .max(start_min + TIMELINE_SNAP_MIN);
+                spans.push(TimelineSpan {
+                    id: event.id,
+                    day: *day,
+                    start_min,
+                    end_min,
+                });
             }
         }
+        spans
     }
 
-    /// Paint the on-canvas preview of a live timeline drag: a translucent block
-    /// spanning the carved-out range (create) or the event at its new slot
-    /// (move), with a time label.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is an independently-meaningful piece of the timeline's own geometry"
-    )]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t is the paint transform, g is the timeline geometry, c is the theme's \
-                  colour set, and s/e are the drag's start/end minute — conventional \
-                  short names for this draw step"
-    )]
-    fn draw_timeline_drag_ghost(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        days: &[NaiveDate],
-        g: &TimelineGeom,
-    ) {
-        let c = &theme.tokens.colors;
-        let Some(drag) = self.timeline_drag else {
-            return;
-        };
-        if !drag.is_active() {
-            return;
-        }
-        let (col, s, e, title, fill, stroke) = match drag {
-            TimelineDrag::Create { .. } => {
-                let Some((day, s, e)) = self.timeline_create_range(area, days, &drag) else {
-                    return;
-                };
-                let Some(col) = days.iter().position(|d| *d == day) else {
-                    return;
-                };
-                (
-                    col,
-                    s,
-                    e,
-                    TITLE_PLACEHOLDER.to_string(),
-                    c.accent[5].with_alpha(0.28),
-                    c.accent[5],
-                )
+    /// Presentation-ready timeline snapshot. Calendar policy decides which
+    /// events are visible and how untitled events are labelled; the timeline
+    /// component owns all geometry and painting from here on.
+    fn timeline_render_events<'a>(&'a self, days: &[NaiveDate]) -> Vec<TimelineRenderEvent<'a>> {
+        let mut events = Vec::new();
+        for day in days {
+            for event in self.visible_events_on(*day) {
+                let start_min =
+                    i64::from(event.start.hour()) * 60 + i64::from(event.start.minute());
+                let end_min = (i64::from(event.end.hour()) * 60 + i64::from(event.end.minute()))
+                    .max(start_min + TIMELINE_SNAP_MIN);
+                events.push(TimelineRenderEvent {
+                    id: event.id,
+                    day: *day,
+                    title: event.display_title(),
+                    location: &event.location,
+                    color: event.color,
+                    start_min,
+                    end_min,
+                    all_day: event.all_day,
+                });
             }
-            TimelineDrag::Move { id, .. } => {
-                let Some((day, s, dur, _)) = self.timeline_move_target(area, days, &drag) else {
-                    return;
-                };
-                let Some(col) = days.iter().position(|d| *d == day) else {
-                    return;
-                };
-                let Some(ev) = self.model.event(id) else {
-                    return;
-                };
-                let col_c = ev.color.color(theme);
-                (
-                    col,
-                    s,
-                    s + dur,
-                    ev.display_title().to_string(),
-                    col_c.with_alpha(0.55),
-                    col_c,
-                )
-            }
-        };
-        let block = self.timeline.block_rect(area, days.len(), *g, col, s, e);
-        fill_round(scene, t, fill, block, 6.0);
-        stroke_round(scene, t, stroke, block, 6.0, 1.5);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &block,
-        );
-        let title_line = elide_to_width(tr, &title, 11.0, block.width() - 16.0);
-        tr.draw_text(
-            scene,
-            &title_line,
-            11.0,
-            c.neutral[9],
-            t * Affine::translate((block.x0 + 8.0, block.y0 + 4.0)),
-            None,
-        );
-        if block.height() > 30.0 {
-            tr.draw_text(
-                scene,
-                &format!("{} – {}", fmt_min(s), fmt_min(e)),
-                10.0,
-                c.text_dim,
-                t * Affine::translate((block.x0 + 8.0, block.y0 + 18.0)),
-                None,
-            );
         }
-        scene.pop_layer();
+        events
     }
 
     #[allow(
@@ -4683,7 +3853,7 @@ impl CalendarApp {
     /// narrow detail screen, then close the detail. Split out of
     /// `handle_keyboard` to keep that under the line cap.
     fn handle_keyboard_escape(&mut self, field_focused: bool, handled: &mut bool) -> bool {
-        if self.timeline_drag.take().is_some() {
+        if self.timeline.cancel_drag() {
             *handled = true;
             self.dirty = true;
             return true;
@@ -5192,13 +4362,30 @@ impl Widget for CalendarApp {
             let area = self.view_rect();
             match self.view {
                 View::Month => hits.extend(self.draw_month(scene, t, text_renderer, theme, area)),
-                View::Week => {
-                    let days = date::week_days(self.anchor);
-                    hits.extend(self.draw_timeline(scene, t, text_renderer, theme, area, &days));
-                }
-                View::Day => {
-                    let days = [self.anchor];
-                    hits.extend(self.draw_timeline(scene, t, text_renderer, theme, area, &days));
+                View::Week | View::Day => {
+                    let days = self.timeline_days();
+                    let events = self.timeline_render_events(&days);
+                    let now = Local::now().naive_local();
+                    let model = TimelineRenderModel {
+                        days: &days,
+                        events: &events,
+                        today: self.today,
+                        now: Some((
+                            self.today,
+                            i64::from(now.hour()) * 60 + i64::from(now.minute()),
+                        )),
+                        untitled: TITLE_PLACEHOLDER,
+                    };
+                    hits.extend(
+                        self.timeline
+                            .draw_timeline(scene, t, text_renderer, theme, area, &model)
+                            .into_iter()
+                            .filter_map(|(rect, effect)| match effect {
+                                TimelineEffect::Select(id) => Some((rect, Action::OpenEvent(id))),
+                                TimelineEffect::OpenDay(day) => Some((rect, Action::OpenDay(day))),
+                                TimelineEffect::Create { .. } | TimelineEffect::Move { .. } => None,
+                            }),
+                    );
                 }
                 View::Agenda => {
                     let hidden = self.hidden_calendar_ids();
@@ -5484,45 +4671,6 @@ impl Widget for CalendarApp {
     }
 }
 
-// ========================================================================
-// Drawing primitives (free functions).
-// ========================================================================
-
-pub(crate) fn fill_rect(scene: &mut Scene, t: Affine, color: Color, r: Rect) {
-    scene.fill(Fill::NonZero, t, color, None, &r);
-}
-
-pub(crate) fn fill_round(scene: &mut Scene, t: Affine, color: Color, r: Rect, radius: f64) {
-    scene.fill(
-        Fill::NonZero,
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(r, radius),
-    );
-}
-
-pub(crate) fn stroke_round(
-    scene: &mut Scene,
-    t: Affine,
-    color: Color,
-    r: Rect,
-    radius: f64,
-    w: f64,
-) {
-    scene.stroke(
-        &Stroke::new(w),
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(r, radius),
-    );
-}
-
-pub(crate) fn stroke_line(scene: &mut Scene, t: Affine, color: Color, a: Point, b: Point, w: f64) {
-    scene.stroke(&Stroke::new(w), t, color, None, &Line::new(a, b));
-}
-
 #[allow(
     clippy::many_single_char_names,
     reason = "t is the paint transform, r is the rect being centred in, and w/x/y are the \
@@ -5757,18 +4905,6 @@ pub(crate) fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect
     } else {
         stroke_round(scene, t, c.neutral[5], r, 4.0, 1.6);
     }
-}
-
-/// Round a minute-of-day to the timeline's drag snap grid, clamped to the day.
-fn snap_minute(m: i64) -> i64 {
-    let step = TIMELINE_SNAP_MIN;
-    (((m + step / 2) / step) * step).clamp(0, 24 * 60)
-}
-
-/// Format a minute-of-day as `HH:MM` (24:00 for the end of the day).
-fn fmt_min(min: i64) -> String {
-    let m = min.clamp(0, 24 * 60);
-    format!("{:02}:{:02}", m / 60, m % 60)
 }
 
 /// A minute-of-day (0..=1439) as a wall-clock time.
@@ -6007,42 +5143,6 @@ fn elide(s: &str, max: usize) -> String {
         out.push('…');
         out
     }
-}
-
-/// Truncate `text` with a trailing ellipsis so it renders within `max_px` at
-/// `size`, measured against the real text shaper so the cut matches the drawn
-/// glyphs (a fixed character budget can't, since glyph widths vary). Returns
-/// the whole string when it already fits, and a lone ellipsis when not even one
-/// character does. This is what keeps event titles from being hard-sliced
-/// mid-glyph in the dense month/week grids.
-fn elide_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_px: f64) -> String {
-    if max_px <= 0.0 {
-        return String::new();
-    }
-    if f64::from(tr.measure(text, size, None).0) <= max_px {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    // Largest prefix length whose "<prefix>…" still fits within `max_px`.
-    let mut lo = 0usize;
-    let mut hi = chars.len().saturating_sub(1);
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let candidate: String = chars
-            .get(..mid)
-            .unwrap_or(&[])
-            .iter()
-            .chain(std::iter::once(&'…'))
-            .collect();
-        if f64::from(tr.measure(&candidate, size, None).0) <= max_px {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    let mut out: String = chars.get(..lo).unwrap_or(&[]).iter().collect();
-    out.push('…');
-    out
 }
 
 #[cfg(test)]
@@ -7039,7 +6139,7 @@ mod tests {
         h.app.view = View::Week;
         h.relayout();
 
-        let g = TimelineViewport::geometry(h.app.view_rect());
+        let g = TimelineInteraction::test_geometry(h.app.view_rect());
         assert!(
             (g.hour_h - TIMELINE_MIN_HOUR_H).abs() < 0.001,
             "a short window pins the hour height to the legible minimum, got {}",
@@ -7065,7 +6165,7 @@ mod tests {
         tall.app.shots_show_calendar();
         tall.app.view = View::Week;
         tall.relayout();
-        let gt = TimelineViewport::geometry(tall.app.view_rect());
+        let gt = TimelineInteraction::test_geometry(tall.app.view_rect());
         assert!(
             gt.hour_h > TIMELINE_MIN_HOUR_H,
             "a tall window grows the hours to fill the space, got {}",
@@ -7084,17 +6184,17 @@ mod tests {
         h.app.view = View::Week;
         h.relayout();
         // Pin the scroll to the top so an early, empty slot is on screen.
-        h.app.timeline.set_offset_y(0.0);
+        h.app.timeline.test_set_offset_y(0.0);
         h.relayout();
 
         let area = h.app.view_rect();
-        let g = TimelineViewport::geometry(area);
+        let g = TimelineInteraction::test_geometry(area);
         let days = h.app.timeline_days();
         let col = 0usize;
         let grid_x0 = area.x0 + g.gutter;
-        let col_w = TimelineViewport::column_width(area, days.len(), g);
+        let col_w = TimelineInteraction::test_column_width(area, days.len(), g);
         let x = grid_x0 + col_w * col as f64 + col_w * 0.5;
-        let offset = f64::from(h.app.timeline.offset_y());
+        let offset = f64::from(h.app.timeline.test_offset_y());
         let y_at = |hour: f64| g.body_top + hour * g.hour_h - offset;
 
         let ids_before: HashSet<Id> = h.app.model.events.iter().map(|e| e.id).collect();
@@ -7157,7 +6257,7 @@ mod tests {
         assert_eq!(start0.time(), min_to_time(11 * 60));
 
         let area = h.app.view_rect();
-        let g = TimelineViewport::geometry(area);
+        let g = TimelineInteraction::test_geometry(area);
         let days = h.app.timeline_days();
         let col = days
             .iter()
@@ -7166,7 +6266,7 @@ mod tests {
         let block = h
             .app
             .timeline
-            .block_rect(area, days.len(), g, col, 11 * 60, 12 * 60);
+            .test_block_rect(area, days.len(), g, col, 11 * 60, 12 * 60);
         let x = block.center().x;
         // Grab near the block top and drag down two hours.
         let from = Point::new(x, block.y0 + 3.0);
