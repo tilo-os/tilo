@@ -46,6 +46,7 @@ use crate::model::{
     Background, Deck, Element, ElementKind, FILL_ROLES, Id, Layout, Palette, PaletteKind, SLIDE_H,
     SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, seed_deck, starter_deck,
 };
+use crate::overview_grid::{OverviewGrid, scroll_from_thumb_drag, scrollbar_rects};
 use crate::presentation::{Blank, Command as PresentCommand, Presentation};
 use crate::render;
 use crate::toolbar_tools::{MenuPress, ToolbarTools, ToolbarToolsLayout};
@@ -536,7 +537,7 @@ pub struct SlidesApp {
     /// slides the deck has.
     rail_scroll: f64,
     /// Vertical scroll offset (px) of the slide-sorter overview grid.
-    overview_scroll: f64,
+    overview: OverviewGrid,
     /// Responsive insert toolbar. Owns overflow state, layout, drawing, and
     /// pointer policy; document actions returned by it are applied here.
     toolbar_tools: ToolbarTools,
@@ -701,7 +702,7 @@ impl SlidesApp {
             deck_rev: 0,
             images: ImageStore::new(),
             rail_scroll: 0.0,
-            overview_scroll: 0.0,
+            overview: OverviewGrid::new(),
             toolbar_tools: ToolbarTools::default(),
             portal_rx: None,
             doc_portal_rx: None,
@@ -775,7 +776,7 @@ impl SlidesApp {
             // Overview scrolled to its end, proving the last slide is reachable.
             "overview_end" => {
                 self.mode = Mode::Overview;
-                self.overview_scroll = 1.0e6;
+                self.overview.set_scroll(1.0e6);
             }
             // Narrow-layout captures (rendered at a phone-ish viewport, so the
             // panels resolve to overlay flaps from the width). We only record a
@@ -5006,150 +5007,23 @@ impl SlidesApp {
 
     // --- overview (slide-sorter) -------------------------------------------
 
-    /// Lay out the slide grid: as many columns as fit, returning the scroll
-    /// viewport, each slide's index + destination rect (already offset by the
-    /// clamped vertical scroll), and the maximum scroll. Shared by draw,
-    /// hit-test and the wheel/scrollbar handlers so they always agree.
     fn compute_overview(&self) -> (Rect, Vec<(usize, Rect)>, f64) {
-        let header_h = 64.0;
-        let area = Rect::new(
-            self.rect.x0,
-            self.rect.y0 + header_h,
-            self.rect.x1,
-            self.rect.y1,
-        );
-        let pad = 36.0;
-        let gap = 26.0;
-        let avail_w = (area.width() - 2.0 * pad).max(200.0);
-        // Aim for a thumbnail ~250px wide, then fit an integer column count.
-        let target = 260.0;
-        let cols = ((avail_w + gap) / (target + gap)).floor().max(1.0) as usize;
-        let tw = (avail_w - (cols as f64 - 1.0) * gap) / cols as f64;
-        let th = tw * SLIDE_H / SLIDE_W;
-        let n = self.deck.slides.len();
-        // Each cell is the slide card plus a caption row beneath it.
-        let cell_h = th + 30.0;
-        let row_stride = cell_h + gap;
-        let rows = if n == 0 { 0 } else { n.div_ceil(cols) };
-        // Content height from the top of `area`: top pad + all rows + bottom pad.
-        let content_h = if rows == 0 {
-            0.0
-        } else {
-            pad + rows as f64 * cell_h + (rows as f64 - 1.0) * gap + pad
-        };
-        let max_scroll = (content_h - area.height()).max(0.0);
-        let scroll = self.overview_scroll.clamp(0.0, max_scroll);
-        let mut out = Vec::new();
-        for i in 0..n {
-            let col = i % cols;
-            let row = i / cols;
-            let x = area.x0 + pad + col as f64 * (tw + gap);
-            let y = area.y0 + pad + row as f64 * row_stride - scroll;
-            out.push((i, Rect::new(x, y, x + tw, y + th)));
-        }
-        (area, out, max_scroll)
+        self.overview.geometry(self.rect, self.deck.slides.len())
     }
 
     fn draw_overview(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let pal = self.palette(theme);
-        let c = &theme.tokens.colors;
-        chrome::fill_rect(scene, t, self.rect, c.surfaces.base);
-
-        // Header row.
-        tr.draw_text_weighted(
-            scene,
-            &self.deck.title,
-            18.0,
-            c.text_primary,
-            t * Affine::translate((self.rect.x0 + 36.0, self.rect.y0 + 16.0)),
-            None,
-            TextWeight::Bold,
-        );
-        tr.draw_text_weighted(
-            scene,
-            &format!(
-                "{} slides  ·  click to open  ·  Esc / G to return",
-                self.deck.slides.len()
-            ),
-            12.0,
-            c.text_dim,
-            t * Affine::translate((self.rect.x0 + 36.0, self.rect.y0 + 38.0)),
-            None,
-            TextWeight::Regular,
-        );
-        stroke_line(
+        let palette = self.palette(theme);
+        self.overview.draw(
             scene,
             t,
-            self.rect.x0,
-            self.rect.y0 + 60.0,
-            self.rect.x1,
-            self.rect.y0 + 60.0,
-            c.border_standard,
+            tr,
+            theme,
+            self.rect,
+            &self.deck,
+            self.cur_slide,
+            &palette,
+            &self.images,
         );
-
-        let (area, thumbs, max_scroll) = self.compute_overview();
-        // Clip the scrolling grid to the area below the header so cards never
-        // paint over the title row as they scroll past.
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &area);
-        for (i, rect) in thumbs {
-            if let Some(slide) = self.deck.slides.get(i) {
-                // Drop shadow + card.
-                let sh = rect + vello::kurbo::Vec2::new(0.0, 4.0);
-                chrome::fill_rrect(
-                    scene,
-                    t,
-                    sh.inflate(1.0, 1.0),
-                    8.0,
-                    render::with_alpha(Color::BLACK, 60),
-                );
-                render::draw_slide(scene, t, tr, theme, &pal, slide, rect, 8.0, &self.images);
-                let (ring, w) = if i == self.cur_slide {
-                    (pal.accent, 2.5)
-                } else {
-                    (render::with_alpha(c.text_primary, 30), 1.0)
-                };
-                chrome::stroke_rrect(scene, t, rect, 8.0, ring, w);
-                // Caption row *beneath* the card: a slide-number chip then the
-                // layout name. Kept below the card so it never collides with the
-                // slide's own title/content (an on-card badge overlapped it).
-                let cap_y = rect.y1 + 7.0;
-                let num = format!("{}", i + 1);
-                let num_col = if i == self.cur_slide {
-                    pal.accent
-                } else {
-                    c.text_primary
-                };
-                tr.draw_text_weighted(
-                    scene,
-                    &num,
-                    12.0,
-                    num_col,
-                    t * Affine::translate((rect.x0 + 2.0, cap_y)),
-                    None,
-                    TextWeight::Bold,
-                );
-                let (num_w, _) = tr.measure_weighted(&num, 12.0, None, TextWeight::Bold);
-                tr.draw_text_weighted(
-                    scene,
-                    slide.layout.label(),
-                    11.5,
-                    c.text_dim,
-                    t * Affine::translate((rect.x0 + f64::from(num_w) + 12.0, cap_y + 0.5)),
-                    None,
-                    TextWeight::Regular,
-                );
-            }
-        }
-        scene.pop_layer();
-        // Scrollbar when the grid overflows the viewport.
-        if let Some((track, thumb)) = scrollbar_rects(
-            area,
-            self.overview_scroll.clamp(0.0, max_scroll),
-            max_scroll,
-        ) {
-            chrome::fill_rrect(scene, t, track, 3.0, render::with_alpha(c.text_primary, 18));
-            chrome::fill_rrect(scene, t, thumb, 3.0, render::with_alpha(c.text_primary, 90));
-        }
     }
 }
 
@@ -5200,55 +5074,6 @@ fn stroke_line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64,
     scene.stroke(&Stroke::new(1.0), t, color, None, &line);
 }
 
-/// `(track, thumb)` rects for a vertical scrollbar over `viewport`, or `None`
-/// when the content fits (`max_scroll <= 0`). The thumb height is proportional
-/// to the visible fraction and its position to the scroll offset.
-fn scrollbar_rects(viewport: Rect, scroll: f64, max_scroll: f64) -> Option<(Rect, Rect)> {
-    if max_scroll <= 0.5 || viewport.height() <= 8.0 {
-        return None;
-    }
-    let sw = 6.0;
-    let track = Rect::new(
-        viewport.x1 - sw - 3.0,
-        viewport.y0,
-        viewport.x1 - 3.0,
-        viewport.y1,
-    );
-    let content_h = viewport.height() + max_scroll;
-    let visible_frac = (viewport.height() / content_h).clamp(0.06, 1.0);
-    let thumb_h = (track.height() * visible_frac).max(28.0);
-    let travel = track.height() - thumb_h;
-    let t = if max_scroll > 0.0 {
-        (scroll / max_scroll).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let ty = track.y0 + travel * t;
-    let thumb = Rect::new(track.x0, ty, track.x1, ty + thumb_h);
-    Some((track, thumb))
-}
-
-/// Map a vertical scrollbar-thumb drag (`dy` px) to a content scroll offset.
-/// The thumb travels `track.height - thumb.height`; the content travels
-/// `max_scroll` over that same span, so one thumb pixel is `max_scroll/travel`
-/// content pixels. Result is clamped to `0..=max_scroll`.
-fn scroll_from_thumb_drag(viewport: Rect, orig_scroll: f64, max_scroll: f64, dy: f64) -> f64 {
-    if max_scroll <= 0.0 {
-        return 0.0;
-    }
-    let orig = orig_scroll.clamp(0.0, max_scroll);
-    match scrollbar_rects(viewport, orig, max_scroll) {
-        Some((track, thumb)) => {
-            let travel = (track.height() - thumb.height()).max(1.0);
-            (orig + dy * (max_scroll / travel)).clamp(0.0, max_scroll)
-        }
-        None => 0.0,
-    }
-}
-
-/// Truncate `label` with a trailing ellipsis so its estimated width fits
-/// `max_w`. Uses the same [`chrome::est_width`] metric that drives the toolbar
-/// layout, so the clip lands where the layout expects it.
 /// Line starts (char index of the first char of every `\n`-delimited line).
 fn line_starts(chars: &[char]) -> Vec<usize> {
     let mut starts = vec![0usize];
@@ -5791,8 +5616,7 @@ impl SlidesApp {
                 self.sync_page_rail();
             }
             Mode::Overview => {
-                let (_, _, ov_max) = self.compute_overview();
-                self.overview_scroll = self.overview_scroll.clamp(0.0, ov_max);
+                self.overview.clamp(self.rect, self.deck.slides.len());
             }
             Mode::Present => {}
         }
@@ -5940,8 +5764,12 @@ impl SlidesApp {
         } = self.drag.clone()
         {
             let (area, _, max_scroll) = self.compute_overview();
-            self.overview_scroll =
-                scroll_from_thumb_drag(area, orig_scroll, max_scroll, p.y - start_y);
+            self.overview.set_scroll(scroll_from_thumb_drag(
+                area,
+                orig_scroll,
+                max_scroll,
+                p.y - start_y,
+            ));
             return;
         }
         let chrome = self.compute_chrome();
@@ -6036,27 +5864,25 @@ impl SlidesApp {
             return;
         }
         if self.mode == Mode::Overview {
-            let (area, thumbs, max_scroll) = self.compute_overview();
+            let (area, _, max_scroll) = self.compute_overview();
             // Scrollbar thumb → start a scroll drag.
             if let Some((_, thumb)) = scrollbar_rects(
                 area,
-                self.overview_scroll.clamp(0.0, max_scroll),
+                self.overview.scroll().clamp(0.0, max_scroll),
                 max_scroll,
             ) && thumb.contains(p)
             {
                 self.drag = Drag::ScrollOverview {
                     start_y: p.y,
-                    orig_scroll: self.overview_scroll.clamp(0.0, max_scroll),
+                    orig_scroll: self.overview.scroll().clamp(0.0, max_scroll),
                 };
                 *handled = true;
                 return;
             }
-            for (i, rect) in thumbs {
-                if rect.contains(p) {
-                    self.apply_hit(doc, Hit::OpenSlide(i));
-                    *handled = true;
-                    return;
-                }
+            if let Some(index) = self.overview.slide_at(self.rect, self.deck.slides.len(), p) {
+                self.apply_hit(doc, Hit::OpenSlide(index));
+                *handled = true;
+                return;
             }
             *handled = true;
             return;
@@ -6764,9 +6590,7 @@ impl SlidesApp {
                 }
             }
             Mode::Overview => {
-                let (_, _, max_scroll) = self.compute_overview();
-                if max_scroll > 0.0 {
-                    self.overview_scroll = (self.overview_scroll - dy).clamp(0.0, max_scroll);
+                if self.overview.wheel(self.rect, self.deck.slides.len(), dy) {
                     *handled = true;
                 }
             }
@@ -7961,7 +7785,7 @@ mod tests {
         let mut handled = false;
         app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
         assert!(
-            handled && app.overview_scroll > 0.0,
+            handled && app.overview.scroll() > 0.0,
             "wheel scrolls the overview"
         );
 
@@ -7971,7 +7795,7 @@ mod tests {
             app.on_wheel(MouseScrollDelta::LineDelta(0.0, -20.0), 1.0, &mut h);
         }
         assert!(
-            (app.overview_scroll - max_scroll).abs() < 1.0,
+            (app.overview.scroll() - max_scroll).abs() < 1.0,
             "overview scroll clamps to max"
         );
         let (area, thumbs, _) = app.compute_overview();
@@ -7998,7 +7822,7 @@ mod tests {
         };
         app.drag_move(Point::new(thumb.center().x, thumb.center().y + 120.0));
         assert!(
-            app.overview_scroll > 0.0,
+            app.overview.scroll() > 0.0,
             "dragging the thumb down scrolls the grid"
         );
     }
