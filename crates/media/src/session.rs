@@ -1,6 +1,6 @@
 //! One decode pipeline per source, shared by everything that needs it.
 //!
-//! Building a `MediaEngine` stands up a whole GStreamer pipeline: element
+//! Building a `MediaEngine` stands up a whole `GStreamer` pipeline: element
 //! discovery, a decoder, a demuxer, an audio chain, and — on the hardware path
 //! — a VA display or CUDA context. Doing that **per thumbnail**, on a fresh
 //! thread, is why a timeline full of clips stalls: a dozen pipelines racing to
@@ -14,7 +14,7 @@
 //!
 //! # Threading
 //!
-//! Sessions are handed out as `Arc<Mutex<EngineSession>>`. A GStreamer
+//! Sessions are handed out as `Arc<Mutex<EngineSession>>`. A `GStreamer`
 //! pipeline is not `Sync`, and the mutex is what makes sharing one legal; it
 //! also serialises the seeks, which is what you want — two callers scrubbing
 //! the same decoder to different times would otherwise fight.
@@ -255,7 +255,7 @@ impl SessionPool {
             let victim = self
                 .sessions
                 .iter()
-                .max_by_key(|(_, s)| s.lock().map(|g| g.idle_for()).unwrap_or(Duration::MAX))
+                .max_by_key(|(_, s)| s.lock().map_or(Duration::MAX, |g| g.idle_for()))
                 .map(|(k, _)| k.clone());
             match victim {
                 Some(k) => {
@@ -329,6 +329,10 @@ mod tests {
             handles.push(pool.session(&Source::LocalFile(p)));
         }
         assert_eq!(pool.len(), 2, "distinct sources are distinct sessions");
+        assert!(
+            !Arc::ptr_eq(&handles[0], &handles[1]),
+            "two sources must not be handed the same decode pipeline"
+        );
 
         // A third source must evict rather than grow the pool: every live
         // pipeline holds a decoder.

@@ -1,6 +1,6 @@
 //! Encoder discovery, preference order, and the record of what was selected.
 //!
-//! The decode side observes which decoder GStreamer autoplugged
+//! The decode side observes which decoder `GStreamer` autoplugged
 //! ([`crate::hw::HwReport`]). Encoding has no autoplugger: an encode pipeline
 //! names its encoder element outright, so if the name is hard-coded to a
 //! software encoder then a machine with a perfectly capable GPU still encodes
@@ -16,11 +16,11 @@
 //! **Claim hardware it has not seen.** [`Selection::confirmed`] is false when
 //! no registry was consulted, and [`Selection::is_hardware`] is false unless
 //! the element was both confirmed *and* belongs to a hardware family. A build
-//! with no GStreamer linked therefore reports "baseline, nothing observed"
+//! with no `GStreamer` linked therefore reports "baseline, nothing observed"
 //! rather than anything that could be read as a GPU claim — the same rule
 //! [`crate::hw::HwReport::is_hardware`] follows for decode.
 //!
-//! **Guess at bitrate units.** GStreamer encoders disagree: `openh264enc` and
+//! **Guess at bitrate units.** `GStreamer` encoders disagree: `openh264enc` and
 //! `vp8enc` take bits per second, while every VA-API, NVENC, QSV and `x264enc`
 //! encoder takes *kilo*bits per second. Setting 16000000 on `x264enc` asks for
 //! 16 Gbit/s, which the encoder clamps — silently producing a file nothing
@@ -48,11 +48,11 @@ pub enum EncoderKind {
     NvCodec,
     /// Intel Quick Sync via the `qsv` plugin.
     Qsv,
-    /// Linux V4L2 stateful encoders — embedded SoCs.
+    /// Linux `V4L2` stateful encoders — embedded system-on-chip parts.
     V4l2,
     /// Direct3D 11/12 video encode (present for completeness).
     D3d,
-    /// Apple VideoToolbox.
+    /// Apple `VideoToolbox`.
     VideoToolbox,
     /// A CPU encoder — `x264enc`, `openh264enc`, `vp8enc`, `avenc_aac`, …
     Software,
@@ -96,7 +96,7 @@ pub enum BitrateUnits {
 /// and how to ask it for a target bitrate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EncoderSpec {
-    /// The GStreamer element factory name.
+    /// The `GStreamer` element factory name.
     pub element: &'static str,
     pub kind: EncoderKind,
     /// The property carrying the target bitrate.
@@ -150,7 +150,7 @@ impl EncoderSpec {
     /// one — the 2 Gbit/s these properties declare as their maximum — was
     /// measured and does not help: `vaav1enc bitrate=2048000` hard-recovers
     /// the context just the same, while a value *past* the declared maximum is
-    /// rejected outright by GObject and never reaches the driver at all. A cap
+    /// rejected outright by `GObject` and never reaches the driver at all. A cap
     /// low enough to actually protect would be a policy limit on legitimate
     /// exports, and one that merely looked protective would be worse than
     /// none. The units table is the real mitigation.
@@ -223,30 +223,39 @@ const H264: &[EncoderSpec] = &[
     kbit("vaapih264enc", EncoderKind::Va),
     kbit("v4l2h264enc", EncoderKind::V4l2),
     kbit("x264enc", EncoderKind::Software),
-    bits_untracked("openh264enc", EncoderKind::Software),
+    H264_BASELINE,
 ];
+const H264_BASELINE: EncoderSpec = bits_untracked("openh264enc", EncoderKind::Software);
 
 /// VP8. Hardware VP8 encode is rare but real on some Intel parts.
 const VP8: &[EncoderSpec] = &[
     kbit("vavp8enc", EncoderKind::Va),
     kbit("vaapivp8enc", EncoderKind::Va),
-    target_bits("vp8enc"),
+    VP8_BASELINE,
 ];
+const VP8_BASELINE: EncoderSpec = target_bits("vp8enc");
 
 /// VP9.
 const VP9: &[EncoderSpec] = &[
     kbit("vavp9enc", EncoderKind::Va),
     kbit("qsvvp9enc", EncoderKind::Qsv),
     kbit("vaapivp9enc", EncoderKind::Va),
-    target_bits("vp9enc"),
+    VP9_BASELINE,
 ];
+const VP9_BASELINE: EncoderSpec = target_bits("vp9enc");
 
 /// AV1.
 const AV1: &[EncoderSpec] = &[
     kbit("vaav1enc", EncoderKind::Va),
     kbit("qsvav1enc", EncoderKind::Qsv),
-    kbit("nvav1enc", EncoderKind::NvCodec),
+    AV1_BASELINE,
 ];
+/// AV1 is the one codec with no software entry: this workspace's plugin set
+/// carries no AV1 *encoder* that runs on the CPU, so the last resort is still
+/// a hardware element and an export on a machine without one fails to
+/// instantiate rather than falling back. Adding `svtav1enc` here is what would
+/// close that gap.
+const AV1_BASELINE: EncoderSpec = kbit("nvav1enc", EncoderKind::NvCodec);
 
 /// AAC. No hardware AAC encoders exist; the choice is quality. `fdkaacenc`
 /// (Fraunhofer) is the better encoder, `avenc_aac` the one that is always
@@ -254,11 +263,13 @@ const AV1: &[EncoderSpec] = &[
 const AAC: &[EncoderSpec] = &[
     bits("fdkaacenc", EncoderKind::Software),
     bits("avenc_aac", EncoderKind::Software),
-    bits("voaacenc", EncoderKind::Software),
+    AAC_BASELINE,
 ];
+const AAC_BASELINE: EncoderSpec = bits("voaacenc", EncoderKind::Software);
 
 /// Opus.
-const OPUS: &[EncoderSpec] = &[bits("opusenc", EncoderKind::Software)];
+const OPUS: &[EncoderSpec] = &[OPUS_BASELINE];
+const OPUS_BASELINE: EncoderSpec = bits("opusenc", EncoderKind::Software);
 
 /// A candidate whose bitrate property is `bitrate`, in bits per second.
 const fn bits(element: &'static str, kind: EncoderKind) -> EncoderSpec {
@@ -316,11 +327,18 @@ impl VideoCodec {
         }
     }
 
-    /// The encoder named when nothing else is confirmed present — the last
-    /// candidate in the table.
+    /// The encoder named when nothing else is confirmed present.
+    ///
+    /// This is each table's final entry, named directly rather than found by
+    /// length arithmetic: reordering a table cannot silently move the last
+    /// resort, and there is no index to get wrong.
     pub fn baseline(self) -> &'static EncoderSpec {
-        let c = self.candidates();
-        &c[c.len() - 1]
+        match self {
+            VideoCodec::H264 => &H264_BASELINE,
+            VideoCodec::Vp8 => &VP8_BASELINE,
+            VideoCodec::Vp9 => &VP9_BASELINE,
+            VideoCodec::Av1 => &AV1_BASELINE,
+        }
     }
 }
 
@@ -332,9 +350,13 @@ impl AudioCodec {
         }
     }
 
+    /// The encoder named when nothing else is confirmed present — see
+    /// [`VideoCodec::baseline`].
     pub fn baseline(self) -> &'static EncoderSpec {
-        let c = self.candidates();
-        &c[c.len() - 1]
+        match self {
+            AudioCodec::Aac => &AAC_BASELINE,
+            AudioCodec::Opus => &OPUS_BASELINE,
+        }
     }
 }
 
@@ -382,9 +404,10 @@ impl HwEncPolicy {
     /// Whether `kind` may be selected at all under this policy.
     fn admits(self, kind: EncoderKind) -> bool {
         match self {
-            HwEncPolicy::Auto => true,
+            // Forcing a family is a preference, not an exclusion: if the
+            // forced encoder is absent the others are still worth trying.
+            HwEncPolicy::Auto | HwEncPolicy::Force(_) => true,
             HwEncPolicy::Off => !kind.is_hardware(),
-            HwEncPolicy::Force(_) => true,
         }
     }
 
@@ -413,7 +436,7 @@ pub struct Selection {
     pub spec: &'static EncoderSpec,
     /// Whether a registry actually confirmed this element is installed.
     ///
-    /// `false` means the caller could not look — no GStreamer linked, or every
+    /// `false` means the caller could not look — no `GStreamer` linked, or every
     /// candidate was missing — and [`Self::spec`] is the declared baseline.
     /// Never read `false` as "software is definitely what will run"; read it
     /// as "nothing has been observed".
@@ -536,19 +559,15 @@ pub struct EncodeReport {
 impl EncodeReport {
     /// Whether the *video* encode runs on hardware. False when unknown.
     pub fn is_hardware(&self) -> bool {
-        self.video
-            .as_ref()
-            .map(Selection::is_hardware)
-            .unwrap_or(false)
+        self.video.as_ref().is_some_and(Selection::is_hardware)
     }
 
     /// A one-line summary for a log or a test failure message.
     pub fn describe(&self) -> String {
-        let v = self
-            .video
-            .as_ref()
-            .map(Selection::describe)
-            .unwrap_or_else(|| "no video encoder selected".to_string());
+        let v = self.video.as_ref().map_or_else(
+            || "no video encoder selected".to_string(),
+            Selection::describe,
+        );
         match &self.audio {
             Some(a) => format!("video: {v}; audio: {}", a.describe()),
             None => format!("video: {v}; audio: none"),
@@ -556,12 +575,12 @@ impl EncodeReport {
     }
 }
 
-/// Whether `name` is an element factory in this process's GStreamer registry.
+/// Whether `name` is an element factory in this process's `GStreamer` registry.
 ///
 /// The real answer to [`select_video`]'s `available` question. Only compiled
-/// where GStreamer is linked; a build without it cannot look, and says so
+/// where `GStreamer` is linked; a build without it cannot look, and says so
 /// through [`Selection::confirmed`] rather than guessing.
-/// Initialises GStreamer if the caller has not — the registry is empty before
+/// Initialises `GStreamer` if the caller has not — the registry is empty before
 /// `gst_init`, and an uninitialised lookup would report every encoder missing,
 /// which is the failure mode this module exists to prevent. `gst_init` is
 /// documented as safe to call repeatedly.
@@ -585,6 +604,12 @@ pub fn select_audio_from_registry(codec: AudioCodec) -> Selection {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "byte counts and bitrates widened to f64 only to print them as \
+              Mbit/s in a failure message; the assertions themselves compare \
+              integers"
+)]
 mod tests {
     use super::*;
 
@@ -1044,7 +1069,7 @@ mod tests {
                     return;
                 }
             }
-            sizes.push(std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0));
+            sizes.push(std::fs::metadata(&out).map_or(0, |m| m.len()));
         }
 
         let (low, high) = (sizes[0], sizes[1]);
@@ -1201,7 +1226,7 @@ mod tests {
                 "the {} encode did not finish: {msg:?}",
                 spec.element,
             );
-            let bytes = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+            let bytes = std::fs::metadata(&out).map_or(0, |m| m.len());
             assert!(bytes > 0, "{} wrote nothing", spec.element);
             let wrote_bps = bytes * 8 / seconds;
             let over = wrote_bps as f64 / asked_bps as f64;

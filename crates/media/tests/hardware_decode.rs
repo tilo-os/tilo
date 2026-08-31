@@ -1,7 +1,7 @@
 //! Proof that hardware decode actually engages — by name, not by assertion.
 //!
 //! Run against the real 1080p H.264 fixture. The test interrogates the
-//! GStreamer registry first, so its verdict is specific to the machine:
+//! `GStreamer` registry first, so its verdict is specific to the machine:
 //!
 //! * a hardware H.264 decoder exists → it **must** be the element that got
 //!   plugged, or the test fails;

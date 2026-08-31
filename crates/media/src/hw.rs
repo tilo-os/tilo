@@ -9,7 +9,7 @@
 //!
 //! Observation is the point. "Hardware decode is enabled" is not a claim this
 //! crate makes from configuration — [`HwReport`] is filled in from the element
-//! GStreamer instantiated, so a consumer (and a test) can assert on the real
+//! `GStreamer` instantiated, so a consumer (and a test) can assert on the real
 //! decoder by name.
 //!
 //! `QOS_MEDIA_HWDEC` overrides the policy:
@@ -27,13 +27,14 @@ pub enum DecoderKind {
     Va,
     /// NVIDIA NVDEC via the `nvcodec` plugin.
     NvCodec,
-    /// Linux V4L2 stateless / stateful codecs — embedded SoCs, Raspberry Pi.
+    /// Linux `V4L2` stateless / stateful codecs — embedded system-on-chip
+    /// parts, Raspberry Pi.
     V4l2,
     /// Vulkan Video.
     Vulkan,
     /// Direct3D 11/12 video (present for completeness; not reachable here).
     D3d,
-    /// Apple VideoToolbox.
+    /// Apple `VideoToolbox`.
     VideoToolbox,
     /// A CPU decoder — `avdec_*`, `openh264dec`, `dav1d`, `vp8dec`, …
     Software,
@@ -58,7 +59,7 @@ impl DecoderKind {
         }
     }
 
-    /// Classify a decoder by its GStreamer element name.
+    /// Classify a decoder by its `GStreamer` element name.
     ///
     /// Names are matched against the prefix each plugin uses. `vaapi*` is the
     /// old gstreamer-vaapi plugin and `va*` the new one in -bad; both are
@@ -146,7 +147,7 @@ impl HwPolicy {
     }
 }
 
-/// What the pipeline actually did — filled in from the elements GStreamer
+/// What the pipeline actually did — filled in from the elements `GStreamer`
 /// instantiated, never from configuration.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HwReport {
@@ -170,17 +171,14 @@ impl HwReport {
     /// software decoder was plugged and when nothing has been plugged yet —
     /// so a caller can never read "not yet known" as "yes".
     pub fn is_hardware(&self) -> bool {
-        self.decoder_kind
-            .map(DecoderKind::is_hardware)
-            .unwrap_or(false)
+        self.decoder_kind.is_some_and(DecoderKind::is_hardware)
     }
 
     /// Whether frames arrive as dmabufs (the zero-copy path).
     pub fn is_dmabuf(&self) -> bool {
         self.negotiated_caps
             .as_deref()
-            .map(|c| c.contains("memory:DMABuf"))
-            .unwrap_or(false)
+            .is_some_and(|c| c.contains("memory:DMABuf"))
     }
 
     /// Record a newly instantiated element, keeping it only if it looks like a
@@ -227,16 +225,8 @@ impl HwReport {
 /// Element instance names carry a trailing index (`nvh264dec0`), so this
 /// matches on a `dec` segment rather than a suffix.
 pub fn looks_like_video_decoder(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    if !n.contains("dec") {
-        return false;
-    }
-    // `decodebin`/`uridecodebin`/`parsebin` are containers, not decoders.
-    if n.starts_with("decodebin") || n.starts_with("uridecodebin") || n.starts_with("parsebin") {
-        return false;
-    }
     // Audio decoders and generic converters would otherwise match on "dec".
-    for audio in [
+    const AUDIO: &[&str] = &[
         "aac",
         "mp3",
         "mpegaudio",
@@ -250,13 +240,8 @@ pub fn looks_like_video_decoder(name: &str) -> bool {
         "wma",
         "sbc",
         "audio",
-    ] {
-        if n.contains(audio) {
-            return false;
-        }
-    }
-    // Anything left containing a known video codec token, or an explicit
-    // video-decoder plugin prefix.
+    ];
+    // A known video codec token, or an explicit video-decoder plugin prefix.
     const VIDEO: &[&str] = &[
         "h264",
         "h265",
@@ -275,6 +260,18 @@ pub fn looks_like_video_decoder(name: &str) -> bool {
         "vc1",
         "wmv",
     ];
+
+    let n = name.to_ascii_lowercase();
+    if !n.contains("dec") {
+        return false;
+    }
+    // `decodebin`/`uridecodebin`/`parsebin` are containers, not decoders.
+    if n.starts_with("decodebin") || n.starts_with("uridecodebin") || n.starts_with("parsebin") {
+        return false;
+    }
+    if AUDIO.iter().any(|a| n.contains(a)) {
+        return false;
+    }
     VIDEO.iter().any(|c| n.contains(c))
 }
 
@@ -286,7 +283,7 @@ pub struct DecoderEntry {
     pub rank: u32,
 }
 
-/// GStreamer's `GST_RANK_PRIMARY`. Software decoders sit here; hardware ones
+/// `GStreamer`'s `GST_RANK_PRIMARY`. Software decoders sit here; hardware ones
 /// are lifted above it so autoplugging reaches them first.
 pub const RANK_PRIMARY: u32 = 256;
 /// The rank a preferred hardware decoder is raised to.
@@ -299,7 +296,7 @@ pub const RANK_DEMOTED: u32 = 1;
 
 /// The rank `policy` assigns to a decoder of `kind`.
 ///
-/// Pure, so the policy is testable without a GStreamer registry.
+/// Pure, so the policy is testable without a `GStreamer` registry.
 pub fn rank_for(policy: HwPolicy, kind: DecoderKind) -> u32 {
     match policy {
         HwPolicy::Off => {

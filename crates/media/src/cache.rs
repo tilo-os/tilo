@@ -42,16 +42,39 @@ pub struct FrameKey {
 ///
 /// Rounded **down** so a bucket never spans two frames: at 30fps a 33ms bucket
 /// would let 12.999s and 13.020s (different pictures) collide.
+///
+/// A degenerate frame rate — zero, negative, NaN, infinite — yields a 1 ms
+/// bucket rather than a division by zero downstream in [`bucket_of`].
 pub fn bucket_ms_for_fps(fps: f64) -> u64 {
+    /// The largest integer `f64` represents without gaps, and it fits `u64`.
+    /// 2^53 ms is 285 000 years; a frame rate small enough to reach it is not
+    /// a frame rate.
+    const MAX_EXACT_MS: f64 = 9_007_199_254_740_992.0; // 2^53
+
     if fps <= 0.0 || !fps.is_finite() {
         return 1;
     }
-    ((1000.0 / fps).floor() as u64).max(1)
+    // `fps` is finite and positive here, so the quotient is a non-negative
+    // finite real. Clamping before the cast is what makes the conversion
+    // exact: nothing that survives the clamp can truncate or lose a sign.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 1.0..=2^53 on the same line, which u64 holds exactly"
+    )]
+    let bucket = (1000.0 / fps).floor().clamp(1.0, MAX_EXACT_MS) as u64;
+    bucket
 }
 
 /// Which bucket a time falls in.
+///
+/// A zero `bucket_ms` is read as 1 ms, so every millisecond is its own bucket
+/// rather than the division trapping.
 pub fn bucket_of(time_ms: u64, bucket_ms: u64) -> u64 {
-    time_ms / bucket_ms.max(1)
+    // `.max(1)` rules out the only divisor `checked_div` rejects, so the
+    // fallback below never runs; it is here because the alternative is a
+    // bare `/` that clippy cannot see is guarded.
+    time_ms.checked_div(bucket_ms.max(1)).unwrap_or(time_ms)
 }
 
 /// Roughly how much memory a frame holds, for the byte budget.
@@ -64,7 +87,18 @@ pub fn frame_cost_bytes(frame: &Frame) -> usize {
         FramePayload::Rgba(b) => b.len(),
         FramePayload::Planar(p) => p.planes.iter().map(|pl| pl.bytes.len()).sum(),
         // NV12-equivalent: one luma byte plus half a chroma byte per pixel.
-        FramePayload::Dmabuf(d) => (d.width as usize * d.height as usize * 3) / 2,
+        //
+        // Saturating, not wrapping: the dimensions come out of a decoder for a
+        // stream this crate did not author, and a wrapped product would charge
+        // a huge picture *almost nothing*, so the cache would stop evicting and
+        // starve the decoder's buffer pool — the exact failure the byte budget
+        // exists to prevent.
+        FramePayload::Dmabuf(d) => {
+            (d.width as usize)
+                .saturating_mul(d.height as usize)
+                .saturating_mul(3)
+                / 2
+        }
     }
 }
 
@@ -129,18 +163,20 @@ impl FrameCache {
 
     /// Look a frame up, marking it most-recently-used.
     pub fn get(&mut self, key: &FrameKey) -> Option<Arc<Frame>> {
-        self.clock += 1;
+        // Saturating rather than wrapping: at `u64::MAX` recency ordering goes
+        // flat and eviction degrades to arbitrary, where a wrap would make the
+        // newest entry look like the oldest and evict exactly what is in use.
+        // Neither is reachable — one tick per cache access is 584 years at a
+        // billion accesses a second — but the failure modes are not equal.
+        self.clock = self.clock.saturating_add(1);
         let tick = self.clock;
-        match self.entries.get_mut(key) {
-            Some(e) => {
-                e.used_at = tick;
-                self.hits += 1;
-                Some(e.frame.clone())
-            }
-            None => {
-                self.misses += 1;
-                None
-            }
+        if let Some(e) = self.entries.get_mut(key) {
+            e.used_at = tick;
+            self.hits = self.hits.saturating_add(1);
+            Some(e.frame.clone())
+        } else {
+            self.misses = self.misses.saturating_add(1);
+            None
         }
     }
 
@@ -153,7 +189,7 @@ impl FrameCache {
     /// Insert a frame, evicting least-recently-used entries until both bounds
     /// hold. Replacing an existing key keeps the newer frame.
     pub fn insert(&mut self, key: FrameKey, frame: Arc<Frame>) {
-        self.clock += 1;
+        self.clock = self.clock.saturating_add(1);
         let cost = frame_cost_bytes(&frame);
         if let Some(old) = self.entries.remove(&key) {
             self.bytes = self.bytes.saturating_sub(old.cost);
@@ -166,7 +202,11 @@ impl FrameCache {
                 cost,
             },
         );
-        self.bytes += cost;
+        // Saturating: a byte total that wrapped would read as *below* the
+        // budget and stop eviction entirely, which for dmabuf entries means
+        // holding decoder pool buffers and file descriptors forever. Saturated,
+        // `evict_to_bounds` simply keeps evicting.
+        self.bytes = self.bytes.saturating_add(cost);
         self.evict_to_bounds();
     }
 
@@ -229,29 +269,49 @@ pub fn read_ahead_targets(
     direction: i64,
     count: usize,
 ) -> Vec<u64> {
-    let bucket = bucket_of(position_ms, bucket_ms);
-    let step = if direction < 0 { -1i64 } else { 1i64 };
+    let here = bucket_of(position_ms, bucket_ms);
+    let backwards = direction < 0;
     let mut out = Vec::with_capacity(count);
-    for i in 1..=(count as i64 * 2) {
+    // Scan twice as far as asked, so cached buckets can be skipped without
+    // cutting the read-ahead short.
+    let scan = u64::try_from(count).unwrap_or(u64::MAX).saturating_mul(2);
+    for offset in 1..=scan {
         if out.len() >= count {
             break;
         }
-        let b = bucket as i64 + step * i;
-        if b < 0 {
+        // Stays in the unsigned bucket domain throughout. The previous form
+        // went through `i64`, where a bucket past `i64::MAX` read as negative
+        // and silently returned nothing to read ahead.
+        let Some(bucket) = (if backwards {
+            here.checked_sub(offset)
+        } else {
+            here.checked_add(offset)
+        }) else {
+            // Ran off the start of the stream, or off the end of the bucket
+            // space. Either way there is nothing further in this direction.
             break;
-        }
+        };
         let key = FrameKey {
             source: source.clone(),
-            bucket: b as u64,
+            bucket,
         };
         if !cache.contains(&key) {
-            out.push(b as u64 * bucket_ms);
+            let Some(time_ms) = bucket.checked_mul(bucket_ms) else {
+                break;
+            };
+            out.push(time_ms);
         }
     }
     out
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "fixture arithmetic on literal frame sizes, bucket counts and \
+              budgets — an overflow here would be a broken test, not a \
+              hazard reaching a user's footage"
+)]
 mod tests {
     use super::*;
     use crate::dmabuf::{Colorimetry, DRM_FORMAT_NV12, DmabufImage};
@@ -275,20 +335,27 @@ mod tests {
     #[test]
     fn buckets_never_span_two_frames_at_common_rates() {
         // 33ms at 30fps would let 12.999s and 13.020s — different pictures —
-        // land in one bucket. Rounding down to 33 keeps them apart... check
-        // the real invariant instead: consecutive frame times differ by at
-        // least one bucket.
-        for fps in [24.0, 25.0, 30.0, 50.0, 60.0] {
+        // land in one bucket. The real invariant: consecutive frame times
+        // differ by at least one bucket. Each frame interval is written out
+        // in whole milliseconds rather than recomputed from the frame rate,
+        // so the expected value is stated rather than derived from the code
+        // under test.
+        for (fps, frame_interval_ms) in [
+            (24.0, 42u64),
+            (25.0, 40),
+            (30.0, 33),
+            (50.0, 20),
+            (60.0, 17),
+        ] {
             let b = bucket_ms_for_fps(fps);
-            let frame_interval_ms = 1000.0 / fps;
             assert!(b >= 1);
             assert!(
-                (b as f64) <= frame_interval_ms,
+                b <= frame_interval_ms,
                 "bucket {b}ms must not exceed the {frame_interval_ms}ms frame interval at {fps}fps"
             );
             // Two consecutive frames must fall in different buckets.
             let t0 = 12_000u64;
-            let t1 = t0 + frame_interval_ms.round() as u64;
+            let t1 = t0 + frame_interval_ms;
             assert_ne!(
                 bucket_of(t0, b),
                 bucket_of(t1, b),
@@ -359,7 +426,7 @@ mod tests {
             c.bytes()
         );
         assert!(c.len() < 3, "the byte budget evicted, not the entry cap");
-        assert!(c.len() >= 1, "at least the newest frame is retained");
+        assert!(!c.is_empty(), "at least the newest frame is retained");
     }
 
     #[test]
@@ -456,5 +523,33 @@ mod tests {
         let src: SourceKey = Arc::from("a");
         let back = read_ahead_targets(&c, &src, 0, 33, -1, 4);
         assert!(back.is_empty(), "nothing precedes t=0, got {back:?}");
+    }
+
+    #[test]
+    fn read_ahead_does_not_run_off_the_end_of_the_bucket_space() {
+        // A playhead at the top of the `u64` millisecond range — a "seek to
+        // the end" sentinel, or a duration that was never resolved. The
+        // read-ahead planner used to route the bucket index through `i64`
+        // and multiply it back out into milliseconds; both steps break here.
+        let c = FrameCache::new(8, 1 << 30);
+        let src: SourceKey = Arc::from("a");
+
+        // 1 ms buckets put the playhead in bucket `u64::MAX`, which as an
+        // `i64` reads as -1 — so *forward* read-ahead came back with the
+        // start of the stream, and the decoder would fetch t=0 while the
+        // playhead sat at the end.
+        let fwd = read_ahead_targets(&c, &src, u64::MAX, 1, 1, 4);
+        assert!(
+            fwd.iter().all(|t| *t >= u64::MAX.saturating_sub(4)),
+            "forward read-ahead must stay ahead of the playhead, got {fwd:?}"
+        );
+
+        // At a realistic 33 ms bucket the same position overflows the
+        // bucket→milliseconds multiplication outright.
+        let fwd = read_ahead_targets(&c, &src, u64::MAX, 33, 1, 4);
+        assert!(
+            fwd.iter().all(|t| *t >= u64::MAX.saturating_sub(66)),
+            "forward read-ahead must stay ahead of the playhead, got {fwd:?}"
+        );
     }
 }
