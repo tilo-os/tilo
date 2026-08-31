@@ -9,82 +9,44 @@ use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 
 use ui::ColorCompat;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, ButtonStyle};
 
 use crate::shell::chrome_state::QuickSettingsState;
 use crate::shell::qs_actions::{QsActions, log_qs_result};
 use crate::shell::quick_settings::{WifiNetwork, WifiPasswordPrompt};
-
-const HEADER_HEIGHT: f64 = 48.0;
-const LIST_TOP: f64 = 56.0;
-const ROW_HEIGHT: f64 = 56.0;
-const ROW_INSET: f64 = 12.0;
-
-#[allow(clippy::cast_precision_loss, reason = "Wi-Fi network counts are tiny")]
-fn usize_to_f64_lossy(value: usize) -> f64 {
-    value as f64
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WifiPaneOutcome {
-    #[default]
-    None,
-    Back,
-    Changed,
-}
+use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
 
 #[derive(Default)]
 pub struct QuickSettingsWifiPane {
-    back_rect: Rect,
-    row_rects: Vec<Rect>,
+    list: DrillInList,
 }
 
 impl QuickSettingsWifiPane {
-    fn layout(&mut self, panel: Rect, row_count: usize) {
-        self.back_rect = Rect::new(
-            panel.x0 + 8.0,
-            panel.y0 + 8.0,
-            panel.x0 + 40.0,
-            panel.y0 + 40.0,
-        );
-        self.row_rects.clear();
-        self.row_rects.extend((0..row_count).map(|index| {
-            let y = panel.y0 + LIST_TOP + usize_to_f64_lossy(index) * ROW_HEIGHT;
-            Rect::new(
-                panel.x0 + ROW_INSET,
-                y,
-                panel.x1 - ROW_INSET,
-                y + ROW_HEIGHT - 4.0,
-            )
-        }));
-    }
-
     pub fn handle_click(
         &mut self,
         point: Point,
         panel: Rect,
         state: &mut QuickSettingsState,
         actions: &dyn QsActions,
-    ) -> WifiPaneOutcome {
-        self.layout(panel, state.wifi_networks.len());
-        if self.back_rect.contains(point) {
-            return WifiPaneOutcome::Back;
+    ) -> DrillInOutcome {
+        self.list.layout(panel, state.wifi_networks.len());
+        if self.list.back_contains(point) {
+            return DrillInOutcome::Back;
         }
-        let Some(index) = self.row_rects.iter().position(|row| row.contains(point)) else {
-            return WifiPaneOutcome::None;
+        let Some(index) = self.list.row_at(point) else {
+            return DrillInOutcome::None;
         };
         let Some(network) = state.wifi_networks.get(index) else {
-            return WifiPaneOutcome::None;
+            return DrillInOutcome::None;
         };
         let ssid = network.ssid.clone();
         if network.secure && !network.connected {
             state.wifi_password = Some(WifiPasswordPrompt::new(ssid));
-            WifiPaneOutcome::Changed
+            DrillInOutcome::Changed
         } else {
             log_qs_result("connect_wifi", actions.connect_wifi(&ssid, None));
-            WifiPaneOutcome::None
+            DrillInOutcome::None
         }
     }
 
@@ -98,72 +60,31 @@ impl QuickSettingsWifiPane {
         cursor: Option<Point>,
         networks: &[WifiNetwork],
     ) {
-        self.layout(panel, networks.len());
+        self.list.layout(panel, networks.len());
         let colors = &theme.tokens.colors;
-        Button::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &ButtonFace::new(self.back_rect, "")
-                .style(ButtonStyle::Ghost)
-                .icon(ui::icons::Icon::ChevronLeft)
-                .hovered(cursor.is_some_and(|point| self.back_rect.contains(point)))
-                .accessible_name("Back"),
-        );
-        let title = "Wi-Fi";
-        let (title_width, title_height) =
-            text.measure(title, theme.tokens.typography.scale.sm, None);
-        text.draw_text_weighted(
-            scene,
-            title,
-            theme.tokens.typography.scale.sm,
-            colors.text_primary,
-            transform.pre_translate(
-                (
-                    panel.center().x - f64::from(title_width) / 2.0,
-                    panel.y0 + (HEADER_HEIGHT - f64::from(title_height)) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-            TextWeight::Semibold,
-        );
+        self.list
+            .draw_header(scene, transform, text, theme, panel, cursor, "Wi-Fi");
         if networks.is_empty() {
-            let message = "Scanning for networks…";
-            let (width, height) = text.measure(message, theme.tokens.typography.scale.sm, None);
-            text.draw_text(
+            DrillInList::draw_empty(
                 scene,
-                message,
-                theme.tokens.typography.scale.sm,
-                colors.text_dim,
-                transform.pre_translate(
-                    (
-                        panel.center().x - f64::from(width) / 2.0,
-                        panel.y0 + LIST_TOP + 24.0 - f64::from(height) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
+                transform,
+                text,
+                theme,
+                panel,
+                "Scanning for networks…",
             );
             return;
         }
-        for (index, (network, row)) in networks.iter().zip(&self.row_rects).enumerate() {
-            let hovered = cursor.is_some_and(|point| row.contains(point));
-            if index == 0 || hovered {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.neutral[2].with_alpha_factor(if hovered { 0.75 } else { 0.50 }),
-                    None,
-                    &RoundedRect::from_rect(*row, 12.0),
-                );
-            }
-            let glyph = Rect::new(
-                row.x0 + 12.0,
-                row.y0 + (row.height() - 20.0) / 2.0,
-                row.x0 + 32.0,
-                row.y0 + f64::midpoint(row.height(), 20.0),
+        for (index, (network, row)) in networks.iter().zip(self.list.rows()).enumerate() {
+            let glyph = DrillInList::draw_discovery_row(
+                scene,
+                transform,
+                text,
+                theme,
+                *row,
+                index,
+                cursor,
+                &network.ssid,
             );
             ui::icons::draw_icon(
                 scene,
@@ -172,16 +93,6 @@ impl QuickSettingsWifiPane {
                 ui::icons::Icon::Wifi,
                 colors.text_primary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            text.draw_text_weighted(
-                scene,
-                &network.ssid,
-                theme.tokens.typography.scale.sm,
-                colors.text_primary,
-                transform
-                    .pre_translate((glyph.x1 + 12.0, row.y0 + (row.height() - 14.0) / 2.0).into()),
-                None,
-                TextWeight::Medium,
             );
             let baseline = row.y0 + row.height() / 2.0 + 6.0;
             for bar in 0..4_u8 {
@@ -263,16 +174,16 @@ mod tests {
         let mut state = QuickSettingsState::default();
         state.wifi_networks = vec![network("Cafe", true), network("Open", false)];
         let actions = RecordingActions::default();
-        pane.layout(panel, 2);
+        pane.list.layout(panel, 2);
         assert_eq!(
-            pane.handle_click(pane.row_rects[0].center(), panel, &mut state, &actions),
-            WifiPaneOutcome::Changed
+            pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
+            DrillInOutcome::Changed
         );
         assert_eq!(state.wifi_password.as_ref().unwrap().ssid, "Cafe");
         state.wifi_password = None;
         assert_eq!(
-            pane.handle_click(pane.row_rects[1].center(), panel, &mut state, &actions),
-            WifiPaneOutcome::None
+            pane.handle_click(pane.list.rows()[1].center(), panel, &mut state, &actions),
+            DrillInOutcome::None
         );
         assert_eq!(actions.0.borrow().as_slice(), [("Open".into(), None)]);
     }
@@ -284,14 +195,14 @@ mod tests {
         let mut state = QuickSettingsState::default();
         state.wifi_networks = vec![network("Cafe", true)];
         let actions = RecordingActions::default();
-        pane.layout(panel, 1);
+        pane.list.layout(panel, 1);
         assert_eq!(
-            pane.handle_click(pane.back_rect.center(), panel, &mut state, &actions),
-            WifiPaneOutcome::Back
+            pane.handle_click(pane.list.back_center(), panel, &mut state, &actions),
+            DrillInOutcome::Back
         );
         assert_eq!(
             pane.handle_click(panel.center(), panel, &mut state, &actions),
-            WifiPaneOutcome::None
+            DrillInOutcome::None
         );
         assert!(actions.0.borrow().is_empty());
         assert!(state.wifi_password.is_none());
