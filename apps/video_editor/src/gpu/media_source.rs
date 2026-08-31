@@ -83,6 +83,17 @@ pub struct MediaFrameSource {
     served_real: bool,
     /// Sources currently running forward under an `Exact` fetch.
     rolling: HashSet<MediaId>,
+    /// Consecutive frame requests a source has answered with nothing.
+    /// Cleared the moment it produces a picture, so a damaged region does
+    /// not accumulate against a file that otherwise plays.
+    failures: HashMap<MediaId, u32>,
+    /// Sources written off as undecodable: asked for, repeatedly, and never
+    /// answered. Nothing is requested for these again.
+    undecodable: HashSet<MediaId>,
+    /// How many times a pipeline was actually asked for a frame. Only a test
+    /// reads it — it is the difference between "gave up" and "still trying
+    /// but quietly", which no other observable distinguishes.
+    attempts: u64,
     fetch: Fetch,
     timeout: Duration,
 }
@@ -112,9 +123,33 @@ impl MediaFrameSource {
             served: HashMap::new(),
             served_real: false,
             rolling: HashSet::new(),
+            failures: HashMap::new(),
+            undecodable: HashSet::new(),
+            attempts: 0,
             fetch,
             timeout: media::DEFAULT_FRAME_TIMEOUT,
         }
+    }
+
+    /// Whether this source has given up on `media`.
+    ///
+    /// A file the decoder never answers for is not a transient miss: the
+    /// media bin holds whatever the project says it holds, including a
+    /// document persisted before the import guard existed, or one replicated
+    /// from a peer — and neither is re-probed. Without a terminal state the
+    /// pipeline is rebuilt for it on every frame, each attempt paying the
+    /// full frame timeout, which is what made an editor holding one bad file
+    /// stall on a fixed cadence forever.
+    pub fn is_undecodable(&self, media: MediaId) -> bool {
+        self.undecodable.contains(&media)
+    }
+
+    /// How many times a pipeline has been asked for a frame. For tests: it is
+    /// what tells "stopped asking" apart from "still asking and still
+    /// failing", which look identical from the outside.
+    #[cfg(test)]
+    pub fn decode_attempts(&self) -> u64 {
+        self.attempts
     }
 
     /// Which of `project`'s media this source can decode, and how fast each
@@ -155,6 +190,11 @@ impl MediaFrameSource {
         self.served.retain(|id, _| self.sources.contains_key(id));
         self.rolling.retain(|id| self.sources.contains_key(id));
         self.demoted.retain(|id| self.sources.contains_key(id));
+        self.failures.retain(|id, _| self.sources.contains_key(id));
+        // A write-off is forgotten when the item leaves the bin, so
+        // re-importing the file asks the decoder again rather than
+        // inheriting a verdict about a project the user has since changed.
+        self.undecodable.retain(|id| self.sources.contains_key(id));
     }
 
     /// A cheap signature of what [`set_project`](Self::set_project) would
@@ -296,8 +336,15 @@ impl FrameSource for MediaFrameSource {
         media: MediaId,
         source_time: f64,
     ) -> Option<SourceTexture> {
+        // Written off: never open a pipeline for it again. The compositor
+        // falls back to the representative fill, exactly as it does for a
+        // reference whose bytes have not hydrated.
+        if self.undecodable.contains(&media) {
+            return None;
+        }
         let (source, fps) = self.sources.get(&media)?.clone();
         let target_ms = (source_time.max(0.0) * 1000.0) as u64;
+        self.attempts += 1;
         let fetch = self.fetch;
         let timeout = self.timeout;
         // Read where this source was last asked for *before* recording the
@@ -364,6 +411,8 @@ impl FrameSource for MediaFrameSource {
 
         match frame {
             Some(f) => {
+                // It answered, so whatever it missed before was transient.
+                self.failures.remove(&media);
                 // Already painted this exact picture for this source? Reuse
                 // the texture rather than uploading it again.
                 if let Some(last) = self.last.get(&media) {
@@ -382,6 +431,17 @@ impl FrameSource for MediaFrameSource {
             // so a scrub does not flash the representative fill between
             // seeks; with nothing at all, the compositor falls back.
             None => {
+                // Count it, and stop asking once a source has answered
+                // nothing this many times running. One miss is an ordinary
+                // seek landing near a damaged GOP; a file that answers
+                // nowhere is not media this editor can play, and retrying it
+                // costs a full frame timeout every frame forever.
+                let n = self.failures.entry(media).or_insert(0);
+                *n += 1;
+                if *n >= crate::thumbnail::FAILURES_BEFORE_GIVING_UP {
+                    self.undecodable.insert(media);
+                    self.rolling.remove(&media);
+                }
                 let texture = self.last.get(&media).map(|l| l.texture.clone());
                 if texture.is_some() {
                     self.slot += 1;
