@@ -65,13 +65,13 @@ mod real {
         // from the clip rather than assuming zero, so a genuine drift still fails.
         let base = stream_pts_base_ms(&mut e);
         let frame = decode_frame_at(&mut e, 12_500, "software accurate seek");
-        let delta = frame.pts_ms as i64 - (12_500 + base) as i64;
+        let delta = Drift::between(frame.pts_ms, 12_500 + base);
         println!(
             "software seek to 12500ms (base {base}ms) landed at {}ms ({delta}ms off)",
             frame.pts_ms
         );
         assert!(
-            delta.unsigned_abs() <= FRAME_MS,
+            delta.ms <= FRAME_MS,
             "the software path landed {delta}ms from the requested time"
         );
     }
