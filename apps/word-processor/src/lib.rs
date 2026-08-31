@@ -42,6 +42,7 @@ pub mod history_panel;
 pub mod i18n;
 mod recovery_banner;
 mod style_color_picker;
+mod zoom_control;
 pub use ui::num;
 pub mod styles;
 pub mod widget;
