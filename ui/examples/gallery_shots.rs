@@ -96,8 +96,10 @@ pub fn run(_args: &[String]) {
     ui::i18n::I18nManager::init("en-US");
     let dir =
         std::env::var("GALLERY_SHOTS_OUT").unwrap_or_else(|_| "/tmp/gallery_shots".to_string());
-    std::fs::create_dir_all(&dir)
-        .unwrap_or_else(|e| panic!("failed to create output dir {dir}: {e}"));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("gallery_shots: failed to create output dir {dir}: {e}");
+        return;
+    }
     let dir = PathBuf::from(dir);
 
     // Fractional HiDPI factor from the environment (default 1.0). 1.5 / 1.25

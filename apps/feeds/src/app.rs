@@ -2571,20 +2571,17 @@ fn draw_sidebar(
 
     for row in rows {
         let cy = row.rect.y0 + row.rect.height() / 2.0;
-        match &row.role {
-            RowRole::Section => {
-                tr.draw_text_weighted(
-                    scene,
-                    &row.label,
-                    10.5,
-                    c.text_dim,
-                    t * Affine::translate((row.rect.x0 + row.indent, cy - 6.0)),
-                    None,
-                    TextWeight::Semibold,
-                );
-                continue;
-            }
-            _ => {}
+        if let RowRole::Section = &row.role {
+            tr.draw_text_weighted(
+                scene,
+                &row.label,
+                10.5,
+                c.text_dim,
+                t * Affine::translate((row.rect.x0 + row.indent, cy - 6.0)),
+                None,
+                TextWeight::Semibold,
+            );
+            continue;
         }
 
         // Selection / hover background.

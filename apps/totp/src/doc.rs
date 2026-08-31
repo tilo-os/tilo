@@ -32,6 +32,14 @@ pub struct AuthDoc;
 
 impl AuthDoc {
     /// Get-or-create the top-level `accounts` Map.
+    ///
+    /// # Panics
+    /// Never in practice: `put_object` only fails when the target object id
+    /// doesn't resolve to a document object, and `ROOT` always does.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on ROOT is infallible; see this function's # Panics doc"
+    )]
     pub fn accounts_map(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "accounts") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -42,6 +50,10 @@ impl AuthDoc {
     }
 
     /// Get-or-create the per-account Map for `id`.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on an existing map object is infallible; see AuthDoc::accounts_map's # Panics doc"
+    )]
     fn ensure_account(doc: &mut AutoCommit, id: AccountId) -> ObjId {
         let accounts = Self::accounts_map(doc);
         let key = id.to_string();
@@ -76,9 +88,8 @@ impl AuthDoc {
     /// created. A field set on a missing (e.g. concurrently deleted) account is
     /// then a clean no-op rather than resurrecting a half-formed record.
     fn existing_account(doc: &AutoCommit, id: AccountId) -> Option<ObjId> {
-        let accounts = match doc.get(&ROOT, "accounts") {
-            Ok(Some((Value::Object(ObjType::Map), aid))) => aid,
-            _ => return None,
+        let Ok(Some((Value::Object(ObjType::Map), accounts))) = doc.get(&ROOT, "accounts") else {
+            return None;
         };
         match doc.get(&accounts, id.to_string().as_str()) {
             Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
@@ -117,9 +128,8 @@ impl AuthDoc {
     /// Read every account out of the document, sorted by `order`.
     /// Records with an unparseable id key are skipped.
     pub fn list_accounts(doc: &AutoCommit) -> Vec<Account> {
-        let accounts = match doc.get(&ROOT, "accounts") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::Map), accounts))) = doc.get(&ROOT, "accounts") else {
+            return Vec::new();
         };
 
         let mut out = Vec::new();

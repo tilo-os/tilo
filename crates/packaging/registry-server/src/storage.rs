@@ -36,6 +36,10 @@ pub struct Storage {
 
 impl Storage {
     /// Open (creating on first use) the store rooted at `root`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Io`] if the `entries/` directory can't be created.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root = root.into();
         std::fs::create_dir_all(root.join("entries"))
@@ -55,6 +59,11 @@ impl Storage {
 
     /// Load the server-identity file. Missing → default-empty
     /// (used on first-run before `serve` writes one).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Io`] if the file exists but can't be
+    /// read, or [`StorageError::Parse`] if it isn't valid TOML.
     pub fn load_identity(&self) -> Result<ServerIdentity, StorageError> {
         let path = self.handshake_path();
         if !path.exists() {
@@ -66,6 +75,11 @@ impl Storage {
     }
 
     /// Atomic-rename write of the server-identity file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Encode`] if `ident` fails to encode as
+    /// TOML, or [`StorageError::Io`] if the write fails.
     pub fn save_identity(&self, ident: &ServerIdentity) -> Result<(), StorageError> {
         let path = self.handshake_path();
         let body =
@@ -75,6 +89,11 @@ impl Storage {
 
     /// Load the publisher allowlist. Missing → empty (nobody can
     /// post).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Io`] if the file exists but can't be
+    /// read, or [`StorageError::Parse`] if it isn't valid TOML.
     pub fn load_allowlist(&self) -> Result<PublisherAllowlist, StorageError> {
         let path = self.publishers_path();
         if !path.exists() {
@@ -86,6 +105,11 @@ impl Storage {
     }
 
     /// Atomic-rename write of the allowlist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Encode`] if `allow` fails to encode as
+    /// TOML, or [`StorageError::Io`] if the write fails.
     pub fn save_allowlist(&self, allow: &PublisherAllowlist) -> Result<(), StorageError> {
         let path = self.publishers_path();
         let body = allow
@@ -103,6 +127,12 @@ impl Storage {
     }
 
     /// Load every entry from disk. Order is not defined.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Io`] if the `entries/` directory or any
+    /// `.json` file in it can't be read, or [`StorageError::Parse`] if
+    /// one fails to decode as a [`RegistryEntry`].
     pub fn load_entries(&self) -> Result<Vec<RegistryEntry>, StorageError> {
         let dir = self.root.join("entries");
         if !dir.exists() {
@@ -125,6 +155,12 @@ impl Storage {
     }
 
     /// Load one entry by id, or `Ok(None)` if it isn't on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Io`] if the file exists but can't be
+    /// read, or [`StorageError::Parse`] if it fails to decode as a
+    /// [`RegistryEntry`].
     pub fn load_entry(&self, package_id: &str) -> Result<Option<RegistryEntry>, StorageError> {
         let path = self.entry_path(package_id);
         if !path.exists() {
@@ -138,6 +174,11 @@ impl Storage {
     }
 
     /// Atomic-rename write of one entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Encode`] if `entry` fails to encode as
+    /// JSON, or [`StorageError::Io`] if the write fails.
     pub fn save_entry(&self, entry: &RegistryEntry) -> Result<(), StorageError> {
         let path = self.entry_path(&entry.package_id);
         let body =
@@ -146,6 +187,10 @@ impl Storage {
     }
 
     /// Remove an entry from disk. `Ok(false)` if it wasn't there.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Io`] if the file exists but can't be removed.
     pub fn delete_entry(&self, package_id: &str) -> Result<bool, StorageError> {
         let path = self.entry_path(package_id);
         if !path.exists() {
@@ -174,6 +219,11 @@ pub struct ServerIdentity {
 /// Write bytes to `path` via a `.tmp` sibling + rename. Both the
 /// tmp and the final file end up in the same directory so the
 /// rename is atomic on every POSIX filesystem qOS supports.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Io`] if `path`'s parent can't be created
+/// or the write/rename fails.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| StorageError::Io(e.to_string()))?;

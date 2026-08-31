@@ -80,8 +80,8 @@ fn pack_with_attestation(
     attestor_sk: &SigningKey,
 ) -> (PackageId, MemoryBlobStore) {
     let payload_root = payload_root_of(payload_dir, publisher_sk);
-    let publisher_pk = publisher_sk.verifying_key().to_bytes();
-    let sig = attest(&payload_root, &publisher_pk, attestor_sk);
+    let publisher_pub_bytes = publisher_sk.verifying_key().to_bytes();
+    let sig = attest(&payload_root, &publisher_pub_bytes, attestor_sk);
     manifest
         .trust
         .attested_by
@@ -303,19 +303,19 @@ fn multiple_attestations_first_trusted_wins() {
     let mut manifest = manifest_with_key(&publisher_pub_hex);
     manifest.trust.attested_by.clear();
 
-    let (attestor_a_sk, _) = fresh_key();
-    let (attestor_b_sk, attestor_b_pub_hex) = fresh_key();
+    let (first_attestor_sk, _) = fresh_key();
+    let (second_attestor_sk, second_attestor_pub_hex) = fresh_key();
 
     let payload_dir = tempfile::tempdir().unwrap();
     fixtures::write_app_payload(payload_dir.path()).unwrap();
 
     let payload_root = payload_root_of(payload_dir.path(), &publisher_sk);
-    let publisher_pk = publisher_sk.verifying_key().to_bytes();
+    let publisher_pub_bytes = publisher_sk.verifying_key().to_bytes();
 
     // Sign both attestations up-front (they don't depend on
     // each other).
-    let sig_a = attest(&payload_root, &publisher_pk, &attestor_a_sk);
-    let sig_b = attest(&payload_root, &publisher_pk, &attestor_b_sk);
+    let sig_a = attest(&payload_root, &publisher_pub_bytes, &first_attestor_sk);
+    let sig_b = attest(&payload_root, &publisher_pub_bytes, &second_attestor_sk);
     manifest.trust.attested_by.push(TrustAttestation {
         attestor: "attestor-a/1".into(),
         claim_hex: String::new(),
@@ -333,7 +333,7 @@ fn multiple_attestations_first_trusted_wins() {
 
     let trusted = vec![TrustedAttestor {
         id: "attestor-b/1".into(),
-        pubkey_hex: attestor_b_pub_hex,
+        pubkey_hex: second_attestor_pub_hex,
         scope: AttestorScope::All,
     }];
     let v = verify_with_trust(id, &store, &[], &trusted, &RevocationList::empty());

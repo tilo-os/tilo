@@ -81,15 +81,16 @@ fn fresh_key() -> (SigningKey, String) {
 
 /// Build a `.qpkg` with the layout `qos-pkg pack` writes.
 fn build_qpkg(qpkg_path: &Path, manifest: &Manifest, sk: &SigningKey, payload_dir: &Path) {
-    let mut store = MemoryBlobStore::new();
-    let identity = SigningIdentity::from_signing_key(sk.clone());
-    let id = pack(payload_dir, manifest, &identity, &mut store).expect("pack");
-
     #[derive(Serialize)]
     struct QpkgHeader {
         package_id: String,
         format: u32,
     }
+
+    let mut store = MemoryBlobStore::new();
+    let identity = SigningIdentity::from_signing_key(sk.clone());
+    let id = pack(payload_dir, manifest, &identity, &mut store).expect("pack");
+
     let header_toml = toml::to_string(&QpkgHeader {
         package_id: id.to_string(),
         format: 1,

@@ -50,6 +50,10 @@ impl Backend {
 impl BlobNode {
     /// Bind a fresh endpoint and serve an in-memory blob store.
     /// Ephemeral — used by tests and short-lived transfers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if binding the endpoint fails.
     pub async fn memory() -> Result<Self> {
         let store = MemStore::new();
         Self::spawn(Backend::Mem(store)).await
@@ -58,9 +62,15 @@ impl BlobNode {
     /// Bind a fresh endpoint and serve a persistent blob store rooted
     /// at `dir` (created if missing). This is what a self-hosted
     /// `file://` registry node serves from.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `dir` can't be created, the store fails to
+    /// load, or binding the endpoint fails.
     pub async fn persistent(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref();
-        std::fs::create_dir_all(dir).with_context(|| format!("create blob store {dir:?}"))?;
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("create blob store {}", dir.display()))?;
         let store = FsStore::load(dir)
             .await
             .context("load iroh-blobs FsStore")?;
@@ -93,6 +103,10 @@ impl BlobNode {
     }
 
     /// Ingest `bytes`, returning the blake3 content hash. Idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying store rejects the ingest.
     pub async fn add(&self, bytes: impl Into<Bytes>) -> Result<Hash> {
         let tag = self
             .backend
@@ -120,6 +134,10 @@ impl BlobNode {
     }
 
     /// Ingest + produce a fetch ticket in one step.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::add`] fails.
     pub async fn add_and_ticket(&self, bytes: impl Into<Bytes>) -> Result<(Hash, BlobTicket)> {
         let hash = self.add(bytes).await?;
         Ok((hash, self.ticket(hash)))
@@ -127,6 +145,10 @@ impl BlobNode {
 }
 
 /// Bind a fresh client endpoint for fetching (no serving).
+///
+/// # Errors
+///
+/// Returns an error if binding the endpoint fails.
 pub async fn client_endpoint() -> Result<Endpoint> {
     Endpoint::bind(presets::N0)
         .await
@@ -143,6 +165,12 @@ pub async fn client_endpoint() -> Result<Endpoint> {
 ///   so wrong bytes abort the stream;
 /// - we re-derive the blake3 and compare, so any residual mismatch is
 ///   an explicit local error rather than silent acceptance.
+///
+/// # Errors
+///
+/// Returns an error if the ticket's advertised hash doesn't match
+/// `expected`, the connection/download fails, or the downloaded bytes
+/// hash to something other than `expected`.
 pub async fn fetch_blob(
     endpoint: &Endpoint,
     ticket: &BlobTicket,

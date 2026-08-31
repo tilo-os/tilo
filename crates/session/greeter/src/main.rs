@@ -47,6 +47,10 @@ use winit::event_loop::EventLoopProxy;
 /// Default offscreen viewport for `--shots`.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+/// # Errors
+///
+/// Returns an error if `--shots` rendering fails (see
+/// [`render_shot_to_png`]); the live event-loop path does not return.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -163,6 +167,13 @@ fn render_shot_to_png(
     use automerge::{ObjType, transaction::Transactable};
 
     let (w, h) = viewport;
+    // Viewport dimensions are screen/image sizes (1280x800 by default),
+    // always far under f32's 24-bit mantissa — never enough to lose precision.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "viewport dimensions are screen/image sizes, always far under 2^24"
+    )]
+    let (wf, hf) = (w as f32, h as f32);
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
@@ -193,8 +204,8 @@ fn render_shot_to_png(
     let root = taffy.new_with_children(
         Style {
             size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
+                width: Dimension::length(wf),
+                height: Dimension::length(hf),
             },
             ..Default::default()
         },
@@ -207,8 +218,8 @@ fn render_shot_to_png(
         taffy.compute_layout_with_measure(
             root,
             taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
+                width: AvailableSpace::Definite(wf),
+                height: AvailableSpace::Definite(hf),
             },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = measure_map.get(&node_id) {

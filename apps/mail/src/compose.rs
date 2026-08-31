@@ -716,7 +716,7 @@ impl ComposeWindow {
         position: winit::dpi::PhysicalPosition<f64>,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut automerge::AutoCommit,
         path: &automerge::ObjId,
         node_id: taffy::NodeId,
@@ -739,7 +739,7 @@ impl ComposeWindow {
             inp.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 &mut h,
@@ -754,7 +754,7 @@ impl ComposeWindow {
             self.plain_body.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 &mut h,
@@ -767,7 +767,7 @@ impl ComposeWindow {
             p.input.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 &mut h,
@@ -807,7 +807,7 @@ impl ComposeWindow {
                 *position,
                 event,
                 scale_factor,
-                modifiers,
+                *modifiers,
                 state,
                 path,
                 node_id,
@@ -871,7 +871,7 @@ impl ComposeWindow {
             WindowEvent::KeyboardInput { .. } => self.handle_keyboard_input(
                 event,
                 scale_factor,
-                modifiers,
+                *modifiers,
                 state,
                 path,
                 node_id,
@@ -895,7 +895,7 @@ impl ComposeWindow {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut automerge::AutoCommit,
         path: &automerge::ObjId,
         node_id: taffy::NodeId,
@@ -937,7 +937,7 @@ impl ComposeWindow {
                 p.input.handle_event(
                     event,
                     scale_factor,
-                    modifiers,
+                    &modifiers,
                     state,
                     path,
                     &mut h,
@@ -975,7 +975,7 @@ impl ComposeWindow {
                     self.plain_body.handle_event(
                         event,
                         scale_factor,
-                        modifiers,
+                        &modifiers,
                         state,
                         path,
                         &mut h,
@@ -995,7 +995,7 @@ impl ComposeWindow {
             inp.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 &mut h,
@@ -1041,46 +1041,29 @@ impl ComposeWindow {
             }
             ComposeHit::Attach => self.open_prompt(PromptKind::Attach),
             ComposeHit::FormatToggle => self.toggle_format(),
-            ComposeHit::FieldTo => self.focus_and_forward(
-                Field::To,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
-            ),
-            ComposeHit::FieldCc => self.focus_and_forward(
-                Field::Cc,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
-            ),
-            ComposeHit::FieldBcc => self.focus_and_forward(
-                Field::Bcc,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
-            ),
-            ComposeHit::FieldSubject => self.focus_and_forward(
-                Field::Subject,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
-            ),
+            ComposeHit::FieldTo
+            | ComposeHit::FieldCc
+            | ComposeHit::FieldBcc
+            | ComposeHit::FieldSubject => {
+                // Each `Field*` hit just differs in which field it focuses;
+                // the forwarding that follows is identical.
+                let field = match hit {
+                    ComposeHit::FieldCc => Field::Cc,
+                    ComposeHit::FieldBcc => Field::Bcc,
+                    ComposeHit::FieldSubject => Field::Subject,
+                    _ => Field::To,
+                };
+                self.focus_and_forward(
+                    field,
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    node_id,
+                    taffy,
+                )
+            }
             ComposeHit::Body => self.dispatch_body_press(
                 pt,
                 event,
@@ -1334,8 +1317,45 @@ impl ComposeWindow {
         }
         let r = self.rect;
         self.draw_window_chrome(scene, t, tr, theme);
+        self.draw_header_fields(scene, t, tr, theme);
+        self.draw_body(scene, t, tr, theme, presence);
 
-        // Header field labels + underlines.
+        // Attachment chips (staged real files — shown by their basename).
+        self.draw_staged_attachment_chips(scene, t, tr, theme, r);
+
+        // Inline prompt bar.
+        self.draw_prompt(scene, t, tr, theme, presence);
+
+        // Buttons.
+        self.draw_action_button(scene, t, tr, theme, ComposeHit::Send, "Send", true);
+        self.draw_action_button(
+            scene,
+            t,
+            tr,
+            theme,
+            ComposeHit::SaveDraft,
+            "Save draft",
+            false,
+        );
+        self.draw_action_button(scene, t, tr, theme, ComposeHit::Discard, "Discard", false);
+
+        // Resize affordance (bottom-right grip dots).
+        let g = Rect::new(r.x1 - 14.0, r.y1 - 14.0, r.x1 - 4.0, r.y1 - 4.0);
+        stroke_round(scene, t, g, 2.0, 1.2, c.border_white_20);
+
+        let _ = presence;
+    }
+
+    /// Draw the header field rows (To, Cc/Bcc when shown, Subject), the
+    /// Cc/Bcc-toggle + Attach chip buttons, and the formatting toolbar when
+    /// in HTML mode. Part of [`Self::draw`].
+    fn draw_header_fields(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         self.draw_field(
             scene,
             t,
@@ -1408,8 +1428,20 @@ impl ComposeWindow {
             self.draw_toolbar(scene, t, tr, theme);
         }
         self.draw_format_toggle(scene, t, tr, theme);
+    }
 
-        // Body.
+    /// Draw the message-body card: border, and either the WYSIWYG editor
+    /// (HTML mode, clipped to the card) or the plain multiline `TextInput`
+    /// (Text mode). Part of [`Self::draw`].
+    fn draw_body(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let c = &theme.tokens.colors;
         let body = self.body_rect();
         fill_round(scene, t, body, 8.0, c.surfaces.base);
         stroke_round(
@@ -1442,31 +1474,6 @@ impl ComposeWindow {
                 ui::widget::Widget::draw(&mut self.plain_body, scene, t, tr, theme, presence);
             }
         }
-
-        // Attachment chips (staged real files — shown by their basename).
-        self.draw_staged_attachment_chips(scene, t, tr, theme, r);
-
-        // Inline prompt bar.
-        self.draw_prompt(scene, t, tr, theme, presence);
-
-        // Buttons.
-        self.draw_action_button(scene, t, tr, theme, ComposeHit::Send, "Send", true);
-        self.draw_action_button(
-            scene,
-            t,
-            tr,
-            theme,
-            ComposeHit::SaveDraft,
-            "Save draft",
-            false,
-        );
-        self.draw_action_button(scene, t, tr, theme, ComposeHit::Discard, "Discard", false);
-
-        // Resize affordance (bottom-right grip dots).
-        let g = Rect::new(r.x1 - 14.0, r.y1 - 14.0, r.x1 - 4.0, r.y1 - 4.0);
-        stroke_round(scene, t, g, 2.0, 1.2, c.border_white_20);
-
-        let _ = presence;
     }
 
     /// Draw the window's drop shadow, body, and title bar (heading + close/

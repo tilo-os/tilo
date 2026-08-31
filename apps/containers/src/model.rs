@@ -8,6 +8,14 @@
 
 use serde::{Deserialize, Serialize};
 
+/// First up to 12 characters of `id`, stopping at a `char` boundary. Podman
+/// ids are hex digests (always ASCII), but this walks `char_indices` rather
+/// than byte-slicing so it can never panic on non-ASCII input.
+fn short_id_of(id: &str) -> &str {
+    let end = id.char_indices().nth(12).map_or(id.len(), |(idx, _)| idx);
+    id.get(..end).unwrap_or_default()
+}
+
 /// Lifecycle state of a container, normalised across the various strings
 /// podman reports (`running`, `exited`, `created`, `paused`, …).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,8 +164,7 @@ pub struct Container {
 impl Container {
     /// 12-character short id, podman-style.
     pub fn short_id(&self) -> &str {
-        let n = self.id.len().min(12);
-        &self.id[..n]
+        short_id_of(&self.id)
     }
 
     /// Matches the free-text search query against name / image / id.
@@ -191,8 +198,7 @@ impl Image {
 
     pub fn short_id(&self) -> &str {
         let trimmed = self.id.strip_prefix("sha256:").unwrap_or(&self.id);
-        let n = trimmed.len().min(12);
-        &trimmed[..n]
+        short_id_of(trimmed)
     }
 
     pub fn matches(&self, query: &str) -> bool {
@@ -310,7 +316,18 @@ impl Engine {
 /// is reachable (notably the headless `--shots` renderer). Mirrors what a
 /// developer machine running a small web stack would show.
 pub fn sample_engine() -> Engine {
-    let containers = vec![
+    Engine {
+        containers: sample_containers(),
+        images: sample_images(),
+        volumes: sample_volumes(),
+        distroboxes: sample_distroboxes(),
+        connection: "podman 5.1.1 · rootless · sample data".into(),
+        live: false,
+    }
+}
+
+fn sample_containers() -> Vec<Container> {
+    vec![
         Container {
             id: "9f3c1a7be4d2c0118af26b5d4e9f01a2".into(),
             name: "web-frontend".into(),
@@ -574,9 +591,11 @@ pub fn sample_engine() -> Engine {
                 "logger=http.server level=info msg=\"HTTP Server Listen\" address=[::]:3000".into(),
             ],
         },
-    ];
+    ]
+}
 
-    let images = vec![
+fn sample_images() -> Vec<Image> {
+    vec![
         Image {
             id: "sha256:5a3c8f9b2e7d14c6a8b0f2e4d6c8a0b2".into(),
             repository: "docker.io/library/nginx".into(),
@@ -633,9 +652,11 @@ pub fn sample_engine() -> Engine {
             created: "2 months ago".into(),
             in_use_by: 0,
         },
-    ];
+    ]
+}
 
-    let distroboxes = vec![
+fn sample_distroboxes() -> Vec<DistroBox> {
+    vec![
         DistroBox {
             name: "my-distrobox".into(),
             image: "registry.fedoraproject.org/fedora-toolbox:42".into(),
@@ -654,9 +675,11 @@ pub fn sample_engine() -> Engine {
             status: ContainerStatus::Exited,
             status_detail: "Created".into(),
         },
-    ];
+    ]
+}
 
-    let volumes = vec![
+fn sample_volumes() -> Vec<Volume> {
+    vec![
         Volume {
             name: "pgdata".into(),
             driver: "local".into(),
@@ -696,16 +719,7 @@ pub fn sample_engine() -> Engine {
             created: "4 hours ago".into(),
             in_use_by: 1,
         },
-    ];
-
-    Engine {
-        containers,
-        images,
-        volumes,
-        distroboxes,
-        connection: "podman 5.1.1 · rootless · sample data".into(),
-        live: false,
-    }
+    ]
 }
 
 fn sample_nginx_logs() -> Vec<String> {
@@ -842,9 +856,11 @@ mod tests {
 
     #[test]
     fn mem_fraction_is_clamped() {
-        let mut s = Stats::default();
-        s.mem_bytes = 200;
-        s.mem_limit_bytes = 100;
+        let mut s = Stats {
+            mem_bytes: 200,
+            mem_limit_bytes: 100,
+            ..Stats::default()
+        };
         assert_eq!(s.mem_fraction(), 1.0);
         s.mem_limit_bytes = 0;
         assert_eq!(s.mem_fraction(), 0.0);

@@ -316,15 +316,15 @@ pub fn basemap() -> Basemap {
 
 /// An irregular closed polygon ("blob") around `c`, radii in grid units.
 fn blob(rng: &mut Rng, c: LatLon, rx: f64, ry: f64, n: usize) -> Vec<LatLon> {
-    let mut ring = Vec::with_capacity(n);
+    let mut pts = Vec::with_capacity(n);
     for i in 0..n {
         let a = (i as f64) / (n as f64) * std::f64::consts::TAU;
         let jitter = rng.range(0.78, 1.18);
         let dx = a.cos() * rx * jitter;
         let dy = a.sin() * ry * jitter;
-        ring.push(LatLon::new(c.lat + dy * DLAT, c.lon + dx * DLON));
+        pts.push(LatLon::new(c.lat + dy * DLAT, c.lon + dx * DLON));
     }
-    ring
+    pts
 }
 
 /// The bundled places (POIs).

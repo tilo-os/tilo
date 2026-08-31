@@ -39,6 +39,7 @@
 //! unless something explicitly permits. It runs again at dispatch, because a
 //! survey is a snapshot and acting on a stale one must not happen.
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use automerge::AutoCommit;
@@ -487,17 +488,22 @@ impl Offer {
         } = &self.descriptor.input
         {
             match collects {
-                qos_actions::Collects::Words => s.push_str(&format!("; takes text: {prompt}")),
+                qos_actions::Collects::Words => {
+                    let _ = write!(s, "; takes text: {prompt}");
+                }
                 // Said differently on purpose: a reader offered this
                 // alongside a rename must not conclude it can be performed
                 // by saying something.
-                qos_actions::Collects::Content => s.push_str(&format!(
-                    "; takes what an earlier step produced, not words: {prompt}"
-                )),
+                qos_actions::Collects::Content => {
+                    let _ = write!(
+                        s,
+                        "; takes what an earlier step produced, not words: {prompt}"
+                    );
+                }
             }
         }
         if let Some(d) = &self.descriptor.description {
-            s.push_str(&format!(". {d}"));
+            let _ = write!(s, ". {d}");
         }
         s
     }
@@ -733,6 +739,7 @@ impl Catalogue {
     /// against. The opens stay: dropping them would mean the application
     /// that would export an operation on the named resource, when it is not
     /// running, can never be started to answer the request.
+    #[must_use]
     pub fn scoped_to(&self, resource: &str) -> Catalogue {
         Catalogue {
             held: self.held.clone(),
@@ -804,10 +811,11 @@ pub fn in_words(offers: &[Offer], most: usize) -> String {
         None => String::new(),
     };
     if rest > 0 {
-        s.push_str(&format!(
+        let _ = write!(
+            s,
             ", among {rest} other thing{}",
             if rest == 1 { "" } else { "s" }
-        ));
+        );
     }
     s
 }
@@ -866,15 +874,23 @@ pub fn quoted_literal(rest: &str) -> Option<String> {
     // Typographic quotes, which open and close with different characters.
     let mut haystack = rest;
     while let Some(open) = haystack.find('\u{201c}') {
-        let after = &haystack[open + '\u{201c}'.len_utf8()..];
+        let Some(after) = haystack.get(open + '\u{201c}'.len_utf8()..) else {
+            break;
+        };
         let Some(close) = after.find('\u{201d}') else {
             break;
         };
-        let lit = after[..close].trim();
+        let Some(lit) = after.get(..close) else {
+            break;
+        };
+        let lit = lit.trim();
         if !lit.is_empty() {
             found.push(lit.to_string());
         }
-        haystack = &after[close + '\u{201d}'.len_utf8()..];
+        let Some(rest_after) = after.get(close + '\u{201d}'.len_utf8()..) else {
+            break;
+        };
+        haystack = rest_after;
     }
 
     match found.len() {
@@ -934,6 +950,14 @@ pub enum NoMatch {
 /// these three it ran into — it never reports success for something it did
 /// not do, and never substitutes the nearest available operation for the
 /// one asked for.
+///
+/// # Errors
+///
+/// Returns [`NoMatch::Nothing`] when no offer's words match the
+/// instruction, [`NoMatch::Ambiguous`] when more than one offer answers
+/// equally well and nothing the instruction supplied breaks the tie, and
+/// [`NoMatch::NeedsText`] when the one offer left collects a value but the
+/// instruction quoted none.
 pub fn from_verbs<'a>(
     rest: &str,
     offers: &'a [Offer],
@@ -989,7 +1013,12 @@ pub fn from_verbs<'a>(
                 .collect(),
         ));
     }
-    let chosen = best[0];
+    // Unreachable given the checks above — `best` is non-empty and, past
+    // the `best.len() > 1` refusal, has exactly one entry — but handled like
+    // any other malformed state: refuse rather than panic.
+    let Some(&chosen) = best.first() else {
+        return Err(NoMatch::Nothing);
+    };
     if !collects_a_value_said(chosen) {
         return Ok((chosen, None));
     }

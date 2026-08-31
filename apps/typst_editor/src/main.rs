@@ -3,7 +3,7 @@
 //! Modes:
 //!   * default        — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!     (headless screenshot; identical passes to the live app).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -48,6 +48,12 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+/// Entry point: dispatches to the offscreen `--shots` renderer, the headless
+/// `--headless-drive` driver, or the live windowed event loop.
+///
+/// # Errors
+/// Returns an error when the `--shots` path fails to lay out or render the
+/// offscreen frame (a taffy layout error, or an I/O failure writing the PNG).
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -65,7 +71,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("light") => Theme::light(),
             _ => Theme::dark(),
         };
-        render_shot_to_png(root, viewport, theme, &out)?;
+        render_shot_to_png(root, viewport, &theme, &out)?;
         return Ok(());
     }
 
@@ -152,7 +158,7 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
-    theme: Theme,
+    theme: &Theme,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
@@ -165,7 +171,7 @@ fn render_shot_to_png(
     let mut state = ui::State::new();
     widget.sync(&mut state.doc, &state.root);
 
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let child = widget.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
             size: Size {
@@ -202,7 +208,7 @@ fn render_shot_to_png(
         &mut scene,
         Affine::IDENTITY,
         &mut text_renderer,
-        &theme,
+        theme,
         &presence,
         &permission,
     );

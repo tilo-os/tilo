@@ -304,7 +304,7 @@ mod tests {
         let env = |k: &str| (k == "REMOTE_SSH_PASSWORD").then(|| "hunter2".to_string());
         match resolve_auth(false, env, &[]).unwrap() {
             SshAuth::Password(p) => assert_eq!(p, "hunter2"),
-            other => panic!("expected password auth, got {other:?}"),
+            other @ SshAuth::Key { .. } => panic!("expected password auth, got {other:?}"),
         }
     }
 
@@ -326,7 +326,7 @@ mod tests {
                 assert_eq!(path, PathBuf::from("/keys/explicit"));
                 assert_eq!(passphrase.as_deref(), Some("pw"));
             }
-            other => panic!("expected key auth, got {other:?}"),
+            other @ SshAuth::Password(_) => panic!("expected key auth, got {other:?}"),
         }
     }
 

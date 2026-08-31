@@ -58,6 +58,16 @@ impl DetailPane {
     }
 }
 
+// `Widget::build_layout`/`apply_layout` (the callers below) return
+// `NodeId`/`()`, not a `Result` — the trait is shared by every widget in
+// `ui`, so its signature isn't ours to change here. `TaffyTree::new_leaf`
+// and `::layout` both wrap an infallible operation in this taffy version
+// (`new_leaf` always inserts; `layout` always finds a node this module
+// just registered) — the `Result` is vestigial, not a real failure mode.
+#[allow(
+    clippy::unwrap_used,
+    reason = "TaffyTree::new_leaf never fails in this taffy version, and the Widget trait's build_layout signature isn't ours to change to Result"
+)]
 fn leaf(
     taffy: &mut TaffyTree<()>,
     node_map: &mut HashMap<NodeId, *mut dyn Widget>,
@@ -76,6 +86,10 @@ fn leaf(
     node
 }
 
+#[allow(
+    clippy::unwrap_used,
+    reason = "node is an id this module just registered with the same taffy tree, so TaffyTree::layout always finds it, and the Widget trait's apply_layout signature isn't ours to change to Result"
+)]
 fn store_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
     let l = taffy.layout(node).unwrap();
     Rect::new(

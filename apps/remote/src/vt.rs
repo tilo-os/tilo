@@ -64,7 +64,9 @@ impl VtGrid {
                 let last = row.iter().rposition(|c| c.ch != ' ' || c.color.is_some());
                 let end = last.map_or(0, |i| i + 1);
                 TermLine {
-                    cells: row[..end].to_vec(),
+                    // `end` is one past a position found within `row` (or 0), so it
+                    // never exceeds `row.len()`; the fallback is unreachable.
+                    cells: row.get(..end).unwrap_or_default().to_vec(),
                 }
             })
             .collect()

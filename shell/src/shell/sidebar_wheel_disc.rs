@@ -1066,12 +1066,12 @@ impl Widget for SidebarWheelDisc {
             ctx.transform,
             &geom.group_clip,
         );
-        self.draw_band_shadow_and_body(&mut ctx, &geom);
+        Self::draw_band_shadow_and_body(&mut ctx, &geom);
         // ---- Pass 2: the sectors ------------------------------------
         self.draw_sectors(&mut ctx, &geom);
         // The rim, painted after the sectors so it sits on top of every
         // wedge, still inside the layer pushed above.
-        self.draw_rim(&mut ctx, &geom);
+        Self::draw_rim(&mut ctx, &geom);
 
         // Fade the whole surface out, top and bottom, in one pass, then
         // close the isolated group.
@@ -1430,7 +1430,7 @@ impl SidebarWheelDisc {
     /// the window-decoration pills, tinted from the theme's elevation
     /// token rather than a literal black, so a shadow-suppressing theme
     /// gets its own answer), then one flat body fill solid to centre.
-    fn draw_band_shadow_and_body(&self, ctx: &mut DrawCtx<'_>, geom: &DiscGeometry) {
+    fn draw_band_shadow_and_body(ctx: &mut DrawCtx<'_>, geom: &DiscGeometry) {
         let shadow_hue = ctx.theme.tokens.elevation.glass_outer.color;
         for &(offset, width, alpha) in &[(2.5_f64, 5.0_f64, 44u8), (7.5, 6.0, 20), (14.0, 9.0, 8)] {
             ctx.scene.stroke(
@@ -1533,7 +1533,7 @@ impl SidebarWheelDisc {
     /// reading as light on a bevel, crisp hairline for a definite
     /// position, then an inset glow. Painted after [`Self::draw_sectors`]
     /// so it sits on top of every wedge.
-    fn draw_rim(&self, ctx: &mut DrawCtx<'_>, geom: &DiscGeometry) {
+    fn draw_rim(ctx: &mut DrawCtx<'_>, geom: &DiscGeometry) {
         let edge_hue = ctx.theme.tokens.colors.text_primary;
         let edge = |a: u8| Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), a);
         let rim = Circle::new((geom.c.x, geom.c.y), geom.r_out);

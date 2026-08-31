@@ -329,7 +329,7 @@ impl ActionCatalog {
         visibility: &dyn ActionVisibility,
     ) -> Self {
         // Empty `wanted_kinds` ⇒ "any kind" — surveys the whole exported surface.
-        let results = registry.query(QueryArgs {
+        let results = registry.query(&QueryArgs {
             needle: query,
             scope,
             active_provider_id,

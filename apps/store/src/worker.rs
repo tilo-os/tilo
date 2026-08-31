@@ -1,6 +1,7 @@
 //! Serialized package/catalog actor. All blocking package and network work
 //! crosses this one queue; the UI only performs non-blocking snapshot drains.
 
+use std::borrow::Borrow;
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 use std::sync::mpsc;
@@ -18,7 +19,7 @@ use crate::sources::{
 };
 use crate::{FlatpakRef, StoreItem};
 
-const REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const REFRESH_INTERVAL: Duration = Duration::from_mins(15);
 const CACHE_CAP: usize = 128;
 
 #[derive(Clone, Debug)]
@@ -27,9 +28,16 @@ pub enum Request {
     Search(String),
     Detail(String),
     RefreshRemotes,
-    RemoteAdd { name: String, url: String },
+    RemoteAdd {
+        name: String,
+        url: String,
+    },
     RemoteRemove(String),
-    Act(StoreItem, ActionKind),
+    /// Boxed: [`StoreItem`] is far larger than every other variant's
+    /// payload, and this is a queued message — boxing keeps every
+    /// `Request` (and the channel that carries them) sized to the common
+    /// case instead of the rare, heavy one.
+    Act(Box<StoreItem>, ActionKind),
 }
 
 #[derive(Clone, Debug)]
@@ -49,13 +57,22 @@ pub struct StoreWorker {
 }
 
 impl StoreWorker {
+    /// # Panics
+    /// Panics if the OS refuses to spawn a thread (extreme resource
+    /// exhaustion). The binary's root widget constructor that calls this is
+    /// infallible, so there is no fallible path back through it to report a
+    /// failure to instead.
+    #[allow(
+        clippy::expect_used,
+        reason = "thread spawn failure means the OS is out of resources; there is no fallible path back through the root widget constructor to report it, and no live app to hand back without a worker"
+    )]
     pub fn spawn(opened_ref: Option<FlatpakRef>) -> Self {
         let (request_tx, request_rx) = mpsc::channel();
         let (snapshot_tx, snapshot_rx) = mpsc::channel();
         let pending = Arc::new(AtomicUsize::new(1));
         std::thread::Builder::new()
             .name("store-worker".into())
-            .spawn(move || run(request_rx, snapshot_tx, opened_ref))
+            .spawn(move || run(&request_rx, &snapshot_tx, opened_ref))
             .expect("spawn store worker");
         Self {
             requests: request_tx,
@@ -99,8 +116,8 @@ struct State {
 }
 
 fn run(
-    requests: mpsc::Receiver<Request>,
-    snapshots: mpsc::Sender<Snapshot>,
+    requests: &mpsc::Receiver<Request>,
+    snapshots: &mpsc::Sender<Snapshot>,
     opened_ref: Option<FlatpakRef>,
 ) {
     let staging = crate::actions::qpkg_staging_dir()
@@ -116,7 +133,7 @@ fn run(
     };
     refresh(&mut state);
     if !send(
-        &snapshots,
+        snapshots,
         &state,
         state.base_items.clone(),
         "Store refreshed.",
@@ -128,14 +145,14 @@ fn run(
     loop {
         match requests.recv_timeout(REFRESH_INTERVAL) {
             Ok(request) => {
-                if !handle(request, &mut state, &snapshots, &staging) {
+                if !handle(request, &mut state, snapshots, &staging) {
                     break;
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 refresh(&mut state);
                 if !send(
-                    &snapshots,
+                    snapshots,
                     &state,
                     state.base_items.clone(),
                     "Store refreshed.",
@@ -168,8 +185,8 @@ fn handle(
                 None,
             )
         }
-        Request::Search(query) => search(query, state, snapshots),
-        Request::Detail(id) => detail(id, state, snapshots),
+        Request::Search(query) => search(&query, state, snapshots),
+        Request::Detail(id) => detail(&id, state, snapshots),
         Request::RefreshRemotes => {
             state.remotes = crate::flathub_client::list_remotes();
             let label = format!("Loaded {} Flatpak remotes.", state.remotes.len());
@@ -221,7 +238,7 @@ fn handle(
     }
 }
 
-fn search(query: String, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) -> bool {
+fn search(query: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) -> bool {
     let query = query.trim().to_string();
     if query.is_empty() {
         return send(
@@ -257,8 +274,8 @@ fn search(query: String, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) 
     send(snapshots, state, items, &label, Some(query), None)
 }
 
-fn detail(id: String, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) -> bool {
-    let loaded = if let Some(cached) = state.details.get(&id).cloned() {
+fn detail(id: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) -> bool {
+    let loaded = if let Some(cached) = state.details.get(id).cloned() {
         Some(cached)
     } else if let Some(item) = state
         .base_items
@@ -266,15 +283,15 @@ fn detail(id: String, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) -> 
         .find(|item| item.id == id && matches!(item.source, StoreSource::Qos { .. }))
         .cloned()
     {
-        state.details.insert(id.clone(), item.clone());
+        state.details.insert(id.to_string(), item.clone());
         Some(item)
     } else {
-        let loaded = crate::flathub_client::fetch_appstream(&id)
+        let loaded = crate::flathub_client::fetch_appstream(id)
             .ok()
             .map(|record| flathub_record_to_item(&record, &state.installed))
             .or_else(|| state.base_items.iter().find(|item| item.id == id).cloned());
         if let Some(item) = loaded.as_ref() {
-            state.details.insert(id.clone(), item.clone());
+            state.details.insert(id.to_string(), item.clone());
         }
         loaded
     };
@@ -392,9 +409,16 @@ impl<K: Clone + Eq + Hash, V> LruMap<K, V> {
         }
     }
 
-    fn get(&mut self, key: &K) -> Option<&V> {
-        if let Some(index) = self.order.iter().position(|item| item == key) {
-            let key = self.order.remove(index).expect("known index");
+    /// Generic over `Borrow<Q>` (like [`HashMap::get`]) so callers can look
+    /// up by `&str` without owning a `String` just for the query.
+    fn get<Q>(&mut self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        if let Some(index) = self.order.iter().position(|item| item.borrow() == key)
+            && let Some(key) = self.order.remove(index)
+        {
             self.order.push_back(key);
         }
         self.values.get(key)

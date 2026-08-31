@@ -232,12 +232,14 @@ impl OskWidget {
     /// Register an additional layout (e.g. a community AZERTY/Dvorak/emoji
     /// file parsed into a [`KeyboardLayout`]). Letter layouts become
     /// selectable via [`KeyAction::Layout`].
+    #[must_use]
     pub fn with_layout(mut self, layout: KeyboardLayout) -> Self {
         self.layouts.insert(layout.name.clone(), layout);
         self
     }
 
     /// Choose the active letter layout by name (must be registered).
+    #[must_use]
     pub fn with_active_layout(mut self, name: &str) -> Self {
         if self.layouts.contains_key(name) {
             self.active_letter = name.to_string();
@@ -247,18 +249,21 @@ impl OskWidget {
 
     /// Start the keyboard on the layout matching `purpose` (e.g. a dialpad for
     /// [`InputPurpose::Telephone`]). The needed layout is registered on demand.
+    #[must_use]
     pub fn with_purpose(mut self, purpose: InputPurpose) -> Self {
         self.apply_purpose(purpose);
         self
     }
 
     /// Replace the toolbar with a custom data-driven set.
+    #[must_use]
     pub fn with_toolbar(mut self, items: Vec<OskToolbarItem>) -> Self {
         self.toolbar = items;
         self
     }
 
     /// Set the responsive target key-row height (logical px).
+    #[must_use]
     pub fn with_target_key_height(mut self, h: f32) -> Self {
         self.target_key_height = h.max(1.0);
         self
@@ -266,6 +271,7 @@ impl OskWidget {
 
     /// Replace the swipe decoder. The default is the geometric model; this is
     /// the seam for dropping in a FUTO/ExecuTorch [`SwipeModel`] later.
+    #[must_use]
     pub fn with_swipe_model(mut self, model: Box<dyn SwipeModel>) -> Self {
         self.swipe_model = model;
         self
@@ -273,6 +279,7 @@ impl OskWidget {
 
     /// Replace the next-word predictor (e.g. a custom-corpus or a future
     /// neural [`Predictor`]).
+    #[must_use]
     pub fn with_predictor(mut self, predictor: Predictor) -> Self {
         self.predictor = predictor;
         self
@@ -280,12 +287,14 @@ impl OskWidget {
 
     /// Imperative per-activation callback. Receives the *emitted* action
     /// (already shift-cased for letters).
+    #[must_use]
     pub fn on_key<F: FnMut(KeyAction) + 'static>(mut self, f: F) -> Self {
         self.on_key = Some(Box::new(f));
         self
     }
 
     /// Imperative toolbar-tap callback.
+    #[must_use]
     pub fn on_toolbar<F: FnMut(OskToolbarAction) + 'static>(mut self, f: F) -> Self {
         self.on_toolbar = Some(Box::new(f));
         self
@@ -330,6 +339,7 @@ impl OskWidget {
 
     /// Start hidden (builder). Used by the auto-show input-method mode, where
     /// the compositor only reveals the keyboard once a text field is focused.
+    #[must_use]
     pub fn hidden(mut self) -> Self {
         self.visible = false;
         self
@@ -492,7 +502,11 @@ impl OskWidget {
             // Symbols/active layout are always registered, but fall back to
             // the active letter layout defensively rather than panic.
             .or_else(|| self.layouts.get(&self.active_letter))
-            .expect("active layout registered")
+            // `layouts` always holds at least the symbols layer plus one
+            // letter layout (see the field doc on `OskWidget::layouts`), so
+            // this last-resort fallback always has something to return.
+            .or_else(|| self.layouts.values().next())
+            .unwrap_or_else(|| unreachable!("OskWidget always registers at least one layout"))
     }
 
     /// Apply an emitted [`KeyAction`]: update text/state, log it, fire the
@@ -547,7 +561,7 @@ impl OskWidget {
             }
             KeyAction::Layout(name) => {
                 if self.layouts.contains_key(name) {
-                    self.active_letter = name.clone();
+                    self.active_letter.clone_from(name);
                     self.showing_symbols = false;
                     self.structure_dirty = true;
                 }
@@ -646,12 +660,14 @@ impl OskWidget {
         let cands = self
             .swipe_model
             .decode(path, &self.key_geom, &layout, MAX_SUGGESTIONS);
-        if cands.is_empty() {
+        // `cands.first()` also covers the empty case, so this doubles as the
+        // emptiness check.
+        let Some(top_cand) = cands.first() else {
             return false;
-        }
+        };
         // The swipe inserts a fresh word: if mid-word (rare, e.g. a swipe
         // started after some taps) replace it; otherwise just append.
-        let top = cands[0].word.clone();
+        let top = top_cand.word.clone();
         if self.current_word.is_empty() {
             // Auto-insert acts like a completed word.
             self.pending_text.push_str(&top);
@@ -706,6 +722,19 @@ impl OskWidget {
     }
 }
 
+/// Interaction/visual flags for one drawn cell, bundled so [`draw_cell`]
+/// doesn't take four separate `bool` parameters.
+#[derive(Clone, Copy, Default)]
+struct CellState {
+    hovered: bool,
+    pressed: bool,
+    /// Accent styling (e.g. an active toggle key).
+    accent: bool,
+    /// Solid (vs. outline) icon glyph — used for a latched state like
+    /// Caps-Lock's Shift key.
+    icon_filled: bool,
+}
+
 /// Draw a rounded "button" cell (used for both keys and toolbar items).
 #[allow(clippy::too_many_arguments)]
 fn draw_cell(
@@ -716,12 +745,15 @@ fn draw_cell(
     rect: Rect,
     icon: Option<Icon>,
     label: &str,
-    hovered: bool,
-    pressed: bool,
-    accent: bool,
+    state: CellState,
     font_scale: f64,
-    icon_filled: bool,
 ) {
+    let CellState {
+        hovered,
+        pressed,
+        accent,
+        icon_filled,
+    } = state;
     let t = &theme.tokens;
     // Inset so adjacent cells have a visible gutter.
     let pad = (rect.height() * 0.06).clamp(2.0, 6.0);
@@ -884,24 +916,30 @@ impl Widget for OskWidget {
         } else {
             0.0
         };
-        let node = taffy
-            .new_leaf(Style {
-                flex_shrink: 0.0,
-                size: Size {
-                    // Fill the available width (phone → desktop); intrinsic
-                    // height from the row count × target key height.
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(total_h),
-                },
-                ..Default::default()
-            })
-            .unwrap();
+        let node = match taffy.new_leaf(Style {
+            flex_shrink: 0.0,
+            size: Size {
+                // Fill the available width (phone → desktop); intrinsic
+                // height from the row count × target key height.
+                width: Dimension::percent(1.0),
+                height: Dimension::length(total_h),
+            },
+            ..Default::default()
+        }) {
+            Ok(node) => node,
+            // `TaffyTree::new_leaf` only ever returns `Err` when the tree is
+            // at capacity; this arm exists so a future upstream change
+            // degrades the app instead of aborting the whole session.
+            Err(_) => NodeId::from(0u64),
+        };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
@@ -957,7 +995,12 @@ impl Widget for OskWidget {
 
         // Toolbar.
         for (i, r) in &self.toolbar_geom {
-            let item = &self.toolbar[*i];
+            // `toolbar_geom` is built from `self.toolbar` each frame, so `*i`
+            // is always in range; `get` avoids a panic if the geometry is
+            // ever stale for one frame.
+            let Some(item) = self.toolbar.get(*i) else {
+                continue;
+            };
             let hovered = self.hovered_tool == Some(*i);
             let pressed = self.pressed_tool == Some(*i);
             draw_cell(
@@ -968,11 +1011,12 @@ impl Widget for OskWidget {
                 *r,
                 item.icon,
                 &item.label,
-                hovered,
-                pressed,
-                false,
+                CellState {
+                    hovered,
+                    pressed,
+                    ..Default::default()
+                },
                 0.34,
-                false,
             );
         }
 
@@ -1031,11 +1075,13 @@ impl Widget for OskWidget {
                 *rect,
                 key.icon,
                 &label,
-                hovered,
-                pressed,
-                is_action || shift_active,
+                CellState {
+                    hovered,
+                    pressed,
+                    accent: is_action || shift_active,
+                    icon_filled,
+                },
                 font_scale,
-                icon_filled,
             );
         }
     }
@@ -1098,7 +1144,7 @@ impl Widget for OskWidget {
                         .key_geom
                         .iter()
                         .find(|(kid, _)| *kid == id)
-                        .map_or(self.rect.center(), |(_, r)| r.center());
+                        .map_or_else(|| self.rect.center(), |(_, r)| r.center());
                     self.gesture_path = Some(vec![start]);
                     *handled = true;
                 } else if let Some(i) = self.hovered_sugg {
@@ -1562,7 +1608,9 @@ mod tests {
                 && c.is_alphabetic()
                 && s.chars().count() == 1
             {
-                centres.entry(c.to_ascii_lowercase()).or_insert(r.center());
+                centres
+                    .entry(c.to_ascii_lowercase())
+                    .or_insert_with(|| r.center());
             }
         }
         let mut pts = Vec::new();

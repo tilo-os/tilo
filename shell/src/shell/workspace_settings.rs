@@ -1665,15 +1665,13 @@ pub fn draw_default_apps_pane(
     scene: &mut Scene,
     transform: Affine,
     pane: Rect,
-    ctx: DefaultAppsCtx<'_>,
+    ctx: &DefaultAppsCtx<'_>,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
-    let DefaultAppsCtx {
-        ws,
-        local_user,
-        candidates,
-    } = ctx;
+    let ws = ctx.ws;
+    let local_user = ctx.local_user;
+    let candidates = ctx.candidates;
     draw_section_header(
         scene,
         transform,

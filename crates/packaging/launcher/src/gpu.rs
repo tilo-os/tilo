@@ -270,7 +270,7 @@ fn unique_manifest_for(dirs: &[PathBuf], library: &str, kind: &str) -> Result<Pa
         if is_foreign_arch(name) {
             continue;
         }
-        scanned += 1;
+        scanned = scanned.saturating_add(1);
         let Some(lib) = manifest_library_name(&path) else {
             continue;
         };

@@ -71,12 +71,16 @@ pub enum StoreError {
         #[source]
         source: io::Error,
     },
-    /// The stored bytes are not a loadable Automerge document.
+    /// The stored bytes are not a loadable Automerge document. Boxed: unlike
+    /// this crate's other variants, `AutomergeError` alone is well over 100
+    /// bytes (nested enums carrying `PatchAction`, `String`s, etc.), which
+    /// would make every `Result<_, StoreError>` in this crate's public API
+    /// large regardless of which variant is actually returned.
     #[error("reading {path}: {source}")]
     Automerge {
         path: PathBuf,
         #[source]
-        source: automerge::AutomergeError,
+        source: Box<automerge::AutomergeError>,
     },
     /// The document was written by a newer build than this one. Kept separate
     /// from [`StoreError::Automerge`] because the data is intact and only this
@@ -222,6 +226,12 @@ struct Refusal {
 impl DocStore {
     /// Open the store belonging to the running package, via `QOS_PACKAGE_ID` —
     /// no argument by design, since an app doesn't choose where its state lives.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `QOS_PACKAGE_ID` is not a valid single directory
+    /// name (see [`validate_package_id`]), or if the package's state
+    /// directory can't be created, inspected or locked.
     pub fn open() -> Result<Self, StoreError> {
         Self::open_for(&cli::package_id())
     }
@@ -229,6 +239,12 @@ impl DocStore {
     /// Open the store, falling back to `manifest_id` when `QOS_PACKAGE_ID` is
     /// unset. The env var always wins; the fallback only covers launcher-less
     /// runs (dev binary, tests) that would otherwise share one directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the resolved id is not a valid single directory
+    /// name (see [`validate_package_id`]), or if the package's state
+    /// directory can't be created, inspected or locked.
     pub fn open_with_manifest_id(manifest_id: &str) -> Result<Self, StoreError> {
         let id = std::env::var("QOS_PACKAGE_ID")
             .ok()
@@ -239,6 +255,11 @@ impl DocStore {
 
     /// Open the store for an explicit package id — for tests and migration
     /// tools; rejects any id that is not a single, non-traversing directory name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `package_id` fails [`validate_package_id`], or if
+    /// the package's state directory can't be created, inspected or locked.
     pub fn open_for(package_id: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
         let dir = cli::standalone_state_dir(package_id);
@@ -252,6 +273,12 @@ impl DocStore {
     /// strictly as a package id. Lands in
     /// `<package dir>/records/<record_key>/state.automerge`, beside the
     /// package's own `state.automerge`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `package_id` fails [`validate_package_id`] or
+    /// `record_key` fails [`validate_record_key`], or if the record's state
+    /// directory can't be created, inspected or locked.
     pub fn open_record(package_id: &str, record_key: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
         validate_record_key(record_key)?;
@@ -266,6 +293,12 @@ impl DocStore {
     /// never resolve to a record's document and merge the two. `room_key` is
     /// validated as strictly as a record key. Lands in
     /// `<package dir>/rooms/<room_key>/state.automerge`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `package_id` fails [`validate_package_id`] or
+    /// `room_key` fails [`validate_record_key`], or if the room's state
+    /// directory can't be created, inspected or locked.
     pub fn open_room(package_id: &str, room_key: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
         validate_record_key(room_key)?;
@@ -329,6 +362,12 @@ impl DocStore {
     /// Load the persisted document, or `Ok(None)` on a first launch. A trailing
     /// partially-written chunk (crash during append) is dropped rather than
     /// failing the load, losing only the last unflushed edit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the document file exists but can't be read, if its
+    /// bytes aren't a loadable Automerge document, or if it declares a schema
+    /// layout newer than this build understands ([`StoreError::NewerSchema`]).
     pub fn load(&mut self) -> Result<Option<AutoCommit>, StoreError> {
         let bytes = match fs::read(&self.document) {
             Ok(b) => b,
@@ -346,7 +385,7 @@ impl DocStore {
         )
         .map_err(|source| StoreError::Automerge {
             path: self.document.clone(),
-            source,
+            source: Box::new(source),
         })?;
         // Check before reading any value: a newer layout may reuse a key with a
         // different meaning, and the writer above saves the whole document back.
@@ -373,13 +412,9 @@ impl DocStore {
         match self.load() {
             Ok(Some(doc)) => doc,
             Ok(None) => self.new_document(),
-            Err(e @ StoreError::NewerSchema { .. }) => {
+            Err(e @ StoreError::NewerSchema { found, .. }) => {
                 tracing::error!(error = %e, "app state was written by a newer version; \
                                              starting empty and NOT writing back");
-                let found = match &e {
-                    StoreError::NewerSchema { found, .. } => *found,
-                    _ => unreachable!("matched NewerSchema"),
-                };
                 let message = e.to_string();
                 let doc = self.new_document();
                 // After new_document, which clears it: the refusal describes the file, not
@@ -416,6 +451,12 @@ impl DocStore {
     /// never half-written. Refuses when [`DocStore::refusal`] is set, since the
     /// in-memory document is an empty stand-in and writing it out would delete
     /// the user's actual data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`DocStore::refusal`] is set (writing would
+    /// discard a newer-schema document already on disk), or if the file
+    /// can't be written.
     pub fn save(&mut self, doc: &mut AutoCommit) -> Result<(), StoreError> {
         self.refuse_to_write()?;
         ensure_schema_version(doc);
@@ -441,6 +482,11 @@ impl DocStore {
     /// Append only the changes `doc` has that the file does not. Returns bytes
     /// appended (`0` when idle). Refuses for the same data-loss reason as
     /// [`DocStore::save`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`DocStore::refusal`] is set, or if the file
+    /// can't be written.
     pub fn append(&mut self, doc: &mut AutoCommit) -> Result<usize, StoreError> {
         self.refuse_to_write()?;
         ensure_schema_version(doc);
@@ -468,6 +514,12 @@ impl DocStore {
     /// store's document (not replacing) so a repeated or later migration can't
     /// lose data. Returns `true` if anything was imported; leaves the legacy
     /// file alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `legacy` exists but can't be read, its bytes
+    /// aren't a loadable Automerge document, the merge fails, or the
+    /// resulting save fails.
     pub fn migrate_from(&mut self, legacy: &Path) -> Result<bool, StoreError> {
         let bytes = match fs::read(legacy) {
             Ok(b) if !b.is_empty() => b,
@@ -481,7 +533,7 @@ impl DocStore {
         )
         .map_err(|source| StoreError::Automerge {
             path: legacy.to_path_buf(),
-            source,
+            source: Box::new(source),
         })?;
 
         let mut current = match self.load()? {
@@ -492,7 +544,7 @@ impl DocStore {
             .merge(&mut incoming)
             .map_err(|source| StoreError::Automerge {
                 path: legacy.to_path_buf(),
-                source,
+                source: Box::new(source),
             })?;
         self.save(&mut current)?;
         Ok(true)
@@ -592,7 +644,7 @@ fn stale_sibling(dir: &Path) -> PathBuf {
     let mut candidate = PathBuf::from(&base);
     let mut n = 0u32;
     while candidate.exists() {
-        n += 1;
+        n = n.saturating_add(1);
         let mut next = base.clone();
         next.push(format!(".{n}"));
         candidate = PathBuf::from(next);

@@ -121,6 +121,9 @@ enum BaseCmd {
 
 fn main() {
     if let Err(e) = real_main() {
+        if let Some(child) = e.downcast_ref::<ChildExit>() {
+            std::process::exit(i32::from(child.0));
+        }
         eprintln!("tinker: {e:#}");
         std::process::exit(1);
     }
@@ -130,17 +133,19 @@ fn real_main() -> Result<()> {
     let cli = Cli::parse();
     let store = Store::user()?;
 
-    match cli.command.unwrap_or(Cmd::Shell(ShellArgs {
-        name: None,
-        base: "debian".into(),
-        on: vec![],
-        keep: false,
-        offline: false,
-        share: vec![],
-        explain: false,
-        command: vec![],
-    })) {
-        Cmd::Shell(args) => cmd_shell(&store, args),
+    match cli.command.unwrap_or_else(|| {
+        Cmd::Shell(ShellArgs {
+            name: None,
+            base: "debian".into(),
+            on: vec![],
+            keep: false,
+            offline: false,
+            share: vec![],
+            explain: false,
+            command: vec![],
+        })
+    }) {
+        Cmd::Shell(args) => cmd_shell(&store, &args),
         Cmd::List => cmd_list(&store),
         Cmd::Diff { name, all } => cmd_diff(&store, &name, all),
         Cmd::Keep { name, rename, note } => {
@@ -148,7 +153,10 @@ fn real_main() -> Result<()> {
         }
         Cmd::Discard { name, yes } => cmd_discard(&store, &name, yes),
         Cmd::Revert { name, path } => cmd_revert(&store, &name, &path),
-        Cmd::Base(BaseCmd::List) => cmd_base_list(&store),
+        Cmd::Base(BaseCmd::List) => {
+            cmd_base_list(&store);
+            Ok(())
+        }
         Cmd::Base(BaseCmd::Add { name, from_image }) => cmd_base_add(&store, &name, &from_image),
         Cmd::Explain => {
             print!("{}", explain_text());
@@ -166,7 +174,7 @@ fn with_mapping<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     f()
 }
 
-fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
+fn cmd_shell(store: &Store, args: &ShellArgs) -> Result<()> {
     let base_path = store.base_path(&args.base);
     if !base_path.is_dir() {
         bail!(
@@ -189,7 +197,7 @@ fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
         );
         spec.lower_layers = args.on.iter().map(|l| store.upper_dir(l)).collect();
         spec.network = !args.offline;
-        spec.command = args.command.clone();
+        spec.command.clone_from(&args.command);
         for s in &args.share {
             spec.shares.push(parse_share(s)?);
         }
@@ -245,7 +253,7 @@ fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
         .map(|l| store.upper_dir(l))
         .collect();
     spec.network = !args.offline;
-    spec.command = args.command.clone();
+    spec.command.clone_from(&args.command);
     for s in &args.share {
         spec.shares.push(parse_share(s)?);
     }
@@ -269,11 +277,29 @@ fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
             }
         }
         if let Some(code) = status.code().filter(|_| !status.success()) {
-            std::process::exit(code);
+            // Forward the sandboxed command's own exit status verbatim, rather than
+            // calling `process::exit` here: `main` is the only place that ends the
+            // process, so a mid-stack exit can't skip cleanup already run above.
+            let code = u8::try_from(code).unwrap_or(u8::MAX);
+            return Err(ChildExit(code).into());
         }
         Ok(())
     }
 }
+
+/// The sandboxed command's own exit code, carried through `Result` instead of a direct
+/// `process::exit` deep in [`cmd_shell`]. `main` recognises this specific error and exits
+/// with the code silently, rather than printing it as a `tinker:` failure.
+#[derive(Debug)]
+struct ChildExit(u8);
+
+impl std::fmt::Display for ChildExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the command exited with status {}", self.0)
+    }
+}
+
+impl std::error::Error for ChildExit {}
 
 /// What the user sees when a throwaway shell that actually changed something
 /// exits. It must state the deadline and both commands, because an offer whose
@@ -417,18 +443,15 @@ fn cmd_revert(store: &Store, name: &str, path: &Path) -> Result<()> {
     })
 }
 
-fn cmd_base_list(store: &Store) -> Result<()> {
-    let rd = if let Ok(rd) = std::fs::read_dir(store.bases_dir()) {
-        rd
-    } else {
+fn cmd_base_list(store: &Store) {
+    let Ok(rd) = std::fs::read_dir(store.bases_dir()) else {
         println!("No bases yet. Add one with:");
         println!("    tinker base add debian --from-image docker.io/library/debian:stable-slim");
-        return Ok(());
+        return;
     };
     for e in rd.filter_map(std::result::Result::ok) {
         println!("{}", e.file_name().to_string_lossy());
     }
-    Ok(())
 }
 
 /// Unpack an OCI image into a base tree.

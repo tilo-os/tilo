@@ -1,4 +1,4 @@
-//! Short-lived, capability-gated PipeWire audio diagnostics and transforms.
+//! Short-lived, capability-gated `PipeWire` audio diagnostics and transforms.
 //!
 //! Every process or virtual node created here has exactly one owner. Dropping
 //! its session kills/waits the process or restores the physical default and
@@ -13,6 +13,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field reports a distinct, independently-detected runtime \
+              capability, not a state machine"
+)]
 pub struct RuntimeCapabilities {
     pub balance: bool,
     pub mono_output: bool,
@@ -33,13 +38,43 @@ pub trait MicrophoneMeterSession: BoundedSession {
 
 pub trait AudioRuntimeControl: Send + Sync {
     fn capabilities(&self) -> RuntimeCapabilities;
+
+    /// Set `sink_name`'s base volume and left/right balance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic message if the underlying volume-control command
+    /// is unavailable or rejects the sink name.
     fn set_balance(&self, sink_name: &str, base_volume: f32, balance: f32) -> Result<(), String>;
+
+    /// Remap `sink_name` to a virtual mono-mix device and make it the
+    /// default output.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic message if the remap module fails to load or the
+    /// default sink cannot be switched to it.
     fn start_mono(&self, sink_name: &str) -> Result<Box<dyn BoundedSession>, String>;
+
+    /// Play a short identification tone on `sink_name`'s left or right
+    /// channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic message if the playback process cannot be
+    /// spawned or its audio input cannot be written.
     fn start_channel_test(
         &self,
         sink_name: &str,
         left: bool,
     ) -> Result<Box<dyn BoundedSession>, String>;
+
+    /// Start metering `source_name` for up to `duration`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic message if the capture process cannot be spawned
+    /// or its captured samples cannot be read.
     fn start_microphone_meter(
         &self,
         source_name: &str,
@@ -67,7 +102,7 @@ impl Default for PersistentAudioPreferences {
     }
 }
 
-/// Reconciles persisted audio intent against successive PipeWire snapshots.
+/// Reconciles persisted audio intent against successive `PipeWire` snapshots.
 ///
 /// The policy is deliberately independent of the settings store and polling
 /// mechanism: the compositor owns those, while tests can inject a recording
@@ -96,6 +131,13 @@ impl PersistentAudioPolicy {
     /// Apply `preferences` to the currently available physical sink. Returns
     /// a user-displayable diagnostic on failure; absence of a sink is a
     /// capability/state condition, never a panic.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic string if mono output or balance is requested but
+    /// unsupported by the runtime, if no physical stereo sink is available,
+    /// or if the underlying runtime call to start the mono session or set
+    /// the balance fails.
     pub fn reconcile(
         &mut self,
         preferences: PersistentAudioPreferences,
@@ -186,6 +228,12 @@ impl PersistentAudioPolicy {
         // Quantise the comparison only; the runtime still receives the full
         // values. This prevents harmless PipeWire float jitter from issuing a
         // command every poll while still following real volume changes.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "base is clamped to 0.0..=1.5 and preferences.balance to \
+                      0.0..=1.0 just above, so both quantised values fit u32"
+        )]
         let signature = (
             sink.name.clone(),
             (base * 10_000.0).round() as u32,
@@ -312,7 +360,9 @@ impl AudioRuntimeControl for RealAudioRuntime {
         drop(input);
         Ok(Box::new(ChildSession {
             child: Some(child),
-            deadline: Instant::now() + Duration::from_secs(2),
+            deadline: Instant::now()
+                .checked_add(Duration::from_secs(2))
+                .unwrap_or_else(Instant::now),
         }))
     }
 
@@ -352,7 +402,7 @@ impl AudioRuntimeControl for RealAudioRuntime {
                 if n == 0 {
                     break;
                 }
-                let _ = tx.send(pcm_peak(&bytes[..n]));
+                let _ = tx.send(pcm_peak(bytes.get(..n).unwrap_or(&[])));
             }
         });
         Ok(Box::new(MicSession {
@@ -360,7 +410,9 @@ impl AudioRuntimeControl for RealAudioRuntime {
             reader: Some(reader),
             levels: rx,
             latest: 0.0,
-            deadline: Instant::now() + duration,
+            deadline: Instant::now()
+                .checked_add(duration)
+                .unwrap_or_else(Instant::now),
         }))
     }
 }
@@ -389,6 +441,16 @@ fn mono_load_args(master: &str) -> Vec<String> {
     ]
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::arithmetic_side_effects,
+    reason = "synthesizes a short identification tone from code-controlled \
+              rate/duration (never from untrusted media); frame counts and \
+              sample amplitudes stay well within usize/i16 range for any \
+              realistic call"
+)]
 fn channel_test_pcm(left: bool, rate: u32, duration: Duration) -> Vec<u8> {
     let frames = (duration.as_secs_f32() * rate as f32) as usize;
     let mut out = Vec::with_capacity(frames * 4);
@@ -398,7 +460,7 @@ fn channel_test_pcm(left: bool, rate: u32, duration: Duration) -> Vec<u8> {
         let sample = ((i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin()
             * 0.18
             * fade
-            * i16::MAX as f32) as i16;
+            * f32::from(i16::MAX)) as i16;
         let (l, r) = if left { (sample, 0) } else { (0, sample) };
         out.extend_from_slice(&l.to_le_bytes());
         out.extend_from_slice(&r.to_le_bytes());
@@ -409,7 +471,10 @@ fn channel_test_pcm(left: bool, rate: u32, duration: Duration) -> Vec<u8> {
 fn pcm_peak(bytes: &[u8]) -> f32 {
     bytes
         .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs() as f32 / i16::MAX as f32)
+        .map(|b| {
+            let &[lo, hi] = b else { return 0.0 };
+            f32::from(i16::from_le_bytes([lo, hi]).unsigned_abs()) / f32::from(i16::MAX)
+        })
         .fold(0.0, f32::max)
         .clamp(0.0, 1.0)
 }

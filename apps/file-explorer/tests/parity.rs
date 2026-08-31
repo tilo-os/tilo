@@ -155,7 +155,7 @@ fn file_explorer_widget_implements_app_widget_and_defaults_correctly() {
     assert_eq!(w.app_title(), "Files");
     match w.app_icon() {
         IconDescriptor::Glyph(g) => assert_eq!(g, "󰉋"),
-        _ => panic!("glyph expected"),
+        IconDescriptor::Named(_) => panic!("glyph expected"),
     }
     assert_eq!(w.permission_hint(), Some(AppKind::Files));
 }
@@ -199,7 +199,7 @@ fn back_button_moves_to_parent_and_noops_at_root() {
     w.back();
     assert_eq!(
         Some(w.current_path()),
-        start_parent.or(Some(w.current_path()))
+        start_parent.or_else(|| Some(w.current_path()))
     );
 
     // At root, back is a no-op.
@@ -474,7 +474,9 @@ fn grid_mode_uses_responsive_file_view() {
     use std::path::PathBuf;
     use ui::SelectionModel;
 
-    assert!(
+    // Compile-time, not a runtime assertion on constants: the metrics are
+    // `const`, so their sanity can (and should) be checked at build time.
+    const _: () = assert!(
         GRID_CELL_WIDTH > 0.0 && GRID_CELL_HEIGHT > 0.0,
         "cell metrics are sane"
     );

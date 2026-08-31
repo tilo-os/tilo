@@ -44,6 +44,16 @@ pub fn on_battery() -> bool {
     on_battery_in(Path::new(POWER_SUPPLY))
 }
 
+// Battery energy values are always tiny relative to f64's precision limit
+// (tens of watt-hours in µWh), and the percentage ratio below is clamped to
+// 0.0..=100.0 immediately before its cast to u8, so it always fits.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "battery energy values are always tiny relative to f64's precision limit, and the \
+              percentage ratio is clamped to 0.0..=100.0 immediately before the cast"
+)]
 fn snapshot_in(root: &Path) -> BatterySnapshot {
     let batteries = supplies_of_type(root, "Battery");
     if batteries.is_empty() {
@@ -69,8 +79,8 @@ fn snapshot_in(root: &Path) -> BatterySnapshot {
         let full = read_u64(dir, "energy_full").or_else(|| read_u64(dir, "charge_full"));
         match (now, full) {
             (Some(n), Some(f)) if f > 0 => {
-                now_total += n;
-                full_total += f;
+                now_total = now_total.saturating_add(n);
+                full_total = full_total.saturating_add(f);
             }
             // No energy counters: some firmware exposes only `capacity`.
             // Keep it as a fallback rather than dropping the battery.
@@ -89,10 +99,14 @@ fn snapshot_in(root: &Path) -> BatterySnapshot {
     let percent = if full_total > 0 {
         // Round rather than truncate: a 99.6%-full battery reading "99"
         // for minutes before it says "100" looks like a stuck charge.
-        (((now_total as f64 / full_total as f64) * 100.0).round() as u64).min(100) as u8
+        ((now_total as f64 / full_total as f64) * 100.0)
+            .round()
+            .clamp(0.0, 100.0) as u8
     } else if !percent_fallback.is_empty() {
-        (percent_fallback.iter().map(|p| u32::from(*p)).sum::<u32>()
-            / percent_fallback.len() as u32) as u8
+        let sum = percent_fallback.iter().map(|p| u32::from(*p)).sum::<u32>();
+        let count = u32::try_from(percent_fallback.len()).unwrap_or(u32::MAX);
+        let avg = sum.checked_div(count).unwrap_or(0);
+        u8::try_from(avg.min(100)).unwrap_or(100)
     } else {
         return BatterySnapshot::absent();
     };

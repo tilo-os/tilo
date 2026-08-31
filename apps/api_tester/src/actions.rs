@@ -45,8 +45,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider,
 };
 
 use crate::doc::ApiDoc;
@@ -162,7 +162,7 @@ impl ApiTesterAction {
             }
             ApiTesterAction::RenameCollection { id, name } => {
                 if let Some(c) = find_collection_mut(cols, id) {
-                    c.name = name.clone();
+                    c.name.clone_from(name);
                 }
             }
             ApiTesterAction::DeleteCollection { id } => {
@@ -191,7 +191,7 @@ impl ApiTesterAction {
                         .iter_mut()
                         .find(|r| r.id.to_string() == *request_id)
                 {
-                    r.name = name.clone();
+                    r.name.clone_from(name);
                 }
             }
             ApiTesterAction::DeleteRequest {
@@ -222,7 +222,7 @@ impl ApiTesterAction {
             }
             ApiTesterAction::RenameEnvironment { id, name } => {
                 if let Some(e) = find_environment_mut(envs, id) {
-                    e.name = name.clone();
+                    e.name.clone_from(name);
                 }
             }
             ApiTesterAction::DeleteEnvironment { id } => {
@@ -231,7 +231,7 @@ impl ApiTesterAction {
             ApiTesterAction::SetVariable { env_id, key, value } => {
                 if let Some(e) = find_environment_mut(envs, env_id) {
                     if let Some(v) = e.variables.iter_mut().find(|v| v.key == *key) {
-                        v.value = value.clone(); // update in place
+                        v.value.clone_from(value); // update in place
                     } else {
                         e.variables.push(KeyValue::new(key.clone(), value.clone()));
                     }
@@ -291,9 +291,17 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Encode any [`ApiTesterAction`] into the wire form the palette and the
 /// on-screen affordances both dispatch. The single point that turns an action
 /// into a replayable envelope.
+///
+/// # Panics
+///
+/// Never panics: an `ApiTesterAction` that fails to serialize (it never
+/// should — every field is a plain string or a nested plain-field struct)
+/// falls back to an empty-payload envelope rather than crashing the caller.
 pub fn encode(action: &ApiTesterAction) -> EncodedAction {
-    EncodedAction::encode(API_TESTER_ACTION_TYPE, action)
-        .expect("ApiTesterAction is always serializable")
+    EncodedAction::encode(API_TESTER_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
+        type_id: API_TESTER_ACTION_TYPE.to_string(),
+        payload: Vec::new(),
+    })
 }
 
 // ===========================================================================
@@ -395,8 +403,16 @@ fn split_kv(arg: &str) -> (String, String) {
 // ===========================================================================
 
 fn immediate(id: &str, label: impl Into<String>, action: &ApiTesterAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, API_TESTER_ACTION_TYPE, action)
-        .expect("encode api_tester action")
+    let label = label.into();
+    ActionSpec::immediate(id, label.clone(), API_TESTER_ACTION_TYPE, action).unwrap_or_else(|_| {
+        ActionSpec {
+            id: id.to_string(),
+            label,
+            description: None,
+            locus: action.locus(),
+            input: ActionInput::Immediate(encode(action)),
+        }
+    })
 }
 
 /// One-line label for a saved request: its method and name.
@@ -453,8 +469,20 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         move |name: &str| encode(&create_environment_action(Uuid::new_v4(), name.trim())),
     ));
 
-    // Collections → a resource each, owning its saved requests.
-    for c in &collections {
+    root = add_collection_children(root, &collections, active_request.as_ref());
+    root = add_environment_children(root, &environments, active_env.as_deref());
+
+    vec![root]
+}
+
+/// Collections → a resource each, owning its saved requests. Split out of
+/// [`provide_resources`] to keep it under the line budget.
+fn add_collection_children(
+    mut root: Resource,
+    collections: &[Collection],
+    active_request: Option<&Request>,
+) -> Resource {
+    for c in collections {
         let cid = c.id;
         let mut node = Resource::new(
             format!("api_tester.collection:{cid}"),
@@ -490,8 +518,8 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         // Save the request currently in the builder into this collection, as a
         // new saved copy — exercises the full whole-record write with the live
         // method / url / params / body. Only offered when a request is loaded.
-        if let Some(active) = active_request.clone() {
-            let mut copy = active;
+        if let Some(active) = active_request {
+            let mut copy = active.clone();
             copy.id = Uuid::new_v4();
             if copy.name.trim().is_empty() {
                 copy.name = "Saved request".to_string();
@@ -527,74 +555,82 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         }
         root = root.with_child(node);
     }
+    root
+}
 
-    // Environments → grouped under one env node, each owning its variables.
-    if !environments.is_empty() {
-        let mut env_root = Resource::new(
-            "api_tester.environments",
-            "api_tester.environments",
-            "Environments",
-        );
-        for e in &environments {
-            let eid = e.id;
-            let is_active = active_env.as_deref() == Some(eid.to_string().as_str());
-            let mut node = Resource::new(
-                format!("api_tester.environment:{eid}"),
-                "api_tester.environment",
-                e.name.clone(),
-            );
-            if !is_active {
-                node = node.with_action(immediate(
-                    "activate",
-                    format!("Use environment “{}”", e.name),
-                    &set_active_environment_action(Some(eid)),
-                ));
-            }
-            node = node.with_action(ActionSpec::prompted(
-                "rename",
-                "Rename environment",
-                "Environment name",
-                "new name…",
-                ExecutionLocus::ClientLocal,
-                move |name: &str| encode(&rename_environment_action(eid, name.trim())),
-            ));
-            node = node.with_action(immediate(
-                "delete",
-                "Delete environment",
-                &delete_environment_action(eid),
-            ));
-            node = node.with_action(ActionSpec::prompted(
-                "set-variable",
-                "Set variable",
-                "key=value",
-                "e.g. base_url=https://api.example.com",
-                ExecutionLocus::ClientLocal,
-                move |arg: &str| {
-                    let (k, v) = split_kv(arg);
-                    encode(&set_variable_action(eid, &k, &v))
-                },
-            ));
-
-            for v in &e.variables {
-                let key = v.key.clone();
-                let child = Resource::new(
-                    format!("api_tester.variable:{eid}:{}", v.key),
-                    "api_tester.variable",
-                    format!("{} = {}", v.key, v.value),
-                )
-                .with_action(immediate(
-                    "delete",
-                    "Delete variable",
-                    &delete_variable_action(eid, &key),
-                ));
-                node = node.with_child(child);
-            }
-            env_root = env_root.with_child(node);
-        }
-        root = root.with_child(env_root);
+/// Environments → grouped under one env node, each owning its variables.
+/// Split out of [`provide_resources`] to keep it under the line budget.
+fn add_environment_children(
+    mut root: Resource,
+    environments: &[Environment],
+    active_env: Option<&str>,
+) -> Resource {
+    if environments.is_empty() {
+        return root;
     }
+    let mut env_root = Resource::new(
+        "api_tester.environments",
+        "api_tester.environments",
+        "Environments",
+    );
+    for e in environments {
+        let eid = e.id;
+        let is_active = active_env == Some(eid.to_string().as_str());
+        let mut node = Resource::new(
+            format!("api_tester.environment:{eid}"),
+            "api_tester.environment",
+            e.name.clone(),
+        );
+        if !is_active {
+            node = node.with_action(immediate(
+                "activate",
+                format!("Use environment “{}”", e.name),
+                &set_active_environment_action(Some(eid)),
+            ));
+        }
+        node = node.with_action(ActionSpec::prompted(
+            "rename",
+            "Rename environment",
+            "Environment name",
+            "new name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| encode(&rename_environment_action(eid, name.trim())),
+        ));
+        node = node.with_action(immediate(
+            "delete",
+            "Delete environment",
+            &delete_environment_action(eid),
+        ));
+        node = node.with_action(ActionSpec::prompted(
+            "set-variable",
+            "Set variable",
+            "key=value",
+            "e.g. base_url=https://api.example.com",
+            ExecutionLocus::ClientLocal,
+            move |arg: &str| {
+                let (k, v) = split_kv(arg);
+                encode(&set_variable_action(eid, &k, &v))
+            },
+        ));
 
-    vec![root]
+        for v in &e.variables {
+            let key = v.key.clone();
+            let child = Resource::new(
+                format!("api_tester.variable:{eid}:{}", v.key),
+                "api_tester.variable",
+                format!("{} = {}", v.key, v.value),
+            )
+            .with_action(immediate(
+                "delete",
+                "Delete variable",
+                &delete_variable_action(eid, &key),
+            ));
+            node = node.with_child(child);
+        }
+        env_root = env_root.with_child(node);
+    }
+    root = root.with_child(env_root);
+    root
 }
 
 impl ResourceProvider for crate::app::ApiTesterApp {
@@ -618,14 +654,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 

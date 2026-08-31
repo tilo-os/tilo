@@ -130,6 +130,12 @@ impl Widget for PathBar {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` only fails on tree-internal bookkeeping errors, never on
+        // caller input; there is none to report here.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "new_leaf cannot fail for a freshly built style"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -146,6 +152,12 @@ impl Widget for PathBar {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // `node` was created by `build_layout` in this same tree, so a
+        // lookup miss would mean the frame cycle called these out of order.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
+        )]
         let l = taffy.layout(node).unwrap();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -311,8 +323,8 @@ fn split_for_completion(input: &str, home: Option<&Path>) -> (PathBuf, String) {
     }
     match input.rfind('/') {
         Some(slash) => {
-            let dir_part = &input[..slash];
-            let prefix = input[slash + 1..].to_string();
+            let dir_part = input.get(..slash).unwrap_or_default();
+            let prefix = input.get(slash + 1..).unwrap_or_default().to_string();
             let dir = if dir_part.is_empty() {
                 PathBuf::from("/")
             } else {

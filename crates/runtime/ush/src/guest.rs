@@ -100,6 +100,11 @@ impl GuestPlan {
 
     /// Create the per-session directories the plan refers to: the `workdir`s
     /// must exist and be empty, since `bwrap` will not create them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a stale workdir can't be cleared, or a workdir
+    /// or the guest home can't be created.
     pub fn prepare(&self) -> std::io::Result<()> {
         for subtree in BASE_SUBTREES {
             let work = self.workdir_for(subtree);
@@ -115,21 +120,45 @@ impl GuestPlan {
 
 /// Build the `bwrap` argv for a plan. Pure: the vector starts with `bwrap`
 /// and ends with the guest's own argv, so `-v` output pastes into a shell.
+///
+/// Each stage of the argv gets its own helper below, in the order `bwrap`
+/// applies flags — that ordering is load-bearing (e.g. the resolver bind
+/// must land after the `/run` tmpfs it would otherwise be covered by), so
+/// keep the call order matching the section order in this function.
 pub fn build_argv(
     plan: &GuestPlan,
     seccomp_fd: Option<std::os::fd::RawFd>,
     userns_fd: Option<std::os::fd::RawFd>,
 ) -> Vec<OsString> {
     let mut a: Vec<OsString> = Vec::new();
+    push_namespace_flags(&mut a, plan, userns_fd);
+    push_overlay_mounts(&mut a, plan);
+    push_symlinks_and_layer_dirs(&mut a, plan);
+    push_pseudo_filesystems_and_resolver(&mut a, plan);
+    push_runtime_and_broker(&mut a, plan);
+    push_home_and_grants(&mut a, plan);
+    push_capabilities(&mut a, plan);
+    push_environment(&mut a, plan);
+    push_seccomp_and_command(&mut a, plan, seccomp_fd);
+    a
+}
+
+/// `--clearenv`, the namespace/identity flags, and the hostname — the part
+/// of the argv that exists before any filesystem is touched.
+fn push_namespace_flags(
+    a: &mut Vec<OsString>,
+    plan: &GuestPlan,
+    userns_fd: Option<std::os::fd::RawFd>,
+) {
     let push = |a: &mut Vec<OsString>, s: &str| a.push(OsString::from(s));
 
-    push(&mut a, "bwrap");
+    push(a, "bwrap");
 
     // `bwrap` hands the guest the parent's whole environment unless told
     // otherwise; clearing it first is what makes the environment block below a
     // complete list rather than overrides on the supervisor's own environment.
     // Comes first because `--clearenv` keeps only what a later `--setenv` restores.
-    push(&mut a, "--clearenv");
+    push(a, "--clearenv");
 
     // A fresh user namespace makes the mounts below possible without privilege,
     // and uid 0 inside it is what lets `rpm` chown into the layer — outside the
@@ -138,29 +167,33 @@ pub fn build_argv(
     // one, which is how the guest gets more than a single mapped uid.
     match userns_fd {
         Some(fd) => {
-            push(&mut a, "--userns");
+            push(a, "--userns");
             a.push(fd.to_string().into());
         }
-        None => push(&mut a, "--unshare-user"),
+        None => push(a, "--unshare-user"),
     }
-    push(&mut a, "--uid");
-    push(&mut a, "0");
-    push(&mut a, "--gid");
-    push(&mut a, "0");
-    push(&mut a, "--unshare-pid");
-    push(&mut a, "--unshare-uts");
-    push(&mut a, "--unshare-ipc");
-    push(&mut a, "--unshare-cgroup-try");
-    push(&mut a, "--hostname");
-    push(&mut a, plan.profile.as_str());
+    push(a, "--uid");
+    push(a, "0");
+    push(a, "--gid");
+    push(a, "0");
+    push(a, "--unshare-pid");
+    push(a, "--unshare-uts");
+    push(a, "--unshare-ipc");
+    push(a, "--unshare-cgroup-try");
+    push(a, "--hostname");
+    push(a, plan.profile.as_str());
     // The guest must not outlive the supervisor. Without this a crashed
     // supervisor leaves a shell running in a namespace nothing is watching.
-    push(&mut a, "--die-with-parent");
+    push(a, "--die-with-parent");
     // Deliberately *not* `--new-session`: it calls `setsid`, detaching the guest
     // from its controlling terminal and taking job control with it (no Ctrl-C,
     // no Ctrl-Z). `bwrap` documents it as incompatible with interactive use; what
     // it defends against — `TIOCSTI` injection — the kernel already refuses.
+}
 
+/// The `/usr` and `/etc` overlay stacks: layer(s) nearest the upper, base
+/// last.
+fn push_overlay_mounts(a: &mut Vec<OsString>, plan: &GuestPlan) {
     for subtree in BASE_SUBTREES {
         // `--overlay-src` entries accumulate for the next `--overlay`; layers are
         // pushed nearest-the-upper first, base last, so the base ends at the bottom.
@@ -179,7 +212,11 @@ pub fn build_argv(
         a.push(plan.workdir_for(subtree).into_os_string());
         a.push(PathBuf::from("/").join(subtree).into_os_string());
     }
+}
 
+/// The usrmerge/`/var` symlinks a real root carries, and the layer-owned
+/// `/var` subdirectories (see [`LAYER_VAR_DIRS`]) bound straight in.
+fn push_symlinks_and_layer_dirs(a: &mut Vec<OsString>, plan: &GuestPlan) {
     // The symlinks a Fedora root has and a hand-built one does not. usrmerge
     // first: the overlay destinations are `/usr` and `/etc`, so the new root has
     // no `/bin` until these exist, and `execvp("/bin/sh")` would fail. `/var/run`
@@ -197,7 +234,11 @@ pub fn build_argv(
         a.push(plan.upper.join(dir).into_os_string());
         a.push(PathBuf::from("/").join(dir).into_os_string());
     }
+}
 
+/// `/proc`, `/dev`, the fresh tmpfs mounts, and the resolver bind — the
+/// resolver is ordered after the `/run` tmpfs so it isn't covered over.
+fn push_pseudo_filesystems_and_resolver(a: &mut Vec<OsString>, plan: &GuestPlan) {
     for (flag, dest) in [
         ("--proc", "/proc"),
         ("--dev", "/dev"),
@@ -219,7 +260,11 @@ pub fn build_argv(
         a.push(src.into_os_string());
         a.push(dst.into_os_string());
     }
+}
 
+/// The runtime binary (read-only, with its command shims) and the broker
+/// socket the guest sends permission requests over.
+fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
     a.push("--dir".into());
     a.push(crate::GUEST_BIN_DIR.into());
     a.push("--ro-bind".into());
@@ -233,7 +278,11 @@ pub fn build_argv(
     a.push("--bind".into());
     a.push(plan.broker_socket.clone().into_os_string());
     a.push(crate::GUEST_BROKER_SOCK.into());
+}
 
+/// The store's guest home bound over the real home path (plus the `/root`
+/// symlink uid 0 resolves to), and the user's trusted/readable grants.
+fn push_home_and_grants(a: &mut Vec<OsString>, plan: &GuestPlan) {
     // Bound over the real home path, so the guest sees the store's copy at `~`,
     // never the user's files. `bwrap` won't create a mount point missing at the
     // top of a fresh root, so `--dir` creates the mountpoint first.
@@ -259,7 +308,11 @@ pub fn build_argv(
         a.push(dir.clone().into_os_string());
         a.push(dir.clone().into_os_string());
     }
+}
 
+/// `/dev/fuse` and the capability bounding set — both profile-gated escape
+/// hatches, never granted to a sandboxed guest.
+fn push_capabilities(a: &mut Vec<OsString>, plan: &GuestPlan) {
     if plan.profile.grants_fuse() {
         a.push("--dev-bind-try".into());
         a.push("/dev/fuse".into());
@@ -273,20 +326,25 @@ pub fn build_argv(
         a.push("--cap-add".into());
         a.push("ALL".into());
     }
+}
 
+/// The guest's whole environment: fixed variables, the locale/timezone
+/// carried from the supervisor, the plan's own extras, and finally
+/// unsetting the store path so nothing inside the namespace can reach it.
+fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan) {
     let setenv = |k: &str, v: &str, a: &mut Vec<OsString>| {
         a.push("--setenv".into());
         a.push(k.into());
         a.push(v.into());
     };
-    setenv("PATH", GUEST_PATH, &mut a);
-    setenv("HOME", &plan.home_mountpoint.to_string_lossy(), &mut a);
-    setenv("TERM", &plan.term, &mut a);
-    setenv("USER", "root", &mut a);
-    setenv("LOGNAME", "root", &mut a);
-    setenv("SHELL", &plan.shell.to_string_lossy(), &mut a);
-    setenv("QOS_USH_PROFILE", plan.profile.as_str(), &mut a);
-    setenv("QOS_USH_BROKER", crate::GUEST_BROKER_SOCK, &mut a);
+    setenv("PATH", GUEST_PATH, a);
+    setenv("HOME", &plan.home_mountpoint.to_string_lossy(), a);
+    setenv("TERM", &plan.term, a);
+    setenv("USER", "root", a);
+    setenv("LOGNAME", "root", a);
+    setenv("SHELL", &plan.shell.to_string_lossy(), a);
+    setenv("QOS_USH_PROFILE", plan.profile.as_str(), a);
+    setenv("QOS_USH_BROKER", crate::GUEST_BROKER_SOCK, a);
     // Carried across explicitly since the guest no longer inherits it: a shell
     // with no `LANG` answers in the C locale, breaking `ls`, `date`, and messages.
     for key in INHERITED_ENV {
@@ -296,16 +354,24 @@ pub fn build_argv(
         if value.is_empty() {
             continue;
         }
-        setenv(key, &value.to_string_lossy(), &mut a);
+        setenv(key, &value.to_string_lossy(), a);
     }
     for (k, v) in &plan.env {
-        setenv(k, v, &mut a);
+        setenv(k, v, a);
     }
     // The store holds the policy file and audit log; unreachable from inside the
     // namespace anyway, but leaving the variable set would follow a program out.
     a.push("--unsetenv".into());
     a.push(crate::store::STORE_ENV.into());
+}
 
+/// The seccomp filter — last of the sandbox flags, applied immediately
+/// before `bwrap` execs — followed by the guest's own argv.
+fn push_seccomp_and_command(
+    a: &mut Vec<OsString>,
+    plan: &GuestPlan,
+    seccomp_fd: Option<std::os::fd::RawFd>,
+) {
     // Placed last of the sandbox flags and applied by `bwrap` immediately before
     // it execs, after every mount above — this is what stops the supervisor's
     // need for `mount`/`unshare` from reaching anything the user runs. `bwrap`
@@ -325,7 +391,6 @@ pub fn build_argv(
             a.push(arg.into());
         }
     }
-    a
 }
 
 /// `remove_dir_all`, but restoring traversal permission as it descends:
@@ -565,6 +630,11 @@ fn clear_cloexec(file: std::fs::File) -> std::io::Result<std::fs::File> {
 /// Open the compiled filter and hand back a descriptor `bwrap` will inherit.
 /// `O_CLOEXEC` must come off so the number in the argv still names this file
 /// after `exec`; the `File` is returned too so the caller keeps it alive.
+///
+/// # Errors
+///
+/// Returns an error if `blob` can't be opened, or its close-on-exec flag
+/// can't be read or cleared.
 pub fn open_seccomp_fd(blob: &Path) -> std::io::Result<(std::fs::File, std::os::fd::RawFd)> {
     use std::os::fd::AsRawFd;
     let file = std::fs::File::open(blob)?;
@@ -592,19 +662,32 @@ pub fn exec(plan: &GuestPlan) -> std::io::Error {
     };
     let (_ns, ns_fd) = userns_for(plan);
     let argv = build_argv(plan, Some(fd), ns_fd);
-    let mut cmd = std::process::Command::new(&argv[0]);
-    cmd.args(&argv[1..]);
+    // `build_argv` always pushes "bwrap" first, so this never actually
+    // misses, but the return type has no way to say that.
+    let Some((program, rest)) = argv.split_first() else {
+        return std::io::Error::other("build_argv produced an empty argv");
+    };
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(rest);
     cmd.exec()
 }
 
 /// Spawn the guest as a child.
+///
+/// # Errors
+///
+/// Returns an error if the seccomp filter can't be opened, or the child
+/// process can't be spawned.
 pub fn spawn(plan: &GuestPlan) -> std::io::Result<std::process::Child> {
     let (_blob, fd) = open_seccomp_fd(&plan.seccomp_blob)?;
     let (_ns, ns_fd) = userns_for(plan);
     let argv = build_argv(plan, Some(fd), ns_fd);
-    std::process::Command::new(&argv[0])
-        .args(&argv[1..])
-        .spawn()
+    // `build_argv` always pushes "bwrap" first, so this never actually
+    // misses, but the return type has no way to say that.
+    let Some((program, rest)) = argv.split_first() else {
+        return Err(std::io::Error::other("build_argv produced an empty argv"));
+    };
+    std::process::Command::new(program).args(rest).spawn()
 }
 
 /// The prepared user namespace for a plan, if its profile asks for one; the

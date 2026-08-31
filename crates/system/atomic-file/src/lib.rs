@@ -45,11 +45,21 @@ use std::path::{Path, PathBuf};
 /// Replace `path`'s contents with `bytes`, durably. On success the file holds exactly
 /// `bytes`, and a crash at any point leaves either the previous contents or the new ones.
 /// The parent directory must already exist — see [`write_creating_parent`].
+///
+/// # Errors
+///
+/// Returns an error if the temp file can't be created/written/synced, or if the rename
+/// over `path` fails (including `EXDEV` if `path`'s parent is on a different filesystem
+/// than the temp file, or if `path`'s parent doesn't exist).
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_inner(path, bytes, None)
 }
 
 /// [`write`], creating the parent directory first when it is missing.
+///
+/// # Errors
+///
+/// Returns an error if the parent directory can't be created, or any error [`write`] documents.
 pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent()
         && !dir.as_os_str().is_empty()
@@ -63,6 +73,10 @@ pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// into place, so the file is never visible at its final path with wider permissions than
 /// intended — what a secret needs, since creating then `chmod`ing leaves a window where
 /// another user can open it.
+///
+/// # Errors
+///
+/// Returns any error [`write`] documents. `mode` is ignored (no-op) on non-Unix targets.
 pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     write_inner(path, bytes, Some(mode))
 }
@@ -168,7 +182,11 @@ mod tests {
             t.file_name().unwrap().to_string_lossy().starts_with('.'),
             "temp file should be hidden: {t:?}"
         );
-        assert_eq!(t.extension().unwrap(), "tmp");
+        assert!(
+            t.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp")),
+            "expected a .tmp extension, got {t:?}"
+        );
     }
 
     #[test]

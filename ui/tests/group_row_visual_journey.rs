@@ -59,6 +59,11 @@ fn make_group(id: u64, tabs: &[(u64, &str, AppKind)]) -> WindowGroup {
     WindowGroup::new(id, tabs, active, WindowWidth::Normal)
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "renderer.width/height are small fixed test-canvas dimensions, exactly \
+              representable in f32"
+)]
 fn render_row(renderer: &mut OffscreenRenderer, row: &mut GroupRow) -> Vec<u8> {
     let (w, h) = (renderer.width, renderer.height);
     let theme = Theme::dark();
@@ -94,10 +99,10 @@ fn render_row(renderer: &mut OffscreenRenderer, row: &mut GroupRow) -> Vec<u8> {
 }
 
 fn pixel_hash(buf: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in buf {
         h ^= u64::from(*b);
-        h = h.wrapping_mul(0x100000001b3);
+        h = h.wrapping_mul(0x100_0000_01b3);
     }
     h
 }
@@ -123,9 +128,7 @@ fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
 #[test]
 fn group_row_visual_journey_distinguishes_all_states() {
     let (w, h) = (960u32, 220u32);
-    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
-        r
-    } else {
+    let Some(mut renderer) = try_new_renderer(w, h) else {
         eprintln!("offscreen: no wgpu adapter available — skipping group-row journey");
         return;
     };
@@ -186,9 +189,7 @@ fn group_row_visual_journey_distinguishes_all_states() {
 #[test]
 fn group_row_maximized_paints_distinct_pixels_and_hides_siblings() {
     let (w, h) = (960u32, 220u32);
-    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
-        r
-    } else {
+    let Some(mut renderer) = try_new_renderer(w, h) else {
         eprintln!("offscreen: no wgpu adapter available — skipping maximize scene");
         return;
     };
@@ -247,9 +248,7 @@ fn group_row_maximized_paints_distinct_pixels_and_hides_siblings() {
 #[test]
 fn group_row_fresh_render_is_deterministic() {
     let (w, h) = (600u32, 200u32);
-    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
-        r
-    } else {
+    let Some(mut renderer) = try_new_renderer(w, h) else {
         eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
         return;
     };
@@ -273,6 +272,10 @@ fn group_row_fresh_render_is_deterministic() {
 /// Returns the taffy tree + root node so the caller can reuse them when
 /// dispatching events (child widgets read `taffy.children`/`taffy.layout`
 /// during event handling).
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "w/h are small fixed test-canvas dimensions, exactly representable in f32"
+)]
 fn lay_out(row: &mut GroupRow, w: u32, h: u32) -> (TaffyTree<()>, NodeId) {
     let theme = Theme::dark();
     let mut taffy = TaffyTree::<()>::new();
@@ -309,9 +312,7 @@ fn group_row_reorder_drop_indicator_is_visible_mid_drag() {
 
     // Wide enough that all three 600px groups + gaps fit on-screen.
     let (w, h) = (1900u32, 220u32);
-    let mut renderer = if let Some(r) = try_new_renderer(w, h) {
-        r
-    } else {
+    let Some(mut renderer) = try_new_renderer(w, h) else {
         eprintln!("offscreen: no wgpu adapter available — skipping reorder shot");
         return;
     };

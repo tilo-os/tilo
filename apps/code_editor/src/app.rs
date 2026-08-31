@@ -1394,7 +1394,7 @@ impl CodeApp {
 
     /// Drain a pending picker, once per frame. Never blocks: the portal's
     /// D-Bus round-trip and its host dialog live entirely on a worker thread.
-    fn poll_portal(&mut self, doc: &mut AutoCommit) {
+    fn poll_portal(&mut self, doc: &AutoCommit) {
         let Some(rx) = self.portal.as_ref() else {
             return;
         };
@@ -2797,12 +2797,7 @@ impl CodeApp {
 
     /// The unsaved-close prompt is modal: resolve it from a keypress or a
     /// click on one of its buttons. Always consumes the event.
-    fn handle_close_prompt(
-        &mut self,
-        event: &WindowEvent,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-    ) {
+    fn handle_close_prompt(&mut self, event: &WindowEvent, state: &AutoCommit, handled: &mut bool) {
         if let Some(choice) = Self::close_prompt_key(event) {
             self.resolve_close_prompt(state, choice);
         }
@@ -2911,7 +2906,7 @@ impl CodeApp {
     fn handle_global_shortcuts(
         &mut self,
         event: &WindowEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
@@ -2977,7 +2972,7 @@ impl CodeApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -2994,7 +2989,7 @@ impl CodeApp {
         self.find.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             handled,
@@ -3015,7 +3010,7 @@ impl CodeApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         taffy: &TaffyTree<()>,
         handled: &mut bool,
@@ -3040,7 +3035,7 @@ impl CodeApp {
             t.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 &tr,
                 &mut th,
@@ -3079,7 +3074,7 @@ impl CodeApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -3095,7 +3090,7 @@ impl CodeApp {
             self.sidebar.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -3125,7 +3120,7 @@ impl CodeApp {
             self.tabs.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -3140,7 +3135,7 @@ impl CodeApp {
             self.panel.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -3153,7 +3148,7 @@ impl CodeApp {
             self.editor.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -3576,7 +3571,7 @@ impl Widget for CodeApp {
             return;
         }
 
-        if self.handle_global_shortcuts(event, modifiers, state, handled) {
+        if self.handle_global_shortcuts(event, *modifiers, state, handled) {
             return;
         }
 
@@ -3593,7 +3588,7 @@ impl Widget for CodeApp {
         if self.handle_find_bar(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -3607,7 +3602,7 @@ impl Widget for CodeApp {
         // terminal, a click in its content region focuses the shell and routes
         // keyboard + pointer input to it (like clicking into any terminal); a
         // press elsewhere returns focus to the editor.
-        if self.handle_terminal_input(event, scale_factor, modifiers, state, taffy, handled) {
+        if self.handle_terminal_input(event, scale_factor, *modifiers, state, taffy, handled) {
             return;
         }
 
@@ -3615,7 +3610,7 @@ impl Widget for CodeApp {
         self.route_to_children(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -4574,7 +4569,7 @@ mod tests {
         assert!(app.close_prompt.is_some(), "the save prompt is raised");
 
         // Discarding closes it and drops the edits.
-        app.resolve_close_prompt(&mut doc, CloseChoice::Discard);
+        app.resolve_close_prompt(&doc, CloseChoice::Discard);
         assert_eq!(app.session.open.len(), before - 1, "the tab closed");
         assert!(app.close_prompt.is_none());
     }

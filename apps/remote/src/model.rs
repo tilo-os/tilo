@@ -280,7 +280,7 @@ impl ConnectionDraft {
             self.port
                 .trim()
                 .parse::<u16>()
-                .unwrap_or(self.kind.default_port())
+                .unwrap_or_else(|_| self.kind.default_port())
         };
         Connection {
             id,
@@ -474,11 +474,13 @@ mod tests {
 
     #[test]
     fn qos_draft_ignores_port() {
-        let mut d = ConnectionDraft::default();
-        d.kind = ConnectionKind::Qos;
-        d.name = "node".into();
-        d.host = "studio".into();
-        d.port = String::new();
+        let d = ConnectionDraft {
+            kind: ConnectionKind::Qos,
+            name: "node".into(),
+            host: "studio".into(),
+            port: String::new(),
+            ..Default::default()
+        };
         assert!(d.problems().is_empty());
         let built = d.build(Uuid::new_v4());
         assert_eq!(built.port, 0);

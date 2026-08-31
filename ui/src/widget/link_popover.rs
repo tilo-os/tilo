@@ -360,7 +360,7 @@ impl LinkPopover {
     /// The "No matches" empty state or the scrolled row window. Split out of
     /// `draw_overlay` to keep that under the line cap.
     fn draw_rows(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,

@@ -2,7 +2,7 @@
 //!
 //! The compositor submits a cue to a bounded worker; it never forks or waits
 //! on the render thread. libcanberra is preferred because it implements the
-//! freedesktop sound-theme lookup and routes through the current PipeWire/
+//! freedesktop sound-theme lookup and routes through the current `PipeWire`/
 //! Pulse session. A standard theme file plus `pw-play` is the compatible
 //! fallback. Missing audio support is reported as a capability, never faked.
 
@@ -80,7 +80,9 @@ fn play_one(backend: SoundBackend) {
     // A broken audio route must not strand the session worker or make final
     // compositor shutdown wait forever. Five seconds is far beyond a desktop
     // cue, while still bounding a wedged helper.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(5))
+        .unwrap_or_else(std::time::Instant::now);
     loop {
         match child.try_wait() {
             Ok(Some(_)) | Err(_) => break,

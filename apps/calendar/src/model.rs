@@ -229,6 +229,7 @@ impl Recurrence {
         }
     }
 
+    #[must_use]
     pub fn cycle(self) -> Self {
         match self {
             Recurrence::None => Recurrence::Daily,
@@ -485,7 +486,16 @@ pub fn seed_demo(today: NaiveDate) -> Model {
     let pid_personal = Uuid::new_v4();
     let pid_health = Uuid::new_v4();
 
-    let projects = vec![
+    Model {
+        projects: seed_demo_projects(pid_work, pid_personal, pid_health),
+        events: seed_demo_events(today, pid_work, pid_personal, pid_health),
+        tasks: seed_demo_tasks(today, pid_personal, pid_health, pid_work),
+    }
+}
+
+/// The three demo projects `seed_demo`'s events and tasks file under.
+fn seed_demo_projects(pid_work: Id, pid_personal: Id, pid_health: Id) -> Vec<Project> {
+    vec![
         Project {
             id: pid_work,
             name: "Work".into(),
@@ -504,19 +514,45 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             color: Palette::Red,
             order: 2,
         },
-    ];
+    ]
+}
 
-    let at = |date: NaiveDate, h: u32, m: u32| -> NaiveDateTime {
-        date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap())
-    };
+/// A literal (h, m) is always in range, so the fallback to midnight only
+/// matters if that ever stops being true — and even then a wrong demo time
+/// beats panicking the whole seed.
+fn seed_demo_at(date: NaiveDate, h: u32, m: u32) -> NaiveDateTime {
+    date.and_time(NaiveTime::from_hms_opt(h, m, 0).unwrap_or(NaiveTime::MIN))
+}
+
+/// The demo's full event list, in stable start-time display order. Split
+/// into two halves purely to keep each builder short.
+fn seed_demo_events(
+    today: NaiveDate,
+    pid_work: Id,
+    pid_personal: Id,
+    pid_health: Id,
+) -> Vec<Event> {
+    let mut events = seed_demo_events_early(today, pid_work, pid_personal, pid_health);
+    events.extend(seed_demo_events_later(today, pid_work, pid_personal));
+    // Stable display order: by start time within the model vector.
+    events.sort_by_key(|e| e.start);
+    events
+}
+
+/// Today's events: standup through quarterly planning.
+fn seed_demo_events_early(
+    today: NaiveDate,
+    pid_work: Id,
+    pid_personal: Id,
+    pid_health: Id,
+) -> Vec<Event> {
     let d = |delta: i64| today + Duration::days(delta);
-
-    let mut events = vec![
+    vec![
         Event {
             id: Uuid::new_v4(),
             title: "Team standup".into(),
-            start: at(today, 9, 30),
-            end: at(today, 9, 45),
+            start: seed_demo_at(today, 9, 30),
+            end: seed_demo_at(today, 9, 45),
             all_day: false,
             location: "Huddle room / Meet".into(),
             color: Palette::Indigo,
@@ -528,8 +564,8 @@ pub fn seed_demo(today: NaiveDate) -> Model {
         Event {
             id: Uuid::new_v4(),
             title: "Design review".into(),
-            start: at(today, 11, 0),
-            end: at(today, 12, 0),
+            start: seed_demo_at(today, 11, 0),
+            end: seed_demo_at(today, 12, 0),
             all_day: false,
             location: "Figma + Meet".into(),
             color: Palette::Violet,
@@ -541,8 +577,8 @@ pub fn seed_demo(today: NaiveDate) -> Model {
         Event {
             id: Uuid::new_v4(),
             title: "Lunch with Sam".into(),
-            start: at(today, 13, 0),
-            end: at(today, 14, 0),
+            start: seed_demo_at(today, 13, 0),
+            end: seed_demo_at(today, 14, 0),
             all_day: false,
             location: "Café Mori".into(),
             color: Palette::Emerald,
@@ -554,8 +590,8 @@ pub fn seed_demo(today: NaiveDate) -> Model {
         Event {
             id: Uuid::new_v4(),
             title: "Gym — strength".into(),
-            start: at(today, 18, 30),
-            end: at(today, 19, 30),
+            start: seed_demo_at(today, 18, 30),
+            end: seed_demo_at(today, 19, 30),
             all_day: false,
             location: "Northside".into(),
             color: Palette::Red,
@@ -567,8 +603,8 @@ pub fn seed_demo(today: NaiveDate) -> Model {
         Event {
             id: Uuid::new_v4(),
             title: "Quarterly planning".into(),
-            start: at(d(2), 10, 0),
-            end: at(d(2), 11, 30),
+            start: seed_demo_at(d(2), 10, 0),
+            end: seed_demo_at(d(2), 11, 30),
             all_day: false,
             location: "War room".into(),
             color: Palette::Indigo,
@@ -577,24 +613,31 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             calendar_id: None,
             project: Some(pid_work),
         },
+    ]
+}
+
+/// The rest of the week's events: dentist through payday rent.
+fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> Vec<Event> {
+    let d = |delta: i64| today + Duration::days(delta);
+    vec![
         Event {
             id: Uuid::new_v4(),
             title: "Dentist".into(),
-            start: at(d(3), 8, 0),
-            end: at(d(3), 8, 45),
+            start: seed_demo_at(d(3), 8, 0),
+            end: seed_demo_at(d(3), 8, 45),
             all_day: false,
             location: "Bright Smiles".into(),
             color: Palette::Blue,
             recurrence: Recurrence::None,
             reminder_min: Some(60),
             calendar_id: None,
-            project: Some(pid_health),
+            project: Some(pid_personal),
         },
         Event {
             id: Uuid::new_v4(),
             title: "Company offsite".into(),
-            start: at(d(4), 0, 0),
-            end: at(d(4), 23, 59),
+            start: seed_demo_at(d(4), 0, 0),
+            end: seed_demo_at(d(4), 23, 59),
             all_day: true,
             location: String::new(),
             color: Palette::Amber,
@@ -606,8 +649,8 @@ pub fn seed_demo(today: NaiveDate) -> Model {
         Event {
             id: Uuid::new_v4(),
             title: "Weekend hike".into(),
-            start: at(d(5), 7, 30),
-            end: at(d(5), 12, 0),
+            start: seed_demo_at(d(5), 7, 30),
+            end: seed_demo_at(d(5), 12, 0),
             all_day: false,
             location: "Ridge trail".into(),
             color: Palette::Emerald,
@@ -619,8 +662,8 @@ pub fn seed_demo(today: NaiveDate) -> Model {
         Event {
             id: Uuid::new_v4(),
             title: "1:1 with manager".into(),
-            start: at(d(-1), 15, 0),
-            end: at(d(-1), 15, 30),
+            start: seed_demo_at(d(-1), 15, 0),
+            end: seed_demo_at(d(-1), 15, 30),
             all_day: false,
             location: "Meet".into(),
             color: Palette::Indigo,
@@ -632,8 +675,8 @@ pub fn seed_demo(today: NaiveDate) -> Model {
         Event {
             id: Uuid::new_v4(),
             title: "Pay rent".into(),
-            start: at(d(7), 9, 0),
-            end: at(d(7), 9, 15),
+            start: seed_demo_at(d(7), 9, 0),
+            end: seed_demo_at(d(7), 9, 15),
             all_day: true,
             location: String::new(),
             color: Palette::Amber,
@@ -642,16 +685,32 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             calendar_id: None,
             project: Some(pid_personal),
         },
-    ];
-    // Stable display order: by start time within the model vector.
-    events.sort_by_key(|e| e.start);
+    ]
+}
 
+/// The demo's full task list: the top-level tasks plus the offsite-flights
+/// subtasks appended after them.
+fn seed_demo_tasks(today: NaiveDate, pid_personal: Id, pid_health: Id, pid_work: Id) -> Vec<Task> {
     // Captured so the offsite-flights task can own a few subtasks — this
-    // exercises the parent/child rendering + toggle path in the detail
-    // panel with real seeded data.
+    // exercises the parent/child rendering + toggle path in the detail panel
+    // with real seeded data.
     let flights = Uuid::new_v4();
+    let mut tasks = seed_demo_top_level_tasks(today, pid_work, pid_personal, pid_health, flights);
+    tasks.extend(seed_demo_flight_subtasks(today, pid_personal, flights));
+    tasks
+}
 
-    let mut tasks = vec![
+/// The seven top-level demo tasks (one of which, "Book flights for
+/// offsite", owns the subtasks `seed_demo_flight_subtasks` returns).
+fn seed_demo_top_level_tasks(
+    today: NaiveDate,
+    pid_work: Id,
+    pid_personal: Id,
+    pid_health: Id,
+    flights: Id,
+) -> Vec<Task> {
+    let d = |delta: i64| today + Duration::days(delta);
+    vec![
         Task {
             id: Uuid::new_v4(),
             title: "Prepare quarterly report".into(),
@@ -715,43 +774,42 @@ pub fn seed_demo(today: NaiveDate) -> Model {
             project: Some(pid_health),
             parent: None,
         },
-    ];
+    ]
+}
 
-    // Subtasks of "Book flights for offsite" — completing one strikes it
-    // through; the parent shows them in its detail panel.
-    tasks.push(Task {
-        id: Uuid::new_v4(),
-        title: "Compare airline prices".into(),
-        done: true,
-        due: Some(d(1)),
-        priority: Priority::None,
-        project: Some(pid_personal),
-        parent: Some(flights),
-    });
-    tasks.push(Task {
-        id: Uuid::new_v4(),
-        title: "Hold seats on the corporate card".into(),
-        done: false,
-        due: Some(d(2)),
-        priority: Priority::Low,
-        project: Some(pid_personal),
-        parent: Some(flights),
-    });
-    tasks.push(Task {
-        id: Uuid::new_v4(),
-        title: "Add itinerary to the calendar".into(),
-        done: false,
-        due: Some(d(3)),
-        priority: Priority::None,
-        project: Some(pid_personal),
-        parent: Some(flights),
-    });
-
-    Model {
-        projects,
-        events,
-        tasks,
-    }
+/// Subtasks of "Book flights for offsite" — completing one strikes it
+/// through; the parent shows them in its detail panel.
+fn seed_demo_flight_subtasks(today: NaiveDate, pid_personal: Id, flights: Id) -> Vec<Task> {
+    let d = |delta: i64| today + Duration::days(delta);
+    vec![
+        Task {
+            id: Uuid::new_v4(),
+            title: "Compare airline prices".into(),
+            done: true,
+            due: Some(d(1)),
+            priority: Priority::None,
+            project: Some(pid_personal),
+            parent: Some(flights),
+        },
+        Task {
+            id: Uuid::new_v4(),
+            title: "Hold seats on the corporate card".into(),
+            done: false,
+            due: Some(d(2)),
+            priority: Priority::Low,
+            project: Some(pid_personal),
+            parent: Some(flights),
+        },
+        Task {
+            id: Uuid::new_v4(),
+            title: "Add itinerary to the calendar".into(),
+            done: false,
+            due: Some(d(3)),
+            priority: Priority::None,
+            project: Some(pid_personal),
+            parent: Some(flights),
+        },
+    ]
 }
 
 #[cfg(test)]

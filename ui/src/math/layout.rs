@@ -1088,6 +1088,30 @@ fn child_steps(steps: &[(usize, Slot)], idx: usize, slot: Slot) -> Vec<(usize, S
     s
 }
 
+/// Find the gap nearest a click point `(px, py)` (content-local). Picks the
+/// row whose vertical band contains `py` if any, else the globally nearest
+/// gap by Euclidean distance to the gap's vertical extent.
+pub fn nearest_gap(gaps: &[Gap], px: f64, py: f64) -> Option<&Gap> {
+    let mut best: Option<(&Gap, f64)> = None;
+    for g in gaps {
+        let dy = if py < g.top {
+            g.top - py
+        } else if py > g.bottom {
+            py - g.bottom
+        } else {
+            0.0
+        };
+        let dx = (g.x - px).abs();
+        // Strongly prefer gaps whose band contains py, then nearest x.
+        let cost = dy * 4.0 + dx;
+        match best {
+            Some((_, c)) if c <= cost => {}
+            _ => best = Some((g, cost)),
+        }
+    }
+    best.map(|(g, _)| g)
+}
+
 #[cfg(test)]
 mod layout_tests {
     use super::super::{model::parse, tex::parse_tex};
@@ -1171,7 +1195,7 @@ mod layout_tests {
             },
         ];
         let laid = layout(&row, &mut tr, 24.0);
-        assert!(laid.height > f64::from(24.0 * 1.25));
+        assert!(laid.height > 24.0 * 1.25);
         let script_gaps: Vec<_> = laid
             .gaps
             .iter()
@@ -1199,8 +1223,8 @@ mod layout_tests {
             }],
         }];
         let laid = layout(&row, &mut tr, 22.0);
-        assert!(laid.height > f64::from(22.0 * 2.0));
-        assert!(laid.width > f64::from(22.0 * 3.0));
+        assert!(laid.height > 22.0 * 2.0);
+        assert!(laid.width > 22.0 * 3.0);
         assert!(
             laid.boxes
                 .iter()
@@ -1293,7 +1317,7 @@ mod layout_tests {
             .fold(f64::NEG_INFINITY, f64::max);
         let matrix_center = (matrix_top + matrix_bottom) * 0.5;
         assert!(
-            (delimiter_center - matrix_center).abs() < f64::from(22.0 * 0.2),
+            (delimiter_center - matrix_center).abs() < 22.0 * 0.2,
             "delimiter and matrix must share an optical centre"
         );
     }
@@ -1335,28 +1359,4 @@ mod layout_tests {
         assert!(accent.x <= base.x + base.w * 0.25);
         assert!(accent.x + accent.w >= base.x + base.w * 0.75);
     }
-}
-
-/// Find the gap nearest a click point `(px, py)` (content-local). Picks the
-/// row whose vertical band contains `py` if any, else the globally nearest
-/// gap by Euclidean distance to the gap's vertical extent.
-pub fn nearest_gap(gaps: &[Gap], px: f64, py: f64) -> Option<&Gap> {
-    let mut best: Option<(&Gap, f64)> = None;
-    for g in gaps {
-        let dy = if py < g.top {
-            g.top - py
-        } else if py > g.bottom {
-            py - g.bottom
-        } else {
-            0.0
-        };
-        let dx = (g.x - px).abs();
-        // Strongly prefer gaps whose band contains py, then nearest x.
-        let cost = dy * 4.0 + dx;
-        match best {
-            Some((_, c)) if c <= cost => {}
-            _ => best = Some((g, cost)),
-        }
-    }
-    best.map(|(g, _)| g)
 }

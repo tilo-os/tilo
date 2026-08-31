@@ -43,8 +43,8 @@ pub fn request_import() -> PortalChannel {
 /// Open the host Save dialog for the annotated document, seeding the filename
 /// field with `suggested_name`. The chosen destination comes back as
 /// [`PortalOutcome::Opened`].
-pub fn request_save(suggested_name: String) -> PortalChannel {
-    PickRequest::save("Save annotated PDF", "Save", &suggested_name)
+pub fn request_save(suggested_name: &str) -> PortalChannel {
+    PickRequest::save("Save annotated PDF", "Save", suggested_name)
         .thread_name("pdf-portal-save")
         .filter(pdf_filter())
         .send()

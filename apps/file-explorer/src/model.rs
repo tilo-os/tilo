@@ -241,6 +241,10 @@ pub fn sort_entries(sort_by: SortBy, sort_order: SortOrder, entries: &mut [Entry
     });
 }
 
+/// # Errors
+///
+/// Returns an error if `path` cannot be read as a directory (it does not
+/// exist, is not a directory, or is not readable).
 pub fn read_dir_sync(path: &Path) -> Result<Vec<Entry>, String> {
     // Only query the sync xattr when listing a workspace mount — an ordinary
     // directory has no such attribute, so skipping the per-entry `getxattr`

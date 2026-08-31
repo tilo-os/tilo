@@ -3765,25 +3765,26 @@ impl WorkspaceTree {
                 continue;
             };
             let ws_id = WorkspaceId::from(ws_id_raw);
-            let Some(strips_id) = Self::doc_obj(&self.doc, &ws_entry, "strips") else {
+            let Some(strip_list_id) = Self::doc_obj(&self.doc, &ws_entry, "strips") else {
                 continue;
             };
-            let strips_len = self.doc.length(&strips_id);
+            let strips_len = self.doc.length(&strip_list_id);
             for strip_pos in 0..strips_len {
-                let Some(strip_entry) = Self::doc_obj(&self.doc, &strips_id, strip_pos) else {
+                let Some(strip_entry) = Self::doc_obj(&self.doc, &strip_list_id, strip_pos) else {
                     continue;
                 };
                 let Some(strip_id_raw) = Self::doc_uint(&self.doc, &strip_entry, "id") else {
                     continue;
                 };
                 let strip_id = StripId::from(strip_id_raw);
-                let Some(groups_id) = Self::doc_obj(&self.doc, &strip_entry, "window_groups")
+                let Some(group_list_id) = Self::doc_obj(&self.doc, &strip_entry, "window_groups")
                 else {
                     continue;
                 };
-                let groups_len = self.doc.length(&groups_id);
+                let groups_len = self.doc.length(&group_list_id);
                 for group_pos in 0..groups_len {
-                    let Some(group_entry) = Self::doc_obj(&self.doc, &groups_id, group_pos) else {
+                    let Some(group_entry) = Self::doc_obj(&self.doc, &group_list_id, group_pos)
+                    else {
                         continue;
                     };
                     let Some(group_id) = Self::doc_uint(&self.doc, &group_entry, "id") else {
@@ -6569,10 +6570,7 @@ mod automerge_foundation_tests {
 
     /// The owner and capability ids the receiver's own **room document**
     /// records — not its cache, so a divergent fold can't hide behind it.
-    fn governance_in_room_doc(
-        tree: &mut WorkspaceTree,
-        room: RoomId,
-    ) -> (Option<String>, Vec<String>) {
+    fn governance_in_room_doc(tree: &WorkspaceTree, room: RoomId) -> (Option<String>, Vec<String>) {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let Some(doc) = tree.room_docs.get(&room) else {
             return (None, Vec::new());
@@ -6895,7 +6893,7 @@ mod automerge_foundation_tests {
                 // And the same read off the receiver's own copy of the
                 // replicated document, which is what it will hand to the
                 // next peer that asks.
-                let (doc_owner, doc_caps) = governance_in_room_doc(&mut host, room);
+                let (doc_owner, doc_caps) = governance_in_room_doc(&host, room);
                 assert_ne!(
                     doc_owner.as_deref(),
                     Some(ROOM_GUEST),
@@ -6969,7 +6967,7 @@ mod automerge_foundation_tests {
                 "round {round}: a guest's grant entered another guest's \
                  capability list; held {cap_ids:?}",
             );
-            let (doc_owner, doc_caps) = governance_in_room_doc(&mut carol, room);
+            let (doc_owner, doc_caps) = governance_in_room_doc(&carol, room);
             assert_eq!(
                 doc_owner.as_deref(),
                 Some(ROOM_OWNER),

@@ -415,6 +415,8 @@ impl ControlState for FrameBuilderControlState<'_> {
         let granted = tree.grant_in_workspace(ws_id, &user, cap).ok_or_else(|| {
             format!("{user} may not administer this room, so nothing was granted")
         })?;
+        // Nothing past this point touches the tree.
+        drop(tree);
         Ok(serde_json::json!({ "granted": granted, "grantor": user }))
     }
 
@@ -449,10 +451,18 @@ impl ControlState for FrameBuilderControlState<'_> {
             tree.doc_revoke_capability(ws_id, id);
             tree.flush_to_disk();
         }
+        // Nothing past this point touches the tree.
+        drop(tree);
         Ok(serde_json::json!({ "revoked": removed, "revoker": user, "id": id }))
     }
 
     /// Answer the in-app action gate for the live workspace.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "ws (borrowed from tree) is read all the way through building the final \
+                  Ok(...) response below; there's no earlier point to drop it without cloning \
+                  the workspace out for no real gain"
+    )]
     fn check_action(
         &self,
         actor: &str,
@@ -783,31 +793,16 @@ fn switch_action_event(action: SwitchAction, pressed: bool) -> WindowEvent {
     )
 }
 
-/// Grouped modifier flags for [`apply_modifier_mask`] — four bare `bool`
-/// parameters read ambiguous at the call site (`fn_params_excessive_bools`).
-struct ModifierFlags {
-    ctrl: bool,
-    shift: bool,
-    alt: bool,
-    logo: bool,
-}
-
-/// Apply a [`SetModifiers`] action by overwriting `ctx.modifiers` — the
-/// host reads the snapshot inline on the next chord. Mirrors `ShellDriver::set_modifiers`.
-fn apply_modifier_mask(ctx: &mut TestControlCtx, flags: ModifierFlags) {
-    let mut mask = ModifiersState::empty();
-    if flags.ctrl {
-        mask |= ModifiersState::CONTROL;
-    }
-    if flags.shift {
-        mask |= ModifiersState::SHIFT;
-    }
-    if flags.alt {
-        mask |= ModifiersState::ALT;
-    }
-    if flags.logo {
-        mask |= ModifiersState::SUPER;
-    }
+/// Apply a `ModifiersState` mask (already assembled by the caller from a
+/// [`SetModifiers`] action) by overwriting `ctx.modifiers` — the host reads
+/// the snapshot inline on the next chord. Mirrors `ShellDriver::set_modifiers`.
+///
+/// Takes the assembled mask rather than the four bare `ctrl`/`shift`/`alt`/
+/// `logo` bools directly — as either bool parameters or a bool-only struct,
+/// four independent flags read ambiguous at the call site
+/// (`fn_params_excessive_bools`/`struct_excessive_bools`); a `ModifiersState`
+/// bitmask is the type this data already is one call site away.
+fn apply_modifier_mask(ctx: &mut TestControlCtx, mask: ModifiersState) {
     ctx.modifiers = Modifiers::from(mask);
 }
 
@@ -852,7 +847,7 @@ fn execute_invoke_action(
     provider: &str,
     id: &str,
     args: &serde_json::Map<String, serde_json::Value>,
-    fb: &mut FrameBuilder,
+    fb: &FrameBuilder,
     ctx: &mut TestControlCtx,
 ) -> Option<InvokeFailure> {
     // Re-resolve rather than carry a handle from dispatch: the document is
@@ -993,16 +988,21 @@ fn execute_planned_action(
             alt,
             logo,
         } => {
+            let mut mask = ModifiersState::empty();
+            if *ctrl {
+                mask |= ModifiersState::CONTROL;
+            }
+            if *shift {
+                mask |= ModifiersState::SHIFT;
+            }
+            if *alt {
+                mask |= ModifiersState::ALT;
+            }
+            if *logo {
+                mask |= ModifiersState::SUPER;
+            }
             // Mutate the modifier snapshot directly — the host reads it on the next chord dispatch, no event needed.
-            apply_modifier_mask(
-                ctx,
-                ModifierFlags {
-                    ctrl: *ctrl,
-                    shift: *shift,
-                    alt: *alt,
-                    logo: *logo,
-                },
-            );
+            apply_modifier_mask(ctx, mask);
         }
         PlannedAction::Snapshot { path } => {
             // Re-render into a fresh OffscreenRenderer rather than tap a backend-cached
@@ -1102,6 +1102,12 @@ fn write_snapshot_png(
     let (w, h) = fb.viewport();
     // Viewport dimensions are always non-negative pixel counts; clamped rather
     // than a bare `as u32` so a pathological value saturates instead of wrapping.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [0.0, u32::MAX] just above, and .round()-ed first, so the cast to \
+                  u32 neither truncates a fraction nor loses a sign"
+    )]
     let (w, h) = (
         w.round().clamp(0.0, f64::from(u32::MAX)) as u32,
         h.round().clamp(0.0, f64::from(u32::MAX)) as u32,
@@ -1168,6 +1174,9 @@ fn write_snapshot_png(
         let Some(rgba) = slot.as_mut().map(|renderer| renderer.render_rgba(&scene)) else {
             return;
         };
+        // `rgba` is now an owned buffer with no tie to the renderer, so the
+        // mutex guard can go before the encode/write work below.
+        drop(slot);
         rgba
     };
     let file = match std::fs::File::create(path) {
@@ -1664,7 +1673,7 @@ fn collab_socket_is_live(path: &std::path::Path) -> bool {
 /// until this succeeds; reported at `error!` and surfaced via `chrome_state::set_collab_unavailable`.
 fn spawn_session_collab_broker(
     chrome: &crate::shell::chrome_state::Chrome,
-    peer_sync: &Option<Arc<crate::shell::network::ShellNetwork>>,
+    peer_sync: Option<&Arc<crate::shell::network::ShellNetwork>>,
 ) -> Option<crate::shell::collab_broker::BrokerHandle> {
     if let Err(e) = launcher::services::ensure_services_root() {
         tracing::error!(
@@ -1691,7 +1700,8 @@ fn spawn_session_collab_broker(
         return None;
     }
 
-    match crate::shell::collab_broker::spawn_native(capnp_path.clone(), peer_sync.clone()) {
+    let peer_sync_owned = peer_sync.cloned();
+    match crate::shell::collab_broker::spawn_native(capnp_path.clone(), &peer_sync_owned) {
         Ok(handle) => {
             tracing::info!(
                 "collab: typed broker listening on {} — peer_sync={}",
@@ -2072,7 +2082,8 @@ pub fn run() -> ! {
     // Lives in this process, not a unit of its own: a listener + fanout
     // table over `ShellNetwork` (the Iroh handle above), since the shell
     // already owns the network stack, identity and permissions. Held to the end of `run()` so the socket outlives every app and unlinks with the session.
-    let collab_broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), &peer_sync);
+    let collab_broker =
+        spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
     // failure only removes the advanced handoff, never core Settings controls.
@@ -2891,6 +2902,12 @@ pub fn run() -> ! {
             // The pointer as the input state knows it — "nowhere", not the origin, for
             // a session that never moved one; being level-triggered, `cursor()` would paint a cursor for nobody.
             relay.set_cursor_position(state.client_input.pointer_position());
+            #[allow(
+                clippy::significant_drop_tightening,
+                reason = "rooms and here are each fully chained from tree; nothing to drop \
+                          earlier without cloning the tree data out for no real gain, and the \
+                          block already ends right after both are computed"
+            )]
             let (rooms, here) = {
                 // Clone the tree handle and drop the `ChromeState` borrow before
                 // locking the tree — nothing here needs the RefCell guard itself.
@@ -3082,13 +3099,17 @@ pub fn run() -> ! {
             // not get password entry, notification counts, or unlock timing.
             if !session.is_locked() && frame_builder.host().projection_capture_requested() {
                 let viewport = frame_builder.viewport();
-                let _ = projection_capture.submit_scene(
-                    &scene,
-                    (
-                        viewport.0.round().clamp(1.0, f64::from(u32::MAX)) as u32,
-                        viewport.1.round().clamp(1.0, f64::from(u32::MAX)) as u32,
-                    ),
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "clamped to [1.0, u32::MAX] and .round()-ed first, so the casts to \
+                              u32 below neither truncate a fraction nor lose a sign"
+                )]
+                let clamped_viewport = (
+                    viewport.0.round().clamp(1.0, f64::from(u32::MAX)) as u32,
+                    viewport.1.round().clamp(1.0, f64::from(u32::MAX)) as u32,
                 );
+                let _ = projection_capture.submit_scene(&scene, clamped_viewport);
             }
             let t_submit_start = Instant::now();
             let mut render_thread_lost = false;
@@ -3316,7 +3337,7 @@ mod tests {
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
         let fb = FrameBuilder::new((800, 600));
         let chrome = fb.chrome_handle();
-        let broker = spawn_session_collab_broker(&chrome, &None)
+        let broker = spawn_session_collab_broker(&chrome, None)
             .expect("the compositor must be able to bind its own collab socket");
 
         assert!(
@@ -3362,11 +3383,11 @@ mod tests {
 
         let first_fb = FrameBuilder::new((800, 600));
         let first_chrome = first_fb.chrome_handle();
-        let first = spawn_session_collab_broker(&first_chrome, &None).expect("first broker binds");
+        let first = spawn_session_collab_broker(&first_chrome, None).expect("first broker binds");
 
         let second_fb = FrameBuilder::new((800, 600));
         let second_chrome = second_fb.chrome_handle();
-        let second = spawn_session_collab_broker(&second_chrome, &None);
+        let second = spawn_session_collab_broker(&second_chrome, None);
 
         assert!(
             second.is_none(),
@@ -3802,7 +3823,9 @@ mod tests {
             drop(chrome);
             let mut tree = tree_handle.write();
             let room = tree.active_workspace().expect("active workspace").room;
-            assert!(tree.note_peer_present(room, 0x51, "alice"));
+            let noted = tree.note_peer_present(room, 0x51, "alice");
+            drop(tree);
+            assert!(noted);
         }
         let state = FrameBuilderControlState { fb: &fb, doc: None };
         let tree = state.workspace_tree_json();
@@ -4089,9 +4112,16 @@ fn refresh_mhz_of(backend: &dyn crate::compositor::backend::Backend) -> Option<u
         .refresh_interval()
         .filter(|d| !d.is_zero())
         .map(|d| {
-            (1000.0 / d.as_secs_f64())
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to [0.0, u32::MAX] and .round()-ed first, so the cast to u32 \
+                          neither truncates a fraction nor loses a sign"
+            )]
+            let mhz = (1000.0 / d.as_secs_f64())
                 .round()
-                .clamp(0.0, f64::from(u32::MAX)) as u32
+                .clamp(0.0, f64::from(u32::MAX)) as u32;
+            mhz
         })
 }
 

@@ -146,7 +146,7 @@ fn build() -> (DataTable<Proc>, TaffyTree<()>, NodeId) {
     (table, taffy, tnode)
 }
 
-fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: &Path) -> Rect {
+fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: &Path) -> Option<Rect> {
     table.set_scroll_y(scroll_y);
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
@@ -178,25 +178,30 @@ fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: &Path) -> Rect {
     let mut r = OffscreenRenderer::new(WIDTH, h);
     r.render_png(&scene, theme.bg_app, out);
     println!("wrote {}", out.display());
-    let Some(thumb) = table.scrollbar_thumb() else {
-        panic!("bar live in internal-scroll mode");
-    };
-    thumb
+    table.scrollbar_thumb()
 }
 
 pub fn run(_args: &[String]) {
     let dir = std::env::var("DATA_TABLE_SHOTS_OUT")
         .unwrap_or_else(|_| "/tmp/data_table_shots".to_string());
-    std::fs::create_dir_all(&dir)
-        .unwrap_or_else(|e| panic!("failed to create output dir {dir}: {e}"));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("data_table: failed to create output dir {dir}: {e}");
+        return;
+    }
     let dir = PathBuf::from(dir);
 
     let (mut table, _taffy, _node) = build();
     let max = table.max_scroll_y();
     println!("max_scroll_y = {max}");
 
-    let top = shoot(&mut table, 0.0, &dir.join("data_table-top.png"));
-    let bottom = shoot(&mut table, max, &dir.join("data_table-bottom.png"));
+    let Some(top) = shoot(&mut table, 0.0, &dir.join("data_table-top.png")) else {
+        eprintln!("data_table: table has no scrollbar thumb in internal-scroll mode");
+        return;
+    };
+    let Some(bottom) = shoot(&mut table, max, &dir.join("data_table-bottom.png")) else {
+        eprintln!("data_table: table has no scrollbar thumb in internal-scroll mode");
+        return;
+    };
 
     // The thumb must reflect the offset: at 0 it sits at the track top; at
     // max it sits at the bottom (and strictly lower than at the top).

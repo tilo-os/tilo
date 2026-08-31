@@ -118,6 +118,7 @@ struct SwipeState {
 
 /// Where and for which message to draw [`Pane::draw_card_header`]: the
 /// message and its card's top-left origin + width.
+#[derive(Clone, Copy)]
 struct CardHeaderArgs<'a> {
     msg: &'a Message,
     x: f64,
@@ -128,6 +129,7 @@ struct CardHeaderArgs<'a> {
 /// Everything [`Pane::draw_list_row`] needs about one row that
 /// [`Pane::draw_list`] has already resolved: the message, its slot rect, its
 /// thread size, and its selection/hover/swipe state.
+#[derive(Clone, Copy)]
 struct ListRowArgs<'a> {
     msg: &'a Message,
     rect: Rect,
@@ -448,13 +450,13 @@ impl Pane {
         for (rect, hit) in &self.hits {
             match hit {
                 Hit::Account(ai) => {
-                    self.draw_sidebar_account_row(scene, t, tr, theme, &st, *rect, *ai, sb);
+                    Self::draw_sidebar_account_row(scene, t, tr, theme, &st, *rect, *ai, sb);
                 }
                 Hit::AddAccount => {
                     self.draw_sidebar_add_account_row(scene, t, tr, theme, *rect);
                 }
                 Hit::Folder(ai, f) => {
-                    self.draw_sidebar_folder_row(scene, t, tr, theme, &st, *rect, *ai, *f);
+                    Self::draw_sidebar_folder_row(scene, t, tr, theme, &st, *rect, *ai, *f);
                 }
                 _ => {}
             }
@@ -469,7 +471,6 @@ impl Pane {
         reason = "each parameter is a distinct piece of the row layout draw_sidebar already computed; bundling them would just move the same count into a field list"
     )]
     fn draw_sidebar_account_row(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -605,7 +606,6 @@ impl Pane {
         reason = "each parameter is a distinct piece of the row layout draw_sidebar already computed; bundling them would just move the same count into a field list"
     )]
     fn draw_sidebar_folder_row(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -841,7 +841,7 @@ impl Pane {
                 t,
                 tr,
                 theme,
-                ListRowArgs {
+                &ListRowArgs {
                     msg,
                     rect: *rect,
                     len,
@@ -864,7 +864,7 @@ impl Pane {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        args: ListRowArgs<'_>,
+        args: &ListRowArgs<'_>,
     ) {
         let ListRowArgs {
             msg,
@@ -874,8 +874,8 @@ impl Pane {
             hov,
             swipe_dx,
             now_min,
-        } = args;
-        let row = self.draw_list_row_frame(scene, t, tr, theme, rect, swipe_dx, selected, hov);
+        } = *args;
+        let row = Self::draw_list_row_frame(scene, t, tr, theme, rect, swipe_dx, selected, hov);
         self.draw_list_row_content(scene, t, tr, theme, row, msg, len, now_min);
     }
 
@@ -888,7 +888,6 @@ impl Pane {
         reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
     )]
     fn draw_list_row_frame(
-        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -952,10 +951,6 @@ impl Pane {
     /// Draw one row's content within its (already framed) `row` rect: unread
     /// dot, avatar, name/date, subject (+ thread-size badge), snippet, and
     /// star/attachment glyphs. Part of [`Self::draw_list_row`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_list_row_content(
         &self,
         scene: &mut Scene,
@@ -967,8 +962,29 @@ impl Pane {
         len: usize,
         now_min: i64,
     ) {
-        let c = &theme.tokens.colors;
         let unread = !msg.read;
+        self.draw_list_row_identity(scene, t, tr, theme, row, msg, unread, now_min);
+        self.draw_list_row_subject(scene, t, tr, theme, row, msg, len, unread);
+    }
+
+    /// The unread dot, avatar, sender name, and relative date of a list row.
+    /// Part of [`Self::draw_list_row_content`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
+    )]
+    fn draw_list_row_identity(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        msg: &Message,
+        unread: bool,
+        now_min: i64,
+    ) {
+        let c = &theme.tokens.colors;
         if unread {
             scene.fill(
                 Fill::NonZero,
@@ -1023,6 +1039,28 @@ impl Pane {
             t * Affine::translate((right - f64::from(dw), row.y0 + 13.0)),
             None,
         );
+    }
+
+    /// The subject line (+ thread-size badge), snippet, and star/attachment
+    /// glyphs of a list row. Part of [`Self::draw_list_row_content`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
+    )]
+    fn draw_list_row_subject(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        msg: &Message,
+        len: usize,
+        unread: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        let text_x = row.x0 + 70.0;
+        let right = row.x1 - 14.0;
 
         let subj_y = row.y0 + 32.0;
         let subj_col = if unread { c.text_primary } else { c.neutral[7] };
@@ -1096,6 +1134,10 @@ impl Pane {
 
     /// The reader's action bar: Reply/Archive/Delete/Star/Mark-unread, icon
     /// only when `compact`, icon + label otherwise. Part of [`Self::draw_reader`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct piece of the reader state draw_reader already resolved; bundling them would just move the same count into a field list"
+    )]
     fn draw_reader_action_bar(
         &self,
         scene: &mut Scene,
@@ -1183,10 +1225,57 @@ impl Pane {
         presence: &PresenceCtx,
     ) {
         let c = &theme.tokens.colors;
-        let mut chip_hits: Vec<(Rect, MessageId, usize)> = Vec::new();
-        let st = self.shared.borrow();
         let rr = self.rect;
         fill_rect(scene, t, rr, c.surfaces.raised);
+
+        let Some((head_id, head_html, webview_rect)) =
+            self.draw_reader_thread(scene, t, tr, theme, rr)
+        else {
+            return;
+        };
+
+        // The HTML body view + its remote-images toggle, now that the shared
+        // borrow is released (they need `&mut self`).
+        self.html_view_rect = None;
+        self.html_toggle_rect = None;
+        if let (Some(rect), Some(html)) = (webview_rect, head_html) {
+            // Switching to a different message re-blocks remote content
+            // (keyed on the shown id, not `html_key`, which the toggle
+            // clears to force a reload of the *same* message).
+            if self.html_shown_id != Some(head_id) {
+                self.html_load_remote = false;
+                self.html_shown_id = Some(head_id);
+            }
+            self.load_html_body(head_id, &html);
+            let view = self.ensure_html_view();
+            view.set_viewport(rect, 1.0);
+            view.draw(scene, t, tr, theme, presence);
+            self.html_view_rect = Some(rect);
+            self.draw_remote_toggle(scene, t, tr, theme, rect);
+        } else {
+            // Plain-text mail this frame — drop any stale load so returning
+            // to an HTML mail reloads fresh (and blocked again by default).
+            self.html_key = None;
+            self.html_shown_id = None;
+        }
+    }
+
+    /// The message-thread portion of [`Self::draw_reader`]: the empty-state
+    /// placeholder, the action bar, the subject/meta header, and each message
+    /// card. Returns the head message's id, its HTML body (if any), and the
+    /// rect reserved for the sandboxed HTML view, or `None` if there is no
+    /// selected thread to draw. Part of [`Self::draw_reader`].
+    fn draw_reader_thread(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rr: Rect,
+    ) -> Option<(MessageId, Option<String>, Option<Rect>)> {
+        let c = &theme.tokens.colors;
+        let mut chip_hits: Vec<(Rect, MessageId, usize)> = Vec::new();
+        let st = self.shared.borrow();
 
         let msgs = st.selected_thread_messages();
         if msgs.is_empty() {
@@ -1209,7 +1298,7 @@ impl Pane {
                 t * Affine::translate((cx - f64::from(w) / 2.0, cy)),
                 None,
             );
-            return;
+            return None;
         }
 
         // Action bar (header strip).
@@ -1223,7 +1312,7 @@ impl Pane {
         let Some(head) = msgs.last() else {
             // Unreachable: `msgs.is_empty()` returned above — but bail rather
             // than panic if that invariant is ever violated.
-            return;
+            return None;
         };
         let content_x = rr.x0 + 24.0;
         let content_w = (rr.width() - 48.0) as f32;
@@ -1287,7 +1376,7 @@ impl Pane {
                     t,
                     tr,
                     theme,
-                    CardHeaderArgs {
+                    &CardHeaderArgs {
                         msg: m,
                         x: content_x,
                         y,
@@ -1322,31 +1411,7 @@ impl Pane {
         }
         self.reader_attachment_hits = chip_hits;
         drop(st);
-
-        // The HTML body view + its remote-images toggle, now that the shared
-        // borrow is released (they need `&mut self`).
-        self.html_view_rect = None;
-        self.html_toggle_rect = None;
-        if let (Some(rect), Some(html)) = (webview_rect, head_html) {
-            // Switching to a different message re-blocks remote content
-            // (keyed on the shown id, not `html_key`, which the toggle
-            // clears to force a reload of the *same* message).
-            if self.html_shown_id != Some(head_id) {
-                self.html_load_remote = false;
-                self.html_shown_id = Some(head_id);
-            }
-            self.load_html_body(head_id, &html);
-            let view = self.ensure_html_view();
-            view.set_viewport(rect, 1.0);
-            view.draw(scene, t, tr, theme, presence);
-            self.html_view_rect = Some(rect);
-            self.draw_remote_toggle(scene, t, tr, theme, rect);
-        } else {
-            // Plain-text mail this frame — drop any stale load so returning
-            // to an HTML mail reloads fresh (and blocked again by default).
-            self.html_key = None;
-            self.html_shown_id = None;
-        }
+        Some((head_id, head_html, webview_rect))
     }
 
     /// Draw the "remote content blocked / loaded" pill under an HTML body and
@@ -1450,14 +1515,14 @@ impl Pane {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        args: CardHeaderArgs<'_>,
+        args: &CardHeaderArgs<'_>,
     ) -> f64 {
         let CardHeaderArgs {
             msg,
             x: cx,
             y: cy,
             width,
-        } = args;
+        } = *args;
         let c = &theme.tokens.colors;
         let card_x1 = cx + f64::from(width);
         let st = self.shared.borrow();
@@ -1641,6 +1706,12 @@ impl Pane {
         yy + 30.0
     }
 
+    /// Draw one message card in the reader thread (header + body or a
+    /// collapsed preview line) and return the y past it.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each parameter is a distinct piece of the thread layout draw_reader already resolved; bundling them would just move the same count into a field list"
+    )]
     fn draw_message_card(
         &self,
         scene: &mut Scene,
@@ -1661,7 +1732,7 @@ impl Pane {
             t,
             tr,
             theme,
-            CardHeaderArgs {
+            &CardHeaderArgs {
                 msg,
                 x: cx,
                 y: cy,
@@ -1729,7 +1800,7 @@ impl Pane {
 
     /// The sidebar's left-click routing: compose, per-account settings/
     /// toggle/select, and folder select. Part of [`Self::on_left_press`].
-    fn on_left_press_sidebar(&mut self, doc: &mut AutoCommit, pt: Point, handled: &mut bool) {
+    fn on_left_press_sidebar(&self, doc: &mut AutoCommit, pt: Point, handled: &mut bool) {
         let Some(hit) = self.hit_at(pt) else {
             return;
         };
@@ -1945,7 +2016,7 @@ impl Pane {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -1966,7 +2037,7 @@ impl Pane {
             view.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -1991,7 +2062,7 @@ impl Pane {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -2008,7 +2079,7 @@ impl Pane {
                 inp.handle_event(
                     event,
                     scale_factor,
-                    modifiers,
+                    &modifiers,
                     state,
                     path,
                     handled,
@@ -2138,7 +2209,7 @@ impl Widget for Pane {
         self.forward_html_view_event(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -2153,7 +2224,7 @@ impl Widget for Pane {
         if self.handle_search_keyboard(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,

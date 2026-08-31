@@ -16,6 +16,10 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::cast_precision_loss,
+    reason = "test viewport dims are small hard-coded literals (a few hundred px), always exactly representable in f32"
+)]
 
 use std::collections::HashMap;
 

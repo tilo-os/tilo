@@ -2023,40 +2023,57 @@ mod tests {
         assert!(Widget::opening(host), "its place is still being held");
     }
 
-    #[test]
-    fn maximize_click_on_tab_pill_toggles_window_group_maximized() {
+    // Common `handle_event` shape shared by every dispatch in the
+    // maximize-click tests below (fixed scale factor, default modifiers);
+    // returns whether the event was claimed.
+    fn dispatch(
+        g: &mut WindowGroup,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        root_id: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        group_node: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let mut handled = false;
+        g.handle_event(
+            event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            state,
+            root_id,
+            &mut handled,
+            focus_target,
+            group_node,
+            taffy,
+        );
+        handled
+    }
+
+    /// Build a `WindowGroup`, lay it out, and hover-open a tab pill's
+    /// maximize chip. Returns everything a maximize-click test needs plus
+    /// `moved`/`press` events aimed at the now-visible chip. Split out of
+    /// `maximize_click_on_tab_pill_toggles_window_group_maximized` to keep
+    /// that under the line cap.
+    #[allow(
+        clippy::type_complexity,
+        reason = "test fixture bundling everything one maximize-click test needs; a named struct would only move the same fields, not reduce them"
+    )]
+    fn open_maximize_chip() -> (
+        WindowGroup,
+        TaffyTree<()>,
+        NodeId,
+        AutoCommit,
+        ObjId,
+        Option<NodeId>,
+        WindowEvent,
+        WindowEvent,
+    ) {
         use crate::theme::Theme;
         use std::collections::HashMap;
         use taffy::Style;
         use taffy::prelude::TaffyMaxContent;
         use winit::event::{ElementState, MouseButton};
-
-        // Common `handle_event` shape shared by every dispatch below
-        // (fixed scale factor, default modifiers); returns whether the
-        // event was claimed.
-        fn dispatch(
-            g: &mut WindowGroup,
-            event: &WindowEvent,
-            state: &mut AutoCommit,
-            root_id: &ObjId,
-            focus_target: &mut Option<NodeId>,
-            group_node: NodeId,
-            taffy: &TaffyTree<()>,
-        ) -> bool {
-            let mut handled = false;
-            g.handle_event(
-                event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                state,
-                root_id,
-                &mut handled,
-                focus_target,
-                group_node,
-                taffy,
-            );
-            handled
-        }
 
         let mut g = make_group();
         assert!(!g.maximized, "fresh group must start non-maximized");
@@ -2108,6 +2125,23 @@ mod tests {
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
+
+        (
+            g,
+            taffy,
+            group_node,
+            state,
+            root_id,
+            focus_target,
+            moved,
+            press,
+        )
+    }
+
+    #[test]
+    fn maximize_click_on_tab_pill_toggles_window_group_maximized() {
+        let (mut g, taffy, group_node, mut state, root_id, mut focus_target, moved, press) =
+            open_maximize_chip();
 
         // Seed last_cursor on the icon — the bar's press arm uses the
         // cached cursor for its fresh hit-test.

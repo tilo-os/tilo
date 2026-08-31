@@ -153,6 +153,10 @@ impl SignedOp {
 
     /// Canonical bytes the author signs to mint this envelope — the struct
     /// minus `signature`, stable regardless of when signing happens.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if canonicalising the view fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         #[derive(Serialize)]
         struct View<'a> {

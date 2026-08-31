@@ -59,19 +59,22 @@ pub fn parse_lsblk(output: &str) -> Vec<Disk> {
         }
         // NAME SIZE [MODEL ...] TYPE — at minimum NAME, SIZE, TYPE.
         let tokens: Vec<&str> = line.split_whitespace().collect();
-        if tokens.len() < 3 {
+        let Some((&ty, rest)) = tokens.split_last() else {
             continue;
-        }
-        let ty = *tokens.last().unwrap();
+        };
         if ty != "disk" {
             continue;
         }
-        let name = tokens[0].to_string();
-        let size = tokens[1].to_string();
-        // Middle tokens (if any) are the model; empty when there are
-        // exactly three tokens.
-        let model = tokens[2..tokens.len() - 1].join(" ");
-        disks.push(Disk { name, size, model });
+        // Middle tokens (if any) are the model; empty when `rest` holds
+        // exactly NAME and SIZE.
+        let [name, size, model_tokens @ ..] = rest else {
+            continue;
+        };
+        disks.push(Disk {
+            name: (*name).to_string(),
+            size: (*size).to_string(),
+            model: model_tokens.join(" "),
+        });
     }
     disks
 }

@@ -72,6 +72,12 @@ impl HostError {
 /// until the application exits, relaying its exit status — the same
 /// shape as [`crate::run::run_with`], so the compositor's launch worker
 /// treats both kinds of launch identically.
+///
+/// # Errors
+///
+/// Returns [`HostError::Plan`] if `desktop_id` cannot be resolved, or
+/// [`HostError::Spawn`] if the resolved program cannot be spawned or waited
+/// on.
 pub fn run_host(desktop_id: &str, env: &LaunchEnv) -> Result<ExitStatus, HostError> {
     let launch = plan_host(desktop_id, env)?;
     spawn(&launch)
@@ -81,12 +87,22 @@ pub fn run_host(desktop_id: &str, env: &LaunchEnv) -> Result<ExitStatus, HostErr
 /// launch would use, without starting anything — so "what will this
 /// actually run, and with what?" is answerable before it runs, the
 /// question that matters most for a launch with no sandbox around it.
+///
+/// # Errors
+///
+/// Returns [`HostError::Plan`] if `desktop_id` does not resolve to an
+/// installed `.desktop` entry.
 pub fn plan_host(desktop_id: &str, env: &LaunchEnv) -> Result<HostLaunch, HostError> {
     Ok(plan_by_id(desktop_id, env)?)
 }
 
 /// Run an already-planned launch. Split out so a caller that built the
 /// plan itself doesn't have to resolve the entry twice.
+///
+/// # Errors
+///
+/// Returns [`HostError::Spawn`] if `launch`'s program cannot be spawned or
+/// waited on.
 pub fn spawn(launch: &HostLaunch) -> Result<ExitStatus, HostError> {
     // Deliberately on stderr and unconditional: a launch that skips the
     // sandbox says so where the compositor's log, journal and a

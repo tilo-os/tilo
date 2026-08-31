@@ -34,6 +34,7 @@ use std::os::fd::IntoRawFd;
 use std::rc::Rc;
 
 use capnp::capability::Promise;
+use capnp::message::ReaderOptions;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use tokio::net::UnixStream;
 use tokio::task::LocalSet;
@@ -61,6 +62,10 @@ struct Captures {
 }
 
 type SharedCaptures = Rc<RefCell<Captures>>;
+
+/// Pre-seeded `(op bytes, from-user attribution)` pairs shared between a
+/// `FakeChannel` and the `FakeOpStream` it hands out.
+type OpBacklog = Rc<RefCell<Vec<(Vec<u8>, String)>>>;
 
 // fake presence stream
 
@@ -274,7 +279,7 @@ impl presence_handle::Server for FakePresence {
 // fake op stream (for `subscribe`) — attribution round-trip
 
 struct FakeOpStream {
-    backlog: Rc<RefCell<Vec<(Vec<u8>, String)>>>,
+    backlog: OpBacklog,
 }
 
 impl stream::Server for FakeOpStream {
@@ -324,18 +329,18 @@ impl context_stream::Server for FakeContextStream {
         {
             let mut collabs = ctx
                 .reborrow()
-                .init_collaborators(seed.collaborators.len() as u32);
+                .init_collaborators(u32::try_from(seed.collaborators.len()).unwrap());
             for (i, (uid, name, color)) in seed.collaborators.iter().enumerate() {
-                let mut c = collabs.reborrow().get(i as u32);
+                let mut c = collabs.reborrow().get(u32::try_from(i).unwrap());
                 c.set_user_id(uid);
                 c.set_display_name(name);
                 c.set_color(*color);
             }
         }
         {
-            let mut perms = ctx.init_permissions(seed.permissions.len() as u32);
+            let mut perms = ctx.init_permissions(u32::try_from(seed.permissions.len()).unwrap());
             for (i, p) in seed.permissions.iter().enumerate() {
-                perms.set(i as u32, p.as_str());
+                perms.set(u32::try_from(i).unwrap(), p.as_str());
             }
         }
         Promise::ok(())
@@ -346,7 +351,7 @@ impl context_stream::Server for FakeContextStream {
 
 struct FakeChannel {
     captures: SharedCaptures,
-    op_backlog: Rc<RefCell<Vec<(Vec<u8>, String)>>>,
+    op_backlog: OpBacklog,
     presence_backlog: Rc<RefCell<Vec<SeedPresence>>>,
     cursor_backlog: Rc<RefCell<Vec<(String, f32, f32)>>>,
     context_backlog: Rc<RefCell<Vec<SeedContext>>>,
@@ -460,9 +465,11 @@ impl channel_handle::Server for FakeChannel {
             });
         let mut batch: scrollback_batch::Builder = results.get().init_batch();
         {
-            let mut ops = batch.reborrow().init_ops(seed.ops.len() as u32);
+            let mut ops = batch
+                .reborrow()
+                .init_ops(u32::try_from(seed.ops.len()).unwrap());
             for (i, op) in seed.ops.iter().enumerate() {
-                ops.set(i as u32, op);
+                ops.set(u32::try_from(i).unwrap(), op);
             }
         }
         batch.set_earliest_seq(seed.earliest_seq);
@@ -503,7 +510,7 @@ impl collab_service::Server for FakeBroker {
     }
 }
 
-async fn stand_up_client(broker: FakeBroker) -> CollabClient {
+fn stand_up_client(broker: FakeBroker) -> CollabClient {
     let (server_side, client_side) = UnixStream::pair().unwrap();
 
     let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
@@ -512,7 +519,7 @@ async fn stand_up_client(broker: FakeBroker) -> CollabClient {
         server_read.compat(),
         server_write.compat_write(),
         rpc_twoparty_capnp::Side::Server,
-        Default::default(),
+        ReaderOptions::default(),
     ));
     let server_rpc = RpcSystem::new(server_network, Some(broker_client.client));
     tokio::task::spawn_local(async move {
@@ -572,7 +579,7 @@ async fn presence_variants_publish_and_stream_round_trip() {
                 context_backlog: Vec::new(),
                 scrollback_response: None,
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("c", b"id").await.unwrap();
             let presence = channel.presence().await.unwrap();
 
@@ -637,7 +644,7 @@ async fn backward_compat_publish_cursor_and_cursor_stream_still_work() {
                 context_backlog: Vec::new(),
                 scrollback_response: None,
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("c", b"id").await.unwrap();
             let presence = channel.presence().await.unwrap();
 
@@ -665,13 +672,13 @@ async fn subscribe_context_delivers_typed_snapshot() {
             let context_backlog = vec![
                 SeedContext {
                     collaborators: vec![
-                        ("alice".into(), "Alice".into(), 0x00ff0000),
+                        ("alice".into(), "Alice".into(), 0x00ff_0000),
                         ("bob".into(), "Bob".into(), 0x00_00ff00),
                     ],
                     permissions: vec!["write".into(), "share".into()],
                 },
                 SeedContext {
-                    collaborators: vec![("alice".into(), "Alice".into(), 0x00ff0000)],
+                    collaborators: vec![("alice".into(), "Alice".into(), 0x00ff_0000)],
                     permissions: vec!["write".into()],
                 },
             ];
@@ -683,7 +690,7 @@ async fn subscribe_context_delivers_typed_snapshot() {
                 context_backlog,
                 scrollback_response: None,
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("c", b"id").await.unwrap();
             let stream = channel.subscribe_context().await.unwrap();
 
@@ -691,7 +698,7 @@ async fn subscribe_context_delivers_typed_snapshot() {
             assert_eq!(s1.collaborators.len(), 2);
             assert_eq!(s1.collaborators[0].user_id, "alice");
             assert_eq!(s1.collaborators[0].display_name, "Alice");
-            assert_eq!(s1.collaborators[0].color, 0x00ff0000);
+            assert_eq!(s1.collaborators[0].color, 0x00ff_0000);
             assert_eq!(s1.collaborators[1].user_id, "bob");
             assert_eq!(s1.permissions, vec!["write", "share"]);
 
@@ -720,7 +727,7 @@ async fn op_stream_carries_from_user_id() {
                 context_backlog: Vec::new(),
                 scrollback_response: None,
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("c", b"id").await.unwrap();
             let stream = channel.subscribe().await.unwrap();
 
@@ -749,7 +756,7 @@ async fn legacy_unsigned_paths_reach_broker() {
                 context_backlog: Vec::new(),
                 scrollback_response: None,
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("c", b"id").await.unwrap();
 
             channel.send_unsigned_snapshot(b"full-doc").await.unwrap();
@@ -792,7 +799,7 @@ async fn fetch_scrollback_round_trip_full_batch() {
                 context_backlog: Vec::new(),
                 scrollback_response,
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("c", b"id").await.unwrap();
 
             let batch = channel.fetch_scrollback(50, 25).await.unwrap();
@@ -824,7 +831,7 @@ async fn fetch_scrollback_empty_done_batch_decodes() {
                 context_backlog: Vec::new(),
                 scrollback_response: None,
             };
-            let collab = stand_up_client(broker).await;
+            let collab = stand_up_client(broker);
             let channel = collab.join_channel("c", b"id").await.unwrap();
 
             let batch = channel.fetch_scrollback(0, 10).await.unwrap();

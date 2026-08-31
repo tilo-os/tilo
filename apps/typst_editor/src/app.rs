@@ -121,6 +121,13 @@ enum TbAction {
     ToggleMenu,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool tracks an independent piece of ephemeral view/drag \
+              state (menu open, which demo scenario is pending, which drag \
+              is live); grouping them into an enum would not read more \
+              clearly at call sites like `self.dragging_divider`"
+)]
 pub struct TypstApp {
     // --- compilation backend ---
     parts: Arc<WorldParts>,
@@ -235,7 +242,7 @@ impl TypstApp {
     /// The live editor: its document library is the user's real `.typ` files on
     /// disk. If none exist yet it opens a single blank starter document.
     pub fn new() -> Self {
-        Self::from_library(Self::save_dir())
+        Self::from_library(Self::save_dir().as_deref())
     }
 
     /// A hermetic instance seeded with the bundled example documents. Used by
@@ -255,9 +262,9 @@ impl TypstApp {
 
     /// Build the live library from `dir`: every `.typ` file found there, or a
     /// single blank starter when the directory is empty or absent.
-    fn from_library(dir: Option<PathBuf>) -> Self {
+    fn from_library(dir: Option<&std::path::Path>) -> Self {
         let mut documents = Vec::new();
-        if let Some(dir) = dir.as_ref() {
+        if let Some(dir) = dir {
             documents = Self::scan_dir(dir);
         }
         if documents.is_empty() {
@@ -369,9 +376,14 @@ impl TypstApp {
         if let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "source") {
             id
         } else {
+            // `put_object` on the document root only errors for conditions
+            // this call never hits (a foreign actor id, or exceeding the
+            // object-nesting depth); fall back to `ROOT` itself rather than
+            // panicking — a caller that then fails to read/splice a "source"
+            // Text degrades to a no-op instead of crashing the app.
             let id = doc
                 .put_object(&ROOT, "source", ObjType::Text)
-                .expect("put_object source on root never fails");
+                .unwrap_or_else(|_| ROOT);
             let seed = self
                 .documents
                 .get(self.current)
@@ -396,7 +408,14 @@ impl TypstApp {
             return;
         }
         self.current = idx.min(self.documents.len() - 1);
-        let src = self.documents[self.current].source.clone();
+        // `self.current` was just clamped to a valid index above; `.get()`
+        // still avoids indexing so a future refactor can't turn this into a
+        // panic.
+        let Some(entry) = self.documents.get(self.current) else {
+            return;
+        };
+        let src = entry.source.clone();
+        let name = entry.name.clone();
         if let Some(id) = self.source_id.clone() {
             // Diff-splice only the changed span instead of delete+reinsert of
             // the whole buffer — switching documents shares the common prefix/
@@ -407,7 +426,6 @@ impl TypstApp {
         // Keep focus consistent with the visible pane in compact mode.
         self.editor.focused = !(self.compact && matches!(self.compact_view, CompactPane::Preview));
         self.preview.fit_width();
-        let name = self.documents[self.current].name.clone();
         self.set_flash(format!("Opened {name}"));
     }
 
@@ -462,9 +480,9 @@ impl TypstApp {
         self.last_source = source.to_string();
     }
 
-    fn force_recompile(&mut self, doc: &mut AutoCommit) {
+    fn force_recompile(&mut self, doc: &AutoCommit) {
         let src = self.read_source(doc);
-        self.source_cache = src.clone();
+        self.source_cache.clone_from(&src);
         self.request_compile(&src);
         self.set_flash("Recompiling…".into());
     }
@@ -497,7 +515,7 @@ impl TypstApp {
 
     /// Core: write the current source to `path`. Split out so the portal drain
     /// and tests drive it against a real file.
-    fn save_typ_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+    fn save_typ_to(&mut self, doc: &AutoCommit, path: &std::path::Path) {
         let src = self.read_source(doc);
         match std::fs::write(path, src) {
             Ok(()) => {
@@ -541,11 +559,7 @@ impl TypstApp {
 
     /// Compile the current source to a PDF and write it to the exact `path`.
     /// Returns an error string on a compile failure or an I/O error.
-    fn export_pdf_to_path(
-        &mut self,
-        doc: &mut AutoCommit,
-        path: &std::path::Path,
-    ) -> Result<(), String> {
+    fn export_pdf_to_path(&self, doc: &AutoCommit, path: &std::path::Path) -> Result<(), String> {
         let src = self.read_source(doc);
         let bytes = compile::compile_pdf(&self.parts, &src).map_err(|diags| {
             let errs = diags
@@ -994,18 +1008,18 @@ impl TypstApp {
             actions.push(("Export PDF", TbAction::ExportPdf));
         }
         for (lbl, act) in actions {
-            let w = Self::pill_width(tr, lbl);
+            let pill_w = Self::pill_width(tr, lbl);
             self.paint_pill(
                 scene,
                 t,
                 tr,
                 theme,
-                Rect::new(x, y, x + w, y + PILL_H),
+                Rect::new(x, y, x + pill_w, y + PILL_H),
                 lbl,
                 act,
                 false,
             );
-            x += w + 8.0;
+            x += pill_w + 8.0;
         }
 
         // --- right group: zoom + problems (placed from the right edge) ---
@@ -1015,10 +1029,10 @@ impl TypstApp {
 
         // zoom cluster: [ − ] [ 100% ] [ + ] [ Fit ]  (right to left)
         for (lbl, act) in [("Fit", TbAction::Fit), ("+", TbAction::ZoomIn)] {
-            let w = Self::pill_width(tr, lbl);
-            let r = Rect::new(rx - w, y, rx, y + PILL_H);
-            self.paint_pill(scene, t, tr, theme, r, lbl, act, false);
-            rx -= w + 6.0;
+            let pill_w = Self::pill_width(tr, lbl);
+            let pill_rect = Rect::new(rx - pill_w, y, rx, y + PILL_H);
+            self.paint_pill(scene, t, tr, theme, pill_rect, lbl, act, false);
+            rx -= pill_w + 6.0;
         }
         // zoom percentage chip (non-interactive)
         let c = &theme.tokens.colors;
@@ -1332,14 +1346,14 @@ impl TypstApp {
         ];
         let row_h = 32.0;
         let pad = 6.0;
-        let mut w: f64 = 150.0;
+        let mut panel_w: f64 = 150.0;
         for (lbl, _) in &items {
             let (lw, _) = tr.measure(lbl, PILL_FONT, None);
-            w = w.max(f64::from(lw) + 28.0);
+            panel_w = panel_w.max(f64::from(lw) + 28.0);
         }
         let h = items.len() as f64 * row_h + pad * 2.0;
         let x1 = self.toolbar_rect.x1 - 10.0;
-        let x0 = (x1 - w).max(self.rect.x0 + 8.0);
+        let x0 = (x1 - panel_w).max(self.rect.x0 + 8.0);
         let y0 = self.toolbar_rect.y1 + 4.0;
         let panel = Rect::new(x0, y0, x1, y0 + h);
 
@@ -1394,7 +1408,7 @@ impl TypstApp {
         }
     }
 
-    fn draw_divider(&mut self, scene: &mut Scene, t: Affine, theme: &Theme) {
+    fn draw_divider(&self, scene: &mut Scene, t: Affine, theme: &Theme) {
         let c = &theme.tokens.colors;
         let dr = self.divider_rect;
         let active = self.dragging_divider || self.divider_hover;
@@ -1497,7 +1511,7 @@ impl TypstApp {
         let left_label = self.status_left_label();
         if left_label != self.last_left_label {
             self.status_bubble_left.poke(now);
-            self.last_left_label = left_label.clone();
+            self.last_left_label.clone_from(&left_label);
         }
         let (lw, lh) = ui::status_bubble::pill_size(&left_label, tr, text_size, 0.0);
         let lrect = Rect::new(
@@ -1526,7 +1540,7 @@ impl TypstApp {
         let (right_label, dot_color) = self.status_right_label(theme);
         if right_label != self.last_right_label {
             self.status_bubble_right.poke(now);
-            self.last_right_label = right_label.clone();
+            self.last_right_label.clone_from(&right_label);
         }
         // Reserve a leading control slot for the status dot.
         let dot_slot = 16.0;
@@ -1627,7 +1641,7 @@ impl Widget for TypstApp {
             // worker online for subsequent edits.
             let out = compile::compile_source(&self.parts, &source, PPP);
             self.apply_output(out);
-            self.worker = Some(CompileWorker::spawn(self.parts.clone()));
+            self.worker = CompileWorker::spawn(self.parts.clone());
             self.last_source = source.clone();
             self.source_cache = source;
             self.initialized = true;
@@ -1761,213 +1775,168 @@ impl Widget for TypstApp {
             ..
         } = event
         {
-            let mods = modifiers.state();
-            let ctrl = mods.control_key() || mods.super_key();
-            if ctrl {
-                if matches!(logical_key, Key::Named(NamedKey::Enter)) {
-                    self.force_recompile(doc);
-                    *handled = true;
-                    return;
-                }
-                if let Key::Character(ch) = logical_key {
-                    match ch.to_lowercase().as_str() {
-                        "s" => {
-                            self.save(doc);
-                            *handled = true;
-                            return;
-                        }
-                        "o" => {
-                            self.open(doc);
-                            *handled = true;
-                            return;
-                        }
-                        "e" => {
-                            self.export_pdf(doc);
-                            *handled = true;
-                            return;
-                        }
-                        "=" | "+" => {
-                            self.preview.zoom_in();
-                            *handled = true;
-                            return;
-                        }
-                        "-" => {
-                            self.preview.zoom_out();
-                            *handled = true;
-                            return;
-                        }
-                        "0" => {
-                            self.preview.fit_width();
-                            *handled = true;
-                            return;
-                        }
-                        "]" => {
-                            self.next_doc(doc);
-                            *handled = true;
-                            return;
-                        }
-                        "[" => {
-                            self.prev_doc(doc);
-                            *handled = true;
-                            return;
-                        }
-                        "j" => {
-                            self.show_diagnostics = !self.show_diagnostics;
-                            *handled = true;
-                            return;
-                        }
-                        "c" => {
-                            // When the rendered preview holds focus, Ctrl+C
-                            // copies the selected document text; otherwise fall
-                            // through to the editor's own clipboard.
-                            if !self.editor.focused {
-                                if let Some(txt) = self.preview.selected_text() {
-                                    ui::clipboard_copy(&txt);
-                                    self.set_flash("Copied selection".into());
-                                }
-                                *handled = true;
-                                return;
-                            }
-                        }
-                        "a"
-                            // Select-all in the preview when it holds focus.
-                            if !self.editor.focused => {
-                                self.preview.select_all();
-                                self.dirty = true;
-                                *handled = true;
-                                return;
-                            }
-                        // remaining a/c/x/v fall through to the editor's clipboard
-                        _ => {}
-                    }
-                }
-            }
-            // Route remaining keys to the focused editor.
-            if self.editor.focused && self.editor.handle_key(event, modifiers, doc, &src_id) {
-                *handled = true;
-            }
+            self.handle_keyboard_shortcut(logical_key, event, modifiers, doc, &src_id, handled);
             return;
         }
 
         // --- pointer ---
+        self.handle_pointer_event(event, scale_factor, modifiers, doc, &src_id, handled);
+    }
+
+    fn name(&self) -> &'static str {
+        "TypstEditor"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep the App pumping frames while: the editor caret is blinking,
+        // a compile is in flight (so `draw` can consume its result), a
+        // transient toast is still fading, or either floating status bubble is
+        // lingering / fading (so it hides itself without a stray pointer event).
+        let now = Instant::now();
+        self.editor.wants_animation()
+            || self.compiling()
+            || self.flash_text().is_some()
+            || self.status_bubble_left.needs_frame(now)
+            || self.status_bubble_right.needs_frame(now)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        // Pointer *moves* are only repainted when `needs_redraw` is true (the
+        // host gates them to avoid hover spam). A live drag or a hover change
+        // sets `dirty`, so divider drags, preview text-selection, and inline
+        // diagnostic tooltips all repaint smoothly.
+        self.dirty
+    }
+}
+
+impl TypstApp {
+    /// Application-level keyboard shortcuts for a pressed key. Split out of
+    /// `Widget::handle_event` to keep it within the line-count lint; the
+    /// caller already matched `event` down to a pressed `KeyEvent` and passes
+    /// its `logical_key` through. Falls through to the focused editor's own
+    /// key handling for anything that isn't an app-level shortcut.
+    fn handle_keyboard_shortcut(
+        &mut self,
+        logical_key: &Key,
+        event: &WindowEvent,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        src_id: &ObjId,
+        handled: &mut bool,
+    ) {
+        let mods = modifiers.state();
+        let ctrl = mods.control_key() || mods.super_key();
+        if ctrl {
+            if matches!(logical_key, Key::Named(NamedKey::Enter)) {
+                self.force_recompile(doc);
+                *handled = true;
+                return;
+            }
+            if let Key::Character(ch) = logical_key {
+                match ch.to_lowercase().as_str() {
+                    "s" => {
+                        self.save(doc);
+                        *handled = true;
+                        return;
+                    }
+                    "o" => {
+                        self.open(doc);
+                        *handled = true;
+                        return;
+                    }
+                    "e" => {
+                        self.export_pdf(doc);
+                        *handled = true;
+                        return;
+                    }
+                    "=" | "+" => {
+                        self.preview.zoom_in();
+                        *handled = true;
+                        return;
+                    }
+                    "-" => {
+                        self.preview.zoom_out();
+                        *handled = true;
+                        return;
+                    }
+                    "0" => {
+                        self.preview.fit_width();
+                        *handled = true;
+                        return;
+                    }
+                    "]" => {
+                        self.next_doc(doc);
+                        *handled = true;
+                        return;
+                    }
+                    "[" => {
+                        self.prev_doc(doc);
+                        *handled = true;
+                        return;
+                    }
+                    "j" => {
+                        self.show_diagnostics = !self.show_diagnostics;
+                        *handled = true;
+                        return;
+                    }
+                    "c" => {
+                        // When the rendered preview holds focus, Ctrl+C
+                        // copies the selected document text; otherwise fall
+                        // through to the editor's own clipboard.
+                        if !self.editor.focused {
+                            if let Some(txt) = self.preview.selected_text() {
+                                ui::clipboard_copy(&txt);
+                                self.set_flash("Copied selection".into());
+                            }
+                            *handled = true;
+                            return;
+                        }
+                    }
+                    "a"
+                        // Select-all in the preview when it holds focus.
+                        if !self.editor.focused => {
+                            self.preview.select_all();
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                    // remaining a/c/x/v fall through to the editor's clipboard
+                    _ => {}
+                }
+            }
+        }
+        // Route remaining keys to the focused editor.
+        if self.editor.focused && self.editor.handle_key(event, modifiers, doc, src_id) {
+            *handled = true;
+        }
+    }
+
+    /// Pointer (cursor move / click / release / wheel) handling. Split out of
+    /// `Widget::handle_event` to keep it within the line-count lint; preserves
+    /// the original control flow exactly.
+    fn handle_pointer_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        src_id: &ObjId,
+        handled: &mut bool,
+    ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.mouse = p;
-                let prev_hover = self.divider_hover;
-                self.divider_hover =
-                    !self.compact && self.divider_rect.inflate(2.0, 0.0).contains(p);
-                if self.divider_hover != prev_hover {
-                    self.dirty = true;
-                }
-                // Re-surface / hide the corner status bubbles as the pointer
-                // enters or leaves their reveal bands — repaint only on a change
-                // so idle hover doesn't spin the loop.
-                let (lz, rz) = self.status_zones();
-                let zones = (lz.contains(p), rz.contains(p));
-                if zones != self.status_hover {
-                    self.status_hover = zones;
-                    self.dirty = true;
-                }
-                if self.dragging_divider {
-                    let content_w = self.rect.width().max(1.0);
-                    self.split_ratio = ((p.x - self.rect.x0) / content_w).clamp(0.18, 0.82);
-                    self.dirty = true;
-                    *handled = true;
-                } else if self.dragging_editor {
-                    let text = doc.text(&src_id).unwrap_or_default();
-                    self.editor.on_mouse_drag(p, &text);
-                    self.dirty = true;
-                    *handled = true;
-                } else if self.dragging_preview {
-                    self.preview.on_mouse_drag(p);
-                    self.dirty = true;
-                    *handled = true;
-                } else {
-                    // Hover feedback: inline-diagnostic tooltip over the source,
-                    // scrollbar-thumb brighten over the preview, row highlight in
-                    // the Problems panel.
-                    let over_editor = self.editor_rect.area() > 0.0 && self.editor_rect.contains(p);
-                    if self.editor.on_mouse_move(over_editor.then_some(p)) {
-                        self.dirty = true;
-                    }
-                    if self.preview_rect.area() > 0.0
-                        && self.preview_rect.contains(p)
-                        && self.preview.on_mouse_move(p)
-                    {
-                        self.dirty = true;
-                    }
-                    if self.show_diagnostics && self.diag_rect.contains(p) {
-                        self.diagnostics.on_mouse_move(p);
-                        self.dirty = true;
-                    }
-                }
+                self.handle_cursor_moved(position, scale_factor, doc, src_id, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                let p = self.mouse;
-                // The compact overflow menu grabs clicks before anything else.
-                if self.compact && self.menu_open {
-                    if let Some(a) = self.hit_menu(p) {
-                        self.do_action(a, doc);
-                        *handled = true;
-                        return;
-                    }
-                    if !self.toolbar_rect.contains(p) {
-                        self.menu_open = false;
-                        *handled = true;
-                        return;
-                    }
-                }
-                if self.toolbar_rect.contains(p) {
-                    if let Some(a) = self.hit_toolbar(p) {
-                        self.do_action(a, doc);
-                    }
-                    *handled = true;
-                    return;
-                }
-                if !self.compact && self.divider_rect.inflate(2.0, 0.0).contains(p) {
-                    self.dragging_divider = true;
-                    *handled = true;
-                    return;
-                }
-                if self.editor_rect.contains(p) {
-                    self.editor.focused = true;
-                    let text = doc.text(&src_id).unwrap_or_default();
-                    self.editor
-                        .on_mouse_down(p, modifiers.state().shift_key(), &text);
-                    self.dragging_editor = true;
-                    *handled = true;
-                    return;
-                }
-                if self.show_diagnostics && self.diag_rect.contains(p) {
-                    if let Some(line) = self.diagnostics.on_mouse_down(p) {
-                        let text = doc.text(&src_id).unwrap_or_default();
-                        self.editor.goto_line(&text, line);
-                        // In compact mode a diagnostic click brings the source
-                        // into view so the jump is visible.
-                        if self.compact {
-                            self.set_compact_view(CompactPane::Editor);
-                        } else {
-                            self.editor.focused = true;
-                        }
-                    }
-                    *handled = true;
-                    return;
-                }
-                if self.preview_rect.contains(p) {
-                    self.editor.focused = false;
-                    self.editor.on_mouse_move(None);
-                    let shift = modifiers.state().shift_key();
-                    if self.preview.on_mouse_down(p, shift) {
-                        self.dragging_preview = true;
-                    }
-                    self.dirty = true;
-                    *handled = true;
-                }
+                self.handle_left_press(modifiers, doc, src_id, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -2003,7 +1972,7 @@ impl Widget for TypstApp {
                         dy = 0.0;
                     }
                     if self.editor_rect.contains(p) {
-                        let text = doc.text(&src_id).unwrap_or_default();
+                        let text = doc.text(src_id).unwrap_or_default();
                         self.editor.scroll_by(dx as f32, dy as f32, &text);
                     } else if self.show_diagnostics && self.diag_rect.contains(p) {
                         self.diagnostics.scroll_by(dy);
@@ -2016,33 +1985,138 @@ impl Widget for TypstApp {
         }
     }
 
-    fn name(&self) -> &'static str {
-        "TypstEditor"
+    /// `CursorMoved`: hover/drag routing. Split out of `handle_pointer_event`
+    /// to keep it within the line-count lint; preserves the original control
+    /// flow exactly.
+    fn handle_cursor_moved(
+        &mut self,
+        position: &winit::dpi::PhysicalPosition<f64>,
+        scale_factor: f64,
+        doc: &mut AutoCommit,
+        src_id: &ObjId,
+        handled: &mut bool,
+    ) {
+        let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+        self.mouse = p;
+        let prev_hover = self.divider_hover;
+        self.divider_hover = !self.compact && self.divider_rect.inflate(2.0, 0.0).contains(p);
+        if self.divider_hover != prev_hover {
+            self.dirty = true;
+        }
+        // Re-surface / hide the corner status bubbles as the pointer enters or
+        // leaves their reveal bands — repaint only on a change so idle hover
+        // doesn't spin the loop.
+        let (lz, rz) = self.status_zones();
+        let zones = (lz.contains(p), rz.contains(p));
+        if zones != self.status_hover {
+            self.status_hover = zones;
+            self.dirty = true;
+        }
+        if self.dragging_divider {
+            let content_w = self.rect.width().max(1.0);
+            self.split_ratio = ((p.x - self.rect.x0) / content_w).clamp(0.18, 0.82);
+            self.dirty = true;
+            *handled = true;
+        } else if self.dragging_editor {
+            let text = doc.text(src_id).unwrap_or_default();
+            self.editor.on_mouse_drag(p, &text);
+            self.dirty = true;
+            *handled = true;
+        } else if self.dragging_preview {
+            self.preview.on_mouse_drag(p);
+            self.dirty = true;
+            *handled = true;
+        } else {
+            // Hover feedback: inline-diagnostic tooltip over the source,
+            // scrollbar-thumb brighten over the preview, row highlight in the
+            // Problems panel.
+            let over_editor = self.editor_rect.area() > 0.0 && self.editor_rect.contains(p);
+            if self.editor.on_mouse_move(over_editor.then_some(p)) {
+                self.dirty = true;
+            }
+            if self.preview_rect.area() > 0.0
+                && self.preview_rect.contains(p)
+                && self.preview.on_mouse_move(p)
+            {
+                self.dirty = true;
+            }
+            if self.show_diagnostics && self.diag_rect.contains(p) {
+                self.diagnostics.on_mouse_move(p);
+                self.dirty = true;
+            }
+        }
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        // Keep the App pumping frames while: the editor caret is blinking,
-        // a compile is in flight (so `draw` can consume its result), a
-        // transient toast is still fading, or either floating status bubble is
-        // lingering / fading (so it hides itself without a stray pointer event).
-        let now = Instant::now();
-        self.editor.wants_animation()
-            || self.compiling()
-            || self.flash_text().is_some()
-            || self.status_bubble_left.needs_frame(now)
-            || self.status_bubble_right.needs_frame(now)
-    }
-
-    fn needs_redraw(&self) -> bool {
-        // Pointer *moves* are only repainted when `needs_redraw` is true (the
-        // host gates them to avoid hover spam). A live drag or a hover change
-        // sets `dirty`, so divider drags, preview text-selection, and inline
-        // diagnostic tooltips all repaint smoothly.
-        self.dirty
+    /// A left-button press. Split out of `handle_pointer_event` to keep it
+    /// within the line-count lint; operates on `self.mouse`, the position
+    /// tracked by the most recent `CursorMoved`.
+    fn handle_left_press(
+        &mut self,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        src_id: &ObjId,
+        handled: &mut bool,
+    ) {
+        let p = self.mouse;
+        // The compact overflow menu grabs clicks before anything else.
+        if self.compact && self.menu_open {
+            if let Some(a) = self.hit_menu(p) {
+                self.do_action(a, doc);
+                *handled = true;
+                return;
+            }
+            if !self.toolbar_rect.contains(p) {
+                self.menu_open = false;
+                *handled = true;
+                return;
+            }
+        }
+        if self.toolbar_rect.contains(p) {
+            if let Some(a) = self.hit_toolbar(p) {
+                self.do_action(a, doc);
+            }
+            *handled = true;
+            return;
+        }
+        if !self.compact && self.divider_rect.inflate(2.0, 0.0).contains(p) {
+            self.dragging_divider = true;
+            *handled = true;
+            return;
+        }
+        if self.editor_rect.contains(p) {
+            self.editor.focused = true;
+            let text = doc.text(src_id).unwrap_or_default();
+            self.editor
+                .on_mouse_down(p, modifiers.state().shift_key(), &text);
+            self.dragging_editor = true;
+            *handled = true;
+            return;
+        }
+        if self.show_diagnostics && self.diag_rect.contains(p) {
+            if let Some(line) = self.diagnostics.on_mouse_down(p) {
+                let text = doc.text(src_id).unwrap_or_default();
+                self.editor.goto_line(&text, line);
+                // In compact mode a diagnostic click brings the source into
+                // view so the jump is visible.
+                if self.compact {
+                    self.set_compact_view(CompactPane::Editor);
+                } else {
+                    self.editor.focused = true;
+                }
+            }
+            *handled = true;
+            return;
+        }
+        if self.preview_rect.contains(p) {
+            self.editor.focused = false;
+            self.editor.on_mouse_move(None);
+            let shift = modifiers.state().shift_key();
+            if self.preview.on_mouse_down(p, shift) {
+                self.dragging_preview = true;
+            }
+            self.dirty = true;
+            *handled = true;
+        }
     }
 }
 
@@ -2263,7 +2337,7 @@ mod tests {
         std::fs::write(dir.join("alpha.typ"), "= Alpha").unwrap();
         std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
 
-        let app = TypstApp::from_library(Some(dir.clone()));
+        let app = TypstApp::from_library(Some(&dir));
         let names: Vec<_> = app.documents.iter().map(|d| d.name.clone()).collect();
         assert_eq!(names, vec!["alpha.typ", "beta.typ"], "sorted, .txt ignored");
         assert!(app.documents.iter().all(|d| d.from_disk));
@@ -2283,7 +2357,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
 
-        let app = TypstApp::from_library(Some(dir.clone()));
+        let app = TypstApp::from_library(Some(&dir));
         assert_eq!(app.documents.len(), 1);
         assert_eq!(app.documents[0].name, "untitled.typ");
         assert!(!app.documents[0].from_disk, "starter is not a disk file");
@@ -2330,7 +2404,7 @@ mod tests {
         app: &mut TypstApp,
         doc: &mut AutoCommit,
         ev: &WindowEvent,
-        mods: &Modifiers,
+        mods: Modifiers,
     ) -> bool {
         let taffy = TaffyTree::<()>::new();
         let mut handled = false;
@@ -2338,7 +2412,7 @@ mod tests {
         app.handle_event(
             ev,
             1.0,
-            mods,
+            &mods,
             doc,
             &ROOT,
             &mut handled,
@@ -2370,7 +2444,7 @@ mod tests {
 
         let base = app.preview.zoom();
         assert!(
-            send_mods(&mut app, &mut doc, &char_press("="), &ctrl),
+            send_mods(&mut app, &mut doc, &char_press("="), ctrl),
             "Ctrl+= consumed"
         );
         let zoomed_in = app.preview.zoom();
@@ -2380,7 +2454,7 @@ mod tests {
         );
 
         assert!(
-            send_mods(&mut app, &mut doc, &char_press("-"), &ctrl),
+            send_mods(&mut app, &mut doc, &char_press("-"), ctrl),
             "Ctrl+- consumed"
         );
         assert!(
@@ -2399,10 +2473,10 @@ mod tests {
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
 
         let over = app.preview_rect.center();
-        send_mods(&mut app, &mut doc, &cursor(over), &ctrl);
+        send_mods(&mut app, &mut doc, &cursor(over), ctrl);
         let base = app.preview.zoom();
         assert!(
-            send_mods(&mut app, &mut doc, &wheel(0.0, 1.0), &ctrl),
+            send_mods(&mut app, &mut doc, &wheel(0.0, 1.0), ctrl),
             "Ctrl+wheel consumed"
         );
         assert!(

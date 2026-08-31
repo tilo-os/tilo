@@ -83,8 +83,11 @@ pub fn parse_wg_transfer(out: &str) -> Option<Transfer> {
 /// found (e.g. the interface does not exist and `ip` printed an error).
 pub fn parse_ip_link_up(out: &str) -> Option<bool> {
     let start = out.find('<')?;
-    let end = out[start..].find('>')? + start;
-    let flags = &out[start + 1..end];
+    // `find` returns byte offsets on `<`/`>`, which are single-byte ASCII
+    // chars, so both are always on a UTF-8 boundary — `.get()` documents
+    // that instead of slicing directly.
+    let end = out.get(start..)?.find('>')? + start;
+    let flags = out.get(start + 1..end)?;
     Some(flags.split(',').any(|f| f.trim() == "UP"))
 }
 
@@ -303,7 +306,7 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
         // the probe returns None — assert the real result either way rather
         // than fabricate one.
         if let Some(up) = probe_interface_up("lo") {
-            assert!(up, "loopback must report UP")
+            assert!(up, "loopback must report UP");
         } else { /* `ip` binary unavailable on this box — honestly unknown */
         }
     }

@@ -4125,11 +4125,58 @@ mod tests {
         );
     }
 
-    /// End-to-end press-drag-release exercising the actual production
-    /// path the user's mouse drives, through to the shell-persisted
-    /// width-change stamp.
-    #[test]
-    fn drag_handle_resizes_both_neighbours_via_set_width() {
+    /// Shared `row.handle_event` shape for the drag-handle tests below
+    /// (fixed scale factor, a caller-owned scratch `handled` flag).
+    /// Returns whether the event was claimed.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors Widget::handle_event's own shape 1:1 for a test dispatcher"
+    )]
+    fn dispatch_row(
+        row: &mut GroupRow,
+        event: &winit::event::WindowEvent,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus: &mut Option<NodeId>,
+        root: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let mut handled = false;
+        row.handle_event(
+            event,
+            1.0,
+            modifiers,
+            state,
+            path,
+            &mut handled,
+            focus,
+            root,
+            taffy,
+        );
+        handled
+    }
+
+    /// Build a two-group row fixture, hover its resize handle open, and
+    /// press to start a drag — the shared prologue for
+    /// `drag_handle_resizes_both_neighbours_via_set_width`. Split out to
+    /// keep that under the line cap.
+    #[allow(
+        clippy::type_complexity,
+        reason = "test fixture bundling everything the drag-continuation needs; a named struct would only move the same fields, not reduce them"
+    )]
+    fn start_handle_drag() -> (
+        GroupRow,
+        TaffyTree<()>,
+        NodeId,
+        f64,
+        f64,
+        winit::event::DeviceId,
+        Modifiers,
+        AutoCommit,
+        ObjId,
+        Option<NodeId>,
+    ) {
         use winit::dpi::PhysicalPosition;
         use winit::event::WindowEvent;
 
@@ -4138,10 +4185,8 @@ mod tests {
 
         // `WindowWidth::Normal` is two thirds of the fixture's 1200px
         // display, i.e. 800px.
-        let pre_left_w = row.groups[0].resolved_width_px();
-        let pre_right_w = row.groups[1].resolved_width_px();
-        assert_eq!(pre_left_w, 800.0);
-        assert_eq!(pre_right_w, 800.0);
+        assert_eq!(row.groups[0].resolved_width_px(), 800.0);
+        assert_eq!(row.groups[1].resolved_width_px(), 800.0);
 
         let handle_rect = row.handle_at(0).unwrap().get_rect();
         let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
@@ -4151,20 +4196,18 @@ mod tests {
         let modifiers = Modifiers::default();
         let mut state = AutoCommit::new();
         let path = automerge::ROOT.clone();
-        let mut handled = false;
         let mut focus: Option<NodeId> = None;
 
         // CursorMoved over the handle → hover engages.
-        row.handle_event(
+        dispatch_row(
+            &mut row,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(cx, cy),
             },
-            1.0,
             &modifiers,
             &mut state,
             &path,
-            &mut handled,
             &mut focus,
             root,
             &taffy,
@@ -4175,18 +4218,16 @@ mod tests {
         );
 
         // MouseInput::Pressed → drag starts.
-        handled = false;
-        row.handle_event(
+        let handled = dispatch_row(
+            &mut row,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0,
             &modifiers,
             &mut state,
             &path,
-            &mut handled,
             &mut focus,
             root,
             &taffy,
@@ -4194,19 +4235,31 @@ mod tests {
         assert!(handled, "press on handle must claim the event");
         assert!(row.handle_at(0).unwrap().is_dragging(), "press starts drag");
 
+        (row, taffy, root, cx, cy, dev, modifiers, state, path, focus)
+    }
+
+    /// End-to-end press-drag-release exercising the actual production
+    /// path the user's mouse drives, through to the shell-persisted
+    /// width-change stamp.
+    #[test]
+    fn drag_handle_resizes_both_neighbours_via_set_width() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::WindowEvent;
+
+        let (mut row, taffy, root, cx, cy, dev, modifiers, mut state, path, mut focus) =
+            start_handle_drag();
+
         // CursorMoved +50 px right → width pulse applied to both
         // neighbours via `set_width`.
-        handled = false;
-        row.handle_event(
+        dispatch_row(
+            &mut row,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(cx + 50.0, cy),
             },
-            1.0,
             &modifiers,
             &mut state,
             &path,
-            &mut handled,
             &mut focus,
             root,
             &taffy,
@@ -4229,18 +4282,16 @@ mod tests {
         );
         assert_eq!(row.groups[1].take_pending_width_change(), None);
 
-        handled = false;
-        row.handle_event(
+        let handled = dispatch_row(
+            &mut row,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Released,
                 button: MouseButton::Left,
             },
-            1.0,
             &modifiers,
             &mut state,
             &path,
-            &mut handled,
             &mut focus,
             root,
             &taffy,

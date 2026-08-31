@@ -1446,6 +1446,12 @@ mod tests {
 
     /// One non-leap year, in seconds — used to build the fixed validity
     /// window below without a magic-number multiplication at the call site.
+    #[allow(
+        clippy::duration_suboptimal_units,
+        reason = "Duration::from_days would read better, but it's still behind the unstable \
+                  duration_constructors feature (rust-lang/rust#120301) on this pinned stable \
+                  toolchain"
+    )]
     const ONE_YEAR: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 
     /// A `ChannelState` authorising one Editor; returns the artifact +
@@ -1467,8 +1473,9 @@ mod tests {
             valid_from: now
                 .checked_sub(ONE_YEAR)
                 .expect("a fixed one-year offset from now is always representable"),
-            valid_until: now
-                .checked_add(ONE_YEAR * 10)
+            valid_until: ONE_YEAR
+                .checked_mul(10)
+                .and_then(|ten_years| now.checked_add(ten_years))
                 .expect("a fixed ten-year offset from now is always representable"),
             signature: Signature::from_bytes([0u8; 64]),
         };
@@ -1554,7 +1561,7 @@ mod tests {
             sink.clone() as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>
         );
         let handle =
-            spawn_native_with_publisher(capnp_path.clone(), publisher).expect("spawn broker");
+            spawn_native_with_publisher(capnp_path.clone(), &publisher).expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4().to_string();
         let channel_id = cluster.clone();
@@ -1596,7 +1603,7 @@ mod tests {
             sink.clone() as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>
         );
         let handle =
-            spawn_native_with_publisher(capnp_path.clone(), publisher).expect("spawn broker");
+            spawn_native_with_publisher(capnp_path.clone(), &publisher).expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4().to_string();
         let channel_id = format!("{cluster}#record:report.md");
@@ -1633,7 +1640,7 @@ mod tests {
             sink.clone() as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>
         );
         let handle =
-            spawn_native_with_publisher(capnp_path.clone(), publisher).expect("spawn broker");
+            spawn_native_with_publisher(capnp_path.clone(), &publisher).expect("spawn broker");
         let (artifact, editor_sk, editor_pk, editor_att_id) = setup_role_table(&handle);
         let op = build_signed_op(
             &editor_sk,
@@ -1674,7 +1681,7 @@ mod tests {
     #[test]
     fn capnp_signed_op_rejections_are_dropped_and_audited() {
         let capnp_path = unique_path("capnp-signed-rejections");
-        let handle = spawn_native(capnp_path.clone(), None).expect("spawn broker");
+        let handle = spawn_native(capnp_path.clone(), &None).expect("spawn broker");
         let (artifact, editor_sk, editor_pk, editor_att_id) = setup_role_table(&handle);
         let valid = build_signed_op(&editor_sk, editor_pk, artifact, editor_att_id, 1, b"valid");
         let mut invalid = build_signed_op(
@@ -1717,6 +1724,11 @@ mod tests {
                 .any(|entry| matches!(entry.rejection, Some(ValidationError::BadOpSignature(_))))
         );
         let channels = handle.channels();
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "channels' only use is the assert_eq! immediately below; the block \
+                      already ends right after it"
+        )]
         {
             let mut channels = channels.lock().expect("channels");
             assert_eq!(
@@ -1740,7 +1752,7 @@ mod tests {
             sink.clone() as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>
         );
         let handle =
-            spawn_native_with_publisher(capnp_path.clone(), publisher).expect("spawn broker");
+            spawn_native_with_publisher(capnp_path.clone(), &publisher).expect("spawn broker");
 
         with_capnp_client(capnp_path, move |sdk| {
             Box::pin(async move {
@@ -1776,7 +1788,7 @@ mod tests {
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
         let net = Arc::new(net);
         let net_for_arrival = Arc::clone(&net);
-        let handle = spawn_native(capnp_path.clone(), Some(net)).expect("spawn broker");
+        let handle = spawn_native(capnp_path.clone(), &Some(net)).expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4();
         let channel_id =
@@ -1843,7 +1855,7 @@ mod tests {
         let capnp_path = unique_path("capnp-outbound");
         let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
-        let handle = spawn_native(capnp_path.clone(), Some(Arc::new(net))).expect("spawn broker");
+        let handle = spawn_native(capnp_path.clone(), &Some(Arc::new(net))).expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4();
         let channel_id =
@@ -1927,7 +1939,7 @@ mod tests {
         let capnp_path = unique_path("capnp-unaddressed");
         let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
-        let handle = spawn_native(capnp_path.clone(), Some(Arc::new(net))).expect("spawn broker");
+        let handle = spawn_native(capnp_path.clone(), &Some(Arc::new(net))).expect("spawn broker");
 
         let channel_id = CrdtRoute::record(
             "dev.qos.words",
@@ -1972,7 +1984,7 @@ mod tests {
     #[test]
     fn an_unsigned_frame_reaches_a_subscriber_tagged_with_its_kind() {
         let capnp_path = unique_path("capnp-unsigned-kind");
-        let handle = spawn_native(capnp_path.clone(), None).expect("spawn typed broker");
+        let handle = spawn_native(capnp_path.clone(), &None).expect("spawn typed broker");
         let channel_id = CrdtRoute::record(
             "dev.qos.words",
             uuid::Uuid::new_v4().to_string(),
@@ -2059,7 +2071,7 @@ mod tests {
     #[test]
     fn a_documents_delta_reaches_its_own_app_and_not_the_app_beside_it() {
         let capnp_path = unique_path("capnp-app-scoped");
-        let handle = spawn_native(capnp_path.clone(), None).expect("spawn broker");
+        let handle = spawn_native(capnp_path.clone(), &None).expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4().to_string();
         let words = CrdtRoute::app("dev.qos.word-processor", cluster.clone()).channel_key();

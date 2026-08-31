@@ -71,15 +71,16 @@ pub fn purpose_from_wire(wire: u32) -> InputPurpose {
     use content_purpose as cp;
     match wire {
         cp::NUMBER => InputPurpose::Number,
-        cp::DIGITS => InputPurpose::Pin,
+        // `digits` is a numeric secret-ish field with no separators — the
+        // same pad as an actual PIN.
+        cp::DIGITS | cp::PIN => InputPurpose::Pin,
         cp::PHONE => InputPurpose::Telephone,
         cp::URL => InputPurpose::Url,
         cp::EMAIL => InputPurpose::Email,
         cp::PASSWORD => InputPurpose::Password,
-        cp::PIN => InputPurpose::Pin,
-        cp::DATE => InputPurpose::Date,
+        // `datetime` has no dedicated layout, so it borrows the date pad.
+        cp::DATE | cp::DATETIME => InputPurpose::Date,
         cp::TIME => InputPurpose::Time,
-        cp::DATETIME => InputPurpose::Date,
         // normal / alpha / name / terminal / anything unrecognised → plain text.
         _ => InputPurpose::Text,
     }

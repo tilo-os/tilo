@@ -144,6 +144,10 @@ impl PanelsView {
             .collect()
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a paint helper carrying the shared scene/tr/t/theme context plus its own rect/model/hover/regions, matching the sibling draw helpers in draw.rs"
+    )]
     fn toolbar(
         scene: &mut Scene,
         tr: &mut TextRenderer,

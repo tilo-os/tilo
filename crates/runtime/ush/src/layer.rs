@@ -97,6 +97,12 @@ const UNUSABLE_FS: &[(i64, &str)] = &[
 
 /// Can a layer live here? Checked before anything is written, so a wrong
 /// filesystem fails with an explanation, not after mirroring 22 000 dirs.
+///
+/// # Errors
+///
+/// Returns [`LayerError::UnusableFilesystem`] if `path` (or its nearest
+/// existing ancestor) sits on a filesystem overlayfs refuses as an upper
+/// directory.
 pub fn upper_filesystem_supported(path: &Path) -> Result<(), LayerError> {
     // Walk up to the nearest existing ancestor — `statfs` needs a path that exists.
     let mut probe = path;
@@ -175,6 +181,12 @@ impl Layer {
     /// Create the layer if it is not there yet. `base` is the root of the
     /// filesystem being shadowed — `/` in production, a fixture in tests.
     /// Idempotent: an existing layer is left alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LayerError::Io`] if the layer directory, the mirrored
+    /// skeleton, the seeded package-manager state, or the marker file can't
+    /// be written.
     pub fn create(&self, base: &Path) -> Result<(), LayerError> {
         // Deliberately no filesystem check here: creating a layer is an ordinary
         // directory operation, useful anywhere (`pkg diff` on a copied store, a
@@ -219,6 +231,11 @@ impl Layer {
 
     /// Destroy the layer's files (`pkg burn`). Refuses on anything without the
     /// marker — an `rm -rf` on the wrong path is unrecoverable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LayerError::NotALayer`] if the path lacks the marker file,
+    /// or [`LayerError::Io`] if the directory survives the forced removal.
     pub fn burn(&self) -> Result<(), LayerError> {
         if !self.path.exists() {
             return Ok(());

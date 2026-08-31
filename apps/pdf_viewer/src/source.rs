@@ -60,6 +60,12 @@ pub struct LoadedDoc {
 
 /// Load a PDF from `path`, preferring pixel-accurate rasterisation and falling
 /// back to pure-Rust text extraction.
+///
+/// # Errors
+///
+/// Returns an error if `path` cannot be read, or — only when no pdfium
+/// library is available and the pure-Rust fallback is used — if the bytes at
+/// `path` cannot be parsed as a PDF for text extraction.
 pub fn open(path: &Path) -> anyhow::Result<LoadedDoc> {
     let t = Instant::now();
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
@@ -251,14 +257,14 @@ impl Rasterizer {
     pub fn first_page_size(&self) -> (f64, f64) {
         self.plan
             .first()
-            .and_then(|s| self.sources[s.source].page_sizes.get(s.page).copied())
+            .and_then(|s| self.sources.get(s.source)?.page_sizes.get(s.page).copied())
             .unwrap_or((612.0, 792.0))
     }
 
     /// Size of displayed page `display_idx`, in PDF points.
     pub fn page_size(&self, display_idx: usize) -> (f64, f64) {
         self.slot(display_idx)
-            .and_then(|s| self.sources[s.source].page_sizes.get(s.page).copied())
+            .and_then(|s| self.sources.get(s.source)?.page_sizes.get(s.page).copied())
             .unwrap_or_else(|| self.first_page_size())
     }
 
@@ -298,6 +304,11 @@ impl Rasterizer {
 
     /// Import every page of the PDF in `bytes`, inserting them starting at
     /// displayed index `at`. Returns the number of pages added.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `bytes` is not a PDF pdfium can parse (corrupt,
+    /// encrypted without a supplied password, or zero pages).
     pub fn import_pdf(&mut self, bytes: Vec<u8>, at: usize) -> anyhow::Result<usize> {
         let source = Self::load_source(self.pdfium, bytes)
             .ok_or_else(|| anyhow!("the file is not a readable PDF"))?;
@@ -320,6 +331,12 @@ impl Rasterizer {
     /// Import an image (`bytes` = PNG/JPEG/… file contents) as a new page,
     /// inserted at displayed index `at`. The image is placed to fill a page
     /// sized to its own aspect ratio.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `bytes` cannot be decoded as an image, or if
+    /// pdfium fails to create the backing single-page document or place the
+    /// image object on it.
     pub fn import_image(&mut self, bytes: &[u8], at: usize) -> anyhow::Result<()> {
         let img = image::load_from_memory(bytes).map_err(|e| anyhow!("decoding the image: {e}"))?;
         let (iw, ih) = (
@@ -369,7 +386,10 @@ impl Rasterizer {
     }
 
     fn metadata(&self) -> (String, String, String) {
-        let meta = self.sources[0].doc.metadata();
+        let Some(src) = self.sources.first() else {
+            return (String::new(), String::new(), String::new());
+        };
+        let meta = src.doc.metadata();
         let get = |tag| {
             meta.get(tag)
                 .map(|t| t.value().to_string())
@@ -386,7 +406,10 @@ impl Rasterizer {
     /// list in document order — every entry still navigates to its page.
     fn outline(&self) -> Vec<OutlineItem> {
         let mut out = Vec::new();
-        for bm in self.sources[0].doc.bookmarks().iter() {
+        let Some(src) = self.sources.first() else {
+            return out;
+        };
+        for bm in src.doc.bookmarks().iter() {
             let Some(title) = bm.title() else { continue };
             let page = bm
                 .destination()
@@ -582,6 +605,13 @@ impl Rasterizer {
     ///
     /// Operates on a freshly-created document, leaving the on-screen render and
     /// the loaded sources untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if pdfium fails to create the output document, copy a
+    /// planned page from its source, or flatten an annotation/signature onto
+    /// a page, or if writing the finished PDF to `out` fails (e.g. an
+    /// unwritable path).
     pub fn save_annotated(
         &self,
         annotations: &[Annotation],
@@ -678,12 +708,13 @@ impl Rasterizer {
                                 .map_err(|e| anyhow!("flattening note text: {e:?}"))?;
                         }
                     }
-                    _ => {}
+                    // A stray one- or zero-point ink stroke has nothing to draw.
+                    AnnoKind::Ink { .. } => {}
                 }
             }
 
             for s in signatures.iter().filter(|s| s.page == page_no) {
-                self.flatten_signature(&doc, &mut page, page_h, s, font, font_italic)?;
+                Self::flatten_signature(&doc, &mut page, page_h, s, font, font_italic)?;
             }
 
             let _ = page.regenerate_content();
@@ -697,7 +728,6 @@ impl Rasterizer {
     /// Flatten one signature: its handwriting stroke, a baseline, and the
     /// signer name + date as real (extractable) text.
     fn flatten_signature(
-        &self,
         doc: &PdfDocument<'static>,
         page: &mut PdfPage<'static>,
         page_h: f64,

@@ -39,6 +39,30 @@ const WIDE_FUTURE: Duration = Duration::from_hours(87600);
 /// claim set — use when the window/claims are what the test is about;
 /// otherwise prefer [`role_attestation`], whose window is wide enough that
 /// validity never becomes an accidental variable.
+///
+/// # Panics
+///
+/// Panics if `att` fails to canonicalise or sign — meaning the fixture
+/// itself is broken, which should fail loudly rather than hand a test a
+/// silently-invalid attestation.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one arg per RoleAttestation field this fixture builder needs to control; \
+              grouping them into a struct would just move the field list to a call site \
+              that constructs one fresh each time"
+)]
+#[allow(
+    clippy::similar_names,
+    reason = "issuer_sk/issuer_pk (secret vs public key) is the established key-pair naming \
+              convention across this codebase; renaming would make the pairing less obvious, \
+              not more"
+)]
+#[allow(
+    clippy::expect_used,
+    reason = "this crate exists purely to build valid signed test fixtures (see the module \
+              doc); a failure here means the fixture itself is broken and must fail loudly, \
+              not be silently propagated into whatever test happens to call this"
+)]
 pub fn role_attestation_windowed(
     issuer_sk: &SigningKey,
     issuer_pk: Ed25519PublicKey,
@@ -73,6 +97,12 @@ pub fn role_attestation_windowed(
 /// Mints a signed [`RoleAttestation`] unambiguously in-window (a year ago
 /// to a decade out, no claims) — the right default whenever the test's
 /// subject isn't attestation validity itself.
+#[allow(
+    clippy::similar_names,
+    reason = "issuer_sk/issuer_pk (secret vs public key) is the established key-pair naming \
+              convention across this codebase; renaming would make the pairing less obvious, \
+              not more"
+)]
 pub fn role_attestation(
     issuer_sk: &SigningKey,
     issuer_pk: Ed25519PublicKey,
@@ -81,14 +111,19 @@ pub fn role_attestation(
     role: Role,
 ) -> RoleAttestation {
     let now = SystemTime::now();
+    // `now - 1 year` / `now + 10 years` cannot realistically overflow
+    // `SystemTime`'s representable range; the fallback just keeps this
+    // fixture from panicking if it somehow ever did.
+    let valid_from = now.checked_sub(WIDE_PAST).unwrap_or(now);
+    let valid_until = now.checked_add(WIDE_FUTURE).unwrap_or(now);
     role_attestation_windowed(
         issuer_sk,
         issuer_pk,
         subject,
         channel,
         role,
-        now - WIDE_PAST,
-        now + WIDE_FUTURE,
+        valid_from,
+        valid_until,
         vec![],
     )
 }
@@ -96,7 +131,24 @@ pub fn role_attestation(
 /// Mints a signed [`SignedOp`] carrying `payload`. `seq` is the author's
 /// per-artifact sequence number — advance it for tests sending more than
 /// one op from the same author, since the validator rejects replays and gaps.
+///
+/// # Panics
+///
+/// Panics if signing fails — meaning the fixture itself is broken, which
+/// should fail loudly rather than hand a test a silently-unsigned op.
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::similar_names,
+    reason = "author_sk/author_pk (secret vs public key) is the established key-pair naming \
+              convention across this codebase; renaming would make the pairing less obvious, \
+              not more"
+)]
+#[allow(
+    clippy::expect_used,
+    reason = "this crate exists purely to build valid signed test fixtures (see the module \
+              doc); a failure here means the fixture itself is broken and must fail loudly, \
+              not be silently propagated into whatever test happens to call this"
+)]
 pub fn signed_op(
     author_sk: &SigningKey,
     author_pk: Ed25519PublicKey,
@@ -120,7 +172,24 @@ pub fn signed_op(
 }
 
 /// [`signed_op`] with encryption metadata attached, for tests pushing an op through the MLS-wrapped path.
+///
+/// # Panics
+///
+/// Panics if signing fails — meaning the fixture itself is broken, which
+/// should fail loudly rather than hand a test a silently-unsigned op.
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::similar_names,
+    reason = "author_sk/author_pk (secret vs public key) is the established key-pair naming \
+              convention across this codebase; renaming would make the pairing less obvious, \
+              not more"
+)]
+#[allow(
+    clippy::expect_used,
+    reason = "this crate exists purely to build valid signed test fixtures (see the module \
+              doc); a failure here means the fixture itself is broken and must fail loudly, \
+              not be silently propagated into whatever test happens to call this"
+)]
 pub fn signed_op_encrypted(
     author_sk: &SigningKey,
     author_pk: Ed25519PublicKey,

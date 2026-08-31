@@ -136,7 +136,13 @@ const FLAG_STATES: usize = 2;
 const STATE_SLOTS: usize = FITNESS_CLASSES * FLAG_STATES;
 
 const fn state_slot(fitness: u8, flagged: bool) -> usize {
-    fitness as usize * FLAG_STATES + flagged as usize
+    // Bounded by construction: fitness is one of FITNESS_CLASSES (0..4) and
+    // flagged contributes 0 or 1, so the product+sum never approaches
+    // overflow; wrapping arithmetic keeps this a `const fn` without a panic
+    // path that can never actually be taken.
+    (fitness as usize)
+        .wrapping_mul(FLAG_STATES)
+        .wrapping_add(flagged as usize)
 }
 
 fn fitness_class(ratio: f32) -> u8 {
@@ -151,18 +157,24 @@ fn fitness_class(ratio: f32) -> u8 {
     }
 }
 
-fn line_metrics(
+/// Accumulate natural width, stretch, shrink and glyph width for the boxes in
+/// `start..end`, including the break-width contributed by the box that would
+/// end the line and any protrusion of the last box's closing punctuation.
+/// Returns `None` only if `start..end` is not a valid range into `boxes`,
+/// which callers never construct — `compose_at_tolerance` always derives
+/// `end` from `1..=boxes.len()` and `start` from `0..end`.
+fn accumulate_line(
     boxes: &[ParagraphBox],
     start: usize,
     end: usize,
     options: ParagraphOptions,
-    final_line: bool,
-) -> Option<LineMetrics> {
+) -> Option<(f32, f32, f32, f32)> {
     let mut natural = 0.0;
     let mut stretch = 0.0;
     let mut shrink = 0.0;
     let mut glyph_width = 0.0;
-    for (offset, item) in boxes[start..end].iter().enumerate() {
+    let slice = boxes.get(start..end)?;
+    for (offset, item) in slice.iter().enumerate() {
         let width = item.width.max(0.0);
         natural += width;
         glyph_width += width;
@@ -182,60 +194,90 @@ fn line_metrics(
         }
     }
     if end < boxes.len() {
-        let break_width = boxes[end].break_width.max(0.0);
+        let break_width = boxes.get(end)?.break_width.max(0.0);
         natural += break_width;
         glyph_width += break_width;
     }
-    let protrusion = boxes[end - 1].end_protrusion.max(0.0).min(glyph_width);
+    let last = end.checked_sub(1).and_then(|idx| boxes.get(idx))?;
+    let protrusion = last.end_protrusion.max(0.0).min(glyph_width);
     natural -= protrusion;
     glyph_width -= protrusion;
+    Some((natural, stretch, shrink, glyph_width))
+}
 
-    // TeX's paragraph fill glue makes the final line effectively ragged.
-    if final_line || !options.justify {
-        if natural > options.line_width && end != start + 1 {
-            return None;
-        }
-        let ragged_ratio = if options.line_width > 0.0 {
-            ((options.line_width - natural) / options.line_width).max(0.0)
-        } else {
-            0.0
-        };
-        let ratio = ragged_ratio * 0.35;
-        return Some(LineMetrics {
-            natural,
-            ratio,
-            fitness: 1,
-            glyph_scale: 1.0,
-            badness: f64::from(ratio * 100.0),
-        });
+/// Metrics for a final line (or any line when justification is off), which
+/// TeX's paragraph fill glue makes effectively ragged: it is never stretched
+/// or shrunk to the measure, only checked that it does not overrun it.
+fn ragged_metrics(
+    natural: f32,
+    start: usize,
+    end: usize,
+    options: ParagraphOptions,
+) -> Option<LineMetrics> {
+    if natural > options.line_width && end != start.saturating_add(1) {
+        return None;
     }
+    let ragged_ratio = if options.line_width > 0.0 {
+        ((options.line_width - natural) / options.line_width).max(0.0)
+    } else {
+        0.0
+    };
+    let ratio = ragged_ratio * 0.35;
+    Some(LineMetrics {
+        natural,
+        ratio,
+        fitness: 1,
+        glyph_scale: 1.0,
+        badness: f64::from(ratio * 100.0),
+    })
+}
 
-    let delta = options.line_width - natural;
-    let capacity = if delta >= 0.0 { stretch } else { shrink };
-    if capacity <= f32::EPSILON {
-        if end < boxes.len() && boxes[end].break_before && natural <= options.line_width {
-            let ratio = ((options.line_width - natural) / options.line_width.max(1.0)) * 3.0;
-            if ratio <= options.tolerance.max(0.0) {
-                return Some(LineMetrics {
-                    natural,
-                    ratio,
-                    fitness: fitness_class(ratio),
-                    glyph_scale: 1.0,
-                    badness: (100.0 * f64::from(ratio.abs()).powi(3)).min(10_000.0),
-                });
-            }
+/// Metrics when neither stretch nor shrink is available at this boundary.
+/// A non-final line with no adjustable glue is only unavoidable when a
+/// single unbreakable box itself fills or overruns the measure. Treating a
+/// short one-word row as perfect would make every word its own line.
+fn zero_capacity_metrics(
+    boxes: &[ParagraphBox],
+    start: usize,
+    end: usize,
+    natural: f32,
+    options: ParagraphOptions,
+) -> Option<LineMetrics> {
+    if end < boxes.len()
+        && boxes.get(end).is_some_and(|item| item.break_before)
+        && natural <= options.line_width
+    {
+        let ratio = ((options.line_width - natural) / options.line_width.max(1.0)) * 3.0;
+        if ratio <= options.tolerance.max(0.0) {
+            return Some(LineMetrics {
+                natural,
+                ratio,
+                fitness: fitness_class(ratio),
+                glyph_scale: 1.0,
+                badness: (100.0 * f64::from(ratio.abs()).powi(3)).min(10_000.0),
+            });
         }
-        // A non-final line with no adjustable glue is only unavoidable when a
-        // single unbreakable box itself fills or overruns the measure. Treating
-        // a short one-word row as perfect would make every word its own line.
-        return (end == start + 1 && natural >= options.line_width).then_some(LineMetrics {
-            natural,
-            ratio: 0.0,
-            fitness: 1,
-            glyph_scale: 1.0,
-            badness: 10_000.0,
-        });
     }
+    (end == start.saturating_add(1) && natural >= options.line_width).then_some(LineMetrics {
+        natural,
+        ratio: 0.0,
+        fitness: 1,
+        glyph_scale: 1.0,
+        badness: 10_000.0,
+    })
+}
+
+/// Search glyph micro-expansion steps for the least-bad stretch/shrink
+/// solution at this boundary, trading inter-word glue against a small
+/// horizontal scale on the glyphs themselves.
+fn expansion_search(
+    natural: f32,
+    stretch: f32,
+    shrink: f32,
+    glyph_width: f32,
+    delta: f32,
+    options: ParagraphOptions,
+) -> Option<LineMetrics> {
     let minimum_ratio = if options.tolerance >= 100.0 {
         -4.0
     } else {
@@ -243,8 +285,8 @@ fn line_metrics(
     };
     let max_expansion = options.max_glyph_expansion.max(0.0);
     let mut best_metrics: Option<LineMetrics> = None;
-    for step in -8..=8 {
-        let expansion = max_expansion * step as f32 / 8.0;
+    for step in -8i8..=8i8 {
+        let expansion = max_expansion * f32::from(step) / 8.0;
         let adjusted_delta = delta - glyph_width * expansion;
         let adjusted_capacity = if adjusted_delta >= 0.0 {
             stretch
@@ -279,6 +321,28 @@ fn line_metrics(
     best_metrics
 }
 
+fn line_metrics(
+    boxes: &[ParagraphBox],
+    start: usize,
+    end: usize,
+    options: ParagraphOptions,
+    final_line: bool,
+) -> Option<LineMetrics> {
+    let (natural, stretch, shrink, glyph_width) = accumulate_line(boxes, start, end, options)?;
+
+    // TeX's paragraph fill glue makes the final line effectively ragged.
+    if final_line || !options.justify {
+        return ragged_metrics(natural, start, end, options);
+    }
+
+    let delta = options.line_width - natural;
+    let capacity = if delta >= 0.0 { stretch } else { shrink };
+    if capacity <= f32::EPSILON {
+        return zero_capacity_metrics(boxes, start, end, natural, options);
+    }
+    expansion_search(natural, stretch, shrink, glyph_width, delta, options)
+}
+
 fn compose_at_tolerance(
     boxes: &[ParagraphBox],
     mut options: ParagraphOptions,
@@ -289,25 +353,29 @@ fn compose_at_tolerance(
     // Keep a candidate for every fitness/flag combination at each boundary.
     // A locally more expensive route can be globally preferable when it avoids
     // an abrupt loose-to-tight transition or consecutive hyphenated lines.
-    let mut best = vec![[None; STATE_SLOTS]; count + 1];
+    let mut best = vec![[None; STATE_SLOTS]; count.saturating_add(1)];
     let initial_slot = state_slot(1, false);
-    best[0][initial_slot] = Some(State {
-        demerits: 0.0,
-        previous: 0,
-        previous_slot: initial_slot,
-        fitness: 1,
-        flagged: false,
-        ratio: 0.0,
-        natural_width: 0.0,
-        glyph_scale: 1.0,
-    });
+    if let Some(slot0) = best.get_mut(0) {
+        slot0[initial_slot] = Some(State {
+            demerits: 0.0,
+            previous: 0,
+            previous_slot: initial_slot,
+            fitness: 1,
+            flagged: false,
+            ratio: 0.0,
+            natural_width: 0.0,
+            glyph_scale: 1.0,
+        });
+    }
 
     for end in 1..=count {
-        if end != count && !boxes[end].break_before {
+        if end != count && boxes.get(end).is_some_and(|item| !item.break_before) {
             continue;
         }
         for start in 0..end {
-            let previous_states = best[start];
+            let Some(previous_states) = best.get(start).copied() else {
+                continue;
+            };
             for (previous_slot, previous) in previous_states.into_iter().enumerate() {
                 let Some(previous) = previous else {
                     continue;
@@ -317,7 +385,11 @@ fn compose_at_tolerance(
                     continue;
                 };
                 let badness = metrics.badness;
-                let boundary = if end < count { Some(boxes[end]) } else { None };
+                let boundary = if end < count {
+                    boxes.get(end).copied()
+                } else {
+                    None
+                };
                 let penalty = boundary.map_or(0.0, |item| f64::from(item.break_penalty));
                 let flagged = boundary.is_some_and(|item| item.flagged_break);
                 let mut demerits = previous.demerits
@@ -330,8 +402,11 @@ fn compose_at_tolerance(
                     demerits += options.flagged_demerit;
                 }
                 let slot = state_slot(metrics.fitness, flagged);
-                if best[end][slot].is_none_or(|current| demerits < current.demerits) {
-                    best[end][slot] = Some(State {
+                let Some(slots) = best.get_mut(end) else {
+                    continue;
+                };
+                if slots[slot].is_none_or(|current| demerits < current.demerits) {
+                    slots[slot] = Some(State {
                         demerits,
                         previous: start,
                         previous_slot,
@@ -346,7 +421,8 @@ fn compose_at_tolerance(
         }
     }
 
-    let (mut slot, _) = best[count]
+    let (mut slot, _) = best
+        .get(count)?
         .iter()
         .enumerate()
         .filter_map(|(slot, state)| state.map(|state| (slot, state)))
@@ -354,7 +430,14 @@ fn compose_at_tolerance(
     let mut lines = Vec::new();
     let mut end = count;
     while end > 0 {
-        let state = best[end][slot]?;
+        let Some(state) = best
+            .get(end)
+            .and_then(|slots| slots.get(slot))
+            .copied()
+            .flatten()
+        else {
+            return None;
+        };
         let final_line = end == count;
         let glue_scale = if final_line || !options.justify {
             1.0
@@ -400,15 +483,21 @@ pub fn compose_paragraph(boxes: &[ParagraphBox], options: ParagraphOptions) -> V
     let mut lines = Vec::new();
     let mut start = 0;
     while start < boxes.len() {
-        let mut end = start + 1;
-        let mut natural = boxes[start].width.max(0.0);
+        let Some(start_box) = boxes.get(start) else {
+            break;
+        };
+        let mut end = start.saturating_add(1);
+        let mut natural = start_box.width.max(0.0);
         while end < boxes.len() {
-            let candidate = natural + boxes[end].glue_before.max(0.0) + boxes[end].width.max(0.0);
-            if boxes[end].break_before && candidate > options.line_width && end > start {
+            let Some(end_box) = boxes.get(end) else {
+                break;
+            };
+            let candidate = natural + end_box.glue_before.max(0.0) + end_box.width.max(0.0);
+            if end_box.break_before && candidate > options.line_width && end > start {
                 break;
             }
             natural = candidate;
-            end += 1;
+            end = end.saturating_add(1);
         }
         lines.push(ComposedLine {
             start,
@@ -460,6 +549,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "checks glue_scale actually moved away from the literal 1.0 sentinel; an epsilon comparison would let a barely-adjusted line slip through undetected"
+    )]
     fn justified_lines_fill_the_measure_but_the_last_line_stays_natural() {
         let boxes: Vec<_> = (0..8)
             .map(|index| ParagraphBox::word(40.0, if index == 0 { 0.0 } else { 10.0 }))

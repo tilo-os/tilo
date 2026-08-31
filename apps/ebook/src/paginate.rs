@@ -456,6 +456,16 @@ fn protrusion_width(
     .0 * fraction
 }
 
+/// Per-word style flags, bundled so the fragment-building functions below
+/// don't take four separate `bool` parameters.
+#[derive(Clone, Copy)]
+struct WordFlags {
+    space_before: bool,
+    bold: bool,
+    italic: bool,
+    mono: bool,
+}
+
 /// Measure and push the single fragment `w[byte_start..byte_end]` as a
 /// `Word`. Returns its char count, so the caller can advance `chars_before`.
 #[allow(clippy::too_many_arguments)]
@@ -468,10 +478,7 @@ fn push_one_fragment(
     chars_before: usize,
     char_start: usize,
     source_byte_start: usize,
-    space_before: bool,
-    bold: bool,
-    italic: bool,
-    mono: bool,
+    flags: WordFlags,
     breaks: &WordBreaks,
     hyphen_width: f32,
     st: &BlockStyle,
@@ -479,6 +486,12 @@ fn push_one_fragment(
     tr: &mut TextRenderer,
     word_family: &FontChoice,
 ) -> usize {
+    let WordFlags {
+        space_before,
+        bold,
+        italic,
+        mono,
+    } = flags;
     let fragment = w.get(byte_start..byte_end).unwrap_or_default();
     let hyphen_break_before =
         fragment_index != 0 && breaks.hyphen.binary_search(&byte_start).is_ok();
@@ -556,10 +569,7 @@ fn push_word_fragments(
     w: &str,
     char_start: usize,
     source_byte_start: usize,
-    space_before: bool,
-    bold: bool,
-    italic: bool,
-    mono: bool,
+    flags: WordFlags,
     st: &BlockStyle,
     settings: &Settings,
     language: &str,
@@ -568,7 +578,14 @@ fn push_word_fragments(
 ) {
     let breaks = word_break_boundaries(w, settings, language);
     let hyphen_width = tr
-        .measure_font("-", st.size, None, weight(bold), italic, word_family)
+        .measure_font(
+            "-",
+            st.size,
+            None,
+            weight(flags.bold),
+            flags.italic,
+            word_family,
+        )
         .0;
     let mut byte_start = 0;
     let mut chars_before = 0;
@@ -582,10 +599,7 @@ fn push_word_fragments(
             chars_before,
             char_start,
             source_byte_start,
-            space_before,
-            bold,
-            italic,
-            mono,
+            flags,
             &breaks,
             hyphen_width,
             st,
@@ -656,10 +670,12 @@ fn build_words(
                 w,
                 char_start,
                 source_byte_start,
-                space_before,
-                bold,
-                italic,
-                mono,
+                WordFlags {
+                    space_before,
+                    bold,
+                    italic,
+                    mono,
+                },
                 st,
                 settings,
                 language,
@@ -674,6 +690,12 @@ fn build_words(
 /// Build the `LineRun`s for one composed line, in visual order, ligating
 /// adjacent fragments that rejoin their source word. Returns the runs and the
 /// final horizontal cursor position (used by the caller for RTL alignment).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the same per-line composition context (words/bidi/style/font/glue-width) \
+              as its sibling compose_one_line/compose_block_lines, which carry the same allow; \
+              splitting it into a context struct would only move the coupling, not remove it"
+)]
 fn line_runs(
     words: &[Word],
     bidi: &BidiInfo<'_>,
@@ -890,6 +912,12 @@ fn compose_block_lines(
 
 /// A laid-out `Block::Math` — the formula centered in the content width, with
 /// vertical breathing room scaled off the body size.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each parameter feeds a distinct piece of the geometry below (index/source for the \
+              block, y/body/content_w for its measurements, tr/st/expr for the math layout \
+              call); grouping any subset would be arbitrary rather than a real simplification"
+)]
 fn laid_math_block(
     index: usize,
     y: f32,

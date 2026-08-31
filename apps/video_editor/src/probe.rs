@@ -50,6 +50,11 @@ pub struct ProbedMedia {
 /// Probe a file on disk into real [`ProbedMedia`]. Reads the bytes (the whole
 /// file for the small clips this handles; a large import is capped) and
 /// dispatches on the magic bytes.
+///
+/// # Errors
+///
+/// Returns `Err` if `path`'s metadata or contents can't be read (missing
+/// file, permission denied, or another OS-level I/O failure).
 pub fn probe_file(path: &Path) -> std::io::Result<ProbedMedia> {
     // Read the file to parse its container header. Cap very large files: the
     // metadata we need lives in the header + `moov`, and a faststart MP4 puts
@@ -227,9 +232,7 @@ fn jpeg_dimensions(d: &[u8]) -> Option<(u32, u32)> {
             i += 1;
             continue;
         }
-        let Some(&marker) = d.get(i + 1) else {
-            return None;
-        };
+        let &marker = d.get(i + 1)?;
         // Standalone markers (RSTn, SOI, EOI, TEM) have no length.
         if (0xD0..=0xD9).contains(&marker) || marker == 0x01 {
             i += 2;
@@ -362,10 +365,10 @@ fn iter_boxes(data: &[u8]) -> Vec<BoxRef<'_>> {
 }
 
 /// First child box of `typ` within `data`.
-fn child<'a>(data: &'a [u8], typ: &[u8; 4]) -> Option<&'a [u8]> {
+fn child<'a>(data: &'a [u8], typ: [u8; 4]) -> Option<&'a [u8]> {
     iter_boxes(data)
         .into_iter()
-        .find(|b| &b.typ == typ)
+        .find(|b| b.typ == typ)
         .map(|b| b.body)
 }
 
@@ -373,16 +376,16 @@ fn child<'a>(data: &'a [u8], typ: &[u8; 4]) -> Option<&'a [u8]> {
 fn descend<'a>(data: &'a [u8], path: &[&[u8; 4]]) -> Option<&'a [u8]> {
     let mut cur = data;
     for step in path {
-        cur = child(cur, step)?;
+        cur = child(cur, **step)?;
     }
     Some(cur)
 }
 
 fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
-    let moov = child(data, b"moov")?;
+    let moov = child(data, *b"moov")?;
 
     // Movie duration from mvhd.
-    let (timescale, duration_units) = child(moov, b"mvhd").and_then(mvhd_time).unwrap_or((0, 0));
+    let (timescale, duration_units) = child(moov, *b"mvhd").and_then(mvhd_time).unwrap_or((0, 0));
     let duration = if timescale > 0 {
         duration_units as f64 / f64::from(timescale)
     } else {
@@ -410,10 +413,10 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
         saw_audio |= is_audio;
 
         let stbl = descend(trak, &[b"mdia", b"minf", b"stbl"]);
-        let track_codec = stbl.and_then(|s| child(s, b"stsd")).and_then(stsd_codec);
+        let track_codec = stbl.and_then(|s| child(s, *b"stsd")).and_then(stsd_codec);
 
         if is_video && !saw_video_recorded(width, height, &codec) {
-            if let Some((w, h)) = child(trak, b"tkhd").and_then(tkhd_dims) {
+            if let Some((w, h)) = child(trak, *b"tkhd").and_then(tkhd_dims) {
                 width = w;
                 height = h;
             }
@@ -421,7 +424,7 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
                 c.clone_into(&mut codec);
             }
             // fps ≈ video sample count / movie duration.
-            let samples = stbl.and_then(|s| child(s, b"stsz")).and_then(stsz_count);
+            let samples = stbl.and_then(|s| child(s, *b"stsz")).and_then(stsz_count);
             if let (Some(n), true) = (samples, duration > 0.0) {
                 fps = f64::from(n) / duration;
             }
@@ -579,7 +582,10 @@ fn ebml_children(d: &[u8]) -> Vec<(u64, &[u8])> {
         } else {
             data_start + size as usize
         };
-        out.push((id, &d[data_start..data_end]));
+        let Some(slice) = d.get(data_start..data_end) else {
+            break;
+        };
+        out.push((id, slice));
         i = data_end;
     }
     out
@@ -688,6 +694,18 @@ struct Mp3Header {
     samples_per_frame: u32,
 }
 
+// Layer III bitrate tables (kbps), indexed by bitrate_index.
+const MP3_BR_V1: [u32; 16] = [
+    0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
+];
+const MP3_BR_V2: [u32; 16] = [
+    0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
+];
+// Sample-rate tables by MPEG version, indexed by samplerate_index.
+const MP3_SR_V1: [u32; 3] = [44100, 48000, 32000];
+const MP3_SR_V2: [u32; 3] = [22050, 24000, 16000];
+const MP3_SR_V25: [u32; 3] = [11025, 12000, 8000];
+
 fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
     let &[b0, b1, b2, b3] = d.first_chunk::<4>()?;
     if b0 != 0xFF || (b1 & 0xE0) != 0xE0 {
@@ -706,31 +724,20 @@ fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
     if bitrate_index == 0 || bitrate_index == 0x0F || samplerate_index == 3 {
         return None; // free-format / reserved
     }
-    // Layer III bitrate tables (kbps), indexed by bitrate_index.
-    const BR_V1: [u32; 16] = [
-        0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
-    ];
-    const BR_V2: [u32; 16] = [
-        0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
-    ];
-    let bitrate_kbps = (if mpeg1 { BR_V1 } else { BR_V2 })
+    let br_kbps = (if mpeg1 { MP3_BR_V1 } else { MP3_BR_V2 })
         .get(bitrate_index as usize)
         .copied()
         .unwrap_or(0);
-    // Sample-rate tables by MPEG version, indexed by samplerate_index.
-    const SR_V1: [u32; 3] = [44100, 48000, 32000];
-    const SR_V2: [u32; 3] = [22050, 24000, 16000];
-    const SR_V25: [u32; 3] = [11025, 12000, 8000];
     let sample_rate = match version_bits {
-        3 => SR_V1,
-        2 => SR_V2,
-        _ => SR_V25,
+        3 => MP3_SR_V1,
+        2 => MP3_SR_V2,
+        _ => MP3_SR_V25,
     }
     .get(samplerate_index as usize)
     .copied()
     .unwrap_or(0);
     let samples_per_frame = if mpeg1 { 1152 } else { 576 };
-    let bitrate_bps = bitrate_kbps * 1000;
+    let bitrate_bps = br_kbps * 1000;
     let _ = padding;
     Some(Mp3Header {
         mpeg1,
@@ -815,11 +822,11 @@ mod tests {
     use super::*;
 
     // ---- box builder for crafting deterministic ISOBMFF test bytes ----
-    fn boxed(typ: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    fn boxed(typ: [u8; 4], payload: &[u8]) -> Vec<u8> {
         let size = (8 + payload.len()) as u32;
         let mut v = Vec::with_capacity(size as usize);
         v.extend_from_slice(&size.to_be_bytes());
-        v.extend_from_slice(typ);
+        v.extend_from_slice(&typ);
         v.extend_from_slice(payload);
         v
     }
@@ -842,26 +849,26 @@ mod tests {
         hdlr[8..12].copy_from_slice(b"vide");
 
         // stsd: ver+flags(4) count(4=1) entry_size(4) fourcc(4="avc1")
-        let mut stsd = Vec::new();
-        stsd.extend_from_slice(&[0, 0, 0, 0]); // ver+flags
-        stsd.extend_from_slice(&1u32.to_be_bytes()); // entry count
-        stsd.extend_from_slice(&16u32.to_be_bytes()); // entry size
-        stsd.extend_from_slice(b"avc1");
+        let mut stsd_body = Vec::new();
+        stsd_body.extend_from_slice(&[0, 0, 0, 0]); // ver+flags
+        stsd_body.extend_from_slice(&1u32.to_be_bytes()); // entry count
+        stsd_body.extend_from_slice(&16u32.to_be_bytes()); // entry size
+        stsd_body.extend_from_slice(b"avc1");
 
         // stsz: ver+flags(4) sample_size(4=0) sample_count(4=150) → fps 25.
         let mut stsz = vec![0u8; 12];
         stsz[8..12].copy_from_slice(&150u32.to_be_bytes());
 
         let stbl = boxed(
-            b"stbl",
-            &[boxed(b"stsd", &stsd), boxed(b"stsz", &stsz)].concat(),
+            *b"stbl",
+            &[boxed(*b"stsd", &stsd_body), boxed(*b"stsz", &stsz)].concat(),
         );
-        let minf = boxed(b"minf", &stbl);
-        let mdia = boxed(b"mdia", &[boxed(b"hdlr", &hdlr), minf].concat());
-        let trak = boxed(b"trak", &[boxed(b"tkhd", &tkhd), mdia].concat());
-        let moov = boxed(b"moov", &[boxed(b"mvhd", &mvhd), trak].concat());
+        let minf = boxed(*b"minf", &stbl);
+        let mdia = boxed(*b"mdia", &[boxed(*b"hdlr", &hdlr), minf].concat());
+        let trak = boxed(*b"trak", &[boxed(*b"tkhd", &tkhd), mdia].concat());
+        let moov = boxed(*b"moov", &[boxed(*b"mvhd", &mvhd), trak].concat());
 
-        let mut file = boxed(b"ftyp", b"isom\0\0\0\0isom");
+        let mut file = boxed(*b"ftyp", b"isom\0\0\0\0isom");
         file.extend_from_slice(&moov);
 
         let p = probe_bytes(&file, Path::new("clip.mp4"));
@@ -878,12 +885,12 @@ mod tests {
         let mut fmt = Vec::new();
         fmt.extend_from_slice(&1u16.to_le_bytes()); // audio format PCM
         fmt.extend_from_slice(&2u16.to_le_bytes()); // channels
-        fmt.extend_from_slice(&44100u32.to_le_bytes()); // sample rate
-        fmt.extend_from_slice(&176400u32.to_le_bytes()); // byte rate
+        fmt.extend_from_slice(&44_100u32.to_le_bytes()); // sample rate
+        fmt.extend_from_slice(&176_400u32.to_le_bytes()); // byte rate
         fmt.extend_from_slice(&4u16.to_le_bytes()); // block align
         fmt.extend_from_slice(&16u16.to_le_bytes()); // bits
 
-        let data_bytes = vec![0u8; 176400]; // exactly 1.0s of audio
+        let data_bytes = vec![0u8; 176_400]; // exactly 1.0s of audio
         let mut riff = Vec::new();
         riff.extend_from_slice(b"RIFF");
         riff.extend_from_slice(&0u32.to_le_bytes()); // riff size (ignored)

@@ -90,6 +90,21 @@ pub const SHOT_SCENARIOS: &[&str] = &["empty", "opened", "cropping", "edited"];
 /// can leak into the live app. Wide (3:2) and asymmetric, so a shot proves
 /// letterboxing, orientation and crop rather than looking plausible either way
 /// round.
+///
+/// # Panics
+///
+/// Panics if `w` or `h` is `0`; every call site passes a fixed, non-zero
+/// scenario size, so this never fires in practice.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "x/y/r/g/b/t/dx/dy are the idiomatic names for pixel coordinates, \
+              colour channels and an interpolation factor"
+)]
+#[allow(
+    clippy::expect_used,
+    reason = "the buffer this builds is always exactly w*h*4 bytes, and every \
+              call site passes a fixed non-zero w/h"
+)]
 pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
     let mut bytes = Vec::with_capacity((w as usize) * (h as usize) * 4);
     for y in 0..h {

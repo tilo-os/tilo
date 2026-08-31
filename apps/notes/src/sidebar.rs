@@ -147,6 +147,10 @@ struct RenameState {
     input: TextInput,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independently-toggled UI/dirty-tracking flag (focus, hover, two unrelated dirty producers, menu kind, one-time init gate) with no shared sub-concept; grouping them would only relocate the count, not reduce it"
+)]
 pub struct NoteTreeView {
     /// Snapshot of the page tree at sync-time. Re-built from the
     /// [`Workspace`] every `sync` so we don't hold mutable references
@@ -732,7 +736,7 @@ impl Widget for NoteTreeView {
             from_idx,
             seam_mode,
         );
-        self.draw_drop_indicator(scene, transform, theme, &metrics, &plan);
+        self.draw_drop_indicator(scene, transform, theme, &metrics, plan.as_ref());
 
         // Paint the embedded rename editor *over* the row.
         if let Some(r) = &mut self.rename {
@@ -769,27 +773,6 @@ impl Widget for NoteTreeView {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    /// Every visible row: selection pill, presence mist, nesting guides,
-    /// expand glyph and label.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
-
-    /// One row's selection pill, presence mist, nesting guides, expand
-    /// glyph and label.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
-
-    /// The half-transparent floating copy of the dragged row, following
-    /// the cursor above the reflowing list.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
-
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -807,7 +790,7 @@ impl Widget for NoteTreeView {
         if self.handle_menu_and_drag_escape(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -820,7 +803,7 @@ impl Widget for NoteTreeView {
         if self.handle_rename_routing(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -872,25 +855,6 @@ impl Widget for NoteTreeView {
             _ => {}
         }
     }
-
-    /// Routes to the context menu and an in-flight drag's Escape-to-cancel
-    /// — whatever currently owns input, in that priority order. Returns
-    /// `true` when the event was fully consumed and [`Self::handle_event`]
-    /// should stop dispatching.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the exact Widget::handle_event context bundle"
-    )]
-
-    /// Routes to the active rename editor — commits it on a click outside
-    /// its rect, then forwards the event (with Enter/Escape handled first
-    /// so the editor doesn't swallow them). Returns `true` when the event
-    /// was fully consumed and [`Self::handle_event`] should stop
-    /// dispatching.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the exact Widget::handle_event context bundle"
-    )]
 
     fn name(&self) -> &'static str {
         "NoteTreeView"
@@ -981,6 +945,12 @@ impl NoteTreeView {
         );
     }
 
+    /// Every visible row: selection pill, presence mist, nesting guides,
+    /// expand glyph and label.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "draw-context bundle, not real parameter coupling"
+    )]
     fn draw_rows(
         &self,
         scene: &mut Scene,
@@ -1032,6 +1002,12 @@ impl NoteTreeView {
         }
     }
 
+    /// One row's selection pill, presence mist, nesting guides, expand
+    /// glyph and label.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "draw-context bundle, not real parameter coupling"
+    )]
     fn draw_one_row(
         &self,
         scene: &mut Scene,
@@ -1134,7 +1110,7 @@ impl NoteTreeView {
         transform: Affine,
         theme: &Theme,
         metrics: &ListMetrics,
-        plan: &Option<DropPlan>,
+        plan: Option<&DropPlan>,
     ) {
         let tokens = &theme.tokens;
         match plan {
@@ -1177,6 +1153,12 @@ impl NoteTreeView {
         }
     }
 
+    /// The half-transparent floating copy of the dragged row, following
+    /// the cursor above the reflowing list.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "draw-context bundle, not real parameter coupling"
+    )]
     fn draw_drag_ghost(
         &self,
         scene: &mut Scene,
@@ -1223,15 +1205,23 @@ impl NoteTreeView {
         }
     }
 
+    /// Routes to the context menu and an in-flight drag's Escape-to-cancel
+    /// — whatever currently owns input, in that priority order. Returns
+    /// `true` when the event was fully consumed and [`Self::handle_event`]
+    /// should stop dispatching.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the exact Widget::handle_event context bundle"
+    )]
     fn handle_menu_and_drag_escape(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
+        focus_target: &Option<NodeId>,
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) -> bool {
@@ -1250,7 +1240,7 @@ impl NoteTreeView {
             self.menu.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 &mut menu_handled,
@@ -1292,11 +1282,20 @@ impl NoteTreeView {
         false
     }
 
+    /// Routes to the active rename editor — commits it on a click outside
+    /// its rect, then forwards the event (with Enter/Escape handled first
+    /// so the editor doesn't swallow them). Returns `true` when the event
+    /// was fully consumed and [`Self::handle_event`] should stop
+    /// dispatching.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the exact Widget::handle_event context bundle"
+    )]
     fn handle_rename_routing(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -1356,7 +1355,7 @@ impl NoteTreeView {
             r.input.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,

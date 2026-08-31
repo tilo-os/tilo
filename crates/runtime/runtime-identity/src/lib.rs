@@ -154,6 +154,11 @@ fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> 
 }
 
 /// Resolve the per-login-user identity directory using XDG rules.
+///
+/// # Errors
+///
+/// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set to an
+/// absolute path.
 pub fn identity_dir_from_env() -> io::Result<PathBuf> {
     if let Some(xdg) = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         let xdg = PathBuf::from(xdg);
@@ -290,6 +295,11 @@ fn read_private_selector(path: &std::path::Path) -> io::Result<String> {
 }
 
 /// Inspect all valid records without exposing their signing shares.
+///
+/// # Errors
+///
+/// Returns an error if the lifecycle lock can't be acquired, or `dir` can't
+/// be read.
 pub fn list_identities(dir: &std::path::Path) -> io::Result<Vec<IdentitySummary>> {
     let _lock = IdentityLock::acquire(dir)?;
     list_identities_unlocked(dir)
@@ -333,6 +343,12 @@ fn list_identities_unlocked(dir: &std::path::Path) -> io::Result<Vec<IdentitySum
 /// Import a complete, already-provisioned identity record.  The record is
 /// cryptographically self-checked before its first byte reaches the final
 /// path; creation is exclusive and mode 0600.
+///
+/// # Errors
+///
+/// Returns an error if `bytes` fails to parse as a valid identity record,
+/// the lifecycle lock can't be acquired, an identity with this id or public
+/// key already exists, or the record can't be written and secured.
 pub fn import_identity(dir: &std::path::Path, id: &str, bytes: &[u8]) -> io::Result<PathBuf> {
     let imported = load_from_bytes(bytes).map_err(|e| {
         io::Error::new(
@@ -341,13 +357,19 @@ pub fn import_identity(dir: &std::path::Path, id: &str, bytes: &[u8]) -> io::Res
         )
     })?;
     let _lock = IdentityLock::acquire(dir)?;
-    import_identity_unlocked(dir, id, bytes, imported, None)
+    import_identity_unlocked(dir, id, bytes, &imported, None)
 }
 
 /// Import through an explicitly selected secret provider. Host provisioning
 /// and recovery code can use this to install a hardware-backed provider; the
 /// provider's reported protection is persisted only after the record passes
 /// the same cryptographic and filesystem checks as a normal import.
+///
+/// # Errors
+///
+/// Returns an error if `bytes` fails to parse as a valid identity record,
+/// the lifecycle lock can't be acquired, an identity with this id or public
+/// key already exists, or the record can't be written and secured.
 pub fn import_identity_with_provider(
     dir: &std::path::Path,
     id: &str,
@@ -361,14 +383,14 @@ pub fn import_identity_with_provider(
         )
     })?;
     let _lock = IdentityLock::acquire(dir)?;
-    import_identity_unlocked(dir, id, bytes, imported, Some(provider))
+    import_identity_unlocked(dir, id, bytes, &imported, Some(provider))
 }
 
 fn import_identity_unlocked(
     dir: &std::path::Path,
     id: &str,
     bytes: &[u8],
-    imported: SigningIdentity,
+    imported: &SigningIdentity,
     provider: Option<&dyn SecretProvider>,
 ) -> io::Result<PathBuf> {
     let path = identity_path(dir, id)?;
@@ -404,6 +426,11 @@ fn import_identity_unlocked(
 
 /// Migrate one legacy identity into broker-only storage. Idempotent and safe
 /// to call at every launch.
+///
+/// # Errors
+///
+/// Returns an error if the lifecycle lock can't be acquired, the record
+/// can't be read, or no secret provider can secure it.
 pub fn secure_identity(dir: &std::path::Path, id: &str) -> io::Result<KeyProtection> {
     let _lock = IdentityLock::acquire(dir)?;
     let path = identity_path(dir, id)?;
@@ -413,6 +440,11 @@ pub fn secure_identity(dir: &std::path::Path, id: &str) -> io::Result<KeyProtect
 /// Migrate using an explicitly supplied provider, for a hardware-backed
 /// integration. The provider's `protection()` is what Settings reports; merely
 /// detecting a TPM device never changes the label.
+///
+/// # Errors
+///
+/// Returns an error if the lifecycle lock can't be acquired, the record
+/// can't be read, or the provider fails to secure it.
 pub fn secure_identity_with_provider(
     dir: &std::path::Path,
     id: &str,
@@ -531,6 +563,12 @@ fn secure_record_with_provider_unlocked(
 /// Select which identity the launcher brokers into newly started apps.
 /// Running apps retain the old capability until relaunched, avoiding a
 /// mid-operation author change.
+///
+/// # Errors
+///
+/// Returns an error if the lifecycle lock can't be acquired, `id` doesn't
+/// name a regular-file identity record, the record can't be secured or
+/// re-validated, or the active-identity selector can't be written.
 pub fn set_active_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
     let _lock = IdentityLock::acquire(dir)?;
     let path = identity_path(dir, id)?;
@@ -554,6 +592,12 @@ pub fn set_active_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
 /// Remove a non-active identity.  The active identity and final remaining
 /// identity are protected; callers must first select another identity and
 /// confirm removal in their UI.
+///
+/// # Errors
+///
+/// Returns an error if the lifecycle lock can't be acquired, `id` is the
+/// active or the only remaining identity, `id` doesn't name a regular-file
+/// identity record, or its secret can't be removed from its provider.
 pub fn remove_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
     let _lock = IdentityLock::acquire(dir)?;
     let path = identity_path(dir, id)?;
@@ -632,10 +676,10 @@ mod ondisk {
             {
                 Some("secret-service-v1") => KeyProtection::SecretService,
                 Some("broker-file-v1") => KeyProtection::BrokerFile,
-                // The default session has no installed TPM provider. A string
-                // in editable metadata is not evidence of hardware sealing.
-                Some("tpm2-sealed-v1") => KeyProtection::Unavailable,
                 None if self.schema_version == 1 => KeyProtection::LegacyPlaintext,
+                // Includes "tpm2-sealed-v1": the default session has no
+                // installed TPM provider, and a string in editable metadata
+                // is not evidence of hardware sealing.
                 _ => KeyProtection::Unavailable,
             }
         }
@@ -668,9 +712,12 @@ enum LoadFailure {
     SecretSizeMismatch {
         got: usize,
     },
+    /// Boxed: every other variant here is pointer-sized or smaller, and two
+    /// inline 32-byte keys would make every `LoadFailure` pay for the
+    /// biggest one.
     PublicKeyMismatch {
-        derived: [u8; 32],
-        recorded: [u8; 32],
+        derived: Box<[u8; 32]>,
+        recorded: Box<[u8; 32]>,
     },
 }
 
@@ -700,7 +747,7 @@ impl std::fmt::Display for LoadFailure {
 /// First four bytes of a key, hex, for error text — never the whole key,
 /// since an error string can end up in a log a third party reads.
 fn hex4(key: &[u8; 32]) -> String {
-    key[..4].iter().map(|b| format!("{b:02x}")).collect()
+    hex::encode(&key[..4])
 }
 
 impl LoadFailure {
@@ -742,10 +789,12 @@ impl std::fmt::Debug for SigningIdentity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SigningIdentity")
             .field("display_name", &self.display_name)
+            .field("avatar_color", &self.avatar_color)
             .field("group_public_key", &"<32 bytes>")
             .field("threshold", &self.threshold)
             .field("total_shares", &self.total_shares)
             .field("share_index", &self.share_index)
+            .field("single_device", &self.single_device)
             .field("signing_source", &"<redacted capability>")
             .finish()
     }
@@ -792,6 +841,11 @@ impl SigningIdentity {
     /// Ed25519 signature; in threshold mode, returns
     /// [`NotAvailable::ConnectionFailed`] — threshold signing needs the
     /// multi-device FROST ceremony via `threshold-identity` instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::ConnectionFailed`] in threshold mode, or if
+    /// signing through the broker fails.
     pub fn sign(&self, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
         match &self.source {
             SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),
@@ -845,6 +899,12 @@ impl SigningIdentity {
 /// `Err(NotAvailable::ServiceFdMissing)` when neither is present,
 /// `Err(NotAvailable::ConnectionFailed(_))` when the file is missing,
 /// unreadable, or malformed, and `Ok(SigningIdentity)` on success.
+///
+/// # Errors
+///
+/// Returns [`NotAvailable::ServiceFdMissing`] when neither the broker nor
+/// [`IDENTITY_ENV_VAR`] is present, or [`NotAvailable::ConnectionFailed`]
+/// when the identity file is missing, unreadable, or malformed.
 pub fn load() -> Result<SigningIdentity, NotAvailable> {
     if std::env::var_os(broker::BROKER_ENV_VAR).is_some() {
         return broker::connect_from_env();
@@ -858,6 +918,16 @@ pub fn load() -> Result<SigningIdentity, NotAvailable> {
 
 /// Same as [`load`] but reads from a caller-specified path — for tests, or
 /// apps that resolve the identity path themselves.
+///
+/// # Errors
+///
+/// Returns [`NotAvailable::ConnectionFailed`] if the file can't be read, is
+/// malformed, has no installed secret provider for a secured record, or the
+/// record fails its self-consistency check.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "public API also called with an owned PathBuf from crates/packaging/launcher, outside this pass's scope to update"
+)]
 pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
     let bytes =
         read_record_bytes(&path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
@@ -887,12 +957,18 @@ pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
 /// Load a secured record through an explicitly installed hardware provider.
 /// The metadata backend id must match; this prevents silently downgrading a
 /// TPM-labelled identity to a software key.
+///
+/// # Errors
+///
+/// Returns [`NotAvailable::ConnectionFailed`] if the file can't be read or
+/// is malformed, the record has no secret reference, the reference names a
+/// different provider than `provider`, or the secret can't be loaded.
 pub fn load_from_path_with_provider(
-    path: PathBuf,
+    path: &std::path::Path,
     provider: &dyn SecretProvider,
 ) -> Result<SigningIdentity, NotAvailable> {
     let bytes =
-        read_record_bytes(&path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
+        read_record_bytes(path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
     let record = parse_record(&bytes)?;
     let reference = record
         .secret_ref
@@ -911,6 +987,11 @@ pub fn load_from_path_with_provider(
 }
 
 /// Same as [`load`] but parses from an in-memory byte slice.
+///
+/// # Errors
+///
+/// Returns [`NotAvailable::ConnectionFailed`] if `bytes` is malformed, is a
+/// secured (schema version 2) record, or fails its self-consistency check.
 pub fn load_from_bytes(bytes: &[u8]) -> Result<SigningIdentity, NotAvailable> {
     let record = parse_record(bytes)?;
     if record.schema_version != 1 {
@@ -954,6 +1035,11 @@ fn read_record_bytes(path: &std::path::Path) -> io::Result<Vec<u8>> {
             "identity record exceeds the size limit",
         ));
     }
+    // Bounded by the MAX_RECORD_BYTES check just above (1 MiB).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "meta.len() is checked <= MAX_RECORD_BYTES (1 MiB) just above"
+    )]
     let mut bytes = Vec::with_capacity(meta.len() as usize);
     (&mut file)
         .take(MAX_RECORD_BYTES + 1)
@@ -1004,8 +1090,8 @@ fn identity_from_record(
         let derived = sk.verifying_key().to_bytes();
         if derived != ti.group_public_key {
             return Err(LoadFailure::PublicKeyMismatch {
-                derived,
-                recorded: ti.group_public_key,
+                derived: Box::new(derived),
+                recorded: Box::new(ti.group_public_key),
             }
             .into_not_available());
         }
@@ -1488,7 +1574,7 @@ mod tests {
         let error = load_from_path(target).unwrap_err();
         match error {
             NotAvailable::ConnectionFailed(error) => {
-                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied)
+                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
             }
             other => panic!("unexpected error: {other:?}"),
         }

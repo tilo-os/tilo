@@ -82,17 +82,26 @@ impl Source {
     /// path. File variants read through `std::fs` (which, for a workspace path,
     /// is the FUSE mount — the read is what triggers hydration). Remote returns
     /// an error: it is streamed by the decode pipeline, not byte-copied here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a [`Source::Remote`] (streamed elsewhere) or if the
+    /// resolved file cannot be opened.
     pub fn open_reader(&self) -> std::io::Result<Box<dyn Read + Send>> {
         if let Source::Remote { .. } = self {
-            Err(std::io::Error::new(
+            return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "remote sources are streamed by the decode pipeline, not read here",
-            ))
-        } else {
-            let abs = self.abs_path().expect("file variant has an abs path");
-            let f = std::fs::File::open(abs)?;
-            Ok(Box::new(f))
+            ));
         }
+        let abs = self.abs_path().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "source has no local path to read",
+            )
+        })?;
+        let f = std::fs::File::open(abs)?;
+        Ok(Box::new(f))
     }
 
     /// The total byte length of a file source, if known (a stat on the mount).
@@ -108,7 +117,7 @@ impl Source {
 /// narrow: keep the unreserved set + `/`, percent-encode everything else.
 pub fn path_to_file_uri(path: &Path) -> String {
     let s = path.to_string_lossy();
-    let mut out = String::with_capacity(s.len() + 8);
+    let mut out = String::with_capacity(s.len().saturating_add(8));
     out.push_str("file://");
     for b in s.as_bytes() {
         let c = *b;
@@ -126,8 +135,8 @@ pub fn path_to_file_uri(path: &Path) -> String {
 
 fn hex_digit(n: u8) -> char {
     match n {
-        0..=9 => (b'0' + n) as char,
-        _ => (b'A' + (n - 10)) as char,
+        0..=9 => (b'0'.saturating_add(n)) as char,
+        _ => (b'A'.saturating_add(n.saturating_sub(10))) as char,
     }
 }
 

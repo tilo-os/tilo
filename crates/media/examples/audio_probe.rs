@@ -59,35 +59,52 @@ fn dump() {
     }
 }
 
+/// Parse `args[i]` as `T`, or print a usage error and exit — this is a
+/// probe's CLI arg handling, not a library API, so "tell the operator and
+/// stop" is the right failure mode rather than propagating a `Result`.
+fn parse_arg<T: std::str::FromStr>(args: &[String], i: usize, name: &str) -> T
+where
+    T::Err: std::fmt::Display,
+{
+    let Some(raw) = args.get(i) else {
+        eprintln!("audio_probe: missing argument <{name}>");
+        std::process::exit(1);
+    };
+    raw.parse().unwrap_or_else(|e| {
+        eprintln!("audio_probe: invalid <{name}> {raw:?}: {e}");
+        std::process::exit(1);
+    })
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let ctl = RealGraphControl;
     match args.first().map(String::as_str) {
         None => dump(),
         Some("route") => {
-            let stream: u32 = args[1].parse().unwrap();
-            let serial: u32 = args[2].parse().unwrap();
+            let stream: u32 = parse_arg(&args, 1, "stream");
+            let serial: u32 = parse_arg(&args, 2, "sink-serial");
             println!(
                 "route stream {stream} -> serial {serial}: {:?}",
                 ctl.route_stream(stream, serial)
             );
         }
         Some("unroute") => {
-            let stream: u32 = args[1].parse().unwrap();
+            let stream: u32 = parse_arg(&args, 1, "stream");
             println!("unroute stream {stream}: {:?}", ctl.unroute_stream(stream));
         }
         Some("default") => {
-            let id: u32 = args[1].parse().unwrap();
+            let id: u32 = parse_arg(&args, 1, "sink-id");
             println!("set default sink {id}: {:?}", ctl.set_default_sink(id));
         }
         Some("volume") => {
-            let id: u32 = args[1].parse().unwrap();
-            let v: f32 = args[2].parse().unwrap();
+            let id: u32 = parse_arg(&args, 1, "node-id");
+            let v: f32 = parse_arg(&args, 2, "0.0-1.0");
             println!("set node {id} volume {v}: {:?}", ctl.set_node_volume(id, v));
         }
         Some("mute") => {
-            let id: u32 = args[1].parse().unwrap();
-            let m: bool = args[2] != "0";
+            let id: u32 = parse_arg(&args, 1, "node-id");
+            let m: bool = args.get(2).is_some_and(|s| s != "0");
             println!("set node {id} mute {m}: {:?}", ctl.set_node_mute(id, m));
         }
         Some(other) => eprintln!("unknown command: {other}"),

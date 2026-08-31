@@ -48,7 +48,17 @@ impl TransportState {
             return self.position_ms;
         }
         let elapsed = now_ms.saturating_sub(self.epoch_ms);
-        self.position_ms + (elapsed as f64 * f64::from(self.rate.max(0.0))) as u64
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            reason = "elapsed and the projected advance are millisecond counts \
+                      for a media playhead — far inside u64/f64's exact-integer \
+                      range for any real session — and rate.max(0.0) keeps the \
+                      product non-negative"
+        )]
+        let advance = (elapsed as f64 * f64::from(self.rate.max(0.0))) as u64;
+        self.position_ms.saturating_add(advance)
     }
 }
 
@@ -128,6 +138,11 @@ impl CrdtTransport {
 
     /// Rebuild a transport from a full saved document (a late-joiner adopting a
     /// peer's snapshot).
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying automerge error if `bytes` is not a valid saved
+    /// document.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, automerge::AutomergeError> {
         Ok(Self {
             doc: AutoCommit::load(bytes)?,
@@ -147,12 +162,22 @@ impl CrdtTransport {
     }
 
     /// Apply an incremental change blob received from the host.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying automerge error if `bytes` is not a valid
+    /// incremental change set.
     pub fn merge_incremental(&mut self, bytes: &[u8]) -> Result<(), automerge::AutomergeError> {
         self.doc.load_incremental(bytes).map(|_| ())
     }
 
     /// Merge a full saved document from a peer (the legacy / late-join
     /// snapshot path). Converges with the local state rather than replacing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying automerge error if `bytes` is not a valid saved
+    /// document, or if merging it into the local document fails.
     pub fn merge_snapshot(&mut self, bytes: &[u8]) -> Result<(), automerge::AutomergeError> {
         let mut other = AutoCommit::load(bytes)?;
         self.doc.merge(&mut other).map(|_| ())
@@ -162,7 +187,7 @@ impl CrdtTransport {
         match self.doc.get(ROOT, key) {
             Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
                 ScalarValue::Uint(u) => Some(*u),
-                ScalarValue::Int(i) => Some((*i).max(0) as u64),
+                ScalarValue::Int(i) => u64::try_from((*i).max(0)).ok(),
                 _ => None,
             },
             _ => None,
@@ -179,6 +204,12 @@ impl CrdtTransport {
         }
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "only used to read the rate scalar, a small playback-speed \
+                  multiplier far inside f64's exact-integer range even if \
+                  stored as Int/Uint"
+    )]
     fn read_f64(&self, key: &str) -> Option<f64> {
         match self.doc.get(ROOT, key) {
             Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -211,6 +242,11 @@ impl TransportSync for CrdtTransport {
             .put(ROOT, K_EPOCH, ScalarValue::Uint(state.epoch_ms));
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "rate is always a small playback-speed multiplier (~0.25..=4.0), \
+                  never near f32's range limits"
+    )]
     fn latest(&self) -> Option<TransportState> {
         // `present` is set on the first publish; without it there is nothing to
         // follow yet (a fresh document, or a peer who never played).

@@ -2202,20 +2202,19 @@ impl WordProcessor {
     /// Resolve the document model under `root` (initialising the schema if
     /// absent), guarantee at least one block, and keep the caret on a real block.
     pub fn bind(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let containers = match self.containers.clone() {
-            Some(c) => c,
-            None => {
-                let c = qdoc::model::open(state, root)
-                    .unwrap_or_else(|_| qdoc::model::init(state, root));
-                // Seed past existing block ids so editing a loaded/imported document
-                // never re-mints (and overwrites) an existing block.
-                self.ids = Some(qdoc::model::seeded_id_gen(state, &c));
-                self.containers = Some(c.clone());
-                // Populate the styles container (built-in defaults, or migrate a
-                // legacy meta-JSON stylesheet) on first bind.
-                self.seed_styles(state);
-                c
-            }
+        let containers = if let Some(c) = self.containers.clone() {
+            c
+        } else {
+            let c =
+                qdoc::model::open(state, root).unwrap_or_else(|_| qdoc::model::init(state, root));
+            // Seed past existing block ids so editing a loaded/imported document
+            // never re-mints (and overwrites) an existing block.
+            self.ids = Some(qdoc::model::seeded_id_gen(state, &c));
+            self.containers = Some(c.clone());
+            // Populate the styles container (built-in defaults, or migrate a
+            // legacy meta-JSON stylesheet) on first bind.
+            self.seed_styles(state);
+            c
         };
         // A document always has somewhere to write: an empty body gets its
         // first paragraph here. Header and footer stay empty until something
@@ -3998,8 +3997,8 @@ mod tests {
 
         let c = wp.containers.clone().unwrap();
         let snap = qdoc::model::materialize(&state, &c);
-        let toc: Vec<_> = snap.blocks.iter().filter(|b| block_is_toc(b)).collect();
-        assert_eq!(toc.len(), 3, "exactly three toc-marked blocks exist");
+        let toc_count = snap.blocks.iter().filter(|b| block_is_toc(b)).count();
+        assert_eq!(toc_count, 3, "exactly three toc-marked blocks exist");
         // They sit at the very top of the document, in heading order.
         assert_eq!(
             &snap.blocks[0].id, &inserted[0],

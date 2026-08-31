@@ -2035,9 +2035,9 @@ mod tests {
 
     #[test]
     fn open_video_navigates_and_records_history() {
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
-        app.apply(Action::OpenVideo("vid_donut".into()), &mut doc, &r);
+        app.apply(Action::OpenVideo("vid_donut".into()), &doc, &r);
         assert_eq!(app.model.route, Route::Watch("vid_donut".into()));
         assert_eq!(
             app.model.history.first().map(std::string::String::as_str),
@@ -2048,10 +2048,10 @@ mod tests {
 
     #[test]
     fn subscribe_toggles_via_action() {
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
         assert!(!app.model.is_subscribed("ch_synth"));
-        app.apply(Action::ToggleSubscribe("ch_synth".into()), &mut doc, &r);
+        app.apply(Action::ToggleSubscribe("ch_synth".into()), &doc, &r);
         assert!(app.model.is_subscribed("ch_synth"));
     }
 
@@ -2114,7 +2114,7 @@ mod tests {
 
     #[test]
     fn toggle_play_drives_the_engine() {
-        let (mut app, mut doc) = fresh_synth();
+        let (mut app, doc) = fresh_synth();
         let r = automerge::ROOT;
         app.model.route = Route::Watch("vid_donut".into());
         app.load_resolved_stream(
@@ -2124,13 +2124,13 @@ mod tests {
             "360p",
         );
         assert!(app.player.borrow().is_playing());
-        app.apply(Action::TogglePlay, &mut doc, &r);
+        app.apply(Action::TogglePlay, &doc, &r);
         assert!(
             !app.player.borrow().is_playing(),
             "TogglePlay paused the engine"
         );
         assert!(!app.model.playing, "the model mirrors the paused engine");
-        app.apply(Action::TogglePlay, &mut doc, &r);
+        app.apply(Action::TogglePlay, &doc, &r);
         assert!(
             app.player.borrow().is_playing(),
             "TogglePlay resumed the engine"
@@ -2175,13 +2175,13 @@ mod tests {
 
     #[test]
     fn seek_into_sponsor_auto_skips_to_segment_end() {
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
         // vid_rust_async has a Sponsor segment 1440..1570.
-        app.apply(Action::OpenVideo("vid_rust_async".into()), &mut doc, &r);
+        app.apply(Action::OpenVideo("vid_rust_async".into()), &doc, &r);
         let dur = f64::from(app.model.video("vid_rust_async").unwrap().duration);
         // Seek to ~1500s (inside the sponsor segment).
-        app.apply(Action::Seek(1500.0 / dur), &mut doc, &r);
+        app.apply(Action::Seek(1500.0 / dur), &doc, &r);
         // Auto-skip should jump the playhead to the segment end (1570).
         assert!(
             app.model.playhead >= 1570.0,
@@ -2196,11 +2196,11 @@ mod tests {
         // Autoplay is on by default; seeking to the very end must advance to
         // the first "up next" recommendation — the real code path that
         // consumes the autoplay flag.
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
         assert!(app.model.settings.autoplay, "autoplay defaults on");
-        app.apply(Action::OpenVideo("vid_rust_async".into()), &mut doc, &r);
-        app.apply(Action::Seek(1.0), &mut doc, &r);
+        app.apply(Action::OpenVideo("vid_rust_async".into()), &doc, &r);
+        app.apply(Action::Seek(1.0), &doc, &r);
         match app.route_for_test() {
             Route::Watch(id) => assert_ne!(
                 id, "vid_rust_async",
@@ -2212,12 +2212,12 @@ mod tests {
 
     #[test]
     fn autoplay_off_parks_at_the_end_without_advancing() {
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
-        app.apply(Action::ToggleSetting(SettingFlag::Autoplay), &mut doc, &r);
+        app.apply(Action::ToggleSetting(SettingFlag::Autoplay), &doc, &r);
         assert!(!app.model.settings.autoplay);
-        app.apply(Action::OpenVideo("vid_rust_async".into()), &mut doc, &r);
-        app.apply(Action::Seek(1.0), &mut doc, &r);
+        app.apply(Action::OpenVideo("vid_rust_async".into()), &doc, &r);
+        app.apply(Action::Seek(1.0), &doc, &r);
         assert_eq!(
             app.route_for_test(),
             &Route::Watch("vid_rust_async".into()),
@@ -2227,21 +2227,21 @@ mod tests {
 
     #[test]
     fn like_toggles_and_share_copies_a_link() {
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
         assert!(!app.model.is_liked("vid_donut"));
-        app.apply(Action::ToggleLike("vid_donut".into()), &mut doc, &r);
+        app.apply(Action::ToggleLike("vid_donut".into()), &doc, &r);
         assert!(
             app.model.is_liked("vid_donut"),
             "ToggleLike likes the video"
         );
-        app.apply(Action::ToggleLike("vid_donut".into()), &mut doc, &r);
+        app.apply(Action::ToggleLike("vid_donut".into()), &doc, &r);
         assert!(
             !app.model.is_liked("vid_donut"),
             "ToggleLike again unlikes it"
         );
 
-        app.apply(Action::Share("vid_donut".into()), &mut doc, &r);
+        app.apply(Action::Share("vid_donut".into()), &doc, &r);
         assert!(
             !app.model.is_liked("vid_donut"),
             "Share must not like the video"
@@ -2255,17 +2255,17 @@ mod tests {
     #[test]
     fn cycling_category_walks_the_three_modes() {
         use crate::model::SkipMode;
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
         assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Skip);
-        app.apply(Action::ToggleCategory(Category::Intro), &mut doc, &r);
+        app.apply(Action::ToggleCategory(Category::Intro), &doc, &r);
         assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Show);
-        app.apply(Action::ToggleCategory(Category::Intro), &mut doc, &r);
+        app.apply(Action::ToggleCategory(Category::Intro), &doc, &r);
         assert_eq!(
             app.model.settings.mode_of(Category::Intro),
             SkipMode::Disabled
         );
-        app.apply(Action::ToggleCategory(Category::Intro), &mut doc, &r);
+        app.apply(Action::ToggleCategory(Category::Intro), &doc, &r);
         assert_eq!(app.model.settings.mode_of(Category::Intro), SkipMode::Skip);
     }
 
@@ -2292,9 +2292,9 @@ mod tests {
             "playhead untouched by auto-skip"
         );
         // The manual skip button jumps to the segment end.
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let r = automerge::ROOT;
-        app.apply(Action::SkipSegment(1570.0), &mut doc, &r);
+        app.apply(Action::SkipSegment(1570.0), &doc, &r);
         assert!(
             app.model.playhead >= 1570.0,
             "manual skip advanced the playhead"
@@ -2305,7 +2305,7 @@ mod tests {
     fn settings_persist_round_trips_through_crdt() {
         let (mut app, mut doc) = fresh();
         let r = automerge::ROOT;
-        app.apply(Action::ToggleSetting(SettingFlag::DeArrow), &mut doc, &r);
+        app.apply(Action::ToggleSetting(SettingFlag::DeArrow), &doc, &r);
         let dearrow_after = app.model.settings.dearrow_enabled;
         app.persist(&mut doc, &r);
 
@@ -2317,10 +2317,10 @@ mod tests {
 
     #[test]
     fn quality_cycles() {
-        let (mut app, mut doc) = fresh();
+        let (mut app, doc) = fresh();
         let r = automerge::ROOT;
         let q0 = app.model.settings.preferred_quality.clone();
-        app.apply(Action::SetQuality(q0.clone()), &mut doc, &r);
+        app.apply(Action::SetQuality(q0.clone()), &doc, &r);
         assert_ne!(q0, app.model.settings.preferred_quality);
     }
 
@@ -2404,15 +2404,15 @@ mod tests {
 
     #[test]
     fn toggle_summons_overlay_rail() {
-        let (mut app, mut doc) = (at_width(560.0), AutoCommit::new());
+        let (mut app, doc) = (at_width(560.0), AutoCommit::new());
         let r = automerge::ROOT;
         assert!(!app.sidebar_currently_open(), "narrow rail starts closed");
-        app.apply(Action::ToggleSidebar, &mut doc, &r);
+        app.apply(Action::ToggleSidebar, &doc, &r);
         assert!(
             app.sidebar_currently_open(),
             "hamburger summons the overlay rail"
         );
-        app.apply(Action::ToggleSidebar, &mut doc, &r);
+        app.apply(Action::ToggleSidebar, &doc, &r);
         assert!(
             !app.sidebar_currently_open(),
             "a second toggle dismisses it"
@@ -2421,11 +2421,11 @@ mod tests {
 
     #[test]
     fn selecting_a_destination_dismisses_overlay_rail() {
-        let (mut app, mut doc) = (at_width(560.0), AutoCommit::new());
+        let (mut app, doc) = (at_width(560.0), AutoCommit::new());
         let r = automerge::ROOT;
-        app.apply(Action::ToggleSidebar, &mut doc, &r); // open it
+        app.apply(Action::ToggleSidebar, &doc, &r); // open it
         assert!(app.sidebar_currently_open());
-        app.apply(Action::Navigate(Route::Trending), &mut doc, &r);
+        app.apply(Action::Navigate(Route::Trending), &doc, &r);
         assert!(
             !app.sidebar_currently_open(),
             "navigating closes the overlay flap"
@@ -2434,9 +2434,9 @@ mod tests {
 
     #[test]
     fn docked_rail_is_not_dismissed_on_navigation() {
-        let (mut app, mut doc) = (at_width(1280.0), AutoCommit::new());
+        let (mut app, doc) = (at_width(1280.0), AutoCommit::new());
         let r = automerge::ROOT;
-        app.apply(Action::Navigate(Route::History), &mut doc, &r);
+        app.apply(Action::Navigate(Route::History), &doc, &r);
         assert!(
             app.sidebar_currently_open(),
             "the docked rail stays put when navigating"
@@ -2476,7 +2476,7 @@ mod tests {
         let r = automerge::ROOT;
         doc.put(&r, "search_query", "rust").unwrap();
         assert!(!app.model.search_loading);
-        app.apply(Action::SubmitSearch, &mut doc, &r);
+        app.apply(Action::SubmitSearch, &doc, &r);
         assert!(
             app.model.search_loading,
             "an in-flight search must show the skeleton"
@@ -2579,11 +2579,11 @@ mod tests {
         // drains, and on the boot-into-watch sync) arms it; `playing_id`
         // latching to the opened video proves the `PlayVideo` resolve request
         // went out, so playback is loading before any Play is pressed.
-        let (mut app, mut doc) = fresh_synth();
+        let (mut app, doc) = fresh_synth();
         app.online = true; // online so `ensure_playback` actually resolves
         let r = automerge::ROOT;
         assert!(app.playing_id.is_none(), "nothing armed before opening");
-        app.apply(Action::OpenVideo("vid_donut".into()), &mut doc, &r);
+        app.apply(Action::OpenVideo("vid_donut".into()), &doc, &r);
         app.ensure_playback();
         assert_eq!(
             app.playing_id.as_deref(),

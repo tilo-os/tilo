@@ -18,19 +18,19 @@
 //! Module map:
 //!
 //!   * [`model`]           — [`StoreItem`], [`Source`], [`ActionKind`]
-//!                           and the filter enum shared across the app.
+//!     and the filter enum shared across the app.
 //!   * [`registry_client`] — HTTP client for the qOS registry protocol.
 //!   * [`flathub_client`]  — HTTP client for the Flathub JSON API.
 //!   * [`installed`]       — parser for `$XDG_DATA_HOME/qos-apps/registry.toml`.
 //!   * [`config`]          — read/write user config for configured registries.
 //!   * [`sources`]         — merges the two feeds + installed state into
-//!                           one [`StoreItem`] stream.
+//!     one [`StoreItem`] stream.
 //!   * [`actions`]         — dispatches Add / Install / Remove via
-//!                           `qos-install` / `flatpak` subprocesses.
+//!     `qos-install` / `flatpak` subprocesses.
 //!   * [`app`]             — the root `StoreApp` widget.
 //!   * [`shots`]           — headless `--shots` renderer.
 //!   * [`widgets`]         — small ui-toolkit compositions shared across
-//!                           the surface (cards, filter chips, etc).
+//!     the surface (cards, filter chips, etc).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot

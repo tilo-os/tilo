@@ -90,6 +90,11 @@ const CACHE_MAX_AGE: Duration = Duration::from_hours(168);
 /// This is only the declarative content-filter path. The scriptlet path
 /// ([`user_scripts`]) is installed separately by the app, since it maps
 /// to a different engine capability (user scripts, not content filters).
+///
+/// # Panics
+///
+/// Panics if the OS refuses to spawn the background loader thread (e.g.
+/// the process is out of resources).
 pub fn spawn_filter_loader(engine: SharedEngine) {
     std::thread::Builder::new()
         .name("filter-loader".into())

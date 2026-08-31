@@ -188,6 +188,10 @@ pub fn parse_properties(text: &str) -> Params {
 }
 
 /// Read the live parameters.
+///
+/// # Errors
+///
+/// Returns an error if `tpm2_getcap` fails.
 pub fn read(runner: &dyn Runner) -> Result<Params> {
     let out = runner.run("tpm2_getcap", &argv!["properties-variable"], None)?;
     if !out.ok() {
@@ -202,6 +206,10 @@ pub fn read(runner: &dyn Runner) -> Result<Params> {
 /// Tighten the parameters. Needs `lockoutAuth` once it has been set. Returns the parameters
 /// as they actually are afterwards, not necessarily what was asked for —
 /// `TPM2_DictionaryAttackParameters` may be more restrictive, and some firmware silently clamps.
+///
+/// # Errors
+///
+/// Returns an error if `tpm2_dictionarylockout` fails, or if the subsequent [`read`] fails.
 pub fn tighten(runner: &dyn Runner, target: Target, lockout_auth: Option<&[u8]>) -> Result<Params> {
     let mt = target.max_tries.to_string();
     let rt = target.recovery_time.to_string();
@@ -237,6 +245,10 @@ pub fn tighten(runner: &dyn Runner, target: Target, lockout_auth: Option<&[u8]>)
 /// user can reach. Setting it and losing it means the only way out of a TPM lockout is a
 /// full `tpm2_clear` from firmware setup, destroying every sealed keyslot — recoverable with
 /// the recovery key, unrecoverable without it.
+///
+/// # Errors
+///
+/// Returns an error if `new_auth` is longer than 48 bytes, or if `tpm2_changeauth` fails.
 pub fn set_reset_auth(runner: &dyn Runner, new_auth: &[u8], old_auth: Option<&[u8]>) -> Result<()> {
     if new_auth.len() > 48 {
         bail!(
@@ -271,6 +283,10 @@ pub fn set_reset_auth(runner: &dyn Runner, new_auth: &[u8], old_auth: Option<&[u
 pub const RESET_AUTH_CHARS: usize = 32;
 
 /// A random reset authorisation.
+///
+/// # Errors
+///
+/// Returns an error if `/dev/urandom` cannot be opened or read.
 pub fn new_reset_auth() -> Result<zeroize::Zeroizing<Vec<u8>>> {
     use std::io::Read;
     let mut f = std::fs::File::open("/dev/urandom").context("opening /dev/urandom")?;
@@ -390,7 +406,7 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
         let p = Params {
             max_tries: 4,
             recovery_time: 86400,
-            lockout_recovery: 172800,
+            lockout_recovery: 172_800,
             lockout_auth_set: true,
             ..Default::default()
         };

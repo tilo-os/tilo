@@ -51,7 +51,7 @@ impl MemoryRelay {
         }
     }
 
-    pub fn attach(&mut self, id: &str) -> Peer {
+    pub fn attach(&self, id: &str) -> Peer {
         self.inboxes
             .lock()
             .unwrap()
@@ -85,11 +85,13 @@ impl Peer {
     }
 
     pub fn poll(&self) -> Vec<CollabEvent> {
-        let mut guard = self.inbox.lock().unwrap();
-        let mine = guard
+        self.inbox
+            .lock()
+            .unwrap()
             .get_mut(&self.id)
-            .expect("peer inbox removed from relay");
-        mine.drain(..).collect()
+            .expect("peer inbox removed from relay")
+            .drain(..)
+            .collect()
     }
 
     pub fn id(&self) -> &str {

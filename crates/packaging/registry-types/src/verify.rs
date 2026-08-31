@@ -61,6 +61,16 @@ pub fn verify_entry_signature(entry: &RegistryEntry) -> bool {
 /// we verify against*. So the same signature is portable: a
 /// federation client can verify the same bytes against a different
 /// owner's allowlist without re-encoding.
+///
+/// # Errors
+///
+/// Returns [`VerifyError::PublisherNotAllowed`] if the entry's declared
+/// pubkey is not in `allowlist`; [`VerifyError::InvalidPubkey`] or
+/// [`VerifyError::BadHex`]/[`VerifyError::BadLength`] if the pubkey or
+/// either signature fails to decode; [`VerifyError::EntrySignatureMismatch`]
+/// if the entry's own signature doesn't verify; and
+/// [`VerifyError::BadSignature`] if the change-level signature doesn't
+/// verify against the declared pubkey.
 pub fn verify_change_request(
     req: &EntryChangeRequest,
     publisher_pubkey_allowlist: &[[u8; 32]],

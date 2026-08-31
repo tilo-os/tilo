@@ -86,7 +86,7 @@ fn full_enrollment_and_directory_sync_flow() {
     let mut phone_dir = WorkspaceDirectory::new(user.public_key, phone_dev.public_key);
     primary_dir.add_workspace(1, "Notes").unwrap();
     primary_dir
-        .set_member_devices(1, vec![primary_dev.public_key, phone_dev.public_key])
+        .set_member_devices(1, &[primary_dev.public_key, phone_dev.public_key])
         .unwrap();
     phone_dir.add_workspace(2, "Photos").unwrap();
 

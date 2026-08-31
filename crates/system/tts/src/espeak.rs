@@ -36,16 +36,29 @@ pub struct EspeakSpeaker {
 
 /// espeak-ng's default speaking rate in words per minute.
 const ESPEAK_DEFAULT_WPM: u32 = 175;
-/// espeak-ng accepts roughly 80..=450 wpm; clamp to a usable band.
+/// espeak-ng accepts roughly 80..=450 wpm; clamp to a usable band. Production
+/// code clamps in `f32` through the mirrors below; only the tests want the
+/// integer band, to assert the value that actually reaches the binary.
+#[cfg(test)]
 const ESPEAK_MIN_WPM: u32 = 80;
+#[cfg(test)]
 const ESPEAK_MAX_WPM: u32 = 450;
+
+// `f32` mirrors of the constants above, kept in sync by hand: `set_rate`'s
+// math is floating-point, and `u32 as f32` has no lossless `From` conversion to
+// reach it through.
+const ESPEAK_DEFAULT_WPM_F32: f32 = 175.0;
+const ESPEAK_MIN_WPM_F32: f32 = 80.0;
+const ESPEAK_MAX_WPM_F32: f32 = 450.0;
 
 impl EspeakSpeaker {
     /// Construct a speaker if an `espeak-ng` (or `espeak`) binary is on `PATH`.
+    /// This probes by spawning `--version`, so it does not start any speech.
+    ///
+    /// # Errors
     ///
     /// Returns [`TtsError::BackendUnavailable`] if neither binary can be found —
     /// the factory uses this to fall through to [`crate::null::NullSpeaker`].
-    /// This probes by spawning `--version`, so it does not start any speech.
     pub fn new() -> Result<Self, TtsError> {
         let bin = if probe(ESPEAK_BIN) {
             ESPEAK_BIN
@@ -162,11 +175,17 @@ impl Speaker for EspeakSpeaker {
         self.kill_current();
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [ESPEAK_MIN_WPM_F32, ESPEAK_MAX_WPM_F32] and checked finite \
+                  just above, so always a small, non-negative, in-range value"
+    )]
     fn set_rate(&mut self, rate: f32) {
         // Normalize: 1.0 -> default wpm, scaled linearly, then clamped.
-        let wpm = (ESPEAK_DEFAULT_WPM as f32 * rate).round();
+        let wpm = (ESPEAK_DEFAULT_WPM_F32 * rate).round();
         let wpm = if wpm.is_finite() {
-            wpm.clamp(ESPEAK_MIN_WPM as f32, ESPEAK_MAX_WPM as f32) as u32
+            wpm.clamp(ESPEAK_MIN_WPM_F32, ESPEAK_MAX_WPM_F32) as u32
         } else {
             ESPEAK_DEFAULT_WPM
         };

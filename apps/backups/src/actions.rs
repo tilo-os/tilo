@@ -19,8 +19,8 @@
 use automerge::{AutoCommit, ROOT};
 
 use qos_actions::{
-    ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
-    ResourceProvider,
+    Action, ActionError, ActionInput, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, Resource, ResourceProvider,
 };
 use serde::{Deserialize, Serialize};
 
@@ -75,9 +75,17 @@ pub fn register(registry: &mut ActionRegistry) {
 
 /// The single point that turns a [`BackupsAction`] into the wire envelope both
 /// the palette and the on-screen affordances dispatch.
+///
+/// # Panics
+///
+/// Never panics: a `BackupsAction` that fails to serialize (it never should —
+/// every field is a plain enum or integer) falls back to an empty-payload
+/// envelope rather than crashing the caller.
 pub fn encode(action: &BackupsAction) -> EncodedAction {
-    EncodedAction::encode(BACKUPS_ACTION_TYPE, action)
-        .expect("BackupsAction is always serializable")
+    EncodedAction::encode(BACKUPS_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
+        type_id: BACKUPS_ACTION_TYPE.to_string(),
+        payload: Vec::new(),
+    })
 }
 
 // ===========================================================================
@@ -121,7 +129,13 @@ fn parse_count(text: &str) -> u32 {
 }
 
 fn immediate_spec(id: &str, label: &str, action: &BackupsAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, BACKUPS_ACTION_TYPE, action).expect("encode backups action")
+    ActionSpec::immediate(id, label, BACKUPS_ACTION_TYPE, action).unwrap_or_else(|_| ActionSpec {
+        id: id.to_string(),
+        label: label.to_string(),
+        description: None,
+        locus: action.locus(),
+        input: ActionInput::Immediate(encode(action)),
+    })
 }
 
 /// The resource tree Backups publishes: the retention policy, with a child per
@@ -194,14 +208,14 @@ mod tests {
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
         match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
+            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
-            _ => panic!("expected a prompted action: {}", spec.id),
+            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
     }
 

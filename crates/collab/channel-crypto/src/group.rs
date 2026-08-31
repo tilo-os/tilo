@@ -66,6 +66,10 @@ impl ChannelGroup {
     /// `MemberKey`'s provider takes ownership of the group state. The
     /// returned `ChannelGroup` is usable on its own — further members via
     /// [`add_member`](Self::add_member).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OpenMls`] if the underlying `MlsGroup::new` call fails.
     pub fn create(channel_id: ChannelId, owner: MemberKey) -> Result<Self> {
         let group = MlsGroup::new(
             &owner.provider,
@@ -130,6 +134,12 @@ impl ChannelGroup {
     /// needs the commit fanned out to existing peers (broker integration);
     /// [`add_member_with_commit`](Self::add_member_with_commit) synthesises
     /// that handoff for the in-crate `third_member_joins` test.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OpenMls`] if `add_members` or merging the pending
+    /// commit fails, or [`Error::TlsCodec`] if the resulting Welcome fails
+    /// to serialise.
     pub fn add_member(&mut self, candidate_key_package: KeyPackage) -> Result<Vec<u8>> {
         let (_commit, welcome_msg, _gi) = self
             .group
@@ -152,6 +162,12 @@ impl ChannelGroup {
     /// whenever there are more than two members. Delivered to every existing
     /// member except the caller (already merged); each calls
     /// [`process_commit`](Self::process_commit). Returns `(welcome_bytes, commit_bytes)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OpenMls`] if `add_members` or merging the pending
+    /// commit fails, or [`Error::TlsCodec`] if the Welcome or commit fails
+    /// to serialise.
     pub fn add_member_with_commit(
         &mut self,
         candidate_key_package: KeyPackage,
@@ -182,6 +198,14 @@ impl ChannelGroup {
     /// advances `epoch()` by one and refreshes the application key schedule.
     /// The only inbound governance message accepted today is a commit from
     /// an already-trusted group member.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::TlsCodec`] if `commit_bytes` fails to deserialise;
+    /// [`Error::OpenMls`] if openmls rejects the commit (including a panic
+    /// absorbed from its debug-assert path, per the comment in
+    /// [`decrypt`](Self::decrypt)); or [`Error::UnexpectedMessageKind`] if
+    /// the processed message isn't a commit.
     pub fn process_commit(&mut self, commit_bytes: &[u8]) -> Result<()> {
         let msg_in = MlsMessageIn::tls_deserialize_exact(commit_bytes).map_err(Error::tls_codec)?;
         let protocol_msg: ProtocolMessage =
@@ -215,6 +239,13 @@ impl ChannelGroup {
     /// `member.provider`'s storage). The returned group starts at the
     /// inviter's post-add epoch — older epochs are unrecoverable, joiners
     /// get no history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::TlsCodec`] if `welcome_bytes` fails to deserialise;
+    /// [`Error::UnexpectedMessageKind`] if it deserialises to something
+    /// other than a Welcome; or [`Error::OpenMls`] if staging or joining
+    /// the group from the Welcome fails.
     pub fn process_welcome(
         channel_id: ChannelId,
         welcome_bytes: &[u8],
@@ -282,6 +313,11 @@ impl ChannelGroup {
     /// signer, binding the message to an MLS group member; the outer
     /// `SignedOp.signature` is a separate collab-types signature over the
     /// canonical envelope, binding it to an `Identity`/attestation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::OpenMls`] if `create_message` fails, or
+    /// [`Error::TlsCodec`] if the resulting message fails to serialise.
     pub fn encrypt(&mut self, payload: &[u8]) -> Result<Vec<u8>> {
         let msg = self
             .group
@@ -298,6 +334,15 @@ impl ChannelGroup {
     /// or too far in the future); tampered ciphertext (AEAD tag check
     /// fails); wrong group (key schedule rejection). In every case the
     /// message is dropped and the broker's audit log records the reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::TlsCodec`] if `ciphertext` fails to deserialise;
+    /// [`Error::OpenMls`] for the protocol-level failure modes listed
+    /// above (including a panic absorbed from openmls's debug-assert
+    /// path — see the comment inside); or
+    /// [`Error::NotApplicationMessage`] if the processed message isn't an
+    /// application payload.
     pub fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>> {
         let msg_in = MlsMessageIn::tls_deserialize_exact(ciphertext).map_err(Error::tls_codec)?;
         let protocol_msg: ProtocolMessage =
@@ -328,21 +373,28 @@ impl ChannelGroup {
     /// [`add_member_with_commit`](Self::add_member_with_commit) minus a
     /// Welcome), and the role table needs a `Revoke` op class. Until then,
     /// callers can mint a fresh channel and invite only the desired members.
-    pub fn remove_member(&mut self, _leaf_index: u32) -> ! {
-        todo!(
-            "Phase 7.1: member removal requires broker commit fan-out + role-table revoke wiring; \
-             not in the Phase 7 minimum-viable surface"
-        )
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`Error::NotImplemented`] — see above.
+    pub fn remove_member(&mut self, _leaf_index: u32) -> Result<()> {
+        Err(Error::NotImplemented {
+            operation: "ChannelGroup::remove_member",
+            reason: "needs broker commit fan-out and a role-table revoke op class",
+        })
     }
 }
 
 impl std::fmt::Debug for ChannelGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `group: MlsGroup` doesn't implement `Debug` (openmls state), so
+        // this can't show every field — `finish_non_exhaustive` says so
+        // explicitly instead of silently pretending the summary is complete.
         f.debug_struct("ChannelGroup")
             .field("channel_id", &self.channel_id)
             .field("member", &self.member)
             .field("epoch", &self.epoch())
             .field("member_count", &self.member_count())
-            .finish()
+            .finish_non_exhaustive()
     }
 }

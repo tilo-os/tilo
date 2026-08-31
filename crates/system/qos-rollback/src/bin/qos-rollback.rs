@@ -318,8 +318,50 @@ fn run() -> Result<()> {
         .clone()
         .unwrap_or_else(|| PathBuf::from(policy::DEFAULT_PREDICTION_DIR));
 
+    // Grouped by the module doc's own command ordering (provisioning / runtime /
+    // authority-side); the split exists only to stay under the line-count lint, it carries
+    // no behavioural significance, and this outer match stays exhaustive over `Cmd` so a new
+    // subcommand fails to compile until it's routed somewhere.
     match &cli.cmd {
-        Cmd::TpmStatus { json } => cmd_tpm_status(&runner, *json),
+        Cmd::TpmStatus { .. } | Cmd::Harden { .. } | Cmd::Enroll { .. } => dispatch_provisioning(
+            &cli,
+            &runner,
+            &ws,
+            &cfg,
+            &state_path,
+            &pred_dir,
+            scratch.path(),
+        ),
+        Cmd::Unlock { .. } | Cmd::Confirm { .. } | Cmd::Status { .. } | Cmd::Certify { .. } => {
+            dispatch_runtime(
+                &cli,
+                &runner,
+                &ws,
+                &cfg,
+                &state_path,
+                &pred_dir,
+                scratch.path(),
+            )
+        }
+        Cmd::FloorRequest { .. } | Cmd::ApproveFloor { .. } | Cmd::SignPrediction { .. } => {
+            dispatch_authority(&cli, &runner, &ws, &cfg, &state_path, scratch.path())
+        }
+    }
+}
+
+/// Provisioning-time commands: check the TPM's lockout posture, harden it, enroll a
+/// generation's keyslot.
+fn dispatch_provisioning(
+    cli: &Cli,
+    runner: &exec::Real,
+    ws: &policy::Workspace,
+    cfg: &Config,
+    state_path: &Path,
+    pred_dir: &Path,
+    scratch_path: &Path,
+) -> Result<()> {
+    match &cli.cmd {
+        Cmd::TpmStatus { json } => cmd_tpm_status(runner, *json),
         Cmd::Harden {
             auth_file,
             max_tries,
@@ -327,7 +369,7 @@ fn run() -> Result<()> {
             lockout_recovery,
             i_have_a_recovery_key,
         } => cmd_harden(
-            &runner,
+            runner,
             auth_file,
             lockout::Target {
                 max_tries: *max_tries,
@@ -342,17 +384,33 @@ fn run() -> Result<()> {
             recovery_key_file,
             pin_file,
         } => cmd_enroll(
-            &runner,
-            &ws,
-            &cfg,
-            &state_path,
-            &pred_dir,
-            scratch.path(),
+            runner,
+            ws,
+            cfg,
+            state_path,
+            pred_dir,
+            scratch_path,
             device,
             *gen_num,
             recovery_key_file,
             pin_file.as_deref(),
         ),
+        // Unreachable: `run` only calls this for TpmStatus/Harden/Enroll.
+        _ => bail!("internal error: dispatch_provisioning called for a non-provisioning command"),
+    }
+}
+
+/// Boot/runtime commands: unseal a generation, confirm it, report status, certify the floor.
+fn dispatch_runtime(
+    cli: &Cli,
+    runner: &exec::Real,
+    ws: &policy::Workspace,
+    cfg: &Config,
+    state_path: &Path,
+    pred_dir: &Path,
+    scratch_path: &Path,
+) -> Result<()> {
+    match &cli.cmd {
         Cmd::Unlock {
             device,
             output,
@@ -360,9 +418,9 @@ fn run() -> Result<()> {
             proof_file,
             no_proof_file,
         } => cmd_unlock(
-            &runner,
-            &ws,
-            &cfg,
+            runner,
+            ws,
+            cfg,
             device,
             output.as_deref(),
             pin_file.as_deref(),
@@ -382,12 +440,12 @@ fn run() -> Result<()> {
             floor_at_least,
             dry_run,
         } => cmd_confirm(
-            &runner,
-            &ws,
-            &cfg,
-            &state_path,
-            &pred_dir,
-            scratch.path(),
+            runner,
+            ws,
+            cfg,
+            state_path,
+            pred_dir,
+            scratch_path,
             device,
             *gen_num,
             recovery_key_file.as_deref(),
@@ -398,28 +456,38 @@ fn run() -> Result<()> {
             *dry_run,
         ),
         Cmd::Status { device, json } => cmd_status(
-            &runner,
-            &cfg,
-            &state_path,
-            scratch.path(),
+            runner,
+            cfg,
+            state_path,
+            scratch_path,
             device.as_deref(),
             *json,
         ),
-        Cmd::Certify { nonce, out_dir } => cmd_certify(
-            &runner,
-            &ws,
-            &cfg,
-            &state_path,
-            scratch.path(),
-            nonce,
-            out_dir,
-        ),
+        Cmd::Certify { nonce, out_dir } => {
+            cmd_certify(runner, ws, cfg, state_path, scratch_path, nonce, out_dir)
+        }
+        // Unreachable: `run` only calls this for Unlock/Confirm/Status/Certify.
+        _ => bail!("internal error: dispatch_runtime called for a non-runtime command"),
+    }
+}
+
+/// Authority-side commands: build a floor-approval request, issue approvals, sign a PCR
+/// prediction. None of these touch a live device's keyslots.
+fn dispatch_authority(
+    cli: &Cli,
+    runner: &exec::Real,
+    ws: &policy::Workspace,
+    cfg: &Config,
+    state_path: &Path,
+    scratch_path: &Path,
+) -> Result<()> {
+    match &cli.cmd {
         Cmd::FloorRequest { device, out } => cmd_floor_request(
-            &runner,
-            &ws,
-            &cfg,
-            &state_path,
-            scratch.path(),
+            runner,
+            ws,
+            cfg,
+            state_path,
+            scratch_path,
             device,
             out.as_deref(),
         ),
@@ -430,8 +498,8 @@ fn run() -> Result<()> {
             out_dir,
             i_accept_stranding_this_machine,
         } => cmd_approve_floor(
-            &runner,
-            &ws,
+            runner,
+            ws,
             private_key,
             request,
             *up_to_floor,
@@ -445,15 +513,17 @@ fn run() -> Result<()> {
             out_dir,
             label,
         } => cmd_sign_prediction(
-            &runner,
-            &ws,
-            &cfg,
+            runner,
+            ws,
+            cfg,
             private_key,
             pcr_values.as_deref(),
             *gen_num,
             out_dir,
             label,
         ),
+        // Unreachable: `run` only calls this for FloorRequest/ApproveFloor/SignPrediction.
+        _ => bail!("internal error: dispatch_authority called for a non-authority command"),
     }
 }
 
@@ -604,6 +674,7 @@ fn cmd_enroll(
     };
     let recovery = read_secret(recovery_key_file)?;
     let pin = pin_file.map(read_secret).transpose()?;
+    let pin_bytes = pin.as_deref().map(|v| &v[..]);
 
     // SAFETY-CRITICAL: the independent unlock path has to work before we touch anything at all.
     if !keyslots::verify_recovery(runner, ws, device, &recovery)? {
@@ -628,29 +699,7 @@ fn cmd_enroll(
         predictions.len()
     );
 
-    let (authority_name, nv_auth_policy) = floor_authority(runner, ws, cfg)?;
-    counter::define(runner, cfg.nv_index, &nv_auth_policy, ws)?;
-    let existing = keyslots::list_tokens(runner, device)?;
-    let base = confirm::load_base(confirm::load_state(state_path)?.as_ref(), &existing)?;
-    let floor = if let Some(b) = base {
-        let c = counter::read(runner, cfg.nv_index, scratch)?
-            .context("the rollback floor counter exists but has never been incremented")?;
-        counter::FloorState {
-            counter: c,
-            base: b,
-        }
-    } else {
-        // First enrollment starts the floor at the bottom of the window, not at this generation —
-        // an immediate floor of `gen_num` would leave the very first update nothing to fall back to.
-        let initial = gen_num.saturating_sub(u64::from(cfg.retained_generations - 1));
-        counter::materialise(runner, ws, cfg.nv_index, scratch, initial, &authority_name)?
-    };
-    println!(
-        "rollback floor counter {} (base {}, floor generation {})",
-        floor.counter,
-        floor.base,
-        floor.floor_generation()
-    );
+    let floor = establish_floor(runner, ws, cfg, device, state_path, scratch, gen_num)?;
 
     let (slot, token_id) = keyslots::enroll_generation(
         runner,
@@ -661,54 +710,11 @@ fn cmd_enroll(
         floor,
         &predictions,
         &recovery,
-        pin.as_deref().map(|v| &v[..]),
+        pin_bytes,
     )?;
     println!("generation {gen_num}: keyslot {slot}, token {token_id}");
 
-    // SAFETY-CRITICAL: prove as much of the seal as is provable right now. For the *running*
-    // generation the whole round-trip is provable (live measurements match the prediction, so
-    // the TPM should release the secret and open the keyslot). For a generation that is not
-    // running — staging an update — it can't be proven: the seal is bound to measurements that
-    // won't exist until it boots. What is provable is that the keyslot works
-    // (`enroll_generation` verified it) and the current generation's token is untouched, so a
-    // first boot that can't unseal falls back rather than failing.
-    let tokens = keyslots::list_tokens(runner, device)?;
-    let (_, t) = tokens
-        .iter()
-        .find(|(_, t)| t.generation == gen_num)
-        .context("the token just written is not readable back")?;
-    let running = generation::running().ok();
-    if running == Some(gen_num) {
-        match keyslots::unseal(
-            runner,
-            ws,
-            t,
-            Path::new(&cfg.pcr_public_key),
-            pin.as_deref().map(|v| &v[..]),
-        )? {
-            Some(secret) => {
-                if !keyslots::verify_passphrase(runner, ws, device, &secret, Some(slot))? {
-                    bail!(
-                        "the unsealed secret does not open keyslot {slot} — enrollment is not usable"
-                    );
-                }
-                println!("generation {gen_num} unseals and opens keyslot {slot}");
-            }
-            None => bail!(
-                "the token for generation {gen_num} was written but does not unseal on this \
-                 machine: the signed prediction does not match the live PCRs. The keyslot was left \
-                 in place and the recovery key still works; fix the prediction and re-run."
-            ),
-        }
-    } else {
-        println!(
-            "generation {gen_num} is not the running generation ({}), so its seal cannot be \
-             exercised until that image boots. Its keyslot is verified; the running generation's \
-             keyslot and the rollback floor are untouched, so a first boot that cannot unseal falls \
-             back instead of failing.",
-            running.map_or_else(|| "unknown".into(), |g| g.to_string())
-        );
-    }
+    let running = verify_enrollment_if_running(runner, ws, cfg, device, gen_num, slot, pin_bytes)?;
 
     confirm::save_state(
         state_path,
@@ -739,6 +745,100 @@ fn cmd_enroll(
         );
     }
     Ok(())
+}
+
+/// Define the NV counter (idempotent) and work out the floor this enrollment should record —
+/// the existing floor if the counter has already been incremented, or the bottom of the
+/// retention window if this is the very first enrollment.
+fn establish_floor(
+    runner: &dyn exec::Runner,
+    ws: &policy::Workspace,
+    cfg: &Config,
+    device: &Path,
+    state_path: &Path,
+    scratch: &Path,
+    gen_num: u64,
+) -> Result<counter::FloorState> {
+    let (authority_name, nv_auth_policy) = floor_authority(runner, ws, cfg)?;
+    counter::define(runner, cfg.nv_index, &nv_auth_policy, ws)?;
+    let existing = keyslots::list_tokens(runner, device)?;
+    let base = confirm::load_base(confirm::load_state(state_path)?.as_ref(), &existing)?;
+    let floor = if let Some(b) = base {
+        let c = counter::read(runner, cfg.nv_index, scratch)?
+            .context("the rollback floor counter exists but has never been incremented")?;
+        counter::FloorState {
+            counter: c,
+            base: b,
+        }
+    } else {
+        // First enrollment starts the floor at the bottom of the window, not at this generation —
+        // an immediate floor of `gen_num` would leave the very first update nothing to fall back to.
+        let window = cfg
+            .retained_generations
+            .checked_sub(1)
+            .context("retained_generations must be at least 1 (the running generation itself)")?;
+        let initial = gen_num.saturating_sub(u64::from(window));
+        counter::materialise(runner, ws, cfg.nv_index, scratch, initial, &authority_name)?
+    };
+    println!(
+        "rollback floor counter {} (base {}, floor generation {})",
+        floor.counter,
+        floor.base,
+        floor.floor_generation()
+    );
+    Ok(floor)
+}
+
+/// SAFETY-CRITICAL: prove as much of the seal as is provable right now. For the *running*
+/// generation the whole round-trip is provable (live measurements match the prediction, so
+/// the TPM should release the secret and open the keyslot). For a generation that is not
+/// running — staging an update — it can't be proven: the seal is bound to measurements that
+/// won't exist until it boots. What is provable is that the keyslot works
+/// (`enroll_generation` verified it) and the current generation's token is untouched, so a
+/// first boot that can't unseal falls back rather than failing.
+///
+/// Returns the running generation (if any), for the caller's `last_confirmed` bookkeeping.
+fn verify_enrollment_if_running(
+    runner: &dyn exec::Runner,
+    ws: &policy::Workspace,
+    cfg: &Config,
+    device: &Path,
+    gen_num: u64,
+    slot: u32,
+    pin: Option<&[u8]>,
+) -> Result<Option<u64>> {
+    let tokens = keyslots::list_tokens(runner, device)?;
+    let (_, t) = tokens
+        .iter()
+        .find(|(_, t)| t.generation == gen_num)
+        .context("the token just written is not readable back")?;
+    let running = generation::running().ok();
+    if running == Some(gen_num) {
+        match keyslots::unseal(runner, ws, t, Path::new(&cfg.pcr_public_key), pin)? {
+            Some(secret) => {
+                if !keyslots::verify_passphrase(runner, ws, device, &secret, Some(slot))? {
+                    bail!(
+                        "the unsealed secret does not open keyslot {slot} — enrollment is not usable"
+                    );
+                }
+                println!("generation {gen_num} unseals and opens keyslot {slot}");
+            }
+            None => bail!(
+                "the token for generation {gen_num} was written but does not unseal on this \
+                 machine: the signed prediction does not match the live PCRs. The keyslot was left \
+                 in place and the recovery key still works; fix the prediction and re-run."
+            ),
+        }
+    } else {
+        println!(
+            "generation {gen_num} is not the running generation ({}), so its seal cannot be \
+             exercised until that image boots. Its keyslot is verified; the running generation's \
+             keyslot and the rollback floor are untouched, so a first boot that cannot unseal falls \
+             back instead of failing.",
+            running.map_or_else(|| "unknown".into(), |g| g.to_string())
+        );
+    }
+    Ok(running)
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -801,7 +901,7 @@ fn cmd_unlock(
                 }
                 return Ok(());
             }
-            Ok(None) => continue,
+            Ok(None) => {}
             Err(e) => {
                 floor_refusals.push(format!("token {id} (generation {}): {e:#}", t.generation));
             }

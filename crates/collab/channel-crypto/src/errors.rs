@@ -51,6 +51,18 @@ pub enum Error {
     /// `ChannelEvent` log, not in-band.
     #[error("processed message was not an application message")]
     NotApplicationMessage,
+
+    /// A documented-but-unbuilt operation was called. Member removal needs
+    /// broker commit fan-out and a role-table revoke op class that don't
+    /// exist yet; callers can mint a fresh channel and invite only the
+    /// desired members until it does.
+    #[error("{operation} is not implemented yet: {reason}")]
+    NotImplemented {
+        /// The operation that was called (e.g. `"ChannelGroup::remove_member"`).
+        operation: &'static str,
+        /// Why it isn't built yet.
+        reason: &'static str,
+    },
 }
 
 impl Error {

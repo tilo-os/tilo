@@ -30,6 +30,7 @@
 //! job/portal channels are the only non-CRDT state.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -70,7 +71,7 @@ const RELEASE_ZERO_H: f64 = 84.0;
 /// A clickable hit-target for one frame. Pure function of the viewport +
 /// state, so `draw` and `handle_event` agree without ordering hazards. The
 /// Customize step's own affordances live inside [`CustomizePanel`], not here.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 enum Hit {
     PickFile,
     Release(usize),
@@ -361,7 +362,6 @@ impl ImagerApp {
 
     #[allow(clippy::too_many_arguments)]
     fn txt_right(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         s: &str,
@@ -387,7 +387,6 @@ impl ImagerApp {
 
     #[allow(clippy::too_many_arguments)]
     fn txt_center(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         s: &str,
@@ -455,7 +454,6 @@ impl ImagerApp {
     }
 
     fn section_label(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -671,7 +669,7 @@ impl ImagerApp {
                 JobPhase::Success => c.semantic.success,
                 _ => c.text_dim,
             };
-            self.txt_right(
+            Self::txt_right(
                 scene,
                 tr,
                 &self.status,
@@ -708,7 +706,7 @@ impl ImagerApp {
             } else {
                 let ring = if current { c.accent[5] } else { c.neutral[4] };
                 scene.fill(Fill::NonZero, t, ring, None, &Circle::new(disc_c, 11.0));
-                self.txt_center(
+                Self::txt_center(
                     scene,
                     tr,
                     &format!("{}", s.index() + 1),
@@ -789,7 +787,7 @@ impl ImagerApp {
                 if hov { c.neutral[3] } else { c.neutral[2] },
             );
             Self::stroke_rr(scene, t, r, 10.0, c.border_standard, 1.0);
-            self.txt_center(
+            Self::txt_center(
                 scene,
                 tr,
                 "‹  Back",
@@ -808,7 +806,7 @@ impl ImagerApp {
 
         // A hint between them (center) — e.g. what's still needed.
         if let Some(hint) = self.footer_hint() {
-            self.txt_center(
+            Self::txt_center(
                 scene,
                 tr,
                 &hint,
@@ -891,7 +889,7 @@ impl ImagerApp {
         };
         Self::fill_rr(scene, t, r, 11.0, bg);
         let fg = if enabled { Color::WHITE } else { c.neutral[6] };
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             &label,
@@ -909,7 +907,6 @@ impl ImagerApp {
 // =========================================================================
 impl ImagerApp {
     fn draw_step_title(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -956,7 +953,7 @@ impl ImagerApp {
         } else {
             "The image to write. Pick a local .iso or .img file, or a qOS release below."
         };
-        self.draw_step_title(scene, tr, theme, content, "Choose the source image", sub);
+        Self::draw_step_title(scene, tr, theme, content, "Choose the source image", sub);
         let browse = self.draw_source_dropzone(scene, tr, theme, t, content);
         let y = self.draw_source_selected_card(scene, tr, theme, t, content, browse);
         let y = self.draw_source_releases(scene, tr, theme, t, content, y);
@@ -1089,7 +1086,7 @@ impl ImagerApp {
             card.y0 + 18.0 + 22.0,
         );
         Self::fill_rr(scene, t, badge, 6.0, source_color(theme, src.kind));
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             src.kind.tag(),
@@ -1160,7 +1157,6 @@ impl ImagerApp {
         content: Rect,
         mut y: f64,
     ) -> f64 {
-        let c = &theme.tokens.colors;
         // qOS releases. With none to choose between, the heading names the
         // section rather than offering a choice that is not there.
         let heading = if self.releases().is_empty() {
@@ -1168,125 +1164,157 @@ impl ImagerApp {
         } else {
             "OR CHOOSE A qOS RELEASE"
         };
-        self.section_label(scene, tr, theme, heading, content.x0, y);
+        Self::section_label(scene, tr, theme, heading, content.x0, y);
         y += 22.0;
         if self.releases().is_empty() {
             // Nothing is known to be on this machine, so nothing is offered.
             // The honest zero-state says so rather than leaving a bare heading.
-            let card = Rect::new(content.x0, y, content.x1, y + RELEASE_ZERO_H);
-            Self::fill_rr(scene, t, card, 12.0, c.surfaces.raised);
-            Self::dashed_rr(scene, t, card, 12.0, c.border_standard, 1.2);
-            let cx = f64::midpoint(card.x0, card.x1);
-            self.txt_center(
-                scene,
-                tr,
-                "No qOS releases found",
-                14.0,
-                c.text_primary,
-                cx,
-                card.y0 + 24.0,
-                TextWeight::Semibold,
-            );
-            self.txt_center(
-                scene,
-                tr,
-                "Releases stored on this machine appear here.",
-                12.0,
-                c.text_dim,
-                cx,
-                card.y0 + 47.0,
-                TextWeight::Regular,
-            );
-            y = card.y1 + 10.0;
+            y = Self::draw_no_releases_card(scene, tr, theme, t, content, y);
         }
         for rel in self.releases() {
-            let r = Rect::new(content.x0, y, content.x1, y + 54.0);
-            let selected = self.source.as_ref().is_some_and(|s| {
-                s.kind == SourceKind::QosImage && s.name == format!("{} {}", rel.name, rel.version)
-            });
-            let hov = r.contains(self.last_mouse);
-            Self::fill_rr(
-                scene,
-                t,
-                r,
-                11.0,
-                if selected {
-                    with_alpha(c.accent[5], 34)
-                } else if hov {
-                    c.neutral[2]
-                } else {
-                    c.surfaces.raised
-                },
-            );
-            Self::stroke_rr(
-                scene,
-                t,
-                r,
-                11.0,
-                if selected {
-                    c.accent[5]
-                } else {
-                    c.border_standard
-                },
-                if selected { 1.4 } else { 1.0 },
-            );
-            let badge = Rect::new(
-                r.x0 + 14.0,
-                r.y0 + 15.0,
-                r.x0 + 14.0 + 42.0,
-                r.y0 + 15.0 + 22.0,
-            );
-            Self::fill_rr(scene, t, badge, 6.0, c.accent[5]);
-            self.txt_center(
-                scene,
-                tr,
-                "qOS",
-                11.0,
-                Color::WHITE,
-                f64::midpoint(badge.x0, badge.x1),
-                badge.y0 + 5.0,
-                TextWeight::Bold,
-            );
-            Self::txt(
-                scene,
-                tr,
-                &format!("qOS {}", rel.version),
-                14.5,
-                c.text_primary,
-                r.x0 + 68.0,
-                r.y0 + 9.0,
-                None,
-                TextWeight::Semibold,
-            );
-            let where_ = if rel.local_path.is_empty() {
-                "download"
-            } else {
-                "on disk"
-            };
-            Self::txt(
-                scene,
-                tr,
-                &format!("{}  ·  {}  ·  {}", rel.channel, fmt_size(rel.size), where_),
-                11.5,
-                c.text_dim,
-                r.x0 + 68.0,
-                r.y0 + 30.0,
-                None,
-                TextWeight::Regular,
-            );
-            self.txt_right(
-                scene,
-                tr,
-                "installable",
-                11.0,
-                c.semantic.success,
-                r.x1 - 16.0,
-                r.y0 + 20.0,
-                TextWeight::Medium,
-            );
-            y += 54.0 + 10.0;
+            y = self.draw_release_row(scene, tr, theme, t, content, y, rel);
         }
         y
+    }
+
+    /// The empty-state card shown in place of the release list when nothing
+    /// is known to be on this machine. Returns the `y` to continue drawing
+    /// from below the card.
+    fn draw_no_releases_card(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        content: Rect,
+        y: f64,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let card = Rect::new(content.x0, y, content.x1, y + RELEASE_ZERO_H);
+        Self::fill_rr(scene, t, card, 12.0, c.surfaces.raised);
+        Self::dashed_rr(scene, t, card, 12.0, c.border_standard, 1.2);
+        let cx = f64::midpoint(card.x0, card.x1);
+        Self::txt_center(
+            scene,
+            tr,
+            "No qOS releases found",
+            14.0,
+            c.text_primary,
+            cx,
+            card.y0 + 24.0,
+            TextWeight::Semibold,
+        );
+        Self::txt_center(
+            scene,
+            tr,
+            "Releases stored on this machine appear here.",
+            12.0,
+            c.text_dim,
+            cx,
+            card.y0 + 47.0,
+            TextWeight::Regular,
+        );
+        card.y1 + 10.0
+    }
+
+    /// One release row: selection badge, name, channel/size/location, and the
+    /// "installable" tag. Returns the `y` to continue drawing from below it.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_release_row(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        content: Rect,
+        y: f64,
+        rel: &QosRelease,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let r = Rect::new(content.x0, y, content.x1, y + 54.0);
+        let selected = self.source.as_ref().is_some_and(|s| {
+            s.kind == SourceKind::QosImage && s.name == format!("{} {}", rel.name, rel.version)
+        });
+        let hov = r.contains(self.last_mouse);
+        Self::fill_rr(
+            scene,
+            t,
+            r,
+            11.0,
+            if selected {
+                with_alpha(c.accent[5], 34)
+            } else if hov {
+                c.neutral[2]
+            } else {
+                c.surfaces.raised
+            },
+        );
+        Self::stroke_rr(
+            scene,
+            t,
+            r,
+            11.0,
+            if selected {
+                c.accent[5]
+            } else {
+                c.border_standard
+            },
+            if selected { 1.4 } else { 1.0 },
+        );
+        let badge = Rect::new(
+            r.x0 + 14.0,
+            r.y0 + 15.0,
+            r.x0 + 14.0 + 42.0,
+            r.y0 + 15.0 + 22.0,
+        );
+        Self::fill_rr(scene, t, badge, 6.0, c.accent[5]);
+        Self::txt_center(
+            scene,
+            tr,
+            "qOS",
+            11.0,
+            Color::WHITE,
+            f64::midpoint(badge.x0, badge.x1),
+            badge.y0 + 5.0,
+            TextWeight::Bold,
+        );
+        Self::txt(
+            scene,
+            tr,
+            &format!("qOS {}", rel.version),
+            14.5,
+            c.text_primary,
+            r.x0 + 68.0,
+            r.y0 + 9.0,
+            None,
+            TextWeight::Semibold,
+        );
+        let where_ = if rel.local_path.is_empty() {
+            "download"
+        } else {
+            "on disk"
+        };
+        Self::txt(
+            scene,
+            tr,
+            &format!("{}  ·  {}  ·  {}", rel.channel, fmt_size(rel.size), where_),
+            11.5,
+            c.text_dim,
+            r.x0 + 68.0,
+            r.y0 + 30.0,
+            None,
+            TextWeight::Regular,
+        );
+        Self::txt_right(
+            scene,
+            tr,
+            "installable",
+            11.0,
+            c.semantic.success,
+            r.x1 - 16.0,
+            r.y0 + 20.0,
+            TextWeight::Medium,
+        );
+        y + 54.0 + 10.0
     }
 
     /// Draws the "Recent" section listing up to the three most recent sources.
@@ -1304,7 +1332,7 @@ impl ImagerApp {
             return;
         }
         y += 12.0;
-        self.section_label(scene, tr, theme, "RECENT", content.x0, y);
+        Self::section_label(scene, tr, theme, "RECENT", content.x0, y);
         y += 20.0;
         for src in self.recent.iter().take(3) {
             if y + 44.0 > content.y1 {
@@ -1339,7 +1367,7 @@ impl ImagerApp {
                 None,
                 TextWeight::Regular,
             );
-            self.txt_right(
+            Self::txt_right(
                 scene,
                 tr,
                 src.kind.tag(),
@@ -1363,7 +1391,7 @@ impl ImagerApp {
     ) {
         let c = &theme.tokens.colors;
         let content = lay.content;
-        self.draw_step_title(
+        Self::draw_step_title(
             scene,
             tr,
             theme,
@@ -1377,7 +1405,7 @@ impl ImagerApp {
         } else {
             format!("{} removable", self.removable_count())
         };
-        self.txt_right(
+        Self::txt_right(
             scene,
             tr,
             &detected,
@@ -1403,7 +1431,7 @@ impl ImagerApp {
             if hov { c.neutral[3] } else { c.neutral[2] },
         );
         Self::stroke_rr(scene, t, rescan, 9.0, c.border_standard, 1.0);
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             "⟳ Rescan",
@@ -1567,7 +1595,7 @@ impl ImagerApp {
         Self::fill_rr(scene, t, body, 6.0, c.neutral[4]);
         let cap = Rect::new(cx - 10.0, gy - 16.0, cx + 10.0, gy);
         Self::fill_rr(scene, t, cap, 3.0, c.neutral[5]);
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             "Insert a drive",
@@ -1577,7 +1605,7 @@ impl ImagerApp {
             card.y0 + 140.0,
             TextWeight::Semibold,
         );
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             "Plug in a USB stick or SD card, then press Rescan.",
@@ -1592,7 +1620,7 @@ impl ImagerApp {
         } else {
             "No removable drives detected — enable “Show internal disks” to target a fixed disk."
         };
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             hint,
@@ -1652,7 +1680,7 @@ impl ImagerApp {
         // Kind badge.
         let badge = Rect::new(left, r.y0 + 18.0, left + 54.0, r.y0 + 18.0 + 24.0);
         Self::fill_rr(scene, t, badge, 6.0, kind_color(theme, drive.kind));
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             drive.kind.tag(),
@@ -1699,7 +1727,7 @@ impl ImagerApp {
             r.y0 + 18.0 + 24.0,
         );
         Self::fill_rr(scene, t, chip, 6.0, with_alpha(chip_c, 40));
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             chip_label,
@@ -1772,7 +1800,7 @@ impl ImagerApp {
         let c = &theme.tokens.colors;
         let content = lay.content;
         if !self.customizable() {
-            self.draw_step_title(scene, tr, theme, content, "Customize (optional)", "");
+            Self::draw_step_title(scene, tr, theme, content, "Customize (optional)", "");
             let card = Rect::new(
                 content.x0,
                 content.y0 + 60.0,
@@ -1781,7 +1809,7 @@ impl ImagerApp {
             );
             Self::fill_rr(scene, t, card, 14.0, c.surfaces.raised);
             Self::stroke_rr(scene, t, card, 14.0, c.border_standard, 1.0);
-            self.txt_center(
+            Self::txt_center(
                 scene,
                 tr,
                 "This image is written unchanged",
@@ -1791,7 +1819,7 @@ impl ImagerApp {
                 card.y0 + 46.0,
                 TextWeight::Semibold,
             );
-            self.txt_center(
+            Self::txt_center(
                 scene,
                 tr,
                 "Pre-configuration (hostname, user, region) is available for qOS",
@@ -1801,7 +1829,7 @@ impl ImagerApp {
                 card.y0 + 76.0,
                 TextWeight::Regular,
             );
-            self.txt_center(
+            Self::txt_center(
                 scene,
                 tr,
                 "images. Press Continue to write it as-is.",
@@ -1819,7 +1847,7 @@ impl ImagerApp {
         } else {
             "Pre-configure the written media so it boots ready to use."
         };
-        self.draw_step_title(scene, tr, theme, content, "Customize (optional)", sub);
+        Self::draw_step_title(scene, tr, theme, content, "Customize (optional)", sub);
 
         // The whole form is the shared guided-customization panel.
         let removable = self.target().is_some_and(|d| d.removable);
@@ -1843,7 +1871,6 @@ impl ImagerApp {
         t: Affine,
         lay: &Layout,
     ) {
-        let c = &theme.tokens.colors;
         let content = lay.content;
         let (title, sub) = match self.action {
             Action::Install => (
@@ -1855,9 +1882,24 @@ impl ImagerApp {
                 "Review the write, then type the drive's name to unlock it.",
             ),
         };
-        self.draw_step_title(scene, tr, theme, content, title, sub);
+        Self::draw_step_title(scene, tr, theme, content, title, sub);
+        let card_bottom = self.draw_confirm_review_card(scene, tr, theme, t, content);
+        self.draw_confirm_danger_banner(scene, tr, theme, t, content, card_bottom);
+        self.draw_confirm_field(scene, tr, theme, t, content);
+    }
 
-        // Review card: Image → Drive.
+    /// The review card: Image → Drive rows, capacity fit, and the action
+    /// summary. Returns the card's bottom edge, so the danger banner below it
+    /// can be positioned.
+    fn draw_confirm_review_card(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        content: Rect,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
         let card = Rect::new(
             content.x0,
             content.y0 + 46.0,
@@ -1866,6 +1908,20 @@ impl ImagerApp {
         );
         Self::fill_rr(scene, t, card, 14.0, c.surfaces.raised);
         Self::stroke_rr(scene, t, card, 14.0, c.border_standard, 1.0);
+        self.draw_confirm_review_rows(scene, tr, theme, card);
+        self.draw_confirm_capacity_and_action(scene, tr, theme, card);
+        card.y1
+    }
+
+    /// The Image and Drive rows inside the review card.
+    fn draw_confirm_review_rows(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+    ) {
+        let c = &theme.tokens.colors;
         let row =
             |scene: &mut Scene, tr: &mut TextRenderer, y: f64, k: &str, v: String, ok: bool| {
                 Self::txt(
@@ -1920,7 +1976,17 @@ impl ImagerApp {
             tgt_v,
             self.target().is_some(),
         );
-        // Fit line + mode.
+    }
+
+    /// The capacity-fit line and the action summary inside the review card.
+    fn draw_confirm_capacity_and_action(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+    ) {
+        let c = &theme.tokens.colors;
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
             let fit = if tgt.fits(src.size) {
                 (
@@ -1956,7 +2022,6 @@ impl ImagerApp {
                 TextWeight::Medium,
             );
         }
-        // Action summary.
         let act = match self.action {
             Action::Install => format!(
                 "Install qOS with your settings (host {}, user {})",
@@ -1990,15 +2055,27 @@ impl ImagerApp {
             Some((card.width() - 116.0) as f32),
             TextWeight::Medium,
         );
+    }
 
-        // Danger banner — louder for a fixed/internal (install) target.
+    /// Danger banner below the review card — louder for a fixed/internal
+    /// (install) target.
+    fn draw_confirm_danger_banner(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        content: Rect,
+        card_bottom: f64,
+    ) {
+        let c = &theme.tokens.colors;
         let internal = self.target().is_some_and(|d| !d.removable);
         let system = self.target().is_some_and(|d| d.is_system);
         let banner = Rect::new(
             content.x0,
-            card.y1 + 16.0,
+            card_bottom + 16.0,
             content.x1,
-            card.y1 + 16.0 + 44.0,
+            card_bottom + 16.0 + 44.0,
         );
         Self::fill_rr(
             scene,
@@ -2033,8 +2110,18 @@ impl ImagerApp {
             Some((banner.width() - 32.0) as f32),
             TextWeight::Semibold,
         );
+    }
 
-        // Typed confirmation field.
+    /// The typed confirmation field and the write-gate note below it.
+    fn draw_confirm_field(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        content: Rect,
+    ) {
+        let c = &theme.tokens.colors;
         let field = Rect::new(
             content.x0,
             content.y1 - 96.0,
@@ -2094,7 +2181,7 @@ impl ImagerApp {
             TextWeight::Medium,
         );
         if matches {
-            self.txt_right(
+            Self::txt_right(
                 scene,
                 tr,
                 "✓ armed",
@@ -2132,7 +2219,6 @@ impl ImagerApp {
         t: Affine,
         lay: &Layout,
     ) {
-        let c = &theme.tokens.colors;
         let content = lay.content;
         let p = &self.progress;
         let writing = p.phase == JobPhase::Writing;
@@ -2145,9 +2231,29 @@ impl ImagerApp {
         } else {
             "Verifying…".to_string()
         };
-        self.draw_step_title(scene, tr, theme, content, &title, "");
+        Self::draw_step_title(scene, tr, theme, content, &title, "");
+        self.draw_write_ring(scene, tr, theme, t, content);
+        self.draw_write_rate_eta(scene, tr, theme, content);
+        let yy = self.draw_write_phase_bars(scene, tr, theme, t, content);
+        self.draw_write_source_target_line(scene, tr, theme, content, yy);
+    }
 
-        // Big overall ring.
+    /// The big overall-progress ring with its percentage and phase caption.
+    fn draw_write_ring(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        content: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        let p = &self.progress;
+        let writing = p.phase == JobPhase::Writing;
+        let verb_ing = match self.action {
+            Action::Install => "Installing",
+            Action::Flash => "Writing",
+        };
         let cxp = f64::midpoint(content.x0, content.x1);
         let cyp = content.y0 + 150.0;
         let radius = 76.0;
@@ -2176,7 +2282,7 @@ impl ImagerApp {
             };
             scene.stroke(&Stroke::new(12.0), t, ring_c, None, &arc);
         }
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             &format!("{:.0}%", overall * 100.0),
@@ -2191,7 +2297,7 @@ impl ImagerApp {
         } else {
             "verifying".to_string()
         };
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             &caption,
@@ -2201,8 +2307,21 @@ impl ImagerApp {
             cyp + 14.0,
             TextWeight::Medium,
         );
+    }
 
-        // Rate + ETA line.
+    /// The rate + ETA line below the ring, when either is known.
+    fn draw_write_rate_eta(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        let p = &self.progress;
+        let cxp = f64::midpoint(content.x0, content.x1);
+        let cyp = content.y0 + 150.0;
+        let radius = 76.0;
         let mut meta = String::new();
         if p.rate_bps > 0 {
             meta.push_str(&fmt_rate(p.rate_bps));
@@ -2213,10 +2332,10 @@ impl ImagerApp {
             if !meta.is_empty() {
                 meta.push_str("   ·   ");
             }
-            meta.push_str(&format!("~{} left", fmt_eta(eta)));
+            let _ = write!(meta, "~{} left", fmt_eta(eta));
         }
         if !meta.is_empty() {
-            self.txt_center(
+            Self::txt_center(
                 scene,
                 tr,
                 &meta,
@@ -2227,8 +2346,23 @@ impl ImagerApp {
                 TextWeight::Medium,
             );
         }
+    }
 
-        // Two phase bars.
+    /// The Write / Verify phase bars. Returns the `y` below them, for the
+    /// image → drive line drawn after.
+    fn draw_write_phase_bars(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        content: Rect,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let p = &self.progress;
+        let writing = p.phase == JobPhase::Writing;
+        let cyp = content.y0 + 150.0;
+        let radius = 76.0;
         let bx0 = content.x0 + 40.0;
         let bx1 = content.x1 - 40.0;
         let mut yy = cyp + radius + 56.0;
@@ -2247,7 +2381,7 @@ impl ImagerApp {
                 None,
                 TextWeight::Semibold,
             );
-            self.txt_right(
+            Self::txt_right(
                 scene,
                 tr,
                 &format!("{:.0}%", frac * 100.0),
@@ -2261,9 +2395,22 @@ impl ImagerApp {
             Self::bar(scene, t, bar, frac, c.neutral[3], fill);
             yy += 48.0;
         }
-        // Image → drive line.
+        yy
+    }
+
+    /// The "image → drive" caption below the phase bars.
+    fn draw_write_source_target_line(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        yy: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let cxp = f64::midpoint(content.x0, content.x1);
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
-            self.txt_center(
+            Self::txt_center(
                 scene,
                 tr,
                 &format!("{}  →  {}", src.name, tgt.dev_path()),
@@ -2285,97 +2432,137 @@ impl ImagerApp {
         lay: &Layout,
         ok: bool,
     ) {
-        let c = &theme.tokens.colors;
         let content = lay.content;
         let cxp = f64::midpoint(content.x0, content.x1);
         let cyp = content.y0 + 120.0;
         let install = self.action == Action::Install;
         if ok {
-            Self::check_disc(
-                scene,
-                t,
-                Point::new(cxp, cyp),
-                46.0,
-                c.semantic.success,
-                Color::WHITE,
-            );
-            let (headline, sub): (&str, &str) = if install {
-                (
-                    "qOS is installed",
-                    "The disk was written and verified — remove the media and reboot.",
-                )
-            } else {
-                (
-                    "Drive is ready",
-                    "The image was written and verified — you can safely remove the drive.",
-                )
-            };
-            self.txt_center(
-                scene,
-                tr,
-                headline,
-                26.0,
-                c.text_primary,
-                cxp,
-                cyp + 66.0,
-                TextWeight::Bold,
-            );
-            self.txt_center(
-                scene,
-                tr,
-                sub,
-                14.0,
-                c.text_dim,
-                cxp,
-                cyp + 100.0,
-                TextWeight::Regular,
-            );
+            Self::draw_write_done_ok_hero(scene, tr, theme, t, cxp, cyp, install);
         } else {
-            // Danger disc with an "!".
-            scene.fill(
-                Fill::NonZero,
-                t,
-                c.semantic.danger,
-                None,
-                &Circle::new(Point::new(cxp, cyp), 46.0),
-            );
-            self.txt_center(
-                scene,
-                tr,
-                "!",
-                44.0,
-                Color::WHITE,
-                cxp,
-                cyp - 34.0,
-                TextWeight::Bold,
-            );
-            let headline = if install {
-                "Install failed"
-            } else {
-                "Write failed"
-            };
-            self.txt_center(
-                scene,
-                tr,
-                headline,
-                26.0,
-                c.text_primary,
-                cxp,
-                cyp + 66.0,
-                TextWeight::Bold,
-            );
-            self.txt_center(
-                scene,
-                tr,
-                "The drive was not changed. See the message below.",
-                14.0,
-                c.text_dim,
-                cxp,
-                cyp + 100.0,
-                TextWeight::Regular,
-            );
+            Self::draw_write_done_failed_hero(scene, tr, theme, t, cxp, cyp, install);
         }
-        // Summary card.
+        self.draw_write_done_summary(scene, tr, theme, t, content, ok);
+    }
+
+    /// The success hero: check disc + headline + sub for the completed step.
+    fn draw_write_done_ok_hero(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        cxp: f64,
+        cyp: f64,
+        install: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        Self::check_disc(
+            scene,
+            t,
+            Point::new(cxp, cyp),
+            46.0,
+            c.semantic.success,
+            Color::WHITE,
+        );
+        let (headline, sub): (&str, &str) = if install {
+            (
+                "qOS is installed",
+                "The disk was written and verified — remove the media and reboot.",
+            )
+        } else {
+            (
+                "Drive is ready",
+                "The image was written and verified — you can safely remove the drive.",
+            )
+        };
+        Self::txt_center(
+            scene,
+            tr,
+            headline,
+            26.0,
+            c.text_primary,
+            cxp,
+            cyp + 66.0,
+            TextWeight::Bold,
+        );
+        Self::txt_center(
+            scene,
+            tr,
+            sub,
+            14.0,
+            c.text_dim,
+            cxp,
+            cyp + 100.0,
+            TextWeight::Regular,
+        );
+    }
+
+    /// The failure hero: danger disc with an "!", headline + sub.
+    fn draw_write_done_failed_hero(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        cxp: f64,
+        cyp: f64,
+        install: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            t,
+            c.semantic.danger,
+            None,
+            &Circle::new(Point::new(cxp, cyp), 46.0),
+        );
+        Self::txt_center(
+            scene,
+            tr,
+            "!",
+            44.0,
+            Color::WHITE,
+            cxp,
+            cyp - 34.0,
+            TextWeight::Bold,
+        );
+        let headline = if install {
+            "Install failed"
+        } else {
+            "Write failed"
+        };
+        Self::txt_center(
+            scene,
+            tr,
+            headline,
+            26.0,
+            c.text_primary,
+            cxp,
+            cyp + 66.0,
+            TextWeight::Bold,
+        );
+        Self::txt_center(
+            scene,
+            tr,
+            "The drive was not changed. See the message below.",
+            14.0,
+            c.text_dim,
+            cxp,
+            cyp + 100.0,
+            TextWeight::Regular,
+        );
+    }
+
+    /// The Image/Drive summary card below the hero, when both are known.
+    fn draw_write_done_summary(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        content: Rect,
+        ok: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        let cyp = content.y0 + 120.0;
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
             let card = Rect::new(
                 content.x0 + 80.0,
@@ -2430,7 +2617,7 @@ impl ImagerApp {
                 TextWeight::Medium,
             );
             if ok {
-                self.txt_right(
+                Self::txt_right(
                     scene,
                     tr,
                     "✓ verified",
@@ -2449,7 +2636,7 @@ impl ImagerApp {
 // Interaction / state mutation
 // =========================================================================
 impl ImagerApp {
-    fn select_source(&mut self, state: &mut AutoCommit, src: Source) {
+    fn select_source(&mut self, state: &mut AutoCommit, src: &Source) {
         if let Some(prev) = &self.source
             && !prev.path.is_empty()
             && !self.recent.iter().any(|s| s.path == prev.path)
@@ -2464,7 +2651,7 @@ impl ImagerApp {
             ImagerDoc::set_action(state, Action::Flash);
         }
         self.source = Some(src.clone());
-        ImagerDoc::set_source(state, Some(&src));
+        ImagerDoc::set_source(state, Some(src));
         self.set_status(state, &format!("Selected {}", src.name));
         self.dirty = true;
     }
@@ -2500,7 +2687,7 @@ impl ImagerApp {
         self.portal_rx = None;
         match outcome {
             PortalOutcome::Opened(path) => match crate::probe::inspect_source(&path) {
-                Some(src) => self.select_source(state, src),
+                Some(src) => self.select_source(state, &src),
                 None => self.set_status(state, "That file is not a readable disk image."),
             },
             PortalOutcome::Cancelled => self.set_status(state, "File selection cancelled."),
@@ -2573,8 +2760,7 @@ impl ImagerApp {
     fn back(&mut self, state: &mut AutoCommit) {
         match self.step {
             Step::Confirm if self.customizable() => self.goto(state, Step::Customize),
-            Step::Confirm => self.goto(state, Step::Drive),
-            Step::Customize => self.goto(state, Step::Drive),
+            Step::Confirm | Step::Customize => self.goto(state, Step::Drive),
             Step::Drive => self.goto(state, Step::Source),
             // No going back from the source, an in-flight write, or the outcome.
             Step::Source | Step::Write | Step::Done => {}
@@ -2730,7 +2916,7 @@ impl ImagerApp {
             // so unplugging the selected drive genuinely drops it from the list.
             let remembered = self.target().map(|d| d.name.clone());
             if let Some(t) = crate::probe::probe() {
-                self.targets = t.clone();
+                self.targets.clone_from(&t);
                 ImagerDoc::write_targets(state, &t);
                 // Keep the same physical drive selected across a rescan by name,
                 // not by index (indices shift as drives come and go).
@@ -2762,12 +2948,12 @@ impl ImagerApp {
                     .get(i)
                     .map(super::model::QosRelease::to_source)
                 {
-                    self.select_source(state, src);
+                    self.select_source(state, &src);
                 }
             }
             Hit::Recent(i) => {
                 if let Some(src) = self.recent.get(i).cloned() {
-                    self.select_source(state, src);
+                    self.select_source(state, &src);
                 }
             }
             Hit::Target(i) => self.select_target(state, i),
@@ -2864,6 +3050,15 @@ impl Widget for ImagerApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
+        // cannot actually return `Err` for a fresh leaf (see
+        // `ui::widget::TaffyTreeExt`'s doc comment), and `Widget::build_layout`
+        // returns a bare `NodeId` across every implementor, so there is
+        // nowhere to surface a theoretical error.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: taffy::Size {
@@ -2879,7 +3074,12 @@ impl Widget for ImagerApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        // A missing layout entry for our own node would be a taffy bug, not a
+        // recoverable app condition — skip this frame's rect update rather
+        // than panic; the next frame's layout pass will have one.
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -2939,7 +3139,6 @@ impl Widget for ImagerApp {
         taffy: &TaffyTree<()>,
     ) {
         use winit::event::{ElementState, KeyEvent, MouseButton};
-        use winit::keyboard::{Key, NamedKey};
 
         let lay = self.compute_layout();
 
@@ -2947,71 +3146,32 @@ impl Widget for ImagerApp {
         // panel, which owns its fields, toggles and export affordance. Only
         // events it does not consume (footer clicks, global keys) fall through
         // to the wizard chrome below.
-        if self.step == Step::Customize && self.customizable() && self.export_text.is_none() {
-            let removable = self.target().is_some_and(|d| d.removable);
-            let profile = self.profile.clone();
-            let resp = self.customize.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                &mut self.actions,
-                &profile,
-                removable,
-                lay.content,
-                node_id,
-                taffy,
-            );
-            if resp.export_requested {
-                self.export_config(state);
-            }
-            if resp.handled {
-                *handled = true;
-                self.dirty = true;
-                return;
-            }
+        let consumed = self.handle_customize_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            &lay,
+            node_id,
+            taffy,
+        );
+        if consumed {
+            *handled = true;
+            self.dirty = true;
+            return;
         }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_mouse = p;
-                // Which drive card (if any) is under the pointer, resolved from
-                // this frame's hit-rects.
-                let hover_now = lay.hits.iter().find_map(|(r, h)| match h {
-                    Hit::Target(i) if r.contains(p) => Some(*i),
-                    _ => None,
-                });
-                self.hover_target = hover_now;
-                // Repaint on move so buttons/cards light up under the pointer.
-                self.dirty = true;
+                self.handle_cursor_moved(position.x, position.y, scale_factor, &lay);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                let p = self.last_mouse;
-                if self.export_text.is_some() {
-                    self.export_text = None;
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                let hit = lay
-                    .hits
-                    .iter()
-                    .find(|(r, _)| r.contains(p))
-                    .map(|(_, h)| h.clone());
-                if let Some(hit) = hit {
-                    self.dispatch_hit(state, hit);
-                    *handled = true;
-                    self.dirty = true;
-                    return;
-                }
-                // A click on empty space drops the confirm field's focus.
-                self.confirm_focused = false;
+                self.handle_left_click(state, &lay, handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3022,67 +3182,7 @@ impl Widget for ImagerApp {
                     },
                 ..
             } => {
-                if self.export_text.is_some() {
-                    if matches!(logical_key, Key::Named(NamedKey::Escape)) {
-                        self.export_text = None;
-                        *handled = true;
-                        self.dirty = true;
-                    }
-                    return;
-                }
-                // The Confirm step's typed device-name field (a transient arming
-                // gesture, not a profile edit).
-                if self.confirm_focused && self.step == Step::Confirm {
-                    match logical_key {
-                        Key::Named(NamedKey::Backspace) => {
-                            self.type_into_confirm(state, None, true);
-                            *handled = true;
-                        }
-                        Key::Named(NamedKey::Enter) => {
-                            if self.can_advance(Step::Confirm) {
-                                self.start_write(state);
-                            }
-                            self.confirm_focused = false;
-                            *handled = true;
-                            self.dirty = true;
-                        }
-                        Key::Named(NamedKey::Escape) => {
-                            self.confirm_focused = false;
-                            *handled = true;
-                            self.dirty = true;
-                        }
-                        Key::Named(NamedKey::Space) => {
-                            self.type_into_confirm(state, Some(' '), false);
-                            *handled = true;
-                        }
-                        Key::Character(s) => {
-                            if let Some(ch) = s.chars().next() {
-                                self.type_into_confirm(state, Some(ch), false);
-                                *handled = true;
-                            }
-                        }
-                        _ => {}
-                    }
-                    return;
-                }
-                // Global shortcuts.
-                match logical_key {
-                    Key::Named(NamedKey::Enter) => {
-                        self.advance(state);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowLeft) => {
-                        self.back(state);
-                        *handled = true;
-                    }
-                    Key::Character(s)
-                        if matches!(s.as_str(), "r" | "R") && self.step == Step::Drive =>
-                    {
-                        self.do_rescan(state);
-                        *handled = true;
-                    }
-                    _ => {}
-                }
+                self.handle_key_pressed(logical_key, state, handled);
             }
             _ => {}
         }
@@ -3137,6 +3237,177 @@ impl Widget for ImagerApp {
     }
 }
 
+impl ImagerApp {
+    /// The Customize step's delegated handling. Returns `true` when the panel
+    /// consumed the event, so the caller stops before the wizard chrome below
+    /// ever sees it.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_customize_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        lay: &Layout,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !(self.step == Step::Customize && self.customizable() && self.export_text.is_none()) {
+            return false;
+        }
+        let removable = self.target().is_some_and(|d| d.removable);
+        let profile = self.profile.clone();
+        let resp = self.customize.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            &mut self.actions,
+            &profile,
+            removable,
+            lay.content,
+            node_id,
+            taffy,
+        );
+        if resp.export_requested {
+            self.export_config(state);
+        }
+        resp.handled
+    }
+
+    /// Track the pointer and which drive card (if any) is under it.
+    fn handle_cursor_moved(&mut self, px: f64, py: f64, scale_factor: f64, lay: &Layout) {
+        let p = Point::new(px / scale_factor, py / scale_factor);
+        self.last_mouse = p;
+        let hover_now = lay.hits.iter().find_map(|(r, h)| match h {
+            Hit::Target(i) if r.contains(p) => Some(*i),
+            _ => None,
+        });
+        self.hover_target = hover_now;
+        // Repaint on move so buttons/cards light up under the pointer.
+        self.dirty = true;
+    }
+
+    /// A left click in the content area: dismiss the export dialog, dispatch
+    /// a hit-tested affordance, or (on empty space) drop the confirm field's
+    /// focus.
+    fn handle_left_click(&mut self, state: &mut AutoCommit, lay: &Layout, handled: &mut bool) {
+        let p = self.last_mouse;
+        if self.export_text.is_some() {
+            self.export_text = None;
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        let hit = lay
+            .hits
+            .iter()
+            .find(|(r, _)| r.contains(p))
+            .map(|(_, h)| *h);
+        if let Some(hit) = hit {
+            self.dispatch_hit(state, hit);
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        self.confirm_focused = false;
+    }
+
+    /// Keyboard handling: export-dialog dismissal, the Confirm step's typed
+    /// device-name field, and global shortcuts.
+    fn handle_key_pressed(
+        &mut self,
+        logical_key: &winit::keyboard::Key,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        use winit::keyboard::{Key, NamedKey};
+
+        if self.export_text.is_some() {
+            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                self.export_text = None;
+                *handled = true;
+                self.dirty = true;
+            }
+            return;
+        }
+        // The Confirm step's typed device-name field (a transient arming
+        // gesture, not a profile edit).
+        if self.confirm_focused && self.step == Step::Confirm {
+            self.handle_confirm_field_key(logical_key, state, handled);
+            return;
+        }
+        self.handle_global_shortcut_key(logical_key, state, handled);
+    }
+
+    fn handle_confirm_field_key(
+        &mut self,
+        logical_key: &winit::keyboard::Key,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        use winit::keyboard::{Key, NamedKey};
+
+        match logical_key {
+            Key::Named(NamedKey::Backspace) => {
+                self.type_into_confirm(state, None, true);
+                *handled = true;
+            }
+            Key::Named(NamedKey::Enter) => {
+                if self.can_advance(Step::Confirm) {
+                    self.start_write(state);
+                }
+                self.confirm_focused = false;
+                *handled = true;
+                self.dirty = true;
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.confirm_focused = false;
+                *handled = true;
+                self.dirty = true;
+            }
+            Key::Named(NamedKey::Space) => {
+                self.type_into_confirm(state, Some(' '), false);
+                *handled = true;
+            }
+            Key::Character(s) => {
+                if let Some(ch) = s.chars().next() {
+                    self.type_into_confirm(state, Some(ch), false);
+                    *handled = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_global_shortcut_key(
+        &mut self,
+        logical_key: &winit::keyboard::Key,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        use winit::keyboard::{Key, NamedKey};
+
+        match logical_key {
+            Key::Named(NamedKey::Enter) => {
+                self.advance(state);
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                self.back(state);
+                *handled = true;
+            }
+            Key::Character(s) if matches!(s.as_str(), "r" | "R") && self.step == Step::Drive => {
+                self.do_rescan(state);
+                *handled = true;
+            }
+            _ => {}
+        }
+    }
+}
+
 // ---- overlay: exported config ------------------------------------------
 impl ImagerApp {
     fn draw_export(
@@ -3149,11 +3420,16 @@ impl ImagerApp {
     ) {
         let c = &theme.tokens.colors;
         scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
-        let w = (self.rect.width() * 0.62).min(640.0);
-        let h = (self.rect.height() * 0.8).min(620.0);
+        let card_w = (self.rect.width() * 0.62).min(640.0);
+        let card_h = (self.rect.height() * 0.8).min(620.0);
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let cy = f64::midpoint(self.rect.y0, self.rect.y1);
-        let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
+        let card = Rect::new(
+            cx - card_w / 2.0,
+            cy - card_h / 2.0,
+            cx + card_w / 2.0,
+            cy + card_h / 2.0,
+        );
         Self::fill_rr(scene, t, card, 14.0, c.surfaces.raised);
         Self::stroke_rr(scene, t, card, 14.0, c.border_standard, 1.0);
         Self::txt(
@@ -3203,7 +3479,7 @@ impl ImagerApp {
             );
             y += 17.0;
         }
-        self.txt_center(
+        Self::txt_center(
             scene,
             tr,
             "click anywhere or press Esc to close",
@@ -3473,7 +3749,7 @@ mod tests {
             .find(|s| s.kind == SourceKind::IsoFile)
             .cloned()
             .unwrap();
-        app.select_source(&mut doc, iso);
+        app.select_source(&mut doc, &iso);
         app.advance(&mut doc); // → Drive
         app.select_target(&mut doc, 0);
         app.advance(&mut doc); // installable == false → straight to Confirm
@@ -3704,7 +3980,7 @@ mod tests {
             .unwrap();
         let palette_action = match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("encrypt is an immediate action"),
+            ActionInput::Prompted { .. } => panic!("encrypt is an immediate action"),
         };
 
         // Click the real on-screen toggle: move the pointer onto it, then press.

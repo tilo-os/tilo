@@ -218,18 +218,19 @@ impl RecordCheckout {
         }
     }
 
+    #[must_use]
     pub fn referencing(mut self, target: RecordCheckout, relation: impl Into<String>) -> Self {
         self.references.push((target, relation.into()));
         self
     }
 }
 
-fn meta_obj(doc: &mut AutoCommit) -> ObjId {
+/// `None` only if `put_object` on the document root itself fails, which
+/// does not happen for a document this call has exclusive access to.
+fn meta_obj(doc: &mut AutoCommit) -> Option<ObjId> {
     match doc.get(&ROOT, META) {
-        Ok(Some((Value::Object(ObjType::Map), id))) => id,
-        _ => doc
-            .put_object(&ROOT, META, ObjType::Map)
-            .expect("put_object on root never fails"),
+        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+        _ => doc.put_object(&ROOT, META, ObjType::Map).ok(),
     }
 }
 
@@ -247,7 +248,10 @@ fn str_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
 /// re-opening leaves an existing stamp alone, so a restart doesn't author
 /// a change graph entry that says nothing new.
 pub fn init(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind, home: &str) {
-    let m = meta_obj(doc);
+    let Some(m) = meta_obj(doc) else {
+        // The document's root object is gone — nothing to stamp.
+        return;
+    };
     if str_at(doc, &m, "id").as_deref() != Some(id.as_str()) {
         let _ = doc.put(&m, "id", id.as_str());
     }
@@ -269,9 +273,8 @@ pub fn init(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind, home: &str) 
 
 /// The identity stamped into `doc`, if it holds a record.
 pub fn identity(doc: &AutoCommit) -> Option<RecordCheckout> {
-    let m = match doc.get(&ROOT, META) {
-        Ok(Some((Value::Object(ObjType::Map), id))) => id,
-        _ => return None,
+    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
+        return None;
     };
     let id = RecordId::parse(&str_at(doc, &m, "id")?)?;
     let kind = RecordKind::new(str_at(doc, &m, "kind").unwrap_or_default());
@@ -280,20 +283,19 @@ pub fn identity(doc: &AutoCommit) -> Option<RecordCheckout> {
 
 /// The room this record was minted in.
 pub fn home(doc: &AutoCommit) -> Option<String> {
-    let m = match doc.get(&ROOT, META) {
-        Ok(Some((Value::Object(ObjType::Map), id))) => id,
-        _ => return None,
+    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
+        return None;
     };
     str_at(doc, &m, "home")
 }
 
-fn refs_obj(doc: &mut AutoCommit) -> ObjId {
-    let m = meta_obj(doc);
+/// `None` only if the containing document's root/meta object is gone; see
+/// [`meta_obj`].
+fn refs_obj(doc: &mut AutoCommit) -> Option<ObjId> {
+    let m = meta_obj(doc)?;
     match doc.get(&m, "refs") {
-        Ok(Some((Value::Object(ObjType::List), id))) => id,
-        _ => doc
-            .put_object(&m, "refs", ObjType::List)
-            .expect("put_object refs never fails"),
+        Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
+        _ => doc.put_object(&m, "refs", ObjType::List).ok(),
     }
 }
 
@@ -303,11 +305,13 @@ pub fn add_reference(doc: &mut AutoCommit, r: &RecordRef) -> bool {
     if references(doc).iter().any(|e| e == r) {
         return false;
     }
-    let list = refs_obj(doc);
+    let Some(list) = refs_obj(doc) else {
+        return false;
+    };
     let n = doc.length(&list);
-    let entry = doc
-        .insert_object(&list, n, ObjType::Map)
-        .expect("insert reference map never fails");
+    let Ok(entry) = doc.insert_object(&list, n, ObjType::Map) else {
+        return false;
+    };
     let _ = doc.put(&entry, "target", r.target.as_str());
     let _ = doc.put(&entry, "relation", r.relation.as_str());
     true
@@ -315,19 +319,16 @@ pub fn add_reference(doc: &mut AutoCommit, r: &RecordRef) -> bool {
 
 /// Every record this one references.
 pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
-    let m = match doc.get(&ROOT, META) {
-        Ok(Some((Value::Object(ObjType::Map), id))) => id,
-        _ => return Vec::new(),
+    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
+        return Vec::new();
     };
-    let list = match doc.get(&m, "refs") {
-        Ok(Some((Value::Object(ObjType::List), id))) => id,
-        _ => return Vec::new(),
+    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&m, "refs") else {
+        return Vec::new();
     };
     (0..doc.length(&list))
         .filter_map(|i| {
-            let entry = match doc.get(&list, i) {
-                Ok(Some((Value::Object(ObjType::Map), id))) => id,
-                _ => return None,
+            let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&list, i) else {
+                return None;
             };
             let target = RecordId::parse(&str_at(doc, &entry, "target")?)?;
             Some(RecordRef {
@@ -359,12 +360,12 @@ pub mod room {
         RecordSet, Transactable, Value, str_at,
     };
 
-    fn index_obj(doc: &mut AutoCommit) -> ObjId {
+    /// `None` only if `put_object` on the document root itself fails, which
+    /// does not happen for a document this call has exclusive access to.
+    fn index_obj(doc: &mut AutoCommit) -> Option<ObjId> {
         match doc.get(&ROOT, INDEX) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&ROOT, INDEX, ObjType::Map)
-                .expect("put_object on root never fails"),
+            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+            _ => doc.put_object(&ROOT, INDEX, ObjType::Map).ok(),
         }
     }
 
@@ -379,7 +380,9 @@ pub mod room {
     /// (not appended to a list) so two machines referencing the same
     /// record concurrently converge on one entry.
     pub fn reference(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind) -> bool {
-        let idx = index_obj(doc);
+        let Some(idx) = index_obj(doc) else {
+            return false;
+        };
         let existing = match doc.get(&idx, id.as_str()) {
             Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
             _ => None,
@@ -392,9 +395,9 @@ pub mod room {
             }
             false
         } else {
-            let entry = doc
-                .put_object(&idx, id.as_str(), ObjType::Map)
-                .expect("put_object into the index never fails");
+            let Ok(entry) = doc.put_object(&idx, id.as_str(), ObjType::Map) else {
+                return false;
+            };
             let _ = doc.put(&entry, "kind", kind.as_str());
             true
         }
@@ -569,6 +572,7 @@ impl RecordSet {
 
     /// Name the room explicitly. Used by tests and by a host that opens
     /// records on behalf of a room other than its own launch environment.
+    #[must_use]
     pub fn with_home(mut self, home: impl Into<String>) -> Self {
         self.home = home.into();
         self
@@ -1130,7 +1134,7 @@ mod tests {
         let mut state = State::new();
         let kind = RecordKind::new("annotation-set");
         let a = RecordCheckout::new(RecordId::for_file("/work/a.pdf"), kind.clone());
-        let b = RecordCheckout::new(RecordId::for_file("/work/b.pdf"), kind.clone());
+        let b = RecordCheckout::new(RecordId::for_file("/work/b.pdf"), kind);
 
         set.checkout(&mut state, Some(&mut room_doc), &a);
         put_text(&mut state.doc, "note", "a's note");
@@ -1220,7 +1224,7 @@ mod tests {
             .join(app_state::RECORDS_DIR);
         let entries: Vec<_> = std::fs::read_dir(&dir)
             .expect("records directory exists")
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .collect();
         assert_eq!(
             entries.len(),

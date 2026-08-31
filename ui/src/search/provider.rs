@@ -50,16 +50,19 @@ impl SearchResult {
         }
     }
 
+    #[must_use]
     pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());
         self
     }
 
+    #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
     }
 
+    #[must_use]
     pub fn with_score(mut self, score: i32) -> Self {
         self.score = score;
         self
@@ -107,8 +110,10 @@ pub fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
         if i == 0 {
             return true;
         }
-        let prev = t[i - 1];
-        !prev.is_alphanumeric()
+        // `i > 0` here, so `i - 1` is always a valid index into `t`; go
+        // through `get` anyway so the lookup can never panic.
+        t.get(i.saturating_sub(1))
+            .is_none_or(|prev| !prev.is_alphanumeric())
     };
 
     let mut qi = 0usize;
@@ -117,41 +122,45 @@ pub fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     let mut streak = 0i32;
 
     for (ti, ch) in t.iter().enumerate() {
-        if qi >= q.len() {
+        // `q.get` doubles as the "query exhausted" check the old `qi >=
+        // q.len()` guard made explicit.
+        let Some(&qc) = q.get(qi) else {
             break;
-        }
-        if *ch == q[qi] {
-            let mut bonus = 1;
+        };
+        if *ch == qc {
+            let mut bonus = 1i32;
             match prev_match {
-                Some(pm) if pm + 1 == ti => {
+                Some(pm) if ti.checked_sub(1) == Some(pm) => {
                     // Contiguous with the previous match — reward the streak so
                     // "docs" beats a scattered "d…o…c…s".
-                    streak += 1;
-                    bonus += 2 + streak;
+                    streak = streak.saturating_add(1);
+                    bonus = bonus.saturating_add(2).saturating_add(streak);
                 }
                 Some(pm) => {
                     // A gap: pay for the distance skipped, reset the streak.
-                    bonus -= ((ti - pm - 1) as i32).min(3);
+                    let gap = ti.saturating_sub(pm).saturating_sub(1).min(3);
+                    bonus = bonus.saturating_sub(i32::try_from(gap).unwrap_or(3));
                     streak = 0;
                 }
                 None => {
                     // First matched char: reward starting at, or near, the front.
                     if ti == 0 {
-                        bonus += 4;
+                        bonus = bonus.saturating_add(4);
                     } else if is_boundary(ti) {
-                        bonus += 3;
+                        bonus = bonus.saturating_add(3);
                     } else {
-                        bonus -= (ti as i32).min(3);
+                        let penalty = i32::try_from(ti.min(3)).unwrap_or(3);
+                        bonus = bonus.saturating_sub(penalty);
                     }
                     streak = 0;
                 }
             }
             if prev_match.is_some() && is_boundary(ti) {
-                bonus += 2;
+                bonus = bonus.saturating_add(2);
             }
-            score += bonus;
+            score = score.saturating_add(bonus);
             prev_match = Some(ti);
-            qi += 1;
+            qi = qi.saturating_add(1);
         }
     }
 

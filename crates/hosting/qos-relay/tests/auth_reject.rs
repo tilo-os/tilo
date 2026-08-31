@@ -105,7 +105,7 @@ async fn revoked_device_is_rejected() {
 
     // The revoked device tries to connect — must fail.
     let ep = client_endpoint().await;
-    let res = RelayClient::connect(
+    let rejected = RelayClient::connect(
         ep,
         addr.clone(),
         user.user_pk,
@@ -114,7 +114,7 @@ async fn revoked_device_is_rejected() {
         RevocationList::new(),
     )
     .await;
-    assert!(res.is_err(), "revoked device must be rejected");
+    assert!(rejected.is_err(), "revoked device must be rejected");
 
     // A non-revoked device from the same user still connects fine.
     let ep2 = client_endpoint().await;

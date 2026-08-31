@@ -35,6 +35,7 @@ pub enum Column {
 }
 
 impl Column {
+    #[must_use]
     pub fn toggle(self) -> Self {
         match self {
             Column::Hex => Column::Ascii,
@@ -52,6 +53,7 @@ pub enum EditMode {
 }
 
 impl EditMode {
+    #[must_use]
     pub fn toggle(self) -> Self {
         match self {
             EditMode::Overwrite => EditMode::Insert,
@@ -75,6 +77,7 @@ pub enum Endian {
 }
 
 impl Endian {
+    #[must_use]
     pub fn toggle(self) -> Self {
         match self {
             Endian::Little => Endian::Big,
@@ -517,13 +520,14 @@ impl HexModel {
                 }
                 match self.pending_nibble.take() {
                     None => {
-                        let cur = self.bytes[self.cursor];
+                        // In bounds: guarded by the cursor check above.
+                        let cur = self.bytes.get(self.cursor).copied().unwrap_or_default();
                         let new = (digit << 4) | (cur & 0x0F);
                         self.set_byte(self.cursor, new);
                         self.pending_nibble = Some(digit);
                     }
                     Some(_high) => {
-                        let cur = self.bytes[self.cursor];
+                        let cur = self.bytes.get(self.cursor).copied().unwrap_or_default();
                         let new = (cur & 0xF0) | digit;
                         self.set_byte(self.cursor, new);
                         // Byte complete — advance.
@@ -546,14 +550,18 @@ impl HexModel {
                 true
             }
             Some(_high) => {
-                let cur = self.bytes[self.cursor];
-                let new = (cur & 0xF0) | digit;
-                if new != cur {
-                    self.bytes[self.cursor] = new;
-                    self.pending_edits.push(BufferEdit::Overwrite {
-                        offset: self.cursor,
-                        bytes: vec![new],
-                    });
+                // In bounds: the preceding `None` arm just inserted the byte
+                // this nibble completes.
+                if let Some(slot) = self.bytes.get_mut(self.cursor) {
+                    let cur = *slot;
+                    let new = (cur & 0xF0) | digit;
+                    if new != cur {
+                        *slot = new;
+                        self.pending_edits.push(BufferEdit::Overwrite {
+                            offset: self.cursor,
+                            bytes: vec![new],
+                        });
+                    }
                 }
                 self.cursor += 1;
                 true

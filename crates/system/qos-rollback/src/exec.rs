@@ -51,6 +51,11 @@ impl Output {
 
 /// One external command runner. A trait so tests can substitute a recorder.
 pub trait Runner {
+    /// # Errors
+    ///
+    /// Returns an error if `program` cannot be spawned, if writing `stdin` to it fails, or if
+    /// waiting for it to exit fails. A non-zero exit code is not itself an error — callers
+    /// inspect [`Output::ok`].
     fn run(&self, program: &str, args: &[&OsStr], stdin: Option<&[u8]>) -> Result<Output>;
 }
 
@@ -74,6 +79,7 @@ impl Real {
     /// slots, so we do not have to hand-manage a TPM with three object slots
     /// (which is what a bare `swtpm` socket gives you, and what makes the
     /// integration test flush so aggressively).
+    #[must_use]
     pub fn with_tcti(mut self, tcti: Option<&str>) -> Self {
         if let Some(t) = tcti {
             self.env.push(("TPM2TOOLS_TCTI".into(), t.into()));
@@ -81,6 +87,7 @@ impl Real {
         self
     }
 
+    #[must_use]
     pub fn with_cwd(mut self, dir: impl Into<PathBuf>) -> Self {
         self.cwd = Some(dir.into());
         self
@@ -115,7 +122,7 @@ impl Runner for Real {
             child
                 .stdin
                 .as_mut()
-                .expect("stdin piped")
+                .context("child process has no stdin pipe despite one being requested")?
                 .write_all(bytes)
                 .with_context(|| format!("writing stdin to {program}"))?;
         }
@@ -159,6 +166,11 @@ pub fn trace_failure(program: &str, args: &[&OsStr], out: &Output) {
 }
 
 /// Convenience: run and fail with the tool's own last diagnostic line.
+///
+/// # Errors
+///
+/// Returns an error if `runner.run` itself fails, or if `program` exits non-zero (with
+/// `what` and the tool's [`Output::last_error_line`] in the message).
 pub fn require(runner: &dyn Runner, program: &str, args: &[&OsStr], what: &str) -> Result<Output> {
     let out = runner.run(program, args, None)?;
     if !out.ok() {
