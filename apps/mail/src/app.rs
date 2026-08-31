@@ -2261,26 +2261,36 @@ impl MailApp {
 fn build_setup_inputs(cfg: &AccountConfig) -> Vec<TextInput> {
     vec![
         TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Name)
             .with_initial_value(&cfg.display_name)
             .with_placeholder("Your name"),
         TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Email)
             .with_initial_value(&cfg.email)
             .with_placeholder("you@example.com"),
         TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Username)
             .with_initial_value(&cfg.username)
             .with_placeholder("Usually your email"),
         TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Password)
             .with_initial_value(&cfg.password)
             .with_secret(true)
             .with_placeholder("Account password"),
         TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Url)
             .with_initial_value(&cfg.imap_host)
             .with_placeholder("imap.example.com"),
-        TextInput::local().with_initial_value(&cfg.imap_port.to_string()),
         TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Number)
+            .with_initial_value(&cfg.imap_port.to_string()),
+        TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Url)
             .with_initial_value(&cfg.smtp_host)
             .with_placeholder("smtp.example.com"),
-        TextInput::local().with_initial_value(&cfg.smtp_port.to_string()),
+        TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Number)
+            .with_initial_value(&cfg.smtp_port.to_string()),
     ]
 }
 

@@ -33,6 +33,10 @@ pub struct Predictor {
     /// simple, allocation-light lookup.
     bigrams: HashMap<String, Vec<(String, u32)>>,
     max_bigram_weight: u32,
+    /// On-device adaptation learned from words this user actually commits.
+    /// It is deliberately process-local here; the OSK service owns persistence
+    /// policy so private typing data never enters an app document.
+    learned: HashMap<String, HashMap<String, u32>>,
 }
 
 impl Predictor {
@@ -72,6 +76,7 @@ impl Predictor {
             dict,
             bigrams,
             max_bigram_weight,
+            learned: HashMap::new(),
         }
     }
 
@@ -82,6 +87,23 @@ impl Predictor {
     /// Number of distinct preceding-words with bigram successors.
     pub fn bigram_contexts(&self) -> usize {
         self.bigrams.len()
+    }
+
+    /// Teach the predictor one committed transition. Repetition increases its
+    /// rank with a saturating counter, entirely offline.
+    pub fn learn_transition(&mut self, previous: Option<&str>, word: &str) {
+        let word = word.trim().to_lowercase();
+        if word.is_empty() || !word.chars().all(char::is_alphabetic) {
+            return;
+        }
+        let context = previous.map(str::to_lowercase).unwrap_or_default();
+        let count = self
+            .learned
+            .entry(context)
+            .or_default()
+            .entry(word)
+            .or_default();
+        *count = count.saturating_add(1);
     }
 
     /// Predict the next/completion words, ranked best-first, as
@@ -115,6 +137,19 @@ impl Predictor {
 
         // Accumulate the best score per candidate word.
         let mut scores: HashMap<String, f32> = HashMap::new();
+
+        // Personal history is the strongest signal after it has repeated, but
+        // starts gently enough that one typo cannot permanently dominate.
+        let learned_context = prev.as_deref().unwrap_or("");
+        if let Some(words) = self.learned.get(learned_context) {
+            for (word, count) in words {
+                if !prefix.is_empty() && !word.starts_with(&prefix) {
+                    continue;
+                }
+                let confidence = *count as f32 / count.saturating_add(3) as f32;
+                upsert_max(&mut scores, word, 0.85 + 0.15 * confidence);
+            }
+        }
 
         // --- bigram successors of prev_word -----------------------------
         if let Some(succ) = prev.as_deref().and_then(|p| self.bigrams.get(p)) {
@@ -249,5 +284,19 @@ mod tests {
         let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
         assert!(words.iter().all(|w| w.starts_with("ar")), "got {words:?}");
         assert!(words.contains(&"are"));
+    }
+
+    #[test]
+    fn committed_transitions_adapt_predictions_locally() {
+        let mut p = small();
+        for _ in 0..4 {
+            p.learn_transition(Some("good"), "mood");
+        }
+        let predictions = p.predict_next(Some("good"), "");
+        assert_eq!(
+            predictions.first().map(|(word, _)| word.as_str()),
+            Some("mood"),
+            "repeated personal usage should outrank the generic corpus"
+        );
     }
 }

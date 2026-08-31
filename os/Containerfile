@@ -634,6 +634,23 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     power-profiles-daemon \
     && dnf clean all && ${DROP_RPMDB_WAL}
 
+# Offline spelling dictionaries used by the shared text toolkit. Hunspell is
+# the affix-aware multilingual baseline; English also has an embedded fallback
+# so recovery/minimal environments retain checking. Keep this explicit rather
+# than pulling every Fedora language pack into the immutable image.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    hunspell \
+    hunspell-en \
+    hunspell-de \
+    hunspell-es \
+    hunspell-fr \
+    hunspell-it \
+    hunspell-nl \
+    hunspell-pl \
+    hunspell-pt \
+    hunspell-ru \
+    && dnf clean all && ${DROP_RPMDB_WAL}
+
 # C9 printing (CUPS plus its standard IPP query tool). Deliberately NOT
 # `cups-browsed`, which is
 # the daemon that turns *remote* DNS-SD advertisements into local print

@@ -24,7 +24,7 @@ use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Widget};
+use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -353,21 +353,25 @@ impl AccountsPane {
     /// The inline add-email form: fields bound to CRDT keys plus Save/Cancel.
     fn mail_form() -> El {
         let name = TextInput::new(Vec::new())
+            .with_kind(TextInputKind::Name)
             .with_id("accounts.form.name")
             .with_on_change_path(FORM_NAME_KEY)
             .with_placeholder("Display name")
             .with_font_size(13.0);
         let email = TextInput::new(Vec::new())
+            .with_kind(TextInputKind::Email)
             .with_id("accounts.form.email")
             .with_on_change_path(FORM_EMAIL_KEY)
             .with_placeholder("you@example.com")
             .with_font_size(13.0);
         let user = TextInput::new(Vec::new())
+            .with_kind(TextInputKind::Username)
             .with_id("accounts.form.username")
             .with_on_change_path(FORM_USER_KEY)
             .with_placeholder("Username (defaults to your address)")
             .with_font_size(13.0);
         let password = TextInput::new(Vec::new())
+            .with_kind(TextInputKind::Password)
             .with_id("accounts.form.password")
             .with_on_change_path(FORM_PASSWORD_KEY)
             .with_secret(true)
@@ -404,6 +408,7 @@ impl AccountsPane {
 
     fn reauth_form(id: &str) -> El {
         let password = TextInput::new(Vec::new())
+            .with_kind(TextInputKind::Password)
             .with_id("accounts.reauth.password")
             .with_on_change_path(REAUTH_PASSWORD_KEY)
             .with_secret(true)

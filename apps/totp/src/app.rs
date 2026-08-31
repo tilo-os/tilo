@@ -149,7 +149,7 @@ impl AuthenticatorApp {
     fn with_mode(seed_mode: SeedMode) -> Self {
         Self {
             vault: Vault::new(),
-            search: TextInput::local(),
+            search: TextInput::local().with_kind(ui::widget::TextInputKind::Search),
             list: AccountList::new(),
             add_panel: AddAccountPanel::new(),
             portal_rx: None,

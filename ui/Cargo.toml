@@ -87,6 +87,7 @@ qos-relay = { path = "../crates/hosting/qos-relay" }
 # instead of a bespoke storage module per app.
 app-state = { path = "../crates/system/app-state" }
 automerge.workspace = true
+spellcheck = { path = "../crates/text/spellcheck" }
 # Diagnostic event/handler tracing. Off by default at WARN; turn up with
 # `RUST_LOG=ui=debug` to see every MouseInput, CursorMoved, KeyboardInput
 # entering App::window_event + dispatch results. Lets a maintainer

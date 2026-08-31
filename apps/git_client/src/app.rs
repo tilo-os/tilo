@@ -23,7 +23,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, TextInput, Widget};
+use ui::widget::{FlapState, SplitLayout, TextInput, TextInputKind, Widget};
 
 use crate::changes::{ChangesColumn, ChangesHit};
 use crate::diffview::{self, DiffView};
@@ -287,9 +287,11 @@ impl GitClientApp {
             .with_placeholder("Summary of changes…")
             .with_font_size(13.0);
         let branch_input = TextInput::local()
+            .with_kind(TextInputKind::Name)
             .with_placeholder("new branch name…")
             .with_font_size(12.5);
         let open_input = TextInput::local()
+            .with_kind(TextInputKind::Path)
             .with_placeholder("/path/to/repository")
             .with_font_size(14.0)
             .with_mono();

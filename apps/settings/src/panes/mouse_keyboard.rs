@@ -43,10 +43,16 @@ pub const GESTURES_KEY: &str = "input.touchpad_gestures";
 pub const COMPOSE_KEY: &str = "input.compose_key";
 pub const ADD_SOURCE_PICKER_KEY: &str = "input.source.add_picker";
 pub const ADD_SOURCE_KEY: &str = "input.source.add";
+pub const CHECK_SPELLING_KEY: &str = "text.check_spelling";
+pub const AUTO_CORRECT_KEY: &str = "text.auto_correct";
 
 pub struct MouseKeyboardPane {
     initial: InputPrefs,
     last: InputPrefs,
+    initial_check_spelling: bool,
+    check_spelling: bool,
+    initial_auto_correct: bool,
+    auto_correct: bool,
     catalog: Vec<CatalogEntry>,
     pending_add_id: Option<String>,
     needs_seed: bool,
@@ -65,9 +71,22 @@ impl MouseKeyboardPane {
     pub fn new() -> Self {
         let mut prefs = SystemPrefs::load().input;
         prefs.normalise_keyboard_sources();
+        let text = settings_store::load_section(ui::text_assistance::SETTINGS_SECTION);
+        let check_spelling = text
+            .get(ui::text_assistance::CHECK_SPELLING_KEY)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        let auto_correct = text
+            .get(ui::text_assistance::AUTO_CORRECT_KEY)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
         Self {
             initial: prefs.clone(),
             last: prefs,
+            initial_check_spelling: check_spelling,
+            check_spelling,
+            initial_auto_correct: auto_correct,
+            auto_correct,
             catalog: installed_catalog(),
             pending_add_id: None,
             needs_seed: true,
@@ -84,6 +103,10 @@ impl MouseKeyboardPane {
         Self {
             initial: initial.clone(),
             last: initial,
+            initial_check_spelling: true,
+            check_spelling: true,
+            initial_auto_correct: true,
+            auto_correct: true,
             catalog,
             pending_add_id: None,
             needs_seed: true,
@@ -116,10 +139,11 @@ impl MouseKeyboardPane {
 
     fn build_composition(&self) -> Box<dyn Widget> {
         crate::widgets::cards(vec![
+            self.keyboard_card(),
+            Self::spell_checker_card(),
+            self.input_sources_card(),
             Self::pointer_card(),
             self.advanced_pointer_card(),
-            self.keyboard_card(),
-            self.input_sources_card(),
             Self::pen_card(),
         ])
     }
@@ -270,6 +294,33 @@ impl MouseKeyboardPane {
         )
     }
 
+    fn spell_checker_card() -> Box<dyn Widget> {
+        card(
+            "Spell checker",
+            rows(vec![
+                setting_row_described(
+                    "Check spelling while typing",
+                    "Underline possible misspellings in natural-language fields",
+                    Box::new(
+                        Toggle::new("settings.text.check_spelling", CHECK_SPELLING_KEY)
+                            .with_id("text.check_spelling"),
+                    ),
+                ),
+                setting_row_described(
+                    "Auto-correct obvious misspellings",
+                    "Apply only high-confidence corrections after Space, punctuation, or Enter",
+                    Box::new(
+                        Toggle::new("settings.text.auto_correct", AUTO_CORRECT_KEY)
+                            .with_id("text.auto_correct"),
+                    ),
+                ),
+                caption(
+                    "Press Backspace immediately to restore the original word. Passwords are always excluded; other structured fields require an app to opt in.",
+                ),
+            ]),
+        )
+    }
+
     fn input_sources_card(&self) -> Box<dyn Widget> {
         let mut source_rows = Vec::new();
         for (index, id) in self.last.keyboard_layouts.iter().enumerate() {
@@ -361,6 +412,16 @@ impl MouseKeyboardPane {
         }
     }
 
+    fn persist_text_preference(key: &str, value: bool) {
+        let mut section = serde_json::Map::new();
+        section.insert(key.to_string(), serde_json::Value::Bool(value));
+        if let Err(e) =
+            settings_store::update_section(ui::text_assistance::SETTINGS_SECTION, section)
+        {
+            warn!(target: "qos::settings", op = "text_assistance_save", error = %e, "failed to persist text-assistance prefs");
+        }
+    }
+
     fn persist_keyboard_sources(&self) {
         let active = self.last.keyboard_layout.clone();
         let sources = self.last.keyboard_layouts.clone();
@@ -446,12 +507,26 @@ impl MouseKeyboardPane {
                 self.pending_add_id = Some(entry.id);
             }
             let _ = state.put(root, ADD_SOURCE_KEY, false);
+            let _ = state.put(root, CHECK_SPELLING_KEY, self.initial_check_spelling);
+            let _ = state.put(root, AUTO_CORRECT_KEY, self.initial_auto_correct);
             self.last = self.initial.clone();
             self.needs_seed = false;
         }
     }
 
     fn sync_simple_fields(&mut self, state: &AutoCommit, root: &ObjId) {
+        if let Some(value) = read_bool(state, root, CHECK_SPELLING_KEY)
+            && value != self.check_spelling
+        {
+            self.check_spelling = value;
+            Self::persist_text_preference(ui::text_assistance::CHECK_SPELLING_KEY, value);
+        }
+        if let Some(value) = read_bool(state, root, AUTO_CORRECT_KEY)
+            && value != self.auto_correct
+        {
+            self.auto_correct = value;
+            Self::persist_text_preference(ui::text_assistance::AUTO_CORRECT_KEY, value);
+        }
         if let Some(v) = read_f64(state, root, POINTER_SPEED_KEY)
             && (v - self.last.pointer_speed).abs() > 0.001
         {

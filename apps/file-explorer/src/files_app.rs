@@ -314,6 +314,7 @@ impl FileExplorerWidget {
             rename_buffer: String::new(),
             rename_seed_pending: false,
             rename_input: TextInput::new(vec![])
+                .with_kind(ui::widget::TextInputKind::Name)
                 .with_id("files.rename_input")
                 .with_on_change_path(RENAME_QUERY_PATH)
                 .with_placeholder("New name"),

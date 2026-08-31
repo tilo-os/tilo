@@ -87,7 +87,10 @@ impl Gallery {
     pub fn new() -> Self {
         Self {
             rows: Vec::new(),
-            name_input: TextInput::local().with_plain_chrome().with_font_size(14.0),
+            name_input: TextInput::local()
+                .with_kind(ui::widget::TextInputKind::Name)
+                .with_plain_chrome()
+                .with_font_size(14.0),
             menu: ContextMenu::new(),
             menu_cmds: Vec::new(),
             selected: String::new(),

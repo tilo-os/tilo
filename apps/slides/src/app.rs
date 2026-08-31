@@ -719,6 +719,7 @@ impl SlidesApp {
             fill_picker_open: false,
             fill_picker_needs_init: false,
             title_input: TextInput::local()
+                .with_kind(ui::widget::TextInputKind::Name)
                 .with_plain_chrome()
                 .with_font_size(17.0)
                 .with_id("slides-title"),
