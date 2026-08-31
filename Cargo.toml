@@ -231,6 +231,14 @@ trailing_empty_array = "deny"
 # with unwrap, since that is denied too.
 as_conversions = "allow"
 
+# `duration_suboptimal_units` wants `Duration::from_days(3)` where the code
+# says `from_secs(259_200)`. It would read better — but `from_days`,
+# `from_hours`, `from_mins` and `from_weeks` are all still behind the unstable
+# `duration_constructors` feature, and the toolchain is pinned to stable. The
+# lint's own suggestion does not compile here, so denying it only produces
+# violations nobody can discharge.
+duration_suboptimal_units = "allow"
+
 # `must_use_candidate` wants `#[must_use]` on every public value-returning
 # function: 6,746 attributes here. The bug it aims at — calling something and
 # discarding a result that mattered — is better caught by `#[must_use]` on the
