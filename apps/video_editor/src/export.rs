@@ -188,7 +188,10 @@ impl ExportSettings {
         if video.bitrate_is_predictive() {
             return format!(
                 "≈ {:.0} MB",
-                self.estimated_mb(project.duration(), with_audio)
+                // The range, not the timeline: quoting the whole project's
+                // size for a marked ten-second render would bill for footage
+                // the file never carries.
+                self.estimated_mb(project.export_duration(), with_audio)
             );
         }
         let audio = if with_audio {
@@ -397,15 +400,60 @@ pub fn pipeline_desc_with_audio(
 /// (H.264 requires even dimensions).
 pub fn output_dims(settings: &ExportSettings, project: &Project) -> (u32, u32) {
     let (_pw, ph) = settings.resolution.dims();
-    let aspect = if project.height > 0 {
-        f64::from(project.width) / f64::from(project.height)
-    } else {
-        16.0 / 9.0
-    };
+    // The project's own aspect, through its one accessor — so a vertical or
+    // square project exports vertical or square instead of being letterboxed
+    // into the 16:9 the frame used to be fixed at.
+    let aspect = project.aspect();
     let h = ph.max(2);
     let mut w = (f64::from(h) * aspect).round() as u32;
     w += w & 1; // make even
     (w.max(2), h)
+}
+
+/// How many frames a render writes, and where on the timeline it starts.
+///
+/// Split out of the encode loop so what gets rendered can be asserted without
+/// an encoder: the loop reads its frame count and every frame's timeline time
+/// from here and decides neither itself. Before the timeline had in / out
+/// marks the loop ran `0..total` unconditionally, so checking a ten-second
+/// fix meant re-rendering the whole project.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RenderPlan {
+    /// Timeline seconds of the render's first frame.
+    pub start: f64,
+    /// Frames the render writes.
+    pub total: u64,
+    fps: f64,
+}
+
+impl RenderPlan {
+    /// The plan for `project` at `fps`, honouring its in / out marks.
+    #[must_use]
+    pub fn new(project: &Project, fps: f64) -> Self {
+        let fps = if fps > 0.0 { fps } else { 1.0 };
+        let (start, _) = project.export_range();
+        let duration = project.export_duration().max(1.0 / fps);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a frame count is a positive whole number; the ceil is taken first"
+        )]
+        let total = (duration * fps).ceil().max(1.0) as u64;
+        Self { start, total, fps }
+    }
+
+    /// The timeline time frame `i` is composited at. The file's own timestamps
+    /// stay zero-based, so a range that begins a minute in still writes a file
+    /// that starts at zero.
+    #[must_use]
+    pub fn time_of(self, i: u64) -> f64 {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a frame index within a render is far inside f64's exact range"
+        )]
+        let i = i as f64;
+        self.start + i / self.fps
+    }
 }
 
 /// The absolute path the export writes to. Honours `$QOS_VE_EXPORT_OUT` (a full
@@ -770,9 +818,11 @@ mod gst_pipeline {
         let expects_pictures = super::places_decoded_video(project);
         let mut any_real = false;
 
-        // Total frames across the timeline duration at the target rate.
-        let duration = project.duration().max(1.0 / fps);
-        let total = (duration * fps).ceil().max(1.0) as u64;
+        // What this render covers: the marked range, or the whole timeline
+        // when nothing is marked. One place decides it (`RenderPlan`), so the
+        // encode, the progress figure and the size estimate cannot disagree.
+        let plan = super::RenderPlan::new(project, fps);
+        let total = plan.total;
         state.total.store(total, Ordering::Relaxed);
         let frame_bytes = (w * h * 4) as usize;
         let ns_per_frame = (1_000_000_000.0 / fps) as u64;
@@ -788,7 +838,7 @@ mod gst_pipeline {
                 std::fs::remove_file(&out).ok();
                 return Err(super::CANCELLED.to_string());
             }
-            let t = i as f64 / fps;
+            let t = plan.time_of(i);
             let rgba = compositor.frame(project, t, w, h, &mut sources);
             any_real |= sources.served_real_picture();
             debug_assert_eq!(rgba.len(), frame_bytes);

@@ -116,6 +116,19 @@ impl VideoDoc {
         let _ = doc.put(&proj, "fps", p.fps);
         let _ = doc.put(&proj, "width", i64::from(p.width));
         let _ = doc.put(&proj, "height", i64::from(p.height));
+        let _ = doc.put(&proj, "format_explicit", p.format_explicit);
+        // An absent mark is an absent key, not a sentinel: a peer that reads
+        // 0.0 for "no in mark" cannot tell it from a mark on the first frame.
+        for (key, mark) in [("mark_in", p.mark_in), ("mark_out", p.mark_out)] {
+            match mark {
+                Some(t) => {
+                    let _ = doc.put(&proj, key, t);
+                }
+                None => {
+                    let _ = doc.delete(&proj, key);
+                }
+            }
+        }
         let _ = doc.put(
             &proj,
             "markers",
@@ -314,6 +327,9 @@ impl VideoDoc {
             p.fps = Self::get_f64(doc, &proj, "fps").unwrap_or(30.0);
             p.width = Self::get_i64(doc, &proj, "width").unwrap_or(1920) as u32;
             p.height = Self::get_i64(doc, &proj, "height").unwrap_or(1080) as u32;
+            p.format_explicit = Self::get_bool(doc, &proj, "format_explicit");
+            p.mark_in = Self::get_f64(doc, &proj, "mark_in");
+            p.mark_out = Self::get_f64(doc, &proj, "mark_out");
             p.markers = Self::get_str(doc, &proj, "markers")
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default();
@@ -506,9 +522,10 @@ impl VideoDoc {
 /// stable across runs.
 pub fn sample_project() -> Project {
     let mut p = Project::new("Coastline_Doc_v3");
-    p.fps = 30.0;
-    p.width = 1920;
-    p.height = 1080;
+    // A cut this far along has a format: it is 1080p at 30, and the next clip
+    // to land on it must not re-shape the timeline it is already cut against.
+    p.set_frame_size(1920, 1080);
+    p.set_fps(30.0);
 
     let mk = |name: &str, kind: MediaKind, dur: f64, w: u32, h: u32, fps: f64, pal: u8| {
         MediaItem {
