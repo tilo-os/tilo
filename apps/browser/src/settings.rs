@@ -147,6 +147,11 @@ impl Settings {
     /// Serialize to pretty JSON and write to an explicit path, creating
     /// parent directories as required. Returns the underlying I/O error
     /// on failure so tests can assert on it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the parent directory can't be created or if the
+    /// write itself fails.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -298,7 +303,7 @@ impl SettingsPane {
     /// Seed the `settings.*` paths from `self.initial`. Idempotent: each
     /// path is only written when absent, so a document already carrying
     /// settings (e.g. restored from collab) is left untouched.
-    fn bootstrap_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
         put_bool_if_absent(state, root, ADBLOCK_PATH, self.initial.adblock_enabled);
         put_bool_if_absent(state, root, CLEAR_ON_EXIT_PATH, self.initial.clear_on_exit);
         // Click-flags start false so a false→true edge fires only on a
@@ -317,7 +322,7 @@ impl SettingsPane {
     /// rhythm is done with explicit spacer rows because an intrinsic-height
     /// column lays out as a block stack that ignores taffy's inter-child
     /// gap — a plain `.push().push()` renders the rows touching.
-    fn build_composition(&self) -> Box<dyn Widget> {
+    fn build_composition() -> Box<dyn Widget> {
         let header = Row::new()
             .push(Box::new(Text::new("Settings").with_size(24.0)))
             .push(Box::new(Spacer::new()))
@@ -540,7 +545,7 @@ impl Widget for SettingsPane {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
+        let mut composed = Self::build_composition();
         let child_node = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
@@ -553,13 +558,21 @@ impl Widget for SettingsPane {
             },
             ..Default::default()
         };
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; `child_node` was just built in this one above.
+        #[allow(
+            clippy::unwrap_used,
+            reason = "every child node was just created in this same tree"
+        )]
         let node = taffy.new_with_children(style, &[child_node]).unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let Ok(layout) = taffy.layout(node) else {
+            return;
+        };
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -810,6 +823,19 @@ mod tests {
         // widget tree and assert the CRDT bool changed.
         use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 
+        // Locate the ad-block toggle's rect by walking the live tree.
+        fn find_toggle_rect(w: &dyn Widget, id: &str) -> Option<Rect> {
+            if w.test_id() == Some(id) {
+                return Some(w.get_rect());
+            }
+            for c in w.children() {
+                if let Some(r) = find_toggle_rect(c, id) {
+                    return Some(r);
+                }
+            }
+            None
+        }
+
         let mut pane = SettingsPane::new();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -834,18 +860,6 @@ mod tests {
         // Re-sync so the toggle's cached `is_checked` reflects the CRDT.
         pane.sync(&mut doc, &root);
 
-        // Locate the ad-block toggle's rect by walking the live tree.
-        fn find_toggle_rect(w: &dyn Widget, id: &str) -> Option<Rect> {
-            if w.test_id() == Some(id) {
-                return Some(w.get_rect());
-            }
-            for c in w.children() {
-                if let Some(r) = find_toggle_rect(c, id) {
-                    return Some(r);
-                }
-            }
-            None
-        }
         let rect = find_toggle_rect(&pane, "settings.adblock")
             .expect("ad-block toggle is addressable in the tree");
         let center = rect.center();

@@ -384,6 +384,13 @@ impl StorageAuthority {
 
 /// Eviction-eligibility inputs, grouped so the call site names each flag
 /// rather than passing an easily-transposed run of `bool`s.
+#[derive(Clone, Copy)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent, named eligibility condition; that's exactly what \
+              this struct exists to make transposition-proof at the call site instead of a run \
+              of positional bool params (see the doc comment above)"
+)]
 struct Eligibility {
     online: bool,
     bytes: u64,

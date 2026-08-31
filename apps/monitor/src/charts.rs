@@ -179,7 +179,9 @@ pub fn area_chart(
         scene.fill(Fill::NonZero, t, with_alpha(s.color, 46), None, &area);
         // Top line.
         let mut line = BezPath::new();
-        line.move_to(map(0, s.data[0]));
+        if let Some(&first) = s.data.first() {
+            line.move_to(map(0, first));
+        }
         for (i, &v) in s.data.iter().enumerate().skip(1) {
             line.line_to(map(i, v));
         }
@@ -337,7 +339,9 @@ pub fn sparkline(scene: &mut Scene, t: Affine, rect: Rect, data: &[f32], max: f3
     area.close_path();
     scene.fill(Fill::NonZero, t, with_alpha(color, 54), None, &area);
     let mut line = BezPath::new();
-    line.move_to(map(0, data[0]));
+    if let Some(&first) = data.first() {
+        line.move_to(map(0, first));
+    }
     for (i, &v) in data.iter().enumerate().skip(1) {
         line.line_to(map(i, v));
     }

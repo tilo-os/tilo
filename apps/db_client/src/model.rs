@@ -326,6 +326,12 @@ impl Cell {
     }
 }
 
+#[allow(
+    clippy::float_cmp,
+    reason = "trunc() is an exact, non-accumulating operation on r itself, not an independently \
+              computed value, so this is testing whether r already is a whole number, not \
+              tolerating rounding error"
+)]
 fn format_real(r: f64) -> String {
     if r == r.trunc() && r.abs() < 1e15 {
         format!("{r:.1}")

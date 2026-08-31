@@ -310,8 +310,9 @@ fn tampered_root_hash_in_signed_bundle_is_caught() {
     // right layered behavior. Either error type is acceptable — both mean
     // "you can't fake this".
     match err {
-        BundleError::HashMismatch { .. } | BundleError::BadSignature => {}
-        BundleError::SignatureFieldMalformed { .. } => {}
+        BundleError::HashMismatch { .. }
+        | BundleError::BadSignature
+        | BundleError::SignatureFieldMalformed { .. } => {}
         other => panic!("unexpected: {other:?}"),
     }
 }

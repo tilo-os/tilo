@@ -76,7 +76,8 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 /// the only shape that can be tested for it.
 fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
     let hex = have.to_hex_string();
-    format!("{prefix}-{}", &hex[..hex.len().min(12)])
+    let short: String = hex.chars().take(12).collect();
+    format!("{prefix}-{short}")
 }
 
 /// The name this replica is given, if anything has named it.
@@ -99,6 +100,10 @@ fn named_actor(prefix: &str) -> Option<String> {
     }
 }
 
+/// # Errors
+///
+/// Returns an error if `--shots` mode fails to lay out or render the
+/// offscreen frame (a taffy layout error, or writing the output PNG).
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -341,12 +346,12 @@ fn write_image(path: &std::path::Path, w: u32, h: u32, kind: u8, fmt: image::Ima
 
 /// A distinct, believable gradient/pattern per `kind` so demo thumbnails read as
 /// real, varied images rather than flat swatches.
-fn gradient_image(w: u32, h: u32, kind: u8) -> image::RgbaImage {
+fn gradient_image(width: u32, height: u32, kind: u8) -> image::RgbaImage {
     let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t.clamp(0.0, 1.0);
-    let mut img = image::RgbaImage::new(w, h);
+    let mut img = image::RgbaImage::new(width, height);
     for (x, y, px) in img.enumerate_pixels_mut() {
-        let fx = x as f32 / w as f32;
-        let fy = y as f32 / h as f32;
+        let fx = x as f32 / width as f32;
+        let fy = y as f32 / height as f32;
         let (r, g, b) = match kind % 5 {
             0 => (
                 lerp(255.0, 60.0, fy),
@@ -389,9 +394,8 @@ fn gradient_image(w: u32, h: u32, kind: u8) -> image::RgbaImage {
 /// A gradient PNG (used for EPUB covers and host-provided preview xattrs).
 fn gradient_png(w: u32, h: u32, kind: u8) -> Vec<u8> {
     let mut out = Vec::new();
-    image::DynamicImage::ImageRgba8(gradient_image(w, h, kind))
-        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
-        .unwrap();
+    let _ = image::DynamicImage::ImageRgba8(gradient_image(w, h, kind))
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png);
     out
 }
 
@@ -426,7 +430,9 @@ fn minimal_pdf(title: &str) -> Vec<u8> {
     out.extend_from_slice(b"%PDF-1.4\n");
     let mut offsets = vec![0usize; objs.len() + 1];
     for (i, body) in objs.iter().enumerate() {
-        offsets[i + 1] = out.len();
+        if let Some(slot) = offsets.get_mut(i + 1) {
+            *slot = out.len();
+        }
         out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
         out.extend_from_slice(body);
         out.extend_from_slice(b"\nendobj\n");
@@ -449,6 +455,10 @@ fn minimal_pdf(title: &str) -> Vec<u8> {
 
 /// Build a minimal but real EPUB (ZIP + OPF) whose manifest declares `cover_png`
 /// as the cover image, so the shared generator extracts + downscales it.
+#[allow(
+    clippy::unwrap_used,
+    reason = "every write here targets an in-memory Vec-backed Cursor with fixed, well-formed demo content and distinct entry names; the zip crate can only fail this call on I/O or duplicate-name errors, neither of which applies"
+)]
 fn minimal_epub(title: &str, cover_png: &[u8]) -> Vec<u8> {
     use std::io::Write;
     use zip::write::SimpleFileOptions;
@@ -553,6 +563,77 @@ fn parse_path_arg(args: &[String]) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Apply scenario-specific state that needs the already-laid-out geometry (a
+/// mid-drag reorder, an open context menu, a hovered row) — split out of
+/// [`render_shot_to_png`] purely to stay under the line-count limit.
+fn apply_post_layout_scenario(
+    widget: &mut FileExplorerWidget,
+    scenario: Option<&str>,
+    (w, h): (u32, u32),
+    state: &mut ui::State,
+    child: NodeId,
+    taffy: &TaffyTree<()>,
+) {
+    match scenario {
+        Some("menu") => {
+            // Right-click context menu + the "New File" template flyout, anchored
+            // in the content pane.
+            widget.debug_show_templates_menu(Point::new(f64::from(w) * 0.45, f64::from(h) * 0.34));
+        }
+        Some("reorder") => {
+            // Grab a favourite and lift it two rows up — mid-drag.
+            widget.debug_begin_favorite_drag(4, 1);
+        }
+        Some("pindrag") => {
+            // Carry a folder out of the list toward the sidebar — mid-drag, so
+            // the floating ghost shows over the Favourites section.
+            let folder = widget.current_path().join("Development");
+            widget.debug_begin_pin_drag(folder, Point::new(150.0, 300.0));
+        }
+        Some("dropmove") => {
+            // Drag a file onto a folder — mid-drop, so the ghost + the folder's
+            // drop-target highlight both show. Pick the first published folder
+            // row as the target and the first file as the dragged item.
+            let target = widget
+                .debug_folder_targets()
+                .into_iter()
+                .next()
+                .map(|(p, _)| p);
+            let source = widget
+                .entries()
+                .iter()
+                .find(|e| !e.is_dir)
+                .map(|e| e.path.clone());
+            if let (Some(target), Some(source)) = (target, source) {
+                widget.debug_begin_move_drag(vec![source], target);
+            }
+        }
+        Some("select") => {
+            // Move the cursor over a (different) row so the hover veneer shows
+            // alongside the accent selection.
+            let ev = winit::event::WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(f64::from(w) * 0.35, 560.0),
+            };
+            let mut handled = false;
+            let mut focus = None;
+            let mods = winit::event::Modifiers::default();
+            widget.handle_event(
+                &ev,
+                1.0,
+                &mods,
+                &mut state.doc,
+                &state.root,
+                &mut handled,
+                &mut focus,
+                child,
+                taffy,
+            );
+        }
+        _ => {}
+    }
+}
+
 /// Run one offscreen frame against `widget` at `viewport` and write the
 /// resulting RGBA to `out` as a PNG. Mirrors `ui::App`'s
 /// `sync → build_layout → compute_layout → apply_layout → draw` cycle, then
@@ -615,64 +696,7 @@ fn render_shot_to_png(
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 
     // Post-layout scenarios need the laid-out geometry.
-    match scenario {
-        Some("menu") => {
-            // Right-click context menu + the "New File" template flyout, anchored
-            // in the content pane.
-            widget.debug_show_templates_menu(Point::new(f64::from(w) * 0.45, f64::from(h) * 0.34));
-        }
-        Some("reorder") => {
-            // Grab a favourite and lift it two rows up — mid-drag.
-            widget.debug_begin_favorite_drag(4, 1);
-        }
-        Some("pindrag") => {
-            // Carry a folder out of the list toward the sidebar — mid-drag, so
-            // the floating ghost shows over the Favourites section.
-            let folder = widget.current_path().join("Development");
-            widget.debug_begin_pin_drag(folder, Point::new(150.0, 300.0));
-        }
-        Some("dropmove") => {
-            // Drag a file onto a folder — mid-drop, so the ghost + the folder's
-            // drop-target highlight both show. Pick the first published folder
-            // row as the target and the first file as the dragged item.
-            let target = widget
-                .debug_folder_targets()
-                .into_iter()
-                .next()
-                .map(|(p, _)| p);
-            let source = widget
-                .entries()
-                .iter()
-                .find(|e| !e.is_dir)
-                .map(|e| e.path.clone());
-            if let (Some(target), Some(source)) = (target, source) {
-                widget.debug_begin_move_drag(vec![source], target);
-            }
-        }
-        Some("select") => {
-            // Move the cursor over a (different) row so the hover veneer shows
-            // alongside the accent selection.
-            let ev = winit::event::WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(f64::from(w) * 0.35, 560.0),
-            };
-            let mut handled = false;
-            let mut focus = None;
-            let mods = winit::event::Modifiers::default();
-            widget.handle_event(
-                &ev,
-                1.0,
-                &mods,
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut focus,
-                child,
-                &taffy,
-            );
-        }
-        _ => {}
-    }
+    apply_post_layout_scenario(&mut widget, scenario, (w, h), &mut state, child, &taffy);
 
     // Thumbnail scenarios: requests are enqueued during draw, so a throwaway
     // warm-up draw kicks off generation for the visible cells, then we wait for

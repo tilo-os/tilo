@@ -40,12 +40,17 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
         "charlie" => (0x10, 0xb9, 0x81), // emerald-500
         _ => {
             // FNV-1a 64-bit: cheap, deterministic, no RNG state.
-            let mut h: u64 = 0xcbf29ce484222325;
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
             for b in user_id.as_bytes() {
                 h ^= u64::from(*b);
-                h = h.wrapping_mul(0x100000001b3);
+                h = h.wrapping_mul(0x10_0000_01b3);
             }
-            PEER_PALETTE[(h % PEER_PALETTE.len() as u64) as usize]
+            // `PEER_PALETTE.len()` (24) is a nonzero compile-time constant,
+            // so the remainder can never divide by zero; the result is
+            // always < 24, so it always fits `usize`.
+            let idx = h.checked_rem(PEER_PALETTE.len() as u64).unwrap_or(0);
+            let idx = usize::try_from(idx).unwrap_or(0);
+            PEER_PALETTE.get(idx).copied().unwrap_or_default()
         }
     }
 }
@@ -100,7 +105,9 @@ pub fn assign_peer_colors(
     let mut taken = [false; PEER_PALETTE.len()];
     for c in reserved {
         if let Some(i) = PEER_PALETTE.iter().position(|p| p == c) {
-            taken[i] = true;
+            if let Some(slot) = taken.get_mut(i) {
+                *slot = true;
+            }
         }
     }
 
@@ -114,16 +121,27 @@ pub fn assign_peer_colors(
             .unwrap_or(0);
         let mut slot = start;
         for step in 0..PEER_PALETTE.len() {
-            let i = (start + step) % PEER_PALETTE.len();
-            if !taken[i] {
+            // `PEER_PALETTE.len()` (24) is a nonzero compile-time constant,
+            // so the remainder can never divide by zero; `start`/`step` are
+            // both < 24, so the sum can't realistically overflow either.
+            let i = start
+                .saturating_add(step)
+                .checked_rem(PEER_PALETTE.len())
+                .unwrap_or(0);
+            if !taken.get(i).copied().unwrap_or(false) {
                 slot = i;
                 break;
             }
             // More people than colours: share the natural entry; the name still says who is who.
             slot = start;
         }
-        taken[slot] = true;
-        out.insert(id.to_string(), PEER_PALETTE[slot]);
+        if let Some(s) = taken.get_mut(slot) {
+            *s = true;
+        }
+        out.insert(
+            id.to_string(),
+            PEER_PALETTE.get(slot).copied().unwrap_or_default(),
+        );
     }
     out
 }
@@ -714,7 +732,7 @@ impl PresenceCtx {
     }
 
     pub fn peers_on(&self, key: &PresenceKey) -> &[UserId] {
-        self.here.get(key).map(Vec::as_slice).unwrap_or(&[])
+        self.here.get(key).map_or(&[], Vec::as_slice)
     }
 
     pub fn pointer_for(&self, key: &PresenceKey, user: &UserId) -> Option<(f32, f32)> {
@@ -768,7 +786,7 @@ impl PresenceCtx {
         // Relabel any already-drawn pill too, in case the pointer arrived first.
         for cursor in &mut self.remote_cursors {
             if cursor.user_id == user.0 {
-                cursor.label = name.clone();
+                cursor.label.clone_from(&name);
             }
         }
         self.names.insert(user, name);
@@ -1030,10 +1048,24 @@ impl PresenceCtx {
     // carries peer ids as `String`, the rest of `PresenceCtx` is keyed by
     // [`UserId`]. Let the pump forward straight from the event payload.
 
+    // `key` is only ever borrowed inside these three wrappers, so clippy
+    // would rather see `&PresenceKey` — but they're the public wire-decode
+    // entrypoints called from `shell::peer_presence` and app crates
+    // (`apps/notes`, `apps/word-processor`) outside this file's ownership,
+    // each handing over an owned `PresenceKey` it just decoded; narrowing
+    // the parameter would ripple into call sites this pass can't touch.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "public wire-decode API called from crates outside ui; narrowing to &PresenceKey would require updating call sites out of scope for this pass"
+    )]
     pub fn set_remote_caret(&mut self, user_id: String, key: PresenceKey, pos: usize) {
         self.set_caret(&key, UserId(user_id), pos);
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "public wire-decode API called from crates outside ui; narrowing to &PresenceKey would require updating call sites out of scope for this pass"
+    )]
     pub fn set_remote_selection(
         &mut self,
         user_id: String,
@@ -1044,6 +1076,10 @@ impl PresenceCtx {
         self.set_selection(&key, UserId(user_id), SelectionRange { start, end });
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "public wire-decode API called from crates outside ui; narrowing to &PresenceKey would require updating call sites out of scope for this pass"
+    )]
     pub fn register_peer_at(&mut self, user_id: String, key: PresenceKey) {
         let uid = UserId(user_id);
         if matches!(key, PresenceKey::Tab { .. }) {
@@ -1058,6 +1094,16 @@ impl PresenceCtx {
     /// because the compositor also subscribes to the identical stream, and
     /// two decoders would drift. The returned [`RemotePresenceEffect`] names
     /// what a bare presence store can't do for itself.
+    // `payload`'s variants are all Copy fields, but `PresencePayload` itself
+    // isn't, so clippy would rather see `&PresencePayload` here — this is
+    // the same public wire-decode entrypoint called from
+    // `shell::peer_presence` and app crates outside this file's ownership,
+    // so narrowing it would ripple into call sites out of scope for this
+    // pass.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "public wire-decode API called from crates outside ui; narrowing payload to &PresencePayload would require updating call sites out of scope for this pass"
+    )]
     pub fn apply_remote_presence(
         &mut self,
         user_id: String,
@@ -1123,7 +1169,7 @@ impl PresenceCtx {
                 // paints nothing.
                 if let Some(prev) = self.caret_for(&key, &uid)
                     && pos > prev
-                    && pos - prev <= TYPING_DERIVE_MAX_RUN
+                    && pos.saturating_sub(prev) <= TYPING_DERIVE_MAX_RUN
                     && self.edit_landed_recently(now)
                 {
                     self.record_peer_typing(
@@ -1183,8 +1229,8 @@ impl PresenceCtx {
 
     /// Drop every trace of `user_id`, on an actual disconnect (not `Left`,
     /// which is just the pointer leaving the viewport — see the arm above).
-    pub fn unregister_peer(&mut self, user_id: String) {
-        let uid = UserId(user_id.clone());
+    pub fn unregister_peer(&mut self, user_id: &str) {
+        let uid = UserId(user_id.to_owned());
         for list in self.here.values_mut() {
             list.retain(|u| u != &uid);
         }
@@ -1201,7 +1247,7 @@ impl PresenceCtx {
         self.typing.retain(|(u, _), _| u != &uid);
         self.views.remove(&uid);
         self.names.remove(&uid);
-        self.remove_remote_cursor(&user_id);
+        self.remove_remote_cursor(user_id);
     }
 }
 
@@ -1345,9 +1391,9 @@ mod remote_cursor_tests {
         assert_eq!(c.position, [42.0, 17.0]);
         assert_eq!(c.label, "alice");
         let (r, g, b) = user_color("alice");
-        assert!((c.color[0] - r as f32 / 255.0).abs() < 1e-3);
-        assert!((c.color[1] - g as f32 / 255.0).abs() < 1e-3);
-        assert!((c.color[2] - b as f32 / 255.0).abs() < 1e-3);
+        assert!((c.color[0] - f32::from(r) / 255.0).abs() < 1e-3);
+        assert!((c.color[1] - f32::from(g) / 255.0).abs() < 1e-3);
+        assert!((c.color[2] - f32::from(b) / 255.0).abs() < 1e-3);
         assert_eq!(c.color[3], 1.0);
     }
 
@@ -1462,7 +1508,7 @@ mod string_id_wrapper_tests {
         assert!(ctx.pointer_for(&key_a, &UserId("alice".into())).is_some());
         assert_eq!(ctx.remote_cursors.len(), 1);
 
-        ctx.unregister_peer("alice".into());
+        ctx.unregister_peer("alice");
 
         // Alice is purged.
         assert!(ctx.peers_on(&key_a).is_empty());
@@ -1828,7 +1874,7 @@ mod string_id_wrapper_tests {
             Instant::now(),
         );
         assert!(!ctx.active_typing(&alice, &key, Instant::now()).is_empty());
-        ctx.unregister_peer("alice".into());
+        ctx.unregister_peer("alice");
         assert!(ctx.active_typing(&alice, &key, Instant::now()).is_empty());
         assert_eq!(
             ctx.display_name(&alice),
@@ -1855,7 +1901,7 @@ mod string_id_wrapper_tests {
         ctx.set_remote_caret("bob".into(), key.clone(), 7);
         ctx.upsert_remote_cursor("bob".into(), [99.0, 99.0], None);
 
-        ctx.unregister_peer("alice".into());
+        ctx.unregister_peer("alice");
 
         assert_eq!(ctx.peers_on(&key), &[UserId("bob".into())]);
         assert_eq!(ctx.caret_for(&key, &UserId("bob".into())), Some(7));
@@ -1975,7 +2021,7 @@ mod own_identity_tests {
         ctx.set_own_identity(["", "   "]);
         assert!(!ctx.is_own_identity(""));
         ctx.apply_remote_presence(
-            "".into(),
+            String::new(),
             room(),
             PresencePayload::Pointer { x: 1.0, y: 2.0 },
         );
@@ -2043,7 +2089,7 @@ mod own_identity_tests {
         // pill and the cursor stay suppressed.
         assert!(ctx.is_own_identity(&me.0));
         assert_eq!(
-            ctx.apply_remote_presence(me.0.clone(), room(), PresencePayload::Caret { pos: 4 }),
+            ctx.apply_remote_presence(me.0, room(), PresencePayload::Caret { pos: 4 }),
             RemotePresenceEffect::None,
         );
         assert!(

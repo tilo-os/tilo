@@ -31,6 +31,10 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "must match the ShotFactory fn-pointer type, which returns Result"
+)]
 fn shot_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(
         if std::env::var("QOS_FIREWALL_SAMPLE").as_deref() == Ok("1") {
@@ -46,5 +50,5 @@ pub fn main() {
         LaunchSpec::new("dev.qos.firewall", firewall::app_root)
             .shot_root(shot_root)
             .configure_app(|app| firewall::actions::register(app.action_registry_mut())),
-    )
+    );
 }

@@ -186,7 +186,6 @@ impl SchemaTree {
         theme: &Theme,
         session: &Session,
     ) {
-        let p = theme.db();
         let r = self.rect;
 
         // Section header.
@@ -209,171 +208,222 @@ impl SchemaTree {
             let idx = self.scroll + vi;
             let Some(row) = self.rows.get(idx) else { break };
             let y = body_top + vi as f64 * ROW_H;
-            let row_rect = Rect::new(r.x0 + 4.0, y, r.x1 - 4.0, y + ROW_H);
-            let hover = row_rect.contains(self.cursor);
-
             match row {
                 Row::Schema { name } => {
-                    let open = self.expanded_schemas.contains(name);
-                    let tri = if open { "▾" } else { "▸" };
-                    tr.draw_text(
-                        scene,
-                        tri,
-                        11.0,
-                        theme.text_dim,
-                        t * Affine::translate((r.x0 + 8.0, y + 5.0)),
-                        None,
-                    );
-                    tr.draw_text(
-                        scene,
-                        name,
-                        12.5,
-                        theme.text_primary,
-                        t * Affine::translate((r.x0 + 24.0, y + 4.0)),
-                        None,
-                    );
-                    // Table count.
-                    if let Some(s) = session.schema.schemas.iter().find(|s| &s.name == name) {
-                        let cnt = format!("{}", s.tables.len());
-                        let (cw, _) = tr.measure(&cnt, 11.0, None);
-                        tr.draw_text(
-                            scene,
-                            &cnt,
-                            11.0,
-                            theme.text_dim,
-                            t * Affine::translate((r.x1 - f64::from(cw) - 12.0, y + 5.0)),
-                            None,
-                        );
-                    }
+                    self.draw_schema_row(scene, t, tr, theme, session, name, r, y)
                 }
                 Row::Table { name } => {
-                    let selected = self.selected.as_deref() == Some(name.as_str());
-                    if selected {
-                        scene.fill(
-                            Fill::NonZero,
-                            t,
-                            p.selection,
-                            None,
-                            &row_rect.to_rounded_rect(5.0),
-                        );
-                    } else if hover {
-                        scene.fill(
-                            Fill::NonZero,
-                            t,
-                            p.hover,
-                            None,
-                            &row_rect.to_rounded_rect(5.0),
-                        );
-                    }
-                    let open = self.expanded_tables.contains(name);
-                    let tri = if open { "▾" } else { "▸" };
-                    let info = session.schema.find_table(name);
-                    let is_view = info.is_some_and(|t| t.kind == RelationKind::View);
-                    tr.draw_text(
-                        scene,
-                        tri,
-                        10.0,
-                        theme.text_dim,
-                        t * Affine::translate((r.x0 + INDENT + 4.0, y + 6.0)),
-                        None,
-                    );
-                    // Table/view glyph.
-                    let glyph = if is_view { "◫" } else { "▦" };
-                    let gcolor = if is_view {
-                        theme.tokens.colors.semantic.info
-                    } else {
-                        theme.accent_primary
-                    };
-                    tr.draw_text(
-                        scene,
-                        glyph,
-                        12.0,
-                        gcolor,
-                        t * Affine::translate((r.x0 + INDENT + 18.0, y + 4.0)),
-                        None,
-                    );
-                    tr.draw_text(
-                        scene,
-                        name,
-                        12.5,
-                        theme.text_primary,
-                        t * Affine::translate((r.x0 + INDENT + 36.0, y + 4.0)),
-                        Some((r.width() - INDENT - 80.0) as f32),
-                    );
-                    // Row count badge.
-                    if let Some(info) = info
-                        && let Some(rc) = info.row_count
-                    {
-                        let badge = format!("{rc}");
-                        let (bw, _) = tr.measure(&badge, 10.5, None);
-                        tr.draw_text(
-                            scene,
-                            &badge,
-                            10.5,
-                            theme.text_dim,
-                            t * Affine::translate((r.x1 - f64::from(bw) - 14.0, y + 5.0)),
-                            None,
-                        );
-                    }
+                    self.draw_table_row(scene, t, tr, theme, session, name, r, y)
                 }
                 Row::Column {
                     table, text, icon, ..
-                } => {
-                    if hover {
-                        scene.fill(
-                            Fill::NonZero,
-                            t,
-                            p.hover,
-                            None,
-                            &row_rect.to_rounded_rect(5.0),
-                        );
-                    }
-                    // Resolve the type colour from the live schema so it
-                    // tracks the theme (avoids storing a stale colour).
-                    let (icon_color, _cls) = self
-                        .column_class(session, table, text)
-                        .map_or((theme.text_dim, crate::model::TypeClass::Unknown), |c| {
-                            (theme.type_color(c), c)
-                        });
-
-                    // Type icon chip.
-                    let chip = Rect::new(
-                        r.x0 + INDENT * 2.0 + 6.0,
-                        y + 4.0,
-                        r.x0 + INDENT * 2.0 + 22.0,
-                        y + 20.0,
-                    )
-                    .to_rounded_rect(4.0);
-                    scene.fill(Fill::NonZero, t, icon_color, None, &chip);
-                    tr.draw_text(
-                        scene,
-                        icon,
-                        10.0,
-                        Color::from_rgb8(20, 20, 20),
-                        t * Affine::translate((r.x0 + INDENT * 2.0 + 10.0, y + 5.0)),
-                        None,
-                    );
-                    tr.draw_text(
-                        scene,
-                        text,
-                        11.5,
-                        theme.text_dim,
-                        t * Affine::translate((r.x0 + INDENT * 2.0 + 30.0, y + 5.0)),
-                        Some((r.width() - INDENT * 2.0 - 40.0) as f32),
-                    );
-                }
+                } => self.draw_column_row(scene, t, tr, theme, session, table, text, icon, r, y),
             }
         }
     }
 
-    /// Look up a column's type class by matching its rendered text back to
-    /// the schema (the row stores the formatted string).
-    fn column_class(
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one row's full draw context: canvas + theme + session + this schema's name + its y"
+    )]
+    fn draw_schema_row(
         &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        session: &Session,
+        name: &str,
+        r: Rect,
+        y: f64,
+    ) {
+        let open = self.expanded_schemas.contains(name);
+        let tri = if open { "▾" } else { "▸" };
+        tr.draw_text(
+            scene,
+            tri,
+            11.0,
+            theme.text_dim,
+            t * Affine::translate((r.x0 + 8.0, y + 5.0)),
+            None,
+        );
+        tr.draw_text(
+            scene,
+            name,
+            12.5,
+            theme.text_primary,
+            t * Affine::translate((r.x0 + 24.0, y + 4.0)),
+            None,
+        );
+        // Table count.
+        if let Some(s) = session.schema.schemas.iter().find(|s| &s.name == name) {
+            let cnt = format!("{}", s.tables.len());
+            let (cw, _) = tr.measure(&cnt, 11.0, None);
+            tr.draw_text(
+                scene,
+                &cnt,
+                11.0,
+                theme.text_dim,
+                t * Affine::translate((r.x1 - f64::from(cw) - 12.0, y + 5.0)),
+                None,
+            );
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one row's full draw context: canvas + theme + session + this table's name + its y"
+    )]
+    fn draw_table_row(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        session: &Session,
+        name: &str,
+        r: Rect,
+        y: f64,
+    ) {
+        let p = theme.db();
+        let row_rect = Rect::new(r.x0 + 4.0, y, r.x1 - 4.0, y + ROW_H);
+        let hover = row_rect.contains(self.cursor);
+        let selected = self.selected.as_deref() == Some(name);
+        if selected {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                p.selection,
+                None,
+                &row_rect.to_rounded_rect(5.0),
+            );
+        } else if hover {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                p.hover,
+                None,
+                &row_rect.to_rounded_rect(5.0),
+            );
+        }
+        let open = self.expanded_tables.contains(name);
+        let tri = if open { "▾" } else { "▸" };
+        let info = session.schema.find_table(name);
+        let is_view = info.is_some_and(|t| t.kind == RelationKind::View);
+        tr.draw_text(
+            scene,
+            tri,
+            10.0,
+            theme.text_dim,
+            t * Affine::translate((r.x0 + INDENT + 4.0, y + 6.0)),
+            None,
+        );
+        // Table/view glyph.
+        let glyph = if is_view { "◫" } else { "▦" };
+        let gcolor = if is_view {
+            theme.tokens.colors.semantic.info
+        } else {
+            theme.accent_primary
+        };
+        tr.draw_text(
+            scene,
+            glyph,
+            12.0,
+            gcolor,
+            t * Affine::translate((r.x0 + INDENT + 18.0, y + 4.0)),
+            None,
+        );
+        tr.draw_text(
+            scene,
+            name,
+            12.5,
+            theme.text_primary,
+            t * Affine::translate((r.x0 + INDENT + 36.0, y + 4.0)),
+            Some((r.width() - INDENT - 80.0) as f32),
+        );
+        // Row count badge.
+        if let Some(info) = info
+            && let Some(rc) = info.row_count
+        {
+            let badge = format!("{rc}");
+            let (bw, _) = tr.measure(&badge, 10.5, None);
+            tr.draw_text(
+                scene,
+                &badge,
+                10.5,
+                theme.text_dim,
+                t * Affine::translate((r.x1 - f64::from(bw) - 14.0, y + 5.0)),
+                None,
+            );
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one row's full draw context: canvas + theme + session + this column's table/text/icon + its y"
+    )]
+    fn draw_column_row(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         session: &Session,
         table: &str,
         text: &str,
-    ) -> Option<crate::model::TypeClass> {
+        icon: &str,
+        r: Rect,
+        y: f64,
+    ) {
+        let p = theme.db();
+        let row_rect = Rect::new(r.x0 + 4.0, y, r.x1 - 4.0, y + ROW_H);
+        let hover = row_rect.contains(self.cursor);
+        if hover {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                p.hover,
+                None,
+                &row_rect.to_rounded_rect(5.0),
+            );
+        }
+        // Resolve the type colour from the live schema so it tracks the
+        // theme (avoids storing a stale colour).
+        let (icon_color, _cls) = Self::column_class(session, table, text)
+            .map_or((theme.text_dim, crate::model::TypeClass::Unknown), |c| {
+                (theme.type_color(c), c)
+            });
+
+        // Type icon chip.
+        let chip = Rect::new(
+            r.x0 + INDENT * 2.0 + 6.0,
+            y + 4.0,
+            r.x0 + INDENT * 2.0 + 22.0,
+            y + 20.0,
+        )
+        .to_rounded_rect(4.0);
+        scene.fill(Fill::NonZero, t, icon_color, None, &chip);
+        tr.draw_text(
+            scene,
+            icon,
+            10.0,
+            Color::from_rgb8(20, 20, 20),
+            t * Affine::translate((r.x0 + INDENT * 2.0 + 10.0, y + 5.0)),
+            None,
+        );
+        tr.draw_text(
+            scene,
+            text,
+            11.5,
+            theme.text_dim,
+            t * Affine::translate((r.x0 + INDENT * 2.0 + 30.0, y + 5.0)),
+            Some((r.width() - INDENT * 2.0 - 40.0) as f32),
+        );
+    }
+
+    /// Look up a column's type class by matching its rendered text back to
+    /// the schema (the row stores the formatted string).
+    fn column_class(session: &Session, table: &str, text: &str) -> Option<crate::model::TypeClass> {
         let info = session.schema.find_table(table)?;
         // The row text starts with the column name.
         let col_name = text.split_whitespace().next()?;

@@ -57,6 +57,10 @@ use vello::kurbo::{Affine, Point};
 /// toolbar row + a sizeable page area.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 
+/// # Errors
+///
+/// Returns an error if a `--shots*` render mode fails to produce its PNG
+/// (missing/unreadable target path, offscreen render failure).
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -93,7 +97,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if let Some(out) = parse_arg_value(&args, "--shots-suggestions") {
-        render_suggestions_shot(std::path::Path::new(&out))?;
+        render_suggestions_shot(std::path::Path::new(&out));
         return Ok(());
     }
     if let Some(out) = parse_arg_value(&args, "--shots-overlay") {
@@ -139,9 +143,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let widget = launch_target(&args)
-        .map(|uri| BrowserWidget::new().with_initial_uri(uri))
-        .unwrap_or_else(BrowserWidget::new);
+    let widget = launch_target(&args).map_or_else(BrowserWidget::new, |uri| {
+        BrowserWidget::new().with_initial_uri(uri)
+    });
     let engine = widget.engine_handle();
 
     // Zero-copy GPU compositing: when the WebView engine exports dmabuf
@@ -180,7 +184,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Render the address-suggestion overlay with sample entries, to inspect
 /// its rows + selection highlight (it paints in the overlay pass, which
 /// the normal shot path doesn't drive).
-fn render_suggestions_shot(out: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+fn render_suggestions_shot(out: &std::path::Path) {
     use browser::address_overlay::AddressSuggestions;
     use browser::history::HistoryEntry;
     let (w, h) = (900u32, 360u32);
@@ -227,7 +231,6 @@ fn render_suggestions_shot(out: &std::path::Path) -> Result<(), Box<dyn std::err
     let mut renderer = OffscreenRenderer::new(w, h);
     renderer.render_png(&scene, theme.bg_app, out);
     println!("browser: wrote suggestions shot to {}", out.display());
-    Ok(())
 }
 
 /// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
@@ -286,23 +289,6 @@ fn launch_target(args: &[String]) -> Option<String> {
         .map(std::path::Path::new)
         .filter(|path| path.is_absolute())?;
     url::Url::from_file_path(path).ok().map(Into::into)
-}
-
-#[cfg(test)]
-mod resource_claim_tests {
-    use super::launch_target;
-
-    #[test]
-    fn startup_accepts_only_declared_web_schemes_as_one_value() {
-        let uri = "HTTPS://example.test/a --still-data";
-        assert_eq!(
-            launch_target(&["browser".into(), uri.into()]).as_deref(),
-            Some(uri)
-        );
-        for value in ["javascript:alert(1)", "data:text/plain,x", "mailto:a@b"] {
-            assert_eq!(launch_target(&["browser".into(), value.into()]), None);
-        }
-    }
 }
 
 /// `--shots-live`: real engine, real network. Boot WPE, navigate, wait
@@ -515,4 +501,21 @@ fn render_shot_to_png(
     renderer.render_png(&scene, theme.bg_app, out);
     println!("browser: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod resource_claim_tests {
+    use super::launch_target;
+
+    #[test]
+    fn startup_accepts_only_declared_web_schemes_as_one_value() {
+        let uri = "HTTPS://example.test/a --still-data";
+        assert_eq!(
+            launch_target(&["browser".into(), uri.into()]).as_deref(),
+            Some(uri)
+        );
+        for value in ["javascript:alert(1)", "data:text/plain,x", "mailto:a@b"] {
+            assert_eq!(launch_target(&["browser".into(), value.into()]), None);
+        }
+    }
 }

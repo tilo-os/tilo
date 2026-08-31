@@ -31,13 +31,21 @@ impl DiffLayout {
             DiffLayout::SideBySide => "split",
         }
     }
+}
+
+impl std::str::FromStr for DiffLayout {
+    /// Parsing never fails: any unrecognised form defaults to
+    /// [`DiffLayout::Unified`] rather than erroring, so a bad replay can't
+    /// wedge a peer.
+    type Err = std::convert::Infallible;
+
     /// Parse the document's string form back into the enum, defaulting to
     /// [`DiffLayout::Unified`] for any unknown value.
-    pub fn from_str(s: &str) -> Self {
-        match s {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "split" => DiffLayout::SideBySide,
             _ => DiffLayout::Unified,
-        }
+        })
     }
 }
 
@@ -136,7 +144,7 @@ impl Settings {
     fn from_obj(doc: &AutoCommit, obj: &ObjId) -> Self {
         let def = Settings::default();
         let layout = get_str(doc, obj, keys::DIFF_LAYOUT)
-            .map_or(def.diff_layout, |s| DiffLayout::from_str(&s));
+            .map_or(def.diff_layout, |s| s.parse().unwrap_or(def.diff_layout));
         Self {
             diff_layout: layout,
             show_whitespace: get_bool(doc, obj, keys::SHOW_WHITESPACE, def.show_whitespace),

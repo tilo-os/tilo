@@ -158,6 +158,131 @@ fn classify_word(lower: &str) -> Tok {
     }
 }
 
+/// `chars[idx]`, but a scan that walks past the end reports "no more input"
+/// instead of panicking.
+fn char_at(chars: &[char], idx: usize) -> Option<char> {
+    chars.get(idx).copied()
+}
+
+/// `chars[start..end]` collected into a `String`; an out-of-range span (which
+/// the scan loops below never actually produce) collects as empty rather than
+/// panicking.
+fn slice_text(chars: &[char], start: usize, end: usize) -> String {
+    chars.get(start..end).unwrap_or_default().iter().collect()
+}
+
+/// Line comment `-- ...`, up to (not including) the newline or end of input.
+fn scan_line_comment(chars: &[char], start: usize, n: usize) -> (usize, Span) {
+    let mut i = start;
+    while i < n && char_at(chars, i) != Some('\n') {
+        i += 1;
+    }
+    (
+        i,
+        Span {
+            text: slice_text(chars, start, i),
+            kind: Tok::Comment,
+        },
+    )
+}
+
+/// Block comment `/* ... */`; an unterminated comment runs to end of input.
+fn scan_block_comment(chars: &[char], start: usize, n: usize) -> (usize, Span) {
+    let mut i = start;
+    i += 2;
+    while i + 1 < n && !(char_at(chars, i) == Some('*') && char_at(chars, i + 1) == Some('/')) {
+        i += 1;
+    }
+    i = (i + 2).min(n);
+    (
+        i,
+        Span {
+            text: slice_text(chars, start, i),
+            kind: Tok::Comment,
+        },
+    )
+}
+
+/// String literal opened by `quote` (single- or double-quoted); a doubled
+/// quote is an escaped quote and stays inside the literal.
+fn scan_string(chars: &[char], start: usize, n: usize, quote: char) -> (usize, Span) {
+    let mut i = start;
+    i += 1;
+    while i < n {
+        if char_at(chars, i) == Some(quote) {
+            if char_at(chars, i + 1) == Some(quote) {
+                i += 2;
+                continue;
+            }
+            i += 1;
+            break;
+        }
+        i += 1;
+    }
+    (
+        i,
+        Span {
+            text: slice_text(chars, start, i),
+            kind: Tok::String,
+        },
+    )
+}
+
+fn scan_whitespace(chars: &[char], start: usize, n: usize) -> (usize, Span) {
+    let mut i = start;
+    while i < n && char_at(chars, i).is_some_and(char::is_whitespace) {
+        i += 1;
+    }
+    (
+        i,
+        Span {
+            text: slice_text(chars, start, i),
+            kind: Tok::Whitespace,
+        },
+    )
+}
+
+/// Integers and decimals.
+fn scan_number(chars: &[char], start: usize, n: usize) -> (usize, Span) {
+    let mut i = start;
+    while i < n && char_at(chars, i).is_some_and(|ch| ch.is_ascii_digit() || ch == '.') {
+        i += 1;
+    }
+    (
+        i,
+        Span {
+            text: slice_text(chars, start, i),
+            kind: Tok::Number,
+        },
+    )
+}
+
+/// Identifiers / keywords / functions / types.
+fn scan_word(chars: &[char], start: usize, n: usize) -> (usize, Span) {
+    let mut i = start;
+    while i < n && char_at(chars, i).is_some_and(|ch| ch.is_alphanumeric() || ch == '_') {
+        i += 1;
+    }
+    let word = slice_text(chars, start, i);
+    let lower = word.to_ascii_lowercase();
+    let kind = classify_word(&lower);
+    (i, Span { text: word, kind })
+}
+
+fn scan_operator(chars: &[char], start: usize, n: usize) -> (usize, Span) {
+    let mut i = start;
+    while i < n && char_at(chars, i).is_some_and(|ch| "+-*/%<>=!|&".contains(ch)) {
+        i += 1;
+    }
+    (
+        i,
+        Span {
+            text: slice_text(chars, start, i),
+            kind: Tok::Operator,
+        },
+    )
+}
+
 /// Tokenize `src` into colour spans covering every byte exactly once.
 pub fn tokenize(src: &str) -> Vec<Span> {
     let chars: Vec<char> = src.chars().collect();
@@ -166,112 +291,56 @@ pub fn tokenize(src: &str) -> Vec<Span> {
     let n = chars.len();
 
     while i < n {
-        let c = chars[i];
+        let Some(c) = char_at(&chars, i) else { break };
 
-        // Line comment `-- ...`
-        if c == '-' && i + 1 < n && chars[i + 1] == '-' {
-            let start = i;
-            while i < n && chars[i] != '\n' {
-                i += 1;
-            }
-            spans.push(Span {
-                text: chars[start..i].iter().collect(),
-                kind: Tok::Comment,
-            });
+        if c == '-' && char_at(&chars, i + 1) == Some('-') {
+            let (next_i, span) = scan_line_comment(&chars, i, n);
+            i = next_i;
+            spans.push(span);
             continue;
         }
 
-        // Block comment `/* ... */`
-        if c == '/' && i + 1 < n && chars[i + 1] == '*' {
-            let start = i;
-            i += 2;
-            while i + 1 < n && !(chars[i] == '*' && chars[i + 1] == '/') {
-                i += 1;
-            }
-            i = (i + 2).min(n);
-            spans.push(Span {
-                text: chars[start..i].iter().collect(),
-                kind: Tok::Comment,
-            });
+        if c == '/' && char_at(&chars, i + 1) == Some('*') {
+            let (next_i, span) = scan_block_comment(&chars, i, n);
+            i = next_i;
+            spans.push(span);
             continue;
         }
 
-        // String literals: single-quoted (with '' escape) or double-quoted
-        // identifiers — we colour both as strings for simplicity.
+        // Single-quoted (with '' escape) or double-quoted identifiers — we
+        // colour both as strings for simplicity.
         if c == '\'' || c == '"' {
-            let quote = c;
-            let start = i;
-            i += 1;
-            while i < n {
-                if chars[i] == quote {
-                    // Doubled quote = escaped quote, stay inside the literal.
-                    if i + 1 < n && chars[i + 1] == quote {
-                        i += 2;
-                        continue;
-                    }
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
-            spans.push(Span {
-                text: chars[start..i].iter().collect(),
-                kind: Tok::String,
-            });
+            let (next_i, span) = scan_string(&chars, i, n, c);
+            i = next_i;
+            spans.push(span);
             continue;
         }
 
-        // Whitespace run.
         if c.is_whitespace() {
-            let start = i;
-            while i < n && chars[i].is_whitespace() {
-                i += 1;
-            }
-            spans.push(Span {
-                text: chars[start..i].iter().collect(),
-                kind: Tok::Whitespace,
-            });
+            let (next_i, span) = scan_whitespace(&chars, i, n);
+            i = next_i;
+            spans.push(span);
             continue;
         }
 
-        // Numbers (integers, decimals).
         if c.is_ascii_digit() {
-            let start = i;
-            while i < n && (chars[i].is_ascii_digit() || chars[i] == '.') {
-                i += 1;
-            }
-            spans.push(Span {
-                text: chars[start..i].iter().collect(),
-                kind: Tok::Number,
-            });
+            let (next_i, span) = scan_number(&chars, i, n);
+            i = next_i;
+            spans.push(span);
             continue;
         }
 
-        // Words: identifiers / keywords / functions / types.
         if c.is_alphabetic() || c == '_' {
-            let start = i;
-            while i < n && (chars[i].is_alphanumeric() || chars[i] == '_') {
-                i += 1;
-            }
-            let word: String = chars[start..i].iter().collect();
-            let lower = word.to_ascii_lowercase();
-            spans.push(Span {
-                text: word,
-                kind: classify_word(&lower),
-            });
+            let (next_i, span) = scan_word(&chars, i, n);
+            i = next_i;
+            spans.push(span);
             continue;
         }
 
-        // Operators.
         if "+-*/%<>=!|&".contains(c) {
-            let start = i;
-            while i < n && "+-*/%<>=!|&".contains(chars[i]) {
-                i += 1;
-            }
-            spans.push(Span {
-                text: chars[start..i].iter().collect(),
-                kind: Tok::Operator,
-            });
+            let (next_i, span) = scan_operator(&chars, i, n);
+            i = next_i;
+            spans.push(span);
             continue;
         }
 

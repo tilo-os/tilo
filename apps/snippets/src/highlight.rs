@@ -102,137 +102,165 @@ fn comment_prefix(lang: Language) -> Option<&'static str> {
 /// on the generic lexer (strings / numbers / placeholders).
 fn keywords(lang: Language) -> &'static [&'static str] {
     match lang {
-        Language::Rust => &[
-            "fn", "let", "mut", "const", "static", "struct", "enum", "trait", "impl", "for",
-            "while", "loop", "if", "else", "match", "return", "pub", "use", "mod", "crate", "self",
-            "super", "as", "in", "ref", "move", "where", "type", "dyn", "async", "await", "unsafe",
-            "extern", "break", "continue",
-        ],
-        Language::Shell => &[
-            "if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac",
-            "function", "in", "return", "export", "local", "set", "echo", "cd", "exit",
-        ],
-        Language::Sql => &[
-            "SELECT",
-            "FROM",
-            "WHERE",
-            "INSERT",
-            "INTO",
-            "VALUES",
-            "UPDATE",
-            "SET",
-            "DELETE",
-            "CREATE",
-            "TABLE",
-            "ALTER",
-            "DROP",
-            "JOIN",
-            "LEFT",
-            "RIGHT",
-            "INNER",
-            "OUTER",
-            "ON",
-            "GROUP",
-            "BY",
-            "ORDER",
-            "HAVING",
-            "LIMIT",
-            "OFFSET",
-            "AND",
-            "OR",
-            "NOT",
-            "NULL",
-            "AS",
-            "DISTINCT",
-            "COUNT",
-            "INDEX",
-            "PRIMARY",
-            "KEY",
-            "FOREIGN",
-            "REFERENCES",
-            "RETURNING",
-        ],
-        Language::Python => &[
-            "def", "class", "import", "from", "as", "if", "elif", "else", "for", "while", "return",
-            "yield", "with", "try", "except", "finally", "raise", "lambda", "pass", "break",
-            "continue", "in", "is", "and", "or", "not", "None", "True", "False", "async", "await",
-        ],
-        Language::JavaScript => &[
-            "function",
-            "const",
-            "let",
-            "var",
-            "if",
-            "else",
-            "for",
-            "while",
-            "return",
-            "class",
-            "extends",
-            "new",
-            "this",
-            "import",
-            "export",
-            "from",
-            "default",
-            "async",
-            "await",
-            "try",
-            "catch",
-            "finally",
-            "throw",
-            "typeof",
-            "instanceof",
-            "of",
-            "in",
-            "null",
-            "undefined",
-            "true",
-            "false",
-        ],
-        Language::Git => &[
-            "git",
-            "add",
-            "commit",
-            "push",
-            "pull",
-            "fetch",
-            "merge",
-            "rebase",
-            "checkout",
-            "branch",
-            "status",
-            "log",
-            "diff",
-            "reset",
-            "stash",
-            "tag",
-            "remote",
-            "clone",
-            "cherry-pick",
-            "switch",
-            "restore",
-        ],
-        Language::Dockerfile => &[
-            "FROM",
-            "RUN",
-            "CMD",
-            "LABEL",
-            "EXPOSE",
-            "ENV",
-            "ADD",
-            "COPY",
-            "ENTRYPOINT",
-            "VOLUME",
-            "USER",
-            "WORKDIR",
-            "ARG",
-            "ONBUILD",
-            "HEALTHCHECK",
-            "SHELL",
-        ],
+        Language::Rust => rust_keywords(),
+        Language::Shell => shell_keywords(),
+        Language::Sql => sql_keywords(),
+        Language::Python => python_keywords(),
+        Language::JavaScript => javascript_keywords(),
+        Language::Git => git_keywords(),
+        Language::Dockerfile => dockerfile_keywords(),
         _ => &[],
     }
+}
+
+fn rust_keywords() -> &'static [&'static str] {
+    &[
+        "fn", "let", "mut", "const", "static", "struct", "enum", "trait", "impl", "for", "while",
+        "loop", "if", "else", "match", "return", "pub", "use", "mod", "crate", "self", "super",
+        "as", "in", "ref", "move", "where", "type", "dyn", "async", "await", "unsafe", "extern",
+        "break", "continue",
+    ]
+}
+
+fn shell_keywords() -> &'static [&'static str] {
+    &[
+        "if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac",
+        "function", "in", "return", "export", "local", "set", "echo", "cd", "exit",
+    ]
+}
+
+fn sql_keywords() -> &'static [&'static str] {
+    &[
+        "SELECT",
+        "FROM",
+        "WHERE",
+        "INSERT",
+        "INTO",
+        "VALUES",
+        "UPDATE",
+        "SET",
+        "DELETE",
+        "CREATE",
+        "TABLE",
+        "ALTER",
+        "DROP",
+        "JOIN",
+        "LEFT",
+        "RIGHT",
+        "INNER",
+        "OUTER",
+        "ON",
+        "GROUP",
+        "BY",
+        "ORDER",
+        "HAVING",
+        "LIMIT",
+        "OFFSET",
+        "AND",
+        "OR",
+        "NOT",
+        "NULL",
+        "AS",
+        "DISTINCT",
+        "COUNT",
+        "INDEX",
+        "PRIMARY",
+        "KEY",
+        "FOREIGN",
+        "REFERENCES",
+        "RETURNING",
+    ]
+}
+
+fn python_keywords() -> &'static [&'static str] {
+    &[
+        "def", "class", "import", "from", "as", "if", "elif", "else", "for", "while", "return",
+        "yield", "with", "try", "except", "finally", "raise", "lambda", "pass", "break",
+        "continue", "in", "is", "and", "or", "not", "None", "True", "False", "async", "await",
+    ]
+}
+
+fn javascript_keywords() -> &'static [&'static str] {
+    &[
+        "function",
+        "const",
+        "let",
+        "var",
+        "if",
+        "else",
+        "for",
+        "while",
+        "return",
+        "class",
+        "extends",
+        "new",
+        "this",
+        "import",
+        "export",
+        "from",
+        "default",
+        "async",
+        "await",
+        "try",
+        "catch",
+        "finally",
+        "throw",
+        "typeof",
+        "instanceof",
+        "of",
+        "in",
+        "null",
+        "undefined",
+        "true",
+        "false",
+    ]
+}
+
+fn git_keywords() -> &'static [&'static str] {
+    &[
+        "git",
+        "add",
+        "commit",
+        "push",
+        "pull",
+        "fetch",
+        "merge",
+        "rebase",
+        "checkout",
+        "branch",
+        "status",
+        "log",
+        "diff",
+        "reset",
+        "stash",
+        "tag",
+        "remote",
+        "clone",
+        "cherry-pick",
+        "switch",
+        "restore",
+    ]
+}
+
+fn dockerfile_keywords() -> &'static [&'static str] {
+    &[
+        "FROM",
+        "RUN",
+        "CMD",
+        "LABEL",
+        "EXPOSE",
+        "ENV",
+        "ADD",
+        "COPY",
+        "ENTRYPOINT",
+        "VOLUME",
+        "USER",
+        "WORKDIR",
+        "ARG",
+        "ONBUILD",
+        "HEALTHCHECK",
+        "SHELL",
+    ]
 }
 
 /// Builtin / type names, coloured distinctly from keywords.
@@ -265,99 +293,133 @@ fn lex(line: &str, lang: Language) -> Vec<Span> {
     let chars: Vec<char> = line.chars().collect();
     let mut spans = Vec::new();
     let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-
-        // ${placeholder}
-        if c == '$'
-            && i + 1 < chars.len()
-            && chars[i + 1] == '{'
-            && let Some(end) = find_char(&chars, i + 2, '}')
-        {
-            let text: String = chars[i..=end].iter().collect();
-            spans.push(Span {
-                text,
-                kind: TokenKind::Placeholder,
-            });
-            i = end + 1;
-            continue;
-        }
-
-        // string literal
-        if c == '"' || c == '\'' || c == '`' {
-            let quote = c;
-            let start = i;
-            i += 1;
-            while i < chars.len() && chars[i] != quote {
-                if chars[i] == '\\' {
-                    i += 1;
-                }
-                i += 1;
-            }
-            if i < chars.len() {
-                i += 1; // include the closing quote
-            }
-            let text: String = chars[start..i].iter().collect();
-            spans.push(Span {
-                text,
-                kind: TokenKind::StringLit,
-            });
-            continue;
-        }
-
-        // number
-        if c.is_ascii_digit() {
-            let start = i;
-            while i < chars.len()
-                && (chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_')
-            {
-                i += 1;
-            }
-            let text: String = chars[start..i].iter().collect();
-            spans.push(Span {
-                text,
-                kind: TokenKind::Number,
-            });
-            continue;
-        }
-
-        // identifier (letters, digits, _, -)
-        if c.is_alphabetic() || c == '_' {
-            let start = i;
-            while i < chars.len()
-                && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '-')
-            {
-                i += 1;
-            }
-            let word: String = chars[start..i].iter().collect();
-            let next_non_ws = chars[i..].iter().find(|c| !c.is_whitespace()).copied();
-            let kind = if kws.iter().any(|k| *k == word) {
-                TokenKind::Keyword
-            } else if bis.iter().any(|b| *b == word) {
-                TokenKind::Builtin
-            } else if next_non_ws == Some('(') {
-                TokenKind::Function
-            } else {
-                TokenKind::Plain
-            };
-            spans.push(Span { text: word, kind });
-            continue;
-        }
-
-        // everything else: punctuation / whitespace — Plain.
-        let start = i;
-        i += 1;
-        let text: String = chars[start..i].iter().collect();
-        spans.push(Span {
-            text,
-            kind: TokenKind::Plain,
-        });
+    while let Some(&c) = chars.get(i) {
+        let (span, next_i) = if let Some(result) = lex_placeholder(&chars, i, c) {
+            result
+        } else if c == '"' || c == '\'' || c == '`' {
+            lex_string(&chars, i, c)
+        } else if c.is_ascii_digit() {
+            lex_number(&chars, i)
+        } else if c.is_alphabetic() || c == '_' {
+            lex_identifier(&chars, i, kws, bis)
+        } else {
+            lex_punct(&chars, i)
+        };
+        spans.push(span);
+        i = next_i;
     }
     spans
 }
 
+/// `${placeholder}` — matches only when `$` is immediately followed by `{`
+/// and a closing `}` exists ahead. `None` falls through to the other
+/// lexers (an unmatched `${` is just punctuation).
+fn lex_placeholder(chars: &[char], i: usize, c: char) -> Option<(Span, usize)> {
+    if c != '$' || chars.get(i + 1) != Some(&'{') {
+        return None;
+    }
+    let end = find_char(chars, i + 2, '}')?;
+    let slice = chars.get(i..=end)?;
+    Some((
+        Span {
+            text: slice.iter().collect(),
+            kind: TokenKind::Placeholder,
+        },
+        end + 1,
+    ))
+}
+
+/// A `"`/`'`/backtick-quoted string literal; `\` escapes the following
+/// character so a literal quote inside the string doesn't end it early.
+fn lex_string(chars: &[char], i: usize, quote: char) -> (Span, usize) {
+    let start = i;
+    let mut i = i + 1;
+    while chars.get(i).is_some_and(|&ch| ch != quote) {
+        if chars.get(i) == Some(&'\\') {
+            i += 1;
+        }
+        i += 1;
+    }
+    if i < chars.len() {
+        i += 1; // include the closing quote
+    }
+    let text = chars.get(start..i).unwrap_or_default().iter().collect();
+    (
+        Span {
+            text,
+            kind: TokenKind::StringLit,
+        },
+        i,
+    )
+}
+
+/// A run of digits plus whatever `.`/`_`/alnum characters follow, so
+/// floats and `1_000`-style separators highlight as one span.
+fn lex_number(chars: &[char], i: usize) -> (Span, usize) {
+    let start = i;
+    let mut i = i;
+    while chars
+        .get(i)
+        .is_some_and(|&ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_')
+    {
+        i += 1;
+    }
+    let text = chars.get(start..i).unwrap_or_default().iter().collect();
+    (
+        Span {
+            text,
+            kind: TokenKind::Number,
+        },
+        i,
+    )
+}
+
+/// An identifier — classified against the language's keyword/builtin
+/// sets, or as a function call when immediately followed (ignoring
+/// whitespace) by `(`.
+fn lex_identifier(chars: &[char], i: usize, kws: &[&str], bis: &[&str]) -> (Span, usize) {
+    let start = i;
+    let mut i = i;
+    while chars
+        .get(i)
+        .is_some_and(|&ch| ch.is_alphanumeric() || ch == '_' || ch == '-')
+    {
+        i += 1;
+    }
+    let word: String = chars.get(start..i).unwrap_or_default().iter().collect();
+    let next_non_ws = chars
+        .get(i..)
+        .unwrap_or_default()
+        .iter()
+        .find(|c| !c.is_whitespace())
+        .copied();
+    let kind = if kws.iter().any(|k| *k == word) {
+        TokenKind::Keyword
+    } else if bis.iter().any(|b| *b == word) {
+        TokenKind::Builtin
+    } else if next_non_ws == Some('(') {
+        TokenKind::Function
+    } else {
+        TokenKind::Plain
+    };
+    (Span { text: word, kind }, i)
+}
+
+/// Everything else: one character of punctuation or whitespace, `Plain`.
+fn lex_punct(chars: &[char], i: usize) -> (Span, usize) {
+    let next = i + 1;
+    let text = chars.get(i..next).unwrap_or_default().iter().collect();
+    (
+        Span {
+            text,
+            kind: TokenKind::Plain,
+        },
+        next,
+    )
+}
+
 fn find_char(chars: &[char], from: usize, target: char) -> Option<usize> {
-    (from..chars.len()).find(|&j| chars[j] == target)
+    (from..chars.len()).find(|&j| chars.get(j) == Some(&target))
 }
 
 /// Merge runs of identical-kind spans into one so the renderer emits

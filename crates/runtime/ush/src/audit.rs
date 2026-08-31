@@ -53,11 +53,13 @@ impl AuditRecord {
         }
     }
 
+    #[must_use]
     pub fn about(mut self, subject: impl Into<String>) -> Self {
         self.subject = Some(subject.into());
         self
     }
 
+    #[must_use]
     pub fn because(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
         self

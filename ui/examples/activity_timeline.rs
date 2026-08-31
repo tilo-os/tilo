@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use automerge::{ActorId, AutoCommit, ROOT};
+use automerge::{ActorId, AutoCommit, AutomergeError, ROOT};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
@@ -27,7 +27,13 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 /// Edit a document as two people and hand back the resulting change graph.
-fn collaborated_document() -> AutoCommit {
+///
+/// # Errors
+///
+/// Returns an error if merging Bob's fork back into Alice's document fails.
+/// Never happens for two forks of the same freshly-created document under
+/// this example's synthetic edits, but `AutoCommit::merge` is fallible.
+fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
     let mut alice = AutoCommit::new();
     alice.set_actor(ActorId::from("alice".as_bytes()));
     let c = qdoc::model::init(&mut alice, &ROOT);
@@ -71,7 +77,7 @@ fn collaborated_document() -> AutoCommit {
         dm.splice_text(&body, 40, 0, " Costs fell by four percent.");
     }
     qdoc::history::commit_stamped(&mut bob);
-    alice.merge(&mut bob).expect("peers merge");
+    alice.merge(&mut bob)?;
 
     // Alice renames the heading, adds a scratch note, then deletes it.
     {
@@ -106,17 +112,23 @@ fn collaborated_document() -> AutoCommit {
     }
     qdoc::history::commit_stamped(&mut alice);
 
-    alice
+    Ok(alice)
 }
 
 pub fn run(args: &[String]) {
     let shot = args
         .iter()
         .position(|a| a == "--shots")
-        .and_then(|i| args.get(i + 1))
+        .and_then(|i| args.get(i.saturating_add(1)))
         .cloned();
 
-    let mut doc = collaborated_document();
+    let mut doc = match collaborated_document() {
+        Ok(doc) => doc,
+        Err(err) => {
+            eprintln!("activity_timeline: failed to build demo document: {err}");
+            return;
+        }
+    };
 
     // Bind each automerge actor to a person. In an app this is the local
     // identity on disk plus whatever the collaboration layer knows about the
@@ -161,6 +173,10 @@ pub fn run(args: &[String]) {
 }
 
 /// Render one headless frame, mirroring the apps' `--shots` mode.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "viewport dimensions are screen-sized pixel counts, always far below 2^24 (the largest exactly-representable f32 integer)"
+)]
 fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     let (w, h) = viewport;
     let mut state = State::new();
@@ -173,37 +189,43 @@ fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
 
     widget.sync(&mut state.doc, &state.root);
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
+    let root = match taffy.new_with_children(
+        Style {
+            size: Size {
+                width: Dimension::length(w as f32),
+                height: Dimension::length(h as f32),
             },
-            &[child],
-        )
-        .expect("root node");
+            ..Default::default()
+        },
+        &[child],
+    ) {
+        Ok(root) => root,
+        Err(err) => {
+            eprintln!("activity_timeline: failed to build root node: {err}");
+            return;
+        }
+    };
     {
         let measure_map = node_map.clone();
         let trr = &mut tr;
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, trr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("layout");
+        let layout_result = taffy.compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, trr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        );
+        if let Err(err) = layout_result {
+            eprintln!("activity_timeline: failed to compute layout: {err}");
+            return;
+        }
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 

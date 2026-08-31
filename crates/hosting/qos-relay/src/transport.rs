@@ -348,7 +348,12 @@ mod tests {
     #[tokio::test]
     async fn frame_reader_rejects_oversize() {
         let mut wire = Vec::new();
-        wire.extend_from_slice(&((MAX_FRAME_BYTES as u32) + 1).to_le_bytes());
+        wire.extend_from_slice(
+            &u32::try_from(MAX_FRAME_BYTES)
+                .unwrap_or(u32::MAX)
+                .saturating_add(1)
+                .to_le_bytes(),
+        );
         wire.extend_from_slice(&[0u8; 8]);
         let cursor = std::io::Cursor::new(wire);
         let mut reader = FrameReader::new(cursor);

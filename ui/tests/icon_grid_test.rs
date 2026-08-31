@@ -37,6 +37,10 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
 }
 
 #[test]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "w/h are small fixed test-canvas dimensions, exactly representable in f32"
+)]
 fn icon_grid_renders_cells_and_selection() {
     let (w, h) = (520u32, 360u32);
     let Some(mut renderer) = try_new_renderer(w, h) else {

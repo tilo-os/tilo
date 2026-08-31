@@ -51,6 +51,8 @@ pub enum IndexError {
     UnknownIsa { arch: Arch, label: String },
     #[error("sign: {0}")]
     Sign(String),
+    #[error("value of length {0} does not fit the wire format's u32 length field")]
+    TooLong(usize),
 }
 
 fn parse_ed25519(s: &str) -> Result<[u8; 32], IndexError> {
@@ -74,9 +76,11 @@ fn parse_sig(s: &str) -> Result<[u8; 64], IndexError> {
         .map_err(|_| IndexError::BadSignatureLen { got })
 }
 
-fn put_str(out: &mut Vec<u8>, s: &str) {
-    out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+fn put_str(out: &mut Vec<u8>, s: &str) -> Result<(), IndexError> {
+    let len = u32::try_from(s.len()).map_err(|_| IndexError::TooLong(s.len()))?;
+    out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(s.as_bytes());
+    Ok(())
 }
 
 /// Machine string for an [`Arch`], matching its TOML/JSON serde form.
@@ -121,6 +125,11 @@ pub struct RuntimeRef {
 
 impl RuntimeRef {
     /// Parse `qos-runtime/1.2.0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `s` has no `/` separator, the name half is
+    /// empty, or the version half isn't valid semver.
     pub fn parse(s: &str) -> Result<Self, IndexError> {
         let (name, ver) = s
             .rsplit_once('/')
@@ -209,6 +218,7 @@ impl HostProfile {
     }
 
     /// Register an installed runtime ABI so runtime-gated entries become selectable.
+    #[must_use]
     pub fn with_runtime(mut self, r: RuntimeRef) -> Self {
         self.runtimes.push(r);
         self
@@ -245,6 +255,10 @@ pub struct IndexEntry {
 
 impl IndexEntry {
     /// The 32-byte qpkg content hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `qpkg_hash` isn't valid hex or isn't 32 bytes long.
     pub fn qpkg_hash_bytes(&self) -> Result<[u8; 32], IndexError> {
         let b = hex::decode(&self.qpkg_hash).map_err(|e| IndexError::Hex(e.to_string()))?;
         b.as_slice()
@@ -253,6 +267,10 @@ impl IndexEntry {
     }
 
     /// Parse the `package_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `package_id` isn't a valid [`PackageId`] string.
     pub fn parse_package_id(&self) -> Result<PackageId, IndexError> {
         self.package_id.parse().map_err(|e| {
             IndexError::BadIdentity(format!("package_id {:?}: {e:?}", self.package_id))
@@ -260,6 +278,10 @@ impl IndexEntry {
     }
 
     /// The parsed publisher key bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `publisher_identity` isn't `ed25519:<hex32>`.
     pub fn publisher_key(&self) -> Result<[u8; 32], IndexError> {
         parse_ed25519(&self.publisher_identity)
     }
@@ -271,22 +293,31 @@ impl IndexEntry {
 
     /// Canonical bytes the publisher signs. Binds every advertised
     /// field so a registry cannot relabel the bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `qpkg_hash` is malformed, or a field is too
+    /// long to fit the wire format's length prefix.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, IndexError> {
         let mut out = Vec::new();
         out.extend_from_slice(ENTRY_MAGIC);
         out.extend_from_slice(&INDEX_FORMAT.to_le_bytes());
-        put_str(&mut out, &self.app_id);
-        put_str(&mut out, &self.version);
-        put_str(&mut out, &self.package_id);
+        put_str(&mut out, &self.app_id)?;
+        put_str(&mut out, &self.version)?;
+        put_str(&mut out, &self.package_id)?;
         out.extend_from_slice(&self.qpkg_hash_bytes()?);
         out.extend_from_slice(&self.size_bytes.to_le_bytes());
-        put_str(&mut out, arch_wire(self.arch));
-        put_str(&mut out, &self.isa);
-        put_str(&mut out, self.runtime.as_deref().unwrap_or(""));
+        put_str(&mut out, arch_wire(self.arch))?;
+        put_str(&mut out, &self.isa)?;
+        put_str(&mut out, self.runtime.as_deref().unwrap_or(""))?;
         Ok(out)
     }
 
     /// Fill `publisher_identity`+`publisher_signature` by signing [`Self::signing_bytes`] with `identity`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::signing_bytes`] fails, or `identity` fails to sign.
     pub fn sign(&mut self, identity: &SigningIdentity) -> Result<(), IndexError> {
         self.publisher_identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
         let preimage = self.signing_bytes()?;
@@ -298,6 +329,10 @@ impl IndexEntry {
     }
 
     /// Verify the publisher signature over this entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the publisher key or signature are malformed, or the signature doesn't verify.
     pub fn verify_publisher(&self) -> Result<(), IndexError> {
         let key = self.publisher_key()?;
         let vk = VerifyingKey::from_bytes(&key).map_err(|_| IndexError::InvalidKey)?;
@@ -369,11 +404,19 @@ impl RegistryIndex {
     }
 
     /// Decode from the served JSON bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `bytes` isn't valid JSON for [`RegistryIndex`]'s shape.
     pub fn from_json(bytes: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(bytes)
     }
 
     /// Encode to pretty JSON for serving / on-disk storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialisation fails.
     pub fn to_json(&self) -> Result<Vec<u8>, serde_json::Error> {
         serde_json::to_vec_pretty(self)
     }
@@ -392,13 +435,20 @@ impl RegistryIndex {
     }
 
     /// Canonical bytes the registry operator signs — the whole document minus the signature itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an entry's [`IndexEntry::signing_bytes`] fails,
+    /// or the entry count / a field doesn't fit the wire format's u32 length field.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, IndexError> {
         let mut out = Vec::new();
         out.extend_from_slice(INDEX_MAGIC);
         out.extend_from_slice(&self.format.to_le_bytes());
-        put_str(&mut out, &self.registry_id);
+        put_str(&mut out, &self.registry_id)?;
         out.extend_from_slice(&self.generated_unix.to_le_bytes());
-        out.extend_from_slice(&(self.packages.len() as u32).to_le_bytes());
+        let packages_len = u32::try_from(self.packages.len())
+            .map_err(|_| IndexError::TooLong(self.packages.len()))?;
+        out.extend_from_slice(&packages_len.to_le_bytes());
         // Entries in a deterministic order (by the fields that make one
         // unique) so the signature is stable regardless of push order.
         let mut idx: Vec<&IndexEntry> = self.packages.iter().collect();
@@ -412,14 +462,18 @@ impl RegistryIndex {
         });
         for e in idx {
             out.extend_from_slice(&e.signing_bytes()?);
-            put_str(&mut out, &e.publisher_identity);
-            put_str(&mut out, &e.publisher_signature);
-            put_str(&mut out, &e.ticket);
+            put_str(&mut out, &e.publisher_identity)?;
+            put_str(&mut out, &e.publisher_signature)?;
+            put_str(&mut out, &e.ticket)?;
         }
         Ok(out)
     }
 
     /// Sign the index with the registry operator identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if [`Self::signing_bytes`] fails, or `identity` fails to sign.
     pub fn sign(&mut self, identity: &SigningIdentity) -> Result<(), IndexError> {
         self.signer_identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
         let preimage = self.signing_bytes()?;
@@ -432,6 +486,11 @@ impl RegistryIndex {
 
     /// Verify the index signature against `expected_key` (the pinned
     /// registry operator key). Fail-closed: unsigned or mismatched → `Err`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the index is unsigned, the embedded signer
+    /// key doesn't match `expected_key`, or the signature doesn't verify.
     pub fn verify_signature(&self, expected_key: &[u8; 32]) -> Result<(), IndexError> {
         if self.signature.is_empty() || self.signer_identity.is_empty() {
             return Err(IndexError::Unsigned);
@@ -449,6 +508,10 @@ impl RegistryIndex {
     }
 
     /// The embedded signer key (self-reported; use only after [`Self::verify_signature`] for trust decisions).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `signer_identity` isn't `ed25519:<hex32>`.
     pub fn signer_key(&self) -> Result<[u8; 32], IndexError> {
         parse_ed25519(&self.signer_identity)
     }

@@ -497,7 +497,11 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
     // process*, not a thread: attaching a pty means `dup2` onto fds 0/1/2 and
     // `setsid`, both process-wide — on a thread that would steal the
     // supervisor's own stdio and controlling terminal (and under a test harness, the harness's).
-    let child = spawn_attached(&session, slave)?;
+    let child = spawn_attached(&session, &slave)?;
+    // Matches the timing spawn_attached had when it owned `slave`: the
+    // child already holds its own clones for stdio, so the original can
+    // close as soon as the spawn is done.
+    drop(slave);
     let audit = AuditLog::at(store.audit_dir());
     let done_id = id.clone();
     std::thread::spawn(move || {
@@ -529,7 +533,10 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
 
 /// Start `qos-ush run` with `slave` as its stdio, in its own session, with the
 /// pty as its controlling terminal.
-fn spawn_attached(session: &Session, slave: std::fs::File) -> std::io::Result<std::process::Child> {
+fn spawn_attached(
+    session: &Session,
+    slave: &std::fs::File,
+) -> std::io::Result<std::process::Child> {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
@@ -618,11 +625,18 @@ fn reply(
 /// `sendmsg` with a single-descriptor `SCM_RIGHTS` control message.
 fn send_with_fd(sock: RawFd, payload: &[u8], fd: RawFd) -> std::io::Result<()> {
     let mut iov = libc::iovec {
-        iov_base: payload.as_ptr() as *mut libc::c_void,
+        iov_base: payload.as_ptr().cast_mut().cast::<libc::c_void>(),
         iov_len: payload.len(),
     };
     // CMSG_SPACE for one int.
     let mut control = [0u8; 32];
+    // `size_of::<RawFd>()` is a small compile-time constant (4 bytes on
+    // every target qOS builds for), always far under u32::MAX.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "size_of::<RawFd>() is a small compile-time constant"
+    )]
+    let fd_size = std::mem::size_of::<RawFd>() as u32;
     // SAFETY: `msghdr` is zeroed and then fully initialised below; every
     // pointer it holds refers to a local that outlives the `sendmsg` call.
     unsafe {
@@ -630,12 +644,12 @@ fn send_with_fd(sock: RawFd, payload: &[u8], fd: RawFd) -> std::io::Result<()> {
         msg.msg_iov = &raw mut iov;
         msg.msg_iovlen = 1;
         msg.msg_control = control.as_mut_ptr().cast::<libc::c_void>();
-        msg.msg_controllen = libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) as _;
+        msg.msg_controllen = libc::CMSG_SPACE(fd_size) as _;
 
         let cmsg = libc::CMSG_FIRSTHDR(&raw const msg);
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_RIGHTS;
-        (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as _;
+        (*cmsg).cmsg_len = libc::CMSG_LEN(fd_size) as _;
         std::ptr::copy_nonoverlapping(&raw const fd, libc::CMSG_DATA(cmsg).cast::<RawFd>(), 1);
 
         if libc::sendmsg(sock, &raw const msg, 0) < 0 {
@@ -647,6 +661,11 @@ fn send_with_fd(sock: RawFd, payload: &[u8], fd: RawFd) -> std::io::Result<()> {
 
 /// Receive a reply that carries one descriptor. The app side of
 /// [`send_with_fd`].
+///
+/// # Errors
+///
+/// Returns an error if `recvmsg` fails, or if it reports more bytes
+/// received than the internal buffer holds.
 pub fn recv_with_fd(sock: RawFd) -> std::io::Result<(Vec<u8>, Option<RawFd>)> {
     let mut buf = [0u8; 4096];
     let mut iov = libc::iovec {
@@ -674,10 +693,16 @@ pub fn recv_with_fd(sock: RawFd) -> std::io::Result<(Vec<u8>, Option<RawFd>)> {
             && (*cmsg).cmsg_type == libc::SCM_RIGHTS
         {
             let mut got: RawFd = -1;
-            std::ptr::copy_nonoverlapping(libc::CMSG_DATA(cmsg) as *const RawFd, &raw mut got, 1);
+            std::ptr::copy_nonoverlapping(libc::CMSG_DATA(cmsg).cast::<RawFd>(), &raw mut got, 1);
             fd = Some(got);
         }
-        Ok((buf[..n as usize].to_vec(), fd))
+        // `n < 0` returned above, so the cast below cannot lose the sign.
+        #[allow(clippy::cast_sign_loss, reason = "n < 0 already returned early above")]
+        let n = n as usize;
+        let received = buf.get(..n).map(<[u8]>::to_vec).ok_or_else(|| {
+            std::io::Error::other("recvmsg reported more bytes than the buffer holds")
+        })?;
+        Ok((received, fd))
     }
 }
 
@@ -848,7 +873,10 @@ mod tests {
         // SAFETY: `fd` is the descriptor just received and still open.
         let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
         assert!(n > 0, "nothing came back through the received descriptor");
-        assert!(String::from_utf8_lossy(&buf[..n as usize]).contains("hello"));
+        // `n > 0` was just asserted above, so the cast below cannot lose the sign.
+        #[allow(clippy::cast_sign_loss, reason = "n > 0 was just asserted above")]
+        let n = n as usize;
+        assert!(String::from_utf8_lossy(&buf[..n]).contains("hello"));
         // SAFETY: we own `fd` now.
         unsafe { libc::close(fd) };
     }

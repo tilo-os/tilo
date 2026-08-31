@@ -1669,7 +1669,7 @@ impl PdfApp {
         if self.portal_save_rx.is_some() {
             return;
         }
-        self.portal_save_rx = Some(crate::portal::request_save(self.suggested_save_name()));
+        self.portal_save_rx = Some(crate::portal::request_save(&self.suggested_save_name()));
         self.dirty = true;
     }
 
@@ -2325,7 +2325,7 @@ impl PdfApp {
     /// [`Widget::sync`]; loads the chosen document, surfaces a failure on the
     /// empty state, and clears the in-flight channel. Never blocks — a still
     /// pending picker simply leaves the channel installed for the next frame.
-    fn drain_portal(&mut self, state: &mut AutoCommit) {
+    fn drain_portal(&mut self, state: &AutoCommit) {
         let Some(rx) = self.portal_rx.as_ref() else {
             return;
         };
@@ -2580,7 +2580,7 @@ impl Widget for PdfApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        self.on_event(event, scale_factor, modifiers, state, handled);
+        self.on_event(event, scale_factor, *modifiers, state, handled);
     }
 
     fn name(&self) -> &'static str {
@@ -3268,20 +3268,6 @@ mod tests {
     /// on the real `search_layout` the draw pass hit-tests, at three widths.
     #[test]
     fn find_bar_layout_never_overlaps_and_reflows() {
-        let (mut app, _st) = app_with_state();
-        app.search_active = true;
-        app.query = "the".to_string();
-        app.matches = (0..12)
-            .map(|i| Match {
-                page: 1,
-                block: 0,
-                start: i,
-                len: 3,
-            })
-            .collect();
-        app.active_match = 2;
-        let mut tr = TextRenderer::new();
-
         fn check(app: &PdfApp, tr: &mut TextRenderer, width: f64) -> SearchBarLayout {
             let lay = app.search_layout(tr);
             // Visible pieces in on-screen (left→right) order.
@@ -3312,6 +3298,20 @@ mod tests {
             }
             lay
         }
+
+        let (mut app, _st) = app_with_state();
+        app.search_active = true;
+        app.query = "the".to_string();
+        app.matches = (0..12)
+            .map(|i| Match {
+                page: 1,
+                block: 0,
+                start: i,
+                len: 3,
+            })
+            .collect();
+        app.active_match = 2;
+        let mut tr = TextRenderer::new();
 
         // Wide: everything shown, counter full, hint present.
         app.search_rect = Rect::new(0.0, 56.0, 1200.0, 56.0 + 46.0);
@@ -3923,7 +3923,7 @@ mod tests {
                 assert_eq!(strokes.len(), 1);
                 assert_eq!(strokes[0].len(), 4, "the drawn polyline is preserved");
             }
-            other => panic!("expected drawn ink, got {other:?}"),
+            SignatureInk::Typed => panic!("expected drawn ink, got Typed"),
         }
         let stored = PdfDoc::list_signatures(&st.doc);
         assert!(
@@ -4861,10 +4861,9 @@ mod tests {
     /// button, whatever its length. Asserts on the production layout helper.
     #[test]
     fn comment_header_never_overlaps_even_with_a_long_name() {
-        let app = PdfApp::sample();
         // A representative inner card rect for the 324px sidebar.
         let card = Rect::new(0.0, 0.0, SIDEBAR_W - 24.0, 120.0);
-        let hdr = app.comment_header_layout(card);
+        let hdr = PdfApp::comment_header_layout(card);
 
         assert!(
             hdr.name_x + f64::from(hdr.name_max) <= hdr.chip.x0,

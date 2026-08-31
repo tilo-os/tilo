@@ -128,6 +128,13 @@ pub struct DownloadProgress {
 /// also keeps a large package off the heap.
 ///
 /// The bytes are not trusted here — see the module header.
+///
+/// # Errors
+///
+/// Returns an error (as a display-ready string) if the HTTP client
+/// can't be built, the request/response fails, `dest`'s parent can't
+/// be created, the file can't be written, or the server closes the
+/// connection with nothing received.
 pub fn download_reporting(
     url: &str,
     dest: &Path,
@@ -159,11 +166,14 @@ pub fn download_reporting(
         if n == 0 {
             break;
         }
+        let chunk = buf.get(..n).ok_or_else(|| {
+            "internal: read() reported more bytes than the buffer holds".to_string()
+        })?;
         writer
-            .write_all(&buf[..n])
+            .write_all(chunk)
             .map_err(|e| format!("write {}: {e}", dest.display()))?;
-        received += n as u64;
-        if received - reported >= PROGRESS_STEP_BYTES {
+        received = received.saturating_add(n as u64);
+        if received.saturating_sub(reported) >= PROGRESS_STEP_BYTES {
             reported = received;
             on_progress(DownloadProgress { received, total });
         }
@@ -181,6 +191,10 @@ pub fn download_reporting(
 }
 
 /// [`download_reporting`] for callers with nothing to report to.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`download_reporting`].
 pub fn download(url: &str, dest: &Path) -> Result<u64, String> {
     download_reporting(url, dest, &mut |_| {})
 }
@@ -189,6 +203,10 @@ pub fn download(url: &str, dest: &Path) -> Result<u64, String> {
 /// The staged file is removed either way: on success the bytes now
 /// live in the installed payload tree; on failure a half-written
 /// download isn't worth keeping.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`install_app_reporting`].
 pub fn install_app(app: &CatalogueApp) -> Result<(), InstallError> {
     install_app_reporting(app, &mut |_| {})
 }
@@ -196,6 +214,12 @@ pub fn install_app(app: &CatalogueApp) -> Result<(), InstallError> {
 /// [`install_app`], reporting download progress. Reporting stops at
 /// the download — `qos-install` verifies+extracts as one opaque step,
 /// and inventing a fraction for it would be a bar that lies.
+///
+/// # Errors
+///
+/// Returns an error if there's nowhere writable to stage the
+/// download, the download itself fails, `qos-install` can't be run,
+/// or it runs and refuses the package.
 pub fn install_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
@@ -248,11 +272,21 @@ pub fn install_app_reporting(
 }
 
 /// Resolve `package_id` against the live catalogue, then install it.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`install_reporting`].
 pub fn install(package_id: &str) -> Result<CatalogueApp, InstallError> {
     install_reporting(package_id, &mut |_| {})
 }
 
 /// [`install`], reporting the download's progress as it happens.
+///
+/// # Errors
+///
+/// Returns [`InstallError::NotOffered`] if no configured registry
+/// offers `package_id`, or the same errors as
+/// [`install_app_reporting`] once resolved.
 pub fn install_reporting(
     package_id: &str,
     on_progress: &mut dyn FnMut(DownloadProgress),

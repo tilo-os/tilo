@@ -3,12 +3,12 @@
 //! Modes:
 //!   * default               — run the live winit event loop via `ui::App`.
 //!   * `--shots PATH`        — render one offscreen frame at the wide viewport
-//!                              to a PNG and exit (the docked side-by-side
-//!                              layout). Identical passes to the live app.
+//!     to a PNG and exit (the docked side-by-side
+//!     layout). Identical passes to the live app.
 //!   * `--shots-narrow PATH` — render one offscreen frame at a narrow viewport
-//!                              with the primary list column revealed as an
-//!                              overlay flap over its scrim, exercising the
-//!                              responsive collapse.
+//!     with the primary list column revealed as an
+//!     overlay flap over its scrim, exercising the
+//!     responsive collapse.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -57,6 +57,14 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// and tall enough to show the diff detail behind the flap.
 const NARROW_SHOTS_VIEWPORT: (u32, u32) = (680, 860);
 
+/// Runs the git client binary: the live app, a headless screenshot capture,
+/// a headless click/keystroke drive, or `--stage-commit`.
+///
+/// # Errors
+///
+/// Returns an error if `--stage-commit` fails to open the repository, stage
+/// its changes or create the commit, or if a `--shots`/`--shots-narrow`
+/// capture fails to render its frame or write the PNG.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 

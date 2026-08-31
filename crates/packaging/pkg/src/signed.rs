@@ -96,6 +96,30 @@ impl SignedRoot {
 
     /// Decode strict — magic, format version, `has_signature` bit
     /// all checked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SignedRootError::WrongLength`] if `bytes` is not exactly
+    /// [`SIGNED_ROOT_LEN`] bytes, [`SignedRootError::BadMagic`] if the
+    /// header doesn't match, [`SignedRootError::UnsupportedFormat`] if the
+    /// format version isn't [`FORMAT_VERSION`],
+    /// [`SignedRootError::BadHasSignatureFlag`] if the `has_signature` byte
+    /// is neither 0 nor 1, and
+    /// [`SignedRootError::NonZeroSignatureWhenUnsigned`] if it is 0 but the
+    /// signature tail is not all-zero.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: every slice below has a fixed, compile-time-known
+    /// offset within `SIGNED_ROOT_LEN`, and the length check above rejects
+    /// any `bytes` that wouldn't fit them.
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "bytes.len() == SIGNED_ROOT_LEN is checked immediately \
+                  above, so every fixed offset below (compile-time \
+                  constants: 8, 12, 44, 76, 77, 109 = SIGNING_PREFIX_LEN, \
+                  173 = SIGNED_ROOT_LEN) is provably in range"
+    )]
     pub fn decode(bytes: &[u8]) -> Result<Self, SignedRootError> {
         if bytes.len() != SIGNED_ROOT_LEN {
             return Err(SignedRootError::WrongLength {
@@ -106,7 +130,7 @@ impl SignedRoot {
         if &bytes[0..8] != MAGIC {
             return Err(SignedRootError::BadMagic);
         }
-        let format = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        let format = u32::from_le_bytes(bytes[8..12].try_into().unwrap_or([0; 4]));
         if format != FORMAT_VERSION {
             return Err(SignedRootError::UnsupportedFormat(format));
         }

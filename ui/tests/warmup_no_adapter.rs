@@ -123,11 +123,16 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
 }
 
 /// Runs in the re-executed child. Diverges: always exits the process.
+#[allow(
+    clippy::exit,
+    reason = "this re-executed child process communicates its outcome to the parent purely via \
+              exit code; the function returns `!`, so returning normally is not an option"
+)]
 fn child_body() -> ! {
     // Prove the simulation works, before the aborting hook is installed,
     // so a surprise here surfaces as a clean exit code rather than a signal.
     if let Err(e) = ui::offscreen::OffscreenRenderer::try_new(4, 4) {
-        eprintln!("child: no adapter, as intended: {e}")
+        eprintln!("child: no adapter, as intended: {e}");
     } else {
         eprintln!("child: an adapter was still available — cannot simulate a GPU-less machine");
         std::process::exit(EXIT_SIMULATION_FAILED);

@@ -31,6 +31,10 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "must match ui::launch::ShotFactory's fn(&LaunchArgs) -> Result<..> signature"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(if args.scenario.as_deref() == Some("confirm") {
         vpn::app_root_demo_confirm()
@@ -47,5 +51,5 @@ pub fn main() {
             .shot_root(shot_root)
             .scenarios(&["confirm"])
             .configure_app(|app| vpn::actions::register(app.action_registry_mut())),
-    )
+    );
 }

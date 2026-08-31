@@ -210,8 +210,8 @@ fn register_i18n() {
 /// checkbox, slider, text field). Split out of `run` to keep that under
 /// the line cap.
 fn seed_doc() -> AutoCommit {
-    let mut doc = AutoCommit::new();
     use automerge::transaction::Transactable;
+    let mut doc = AutoCommit::new();
     let _ = doc.put(&automerge::ObjId::Root, "toggle_1", true);
     let _ = doc.put(&automerge::ObjId::Root, "check_1", false);
     let _ = doc.put(&automerge::ObjId::Root, "slider_1", 0.5);
@@ -389,12 +389,12 @@ pub fn run(_args: &[String]) {
         clippy::cast_precision_loss,
         reason = "canvas_w/canvas_h are small fixed pixel dimensions, far below f32's exact-integer range"
     )]
-    let (canvas_w_f32, canvas_h_f32) = (canvas_w as f32, canvas_h as f32);
+    let (layout_width_px, layout_height_px) = (canvas_w as f32, canvas_h as f32);
     let _ = taffy.compute_layout_with_measure(
         root_node,
         Size {
-            width: AvailableSpace::Definite(canvas_w_f32),
-            height: AvailableSpace::Definite(canvas_h_f32),
+            width: AvailableSpace::Definite(layout_width_px),
+            height: AvailableSpace::Definite(layout_height_px),
         },
         |known, available, node_id, _, _| {
             if let Some(&ptr) = node_map.get(&node_id) {

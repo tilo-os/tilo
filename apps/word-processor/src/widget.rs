@@ -671,8 +671,8 @@ fn layout_line_tops(layout: &RichTextLayout, text: &str) -> Vec<(f64, f64)> {
     // Ensure the first line starts at the top (a leading blank line has no rect).
     let line_h = tops.first().map_or(1.0, |&(_, h)| h).max(1.0);
     while tops.first().is_some_and(|&(top, _)| top > line_h * 0.5) {
-        let top0 = tops.first().map_or(0.0, |&(top, _)| top);
-        tops.insert(0, (top0 - line_h, line_h));
+        let first_top = tops.first().map_or(0.0, |&(top, _)| top);
+        tops.insert(0, (first_top - line_h, line_h));
     }
     // Back-fill any trailing blank lines so the tops span the full height.
     let Some(&(last_top, last_h)) = tops.last() else {
@@ -1192,6 +1192,16 @@ fn block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRuns {
 /// The `(ins_ranges, del_ranges)` byte ranges in a block covered by an `ins`
 /// tracked-insertion mark and a `del` tracked-deletion mark respectively.
 type ChangeDecoRanges = (Vec<(usize, usize)>, Vec<(usize, usize)>);
+
+/// `prepare_pass2_inputs`'s `(multi_sel, note_nums, spell_by_block)` result:
+/// whether the selection spans multiple cells, footnote citation numbers
+/// keyed by block id, and (when spell-check is on) misspelled byte spans
+/// keyed by block id.
+type Pass2Inputs = (
+    bool,
+    HashMap<String, usize>,
+    HashMap<String, Vec<(usize, usize)>>,
+);
 
 /// The `(byte_start, byte_end)` ranges in a block covered by an `ins` tracked-
 /// insertion mark and a `del` tracked-deletion mark respectively. Used by the
@@ -4096,7 +4106,7 @@ impl WordProcessorWidget {
         // the current selection. This is what keeps the two homes unambiguous.
         ctx.tr.draw_text(
             ctx.scene,
-            &t_args("panel-style-hint", &[arg("name", display_name.clone())]),
+            &t_args("panel-style-hint", &[arg("name", display_name)]),
             11.0,
             ctx.cc.text_dim,
             ctx.transform * Affine::translate((x0, y)),
@@ -5868,6 +5878,12 @@ impl WordProcessorWidget {
     /// page or needs to be split into per-page slices, and push its `Laid`
     /// entry/entries. Handles the paragraph side of float bookkeeping — a
     /// floated image only narrows blocks on its own page.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors emit_paragraph_slices below: one call site threading \
+                  the shared pagination cursor, both layout caches, and the \
+                  output vec through the single-paragraph pagination step"
+    )]
     fn paginate_paragraph(
         &mut self,
         b: &BlockView,
@@ -5939,7 +5955,7 @@ impl WordProcessorWidget {
             });
             cur.y = item_top + block_h + f64::from(pl.space_after);
         } else {
-            self.emit_paragraph_slices(b, fg, &ps.layout, laid, cur, item_top, &pl);
+            Self::emit_paragraph_slices(b, fg, &ps.layout, laid, cur, item_top, &pl);
         }
         new_cache.insert(b.id.clone(), (ps.key, ps.layout));
         // Float bookkeeping: a float only narrows blocks on its own page and
@@ -5965,9 +5981,7 @@ impl WordProcessorWidget {
     /// layout origin so line geometry (`selection_rects`/`caret_geometry`/
     /// `hit`) still resolves, and its `clip` band keeps lines from other
     /// slices off this page.
-    #[allow(clippy::too_many_arguments)]
     fn emit_paragraph_slices(
-        &mut self,
         b: &BlockView,
         fg: &FrameGeometry,
         layout: &RichTextLayout,
@@ -6255,11 +6269,7 @@ impl WordProcessorWidget {
         blocks: Vec<BlockView>,
         laid: &[Laid],
         fg: &FrameGeometry,
-    ) -> (
-        bool,
-        HashMap<String, usize>,
-        HashMap<String, Vec<(usize, usize)>>,
-    ) {
+    ) -> Pass2Inputs {
         // Restore the block cache before pass 2 so selection lookups resolve.
         self.blocks = blocks;
         let multi_sel = self.selection_blocks_cached().len() > 1;
@@ -6340,7 +6350,7 @@ impl WordProcessorWidget {
             }
 
             if l.kind == "fidelity" {
-                self.draw_laid_fidelity(scene, fg, text_renderer, l);
+                Self::draw_laid_fidelity(scene, fg, text_renderer, l);
                 continue;
             }
 
@@ -6547,7 +6557,6 @@ impl WordProcessorWidget {
 
     /// One pass-2 "fidelity" (unrenderable embedded content) placeholder item.
     fn draw_laid_fidelity(
-        &self,
         scene: &mut Scene,
         fg: &FrameGeometry,
         text_renderer: &mut TextRenderer,
@@ -6580,7 +6589,7 @@ impl WordProcessorWidget {
     /// also records `comment_markers` for the review-card pass), and the
     /// shaped text itself, for one pass-2 item.
     fn draw_laid_text(
-        &mut self,
+        &self,
         scene: &mut Scene,
         fg: &FrameGeometry,
         text_renderer: &mut TextRenderer,
@@ -7242,7 +7251,7 @@ impl WordProcessorWidget {
     /// running head) on every page, then draw the band caret on top so it
     /// stays crisp through the veil.
     fn draw_running_region_veil(
-        &mut self,
+        &self,
         scene: &mut Scene,
         fg: &FrameGeometry,
         num_pages: usize,
@@ -7295,7 +7304,7 @@ impl WordProcessorWidget {
     /// over it, each in the peer's colour with a name pill. A no-op with no
     /// remote presence, so single-user rendering is unchanged.
     fn draw_remote_overlays(
-        &mut self,
+        &self,
         scene: &mut Scene,
         ctf: Affine,
         text_renderer: &mut TextRenderer,
@@ -7340,7 +7349,7 @@ impl WordProcessorWidget {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
@@ -7364,7 +7373,7 @@ impl WordProcessorWidget {
         }
         let outcome = self
             .history
-            .handle_event(event, scale_factor, modifiers, state, path);
+            .handle_event(event, scale_factor, &modifiers, state, path);
         if outcome.restored {
             self.needs_commit = true;
             self.history.follow_document();
@@ -7514,7 +7523,7 @@ impl WordProcessorWidget {
     /// styles-panel chip, else the editing/spell-check context menu when it
     /// lands on the page body (chrome — toolbar/panel/status bar — ignores
     /// the right button; it only hit-tests the left one).
-    fn handle_right_press(&mut self, state: &mut AutoCommit, tb_h: f64, handled: &mut bool) {
+    fn handle_right_press(&mut self, state: &AutoCommit, tb_h: f64, handled: &mut bool) {
         if !self.rect.contains(self.pointer) {
             return;
         }
@@ -8501,7 +8510,7 @@ impl Widget for WordProcessorWidget {
         // keeps capturing mid-drag). A restore flags `needs_commit`, handing the
         // commit to `App::commit_action` so it lands on the undo stack stamped and
         // attributed like a typed edit.
-        if self.handle_history_event(event, scale_factor, modifiers, state, path) {
+        if self.handle_history_event(event, scale_factor, *modifiers, state, path) {
             *handled = true;
             return;
         }
@@ -10649,6 +10658,7 @@ impl WordProcessorWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use taffy::AvailableSpace;
     use ui::permissions::PermissionContext;
 
@@ -10871,7 +10881,7 @@ mod tests {
             .unwrap_or_else(|| panic!("spec {id}"));
         match &spec.input {
             qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("{id} is immediate"),
+            qos_actions::ActionInput::Prompted { .. } => panic!("{id} is immediate"),
         }
     }
 
@@ -11746,7 +11756,7 @@ mod tests {
         // ONE paragraph with enough words to wrap to well over a page of lines.
         let mut para = String::new();
         for i in 0..400 {
-            para.push_str(&format!("word{i} "));
+            write!(para, "word{i} ").unwrap();
         }
         let para = para.trim_end().to_string();
         wp.model_mut().insert_str(&mut state.doc, &para);
@@ -11825,7 +11835,7 @@ mod tests {
         wp.sync(&mut state.doc, &state.root);
         let mut para = String::new();
         for i in 0..400 {
-            para.push_str(&format!("word{i} "));
+            write!(para, "word{i} ").unwrap();
         }
         let para = para.trim_end().to_string();
         wp.model_mut().insert_str(&mut state.doc, &para);
@@ -14034,6 +14044,8 @@ mod tests {
     /// catches both; asserting merely "non-empty" catches only the first.
     #[test]
     fn typed_text_lands_in_the_document_with_its_capitals() {
+        const TYPED: &str = "Hello World";
+
         let (mut state, mut wp) = bound();
         assert_eq!(
             body_text(&wp, &state).concat(),
@@ -14042,7 +14054,6 @@ mod tests {
              what typing added and nothing else",
         );
 
-        const TYPED: &str = "Hello World";
         for ch in TYPED.chars() {
             type_char(&mut wp, &mut state, ch);
         }
@@ -14763,11 +14774,12 @@ mod tests {
     /// [`Role::Toolbar`] group of button nodes with spelled-out accessible names.
     #[test]
     fn accessibility_tree_exposes_toolbar_buttons() {
+        use ui::a11y::Role;
+
         // Assertions below are literal English button names; pin the locale so
         // the test doesn't depend on the host's `LANG` (nextest runs each test
         // in its own process, so this can't leak into a sibling test).
         crate::i18n::set_locale("en-US");
-        use ui::a11y::Role;
         let (mut state, mut wp) = populated();
         pipeline_draw(&mut wp, &mut state, 1100, 760);
         // Re-sync so the tree reflects the drawn toolbar.
@@ -14781,13 +14793,12 @@ mod tests {
             .expect("a toolbar group is present after a draw");
         assert!(!toolbar.children.is_empty(), "the toolbar has button nodes");
         // The buttons read with human names, not the terse visible glyphs.
-        let names: Vec<&str> = toolbar
-            .children
-            .iter()
-            .filter_map(|c| c.node.name.as_deref())
-            .collect();
         assert!(
-            names.contains(&"Bold"),
+            toolbar
+                .children
+                .iter()
+                .filter_map(|c| c.node.name.as_deref())
+                .any(|n| n == "Bold"),
             "the Bold button is named for a screen reader"
         );
         assert!(

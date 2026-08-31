@@ -27,6 +27,10 @@ pub struct FirewallDoc;
 
 impl FirewallDoc {
     /// Get-or-create the `config` Text object.
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on ROOT with a fresh key is infallible; there is no meaningful fallback ObjId to return instead"
+    )]
     fn config_text(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, CONFIG_KEY) {
             Ok(Some((Value::Object(ObjType::Text), id))) => id,

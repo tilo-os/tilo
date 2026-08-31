@@ -491,7 +491,7 @@ impl Drop for BrokerHandle {
 /// directory is not writable).
 pub fn spawn_native(
     capnp_socket_path: PathBuf,
-    peer_sync: Option<Arc<ShellNetwork>>,
+    peer_sync: &Option<Arc<ShellNetwork>>,
 ) -> std::io::Result<BrokerHandle> {
     let identity = LocalIdentity::from_network(peer_sync.clone());
     let publisher = PeerPublisher::from_network(peer_sync.clone());
@@ -508,11 +508,11 @@ pub fn spawn_native(
 #[cfg(test)]
 pub fn spawn_native_with_identity(
     capnp_socket_path: PathBuf,
-    peer_sync: Option<Arc<ShellNetwork>>,
-    identity: Arc<LocalIdentity>,
+    peer_sync: &Option<Arc<ShellNetwork>>,
+    identity: &Arc<LocalIdentity>,
 ) -> std::io::Result<BrokerHandle> {
     let publisher = PeerPublisher::from_network(peer_sync.clone());
-    spawn_inner(capnp_socket_path, peer_sync.as_ref(), &identity, &publisher)
+    spawn_inner(capnp_socket_path, peer_sync.as_ref(), identity, &publisher)
 }
 
 /// Test-only variant of [`spawn_native`] that takes an explicit
@@ -525,10 +525,10 @@ pub fn spawn_native_with_identity(
 #[cfg(test)]
 pub fn spawn_native_with_publisher(
     capnp_socket_path: PathBuf,
-    publisher: Arc<PeerPublisher>,
+    publisher: &Arc<PeerPublisher>,
 ) -> std::io::Result<BrokerHandle> {
     let identity = LocalIdentity::from_network(None);
-    spawn_inner(capnp_socket_path, None, &identity, &publisher)
+    spawn_inner(capnp_socket_path, None, &identity, publisher)
 }
 
 /// Inbound queues + shared fanout state the drain thread polls each
@@ -702,7 +702,9 @@ impl DrainQueues {
                     // borrowed as a whole.
                     let route =
                         CrdtRoute::record(&entry.app_id, &entry.cluster_id, &entry.record_id);
-                    self.accept_signed_op(envelope, artifact, entry.peer, route, labels, announced);
+                    self.accept_signed_op(
+                        envelope, artifact, entry.peer, &route, labels, announced,
+                    );
                 }
                 Err(ValidationError::OpAlreadyRedacted { target }) => {
                     self.record_already_redacted(envelope, artifact, target);
@@ -733,7 +735,7 @@ impl DrainQueues {
         envelope: collab_types::SignedOp,
         artifact: ArtifactId,
         peer: u64,
-        route: CrdtRoute,
+        route: &CrdtRoute,
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
         announced: &mut HashMap<(String, u64), (String, u64)>,
     ) {
@@ -767,7 +769,7 @@ impl DrainQueues {
         // Same app + cluster stamp as unsigned envelopes; an
         // unaddressed one (too old to stamp) is dropped, not shown to
         // every app.
-        self.table.fanout_to_route(&event, u64::MAX, &route);
+        self.table.fanout_to_route(&event, u64::MAX, route);
     }
 
     /// Late-arriving op via Iroh, already redacted: don't fan, push a

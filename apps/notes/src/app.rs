@@ -69,6 +69,10 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 /// duplicate. A lone instance simply seeds after the window elapses.
 const SEED_GRACE: Duration = Duration::from_millis(1500);
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independently-toggled flag from a distinct concern (shots override, collab sync-state tracking, responsive layout mode, dirty tracking) with no shared sub-concept; grouping them would only relocate the count, not reduce it"
+)]
 pub struct NotesApp {
     workspace: Workspace,
     sidebar: NoteTreeView,
@@ -867,7 +871,7 @@ impl NotesApp {
                 if let Some(meta) = self.workspace.get(id) {
                     let title = meta.title.clone();
                     let body = storage::read_page_body(&self.root, id).unwrap_or_default();
-                    self.load_page_with_resolver(id, title, body);
+                    self.load_page_with_resolver(id, &title, body);
                 }
             }
             OutEvent::Rename { id, new_title } => {
@@ -943,7 +947,7 @@ impl NotesApp {
                         let title = meta.title.clone();
                         let body =
                             storage::read_page_body(&self.root, new_root).unwrap_or_default();
-                        self.load_page_with_resolver(new_root, title, body);
+                        self.load_page_with_resolver(new_root, &title, body);
                     }
                 }
             }
@@ -958,7 +962,7 @@ impl NotesApp {
     /// Load a page through `MainPanel::load_page_with_link_resolver`,
     /// resolving `[[Title]]` link marks against the current
     /// workspace's page list.
-    fn load_page_with_resolver(&mut self, id: PageId, title: String, body: String) {
+    fn load_page_with_resolver(&mut self, id: PageId, title: &str, body: String) {
         // Snapshot the title→id map ahead of borrowing main mutably.
         let by_title: std::collections::HashMap<String, PageId> = self
             .workspace
@@ -967,7 +971,7 @@ impl NotesApp {
             .map(|p| (p.title.clone(), p.id))
             .collect();
         self.main
-            .load_page_with_link_resolver(id, &title, body, |t| by_title.get(t).copied());
+            .load_page_with_link_resolver(id, title, body, |t| by_title.get(t).copied());
     }
 
     /// Navigate to `id`: select + load the page. Used both by the
@@ -978,7 +982,7 @@ impl NotesApp {
             let title = meta.title.clone();
             let body = storage::read_page_body(&self.root, id).unwrap_or_default();
             self.workspace.set_selected(Some(id));
-            self.load_page_with_resolver(id, title, body);
+            self.load_page_with_resolver(id, &title, body);
             self.sidebar.sync_from_workspace(&self.workspace);
             self.persist();
         }
@@ -1682,10 +1686,10 @@ impl Widget for NotesApp {
         if self.handle_help_key(event, handled) {
             return;
         }
-        if self.handle_palette_shortcut(event, modifiers, focus_target, node_id, handled) {
+        if self.handle_palette_shortcut(event, *modifiers, focus_target, node_id, handled) {
             return;
         }
-        if self.handle_new_child_shortcut(event, modifiers, state, handled) {
+        if self.handle_new_child_shortcut(event, *modifiers, state, handled) {
             return;
         }
         if self.handle_palette_capture(event, focus_target, handled) {
@@ -1694,7 +1698,7 @@ impl Widget for NotesApp {
         if self.handle_narrow_drawer(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -1709,7 +1713,7 @@ impl Widget for NotesApp {
         self.route_to_children(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -1717,22 +1721,6 @@ impl Widget for NotesApp {
             taffy,
         );
     }
-
-    /// Narrow-mode overlay drawer. The top-bar button toggles it; while
-    /// open it captures pointer/keys so the page tree behaves like a
-    /// modal flyout over the editor.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the exact Widget::handle_event context bundle"
-    )]
-
-    /// The default routing once none of the modal overlays above claimed
-    /// the event: sidebar + editor, then the title-rename / dirty-save /
-    /// last-mouse / status bookkeeping every event needs.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the exact Widget::handle_event context bundle"
-    )]
 
     fn name(&self) -> &'static str {
         "NotesApp"
@@ -1939,7 +1927,7 @@ impl NotesApp {
     fn handle_palette_shortcut(
         &mut self,
         event: &WindowEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
         handled: &mut bool,
@@ -1983,7 +1971,7 @@ impl NotesApp {
     fn handle_new_child_shortcut(
         &mut self,
         event: &WindowEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
@@ -2042,11 +2030,18 @@ impl NotesApp {
         true
     }
 
+    /// Narrow-mode overlay drawer. The top-bar button toggles it; while
+    /// open it captures pointer/keys so the page tree behaves like a
+    /// modal flyout over the editor.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the exact Widget::handle_event context bundle"
+    )]
     fn handle_narrow_drawer(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -2104,7 +2099,7 @@ impl NotesApp {
             self.sidebar.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -2142,11 +2137,18 @@ impl NotesApp {
         true
     }
 
+    /// The default routing once none of the modal overlays above claimed
+    /// the event: sidebar + editor, then the title-rename / dirty-save /
+    /// last-mouse / status bookkeeping every event needs.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the exact Widget::handle_event context bundle"
+    )]
     fn route_to_children(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -2171,7 +2173,7 @@ impl NotesApp {
                 self.sidebar.handle_event(
                     event,
                     scale_factor,
-                    modifiers,
+                    &modifiers,
                     state,
                     path,
                     handled,
@@ -2193,7 +2195,7 @@ impl NotesApp {
             self.main.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,

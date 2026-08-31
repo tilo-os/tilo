@@ -1,17 +1,13 @@
 //! Weather — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!   * default — run the live winit event loop via `ui::App`.
+//!   * `--shots PATH` — render one offscreen frame to a PNG and exit (headless screenshot; identical passes to the live app).
 //!
 //! Optional flags for `--shots` (used to capture interaction states that the
 //! single-frame headless renderer can't reach through live input):
-//!   * `--scenario NAME` — seed a staged state (`detail`, `drag`, `scrolled`);
-//!                          see [`weather::app_root_for_shot`].
-//!   * `--viewport WxH`  — render at a custom size (e.g. `--viewport 560x720`
-//!                          for the narrow full-screen city list, or pair with
-//!                          `--scenario detail` for the pushed forecast).
+//!   * `--scenario NAME` — seed a staged state (`detail`, `drag`, `scrolled`); see [`weather::app_root_for_shot`].
+//!   * `--viewport WxH` — render at a custom size (e.g. `--viewport 560x720` for the narrow full-screen city list, or pair with `--scenario detail` for the pushed forecast).
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -56,6 +52,11 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+/// # Errors
+///
+/// Returns an error if `--probe` can't complete its live fetch within its
+/// deadline, `--shots` fails to lay out or render the offscreen frame, or
+/// `--viewport` parsing bubbles up an I/O error while writing the PNG.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 

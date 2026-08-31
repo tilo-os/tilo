@@ -242,7 +242,7 @@ impl ActionPalette {
         transport: &mut dyn ActionTransport,
     ) -> Option<Result<Dispatched, qos_actions::ActionError>> {
         let encoded = self.pending_dispatch.take()?;
-        Some(self.dispatch_encoded(doc, &encoded, registry, transport))
+        Some(Self::dispatch_encoded(doc, &encoded, registry, transport))
     }
 
     /// Drain a completed content activation: the opaque `action_id` of the
@@ -252,7 +252,6 @@ impl ActionPalette {
     }
 
     fn dispatch_encoded(
-        &self,
         doc: &mut AutoCommit,
         encoded: &EncodedAction,
         registry: &ActionRegistry,
@@ -346,6 +345,13 @@ impl ActionPalette {
 
     /// Position the palette at `origin` with `width`. Called each frame
     /// before `draw`.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "width and FIELD_H are UI layout dimensions in logical \
+                  pixels, always tiny compared to f32's range; narrowing \
+                  for taffy's f32-based layout loses no visually \
+                  meaningful precision"
+    )]
     pub fn layout(&mut self, theme: &Theme, origin: Point, width: f64) {
         // Field: build a fresh 2-node tree so `handle_event` can resolve the
         // inner text input's node, then place it at the top of the card.
@@ -353,20 +359,23 @@ impl ActionPalette {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = self.field.build_layout(&mut taffy, theme, &mut node_map);
         let tr = &mut self.measure;
-        taffy
-            .compute_layout_with_measure(
-                node,
-                Size {
-                    width: AvailableSpace::Definite(width as f32),
-                    height: AvailableSpace::Definite(FIELD_H as f32),
-                },
-                |known, available, id, _, _| {
-                    node_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
-                        (*p).measure(known, available, tr)
-                    })
-                },
-            )
-            .expect("field layout");
+        let Ok(()) = taffy.compute_layout_with_measure(
+            node,
+            Size {
+                width: AvailableSpace::Definite(width as f32),
+                height: AvailableSpace::Definite(FIELD_H as f32),
+            },
+            |known, available, id, _, _| {
+                node_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, tr)
+                })
+            },
+        ) else {
+            // A freshly built, cycle-free 2-node tree cannot fail this in
+            // practice; if it ever does, keep the previous frame's layout
+            // rather than panicking the app.
+            return;
+        };
         self.field.apply_layout(&taffy, node, origin);
         self.field_taffy = taffy;
         self.field_node = Some(node);
@@ -439,7 +448,7 @@ impl ActionPalette {
                 }
                 self.open = false;
             } else {
-                self.route_to_field(event, modifiers, doc, path);
+                self.route_to_field(event, *modifiers, doc, path);
             }
             return true;
         }
@@ -451,10 +460,10 @@ impl ActionPalette {
             Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Enter)
         );
         if nav {
-            self.route_to_results(event, modifiers, doc, path);
+            self.route_to_results(event, *modifiers, doc, path);
             self.poll_view_activation();
         } else {
-            self.route_to_field(event, modifiers, doc, path);
+            self.route_to_field(event, *modifiers, doc, path);
             if let Some(q) = self.field.take_dirty() {
                 self.rebuild(&q);
             }
@@ -480,7 +489,7 @@ impl ActionPalette {
     fn route_to_field(
         &mut self,
         event: &WindowEvent,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) {
@@ -490,7 +499,7 @@ impl ActionPalette {
         self.field.handle_event(
             event,
             1.0,
-            modifiers,
+            &modifiers,
             doc,
             path,
             &mut handled,
@@ -503,18 +512,23 @@ impl ActionPalette {
     fn route_to_results(
         &mut self,
         event: &WindowEvent,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
         doc: &mut AutoCommit,
         path: &ObjId,
     ) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).expect("leaf");
+        let Ok(node) = taffy.new_leaf(Style::default()) else {
+            // A style-only leaf with no children cannot fail this in
+            // practice; if it ever does, there is no event target to route
+            // to, so drop the event.
+            return;
+        };
         let mut handled = false;
         let mut ft = None;
         self.results.handle_event(
             event,
             1.0,
-            modifiers,
+            &modifiers,
             doc,
             path,
             &mut handled,
@@ -535,7 +549,7 @@ fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
         let bonus = fuzzy_score(query, &r.title)
             .or_else(|| r.subtitle.as_deref().and_then(|s| fuzzy_score(query, s)))
             .unwrap_or(0);
-        r.score * BIAS_WEIGHT + bonus
+        r.score.saturating_mul(BIAS_WEIGHT).saturating_add(bonus)
     };
     let mut ranked = rows;
     ranked.sort_by_key(|b| std::cmp::Reverse(key(b)));
@@ -627,7 +641,7 @@ mod tests {
     /// A provider standing in for a searchable corpus (e.g. contacts).
     struct People;
     impl SearchProvider for People {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "People"
         }
         fn search(&self, query: &str) -> Vec<SearchResult> {

@@ -80,6 +80,18 @@ enum ComposerHit {
 /// bridging the transport-agnostic widget layer to `ShellNetwork`.
 type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>;
 
+/// The peer-sync fields off chrome state, cloned out by
+/// [`ShellOverlayHost::peer_sync_snapshot`] so the borrow drops before any
+/// painting starts. A named struct in place of a five-`Option<String>`
+/// tuple so each field reads at its use site instead of by position.
+struct PeerSyncSnapshot {
+    input: Option<String>,
+    token: Option<String>,
+    invite_name: Option<String>,
+    invite_for: Option<String>,
+    status: Option<String>,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -1634,7 +1646,7 @@ impl ShellOverlayHost {
     /// invitee is a plain `/invite`, labelled as such rather than keeping
     /// a stale name. The composer clears only on success, so a refused
     /// invite can be retried without retyping the name.
-    fn mint_invite(&mut self, invitee: Option<String>, copy: bool) {
+    fn mint_invite(&self, invitee: Option<String>, copy: bool) {
         let request = match invitee.as_deref() {
             Some(name) => PeerSyncRequest::IssueInviteFor(name.to_string()),
             None => PeerSyncRequest::IssueInvite,
@@ -3709,6 +3721,12 @@ impl ShellOverlayHost {
         // Snapshot each strip's known tab ids under one read borrow, then
         // drop it — the unsafe row-pointer walk below doesn't touch the
         // tree, so there's no reason to hold the lock across it.
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "strip_tree_ids is fully chained from tree (via the active workspace's \
+                      strips and groups); nothing to drop earlier without cloning the tree data \
+                      out for no real gain, and the block already ends right after it's computed"
+        )]
         let strip_tree_ids: Vec<(StripId, std::collections::HashSet<u64>)> = {
             let st = chrome.borrow();
             let tree = st.tree();
@@ -5104,7 +5122,7 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Routes pointer/keyboard input to the AirPlay credential field before
+    /// Routes pointer/keyboard input to the `AirPlay` credential field before
     /// the projection sheet's own shortcuts see it. `Some(_)` means the
     /// field consumed (or acted on) the event and `handle_projection_event`
     /// must return that value immediately; `None` means fall through to the
@@ -5475,7 +5493,7 @@ impl ShellOverlayHost {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) -> bool {
         if !(self.overlay_flags().room_activity
@@ -5515,7 +5533,7 @@ impl ShellOverlayHost {
                 let st = chrome.borrow();
                 let mut tree = st.tree_mut();
                 self.room_activity
-                    .handle_event(event, scale_factor, modifiers, cursor, &mut tree)
+                    .handle_event(event, scale_factor, &modifiers, cursor, &mut tree)
             };
             if outcome.reverted {
                 let mut st = chrome.borrow_mut();
@@ -5596,7 +5614,7 @@ impl ShellOverlayHost {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -5623,7 +5641,7 @@ impl ShellOverlayHost {
         prompt.handle_event(
             event,
             scale_factor,
-            modifiers,
+            &modifiers,
             state,
             path,
             handled,
@@ -5637,7 +5655,7 @@ impl ShellOverlayHost {
     /// `DroppedFile` carries no coordinate, so route by `last_cursor`
     /// through the same hit-test click-focus uses. A drop over empty
     /// space is a no-op, not dumped into an arbitrary window.
-    fn route_dropped_file_event(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+    fn route_dropped_file_event(&self, event: &WindowEvent, handled: &mut bool) -> bool {
         let WindowEvent::DroppedFile(path) = event else {
             return false;
         };
@@ -5960,7 +5978,7 @@ impl ShellOverlayHost {
         &mut self,
         s: &str,
         super_down: bool,
-        state: &mut AutoCommit,
+        state: &AutoCommit,
         path: &ObjId,
         handled: &mut bool,
     ) -> bool {
@@ -6128,7 +6146,7 @@ impl ShellOverlayHost {
     /// flight consumes character/backspace/enter/navigation/clipboard
     /// keys before anything else gets a chance.
     fn handle_workspace_rename_key(
-        &mut self,
+        &self,
         logical_key: &Key,
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
@@ -6140,13 +6158,23 @@ impl ShellOverlayHost {
         if !is_editing {
             return false;
         }
-        use ui::text_selection::{
-            Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
-            prev_char_boundary, prev_word_boundary,
-        };
         let mods_state = modifiers.state();
         let shift = mods_state.shift_key();
         let ctrl = mods_state.control_key() || mods_state.super_key();
+        Self::apply_workspace_rename_key(&chrome, logical_key, ctrl, shift, handled)
+    }
+
+    /// The keystroke-applying tail of [`Self::handle_workspace_rename_key`],
+    /// split out to keep that gate function short: acquires the write
+    /// borrow, edits the rename buffer, and reports whether the key was
+    /// consumed.
+    fn apply_workspace_rename_key(
+        chrome: &Chrome,
+        logical_key: &Key,
+        ctrl: bool,
+        shift: bool,
+        handled: &mut bool,
+    ) -> bool {
         let mut st = chrome.borrow_mut();
         // Pulled out by value first so it isn't a separate
         // immutable borrow alongside `buf`.
@@ -6154,15 +6182,52 @@ impl ShellOverlayHost {
         let Some(buf) = st.editing_workspace_name.as_mut() else {
             return true;
         };
-        let mut consumed = true;
-        let mut needs_bump = true;
-        match logical_key {
-            Key::Named(NamedKey::Enter) => {
-                drop(st);
-                chrome.borrow_mut().commit_workspace_name();
-                *handled = true;
-                return true;
+        if matches!(logical_key, Key::Named(NamedKey::Enter)) {
+            drop(st);
+            chrome.borrow_mut().commit_workspace_name();
+            *handled = true;
+            return true;
+        }
+        let (consumed, needs_bump) = match logical_key {
+            Key::Named(
+                NamedKey::ArrowLeft
+                | NamedKey::ArrowRight
+                | NamedKey::Home
+                | NamedKey::End
+                | NamedKey::Backspace
+                | NamedKey::Delete
+                | NamedKey::Space,
+            ) => Self::apply_rename_navigation_key(logical_key, ctrl, shift, buf, &mut sel),
+            Key::Character(s) if ctrl => Self::apply_rename_clipboard_chord(s, buf, &mut sel),
+            Key::Character(s) => Self::apply_rename_character_insert(s, buf, &mut sel),
+            _ => (false, false),
+        };
+        if consumed {
+            st.editing_workspace_name_selection = sel;
+            if needs_bump {
+                st.bump();
             }
+            *handled = true;
+            return true;
+        }
+        false
+    }
+
+    /// Cursor motion and single-character deletes for the rename field —
+    /// every arm here consumes the key and needs a bump, so unlike the
+    /// clipboard/character helpers it always returns `(true, true)`.
+    fn apply_rename_navigation_key(
+        logical_key: &Key,
+        ctrl: bool,
+        shift: bool,
+        buf: &mut String,
+        sel: &mut ui::text_selection::Selection,
+    ) -> (bool, bool) {
+        use ui::text_selection::{
+            Selection, next_char_boundary, next_word_boundary, prev_char_boundary,
+            prev_word_boundary,
+        };
+        match logical_key {
             Key::Named(NamedKey::ArrowLeft) => {
                 let new_pos = if ctrl {
                     prev_word_boundary(buf, sel.cursor)
@@ -6202,12 +6267,12 @@ impl ShellOverlayHost {
                     if sel.cursor > 0 {
                         let prev = prev_char_boundary(buf, sel.cursor);
                         buf.replace_range(prev..sel.cursor, "");
-                        sel = Selection::collapsed(prev);
+                        *sel = Selection::collapsed(prev);
                     }
                 } else {
                     let r = sel.range();
                     buf.replace_range(r.clone(), "");
-                    sel = Selection::collapsed(r.start);
+                    *sel = Selection::collapsed(r.start);
                 }
             }
             Key::Named(NamedKey::Delete) => {
@@ -6219,62 +6284,61 @@ impl ShellOverlayHost {
                 } else {
                     let r = sel.range();
                     buf.replace_range(r.clone(), "");
-                    sel = Selection::collapsed(r.start);
+                    *sel = Selection::collapsed(r.start);
                 }
             }
             Key::Named(NamedKey::Space) => {
                 let r = sel.range();
                 buf.replace_range(r.clone(), " ");
-                sel = Selection::collapsed(r.start.saturating_add(1));
+                *sel = Selection::collapsed(r.start.saturating_add(1));
             }
-            Key::Character(s) if ctrl => match s.as_str() {
-                "a" | "A" => {
-                    sel.anchor = 0;
-                    sel.cursor = buf.len();
+            // The caller has already matched on this exact key set.
+            _ => {}
+        }
+        (true, true)
+    }
+
+    /// `Ctrl`+letter clipboard chords over the rename field's selection.
+    fn apply_rename_clipboard_chord(
+        s: &winit::keyboard::SmolStr,
+        buf: &mut String,
+        sel: &mut ui::text_selection::Selection,
+    ) -> (bool, bool) {
+        use ui::text_selection::{Selection, clipboard_copy, clipboard_paste};
+        let mut needs_bump = true;
+        let mut consumed = true;
+        match s.as_str() {
+            "a" | "A" => {
+                sel.anchor = 0;
+                sel.cursor = buf.len();
+                needs_bump = false;
+            }
+            "c" | "C" => {
+                let r = sel.range();
+                if let Some(selected) = buf.get(r) {
+                    clipboard_copy(selected);
+                }
+                needs_bump = false;
+            }
+            "x" | "X" => {
+                let r = sel.range();
+                if r.is_empty() {
                     needs_bump = false;
-                }
-                "c" | "C" => {
-                    let r = sel.range();
-                    if let Some(selected) = buf.get(r) {
-                        clipboard_copy(selected);
-                    }
-                    needs_bump = false;
-                }
-                "x" | "X" => {
-                    let r = sel.range();
-                    if r.is_empty() {
-                        needs_bump = false;
-                    } else if let Some(selected) = buf.get(r.clone()) {
-                        clipboard_copy(selected);
-                        buf.replace_range(r.clone(), "");
-                        sel = Selection::collapsed(r.start);
-                    } else {
-                        needs_bump = false;
-                    }
-                }
-                "v" | "V" => {
-                    if let Some(paste) = clipboard_paste() {
-                        let r = sel.range();
-                        buf.replace_range(r.clone(), &paste);
-                        sel = Selection::collapsed(r.start.saturating_add(paste.len()));
-                    } else {
-                        needs_bump = false;
-                    }
-                }
-                _ => {
-                    consumed = false;
-                    needs_bump = false;
-                }
-            },
-            Key::Character(s) => {
-                let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
-                if filtered.is_empty() {
-                    consumed = false;
-                    needs_bump = false;
+                } else if let Some(selected) = buf.get(r.clone()) {
+                    clipboard_copy(selected);
+                    buf.replace_range(r.clone(), "");
+                    *sel = Selection::collapsed(r.start);
                 } else {
+                    needs_bump = false;
+                }
+            }
+            "v" | "V" => {
+                if let Some(paste) = clipboard_paste() {
                     let r = sel.range();
-                    buf.replace_range(r.clone(), &filtered);
-                    sel = Selection::collapsed(r.start.saturating_add(filtered.len()));
+                    buf.replace_range(r.clone(), &paste);
+                    *sel = Selection::collapsed(r.start.saturating_add(paste.len()));
+                } else {
+                    needs_bump = false;
                 }
             }
             _ => {
@@ -6282,15 +6346,25 @@ impl ShellOverlayHost {
                 needs_bump = false;
             }
         }
-        if consumed {
-            st.editing_workspace_name_selection = sel;
-            if needs_bump {
-                st.bump();
-            }
-            *handled = true;
-            return true;
+        (consumed, needs_bump)
+    }
+
+    /// A plain (non-chord) character typed into the rename field.
+    fn apply_rename_character_insert(
+        s: &winit::keyboard::SmolStr,
+        buf: &mut String,
+        sel: &mut ui::text_selection::Selection,
+    ) -> (bool, bool) {
+        use ui::text_selection::Selection;
+        let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
+        if filtered.is_empty() {
+            (false, false)
+        } else {
+            let r = sel.range();
+            buf.replace_range(r.clone(), &filtered);
+            *sel = Selection::collapsed(r.start.saturating_add(filtered.len()));
+            (true, true)
         }
-        false
     }
 
     /// Outside-click close for a popover/modal, swallowing the click so
@@ -6405,7 +6479,7 @@ impl ShellOverlayHost {
     /// swallow the click so content beneath doesn't grab it. Reached
     /// only once `flags.collaborators` is true, at which point every
     /// path absorbs the click.
-    fn handle_shell_collaborators_click(&mut self, p: Point, handled: &mut bool) {
+    fn handle_shell_collaborators_click(&self, p: Point, handled: &mut bool) {
         let invite = self.collab_invite_row_rect;
         if invite.area() > 0.0 && invite.contains(p) {
             if let Some(chrome) = self.chrome.clone() {
@@ -6477,10 +6551,10 @@ impl ShellOverlayHost {
             .map_or(crate::shell::quick_settings::QsLevel::Root, |c| {
                 c.borrow().quick_settings.current_level().clone()
             });
-        if !matches!(current_level, crate::shell::quick_settings::QsLevel::Root) {
-            self.handle_shell_quick_settings_drill_in_click(p, &current_level);
-        } else {
+        if matches!(current_level, crate::shell::quick_settings::QsLevel::Root) {
             self.handle_shell_quick_settings_root_click(p);
+        } else {
+            self.handle_shell_quick_settings_drill_in_click(p, &current_level);
         }
         *handled = true;
     }
@@ -6592,10 +6666,9 @@ impl ShellOverlayHost {
             current_level,
             crate::shell::quick_settings::QsLevel::Notifications
         ) && self.qs_notification_clear_rect().contains(p)
+            && let Some(chrome) = self.chrome.clone()
         {
-            if let Some(chrome) = self.chrome.clone() {
-                chrome.borrow_mut().clear_notification_history();
-            }
+            chrome.borrow_mut().clear_notification_history();
         }
     }
 
@@ -6823,7 +6896,7 @@ impl ShellOverlayHost {
     /// re-entrant `borrow_mut`.
     #[allow(clippy::too_many_arguments)]
     fn dispatch_quick_settings_toggle_actions(
-        &mut self,
+        &self,
         pending_wifi: Option<bool>,
         pending_bt: Option<bool>,
         pending_wired: Option<bool>,
@@ -6924,7 +6997,7 @@ impl ShellOverlayHost {
     /// choice) in the workspace-settings modal. Split out of
     /// `handle_shell_ws_settings_click`.
     fn handle_shell_ws_settings_default_app_click(
-        &mut self,
+        &self,
         p: Point,
         is_owner: bool,
         handled: &mut bool,
@@ -6976,7 +7049,7 @@ impl ShellOverlayHost {
     /// control, or a revoke button, in the workspace-settings modal.
     /// Split out of `handle_shell_ws_settings_click`.
     fn handle_shell_ws_settings_grant_click(
-        &mut self,
+        &self,
         p: Point,
         is_owner: bool,
         handled: &mut bool,
@@ -7197,7 +7270,7 @@ impl ShellOverlayHost {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -7277,7 +7350,7 @@ impl ShellOverlayHost {
             self.palette.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -7305,7 +7378,7 @@ impl ShellOverlayHost {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -7330,7 +7403,7 @@ impl ShellOverlayHost {
                 sidebar.handle_event(
                     event,
                     scale_factor,
-                    modifiers,
+                    &modifiers,
                     state,
                     path,
                     handled,
@@ -7359,7 +7432,7 @@ impl ShellOverlayHost {
             self.content.handle_event(
                 event,
                 scale_factor,
-                modifiers,
+                &modifiers,
                 state,
                 path,
                 handled,
@@ -7798,7 +7871,7 @@ impl Widget for ShellOverlayHost {
         if self.route_qs_slider_drag(event, handled) {
             return;
         }
-        if self.route_room_activity_event(event, scale_factor, modifiers, handled) {
+        if self.route_room_activity_event(event, scale_factor, *modifiers, handled) {
             return;
         }
         if self.route_absorbable_pointer_and_toast_click(event, handled) {
@@ -7807,7 +7880,7 @@ impl Widget for ShellOverlayHost {
         if self.route_permission_prompt_event(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -7846,7 +7919,7 @@ impl Widget for ShellOverlayHost {
         if self.route_palette_event(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -7859,7 +7932,7 @@ impl Widget for ShellOverlayHost {
         self.dispatch_pointer_and_content_event(
             event,
             scale_factor,
-            modifiers,
+            *modifiers,
             state,
             path,
             handled,
@@ -8451,9 +8524,14 @@ impl ShellOverlayHost {
         // the modal first, then come back to the prompt.
         if let Some(prompt) = self.permission_prompt.as_mut() {
             let bar_y0 = self.rect.y0 + f64::from(self.sidebar_top_y);
-            let bar_x0 = self.rect.x0 + f64::from(self.sidebar_top_y);
-            let bar_x1 = self.rect.x1 - f64::from(self.sidebar_top_y);
-            prompt.set_rect(Rect::new(bar_x0, bar_y0, bar_x1, bar_y0 + PROMPT_HEIGHT));
+            let bar_left = self.rect.x0 + f64::from(self.sidebar_top_y);
+            let bar_right = self.rect.x1 - f64::from(self.sidebar_top_y);
+            prompt.set_rect(Rect::new(
+                bar_left,
+                bar_y0,
+                bar_right,
+                bar_y0 + PROMPT_HEIGHT,
+            ));
             prompt.draw(scene, transform, text_renderer, theme, presence);
         }
 
@@ -8507,7 +8585,22 @@ impl ShellOverlayHost {
         theme: &Theme,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        let target = if flags.overview { 1.0 } else { 0.0 };
+        self.draw_overview_overlay(scene, transform, text_renderer, theme, flags.overview);
+        self.draw_ws_settings_overlay(scene, transform, text_renderer, theme, flags.ws_settings);
+    }
+
+    /// The room-overview panel half of
+    /// [`Self::draw_overview_and_ws_settings_overlays`]: rise/fall transition,
+    /// scrim, and the panel itself. Split out to keep that dispatcher short.
+    fn draw_overview_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        overview_open: bool,
+    ) {
+        let target = if overview_open { 1.0 } else { 0.0 };
         let t = self.tick_overview_transition(target);
         // The overview is a panel over the desk, not a place you travel
         // to: the desktop stays drawn and the scrim dims it as the panel
@@ -8566,10 +8659,23 @@ impl ShellOverlayHost {
                 scene.pop_layer();
             }
         }
+    }
 
+    /// The workspace-settings modal half of
+    /// [`Self::draw_overview_and_ws_settings_overlays`]: scrim, panel
+    /// transform, shadow and content. Split out to keep that dispatcher
+    /// short.
+    fn draw_ws_settings_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        ws_settings_open: bool,
+    ) {
         // `ws_settings_transition` plays the entrance in reverse on close
         // too, so the modal + scrim fade out instead of popping.
-        if !flags.ws_settings {
+        if !ws_settings_open {
             // Clear cached rects so a click during the close fade can't
             // flip tabs, same as `add_workspace_rect` above.
             self.ws_settings_tab_pill_rects = [Rect::ZERO; 4];
@@ -8578,9 +8684,9 @@ impl ShellOverlayHost {
             self.grant_composer_rects = None;
             self.member_control_rects.clear();
         }
-        self.ws_settings_was_open = flags.ws_settings;
+        self.ws_settings_was_open = ws_settings_open;
         self.ws_settings_transition.set_open(
-            flags.ws_settings,
+            ws_settings_open,
             Duration::from_millis(MODAL_OPEN_ANIM_MS),
             ui::Curve::EaseOut,
         );
@@ -9236,6 +9342,13 @@ impl ShellOverlayHost {
     /// "Where you are": the current room's face stack, name, "You are
     /// here" chip and access label — or an honest empty state when
     /// nothing is marked current.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the scene/transform/text_renderer/theme paint context threaded \
+                  through every draw_* helper in this file; wrapping it in a context type \
+                  would ripple through the many sibling draw_* functions that share the same \
+                  convention, not just this one"
+    )]
     fn draw_overview_here_section(
         &self,
         scene: &mut Scene,
@@ -9280,6 +9393,13 @@ impl ShellOverlayHost {
 
     /// The current room's selection highlight, face stack, name, "You
     /// are here" chip and access label.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the scene/transform/text_renderer/theme paint context threaded \
+                  through every draw_* helper in this file; wrapping it in a context type \
+                  would ripple through the many sibling draw_* functions that share the same \
+                  convention, not just this one"
+    )]
     fn draw_overview_here_room(
         &self,
         scene: &mut Scene,
@@ -9408,6 +9528,13 @@ impl ShellOverlayHost {
 
     /// "What leaves this room": the share list, or an honest zero-state
     /// when nothing in the current room is shared out of it.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the scene/transform/text_renderer/theme paint context threaded \
+                  through every draw_* helper in this file; wrapping it in a context type \
+                  would ripple through the many sibling draw_* functions that share the same \
+                  convention, not just this one"
+    )]
     fn draw_overview_shares_section(
         &self,
         scene: &mut Scene,
@@ -9513,6 +9640,13 @@ impl ShellOverlayHost {
 
     /// One row per share (up to `OVERVIEW_SHARES_MAX_ROWS`), plus an
     /// "and N more" trailer when there are more than that.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the scene/transform/text_renderer/theme paint context threaded \
+                  through every draw_* helper in this file; wrapping it in a context type \
+                  would ripple through the many sibling draw_* functions that share the same \
+                  convention, not just this one"
+    )]
     fn draw_overview_share_rows(
         scene: &mut Scene,
         transform: Affine,
@@ -9565,6 +9699,13 @@ impl ShellOverlayHost {
     }
 
     /// One "shared out of here" row: an icon, who holds it, and what.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the scene/transform/text_renderer/theme paint context threaded \
+                  through every draw_* helper in this file; wrapping it in a context type \
+                  would ripple through the many sibling draw_* functions that share the same \
+                  convention, not just this one"
+    )]
     fn draw_overview_share_row(
         scene: &mut Scene,
         transform: Affine,
@@ -10029,6 +10170,13 @@ impl ShellOverlayHost {
     /// so the caller knows to stop. Returns `false` on `General`, whose
     /// clearing happens here too, but whose body the caller continues
     /// painting below.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the scene/transform/text_renderer/theme paint context threaded \
+                  through every draw_* helper in this file; wrapping it in a context type \
+                  would ripple through the many sibling draw_* functions that share the same \
+                  convention, not just this one"
+    )]
     fn draw_ws_settings_dispatch_tab(
         &mut self,
         scene: &mut Scene,
@@ -10089,6 +10237,13 @@ impl ShellOverlayHost {
     }
 
     /// The Members tab body: roster rows, then the shared close hint.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the scene/transform/text_renderer/theme paint context threaded \
+                  through every draw_* helper in this file; wrapping it in a context type \
+                  would ripple through the many sibling draw_* functions that share the same \
+                  convention, not just this one"
+    )]
     fn draw_ws_settings_members_tab(
         &mut self,
         scene: &mut Scene,
@@ -10125,6 +10280,13 @@ impl ShellOverlayHost {
 
     /// The Permissions tab body: the grant/revoke pane, then the shared
     /// close hint.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the scene/transform/text_renderer/theme paint context threaded \
+                  through every draw_* helper in this file; wrapping it in a context type \
+                  would ripple through the many sibling draw_* functions that share the same \
+                  convention, not just this one"
+    )]
     fn draw_ws_settings_permissions_tab(
         &mut self,
         scene: &mut Scene,
@@ -10168,6 +10330,13 @@ impl ShellOverlayHost {
     }
 
     /// The Apps tab body: default-app rows, then the shared close hint.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the scene/transform/text_renderer/theme paint context threaded \
+                  through every draw_* helper in this file; wrapping it in a context type \
+                  would ripple through the many sibling draw_* functions that share the same \
+                  convention, not just this one"
+    )]
     fn draw_ws_settings_apps_tab(
         &mut self,
         scene: &mut Scene,
@@ -10194,7 +10363,7 @@ impl ShellOverlayHost {
                 scene,
                 transform,
                 body_rect,
-                DefaultAppsCtx {
+                &DefaultAppsCtx {
                     ws,
                     local_user: &state.local_user_id,
                     candidates: &candidates,
@@ -10209,6 +10378,13 @@ impl ShellOverlayHost {
     /// Name input — edits fall through to `editing_workspace_name`.
     /// Returns whether the name is currently being edited, so the
     /// caller's footer hint can match.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the scene/transform/text_renderer/theme paint context threaded \
+                  through every draw_* helper in this file; wrapping it in a context type \
+                  would ripple through the many sibling draw_* functions that share the same \
+                  convention, not just this one"
+    )]
     fn draw_ws_settings_name_input(
         &self,
         scene: &mut Scene,
@@ -10278,6 +10454,13 @@ impl ShellOverlayHost {
     /// floor against the closed-modal baseline. Returns the invite
     /// section's top y, so the caller can place the collaborators
     /// section directly beneath it.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the scene/transform/text_renderer/theme paint context threaded \
+                  through every draw_* helper in this file; wrapping it in a context type \
+                  would ripple through the many sibling draw_* functions that share the same \
+                  convention, not just this one"
+    )]
     fn draw_ws_settings_invite_link(
         &self,
         scene: &mut Scene,
@@ -10586,7 +10769,13 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let (input, token, invite_name, invite_for, status) = Self::peer_sync_snapshot(&chrome);
+        let PeerSyncSnapshot {
+            input,
+            token,
+            invite_name,
+            invite_for,
+            status,
+        } = Self::peer_sync_snapshot(&chrome);
         if input.is_none() && token.is_none() && invite_name.is_none() {
             return;
         }
@@ -10688,23 +10877,15 @@ impl ShellOverlayHost {
 
     /// The peer-sync fields off chrome state, cloned out so the borrow
     /// drops before any painting starts.
-    fn peer_sync_snapshot(
-        chrome: &Chrome,
-    ) -> (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) {
+    fn peer_sync_snapshot(chrome: &Chrome) -> PeerSyncSnapshot {
         let st = chrome.borrow();
-        (
-            st.peer_sync_connect_input.clone(),
-            st.peer_sync_invite_token.clone(),
-            st.peer_sync_invite_name.clone(),
-            st.peer_sync_invite_for.clone(),
-            st.peer_sync_status.clone(),
-        )
+        PeerSyncSnapshot {
+            input: st.peer_sync_connect_input.clone(),
+            token: st.peer_sync_invite_token.clone(),
+            invite_name: st.peer_sync_invite_name.clone(),
+            invite_for: st.peer_sync_invite_for.clone(),
+            status: st.peer_sync_status.clone(),
+        }
     }
 
     /// Dispatches to whichever half of the peer-sync flow is showing —
@@ -11018,6 +11199,13 @@ impl ShellOverlayHost {
 
     /// The bottom-right action row: Create/Cancel, Join/Cancel/Paste or
     /// Copy, depending which half of the flow is showing.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shares the scene/transform/text_renderer/theme paint context threaded \
+                  through every draw_* helper in this file; wrapping it in a context type \
+                  would ripple through the many sibling draw_* functions that share the same \
+                  convention, not just this one"
+    )]
     fn draw_peer_sync_buttons(
         &mut self,
         scene: &mut Scene,
@@ -11677,10 +11865,10 @@ impl ShellOverlayHost {
                 card.x0 + 12.0 + 20.0,
                 card.y0 + 12.0 + 20.0,
             );
-            // Slot 4 (Hotspot) reuses the Wifi glyph, same as the
+            // Slot 0 is Wifi and slot 4 (Hotspot) reuses the Wifi glyph;
+            // both fall through to the same default arm below as the
             // catch-all for anything past slot 7 (e.g. Mobile data).
             let icon = match i {
-                0 | 4 => ui::icons::Icon::Wifi,
                 1 => ui::icons::Icon::Bluetooth,
                 2 => ui::icons::Icon::EthernetPort,
                 3 => ui::icons::Icon::WifiOff,
@@ -15057,6 +15245,13 @@ mod two_workspace_host_tests {
     fn real_peers_are_picked_up_by_room_and_only_the_active_one() {
         use ui::permissions::UserId;
         let (h, chrome) = host_with_two_workspaces();
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "here and elsewhere are each fully chained from tree (via the active id \
+                      and a workspace lookup); nothing to drop earlier without cloning the tree \
+                      data out for no real gain, and the block already ends right after both \
+                      are computed"
+        )]
         let (here, elsewhere) = {
             let c = chrome.borrow();
             let tree = c.tree();
@@ -16340,8 +16535,8 @@ mod tests {
         h.host.force_room_activity_settled();
         paint(&mut h);
 
-        let rows = h.host.room_activity().timeline().rect();
-        assert!(rows.area() > 0.0);
+        let timeline_rect = h.host.room_activity().timeline().rect();
+        assert!(timeline_rect.area() > 0.0);
         let row0 = h
             .host
             .room_activity()

@@ -897,7 +897,7 @@ mod two_sessions {
     /// Cap'n Proto broker under test opens its own socket the same way
     /// production does, just with no peer-sync bridge to Iroh.
     fn broker(dir: &std::path::Path, name: &str) -> crate::shell::collab_broker::BrokerHandle {
-        crate::shell::collab_broker::spawn_native(dir.join(name), None)
+        crate::shell::collab_broker::spawn_native(dir.join(name), &None)
             .expect("a broker on a temp socket")
     }
 

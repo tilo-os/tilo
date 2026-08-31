@@ -344,6 +344,12 @@ pub struct NetGate {
 impl NetGate {
     /// Bind `socket_path` and serve SOCKS5 against `policy` until
     /// dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GateError::Mkdir`] if the socket's parent directory can't
+    /// be created, or [`GateError::Bind`] if the socket itself can't be
+    /// bound.
     pub fn start(socket_path: &Path, policy: EgressPolicy) -> Result<NetGate, GateError> {
         if let Some(parent) = socket_path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| GateError::Mkdir {
@@ -451,6 +457,11 @@ pub mod reply {
 
 /// Read the client greeting and answer it. No authentication: peer
 /// identity is established by the bind-mount, not a credential.
+///
+/// # Errors
+///
+/// Returns an error if `stream` fails to read/write, or if the version byte
+/// is not `0x05` (not SOCKS5).
 pub fn socks5_greet<S: Read + Write>(stream: &mut S) -> io::Result<()> {
     let mut head = [0u8; 2];
     stream.read_exact(&mut head)?;
@@ -468,6 +479,12 @@ pub fn socks5_greet<S: Read + Write>(stream: &mut S) -> io::Result<()> {
 
 /// Read a CONNECT request. Returns the destination, or writes the
 /// appropriate refusal and returns an error.
+///
+/// # Errors
+///
+/// Returns an error if `stream` fails to read/write, if the version byte is
+/// not `0x05`, if the command is not CONNECT, if the address type is
+/// unrecognised, or if a domain name is not valid UTF-8.
 pub fn socks5_request<S: Read + Write>(stream: &mut S) -> io::Result<Destination> {
     let mut head = [0u8; 4];
     stream.read_exact(&mut head)?;
@@ -527,6 +544,10 @@ fn read_port<S: Read>(stream: &mut S) -> io::Result<u16> {
 
 /// Write a reply header. The bound-address fields are zeroed — a
 /// CONNECT client has no use for them.
+///
+/// # Errors
+///
+/// Returns an error if `stream` fails to write.
 pub fn write_reply<S: Write>(stream: &mut S, code: u8) -> io::Result<()> {
     stream.write_all(&[0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
 }
@@ -642,15 +663,14 @@ impl<S: Read> Read for Replay<'_, S> {
         if buf.is_empty() {
             return Ok(0);
         }
-        let mut n = 0;
+        let mut n: usize = 0;
         while n < buf.len() {
-            match self.pending.pop_front() {
-                Some(b) => {
-                    buf[n] = b;
-                    n += 1;
-                }
-                None => break,
-            }
+            let Some(b) = self.pending.pop_front() else {
+                break;
+            };
+            let Some(slot) = buf.get_mut(n) else { break };
+            *slot = b;
+            n = n.saturating_add(1);
         }
         if n > 0 {
             return Ok(n);
@@ -707,7 +727,7 @@ pub fn parse_http_proxy_head(head: &str) -> Option<HttpProxyRequest> {
         .strip_prefix("http://")
         .or_else(|| target.strip_prefix("HTTP://"))?;
     let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
+        Some(i) => rest.split_at_checked(i).unwrap_or((rest, "/")),
         None => (rest, "/"),
     };
     let (host, port) = split_host_port(authority, 80)?;
@@ -831,7 +851,7 @@ fn serve_http(
 fn canonical_ip(addr: IpAddr) -> IpAddr {
     match addr {
         IpAddr::V6(v6) => v6.to_ipv4().map_or(addr, IpAddr::V4),
-        v4 => v4,
+        IpAddr::V4(_) => addr,
     }
 }
 
@@ -926,6 +946,10 @@ fn splice(client: UnixStream, upstream: TcpStream) {
 /// bypass it — the bytes are opaque to it and every policy decision is
 /// made on the host side. Exists so an unmodified HTTP client honouring
 /// `ALL_PROXY` works, since `socks5h://` needs a TCP endpoint.
+///
+/// # Errors
+///
+/// Returns an error if the loopback listener on `port` cannot be bound.
 pub fn run_relay(gate_socket: &Path, port: u16) -> io::Result<()> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
     let gate = gate_socket.to_path_buf();

@@ -885,9 +885,9 @@ async fn drain_peer_relay_session(
 }
 
 /// Apply one inbound envelope from the federated peer-relay session:
-/// fan Delta/Presence out to local subscribers, materialize a
-/// `SyncResponse` backfill, or handle protocol housekeeping (Ping,
-/// NotAuthorised).
+/// fan `Delta`/`Presence` out to local subscribers, materialize a
+/// `SyncResponse` backfill, or handle protocol housekeeping (`Ping`,
+/// `NotAuthorised`).
 async fn handle_peer_relay_envelope(
     workspaces: &WorkspaceRegistry,
     client: &RelayClient,

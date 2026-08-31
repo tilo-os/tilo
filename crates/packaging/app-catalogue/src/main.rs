@@ -46,6 +46,7 @@
 )]
 
 use std::io::Write;
+use std::process::ExitCode;
 
 use app_catalogue::install::DownloadProgress;
 use clap::{Parser, Subcommand};
@@ -75,7 +76,7 @@ enum Cmd {
     },
 }
 
-fn main() {
+fn main() -> ExitCode {
     // rustls needs an explicit provider: the tree carries both ring
     // and aws-lc-rs, and 0.23 will not pick one on its own. Failing
     // here would mean every https registry silently errored later.
@@ -88,17 +89,19 @@ fn main() {
     }
 }
 
-fn list(json: bool) {
+fn list(json: bool) -> ExitCode {
     let listing = app_catalogue::available();
     if json {
-        match serde_json::to_string(&listing) {
-            Ok(s) => println!("{s}"),
+        return match serde_json::to_string(&listing) {
+            Ok(s) => {
+                println!("{s}");
+                ExitCode::SUCCESS
+            }
             Err(e) => {
                 eprintln!("could not encode the catalogue: {e}");
-                std::process::exit(1);
+                ExitCode::FAILURE
             }
-        }
-        return;
+        };
     }
     if listing.apps.is_empty() {
         println!("nothing available to install");
@@ -112,9 +115,10 @@ fn list(json: bool) {
     for bad in &listing.unreachable {
         eprintln!("registry {} unreachable: {}", bad.name, bad.detail);
     }
+    ExitCode::SUCCESS
 }
 
-fn install(package_id: &str) {
+fn install(package_id: &str) -> ExitCode {
     // Flushed as it happens — the caller is a process watching a pipe, and a
     // fetch that only spoke when it finished is a fetch nobody can show. The
     // final `installed` line stays the last word either way, so a caller that
@@ -136,10 +140,11 @@ fn install(package_id: &str) {
     match app_catalogue::install::install_reporting(package_id, &mut on_progress) {
         Ok(app) => {
             println!("installed {} {}", app.package_id, app.version);
+            ExitCode::SUCCESS
         }
         Err(e) => {
             eprintln!("{}", e.user_message());
-            std::process::exit(1);
+            ExitCode::FAILURE
         }
     }
 }

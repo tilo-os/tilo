@@ -132,7 +132,15 @@ impl DisplayStreamPolicy {
             (None, None) => (1920, 1080),
         };
         let fps = self.max_fps.clamp(24, 120);
-        let pixels_per_second = u64::from(width) * u64::from(height) * u64::from(fps);
+        // `width`/`height` may originate from a receiver-advertised capability
+        // over the network, so this is untrusted-magnitude data. `checked_mul`
+        // rejects an overflowing (malformed) advertisement outright by
+        // falling back to the bitrate floor, rather than saturating to a
+        // plausible-looking but made-up value.
+        let pixels_per_second = u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|value| value.checked_mul(u64::from(fps)))
+            .unwrap_or(0);
         let bitrate_kbps = (pixels_per_second / 12_000).clamp(2_500, 40_000) as u32;
         CaptureProfile::new(width, height, fps, bitrate_kbps)
     }
@@ -233,6 +241,10 @@ pub struct VideoPacket {
 }
 
 impl VideoPacket {
+    /// # Errors
+    ///
+    /// Returns an error if `annex_b` exceeds 16 MiB, or if writing to `writer`
+    /// fails.
     pub fn write_to(&self, mut writer: impl Write) -> io::Result<()> {
         if self.annex_b.len() > MAX_VIDEO_PACKET_BYTES {
             return Err(io::Error::new(
@@ -240,15 +252,28 @@ impl VideoPacket {
                 "projection video packet exceeds 16 MiB",
             ));
         }
+        // The length check above already bounds `annex_b.len()` well within
+        // `u32::MAX` (16 MiB vs. ~4 GiB), so this narrowing cannot truncate.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "annex_b.len() is bounded to MAX_VIDEO_PACKET_BYTES (16 MiB) above"
+        )]
+        let payload_len = self.annex_b.len() as u32;
         writer.write_all(&VIDEO_PACKET_MAGIC)?;
         writer.write_all(&self.width.to_be_bytes())?;
         writer.write_all(&self.height.to_be_bytes())?;
         writer.write_all(&self.presentation_time_us.to_be_bytes())?;
         writer.write_all(&[u8::from(self.keyframe)])?;
-        writer.write_all(&(self.annex_b.len() as u32).to_be_bytes())?;
+        writer.write_all(&payload_len.to_be_bytes())?;
         writer.write_all(&self.annex_b)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the stream does not begin with the expected magic
+    /// bytes, if the keyframe flag byte is neither 0 nor 1, if the declared
+    /// payload length exceeds 16 MiB, or if reading from `reader` fails
+    /// (including a short read before the declared payload is complete).
     pub fn read_from(mut reader: impl Read) -> io::Result<Self> {
         let mut magic = [0u8; 8];
         reader.read_exact(&mut magic)?;

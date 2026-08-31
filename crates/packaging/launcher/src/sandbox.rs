@@ -324,6 +324,15 @@ pub fn build_bwrap_argv(
 }
 
 /// `build_bwrap_argv` variant for `run-installed`'s CLI entrypoint.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is an independently-resolved decision (runtime \
+              bundle, service sockets, D-Bus plan, identity, capabilities) \
+              threaded straight into the bwrap argv; bundling them into a \
+              struct only relocates the same fields one level out, and this \
+              signature is depended on by call sites in run.rs owned by a \
+              different pass of this campaign"
+)]
 pub fn build_bwrap_argv_for_entry(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -1507,7 +1516,7 @@ mod tests {
         let tmpfs = argv
             .windows(2)
             .position(|w| w[0] == "--tmpfs" && w[1] == "/dev/dri")
-            .expect("device dir must be emptied: {argv:?}");
+            .unwrap_or_else(|| panic!("device dir must be emptied: {argv:?}"));
         let node = argv
             .windows(3)
             .position(|w| {

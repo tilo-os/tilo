@@ -24,6 +24,10 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::ShotFactory"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let width = f64::from(args.viewport.unwrap_or(ui::launch::DEFAULT_VIEWPORT).0);
     Ok(if args.has("--empty") {
@@ -41,5 +45,5 @@ pub fn main() {
             .shot_root(shot_root)
             .allowed_flags(&["--empty", "--status"])
             .configure_app(|app| db_client::actions::register(app.action_registry_mut())),
-    )
+    );
 }

@@ -139,7 +139,8 @@ fn lay_out_field(field: &mut SearchField, theme: &Theme, width: f64, origin: Poi
         },
     );
     if let Err(e) = layout_result {
-        panic!("layout failed: {e}");
+        eprintln!("search_showcase: layout failed: {e}");
+        return;
     }
     field.apply_layout(&taffy, node, origin);
 }

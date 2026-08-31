@@ -75,6 +75,7 @@ impl LaunchSpec {
         }
     }
 
+    #[must_use]
     pub fn shot_root(mut self, factory: ShotFactory) -> Self {
         self.shot_root = factory;
         self
@@ -83,6 +84,7 @@ impl LaunchSpec {
     /// Delegate screenshot execution to an app-specific pipeline while the
     /// standard runner still owns parsing, mode validation, logging, headless
     /// driving, persistence and live startup.
+    #[must_use]
     pub fn shot_handler(mut self, handler: ShotHandler) -> Self {
         self.shot_handler = Some(handler);
         self
@@ -90,11 +92,13 @@ impl LaunchSpec {
 
     /// Scenario-specific default viewport. An explicit `--viewport` always
     /// wins over this callback.
+    #[must_use]
     pub fn shot_viewport(mut self, factory: ViewportFactory) -> Self {
         self.shot_viewport = factory;
         self
     }
 
+    #[must_use]
     pub fn configure_app(mut self, configure: ConfigureApp) -> Self {
         self.configure_app = Some(configure);
         self
@@ -102,6 +106,7 @@ impl LaunchSpec {
 
     /// Allow app-specific boolean flags. Value-taking common options belong
     /// in `LaunchArgs`; specialized CLIs should use the lower-level APIs.
+    #[must_use]
     pub fn allowed_flags(mut self, flags: &'static [&'static str]) -> Self {
         self.allowed_flags = flags;
         self
@@ -110,6 +115,7 @@ impl LaunchSpec {
     /// Allow app-specific, value-taking options in both `--name value` and
     /// `--name=value` form. Their values are available through
     /// [`LaunchArgs::value`].
+    #[must_use]
     pub fn allowed_options(mut self, options: &'static [&'static str]) -> Self {
         self.allowed_options = options;
         self
@@ -117,6 +123,7 @@ impl LaunchSpec {
 
     /// Declare every accepted screenshot scenario. With no declaration,
     /// `--scenario` is rejected instead of being silently ignored.
+    #[must_use]
     pub fn scenarios(mut self, scenarios: &'static [&'static str]) -> Self {
         self.scenarios = scenarios;
         self
@@ -151,8 +158,7 @@ impl fmt::Display for LaunchError {
             }
             Self::ShotsOnly(arg) => write!(f, "{arg} is only meaningful with --shots"),
             Self::ShotsUnsupported => write!(f, "this application does not support --shots"),
-            Self::Scenario(message) => f.write_str(message),
-            Self::Operation(message) => f.write_str(message),
+            Self::Scenario(message) | Self::Operation(message) => f.write_str(message),
         }
     }
 }
@@ -171,23 +177,46 @@ impl LaunchError {
 
 /// Run the standard app lifecycle and report command-line errors using the
 /// conventional usage-error exit status (`2`).
+#[allow(
+    clippy::exit,
+    reason = "this *is* the app's CLI entry point (every app's `main` just \
+              calls it); reporting a usage error via `std::process::exit` \
+              is the documented contract, not an incidental exit deep in \
+              library code"
+)]
 pub fn run_or_exit(spec: LaunchSpec) {
-    if let Err(error) = run(spec) {
+    if let Err(error) = run(&spec) {
         eprintln!("error: {error}");
         std::process::exit(error.exit_code());
     }
 }
 
 /// Run the standard app lifecycle using `std::env::args`.
-pub fn run(spec: LaunchSpec) -> Result<(), LaunchError> {
+///
+/// # Errors
+///
+/// Returns a [`LaunchError`] if argument parsing fails (an unknown flag, a
+/// missing or malformed value, a duplicate flag, `--shots` combined with
+/// `--headless-drive`, a shots-only flag used outside `--shots`, or an
+/// undeclared `--scenario`), if the app has no [`LaunchSpec::shot_root`] /
+/// [`LaunchSpec::shot_handler`] and `--shots` was requested, or if the
+/// app's own shot factory or shot handler returns one.
+pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     let _ = tracing_subscriber::fmt::try_init();
     let args: Vec<String> = std::env::args().collect();
     run_with_args(spec, &args)
 }
 
-fn run_with_args(spec: LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
+#[allow(
+    clippy::exit,
+    reason = "the --headless-drive path reports the harness's pass/fail \
+              status as this process's exit code, exactly like --shots \
+              reports success by returning Ok — there is no caller to \
+              hand a status back to"
+)]
+fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
     let args = parse_args(raw_args, spec.allowed_flags, spec.allowed_options)?;
-    validate_spec_args(&args, &spec)?;
+    validate_spec_args(&args, spec)?;
 
     if let Some(out) = &args.shots {
         if let Some(handler) = spec.shot_handler {
@@ -252,9 +281,8 @@ fn parse_args(
         extras: Vec::new(),
         values: Vec::new(),
     };
-    let mut index = 1;
-    while index < args.len() {
-        let arg = &args[index];
+    let mut index: usize = 1;
+    while let Some(arg) = args.get(index) {
         let (flag, inline) = arg
             .split_once('=')
             .map_or((arg.as_str(), None), |(flag, value)| (flag, Some(value)));
@@ -293,7 +321,7 @@ fn parse_args(
             }
             _ => return Err(LaunchError::UnknownArgument(arg.clone())),
         }
-        index += 1;
+        index = index.saturating_add(1);
     }
     if parsed.shots.is_some() && parsed.headless.is_some() {
         return Err(LaunchError::ConflictingModes);
@@ -326,7 +354,7 @@ fn take_value<'a>(
             .then_some(value)
             .ok_or_else(|| LaunchError::MissingValue(flag.to_owned()));
     }
-    *index += 1;
+    *index = index.saturating_add(1);
     args.get(*index)
         .map(String::as_str)
         .filter(|value| !value.starts_with("--"))
@@ -506,7 +534,7 @@ mod tests {
     fn custom_shot_pipeline_uses_standard_mode_dispatch() {
         CUSTOM_SHOT_RAN.store(false, Ordering::SeqCst);
         let spec = LaunchSpec::new("dev.qos.test", dummy_root).shot_handler(custom_shot);
-        run_with_args(spec, &strings(&["app", "--shots", "/tmp/custom.png"])).unwrap();
+        run_with_args(&spec, &strings(&["app", "--shots", "/tmp/custom.png"])).unwrap();
         assert!(CUSTOM_SHOT_RAN.load(Ordering::SeqCst));
     }
 

@@ -187,9 +187,9 @@ impl AuthenticatorApp {
     /// from the document afterward for immediate feedback; `sync` reconciles it
     /// again each frame (so a palette dispatch shows up the same way). This app
     /// supplies only its domain: the action and its type.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::TotpAction) {
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::TotpAction) {
         self.actions
-            .dispatch(doc, crate::actions::TOTP_ACTION_TYPE, &action);
+            .dispatch(doc, crate::actions::TOTP_ACTION_TYPE, action);
     }
 
     /// Re-project the in-memory vault from the now-authoritative document, and —
@@ -269,15 +269,15 @@ impl AuthenticatorApp {
                 self.list_dirty = true;
             }
             ListEvent::MoveUp(id) => {
-                self.perform_action(state, crate::actions::move_up_action(id));
+                self.perform_action(state, &crate::actions::move_up_action(id));
                 self.reload_from_doc(state);
             }
             ListEvent::MoveDown(id) => {
-                self.perform_action(state, crate::actions::move_down_action(id));
+                self.perform_action(state, &crate::actions::move_down_action(id));
                 self.reload_from_doc(state);
             }
             ListEvent::Delete(id) => {
-                self.perform_action(state, crate::actions::delete_account_action(id));
+                self.perform_action(state, &crate::actions::delete_account_action(id));
                 self.reload_from_doc(state);
                 if self.selected == Some(id) {
                     self.selected = self.vault.ordered().first().map(|a| a.id);
@@ -301,7 +301,7 @@ impl AuthenticatorApp {
                 acc.color = (self.vault.len() % 7) as u8;
                 let order = self.vault.next_order();
                 let id = acc.id;
-                self.perform_action(state, crate::actions::add_account_action(&acc, order));
+                self.perform_action(state, &crate::actions::add_account_action(&acc, order));
                 self.reload_from_doc(state);
                 self.selected = Some(id);
                 self.toast("Account added");
@@ -320,6 +320,103 @@ impl AuthenticatorApp {
         if let Some(id) = target {
             self.copy_account(id);
         }
+    }
+
+    /// Global keyboard shortcuts available whenever the add-panel modal
+    /// isn't open: Ctrl/Cmd+N (add), Ctrl/Cmd+F and `/` (focus search),
+    /// Escape (clear + unfocus search) and Enter (copy the focused code).
+    /// Returns `true` when the event was fully consumed here — `handled`
+    /// is already set in that case, so [`Widget::handle_event`] should stop
+    /// routing further.
+    fn handle_global_shortcut(
+        &mut self,
+        event: &WindowEvent,
+        mods: winit::keyboard::ModifiersState,
+        handled: &mut bool,
+    ) -> bool {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+
+        // Ctrl/Cmd+N → add account.
+        if let Key::Character(c) = logical_key {
+            let lc = c.to_lowercase();
+            if (mods.control_key() || mods.super_key()) && lc == "n" {
+                self.add_panel.open();
+                self.add_panel.layout(self.rect);
+                *handled = true;
+                return true;
+            }
+            if (mods.control_key() || mods.super_key()) && lc == "f" {
+                self.search.set_focus(true);
+                *handled = true;
+                return true;
+            }
+            // "/" focuses search when not already typing there.
+            if c.as_str() == "/" && !self.search.is_focused() {
+                self.search.set_focus(true);
+                *handled = true;
+                return true;
+            }
+        }
+        match logical_key {
+            Key::Named(NamedKey::Escape) => {
+                if self.search.is_focused() {
+                    self.search.set_focus(false);
+                    if !self.search.value().is_empty() {
+                        self.search.set_text("");
+                        self.refresh_list();
+                    }
+                    *handled = true;
+                    return true;
+                }
+            }
+            Key::Named(NamedKey::Enter) => {
+                self.copy_focused();
+                *handled = true;
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// Add-button + search-field focus management on a left click. Returns
+    /// `true` when the click opened the add modal — fully consumed, so
+    /// [`Widget::handle_event`] should stop routing further; a click that
+    /// only moves search focus returns `false` so the event still reaches
+    /// the search field and list below.
+    fn handle_add_and_search_focus_click(
+        &mut self,
+        event: &WindowEvent,
+        handled: &mut bool,
+    ) -> bool {
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        if self.add_btn_rect.contains(self.last_mouse) {
+            self.add_panel.open();
+            self.add_panel.layout(self.rect);
+            *handled = true;
+            return true;
+        }
+        let on_search = self.search_rect.contains(self.last_mouse);
+        self.search.set_focus(on_search);
+        false
     }
 
     /// Import a QR code from an image file into the open add panel.
@@ -571,6 +668,10 @@ impl Widget for AuthenticatorApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
+        )]
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -587,7 +688,7 @@ impl Widget for AuthenticatorApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         let x0 = origin.x + f64::from(layout.location.x);
         let y0 = origin.y + f64::from(layout.location.y);
         self.rect = Rect::new(
@@ -714,76 +815,12 @@ impl Widget for AuthenticatorApp {
             return;
         }
 
-        let mods = modifiers.state();
-
-        // Global keyboard shortcuts.
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            // Ctrl/Cmd+N → add account.
-            if let Key::Character(c) = logical_key {
-                let lc = c.to_lowercase();
-                if (mods.control_key() || mods.super_key()) && lc == "n" {
-                    self.add_panel.open();
-                    self.add_panel.layout(self.rect);
-                    *handled = true;
-                    return;
-                }
-                if (mods.control_key() || mods.super_key()) && lc == "f" {
-                    self.search.set_focus(true);
-                    *handled = true;
-                    return;
-                }
-                // "/" focuses search when not already typing there.
-                if c.as_str() == "/" && !self.search.is_focused() {
-                    self.search.set_focus(true);
-                    *handled = true;
-                    return;
-                }
-            }
-            match logical_key {
-                Key::Named(NamedKey::Escape) => {
-                    if self.search.is_focused() {
-                        self.search.set_focus(false);
-                        if !self.search.value().is_empty() {
-                            self.search.set_text("");
-                            self.refresh_list();
-                        }
-                        *handled = true;
-                        return;
-                    }
-                }
-                Key::Named(NamedKey::Enter) => {
-                    self.copy_focused();
-                    *handled = true;
-                    return;
-                }
-                _ => {}
-            }
+        if self.handle_global_shortcut(event, modifiers.state(), handled) {
+            return;
         }
 
-        // Add-button + search focus management on click.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            if self.add_btn_rect.contains(self.last_mouse) {
-                self.add_panel.open();
-                self.add_panel.layout(self.rect);
-                *handled = true;
-                return;
-            }
-            let on_search = self.search_rect.contains(self.last_mouse);
-            self.search.set_focus(on_search);
+        if self.handle_add_and_search_focus_click(event, handled) {
+            return;
         }
 
         // Route to the search field (caret placement + typing) when it
@@ -938,7 +975,7 @@ mod tests {
     fn dispatch(
         app: &mut AuthenticatorApp,
         ev: &WindowEvent,
-        mods: &winit::event::Modifiers,
+        mods: winit::event::Modifiers,
         state: &mut AutoCommit,
         root: &ObjId,
         node: NodeId,
@@ -949,7 +986,7 @@ mod tests {
         app.handle_event(
             ev,
             1.0,
-            mods,
+            &mods,
             state,
             root,
             &mut handled,
@@ -1231,7 +1268,7 @@ mod tests {
         dispatch(
             &mut app,
             &cursor_at(btn),
-            &mods,
+            mods,
             &mut state.doc,
             &state.root,
             node,
@@ -1240,7 +1277,7 @@ mod tests {
         dispatch(
             &mut app,
             &left_press(),
-            &mods,
+            mods,
             &mut state.doc,
             &state.root,
             node,
@@ -1260,7 +1297,7 @@ mod tests {
         let handled = dispatch(
             &mut app,
             &char_press("n"),
-            &ctrl,
+            ctrl,
             &mut state.doc,
             &state.root,
             node,
@@ -1277,11 +1314,11 @@ mod tests {
         assert!(!app.search.is_focused());
 
         // "/" focuses search when not already typing there.
-        let none = no_mods();
+        let mods = no_mods();
         dispatch(
             &mut app,
             &char_press("/"),
-            &none,
+            mods,
             &mut state.doc,
             &state.root,
             node,
@@ -1295,7 +1332,7 @@ mod tests {
         dispatch(
             &mut app,
             &char_press("f"),
-            &ctrl,
+            ctrl,
             &mut state.doc,
             &state.root,
             node,
@@ -1311,11 +1348,11 @@ mod tests {
         app.search.set_focus(true);
         app.search.set_text("github");
 
-        let none = no_mods();
+        let mods = no_mods();
         let handled = dispatch(
             &mut app,
             &named_press(NamedKey::Escape),
-            &none,
+            mods,
             &mut state.doc,
             &state.root,
             node,
@@ -1339,11 +1376,11 @@ mod tests {
         let acc = app.vault.get(id).cloned().unwrap();
 
         let before = totp::current_code(&acc);
-        let none = no_mods();
+        let mods = no_mods();
         dispatch(
             &mut app,
             &named_press(NamedKey::Enter),
-            &none,
+            mods,
             &mut state.doc,
             &state.root,
             node,
@@ -1371,11 +1408,11 @@ mod tests {
         app.add_panel.layout(app.rect);
         assert!(!app.search.is_focused());
 
-        let none = no_mods();
+        let mods = no_mods();
         dispatch(
             &mut app,
             &char_press("/"),
-            &none,
+            mods,
             &mut state.doc,
             &state.root,
             node,
@@ -1401,13 +1438,16 @@ mod tests {
         );
     }
 
+    /// A `--shots` entry point: its display name and root-widget factory.
+    type ShotsScenario = (&'static str, fn() -> Box<dyn Widget>);
+
     #[test]
     fn every_shots_scenario_renders_a_nonblank_frame() {
         // The five `--shots` entry points must each produce a real frame, not
         // collapse to nothing. Runs the exact host cycle (sync → build_layout →
         // compute_layout(measure) → apply_layout → draw) and asserts the scene
         // encoded draw commands. No GPU needed — this is pure Vello encoding.
-        let scenarios: [(&str, fn() -> Box<dyn Widget>); 5] = [
+        let scenarios: [ShotsScenario; 5] = [
             ("demo", crate::app_root_demo),
             ("empty", crate::app_root_empty),
             ("add", crate::app_root_add_screen),

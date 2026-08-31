@@ -174,6 +174,11 @@ impl WorkspaceDirectory {
     /// Load an existing directory from its full byte-serialisation.
     /// Consumes the full snapshot (see
     /// [`WorkspaceDirectory::save`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Automerge`] if `bytes` is not a valid
+    /// Automerge document.
     pub fn load(
         user_public_key: [u8; 32],
         device_public_key: [u8; 32],
@@ -235,6 +240,11 @@ impl WorkspaceDirectory {
     /// Idempotent: calling twice with the same `(id, name)` is a
     /// no-op after the first call. Calling with a different `name`
     /// renames the workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Automerge`] if the underlying
+    /// Automerge document operation fails.
     pub fn add_workspace(&mut self, id: WorkspaceId, name: &str) -> Result<(), DirectoryError> {
         let obj = self.ensure_workspace_obj(id)?;
         self.doc
@@ -256,6 +266,13 @@ impl WorkspaceDirectory {
 
     /// Remove a workspace from the directory. If the workspace does
     /// not exist, this is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Never actually returns an error today — deleting an absent key
+    /// is a no-op in Automerge, and this discards any underlying
+    /// error to preserve that. `Result` is kept for API symmetry with
+    /// the rest of `WorkspaceDirectory`.
     pub fn remove_workspace(&mut self, id: WorkspaceId) -> Result<(), DirectoryError> {
         let key = Self::workspace_key(id);
         // `AutoCommit::delete` returns `Ok(())` for both existing +
@@ -267,28 +284,43 @@ impl WorkspaceDirectory {
     /// Replace a workspace's member-device set. Passing an empty
     /// vec means "no device carries this workspace" — legal but
     /// unusual.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Automerge`] if the underlying
+    /// Automerge document operation fails.
     pub fn set_member_devices(
         &mut self,
         id: WorkspaceId,
-        devices: Vec<[u8; 32]>,
+        devices: &[[u8; 32]],
     ) -> Result<(), DirectoryError> {
         let obj = self.ensure_workspace_obj(id)?;
-        self.replace_pubkey_list(&obj, "members", &devices)
+        self.replace_pubkey_list(&obj, "members", devices)
     }
 
     /// Replace a workspace's host-device set. Multiple hosts are
     /// allowed and interpreted as redundant replicas that merge —
     /// see design §5.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Automerge`] if the underlying
+    /// Automerge document operation fails.
     pub fn set_host_devices(
         &mut self,
         id: WorkspaceId,
-        hosts: Vec<[u8; 32]>,
+        hosts: &[[u8; 32]],
     ) -> Result<(), DirectoryError> {
         let obj = self.ensure_workspace_obj(id)?;
-        self.replace_pubkey_list(&obj, "hosts", &hosts)
+        self.replace_pubkey_list(&obj, "hosts", hosts)
     }
 
     /// Add a single host to a workspace's host set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Automerge`] if the underlying
+    /// Automerge document operation fails.
     pub fn assign_host(&mut self, id: WorkspaceId, host: [u8; 32]) -> Result<(), DirectoryError> {
         let obj = self.ensure_workspace_obj(id)?;
         let mut hosts = self.read_pubkey_list(&obj, "hosts");
@@ -300,6 +332,11 @@ impl WorkspaceDirectory {
 
     /// Pin a workspace on the given device — mark it should hold a
     /// full offline replica.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Automerge`] if the underlying
+    /// Automerge document operation fails.
     pub fn pin(&mut self, id: WorkspaceId, device: [u8; 32]) -> Result<(), DirectoryError> {
         let obj = self.ensure_workspace_obj(id)?;
         let mut pinned = self.read_pubkey_list(&obj, "pinned");
@@ -311,6 +348,11 @@ impl WorkspaceDirectory {
 
     /// Unpin — the workspace goes back to on-demand hydration on
     /// that device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Automerge`] if the underlying
+    /// Automerge document operation fails.
     pub fn unpin(&mut self, id: WorkspaceId, device: [u8; 32]) -> Result<(), DirectoryError> {
         let obj = self.ensure_workspace_obj(id)?;
         let pinned: Vec<[u8; 32]> = self
@@ -332,9 +374,8 @@ impl WorkspaceDirectory {
             let Ok(id) = id_str.parse::<u64>() else {
                 continue;
             };
-            let obj = match self.doc.get(ROOT, &key) {
-                Ok(Some((Value::Object(ObjType::Map), id))) => id,
-                _ => continue,
+            let Ok(Some((Value::Object(ObjType::Map), obj))) = self.doc.get(ROOT, &key) else {
+                continue;
             };
             let name = match self.doc.get(&obj, "name") {
                 Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -356,9 +397,9 @@ impl WorkspaceDirectory {
     }
 
     fn read_pubkey_list(&self, workspace_obj: &ObjId, key: &str) -> Vec<[u8; 32]> {
-        let list_obj = match self.doc.get(workspace_obj, key) {
-            Ok(Some((Value::Object(ObjType::List), id))) => id,
-            _ => return Vec::new(),
+        let Ok(Some((Value::Object(ObjType::List), list_obj))) = self.doc.get(workspace_obj, key)
+        else {
+            return Vec::new();
         };
         let len = self.doc.length(&list_obj);
         let mut out = Vec::with_capacity(len);
@@ -410,6 +451,11 @@ impl WorkspaceDirectory {
     ///
     /// `now_ns` is stamped into the delta as `authored_at_ns` and
     /// is used by recipients' revocation-list checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Canonical`] if the update cannot be
+    /// canonically encoded for signing (effectively unreachable).
     pub fn sync_incremental(
         &mut self,
         device_signing_key: &ed25519_dalek::SigningKey,
@@ -438,6 +484,17 @@ impl WorkspaceDirectory {
     /// Returns `Ok(())` on merge; every check failure returns an
     /// explicit `DirectoryError` variant so the caller can log the
     /// exact rejection reason.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::WrongIdentity`] if `author_cert` is
+    /// for a different user or a different device than the update
+    /// claims, [`DirectoryError::Cert`] if the cert itself fails to
+    /// verify or has expired, [`DirectoryError::Revoked`] if the
+    /// author device was revoked at or before `update.authored_at_ns`,
+    /// [`DirectoryError::BadSignature`] if the delta's signature does
+    /// not verify, and [`DirectoryError::Automerge`] if merging the
+    /// delta into the local document fails.
     pub fn apply_incremental(
         &mut self,
         update: &DirectoryUpdate,
@@ -508,6 +565,16 @@ mod serde_bytes_64 {
 }
 
 #[cfg(test)]
+// `_sk`/`_pk` (signing key / public key) is this crate's established,
+// unambiguous naming convention for a device/user keypair — used in
+// nearly every test below. Renaming one half per pair to dodge the
+// lint would fight that convention and risks a copy-paste mixup of
+// which variable is the secret vs. the public half, in exactly the
+// code where that mistake matters most.
+#[allow(
+    clippy::similar_names,
+    reason = "the _sk/_pk keypair naming convention is deliberate and used throughout this crate's tests"
+)]
 mod tests {
     use super::*;
     use crate::cert::{DeviceCapabilities, DeviceCert, sign_device_cert};
@@ -583,7 +650,7 @@ mod tests {
 
         let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
         dir.add_workspace(9, "Notes").unwrap();
-        dir.set_member_devices(9, vec![a_pk, b_pk]).unwrap();
+        dir.set_member_devices(9, &[a_pk, b_pk]).unwrap();
         dir.assign_host(9, h_pk).unwrap();
         dir.pin(9, a_pk).unwrap();
         dir.pin(9, a_pk).unwrap(); // idempotent

@@ -59,7 +59,7 @@ impl Mount {
         collection: &Collection,
         store: S,
         mountpoint: &Path,
-        options: MountOptions,
+        options: &MountOptions,
     ) -> Result<Self, MountError> {
         let mountpoint = mountpoint.to_path_buf();
         let mut fs = if let Some(pages) = options.cache_pages {

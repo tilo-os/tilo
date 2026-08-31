@@ -24,6 +24,12 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+// The signature is fixed by `ui::launch::ShotFactory`: other apps' shot roots
+// genuinely can fail, so the alias is fallible even where this one isn't.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is dictated by ui::launch::ShotFactory, which other apps' fallible shot roots need"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let width = args.viewport.unwrap_or(ui::launch::DEFAULT_VIEWPORT).0;
     Ok(themes::app_root_for_shot(width))
@@ -34,5 +40,5 @@ pub fn main() {
         LaunchSpec::new("dev.qos.themes", themes::app_root)
             .shot_root(shot_root)
             .configure_app(|app| themes::actions::register(app.action_registry_mut())),
-    )
+    );
 }

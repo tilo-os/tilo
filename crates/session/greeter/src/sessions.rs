@@ -66,10 +66,14 @@ pub fn parse_desktop_entry(contents: &str) -> Option<Session> {
     }
 
     let name = name.unwrap_or_else(|| {
-        Path::new(&argv[0])
+        // `argv` was just checked non-empty above.
+        let Some(first) = argv.first() else {
+            return String::new();
+        };
+        Path::new(first)
             .file_name()
             .and_then(|s| s.to_str())
-            .unwrap_or(&argv[0])
+            .unwrap_or(first)
             .to_string()
     });
 

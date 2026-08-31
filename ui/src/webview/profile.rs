@@ -98,7 +98,9 @@ pub fn record_input(kind: &'static str) {
     if !enabled() {
         return;
     }
-    let mut s = state().lock().unwrap_or_else(|e| e.into_inner());
+    let mut s = state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if s.pending_input.is_none() {
         s.pending_input = Some((Instant::now(), kind));
     }
@@ -111,7 +113,9 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
         return;
     }
     let now = Instant::now();
-    let mut s = state().lock().unwrap_or_else(|e| e.into_inner());
+    let mut s = state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     s.started.get_or_insert(now);
 
     if let Some(prev) = s.last_frame {
@@ -157,7 +161,9 @@ pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
     }
     // Scoped so the mutex guard is dropped before the (I/O) eprintln! below.
     let n = {
-        let mut s = state().lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = state()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         s.draw_count = s.draw_count.saturating_add(1);
         s.draw_count
     };
@@ -271,7 +277,9 @@ pub fn print_final_summary() {
     }
     if let Some(m) = STATE.get() {
         eprintln!("[webview-profile] --- final ---");
-        m.lock().unwrap_or_else(|e| e.into_inner()).print_summary();
+        m.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .print_summary();
     }
 }
 
@@ -283,12 +291,22 @@ mod tests {
     fn ring_percentiles_are_ordered() {
         let mut r = Ring::new();
         for i in 0..100 {
-            r.push(i as f64);
+            r.push(f64::from(i));
         }
         let mut sorted: Vec<f64> = r.buf[..r.len].to_vec();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         // p50 of 0..100 sits mid-range, p95 near the top.
-        let pct = |p: f64| sorted[((sorted.len() as f64 * p) as usize).min(sorted.len() - 1)];
+        let pct = |p: f64| {
+            let len = u32::try_from(sorted.len()).unwrap_or(u32::MAX);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "p is a fixed non-negative percentile constant, so the \
+                          resulting index is always in range"
+            )]
+            let idx = (f64::from(len) * p) as usize;
+            sorted[idx.min(sorted.len() - 1)]
+        };
         assert!(pct(0.50) >= 45.0 && pct(0.50) <= 55.0);
         assert!(pct(0.95) >= 90.0);
     }
@@ -297,11 +315,12 @@ mod tests {
     fn ring_wraps_and_keeps_recent() {
         let mut r = Ring::new();
         for i in 0..(SAMPLES + 10) {
-            r.push(i as f64);
+            let value = u32::try_from(i).unwrap_or(u32::MAX);
+            r.push(f64::from(value));
         }
         assert_eq!(r.len, SAMPLES);
         // Oldest ten were overwritten; the minimum retained is >= 10.
-        let min = r.buf.iter().cloned().fold(f64::INFINITY, f64::min);
+        let min = r.buf.iter().copied().fold(f64::INFINITY, f64::min);
         assert!(min >= 10.0);
     }
 }

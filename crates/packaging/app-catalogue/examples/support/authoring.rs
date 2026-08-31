@@ -41,6 +41,38 @@ pub struct Authored {
     pub source: ManifestSource,
 }
 
+/// Failure authoring a `.qpkg` for the local test registry — every
+/// variant names the step that failed.
+#[derive(Debug, thiserror::Error)]
+pub enum AuthorError {
+    #[error("read the package manifest at {}: {detail}", path.display())]
+    ReadManifest { path: PathBuf, detail: String },
+    #[error("parse the package manifest at {}: {detail}", path.display())]
+    ParseManifest { path: PathBuf, detail: String },
+    #[error("the synthesised manifest failed to parse: {0}")]
+    SynthesisedManifest(String),
+    #[error("create a staging tempdir: {0}")]
+    TempDir(String),
+    #[error("the entrypoint {} has no parent directory", .0.display())]
+    EntrypointHasNoParent(PathBuf),
+    #[error("create the payload tree: {0}")]
+    CreatePayloadTree(String),
+    #[error("copy {} into the payload at {}: {detail}", from.display(), to.display())]
+    CopyPayload {
+        from: PathBuf,
+        to: PathBuf,
+        detail: String,
+    },
+    #[error("read metadata for {}: {detail}", path.display())]
+    ReadMetadata { path: PathBuf, detail: String },
+    #[error("set permissions on {}: {detail}", path.display())]
+    SetPermissions { path: PathBuf, detail: String },
+    #[error("pack the payload: {0}")]
+    Pack(String),
+    #[error("write qpkg bytes: {0}")]
+    WriteQpkg(String),
+}
+
 /// The `manifest.toml` belonging to `payload_bin`, if part of an installed package.
 ///
 /// `qos-install` unpacks as `<payload-root>/manifest.toml` beside
@@ -50,7 +82,7 @@ pub struct Authored {
 pub fn manifest_beside(payload_bin: &Path) -> Option<PathBuf> {
     let mut dir = payload_bin.parent();
     for _ in 0..3 {
-        let Some(d) = dir else { return None };
+        let d = dir?;
         let candidate = d.join("manifest.toml");
         if candidate.is_file() {
             return Some(candidate);
@@ -70,13 +102,19 @@ pub fn manifest_beside(payload_bin: &Path) -> Option<PathBuf> {
 /// publisher would fail `pack`'s own identity check. Third-party
 /// attestations are dropped too: a local test registry can't mint
 /// one, and an empty-signature row only warns at install.
+///
+/// # Errors
+///
+/// Returns an error if the manifest can't be read or parsed, the
+/// staging tempdir or payload tree can't be built, the payload can't
+/// be copied/chmod'd into it, or packing/serialising the `.qpkg` fails.
 pub fn author(
     package_id: &str,
     name: &str,
     payload_bin: &Path,
     manifest_path: Option<&Path>,
     identity: &SigningIdentity,
-) -> Authored {
+) -> Result<Authored, AuthorError> {
     let pubhex = hex::encode(identity.public_key_bytes());
     let found = manifest_path
         .map(Path::to_path_buf)
@@ -84,15 +122,20 @@ pub fn author(
 
     let (mut manifest, source) = match &found {
         Some(path) => {
-            let toml = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read the package manifest at {path:?}: {e}"));
-            let manifest = Manifest::from_toml_str(&toml)
-                .unwrap_or_else(|e| panic!("parse the package manifest at {path:?}: {e}"));
+            let toml = std::fs::read_to_string(path).map_err(|e| AuthorError::ReadManifest {
+                path: path.clone(),
+                detail: e.to_string(),
+            })?;
+            let manifest =
+                Manifest::from_toml_str(&toml).map_err(|e| AuthorError::ParseManifest {
+                    path: path.clone(),
+                    detail: e.to_string(),
+                })?;
             (manifest, ManifestSource::Package(path.clone()))
         }
         None => (
             Manifest::from_toml_str(&synthesised_toml(package_id, name, &pubhex))
-                .expect("the synthesised manifest parses"),
+                .map_err(|e| AuthorError::SynthesisedManifest(e.to_string()))?,
             ManifestSource::Synthesised,
         ),
     };
@@ -115,29 +158,45 @@ pub fn author(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| PathBuf::from("bin/app"));
 
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().map_err(|e| AuthorError::TempDir(e.to_string()))?;
     let payload = dir.path().join("payload");
     let dest = payload.join(&entry_rel);
-    std::fs::create_dir_all(dest.parent().expect("the entrypoint has a directory"))
-        .expect("create the payload tree");
-    std::fs::copy(payload_bin, &dest)
-        .unwrap_or_else(|e| panic!("copy {payload_bin:?} into the payload at {dest:?}: {e}"));
+    let dest_parent = dest
+        .parent()
+        .ok_or_else(|| AuthorError::EntrypointHasNoParent(entry_rel.clone()))?;
+    std::fs::create_dir_all(dest_parent)
+        .map_err(|e| AuthorError::CreatePayloadTree(e.to_string()))?;
+    std::fs::copy(payload_bin, &dest).map_err(|e| AuthorError::CopyPayload {
+        from: payload_bin.to_path_buf(),
+        to: dest.clone(),
+        detail: e.to_string(),
+    })?;
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&dest).unwrap().permissions();
+        let mut perms = std::fs::metadata(&dest)
+            .map_err(|e| AuthorError::ReadMetadata {
+                path: dest.clone(),
+                detail: e.to_string(),
+            })?
+            .permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&dest, perms).unwrap();
+        std::fs::set_permissions(&dest, perms).map_err(|e| AuthorError::SetPermissions {
+            path: dest.clone(),
+            detail: e.to_string(),
+        })?;
     }
 
     let version = manifest.package.version.clone();
     let mut store = MemoryBlobStore::new();
-    let id = pack(&payload, &manifest, identity, &mut store).expect("pack");
-    let qpkg = app_registry::qpkg::write_bytes(id, &store).expect("write qpkg bytes");
-    Authored {
+    let id = pack(&payload, &manifest, identity, &mut store)
+        .map_err(|e| AuthorError::Pack(e.to_string()))?;
+    let qpkg = app_registry::qpkg::write_bytes(id, &store)
+        .map_err(|e| AuthorError::WriteQpkg(e.to_string()))?;
+    Ok(Authored {
         qpkg,
         version,
         source,
-    }
+    })
 }
 
 /// The minimum that installs and starts, for a payload with no

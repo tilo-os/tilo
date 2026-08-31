@@ -142,6 +142,13 @@ impl RecoveryShare {
     /// cross-checking threshold/identifier/group-key against the live
     /// `ThresholdIdentity` being restored into (see
     /// [`crate::identity::ThresholdIdentity::adopt_recovery_share`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ThresholdError::BadRecoveryMnemonic`] if the mnemonic
+    /// fails to parse or does not decode to exactly 32 bytes of
+    /// entropy, or a FROST-internal error if the resulting scalar
+    /// does not form a valid key package.
     pub fn into_secret_share(self) -> Result<SecretShare, ThresholdError> {
         // Decode the mnemonic into 32 bytes of entropy. `parse_normalized`
         // (not `parse`) avoids the unicode-normalization feature flag — our

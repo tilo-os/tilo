@@ -82,7 +82,7 @@ fn main() -> ExitCode {
     // using it. `service_fd` returns None both when the env var is absent
     // and when it names something not open — the two shapes the handoff can fail in.
     if let Some(fd) = runtime_portal::service_fd("collab") {
-        println!("probe: collab service fd = {fd}")
+        println!("probe: collab service fd = {fd}");
     } else {
         eprintln!(
             "probe: FAIL no usable collab service fd. QOS_SVC_COLLAB_FD={:?}. \
@@ -118,6 +118,11 @@ fn main() -> ExitCode {
 
 /// Dial the broker over the launcher-supplied descriptor and join one
 /// channel; `channel` is the broker's routing key verbatim (room uuid, or `<room>#record:<id>`).
+#[allow(
+    clippy::future_not_send,
+    reason = "only ever driven inside the single-threaded `LocalSet` this binary sets up; \
+              never spawned across threads"
+)]
 async fn join(
     channel: &str,
 ) -> Result<runtime_collab::ChannelHandle, runtime_portal::NotAvailable> {
@@ -134,6 +139,11 @@ async fn join(
     Ok(handle)
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "only ever driven inside the single-threaded `LocalSet` this binary sets up; \
+              never spawned across threads"
+)]
 async fn write(channel: &str, text: &str) -> ExitCode {
     let Ok(handle) = join(channel).await else {
         return ExitCode::from(5);
@@ -158,6 +168,11 @@ async fn write(channel: &str, text: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "only ever driven inside the single-threaded `LocalSet` this binary sets up; \
+              never spawned across threads"
+)]
 async fn read(channel: &str, timeout_secs: u64) -> ExitCode {
     let Ok(handle) = join(channel).await else {
         return ExitCode::from(5);
@@ -188,7 +203,7 @@ async fn read(channel: &str, timeout_secs: u64) -> ExitCode {
                 Ok(Some((value, _))) => {
                     return Some(value.to_str().unwrap_or_default().to_string());
                 }
-                _ => continue,
+                _ => {}
             }
         }
     })

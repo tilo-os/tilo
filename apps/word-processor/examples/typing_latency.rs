@@ -147,14 +147,14 @@ fn type_and_time(paragraphs: usize, chars: usize) -> std::io::Result<(Vec<u64>, 
         driver.key(&ch.to_string());
         let wall = saturating_u64(t.elapsed().as_micros());
         let frames = driver.take_profile_samples();
-        assert_eq!(
-            frames.len(),
-            2,
-            "a keypress should produce exactly the press and release frames",
-        );
+        if frames.len() != 2 {
+            return Err(std::io::Error::other(
+                "a keypress should produce exactly the press and release frames",
+            ));
+        }
         let events: u64 = frames.iter().map(|f| f.handle_event_us).sum();
-        // `assert_eq!` above guarantees a first frame; the fallback is never
-        // taken but keeps this free of a panicking index.
+        // The length check above guarantees a first frame; the fallback is
+        // never taken but keeps this free of a panicking index.
         let first = frames.first().copied().unwrap_or_default();
         let paint = first
             .sync_us
@@ -187,11 +187,12 @@ fn type_and_time(paragraphs: usize, chars: usize) -> std::io::Result<(Vec<u64>, 
         .saturating_mul(PARAGRAPH.chars().count())
         .saturating_add("warmup".len())
         .saturating_add(chars);
-    assert!(
-        total >= expected,
-        "only {total} characters are in the document, expected at least \
-         {expected}: the harness typed into something that did not keep the text",
-    );
+    if total < expected {
+        return Err(std::io::Error::other(format!(
+            "only {total} characters are in the document, expected at least \
+             {expected}: the harness typed into something that did not keep the text",
+        )));
+    }
 
     let n = u64::try_from(per_char.len()).unwrap_or(u64::MAX).max(1);
     let div = |x: u64| x.checked_div(n).unwrap_or(0);

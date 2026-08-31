@@ -76,12 +76,14 @@ pub fn find(data_home: &Path, package_id: &str) -> Vec<RoomState> {
 /// cannot be removed must not leave the *package* half-uninstalled, and
 /// the caller can report both outcomes.
 pub fn remove(states: &[RoomState]) -> (usize, Vec<(PathBuf, std::io::Error)>) {
-    let mut removed = 0;
+    let mut removed: usize = 0;
     let mut failures = Vec::new();
     for state in states {
         match std::fs::remove_dir_all(&state.path) {
-            Ok(()) => removed += 1,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => removed += 1,
+            Ok(()) => removed = removed.saturating_add(1),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                removed = removed.saturating_add(1)
+            }
             Err(e) => failures.push((state.path.clone(), e)),
         }
     }
@@ -94,6 +96,12 @@ pub fn total_bytes(states: &[RoomState]) -> u64 {
 }
 
 /// `1.4 MB`, for a prompt a person reads.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "display only, rounded to one decimal place; precision beyond f64's 52-bit \
+              mantissa is unobservable at that rounding and would only matter for byte counts \
+              in the exabyte range"
+)]
 pub fn human_bytes(bytes: u64) -> String {
     const UNITS: [(&str, u64); 4] = [
         ("GB", 1_000_000_000),
@@ -144,8 +152,8 @@ fn fnv1a(raw: &str) -> String {
 }
 
 fn measure(dir: &Path) -> (u64, usize) {
-    let mut bytes = 0;
-    let mut files = 0;
+    let mut bytes: u64 = 0;
+    let mut files: usize = 0;
     let Ok(entries) = std::fs::read_dir(dir) else {
         return (bytes, files);
     };
@@ -159,11 +167,11 @@ fn measure(dir: &Path) -> (u64, usize) {
         };
         if meta.is_dir() {
             let (b, f) = measure(&path);
-            bytes += b;
-            files += f;
+            bytes = bytes.saturating_add(b);
+            files = files.saturating_add(f);
         } else {
-            bytes += meta.len();
-            files += 1;
+            bytes = bytes.saturating_add(meta.len());
+            files = files.saturating_add(1);
         }
     }
     (bytes, files)

@@ -29,6 +29,21 @@ pub struct H264Decoder {
 }
 
 impl H264Decoder {
+    /// # Panics
+    ///
+    /// Panics if the bundled openh264 backend fails to initialise. This is
+    /// not reachable in practice with the vendored library, but the
+    /// underlying `with_api_config` call is fallible; production code
+    /// (the chat app's per-peer `remote_decoders`/`remote_screen_rx` maps)
+    /// relies on [`H264Decoder`]/[`crate::session::VideoStreamReceiver`]
+    /// staying [`Default`]-constructible via `HashMap::entry().or_default()`,
+    /// so this stays infallible rather than returning `Result`.
+    #[allow(
+        clippy::expect_used,
+        reason = "construction from the bundled openh264 library never fails in practice; \
+                  keeping this infallible is required for the Default-based \
+                  entry().or_default() pattern production code depends on"
+    )]
     pub fn new() -> Self {
         let inner =
             Decoder::with_api_config(openh264::OpenH264API::from_source(), DecoderConfig::new())
@@ -48,14 +63,16 @@ impl H264Decoder {
         }
         let yuv = self.inner.decode(nalus).ok().flatten()?;
         let (width, height) = yuv.dimensions();
-        let needed = width * height * 4;
+        // `width`/`height` come from the peer's SPS via openh264 — remote
+        // input. Saturate rather than panic on an implausible dimension.
+        let needed = width.saturating_mul(height).saturating_mul(4);
         if self.rgba_scratch.len() != needed {
             self.rgba_scratch.resize(needed, 0);
         }
         yuv.write_rgba8(&mut self.rgba_scratch);
         Some(DecodedFrame {
-            width: width as u32,
-            height: height as u32,
+            width: u32::try_from(width).unwrap_or(u32::MAX),
+            height: u32::try_from(height).unwrap_or(u32::MAX),
             rgba: self.rgba_scratch.clone(),
         })
     }
@@ -85,8 +102,8 @@ mod tests {
         let mut rgba = Vec::with_capacity((W * H * 4) as usize);
         for y in 0..H {
             for x in 0..W {
-                rgba.push(((x * 255) / W) as u8);
-                rgba.push(((y * 255) / H) as u8);
+                rgba.push(u8::try_from((x * 255) / W).unwrap_or(u8::MAX));
+                rgba.push(u8::try_from((y * 255) / H).unwrap_or(u8::MAX));
                 rgba.push(0x40);
                 rgba.push(0xFF);
             }

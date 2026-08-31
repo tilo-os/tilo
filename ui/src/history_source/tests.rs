@@ -22,7 +22,10 @@ const T0: i64 = 1_780_000_000; // 2026-06-08T…, comfortably in the qOS era.
 const HOUR: i64 = 3_600;
 
 fn at(secs: i64) -> SystemTime {
-    UNIX_EPOCH + Duration::from_secs(secs as u64)
+    let secs = u64::try_from(secs).unwrap_or(0);
+    UNIX_EPOCH
+        .checked_add(Duration::from_secs(secs))
+        .unwrap_or(UNIX_EPOCH)
 }
 
 /// A document carrying the qdoc schema, authored by `handle`.
@@ -455,7 +458,7 @@ fn state_commit_action_stamps_the_change() {
         .duration_since(entries[0].timestamp)
         .expect("timestamp is in the past, not 1970-adjacent nonsense");
     assert!(
-        age < Duration::from_secs(600),
+        age < Duration::from_mins(10),
         "a just-committed action must be stamped with now, got {age:?} ago"
     );
 }
@@ -513,7 +516,8 @@ fn the_entry_cap_keeps_the_most_recent_versions() {
             };
             dm.splice_text(&p, i, 0, "x");
         }
-        qdoc::history::commit_stamped_at(&mut doc, T0 + (i as i64 + 1) * HOUR);
+        let i = i64::try_from(i).unwrap_or(i64::MAX);
+        qdoc::history::commit_stamped_at(&mut doc, T0 + (i + 1) * HOUR);
     }
     let all = source().entries(&mut doc);
     let capped = source().with_max_entries(3).entries(&mut doc);

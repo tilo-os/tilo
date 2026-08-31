@@ -1166,7 +1166,7 @@ impl AudioPane {
 
     /// Apply the balance slider and mono toggle from the CRDT, persisting the
     /// preference (never touching the compositor's live session transform).
-    fn apply_balance_and_mono(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn apply_balance_and_mono(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(value) = read_f64(state, root, BALANCE_KEY).map(|v| v as f32)
             && (value - self.balance).abs() > 0.001
         {

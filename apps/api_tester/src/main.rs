@@ -24,6 +24,14 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+// `ShotFactory` (in `ui::launch`) is `fn(&LaunchArgs) -> Result<Box<dyn
+// Widget>, LaunchError>` — a fixed callback type shared by every app's
+// `--shots` entry point, so this can't drop the `Result` even though this
+// particular app never fails to build its shot root.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "must match ui::launch's ShotFactory = fn(&LaunchArgs) -> Result<..>"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let mut app = api_tester::ApiTesterApp::new_demo();
     if args.has("--rail-open") {
@@ -38,5 +46,5 @@ pub fn main() {
             .shot_root(shot_root)
             .allowed_flags(&["--rail-open"])
             .configure_app(|app| api_tester::actions::register(app.action_registry_mut())),
-    )
+    );
 }

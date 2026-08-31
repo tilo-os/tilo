@@ -568,7 +568,7 @@ impl PowerPane {
         }
     }
 
-    fn handle_charge_limit(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn handle_charge_limit(&mut self, state: &AutoCommit, root: &ObjId) {
         let Some(label) = read_str(state, root, CHARGE_LIMIT_KEY) else {
             return;
         };
@@ -597,7 +597,7 @@ impl PowerPane {
 
     /// Auto-suspend, screen-blank and the three per-profile idle-suspend
     /// timeouts → persisted on change.
-    fn handle_idle_prefs(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn handle_idle_prefs(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(b) = read_bool(state, root, AUTO_SUSPEND_KEY)
             && b != self.last_prefs.auto_suspend
         {
@@ -665,7 +665,7 @@ impl PowerPane {
 
     /// Lid-close, power-key and critical-battery actions → persisted on
     /// change.
-    fn handle_action_prefs(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn handle_action_prefs(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(label) = read_str(state, root, LID_KEY)
             && let Some(a) = PowerActionPref::from_display(&label)
             && a != self.last_prefs.lid_close_action

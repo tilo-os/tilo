@@ -135,7 +135,7 @@ fn stacked_dispatch_converges(n: usize, iterations: usize) {
             let action = if i % 2 == 0 {
                 Counter::Put {
                     key: format!("k{i}"),
-                    value: i as i64,
+                    value: i64::try_from(i).unwrap_or(i64::MAX),
                 }
             } else {
                 Counter::Append {
@@ -156,7 +156,11 @@ fn stacked_dispatch_converges(n: usize, iterations: usize) {
                 .unwrap()
                 .unwrap_or_else(|| panic!("iter {iter}: key k{i} missing after stack"))
                 .0;
-            assert_eq!(got.to_i64(), Some(i as i64), "iter {iter}: k{i} value");
+            assert_eq!(
+                got.to_i64(),
+                Some(i64::try_from(i).unwrap_or(i64::MAX)),
+                "iter {iter}: k{i} value"
+            );
         }
         let appended = (0..n).filter(|i| i % 2 == 1).count();
         if appended > 0 {

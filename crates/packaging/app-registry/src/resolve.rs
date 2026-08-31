@@ -45,12 +45,18 @@ pub struct FetchOutcome {
 }
 
 /// Fetch the raw index document bytes for a registry.
+///
+/// # Errors
+///
+/// Returns an error if a `file://` registry's `index.json` can't be
+/// read, an `https://`/`http://` GET fails or returns non-success, or
+/// `base_url` uses an unsupported scheme.
 pub async fn fetch_index_bytes(registry: &RegistryRef) -> Result<Vec<u8>> {
     if let Some(path) = registry.file_path() {
         let p = path.join("index.json");
         return tokio::fs::read(&p)
             .await
-            .with_context(|| format!("read {p:?}"));
+            .with_context(|| format!("read {}", p.display()));
     }
     if registry.base_url.starts_with("https://") || registry.base_url.starts_with("http://") {
         let url = format!("{}/index.json", registry.base_url.trim_end_matches('/'));
@@ -70,6 +76,12 @@ pub async fn fetch_index_bytes(registry: &RegistryRef) -> Result<Vec<u8>> {
 /// Resolve `app_id` (optionally constrained by `req`) to verified
 /// bytes across all configured registries. Binds one client endpoint
 /// for the whole sweep.
+///
+/// # Errors
+///
+/// Returns an error if a trusted registry's entry fails to download
+/// or verify (fail-closed), or if no configured registry offers
+/// `app_id` for `host`.
 pub async fn fetch_qpkg(
     config: &RegistriesConfig,
     app_id: &str,
@@ -80,7 +92,7 @@ pub async fn fetch_qpkg(
     for registry in &config.registries {
         match try_registry(&client, registry, app_id, req, host).await {
             Ok(Some(outcome)) => return Ok(outcome),
-            Ok(None) => continue,
+            Ok(None) => {}
             // A crypto/hash failure on real bytes is fatal — fail closed.
             Err(e) => return Err(e),
         }
@@ -163,6 +175,11 @@ async fn try_registry(
 /// Convenience: load the registries config (global + optional
 /// workspace), detect the host, and fetch. `version` is an optional
 /// semver requirement string (`"^1.2"`, `"=0.3.0"`, …).
+///
+/// # Errors
+///
+/// Returns an error if the config fails to load, `version` isn't a
+/// valid semver requirement, or [`fetch_qpkg`] fails.
 pub async fn resolve_and_fetch(
     workspace_root: Option<&std::path::Path>,
     host: &HostProfile,

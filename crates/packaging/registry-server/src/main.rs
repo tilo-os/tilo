@@ -136,99 +136,137 @@ async fn main() -> anyhow::Result<()> {
             port,
             bind,
             identity: _,
-        } => {
-            let ident: ServerIdentity = storage
-                .load_identity()
-                .map_err(|e| anyhow::anyhow!("load identity: {e}"))?;
-            if ident.owner_pubkey_hex.is_empty() {
-                anyhow::bail!(
-                    "no handshake.toml at {} — run `qos-registry-server init …` first",
-                    storage.handshake_path().display()
-                );
-            }
-            let allow = storage
-                .load_allowlist()
-                .map_err(|e| anyhow::anyhow!("load allowlist: {e}"))?;
-            info!(
-                "loaded {} publisher(s) from {}",
-                allow.publishers.len(),
-                storage.publishers_path().display()
-            );
-            let state = AppState::new(storage, ident, allow);
-            let addr = SocketAddr::new(bind, port);
-            run_server(addr, state).await?;
-        }
+        } => cmd_serve(storage, bind, port).await,
         Cmd::Init {
             owner_pubkey,
             name,
             description,
             base_url,
             overwrite,
-        } => {
-            if storage.handshake_path().exists() && !overwrite {
-                anyhow::bail!(
-                    "{} already exists — pass --overwrite to replace",
-                    storage.handshake_path().display()
-                );
-            }
-            let ident = ServerIdentity {
-                owner_pubkey_hex: owner_pubkey,
-                name,
-                description,
-                base_url,
-            };
-            storage
-                .save_identity(&ident)
-                .map_err(|e| anyhow::anyhow!("save identity: {e}"))?;
-            info!(
-                "wrote handshake to {} — start the server with `qos-registry-server serve`",
-                storage.handshake_path().display()
-            );
-        }
+        } => cmd_init(
+            &storage,
+            owner_pubkey,
+            name,
+            description,
+            base_url,
+            overwrite,
+        ),
         Cmd::AddPublisher {
             pubkey,
             can_add_new,
             note,
-        } => {
-            let mut allow: PublisherAllowlist = storage
-                .load_allowlist()
-                .map_err(|e| anyhow::anyhow!("load allowlist: {e}"))?;
-            let replaced = allow.upsert(PublisherRow {
-                pubkey_hex: pubkey.clone(),
-                can_add_new,
-                note,
-            });
-            storage
-                .save_allowlist(&allow)
-                .map_err(|e| anyhow::anyhow!("save allowlist: {e}"))?;
-            if replaced {
-                info!("replaced publisher {pubkey}");
-            } else {
-                info!("added publisher {pubkey}");
-            }
-        }
-        Cmd::RemovePublisher { pubkey } => {
-            let mut allow: PublisherAllowlist = storage
-                .load_allowlist()
-                .map_err(|e| anyhow::anyhow!("load allowlist: {e}"))?;
-            if allow.remove(&pubkey) {
-                storage
-                    .save_allowlist(&allow)
-                    .map_err(|e| anyhow::anyhow!("save allowlist: {e}"))?;
-                info!("removed publisher {pubkey}");
-            } else {
-                anyhow::bail!("no publisher with pubkey {pubkey}");
-            }
-        }
-        Cmd::ListPublishers => {
-            let allow: PublisherAllowlist = storage
-                .load_allowlist()
-                .map_err(|e| anyhow::anyhow!("load allowlist: {e}"))?;
-            let s = allow
-                .to_toml()
-                .map_err(|e| anyhow::anyhow!("encode allowlist: {e}"))?;
-            print!("{s}");
-        }
+        } => cmd_add_publisher(&storage, pubkey, can_add_new, note),
+        Cmd::RemovePublisher { pubkey } => cmd_remove_publisher(&storage, &pubkey),
+        Cmd::ListPublishers => cmd_list_publishers(&storage),
     }
+}
+
+/// `Cmd::Serve` — load the identity + allowlist and serve until ctrl-c.
+async fn cmd_serve(storage: Storage, bind: IpAddr, port: u16) -> anyhow::Result<()> {
+    let ident: ServerIdentity = storage
+        .load_identity()
+        .map_err(|e| anyhow::anyhow!("load identity: {e}"))?;
+    if ident.owner_pubkey_hex.is_empty() {
+        anyhow::bail!(
+            "no handshake.toml at {} — run `qos-registry-server init …` first",
+            storage.handshake_path().display()
+        );
+    }
+    let allow = storage
+        .load_allowlist()
+        .map_err(|e| anyhow::anyhow!("load allowlist: {e}"))?;
+    info!(
+        "loaded {} publisher(s) from {}",
+        allow.publishers.len(),
+        storage.publishers_path().display()
+    );
+    let state = AppState::new(storage, ident, allow);
+    let addr = SocketAddr::new(bind, port);
+    run_server(addr, state).await?;
+    Ok(())
+}
+
+/// `Cmd::Init` — bootstrap a fresh `handshake.toml`.
+fn cmd_init(
+    storage: &Storage,
+    owner_pubkey: String,
+    name: String,
+    description: String,
+    base_url: String,
+    overwrite: bool,
+) -> anyhow::Result<()> {
+    if storage.handshake_path().exists() && !overwrite {
+        anyhow::bail!(
+            "{} already exists — pass --overwrite to replace",
+            storage.handshake_path().display()
+        );
+    }
+    let ident = ServerIdentity {
+        owner_pubkey_hex: owner_pubkey,
+        name,
+        description,
+        base_url,
+    };
+    storage
+        .save_identity(&ident)
+        .map_err(|e| anyhow::anyhow!("save identity: {e}"))?;
+    info!(
+        "wrote handshake to {} — start the server with `qos-registry-server serve`",
+        storage.handshake_path().display()
+    );
+    Ok(())
+}
+
+/// `Cmd::AddPublisher` — add or replace one allowlist row.
+fn cmd_add_publisher(
+    storage: &Storage,
+    pubkey: String,
+    can_add_new: bool,
+    note: String,
+) -> anyhow::Result<()> {
+    let mut allow: PublisherAllowlist = storage
+        .load_allowlist()
+        .map_err(|e| anyhow::anyhow!("load allowlist: {e}"))?;
+    let replaced = allow.upsert(PublisherRow {
+        pubkey_hex: pubkey.clone(),
+        can_add_new,
+        note,
+    });
+    storage
+        .save_allowlist(&allow)
+        .map_err(|e| anyhow::anyhow!("save allowlist: {e}"))?;
+    if replaced {
+        info!("replaced publisher {pubkey}");
+    } else {
+        info!("added publisher {pubkey}");
+    }
+    Ok(())
+}
+
+/// `Cmd::RemovePublisher` — drop one allowlist row.
+fn cmd_remove_publisher(storage: &Storage, pubkey: &str) -> anyhow::Result<()> {
+    let mut allow: PublisherAllowlist = storage
+        .load_allowlist()
+        .map_err(|e| anyhow::anyhow!("load allowlist: {e}"))?;
+    if allow.remove(pubkey) {
+        storage
+            .save_allowlist(&allow)
+            .map_err(|e| anyhow::anyhow!("save allowlist: {e}"))?;
+        info!("removed publisher {pubkey}");
+        Ok(())
+    } else {
+        anyhow::bail!("no publisher with pubkey {pubkey}");
+    }
+}
+
+/// `Cmd::ListPublishers` — print `publishers.toml` to stdout.
+fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {
+    let allow: PublisherAllowlist = storage
+        .load_allowlist()
+        .map_err(|e| anyhow::anyhow!("load allowlist: {e}"))?;
+    let s = allow
+        .to_toml()
+        .map_err(|e| anyhow::anyhow!("encode allowlist: {e}"))?;
+    print!("{s}");
     Ok(())
 }

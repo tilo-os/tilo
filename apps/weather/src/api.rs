@@ -10,6 +10,8 @@
 //!   * Forecast:  <https://api.open-meteo.com/v1/forecast>
 //!   * Geocoding: <https://geocoding-api.open-meteo.com/v1/search>
 
+use std::fmt::Write as _;
+
 use serde::Deserialize;
 
 use crate::model::{
@@ -66,7 +68,10 @@ fn url_encode(s: &str) -> String {
                 out.push(b as char);
             }
             b' ' => out.push_str("%20"),
-            other => out.push_str(&format!("%{other:02X}")),
+            // `String`'s `Write` impl never fails, so the result is inert.
+            other => {
+                let _ = write!(out, "%{other:02X}");
+            }
         }
     }
     out
@@ -126,6 +131,10 @@ struct DailyRaw {
 
 /// Parse a forecast JSON body into a [`WeatherSnapshot`]. The hourly strip
 /// is sliced to the 24 hours starting at the current observation time.
+///
+/// # Errors
+/// Returns an error message if `body` doesn't decode as the expected
+/// Open-Meteo forecast JSON shape.
 pub fn parse_forecast(
     body: &str,
     location_id: LocationId,
@@ -166,7 +175,7 @@ pub fn parse_forecast(
     let mut hourly = Vec::new();
     for i in start..raw.hourly.time.len().min(start + 24) {
         hourly.push(HourPoint {
-            time: raw.hourly.time[i].clone(),
+            time: raw.hourly.time.get(i).cloned().unwrap_or_default(),
             temperature: *raw.hourly.temperature_2m.get(i).unwrap_or(&0.0),
             precip_probability: raw
                 .hourly
@@ -182,7 +191,7 @@ pub fn parse_forecast(
     let mut daily = Vec::new();
     for i in 0..raw.daily.time.len() {
         daily.push(DayForecast {
-            date: raw.daily.time[i].clone(),
+            date: raw.daily.time.get(i).cloned().unwrap_or_default(),
             temp_max: *raw.daily.temperature_2m_max.get(i).unwrap_or(&0.0),
             temp_min: *raw.daily.temperature_2m_min.get(i).unwrap_or(&0.0),
             precip_probability: raw
@@ -243,6 +252,10 @@ struct AirQualityCurrentRaw {
 
 /// Parse an air-quality JSON body into an [`AirQuality`] reading. Missing
 /// fields decode to `None` (honest "unavailable"), never a fabricated zero.
+///
+/// # Errors
+/// Returns an error message if `body` doesn't decode as the expected
+/// Open-Meteo air-quality JSON shape.
 pub fn parse_air_quality(
     body: &str,
     location_id: LocationId,
@@ -301,6 +314,10 @@ struct GeocodeResult {
 }
 
 /// Parse a geocoding JSON body into a list of candidate locations.
+///
+/// # Errors
+/// Returns an error message if `body` doesn't decode as the expected
+/// Open-Meteo geocoding JSON shape.
 pub fn parse_geocode(body: &str) -> Result<Vec<SavedLocation>, String> {
     let raw: GeocodeResponse =
         serde_json::from_str(body).map_err(|e| format!("geocode decode: {e}"))?;
@@ -354,7 +371,7 @@ mod tests {
         for h in 0..26 {
             times.push(format!("2026-06-30T{h:02}:00"));
         }
-        let temps: Vec<f64> = (0..26).map(|h| f64::from(h)).collect();
+        let temps: Vec<f64> = (0..26).map(f64::from).collect();
         let codes: Vec<i64> = vec![0; 26];
         let isday: Vec<i64> = vec![1; 26];
         let body = serde_json::json!({

@@ -104,7 +104,19 @@ mod tests {
     fn fill_lands_at_physical_coordinates_at_fractional_scales() {
         for scale in [1.25f64, 1.5, 1.75] {
             let (lw, lh) = (100.0f64, 60.0f64);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "lw/lh are small positive test dimensions and scale is a positive \
+                          test factor, so the physical length stays well within u32 range"
+            )]
             let pw = physical_len(lw, scale).round() as u32;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "lw/lh are small positive test dimensions and scale is a positive \
+                          test factor, so the physical length stays well within u32 range"
+            )]
             let ph = physical_len(lh, scale).round() as u32;
 
             let mut scene = Scene::new();
@@ -121,6 +133,12 @@ mod tests {
             let buf = r.render(&scene, Color::BLACK);
 
             let (cx, cy) = physical_point((40.0, 30.0), scale);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "cx/cy are physical_point() of positive logical coordinates at a \
+                          positive scale, so they are always non-negative"
+            )]
             let (cr, _, _, _) = OffscreenRenderer::sample(&buf, pw, cx as u32, cy as u32);
             assert!(
                 cr > 200,
@@ -128,6 +146,12 @@ mod tests {
             );
 
             let (ox, oy) = physical_point((6.0, 6.0), scale);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "ox/oy are physical_point() of positive logical coordinates at a \
+                          positive scale, so they are always non-negative"
+            )]
             let (obr, _, _, _) = OffscreenRenderer::sample(&buf, pw, ox as u32, oy as u32);
             assert!(
                 obr < 60,
@@ -148,9 +172,9 @@ mod tests {
                 (lw, lh),
                 "measure is scale-free (logical) at {scale}"
             );
-            let pw = physical_len(lw as f64, scale);
+            let pw = physical_len(f64::from(lw), scale);
             assert!(
-                (pw - lw as f64 * scale).abs() < 1e-6,
+                (pw - f64::from(lw) * scale).abs() < 1e-6,
                 "physical width = logical × {scale}"
             );
         }
@@ -158,14 +182,14 @@ mod tests {
 
     /// Models the "blurry 2× upscale" a non-scale-aware pipeline would produce.
     fn nearest_upscale(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
-        let mut out = vec![0u8; (dw * dh * 4) as usize];
+        let mut out = vec![0u8; dw.saturating_mul(dh).saturating_mul(4) as usize];
         for y in 0..dh {
-            let sy = (y * sh / dh).min(sh - 1);
+            let sy = (y.saturating_mul(sh) / dh).min(sh.saturating_sub(1));
             for x in 0..dw {
-                let sx = (x * sw / dw).min(sw - 1);
-                let si = ((sy * sw + sx) * 4) as usize;
-                let di = ((y * dw + x) * 4) as usize;
-                out[di..di + 4].copy_from_slice(&src[si..si + 4]);
+                let sx = (x.saturating_mul(sw) / dw).min(sw.saturating_sub(1));
+                let si = sy.saturating_mul(sw).saturating_add(sx).saturating_mul(4) as usize;
+                let di = y.saturating_mul(dw).saturating_add(x).saturating_mul(4) as usize;
+                out[di..di.saturating_add(4)].copy_from_slice(&src[si..si.saturating_add(4)]);
             }
         }
         out
@@ -175,8 +199,8 @@ mod tests {
     /// anti-aliased edge gradations a raster carries.
     fn distinct_luma_levels(buf: &[u8], w: u32, h: u32) -> usize {
         let mut seen = [false; 256];
-        for i in 0..(w * h) as usize {
-            seen[buf[i * 4] as usize] = true;
+        for i in 0..w.saturating_mul(h) as usize {
+            seen[buf[i.saturating_mul(4)] as usize] = true;
         }
         seen.iter().filter(|&&b| b).count()
     }
@@ -190,8 +214,20 @@ mod tests {
         let mut tr = TextRenderer::new();
 
         let draw = |scale: f64, tr: &mut TextRenderer| -> (Vec<u8>, u32, u32) {
-            let pw = (lw as f64 * scale).round() as u32;
-            let ph = (lh as f64 * scale).round() as u32;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "lw/lh are small positive test dimensions and scale is a positive \
+                          test factor, so the physical size stays well within u32 range"
+            )]
+            let pw = (f64::from(lw) * scale).round() as u32;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "lw/lh are small positive test dimensions and scale is a positive \
+                          test factor, so the physical size stays well within u32 range"
+            )]
+            let ph = (f64::from(lh) * scale).round() as u32;
             let mut scene = Scene::new();
             tr.draw_text(
                 &mut scene,
