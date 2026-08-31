@@ -106,6 +106,8 @@
     reason = "Deferred, only apply in some feature sets so not expect"
 )]
 
+#[cfg(feature = "wgpu")]
+mod bump_budget;
 mod debug;
 mod recording;
 mod render;
@@ -320,18 +322,14 @@ pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 /// This is an assumption which is known to be limiting, and is planned to change.
 #[cfg(feature = "wgpu")]
 pub struct Renderer {
-    #[cfg_attr(
-        not(feature = "hot_reload"),
-        expect(
-            dead_code,
-            reason = "Options are only used to reinitialise on a hot reload"
-        )
-    )]
     options: RendererOptions,
     engine: WgpuEngine,
     resolver: Resolver,
     image_atlas: Option<recording::ImageProxy>,
     shaders: FullShaders,
+    /// How much bump-allocated scratch to reserve, and the per-frame
+    /// readback that decides it. See [`crate::bump_budget`].
+    budget: bump_budget::BudgetTracker,
     #[cfg(feature = "debug_layers")]
     debug: debug::DebugRenderer,
     #[cfg(feature = "wgpu-profiler")]
@@ -448,6 +446,7 @@ impl Renderer {
             resolver: Resolver::new(),
             image_atlas: None,
             shaders,
+            budget: bump_budget::BudgetTracker::new(),
             #[cfg(feature = "debug_layers")]
             debug,
             #[cfg(feature = "wgpu-profiler")]
@@ -479,12 +478,28 @@ impl Renderer {
         texture: &TextureView,
         params: &RenderParams,
     ) -> Result<()> {
-        let (recording, target) = render::render_full(
+        // Collect the previous frame's bump counters before choosing
+        // this frame's reservation, so a scene that has grown is covered
+        // by the frame after the one that grew it. When the reservation
+        // changes, the pooled buffers at the old sizes are dropped
+        // rather than kept for a size nothing will ask for again.
+        self.budget.set_viewport(params.width, params.height);
+        if self.budget.collect(device, &mut self.engine) {
+            self.engine.clear_pool();
+        }
+        // Downloads inside a recording are not supported by the CPU-dispatch
+        // engine. The CPU path still uses the GPU for the fine pass, but its
+        // coarse buffers are host allocations and do not need GPU-side bump
+        // measurement.
+        let measure = !self.options.use_cpu && self.budget.wants_readback();
+        let (recording, target, bump_buf) = render::render_full(
             scene,
             &mut self.resolver,
             &self.shaders,
             &mut self.image_atlas,
             params,
+            self.budget.budget(),
+            measure,
         );
         let external_resources = [ExternalResource::Image(
             *target.as_image().unwrap(),
@@ -499,6 +514,9 @@ impl Renderer {
             #[cfg(feature = "wgpu-profiler")]
             &mut self.profiler,
         )?;
+        if let Some(bump_buf) = bump_buf {
+            self.budget.begin_readback(&self.engine, bump_buf);
+        }
         // N.B. This is horrible; this integration of wgpu-profiler really needs some work...
         #[cfg(feature = "wgpu-profiler")]
         {
@@ -724,17 +742,22 @@ impl Renderer {
     ) -> Result<RenderResult> {
         let mut render = Render::new();
         let encoding = scene.encoding();
-        // TODO: turn this on; the download feature interacts with CPU dispatch.
-        // Currently this is always enabled when the `debug_layers` setting is enabled as the bump
-        // counts are used for debug visualiation.
-        let robust = cfg!(feature = "debug_layers");
+        self.budget.set_viewport(params.width, params.height);
+        let capture_debug = cfg!(feature = "debug_layers");
+        // Debug layers require these counters. Otherwise only the adaptive
+        // GPU path pays for the awaited readback; pinned and CPU-dispatch
+        // rendering do not need it for sizing.
+        let measure_bump =
+            capture_debug || (!self.options.use_cpu && self.budget.wants_measurement());
         let recording = render.render_encoding_coarse(
             encoding,
             &mut self.resolver,
             &self.shaders,
             &mut self.image_atlas,
             params,
-            robust,
+            self.budget.budget(),
+            measure_bump,
+            capture_debug,
         );
         let target = render.out_image();
         let bump_buf = render.bump_buf();
@@ -759,8 +782,14 @@ impl Renderer {
             let mapped = buf_slice.get_mapped_range();
             bump = Some(bytemuck::pod_read_unaligned(&mapped));
         }
-        // TODO: apply logic to determine whether we need to rerun coarse, and also
-        // allocate the blend stack as needed.
+        // Size later frames from this one. Re-running coarse for the current
+        // frame is not attempted; a failure can therefore affect this output,
+        // and convergence can require more than one subsequent render.
+        if let Some(bump) = bump.as_ref()
+            && self.budget.observe_now(bump)
+        {
+            self.engine.clear_pool();
+        }
         self.engine.free_download(bump_buf);
         // Maybe clear to reuse allocation?
         let mut recording = Recording::default();

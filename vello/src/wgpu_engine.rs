@@ -779,6 +779,19 @@ impl WgpuEngine {
         self.downloads.get(&buf.id)
     }
 
+    /// Drop every buffer the pool is holding for reuse.
+    ///
+    /// The pool keeps a free list per size class and never gives one up,
+    /// which is right while the sizes asked for stay the same. When the
+    /// bump reservation changes ([`crate::bump_budget`]) the old classes
+    /// stop being asked for, and without this they would be kept for the
+    /// life of the process — the memory this whole exercise is about.
+    /// Buffers in use are not in the pool, so this cannot pull one out
+    /// from under a frame in flight.
+    pub fn clear_pool(&mut self) {
+        self.pool.bufs.clear();
+    }
+
     pub fn free_download(&mut self, buf: BufferProxy) {
         self.downloads.remove(&buf.id);
     }
