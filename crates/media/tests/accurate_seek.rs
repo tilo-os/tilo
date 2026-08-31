@@ -16,7 +16,7 @@
 //!
 //! This clip's video track starts at a PTS of 66.67ms rather than zero — a
 //! two-frame offset the container's edit list hides from `ffprobe` but which
-//! GStreamer reports verbatim. So a seek to `T` correctly yields a picture
+//! `GStreamer` reports verbatim. So a seek to `T` correctly yields a picture
 //! stamped `T + 66.67ms`. Every assertion below measures that base from the
 //! clip itself ([`common::stream_pts_base_ms`]) rather than hardcoding it, so
 //! the tests calibrate against the stream's own timeline and a genuine drift
