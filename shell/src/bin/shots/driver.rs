@@ -57,6 +57,7 @@ impl ShellDriver {
         Self::with_tree(WorkspaceTree::bootstrap_demo(), viewport)
     }
 
+    /// Build a driver around the provided workspace tree at `viewport` size.
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
         // Boot adopts every ownerless workspace before the session ever
         // paints (`compositor::hosted`), so a room you made is a room
@@ -99,10 +100,13 @@ impl ShellDriver {
     pub fn chrome(&self) -> std::cell::Ref<'_, ChromeState> {
         self.fb.chrome()
     }
+
+    /// Get a cheap-clone handle to the chrome cell.
     pub fn chrome_handle(&self) -> Chrome {
         self.fb.chrome_handle()
     }
 
+    /// Get a read-only reference to the overlay host.
     pub fn host(&self) -> &ShellOverlayHost {
         self.fb.host()
     }
@@ -117,6 +121,8 @@ impl ShellDriver {
     pub fn palette_query(&self) -> &str {
         self.fb.host().palette_query()
     }
+
+    /// Get the viewport size as (width, height) in logical pixels.
     pub fn viewport(&self) -> (f64, f64) {
         self.fb.viewport()
     }

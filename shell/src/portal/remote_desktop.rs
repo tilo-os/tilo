@@ -71,6 +71,7 @@ pub struct RemoteInputInjectorHandle {
 }
 
 impl RemoteInputInjectorHandle {
+    /// Create a new handle wrapping the given injector.
     pub fn new(inner: Arc<dyn RemoteInputInjector>) -> Self {
         Self { inner }
     }
@@ -82,6 +83,7 @@ impl RemoteInputInjectorHandle {
         }
     }
 
+    /// Inject a remote action into the wrapped injector.
     pub fn inject(&self, action: RemoteAction) -> bool {
         self.inner.inject(action)
     }
@@ -100,12 +102,14 @@ pub struct RecordingInjector {
 }
 
 impl RecordingInjector {
+    /// Create a new recording injector.
     pub fn new() -> Self {
         Self {
             actions: Mutex::new(Vec::new()),
         }
     }
 
+    /// Return a clone of all recorded actions.
     pub fn actions(&self) -> Vec<RemoteAction> {
         self.actions.lock().map(|a| a.clone()).unwrap_or_default()
     }
@@ -133,6 +137,7 @@ pub struct ChannelInjector {
 }
 
 impl ChannelInjector {
+    /// Create a new channel-based injector that sends actions to the given channel.
     pub fn new(tx: std::sync::mpsc::Sender<RemoteAction>) -> Self {
         Self { tx }
     }
@@ -163,6 +168,7 @@ pub struct RemoteDesktopBackend {
 }
 
 impl RemoteDesktopBackend {
+    /// Create a new `RemoteDesktop` portal backend.
     pub fn new(ctx: PortalContext) -> Self {
         Self {
             ctx,
