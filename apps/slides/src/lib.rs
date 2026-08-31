@@ -43,6 +43,7 @@ pub mod doc;
 mod help_overlay;
 pub mod model;
 pub mod odp;
+mod overview_grid;
 mod presentation;
 pub mod render;
 pub mod search_provider;
