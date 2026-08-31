@@ -1301,8 +1301,20 @@ impl PdfApp {
         scene.fill(Fill::NonZero, base, c.border_standard, None, &hair);
 
         let lay = self.toolbar_layout();
-        let annotate = matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note);
+        self.draw_toolbar_open_save(scene, base, theme, &lay);
+        self.draw_toolbar_tools(scene, base, theme, &lay);
+        self.draw_toolbar_zoom_fit(scene, base, tr, theme, &lay);
+        self.draw_toolbar_view_toggles(scene, base, theme, &lay);
+    }
 
+    /// Open-document and save-annotated-PDF buttons, plus the unsaved-edits dot.
+    fn draw_toolbar_open_save(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        theme: &Theme,
+        lay: &ToolbarLayout,
+    ) {
         // Open a document (folder button), left-most after the page-rail toggle.
         Self::icon_button_bg(
             scene,
@@ -1338,7 +1350,16 @@ impl PdfApp {
             let dot = Circle::new((lay.save.x1 - 6.0, lay.save.y0 + 6.0), d);
             scene.fill(Fill::NonZero, base, theme.accent_primary, None, &dot);
         }
+    }
 
+    /// The tool-selector row plus (while annotating) the colour swatches.
+    fn draw_toolbar_tools(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        theme: &Theme,
+        lay: &ToolbarLayout,
+    ) {
         for (t, r) in &lay.tools {
             let active = *t == self.tool;
             let hovered = r.contains(self.last_mouse);
@@ -1347,6 +1368,7 @@ impl PdfApp {
             draw_tool_icon(scene, base, *t, *r, col);
         }
 
+        let annotate = matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note);
         if annotate {
             for (s, r) in &lay.swatches {
                 let col = render::swatch_color(theme, *s);
@@ -1365,8 +1387,17 @@ impl PdfApp {
                 }
             }
         }
+    }
 
-        // Zoom group.
+    /// Zoom out/in + the zoom percentage label, plus the Fit button.
+    fn draw_toolbar_zoom_fit(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        lay: &ToolbarLayout,
+    ) {
         Self::icon_button_bg(
             scene,
             base,
@@ -1401,7 +1432,6 @@ impl PdfApp {
             );
         }
 
-        // Fit button.
         let fit_active = !matches!(self.fit, FitMode::Custom(_));
         Self::icon_button_bg(
             scene,
@@ -1431,8 +1461,16 @@ impl PdfApp {
             )),
             None,
         );
+    }
 
-        // Search, rail toggle, sidebar toggle.
+    /// Search, page-rail and sidebar toggle buttons.
+    fn draw_toolbar_view_toggles(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        theme: &Theme,
+        lay: &ToolbarLayout,
+    ) {
         Self::icon_button_bg(
             scene,
             base,
@@ -1520,7 +1558,6 @@ impl PdfApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> Vec<(SearchHit, Rect)> {
-        let mut hits: Vec<(SearchHit, Rect)> = Vec::new();
         let s = self.search_rect;
         let c = &theme.tokens.colors;
         scene.fill(Fill::NonZero, base, c.surfaces.glass, None, &s);
@@ -1528,6 +1565,24 @@ impl PdfApp {
         scene.fill(Fill::NonZero, base, c.border_standard, None, &hair);
 
         let lay = self.search_layout(tr);
+        self.draw_search_field(scene, base, tr, theme, &lay);
+        self.draw_search_counter(scene, base, tr, theme, &lay);
+        let hits = self.draw_search_toggles(scene, base, tr, theme, &lay);
+        self.draw_search_hint(scene, base, tr, theme, &lay);
+        hits
+    }
+
+    /// The search field background, glyph, typed query (or placeholder) and
+    /// its trailing caret indicator.
+    fn draw_search_field(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        lay: &SearchBarLayout,
+    ) {
+        let c = &theme.tokens.colors;
         let field = lay.field;
         let field_shape = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, base, c.surfaces.base, None, &field_shape);
@@ -1571,22 +1626,42 @@ impl PdfApp {
             let caret = Rect::new(cx, field.y0 + 6.0, cx + 1.5, field.y1 - 6.0);
             scene.fill(Fill::NonZero, base, theme.accent_primary, None, &caret);
         }
+    }
 
-        // Match counter, left-aligned just right of the field (already chosen
-        // full/compact and sized to fit by the layout).
+    /// Match counter, left-aligned just right of the field (already chosen
+    /// full/compact and sized to fit by the layout).
+    fn draw_search_counter(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        lay: &SearchBarLayout,
+    ) {
         if let Some((rect, text)) = &lay.counter {
             tr.draw_text(
                 scene,
                 text,
                 12.0,
                 theme.text_dim,
-                base * Affine::translate((rect.x0, vcenter(s, 12.0))),
+                base * Affine::translate((rect.x0, vcenter(self.search_rect, 12.0))),
                 None,
             );
         }
+    }
 
-        // Find-bar option toggles: Case + Whole word. Each is a pill the user
-        // clicks to flip; the matcher honours both live.
+    /// Find-bar option toggles: Case + Whole word. Each is a pill the user
+    /// clicks to flip; the matcher honours both live. Returns their hit rects.
+    fn draw_search_toggles(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        lay: &SearchBarLayout,
+    ) -> Vec<(SearchHit, Rect)> {
+        let c = &theme.tokens.colors;
+        let mut hits: Vec<(SearchHit, Rect)> = Vec::new();
         for (label, active, hit, r) in [
             (
                 "Case",
@@ -1628,18 +1703,27 @@ impl PdfApp {
             );
             hits.push((hit, r));
         }
+        hits
+    }
 
+    fn draw_search_hint(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        lay: &SearchBarLayout,
+    ) {
         if let Some(hint) = lay.hint {
             tr.draw_text(
                 scene,
                 SEARCH_HINT,
                 10.5,
                 theme.text_dim,
-                base * Affine::translate((hint.x0, vcenter(s, 10.5))),
+                base * Affine::translate((hint.x0, vcenter(self.search_rect, 10.5))),
                 None,
             );
         }
-        hits
     }
 
     // ---- sidebar ----------------------------------------------------
@@ -2441,187 +2525,228 @@ impl PdfApp {
         card: Rect,
         out: &mut SidebarHits,
     ) {
-        let c = &theme.tokens.colors;
         self.sig_pad_rect = Rect::ZERO;
         match self.sig_mode {
-            SigMode::Type => {
-                scene.fill(
-                    Fill::NonZero,
-                    base,
-                    c.surfaces.base,
-                    None,
-                    &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    base,
-                    c.border_standard,
-                    None,
-                    &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
-                );
-                tr.draw_text(
+            SigMode::Type => self.draw_signature_compose_type(scene, base, tr, theme, card, out),
+            SigMode::Draw => self.draw_signature_compose_draw(scene, base, tr, theme, card, out),
+        }
+    }
+
+    /// The signer-name field: editable inline when it's the active edit
+    /// target, else the placeholder or the stored name. Returns the shown
+    /// name text (used by the caller's live script preview).
+    fn draw_signature_name_field(
+        &mut self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        out: &mut SidebarHits,
+    ) -> String {
+        let editing_signer = self.is_editing(&EditTarget::Signer);
+        let name_x = card.x0 + 12.0;
+        let name_y = card.y0 + 22.0;
+        let name_hit = Rect::new(
+            card.x0 + 8.0,
+            card.y0 + 19.0,
+            card.x1 - 100.0,
+            card.y1 - 6.0,
+        );
+        let name_shown: String = if editing_signer {
+            self.editing
+                .as_ref()
+                .map(|e| e.text().to_string())
+                .unwrap_or_default()
+        } else {
+            self.signer_name.clone()
+        };
+        if editing_signer {
+            scene.stroke(
+                &Stroke::new(1.5),
+                base,
+                theme.border_focus,
+                None,
+                &RoundedRect::from_rect(name_hit, f64::from(theme.tokens.radii.sm)),
+            );
+            *out.edit_rect = name_hit;
+            if let Some(editing) = self.editing.as_mut() {
+                draw_inline_editor(
+                    &mut editing.input,
                     scene,
-                    "SIGNING AS",
-                    9.0,
-                    theme.text_dim,
-                    base * Affine::translate((card.x0 + 12.0, card.y0 + 9.0)),
-                    None,
-                );
-                let editing_signer = self.is_editing(&EditTarget::Signer);
-                let name_x = card.x0 + 12.0;
-                let name_y = card.y0 + 22.0;
-                let name_hit = Rect::new(
-                    card.x0 + 8.0,
-                    card.y0 + 19.0,
-                    card.x1 - 100.0,
-                    card.y1 - 6.0,
-                );
-                let name_shown: String = if editing_signer {
-                    self.editing
-                        .as_ref()
-                        .map(|e| e.text().to_string())
-                        .unwrap_or_default()
-                } else {
-                    self.signer_name.clone()
-                };
-                if editing_signer {
-                    scene.stroke(
-                        &Stroke::new(1.5),
-                        base,
-                        theme.border_focus,
-                        None,
-                        &RoundedRect::from_rect(name_hit, f64::from(theme.tokens.radii.sm)),
-                    );
-                    *out.edit_rect = name_hit;
-                    if let Some(editing) = self.editing.as_mut() {
-                        draw_inline_editor(
-                            &mut editing.input,
-                            scene,
-                            base,
-                            tr,
-                            theme,
-                            Point::new(name_x, name_y),
-                            ((name_hit.width() - 6.0) as f32, 18.0),
-                        );
-                    }
-                } else if name_shown.is_empty() {
-                    tr.draw_text(
-                        scene,
-                        "Your name",
-                        13.0,
-                        theme.text_dim,
-                        base * Affine::translate((name_x, name_y)),
-                        None,
-                    );
-                } else {
-                    tr.draw_text_weighted(
-                        scene,
-                        &name_shown,
-                        13.0,
-                        theme.text_primary,
-                        base * Affine::translate((name_x, name_y)),
-                        Some((name_hit.width() - 6.0) as f32),
-                        TextWeight::Semibold,
-                    );
-                }
-                out.hits.push((SidebarHit::EditSigner, name_hit));
-                // Live preview: the typed name rendered as the script that will
-                // be stamped.
-                let prev = Rect::new(
-                    card.x1 - 96.0,
-                    card.y0 + 8.0,
-                    card.x1 - 12.0,
-                    card.y1 - 10.0,
-                );
-                render::draw_signature_preview(
-                    scene,
+                    base,
                     tr,
-                    base,
-                    render::ink(),
-                    prev,
-                    &SignatureInk::Typed,
-                    &name_shown,
+                    theme,
+                    Point::new(name_x, name_y),
+                    ((name_hit.width() - 6.0) as f32, 18.0),
                 );
             }
-            SigMode::Draw => {
-                // The draw pad: the user drags here to draw their signature.
-                scene.fill(
-                    Fill::NonZero,
-                    base,
-                    c.surfaces.base,
-                    None,
-                    &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
-                );
-                let armed = self.sig_stroke.is_some();
-                let border = if armed {
-                    theme.border_focus
-                } else {
-                    c.border_standard
-                };
-                scene.stroke(
-                    &Stroke::new(1.2),
-                    base,
-                    border,
-                    None,
-                    &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
-                );
-                self.sig_pad_rect = card;
-                let ink_area = card.inflate(-10.0, -10.0);
-                if self.sig_strokes.is_empty() && self.sig_stroke.is_none() {
-                    let hint = "Draw your signature here";
-                    let (hw, _) = tr.measure(hint, 12.0, None);
-                    tr.draw_text(
-                        scene,
-                        hint,
-                        12.0,
-                        theme.text_dim,
-                        base * Affine::translate((
-                            f64::midpoint(card.x0, card.x1) - f64::from(hw) / 2.0,
-                            vcenter(card, 12.0),
-                        )),
-                        None,
-                    );
-                } else {
-                    // Draw the committed strokes plus the in-progress one.
-                    let mut strokes = self.sig_strokes.clone();
-                    if let Some(cur) = &self.sig_stroke {
-                        strokes.push(cur.clone());
-                    }
-                    render::draw_signature_preview(
-                        scene,
-                        tr,
-                        base,
-                        theme.text_primary,
-                        ink_area,
-                        &SignatureInk::Drawn { strokes },
-                        "",
-                    );
-                }
-                // Clear link (top-right), only when there is something to clear.
-                if !self.sig_strokes.is_empty() {
-                    let (cw, _) = tr.measure("Clear", 10.5, None);
-                    let clr = Rect::new(
-                        card.x1 - 12.0 - f64::from(cw) - 8.0,
-                        card.y0 + 4.0,
-                        card.x1 - 6.0,
-                        card.y0 + 22.0,
-                    );
-                    let hot = clr.contains(self.last_mouse);
-                    tr.draw_text(
-                        scene,
-                        "Clear",
-                        10.5,
-                        if hot {
-                            theme.accent_primary
-                        } else {
-                            theme.text_dim
-                        },
-                        base * Affine::translate((clr.x0 + 6.0, clr.y0 + 3.0)),
-                        None,
-                    );
-                    out.hits.push((SidebarHit::SigClear, clr));
-                }
+        } else if name_shown.is_empty() {
+            tr.draw_text(
+                scene,
+                "Your name",
+                13.0,
+                theme.text_dim,
+                base * Affine::translate((name_x, name_y)),
+                None,
+            );
+        } else {
+            tr.draw_text_weighted(
+                scene,
+                &name_shown,
+                13.0,
+                theme.text_primary,
+                base * Affine::translate((name_x, name_y)),
+                Some((name_hit.width() - 6.0) as f32),
+                TextWeight::Semibold,
+            );
+        }
+        out.hits.push((SidebarHit::EditSigner, name_hit));
+        name_shown
+    }
+
+    /// The "type your name" composer: signer-name field (editable inline)
+    /// plus a live script preview of the stamped signature.
+    fn draw_signature_compose_type(
+        &mut self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        out: &mut SidebarHits,
+    ) {
+        let c = &theme.tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            base,
+            c.surfaces.base,
+            None,
+            &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            base,
+            c.border_standard,
+            None,
+            &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
+        );
+        tr.draw_text(
+            scene,
+            "SIGNING AS",
+            9.0,
+            theme.text_dim,
+            base * Affine::translate((card.x0 + 12.0, card.y0 + 9.0)),
+            None,
+        );
+        let name_shown = self.draw_signature_name_field(scene, base, tr, theme, card, out);
+        // Live preview: the typed name rendered as the script that will
+        // be stamped.
+        let prev = Rect::new(
+            card.x1 - 96.0,
+            card.y0 + 8.0,
+            card.x1 - 12.0,
+            card.y1 - 10.0,
+        );
+        render::draw_signature_preview(
+            scene,
+            tr,
+            base,
+            render::ink(),
+            prev,
+            &SignatureInk::Typed,
+            &name_shown,
+        );
+    }
+
+    /// The freehand draw pad: the user drags here to draw their signature,
+    /// with a clear link once there is something drawn.
+    fn draw_signature_compose_draw(
+        &mut self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        out: &mut SidebarHits,
+    ) {
+        let c = &theme.tokens.colors;
+        // The draw pad: the user drags here to draw their signature.
+        scene.fill(
+            Fill::NonZero,
+            base,
+            c.surfaces.base,
+            None,
+            &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
+        );
+        let armed = self.sig_stroke.is_some();
+        let border = if armed {
+            theme.border_focus
+        } else {
+            c.border_standard
+        };
+        scene.stroke(
+            &Stroke::new(1.2),
+            base,
+            border,
+            None,
+            &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
+        );
+        self.sig_pad_rect = card;
+        let ink_area = card.inflate(-10.0, -10.0);
+        if self.sig_strokes.is_empty() && self.sig_stroke.is_none() {
+            let hint = "Draw your signature here";
+            let (hw, _) = tr.measure(hint, 12.0, None);
+            tr.draw_text(
+                scene,
+                hint,
+                12.0,
+                theme.text_dim,
+                base * Affine::translate((
+                    f64::midpoint(card.x0, card.x1) - f64::from(hw) / 2.0,
+                    vcenter(card, 12.0),
+                )),
+                None,
+            );
+        } else {
+            // Draw the committed strokes plus the in-progress one.
+            let mut strokes = self.sig_strokes.clone();
+            if let Some(cur) = &self.sig_stroke {
+                strokes.push(cur.clone());
             }
+            render::draw_signature_preview(
+                scene,
+                tr,
+                base,
+                theme.text_primary,
+                ink_area,
+                &SignatureInk::Drawn { strokes },
+                "",
+            );
+        }
+        // Clear link (top-right), only when there is something to clear.
+        if !self.sig_strokes.is_empty() {
+            let (cw, _) = tr.measure("Clear", 10.5, None);
+            let clr = Rect::new(
+                card.x1 - 12.0 - f64::from(cw) - 8.0,
+                card.y0 + 4.0,
+                card.x1 - 6.0,
+                card.y0 + 22.0,
+            );
+            let hot = clr.contains(self.last_mouse);
+            tr.draw_text(
+                scene,
+                "Clear",
+                10.5,
+                if hot {
+                    theme.accent_primary
+                } else {
+                    theme.text_dim
+                },
+                base * Affine::translate((clr.x0 + 6.0, clr.y0 + 3.0)),
+                None,
+            );
+            out.hits.push((SidebarHit::SigClear, clr));
         }
     }
 
@@ -2706,7 +2831,6 @@ impl PdfApp {
         y_start: f64,
         out: &mut SidebarHits,
     ) {
-        let c = &theme.tokens.colors;
         tr.draw_text(
             scene,
             &format!("PLACED  ·  {}", self.signatures.len()),
@@ -2720,107 +2844,115 @@ impl PdfApp {
 
         for (i, s) in self.signatures.iter().enumerate() {
             let row = Rect::new(body.x0 + pad, y, body.x1 - pad, y + 46.0);
-            if row.y1 < body.y0 || row.y0 > body.y1 {
-                out.hits.push((SidebarHit::SigJump(i), row));
-                y += 56.0;
-                continue;
+            if row.y1 >= body.y0 && row.y0 <= body.y1 {
+                self.draw_placed_signature_row(scene, base, tr, theme, row, s, out);
             }
-            let selected = self.selected_sig.as_deref() == Some(s.id.as_str());
-            let bg = if selected {
-                render::alpha(theme.accent_primary, 28)
-            } else {
-                c.surfaces.base
-            };
-            scene.fill(
-                Fill::NonZero,
-                base,
-                bg,
-                None,
-                &RoundedRect::from_rect(row, f64::from(theme.tokens.radii.md)),
-            );
-            let border = if selected {
-                theme.accent_primary
-            } else {
-                c.border_standard
-            };
-            scene.stroke(
-                &Stroke::new(if selected { 1.5 } else { 1.0 }),
-                base,
-                border,
-                None,
-                &RoundedRect::from_rect(row, f64::from(theme.tokens.radii.md)),
-            );
-            let sg = Rect::new(row.x0 + 8.0, row.y0 + 8.0, row.x0 + 64.0, row.y1 - 8.0);
-            render::draw_signature_preview(
-                scene,
-                tr,
-                base,
-                theme.text_primary,
-                sg,
-                &s.ink,
-                &s.signer,
-            );
-            tr.draw_text_weighted(
-                scene,
-                &s.signer,
-                12.0,
-                theme.text_primary,
-                base * Affine::translate((sg.x1 + 12.0, row.y0 + 9.0)),
-                None,
-                TextWeight::Semibold,
-            );
-            tr.draw_text(
-                scene,
-                &format!("Page {} · {}", s.page, s.date),
-                10.0,
-                theme.text_dim,
-                base * Affine::translate((sg.x1 + 12.0, row.y0 + 26.0)),
-                None,
-            );
-
-            // Delete (×) button on the right.
-            let del = Rect::new(
-                row.x1 - 10.0 - 18.0,
-                row.y0 + 8.0,
-                row.x1 - 10.0,
-                row.y0 + 26.0,
-            );
-            let del_hot = del.contains(self.last_mouse);
-            if del_hot {
-                scene.fill(
-                    Fill::NonZero,
-                    base,
-                    render::alpha(c.semantic.danger, 40),
-                    None,
-                    &RoundedRect::from_rect(del, f64::from(theme.tokens.radii.sm)),
-                );
-            }
-            let dc = Point::new(f64::midpoint(del.x0, del.x1), f64::midpoint(del.y0, del.y1));
-            let dcol = if del_hot {
-                c.semantic.danger
-            } else {
-                theme.text_dim
-            };
-            scene.stroke(
-                &Stroke::new(1.5),
-                base,
-                dcol,
-                None,
-                &Line::new((dc.x - 4.0, dc.y - 4.0), (dc.x + 4.0, dc.y + 4.0)),
-            );
-            scene.stroke(
-                &Stroke::new(1.5),
-                base,
-                dcol,
-                None,
-                &Line::new((dc.x - 4.0, dc.y + 4.0), (dc.x + 4.0, dc.y - 4.0)),
-            );
-            out.hits
-                .push((SidebarHit::DeleteSignature(s.id.clone()), del));
-
             out.hits.push((SidebarHit::SigJump(i), row));
             y += 56.0;
         }
+    }
+
+    /// One row of the placed-signatures list: preview thumbnail, signer +
+    /// page/date, and the delete (×) button.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "threads the same sidebar-draw context as draw_signatures"
+    )]
+    fn draw_placed_signature_row(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        s: &Signature,
+        out: &mut SidebarHits,
+    ) {
+        let c = &theme.tokens.colors;
+        let selected = self.selected_sig.as_deref() == Some(s.id.as_str());
+        let bg = if selected {
+            render::alpha(theme.accent_primary, 28)
+        } else {
+            c.surfaces.base
+        };
+        scene.fill(
+            Fill::NonZero,
+            base,
+            bg,
+            None,
+            &RoundedRect::from_rect(row, f64::from(theme.tokens.radii.md)),
+        );
+        let border = if selected {
+            theme.accent_primary
+        } else {
+            c.border_standard
+        };
+        scene.stroke(
+            &Stroke::new(if selected { 1.5 } else { 1.0 }),
+            base,
+            border,
+            None,
+            &RoundedRect::from_rect(row, f64::from(theme.tokens.radii.md)),
+        );
+        let sg = Rect::new(row.x0 + 8.0, row.y0 + 8.0, row.x0 + 64.0, row.y1 - 8.0);
+        render::draw_signature_preview(scene, tr, base, theme.text_primary, sg, &s.ink, &s.signer);
+        tr.draw_text_weighted(
+            scene,
+            &s.signer,
+            12.0,
+            theme.text_primary,
+            base * Affine::translate((sg.x1 + 12.0, row.y0 + 9.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        tr.draw_text(
+            scene,
+            &format!("Page {} · {}", s.page, s.date),
+            10.0,
+            theme.text_dim,
+            base * Affine::translate((sg.x1 + 12.0, row.y0 + 26.0)),
+            None,
+        );
+
+        // Delete (×) button on the right.
+        let del = Rect::new(
+            row.x1 - 10.0 - 18.0,
+            row.y0 + 8.0,
+            row.x1 - 10.0,
+            row.y0 + 26.0,
+        );
+        let del_hot = del.contains(self.last_mouse);
+        if del_hot {
+            scene.fill(
+                Fill::NonZero,
+                base,
+                render::alpha(c.semantic.danger, 40),
+                None,
+                &RoundedRect::from_rect(del, f64::from(theme.tokens.radii.sm)),
+            );
+        }
+        let dc = Point::new(f64::midpoint(del.x0, del.x1), f64::midpoint(del.y0, del.y1));
+        let dcol = if del_hot {
+            c.semantic.danger
+        } else {
+            theme.text_dim
+        };
+        scene.stroke(
+            &Stroke::new(1.5),
+            base,
+            dcol,
+            None,
+            &Line::new((dc.x - 4.0, dc.y - 4.0), (dc.x + 4.0, dc.y + 4.0)),
+        );
+        scene.stroke(
+            &Stroke::new(1.5),
+            base,
+            dcol,
+            None,
+            &Line::new((dc.x - 4.0, dc.y + 4.0), (dc.x + 4.0, dc.y - 4.0)),
+        );
+        out.hits
+            .push((SidebarHit::DeleteSignature(s.id.clone()), del));
     }
 
     // ---- floating page bubble ---------------------------------------

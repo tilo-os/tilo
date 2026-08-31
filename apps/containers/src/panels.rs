@@ -500,7 +500,7 @@ impl ContainersApp {
 
         let cols = Self::container_columns(list, detail_open);
         let colhead_bottom =
-            self.draw_container_list_header(scene, tr, theme, list, detail_open, &cols);
+            Self::draw_container_list_header(scene, tr, theme, list, detail_open, &cols);
         let rows_area = Rect::new(list.x0, colhead_bottom, list.x1, list.y1);
         self.draw_container_rows(scene, tr, theme, rows_area, &rows, &cols, detail_open, view);
         self.draw_container_detail_pane(scene, tr, theme, content, list, body_y, view);
@@ -509,7 +509,6 @@ impl ContainersApp {
     /// The list column header (labels + divider) above the scrollable rows.
     /// Returns the y just below the divider, where the rows area starts.
     fn draw_container_list_header(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -562,6 +561,7 @@ impl ContainersApp {
 
     /// The scrollable container rows, plus the empty-state fallbacks and the
     /// list scrollbar.
+    #[allow(clippy::too_many_arguments)]
     fn draw_container_rows(
         &mut self,
         scene: &mut Scene,
@@ -626,6 +626,7 @@ impl ContainersApp {
 
     /// The selected container's detail pane, if any (or the "no longer
     /// exists" fallback when the selection went stale).
+    #[allow(clippy::too_many_arguments)]
     fn draw_container_detail_pane(
         &mut self,
         scene: &mut Scene,
@@ -732,7 +733,7 @@ impl ContainersApp {
             TextWeight::Regular,
         );
 
-        self.draw_container_row_layout(scene, tr, theme, info, name_y, sub_y);
+        Self::draw_container_row_layout(scene, tr, theme, info, name_y, sub_y);
 
         // Action buttons cluster on the far right.
         self.draw_row_actions(scene, tr, theme, container, row);
@@ -745,7 +746,6 @@ impl ContainersApp {
     /// The compact (detail-open) vs. full row content: a bare status pill,
     /// or the image / status-detail text plus the CPU/MEM mini-stats.
     fn draw_container_row_layout(
-        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,

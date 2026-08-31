@@ -1260,7 +1260,7 @@ impl VpnApp {
             };
             let selected = self.vault.selected == Some(*id);
             let hovered = self.hovered_row == Some(*id);
-            self.draw_list_row(scene, tr, t, theme, c, row, toggle, selected, hovered);
+            Self::draw_list_row(scene, tr, t, theme, c, row, toggle, selected, hovered);
         }
     }
 
@@ -1273,7 +1273,6 @@ impl VpnApp {
         reason = "one list row is scene + renderer + transform + theme + the connection + its two laid-out rects + selection/hover state; grouping into a struct would only move the fields, not reduce them"
     )]
     fn draw_list_row(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         t: Affine,
@@ -1407,7 +1406,7 @@ impl VpnApp {
         };
         let dinner = Rect::new(d.x0 + 24.0, d.y0 + 24.0, d.x1 - 24.0, d.y1 - 24.0);
 
-        self.draw_detail_header(scene, tr, t, theme, dinner, c);
+        Self::draw_detail_header(scene, tr, t, theme, dinner, c);
         self.draw_detail_connect_button(scene, tr, t, theme, lay, c);
         self.draw_detail_tabs(scene, tr, t, theme, lay);
 
@@ -1459,7 +1458,6 @@ impl VpnApp {
     /// The title, status pill and endpoint subtitle at the top of the detail
     /// pane. Split out of [`Self::draw_detail`].
     fn draw_detail_header(
-        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         t: Affine,

@@ -27,6 +27,13 @@ use crate::validate::{ManifestError, validate_manifest_with_payload};
 /// needs the multi-device ceremony, which belongs to the publisher
 /// pipeline, not this crate — use `from_threshold_aggregated` for an
 /// already-aggregated signature from such a ceremony.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "ThresholdIdentity is already boxed (see its own doc below); the remaining gap to \
+              Ed25519's plain SigningKey is inherent to ed25519_dalek's expanded-key caching, \
+              not something a second box would meaningfully shrink for a type constructed once \
+              per pack/sign call, never per-item in a hot loop"
+)]
 pub enum SigningIdentity {
     /// Plain Ed25519 — simplest case; used by tests, CI signing, and `qos-pkg sign --identity`.
     Ed25519(ed25519_dalek::SigningKey),

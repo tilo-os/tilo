@@ -431,6 +431,15 @@ impl BooksApp {
     reason = "each bool is an independent per-peer view-state flag (dirty, mouse_down, \
               dragging_sel, ...), not a combinatorial state machine"
 )]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, unrelated flag spanning unrelated \
+              subsystems (library-load state, drag/selection gestures, popover \
+              open/closed toggles, and a handful of --shots-only seams); \
+              grouping them into enums would not express any real invariant \
+              between them and would touch reader, library and settings call \
+              sites across this file"
+)]
 pub struct BooksApp {
     // --- parsed content (render cache, regenerable; not in the CRDT) -------
     library: Vec<Book>,
@@ -6093,7 +6102,7 @@ impl BooksApp {
         self.draw_pane_highlight_markers(scene, t, palette, content_x, &group_top);
 
         // ---- glyphs + decorations (on top of bands) ---------------------
-        self.draw_pane_glyphs(
+        Self::draw_pane_glyphs(
             scene,
             t,
             tr,
@@ -6477,7 +6486,6 @@ impl BooksApp {
     /// bullets) and every run's glyphs, on top of the bands.
     #[allow(clippy::too_many_arguments)]
     fn draw_pane_glyphs(
-        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
