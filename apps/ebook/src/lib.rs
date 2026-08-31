@@ -51,6 +51,7 @@ pub mod paint;
 mod reader_bubble;
 pub mod reader_theme;
 pub mod search_provider;
+mod shelf_controls;
 pub mod xhtml;
 
 pub use app::BooksApp;
