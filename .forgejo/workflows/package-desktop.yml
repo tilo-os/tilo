@@ -56,7 +56,12 @@ jobs:
             diagnostic=arch-version-drift
           elif ! grep -Fxq "%{!?qos_version:%global qos_version $(<dist/VERSION)}" dist/rpm/qos-session.spec; then
             diagnostic=rpm-version-drift
-          elif ! dist/session/tests/dev-session-refusals.sh; then
+          elif ! docker run --rm --platform linux/amd64 \
+              --entrypoint /bin/bash \
+              --volume "$GITHUB_WORKSPACE:/source:ro" \
+              --workdir /source \
+              docker.io/library/ubuntu:24.04 \
+              dist/session/tests/dev-session-refusals.sh; then
             diagnostic=dev-session-contract
           elif ! os/tests/portal_config_validity.sh; then
             diagnostic=portal-contract
