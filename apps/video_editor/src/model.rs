@@ -1076,6 +1076,43 @@ pub struct Clip {
     /// Markers pinned to this clip, in clip-local seconds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<Marker>,
+    /// Which **link group** this clip belongs to, if any. Two clips carrying
+    /// the same id are linked: the picture and the sound of one shot, which
+    /// move, trim, split, delete and re-time together.
+    ///
+    /// Deliberately a shared group id rather than "my partner is clip X". A
+    /// pointer has to be repaired when one half is deleted, and this document
+    /// is a CRDT two people edit at once, so the repair is a conflict waiting
+    /// to happen. A group id degrades safely instead: delete one half and the
+    /// other is simply a clip whose group has one member, which is
+    /// indistinguishable from an unlinked clip everywhere it matters (see
+    /// [`Project::link_partners`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<Uuid>,
+    /// True when this picture clip's own sound has been split off onto an
+    /// audio clip, so the mixer must not also read it from here.
+    ///
+    /// It is not the same question as "am I linked", and it must not be
+    /// answered by asking the link, for two reasons:
+    ///
+    ///  * **Unlinking would double the sound.** Break the link and the picture
+    ///    clip would start carrying sound the audio clip is already carrying —
+    ///    the shot heard twice, at double level, and as an echo the moment the
+    ///    two are slid apart.
+    ///  * **Linking a music bed to a shot must not silence the shot.** A link
+    ///    is a general "these move together"; only splitting the sound off
+    ///    actually moves where the sound comes from.
+    ///
+    /// False in every project written before linked audio existed, which is
+    /// exactly why those still play: they have no audio clip, so their picture
+    /// clip still carries the sound.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sound_split: bool,
+}
+
+/// `skip_serializing_if` for a `bool` that defaults to false.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Default for Clip {
@@ -1105,6 +1142,8 @@ impl Default for Clip {
             mask: Mask::default(),
             anim: ClipAnimation::default(),
             markers: Vec::new(),
+            link: None,
+            sound_split: false,
         }
     }
 }
@@ -1986,10 +2025,30 @@ impl Project {
         false
     }
 
-    /// The lane kind a clip belongs on, from the kind of media it references.
-    /// Falls back to video for a dangling media reference so a broken clip
-    /// still has a home rather than silently migrating to audio.
+    /// The lane kind a clip belongs on: the kind of the track it already sits
+    /// on, and only failing that the kind of media it references.
+    ///
+    /// The track has to be asked first because one source can legitimately be
+    /// placed as two clips. The audio half of a linked pair references a video
+    /// file and lives on an audio lane; deriving its kind from the media would
+    /// call it a video clip, and [`Self::can_place`] would then refuse to let
+    /// it move along its own lane. Falls back to video for a clip whose track
+    /// *and* media are both gone, so a broken clip still has a home rather
+    /// than silently migrating to audio.
     pub fn clip_kind(&self, id: ClipId) -> TrackKind {
+        if let Some(kind) = self
+            .clip(id)
+            .and_then(|c| self.track(c.track))
+            .map(|t| t.kind)
+        {
+            return kind;
+        }
+        self.media_kind_of(id)
+    }
+
+    /// The lane kind the clip's *source* asks for, ignoring where it currently
+    /// sits — what a fresh placement of that media would choose.
+    pub fn media_kind_of(&self, id: ClipId) -> TrackKind {
         self.clip(id)
             .and_then(|c| self.media(c.media))
             .map(|m| {
@@ -2000,6 +2059,284 @@ impl Project {
                 }
             })
             .unwrap_or(TrackKind::Video)
+    }
+
+    // --- linked audio and video ------------------------------------------
+
+    /// Every clip in `id`'s link group, itself included, in a settled order
+    /// (by start, then by id) so two peers agree about it.
+    ///
+    /// A clip with no link, or whose group has lost every other member, is a
+    /// group of one — which is exactly how a half-deleted pair degrades.
+    pub fn link_group(&self, id: ClipId) -> Vec<ClipId> {
+        let Some(clip) = self.clip(id) else {
+            return Vec::new();
+        };
+        let Some(link) = clip.link else {
+            return vec![id];
+        };
+        let mut v: Vec<(f64, ClipId)> = self
+            .clips
+            .iter()
+            .filter(|c| c.link == Some(link))
+            .map(|c| (c.start, c.id))
+            .collect();
+        v.sort_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.cmp(&b.1))
+        });
+        v.into_iter().map(|(_, c)| c).collect()
+    }
+
+    /// The *other* clips linked to `id`. Empty when nothing is linked to it.
+    pub fn link_partners(&self, id: ClipId) -> Vec<ClipId> {
+        let mut v = self.link_group(id);
+        v.retain(|c| *c != id);
+        v
+    }
+
+    /// Whether `id` has at least one partner — the question every affordance
+    /// asks, because a group of one is not a link, it is a clip.
+    pub fn is_linked(&self, id: ClipId) -> bool {
+        !self.link_partners(id).is_empty()
+    }
+
+    /// Put every clip in `ids` into one fresh link group, returning its id.
+    ///
+    /// Refused, changing nothing, for fewer than two clips that actually
+    /// exist: linking a clip to itself is not a state the rest of the editor
+    /// should have to recognise. The id is minted here, so a caller that
+    /// dispatches the resulting clips carries it on the wire rather than
+    /// re-rolling it on every peer.
+    pub fn link_clips(&mut self, ids: &[ClipId]) -> Option<Uuid> {
+        let mut live: Vec<ClipId> = Vec::new();
+        for id in ids {
+            if self.clip(*id).is_some() && !live.contains(id) {
+                live.push(*id);
+            }
+        }
+        if live.len() < 2 {
+            return None;
+        }
+        let link = Uuid::new_v4();
+        for id in &live {
+            if let Some(c) = self.clip_mut(*id) {
+                c.link = Some(link);
+            }
+        }
+        Some(link)
+    }
+
+    /// Take every clip in `ids` out of whatever group it was in, returning the
+    /// clips that actually changed so the caller replicates exactly those.
+    ///
+    /// A group left holding one member is left alone: it already reads as
+    /// unlinked everywhere ([`Self::is_linked`]), and clearing it would be a
+    /// second write nobody asked for.
+    pub fn unlink_clips(&mut self, ids: &[ClipId]) -> Vec<ClipId> {
+        let mut changed = Vec::new();
+        for id in ids {
+            if let Some(c) = self.clip_mut(*id)
+                && c.link.take().is_some()
+            {
+                changed.push(*id);
+            }
+        }
+        changed
+    }
+
+    /// Place the *sound* of `video_clip` on `audio_track` as its linked half:
+    /// the same source, the same `start`, the same trim window, the same rate.
+    ///
+    /// Returns the new clip's id, or `None` when the picture clip is gone or
+    /// the two are already linked. The pair shares a freshly minted group id,
+    /// so neither half points at the other.
+    pub fn add_linked_audio(&mut self, video_clip: ClipId, audio_track: TrackId) -> Option<ClipId> {
+        let mut audio = self.clip(video_clip)?.clone();
+        let link = Uuid::new_v4();
+        audio.id = Uuid::new_v4();
+        audio.track = audio_track;
+        audio.link = Some(link);
+        // The sound carries the shot's timing and level, not its picture: a
+        // grade, a mask, a key, a geometry and an opacity ramp all describe
+        // frames the audio half never draws, and carrying them would make the
+        // two halves disagree about what an "identical" clip is.
+        audio.filters = Filters::default();
+        audio.curves = Curve::default();
+        audio.effects = Vec::new();
+        audio.transform = Transform::default();
+        audio.key = ChromaKey::default();
+        audio.mask = Mask::default();
+        audio.opacity = 1.0;
+        audio.transition = Transition::None;
+        audio.transition_duration = 0.0;
+        audio.anim = ClipAnimation::default();
+        // The sound now comes from here, so this clip is the one that carries
+        // it — never a clip whose own sound was split off somewhere else.
+        audio.sound_split = false;
+        let id = audio.id;
+        self.clips.push(audio);
+        if let Some(v) = self.clip_mut(video_clip) {
+            v.link = Some(link);
+            // Durable, and deliberately not undone by unlinking: the sound has
+            // moved to a clip of its own, and reading it from both would play
+            // the shot twice.
+            v.sound_split = true;
+        }
+        Some(id)
+    }
+
+    /// Split every clip in `id`'s link group at timeline time `at`, returning
+    /// the `(head, tail)` pair each one produced.
+    ///
+    /// The heads stay in the group they were already in and the tails become a
+    /// group of their own, because the alternative — four clips in one group —
+    /// would make dragging the second half of the shot drag the first half
+    /// with it. A tail with no sibling is left unlinked rather than in a group
+    /// of one, so it does not stay tied to the head it was cut from.
+    pub fn split_linked(&mut self, id: ClipId, at: f64) -> Vec<(ClipId, ClipId)> {
+        let group = self.link_group(id);
+        self.split_group(&group, at)
+    }
+
+    /// [`Self::split_linked`] over an explicit set of clips — what a caller
+    /// that has already dropped the members a track lock forbids editing hands
+    /// in, so a link cannot be used to cut through a locked lane.
+    pub fn split_group(&mut self, ids: &[ClipId], at: f64) -> Vec<(ClipId, ClipId)> {
+        let mut pairs = Vec::new();
+        for gid in ids {
+            if let Some(rid) = self.split_clip(*gid, at) {
+                pairs.push((*gid, rid));
+            }
+        }
+        let tails: Vec<ClipId> = pairs.iter().map(|(_, r)| *r).collect();
+        if tails.len() < 2 {
+            self.unlink_clips(&tails);
+        } else {
+            self.link_clips(&tails);
+        }
+        pairs
+    }
+
+    /// Delete every clip in `id`'s link group, leaving the gaps where they
+    /// were. Returns the ids removed.
+    pub fn delete_linked(&mut self, id: ClipId) -> Vec<ClipId> {
+        let group = self.link_group(id);
+        self.clips.retain(|c| !group.contains(&c.id));
+        group
+    }
+
+    /// Ripple-delete every clip in `id`'s link group, closing the gap on each
+    /// clip's own lane. Returns the ids removed and the ids that shifted.
+    ///
+    /// Deleted last-first so each remaining clip's start is still valid while
+    /// the earlier ones are there — the same order a multi-clip ripple uses.
+    pub fn ripple_delete_linked(&mut self, id: ClipId) -> (Vec<ClipId>, Vec<ClipId>) {
+        let group = self.link_group(id);
+        let mut moved: Vec<ClipId> = Vec::new();
+        for gid in group.iter().rev() {
+            for m in self.ripple_delete(*gid) {
+                if !moved.contains(&m) {
+                    moved.push(m);
+                }
+            }
+        }
+        moved.retain(|m| !group.contains(m));
+        (group, moved)
+    }
+
+    /// Trim the head of `id` and of every clip linked to it by the *same*
+    /// amount — the amount `id` itself could actually take after clamping.
+    /// Returns that amount.
+    pub fn trim_in_linked(&mut self, id: ClipId, delta: f64) -> f64 {
+        let also = self.link_partners(id);
+        self.trim_in_with(id, delta, &also)
+    }
+
+    /// [`Self::trim_in_linked`] over an explicit set of followers.
+    pub fn trim_in_with(&mut self, id: ClipId, delta: f64, also: &[ClipId]) -> f64 {
+        let applied = self.trim_in(id, delta);
+        if applied != 0.0 {
+            for other in also {
+                if *other != id {
+                    self.trim_in(*other, applied);
+                }
+            }
+        }
+        applied
+    }
+
+    /// [`Self::trim_in_linked`] for the tail.
+    pub fn trim_out_linked(&mut self, id: ClipId, delta: f64) -> f64 {
+        let also = self.link_partners(id);
+        self.trim_out_with(id, delta, &also)
+    }
+
+    /// [`Self::trim_out_linked`] over an explicit set of followers.
+    pub fn trim_out_with(&mut self, id: ClipId, delta: f64, also: &[ClipId]) -> f64 {
+        let applied = self.trim_out(id, delta);
+        if applied != 0.0 {
+            for other in also {
+                if *other != id {
+                    self.trim_out(*other, applied);
+                }
+            }
+        }
+        applied
+    }
+
+    /// Re-time `id` and every clip linked to it to the same rate and
+    /// direction.
+    ///
+    /// Speed is the one field where following the link is not a convenience:
+    /// change the picture's rate and not the sound's and the two drift apart
+    /// by a growing amount for the rest of the shot, which is a fault a user
+    /// cannot diagnose from anything on screen.
+    pub fn set_speed_linked(&mut self, id: ClipId, rate: f64, reverse: bool) {
+        let group = self.link_group(id);
+        self.set_speed_group(&group, rate, reverse);
+    }
+
+    /// [`Self::set_speed_linked`] over an explicit set of clips.
+    pub fn set_speed_group(&mut self, ids: &[ClipId], rate: f64, reverse: bool) {
+        for gid in ids {
+            if let Some(c) = self.clip_mut(*gid) {
+                c.set_speed(rate, reverse);
+            }
+        }
+    }
+
+    /// Whether `id` is a picture clip whose source carries sound and which has
+    /// no **linked** audio clip carrying it — the state the "split off audio"
+    /// affordance exists for.
+    ///
+    /// Deliberately asks the link rather than [`Clip::sound_split`]. The flag
+    /// says the sound left the picture; it does not say the clip it left for
+    /// still exists. Deleting the audio lane takes every sound half with it,
+    /// and a rule that read the flag would leave every shot on the timeline
+    /// permanently silent with nothing on screen offering a way back. Asking
+    /// the link instead makes that recoverable: press it and the sound gets a
+    /// clip again.
+    ///
+    /// True for every clip in a project saved before linked audio existed,
+    /// which is how those get a sound clip at all.
+    pub fn can_split_audio(&self, id: ClipId) -> bool {
+        let Some(clip) = self.clip(id) else {
+            return false;
+        };
+        if self.clip_kind(id) != TrackKind::Video {
+            return false;
+        }
+        if self
+            .link_partners(id)
+            .iter()
+            .any(|p| self.clip_kind(*p) == TrackKind::Audio)
+        {
+            return false;
+        }
+        self.media(clip.media)
+            .is_some_and(|m| m.kind.is_visual() && m.has_audio)
     }
 
     /// Whether any track of `kind` is soloed. While one is, the others of that
@@ -2080,11 +2417,20 @@ impl Project {
     /// trims later into the source (clip shrinks from the left and its
     /// timeline start moves right); negative reveals earlier source.
     /// Clamped so `in_point >= 0` and the clip keeps at least `MIN_CLIP`.
-    pub fn trim_in(&mut self, id: ClipId, delta: f64) {
+    ///
+    /// Returns the delta it *actually* applied after clamping, in source
+    /// seconds. A caller trimming several clips at once (the halves of a
+    /// linked pair) has to hand the rest the amount the first one really
+    /// moved, or a clip that clamped and a clip that did not would drift apart
+    /// by exactly the difference — which is the desync a link exists to
+    /// prevent.
+    pub fn trim_in(&mut self, id: ClipId, delta: f64) -> f64 {
+        let mut applied = 0.0;
         if let Some(c) = self.clip_mut(id) {
             let max_delta = (c.out_point - c.in_point) - MIN_CLIP; // can't cross out
             let min_delta = -c.in_point; // can't go before source 0
             let d = delta.clamp(min_delta, max_delta);
+            applied = d;
             c.in_point += d;
             // `d` is source seconds; the timeline start moves by however
             // long those seconds take to play, which the rate decides.
@@ -2101,20 +2447,27 @@ impl Project {
                 m.t -= on_timeline;
             }
         }
+        applied
     }
 
     /// Drag the right (out) handle by `delta` seconds. Clamped so the
     /// clip stays within the source length and keeps at least `MIN_CLIP`.
-    pub fn trim_out(&mut self, id: ClipId, delta: f64) {
+    /// Returns the delta actually applied, for the same reason
+    /// [`Self::trim_in`] does.
+    pub fn trim_out(&mut self, id: ClipId, delta: f64) -> f64 {
         let media_dur = self
             .clip(id)
             .and_then(|c| self.media(c.media))
             .map(|m| m.duration);
+        let mut applied = 0.0;
         if let (Some(c), Some(media_dur)) = (self.clip_mut(id), media_dur) {
             let max_out = media_dur;
             let min_out = c.in_point + MIN_CLIP;
+            let before = c.out_point;
             c.out_point = (c.out_point + delta).clamp(min_out, max_out);
+            applied = c.out_point - before;
         }
+        applied
     }
 
     pub fn delete_clip(&mut self, id: ClipId) {
@@ -2176,10 +2529,16 @@ impl Project {
     /// Paste `clip` as a new independent clip starting at `start` on
     /// `track` (the clip keeps its trim window, filters and fades). Returns
     /// the new id. Used by copy/paste — the source clip is unchanged.
+    ///
+    /// Independent includes *unlinked*: carrying the source's link group over
+    /// would tie the copy to the clip it was copied from, so dragging the
+    /// original would drag the copy across the timeline. A caller pasting a
+    /// whole linked pair re-links the copies to each other afterwards.
     pub fn paste_clip(&mut self, mut clip: Clip, track: TrackId, start: f64) -> ClipId {
         clip.id = Uuid::new_v4();
         clip.track = track;
         clip.start = start.max(0.0);
+        clip.link = None;
         let id = clip.id;
         self.clips.push(clip);
         id
@@ -3571,5 +3930,314 @@ mod tests {
         assert_eq!(p.next_marker_at(9.0), None);
         assert_eq!(p.prev_marker_at(9.0), Some(4.0));
         assert_eq!(p.prev_marker_at(4.0), None);
+    }
+}
+
+/// Linked audio and video: the shared group id, what follows it, and what a
+/// half-deleted pair degrades to.
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    /// A project holding one picture source whose container carries sound,
+    /// placed on V1, plus an empty audio lane to split the sound onto.
+    fn shot() -> (Project, ClipId, TrackId) {
+        let mut p = Project::new("interview");
+        let media = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: media,
+            name: "Interview_A.mp4".into(),
+            kind: MediaKind::Video,
+            duration: 30.0,
+            has_audio: true,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            ..Default::default()
+        });
+        let v1 = Uuid::new_v4();
+        p.tracks.push(Track {
+            id: v1,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            ..Default::default()
+        });
+        let a1 = Uuid::new_v4();
+        p.tracks.push(Track {
+            id: a1,
+            name: "A1".into(),
+            kind: TrackKind::Audio,
+            index: 1,
+            ..Default::default()
+        });
+        let cid = p.add_clip(v1, media, 2.0).expect("place the picture");
+        {
+            let c = p.clip_mut(cid).expect("the clip");
+            c.in_point = 4.0;
+            c.out_point = 14.0;
+            c.filters.saturation = 0.8;
+        }
+        (p, cid, a1)
+    }
+
+    /// The pair, already split.
+    fn pair() -> (Project, ClipId, ClipId) {
+        let (mut p, vid, a1) = shot();
+        let aid = p.add_linked_audio(vid, a1).expect("split the sound off");
+        (p, vid, aid)
+    }
+
+    #[test]
+    fn splitting_the_sound_off_makes_a_second_clip_over_the_same_frames() {
+        let (p, vid, aid) = pair();
+        let v = p.clip(vid).expect("picture");
+        let a = p.clip(aid).expect("sound");
+        assert_ne!(vid, aid, "the sound is its own clip, not the same one");
+        assert_eq!(
+            a.media, v.media,
+            "both halves read the one source; the bin does not grow a copy"
+        );
+        assert!((a.start - v.start).abs() < 1e-9, "they start together");
+        assert!((a.in_point - v.in_point).abs() < 1e-9);
+        assert!((a.out_point - v.out_point).abs() < 1e-9);
+        assert_eq!(
+            p.track(a.track).map(|t| t.kind),
+            Some(TrackKind::Audio),
+            "the sound lands on an audio lane, which is what makes it \
+             sliddable, levellable and cuttable on its own",
+        );
+        assert_eq!(v.link, a.link, "one shared group id");
+        assert!(v.link.is_some());
+        assert!(
+            v.sound_split,
+            "the picture must stop carrying the sound the audio clip now has",
+        );
+        assert!(
+            !a.sound_split,
+            "the sound half is where the sound comes from",
+        );
+        assert!(
+            a.filters.is_identity(),
+            "a grade describes frames the sound half never draws: {:?}",
+            a.filters,
+        );
+    }
+
+    #[test]
+    fn a_link_is_a_group_so_losing_one_half_leaves_an_ordinary_clip() {
+        // The whole reason it is a shared id rather than "my partner is clip
+        // X": no dangling reference to repair, and no repair to conflict over.
+        let (mut p, vid, aid) = pair();
+        assert!(p.is_linked(vid) && p.is_linked(aid));
+        assert_eq!(p.link_partners(vid), vec![aid]);
+        p.delete_clip(aid);
+        assert!(
+            !p.is_linked(vid),
+            "a group with one member is a clip, not a link",
+        );
+        assert!(p.link_partners(vid).is_empty());
+        assert!(
+            p.clip(vid)
+                .expect("the picture is still there")
+                .link
+                .is_some(),
+            "and nothing had to be written to repair it",
+        );
+    }
+
+    #[test]
+    fn linking_needs_two_clips_and_unlinking_leaves_two_ordinary_ones() {
+        let (mut p, vid, aid) = pair();
+        assert_eq!(
+            p.link_clips(&[vid]),
+            None,
+            "one clip is not a link, and asking must change nothing",
+        );
+        let changed = p.unlink_clips(&[vid, aid]);
+        assert_eq!(changed.len(), 2, "both halves changed: {changed:?}");
+        assert!(p.clip(vid).expect("picture").link.is_none());
+        assert!(p.clip(aid).expect("sound").link.is_none());
+        assert!(!p.is_linked(vid) && !p.is_linked(aid));
+        // …and back again, on a fresh group id.
+        let group = p.link_clips(&[vid, aid]).expect("two clips do link");
+        assert_eq!(p.clip(vid).expect("picture").link, Some(group));
+        assert_eq!(p.clip(aid).expect("sound").link, Some(group));
+    }
+
+    #[test]
+    fn splitting_a_linked_shot_gives_the_two_tails_a_group_of_their_own() {
+        // Four clips in one group would make dragging the second half of the
+        // shot drag the first half with it.
+        let (mut p, vid, aid) = pair();
+        let was = p.clip(vid).expect("picture").link;
+        let pairs = p.split_linked(vid, 6.0);
+        assert_eq!(pairs.len(), 2, "both lanes were cut: {pairs:?}");
+        let tails: Vec<ClipId> = pairs.iter().map(|(_, t)| *t).collect();
+        let tail_link = p.clip(tails[0]).expect("a tail").link;
+        assert!(tail_link.is_some());
+        assert_ne!(tail_link, was, "the tails are not in the heads' group");
+        assert_eq!(
+            p.clip(tails[1]).expect("the other tail").link,
+            tail_link,
+            "but they are in each other's",
+        );
+        assert_eq!(
+            p.clip(vid).expect("head").link,
+            was,
+            "the heads keep theirs"
+        );
+        assert_eq!(p.clip(aid).expect("head").link, was);
+        assert_eq!(p.link_group(tails[0]).len(), 2);
+        assert_eq!(p.link_group(vid).len(), 2);
+    }
+
+    #[test]
+    fn a_lone_tail_comes_away_unlinked_rather_than_tied_to_its_head() {
+        let (mut p, vid, _aid) = pair();
+        // Only the picture is offered to the cut (a locked sound lane, say).
+        let pairs = p.split_group(&[vid], 6.0);
+        assert_eq!(pairs.len(), 1);
+        assert!(
+            p.clip(pairs[0].1).expect("the tail").link.is_none(),
+            "a tail with no sibling must not stay in the group it was cut from",
+        );
+    }
+
+    #[test]
+    fn a_trim_that_clamps_on_one_half_clamps_on_both() {
+        // The halves do not have to hold identical windows -- a user can slide
+        // the sound. Handing the follower the *raw* delta would move it by
+        // more than the clip that was actually dragged, and the two would come
+        // out of a single drag desynced by exactly the difference.
+        let (mut p, vid, aid) = pair();
+        p.clip_mut(vid).expect("picture").in_point = 1.0;
+        p.clip_mut(aid).expect("sound").in_point = 6.0;
+        let applied = p.trim_in_linked(vid, -5.0);
+        assert!(
+            (applied - -1.0).abs() < 1e-9,
+            "the picture could only give back 1s of head: {applied}",
+        );
+        assert!((p.clip(vid).expect("picture").in_point - 0.0).abs() < 1e-9);
+        assert!(
+            (p.clip(aid).expect("sound").in_point - 5.0).abs() < 1e-9,
+            "the sound took the same 1s, not the 5s that was asked for",
+        );
+    }
+
+    #[test]
+    fn re_timing_one_half_re_times_the_other() {
+        // The one field where drifting apart is not cosmetic: the gap grows
+        // with every second of the shot and nothing on screen says why.
+        let (mut p, vid, aid) = pair();
+        p.set_speed_linked(vid, 2.0, true);
+        let v = p.clip(vid).expect("picture");
+        let a = p.clip(aid).expect("sound");
+        assert_eq!(a.speed, v.speed, "both halves play at one rate");
+        assert!((a.speed.rate() - 2.0).abs() < 1e-9);
+        assert!(a.speed.reverse);
+        assert!(
+            (a.duration() - v.duration()).abs() < 1e-9,
+            "so they still cover the same stretch of timeline",
+        );
+    }
+
+    #[test]
+    fn deleting_or_rippling_one_half_takes_the_whole_shot() {
+        let (mut p, vid, aid) = pair();
+        // A later clip on each lane, to prove the gap really closes on both.
+        let (v_track, a_track) = (
+            p.clip(vid).expect("picture").track,
+            p.clip(aid).expect("sound").track,
+        );
+        let media = p.clip(vid).expect("picture").media;
+        let after_v = p.add_clip(v_track, media, 20.0).expect("a later picture");
+        let after_a = p.add_clip(a_track, media, 20.0).expect("a later sound");
+        let gap = p.clip(vid).expect("picture").duration();
+
+        let (removed, moved) = p.ripple_delete_linked(vid);
+        assert_eq!(removed.len(), 2, "both halves went: {removed:?}");
+        assert!(p.clip(vid).is_none() && p.clip(aid).is_none());
+        assert!(
+            moved.contains(&after_v) && moved.contains(&after_a),
+            "{moved:?}"
+        );
+        for later in [after_v, after_a] {
+            assert!(
+                (p.clip(later).expect("later clip").start - (20.0 - gap)).abs() < 1e-9,
+                "the gap has to close on the sound lane as well as the picture one",
+            );
+        }
+
+        let (mut p, vid, aid) = pair();
+        assert_eq!(p.delete_linked(vid).len(), 2);
+        assert!(
+            p.clip(aid).is_none(),
+            "half a shot left behind is the surprise"
+        );
+    }
+
+    #[test]
+    fn a_clip_on_an_audio_lane_is_an_audio_clip_whatever_its_source_is() {
+        // The sound half references a *video* file. Reading its lane kind off
+        // the media would call it a video clip, and `can_place` would then
+        // refuse to let it move along the lane it is already on.
+        let (p, vid, aid) = pair();
+        assert_eq!(p.clip_kind(aid), TrackKind::Audio);
+        assert_eq!(
+            p.media_kind_of(aid),
+            TrackKind::Video,
+            "the source really is a picture; it is the placement that differs",
+        );
+        assert_eq!(p.clip_kind(vid), TrackKind::Video);
+        let a_track = p.clip(aid).expect("sound").track;
+        assert!(
+            p.can_place(aid, a_track),
+            "the sound half must be able to move along its own lane",
+        );
+        assert!(
+            !p.can_place(vid, a_track),
+            "and a picture clip still may not land on an audio lane",
+        );
+    }
+
+    #[test]
+    fn a_pasted_copy_is_independent_of_the_shot_it_came_from() {
+        // Carrying the group over would tie the copy to the original, so
+        // dragging the original would drag the copy across the timeline.
+        let (mut p, vid, _aid) = pair();
+        let clip = p.clip(vid).expect("picture").clone();
+        let track = clip.track;
+        let copy = p.paste_clip(clip, track, 30.0);
+        assert!(p.clip(copy).expect("the copy").link.is_none());
+        assert!(!p.is_linked(copy));
+    }
+
+    #[test]
+    fn a_shot_offers_to_split_its_sound_until_it_has() {
+        let (p, vid, _a1) = shot();
+        assert!(
+            p.can_split_audio(vid),
+            "a project made before links existed has to be able to get one",
+        );
+        let (mut p, vid, aid) = pair();
+        assert!(
+            !p.can_split_audio(vid),
+            "not while a linked clip is already carrying that sound: it would \
+             be heard twice",
+        );
+        assert!(!p.can_split_audio(aid), "and never off a sound clip");
+        // Losing the sound half -- deleting the lane it sits on takes every
+        // one of them -- has to be recoverable, or every shot on the timeline
+        // is permanently silent with nothing offering a way back.
+        p.delete_clip(aid);
+        assert!(
+            p.clip(vid).expect("picture").sound_split,
+            "the flag stays: the sound really did leave the picture",
+        );
+        assert!(
+            p.can_split_audio(vid),
+            "…but the clip it left for is gone, so the offer has to come back",
+        );
     }
 }
