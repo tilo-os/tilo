@@ -41,6 +41,7 @@ use ui::widget::{
 
 use crate::date;
 use crate::doc::ContactsDoc;
+use crate::export_dialog::ExportDialog;
 use crate::model::{
     Address, Birthday, Contact, ContactId, ContactStore, Labeled, SortKey, sample_contacts,
 };
@@ -432,11 +433,8 @@ pub struct ContactsApp {
     toast: Option<(String, Instant)>,
     confirm_delete: Option<ContactId>,
 
-    /// Open export-selection dialog: the set of contact ids currently ticked
-    /// for export. `Some` ⇒ the modal is showing.
-    export_sel: Option<std::collections::HashSet<ContactId>>,
-    /// Scroll offset of the export dialog's contact list.
-    export_scroll: f64,
+    /// Self-contained export selection modal: state, drawing and input routing.
+    export_dialog: ExportDialog,
     /// When switching to another contact would lose unsaved edits, the
     /// target id parks here while the "Save changes?" modal is shown.
     pending_switch: Option<ContactId>,
@@ -553,8 +551,7 @@ impl ContactsApp {
             popup: None,
             toast: None,
             confirm_delete: None,
-            export_sel: None,
-            export_scroll: 0.0,
+            export_dialog: ExportDialog::new(),
             pending_switch: None,
             rect: Rect::ZERO,
             split_pos: 0.34,
@@ -1047,8 +1044,7 @@ impl ContactsApp {
     /// add via the per-row checkboxes / Select all / Select none.
     fn open_export_dialog(&mut self) {
         let pre: std::collections::HashSet<ContactId> = self.visible_ids().into_iter().collect();
-        self.export_sel = Some(pre);
-        self.export_scroll = 0.0;
+        self.export_dialog.open(pre);
         self.popup = None;
         self.dirty = true;
     }
@@ -1589,8 +1585,17 @@ impl ContactsApp {
         if let Some(popup) = &self.popup {
             self.draw_popup(scene, transform, tr, theme, popup);
         }
-        if self.export_sel.is_some() {
-            self.draw_export_dialog(scene, transform, tr, theme);
+        if self.export_dialog.is_open() {
+            self.export_dialog.draw(
+                scene,
+                transform,
+                tr,
+                theme,
+                self.rect,
+                &self.store,
+                self.sort,
+                self.last_mouse,
+            );
         }
         if self.pending_switch.is_some() {
             self.draw_unsaved_modal(scene, transform, tr, theme);
@@ -2764,109 +2769,6 @@ impl ContactsApp {
         }
     }
 
-    /// The export-selection dialog: a centered modal listing every contact
-    /// with a per-row checkbox, Select all / Select none, and the two vCard
-    /// version export actions. The user exports exactly the ticked set.
-    fn draw_export_dialog(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let c = &theme.tokens.colors;
-        let sel = self.export_sel.clone().unwrap_or_default();
-        // Scrim.
-        scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
-        let g = self.export_geometry();
-        menu_panel(scene, t, theme, g.panel);
-        // Title + count.
-        tr.draw_text_weighted(
-            scene,
-            "Export contacts",
-            16.0,
-            c.text_primary,
-            t * Affine::translate((g.panel.x0 + 18.0, g.panel.y0 + 18.0)),
-            None,
-            TextWeight::Bold,
-        );
-        tr.draw_text(
-            scene,
-            &format!("{} selected", sel.len()),
-            12.0,
-            c.text_dim,
-            t * Affine::translate((g.panel.x0 + 18.0, g.panel.y0 + 40.0)),
-            None,
-        );
-        // Select all / none chips.
-        chip(scene, t, tr, theme, g.select_all, "Select all", false);
-        chip(scene, t, tr, theme, g.select_none, "Select none", false);
-
-        // Scrollable contact list with checkboxes.
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &g.list_body);
-        for (id, row, cb) in &g.rows {
-            if row.y1 < g.list_body.y0 || row.y0 > g.list_body.y1 {
-                continue;
-            }
-            let Some(contact) = self.store.get(*id) else {
-                continue;
-            };
-            let checked = sel.contains(id);
-            let hov = row.contains(self.last_mouse);
-            if hov {
-                let bg = RoundedRect::from_rect(*row, f64::from(theme.tokens.radii.md));
-                scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &bg);
-            }
-            draw_checkbox(scene, t, theme, *cb, checked);
-            tr.draw_text(
-                scene,
-                &contact.display_name(),
-                14.0,
-                c.text_primary,
-                t * Affine::translate((cb.x1 + 12.0, row.center().y - 9.0)),
-                Some((row.x1 - cb.x1 - 20.0) as f32),
-            );
-        }
-        scene.pop_layer();
-
-        // Footer buttons.
-        let m = self.last_mouse;
-        toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
-            g.cancel,
-            "Cancel",
-            false,
-            g.cancel.contains(m),
-            false,
-        );
-        toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
-            g.export_v3,
-            "Export 3.0",
-            false,
-            g.export_v3.contains(m),
-            false,
-        );
-        toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
-            g.export_v4,
-            "Export 4.0",
-            true,
-            g.export_v4.contains(m),
-            false,
-        );
-        let _ = g.content_h;
-    }
-
     /// The "Save changes?" guard modal shown when the user tries to switch
     /// contacts while an edit form holds unsaved changes.
     fn draw_unsaved_modal(
@@ -3014,22 +2916,6 @@ impl ContactsApp {
     }
 }
 
-/// Geometry of the export-selection dialog. Grouped so draw + hit-test share
-/// one source of truth.
-struct ExportGeom {
-    panel: Rect,
-    select_all: Rect,
-    select_none: Rect,
-    list_body: Rect,
-    /// `(contact id, full row rect, checkbox rect)` for every contact.
-    rows: Vec<(ContactId, Rect, Rect)>,
-    export_v3: Rect,
-    export_v4: Rect,
-    cancel: Rect,
-    /// Total scrollable content height (for clamping `export_scroll`).
-    content_h: f64,
-}
-
 /// Geometry of the unsaved-changes ("Save changes?") modal.
 struct UnsavedGeom {
     panel: Rect,
@@ -3039,78 +2925,6 @@ struct UnsavedGeom {
 }
 
 impl ContactsApp {
-    fn export_geometry(&self) -> ExportGeom {
-        let w = 460.0_f64;
-        let h = (self.rect.height() * 0.8)
-            .clamp(320.0, 560.0)
-            .min(self.rect.height() - 40.0);
-        let cx = self.rect.center().x;
-        let cy = self.rect.center().y;
-        let panel = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
-        // Header band: title + Select all / none on the right.
-        let head_y = panel.y0 + 18.0;
-        let select_none = Rect::new(
-            panel.x1 - 16.0 - 96.0,
-            head_y,
-            panel.x1 - 16.0,
-            head_y + 28.0,
-        );
-        let select_all = Rect::new(
-            select_none.x0 - 8.0 - 96.0,
-            head_y,
-            select_none.x0 - 8.0,
-            head_y + 28.0,
-        );
-        // Scrollable list region between header and footer.
-        let list_top = panel.y0 + 64.0;
-        let footer_top = panel.y1 - 56.0;
-        let list_body = Rect::new(panel.x0 + 16.0, list_top, panel.x1 - 16.0, footer_top - 8.0);
-        let ids = self.visible_export_ids();
-        let row_h = 40.0;
-        let mut rows = Vec::new();
-        let mut ry = list_body.y0 - self.export_scroll;
-        for id in &ids {
-            let row = Rect::new(list_body.x0, ry, list_body.x1, ry + row_h);
-            let cb = Rect::new(
-                row.x0 + 4.0,
-                row.center().y - 10.0,
-                row.x0 + 24.0,
-                row.center().y + 10.0,
-            );
-            rows.push((*id, row, cb));
-            ry += row_h;
-        }
-        let content_h = ids.len() as f64 * row_h;
-        // Footer buttons.
-        let by = panel.y1 - 44.0;
-        let export_v4 = Rect::new(panel.x1 - 16.0 - 120.0, by, panel.x1 - 16.0, by + 32.0);
-        let export_v3 = Rect::new(
-            export_v4.x0 - 8.0 - 120.0,
-            by,
-            export_v4.x0 - 8.0,
-            by + 32.0,
-        );
-        let cancel = Rect::new(panel.x0 + 16.0, by, panel.x0 + 16.0 + 88.0, by + 32.0);
-        ExportGeom {
-            panel,
-            select_all,
-            select_none,
-            list_body,
-            rows,
-            export_v3,
-            export_v4,
-            cancel,
-            content_h,
-        }
-    }
-
-    /// Contacts offered in the export dialog: the whole address book in the
-    /// current sort order (export is not limited to the active filter — the
-    /// dialog lets you pick from everyone).
-    fn visible_export_ids(&self) -> Vec<ContactId> {
-        self.store.filtered_sorted("", None, self.sort)
-    }
-
     fn unsaved_geometry(&self) -> UnsavedGeom {
         let w = 420.0;
         let h = 156.0;
@@ -3219,7 +3033,7 @@ fn type_label(draft: &Contact, target: TypeTarget) -> &str {
     clippy::too_many_arguments,
     reason = "a draw helper's scene/transform/text-renderer/theme plus the geometry and state it paints are each independently meaningful, matching detail_field/menu_item elsewhere in this file"
 )]
-fn toolbar_button(
+pub(crate) fn toolbar_button(
     scene: &mut Scene,
     t: Affine,
     tr: &mut TextRenderer,
@@ -3280,7 +3094,7 @@ fn add_button(
     );
 }
 
-fn chip(
+pub(crate) fn chip(
     scene: &mut Scene,
     t: Affine,
     tr: &mut TextRenderer,
@@ -3317,7 +3131,7 @@ fn contact_chip_style(theme: &Theme, active: bool) -> ChipStyle {
     }
 }
 
-fn menu_panel(scene: &mut Scene, t: Affine, theme: &Theme, panel: Rect) {
+pub(crate) fn menu_panel(scene: &mut Scene, t: Affine, theme: &Theme, panel: Rect) {
     let c = &theme.tokens.colors;
     // Soft shadow.
     let shadow = RoundedRect::from_rect(panel.inset(2.0), f64::from(theme.tokens.radii.md) + 1.0);
@@ -3391,7 +3205,13 @@ fn menu_item_colored(
     );
 }
 
-fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, checked: bool) {
+pub(crate) fn draw_checkbox(
+    scene: &mut Scene,
+    t: Affine,
+    theme: &Theme,
+    rect: Rect,
+    checked: bool,
+) {
     Checkbox::paint(
         scene,
         t,
@@ -3794,7 +3614,7 @@ impl ContactsApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) -> bool {
-        if (self.export_sel.is_some()
+        if (self.export_dialog.is_open()
             || self.pending_switch.is_some()
             || self.confirm_delete.is_some())
             && let WindowEvent::KeyboardInput { event: ke, .. } = event
@@ -3817,7 +3637,7 @@ impl ContactsApp {
             *handled = true;
             return true;
         }
-        if self.export_sel.is_some() {
+        if self.export_dialog.is_open() {
             self.handle_export(event, handled);
             return true;
         }
@@ -4714,8 +4534,7 @@ impl ContactsApp {
                 // contact.
                 let mut set = std::collections::HashSet::new();
                 set.insert(target);
-                self.export_sel = Some(set);
-                self.export_scroll = 0.0;
+                self.export_dialog.open(set);
             }
             ContextAction::Delete => {
                 self.selected = Some(target);
@@ -4810,83 +4629,21 @@ impl ContactsApp {
     /// scroll, the two export actions, and dismissal.
     fn handle_export(&mut self, event: &WindowEvent, handled: &mut bool) {
         if matches!(event, WindowEvent::CursorMoved { .. }) {
-            self.dirty = true; // hover highlight
-        }
-        if let WindowEvent::MouseWheel { delta, .. } = event {
-            let dy = match delta {
-                MouseScrollDelta::LineDelta(_, y) => f64::from(-y * 48.0),
-                MouseScrollDelta::PixelDelta(p) => -p.y,
-            };
-            let g = self.export_geometry();
-            let max = (g.content_h - g.list_body.height()).max(0.0);
-            self.export_scroll = (self.export_scroll + dy).clamp(0.0, max);
             self.dirty = true;
-            *handled = true;
-            return;
         }
-        let press = matches!(
+        let (consumed, request) = self.export_dialog.handle_event(
             event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            }
+            self.last_mouse,
+            self.rect,
+            &self.store,
+            self.sort,
         );
-        if !press {
-            return;
+        *handled |= consumed;
+        if consumed {
+            self.dirty = true;
         }
-        *handled = true;
-        self.dirty = true;
-        let p = self.last_mouse;
-        let g = self.export_geometry();
-
-        if g.select_all.contains(p) {
-            let all: std::collections::HashSet<ContactId> =
-                self.visible_export_ids().into_iter().collect();
-            self.export_sel = Some(all);
-            return;
-        }
-        if g.select_none.contains(p) {
-            self.export_sel = Some(std::collections::HashSet::new());
-            return;
-        }
-        // Row checkbox toggle (whole row is clickable).
-        if g.list_body.contains(p) {
-            if let Some((id, _, _)) = g.rows.iter().find(|(_, r, _)| r.contains(p))
-                && let Some(set) = &mut self.export_sel
-            {
-                if set.contains(id) {
-                    set.remove(id);
-                } else {
-                    set.insert(*id);
-                }
-            }
-            return;
-        }
-        if g.cancel.contains(p) {
-            self.export_sel = None;
-            return;
-        }
-        if g.export_v3.contains(p) || g.export_v4.contains(p) {
-            let version = if g.export_v4.contains(p) {
-                VCardVersion::V4
-            } else {
-                VCardVersion::V3
-            };
-            let ids: Vec<ContactId> = self
-                .visible_export_ids()
-                .into_iter()
-                .filter(|id| self.export_sel.as_ref().is_some_and(|s| s.contains(id)))
-                .collect();
-            // Close the selection dialog and hand off to the host Save dialog;
-            // the file is written when the portal returns a destination.
-            self.export_sel = None;
-            self.request_export(ids, version);
-            return;
-        }
-        // Click on the scrim (outside the panel) dismisses.
-        if !g.panel.contains(p) {
-            self.export_sel = None;
+        if let Some(request) = request {
+            self.request_export(request.ids, request.version);
         }
     }
 
@@ -5043,8 +4800,8 @@ impl ContactsApp {
     /// topmost, in priority order, or (with nothing open) clears search/form
     /// focus. The caller sets `handled`/`dirty` uniformly afterward.
     fn handle_key_escape(&mut self) {
-        if self.export_sel.is_some() {
-            self.export_sel = None;
+        if self.export_dialog.is_open() {
+            self.export_dialog.close();
         } else if self.pending_switch.is_some() {
             self.pending_switch = None;
         } else if self.confirm_delete.is_some() {
@@ -7108,31 +6865,40 @@ mod tests {
         // Open the export dialog via the toolbar Export button.
         h.press_left(h.app.hit.export.center());
         assert!(
-            h.app.export_sel.is_some(),
+            h.app.export_dialog.is_open(),
             "Export opens the selection dialog"
         );
         // Pre-ticked with all visible contacts.
-        let total = h.app.visible_export_ids().len();
+        let total = h.app.store.filtered_sorted("", None, h.app.sort).len();
         assert_eq!(
-            h.app.export_sel.as_ref().unwrap().len(),
+            h.app.export_dialog.selection().len(),
             total,
             "all pre-selected"
         );
         // Select none, then tick exactly one row.
-        let g = h.app.export_geometry();
+        let g = h
+            .app
+            .export_dialog
+            .geometry(h.app.rect, &h.app.store, h.app.sort);
         h.press_left(g.select_none.center());
-        let g = h.app.export_geometry();
+        let g = h
+            .app
+            .export_dialog
+            .geometry(h.app.rect, &h.app.store, h.app.sort);
         let (first_id, _row, cb) = g.rows[0];
         h.press_left(cb.center());
-        assert_eq!(h.app.export_sel.as_ref().unwrap().len(), 1);
-        assert!(h.app.export_sel.as_ref().unwrap().contains(&first_id));
+        assert_eq!(h.app.export_dialog.selection().len(), 1);
+        assert!(h.app.export_dialog.selection().contains(&first_id));
 
         // Export 3.0 → closes the dialog and parks the selection for the Save
         // dialog. It must NOT write anything before the user chooses a path.
-        let g = h.app.export_geometry();
+        let g = h
+            .app
+            .export_dialog
+            .geometry(h.app.rect, &h.app.store, h.app.sort);
         h.press_left(g.export_v3.center());
         assert!(
-            h.app.export_sel.is_none(),
+            !h.app.export_dialog.is_open(),
             "choosing a version closes the dialog"
         );
         {
@@ -7174,7 +6940,7 @@ mod tests {
         // writes a matching .vcf to the given path.
         let (dir, vcf) = scratch_export();
         let mut h = Harness::new(1280, 800);
-        let ids = h.app.visible_export_ids();
+        let ids = h.app.store.filtered_sorted("", None, h.app.sort);
         let total = ids.len();
         h.app.write_export(&ids, VCardVersion::V4, &vcf);
         let body = std::fs::read_to_string(&vcf).unwrap();
