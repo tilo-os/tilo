@@ -43,11 +43,65 @@ use crate::shell::collab_broker::{
     apply_redaction_from_envelope,
 };
 use crate::shell::collab_outbound::PeerPublisher;
+use crate::shell::state::{CapRole, Principal, WorkspaceTree, WorkspaceTreeHandle};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct VerifiedJoinIdentity {
     user_public_key: [u8; 32],
     device_public_key: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AdmittedJoinIdentity {
+    verified: VerifiedJoinIdentity,
+    principal_id: String,
+    /// Workspace admission role from the owner/capability roster. This does
+    /// not replace `ChannelState`'s signed role attestations: they remain the
+    /// authority for which signed operation classes the device may apply.
+    role: CapRole,
+}
+
+fn principal_id_for_root(user_public_key: [u8; 32]) -> String {
+    match Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(user_public_key)) {
+        Principal::Person(id) => id,
+        _ => hex::encode(user_public_key),
+    }
+}
+
+fn admit_verified_join(
+    tree: &WorkspaceTree,
+    route: &CrdtRoute,
+    verified: VerifiedJoinIdentity,
+) -> Result<AdmittedJoinIdentity, String> {
+    let workspace = tree
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room.to_string() == route.cluster_id)
+        .ok_or_else(|| "certified join names a workspace this session does not host".to_string())?;
+    let principal_id = principal_id_for_root(verified.user_public_key);
+    let role = workspace
+        .role_of(&principal_id)
+        .ok_or_else(|| "certified collaboration identity is not a workspace member".to_string())?;
+    if role == CapRole::Denied {
+        return Err("certified collaboration identity is blocked in this workspace".into());
+    }
+    Ok(AdmittedJoinIdentity {
+        verified,
+        principal_id,
+        role,
+    })
+}
+
+fn verify_session_author(
+    admitted: Option<&AdmittedJoinIdentity>,
+    author: collab_types::Ed25519PublicKey,
+) -> Result<(), String> {
+    if let Some(identity) = admitted
+        && author.as_bytes() != &identity.verified.device_public_key
+    {
+        return Err("signed op author does not match the certified device for this session".into());
+    }
+    Ok(())
 }
 
 fn verify_join_presentation(
@@ -93,7 +147,8 @@ fn verify_join_presentation(
 fn verify_join_identity(
     route: &CrdtRoute,
     identity_bytes: &[u8],
-) -> Result<Option<VerifiedJoinIdentity>, String> {
+    membership: Option<&WorkspaceTreeHandle>,
+) -> Result<Option<AdmittedJoinIdentity>, String> {
     let Some(presentation) = runtime_collab::CertifiedJoinIdentity::decode(identity_bytes)
         .map_err(|error| format!("certified join presentation is malformed: {error}"))?
     else {
@@ -126,15 +181,17 @@ fn verify_join_identity(
                 .saturating_mul(1_000_000_000)
                 .saturating_add(u64::from(duration.subsec_nanos()))
         });
-    verify_join_presentation(
+    let verified = verify_join_presentation(
         route,
         &presentation,
         &profile.user_public_key,
         now_ns,
         revoked,
         enrolled,
-    )
-    .map(Some)
+    )?;
+    let membership = membership
+        .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;
+    admit_verified_join(&membership.read(), route, verified).map(Some)
 }
 
 /// Envelope pushed onto an [`OpStreamServer`]'s queue. `kind` is what
@@ -203,6 +260,10 @@ pub struct CapnpBrokerState {
     publisher: Arc<PeerPublisher>,
     /// Resolves local participant names through the room authority.
     identity: Arc<LocalIdentity>,
+    /// The shell's one replicated workspace owner/capability authority.
+    /// `None` exists only for transitional test/diagnostic brokers; a
+    /// certified join fails closed when they have no authority to consult.
+    membership: Option<WorkspaceTreeHandle>,
 }
 
 impl CapnpBrokerState {
@@ -217,6 +278,7 @@ impl CapnpBrokerState {
         broker_channels: Arc<Mutex<BrokerChannels>>,
         publisher: Arc<PeerPublisher>,
         identity: Arc<LocalIdentity>,
+        membership: Option<WorkspaceTreeHandle>,
     ) -> Arc<Self> {
         Arc::new(Self {
             channels: Mutex::new(HashMap::new()),
@@ -224,13 +286,42 @@ impl CapnpBrokerState {
             broker_channels,
             publisher,
             identity,
+            membership,
         })
     }
 
     /// `joinChannel(channelId, identity)` carries no announced handle,
     /// so the room lookup is the only answer for who to stamp traffic as.
-    fn participant_id(&self, route: &CrdtRoute, announced: Option<&str>) -> String {
-        self.identity.resolve(Some(route), announced)
+    fn participant_id(
+        &self,
+        route: &CrdtRoute,
+        announced: Option<&str>,
+        admitted: Option<&AdmittedJoinIdentity>,
+    ) -> String {
+        admitted.map_or_else(
+            || self.identity.resolve(Some(route), announced),
+            |identity| identity.principal_id.clone(),
+        )
+    }
+
+    fn revalidate_admission(
+        &self,
+        route: &CrdtRoute,
+        admitted: Option<&AdmittedJoinIdentity>,
+    ) -> Result<(), capnp::Error> {
+        let Some(admitted) = admitted else {
+            return Ok(());
+        };
+        let membership = self.membership.as_ref().ok_or_else(|| {
+            capnp::Error::failed("certified session lost its membership authority".into())
+        })?;
+        admit_verified_join(&membership.read(), route, admitted.verified.clone())
+            .map(|_| ())
+            .map_err(|error| {
+                capnp::Error::failed(format!(
+                    "certified collaboration session is no longer admitted: {error}"
+                ))
+            })
     }
 
     fn publisher(&self) -> &Arc<PeerPublisher> {
@@ -524,7 +615,12 @@ impl collab_service::Server for CapnpCollabService {
                 .to_owned();
             let identity = reader.get_identity()?;
             let route = CrdtRoute::from_channel_key(&channel_id);
-            let verified_identity = verify_join_identity(&route, identity).map_err(|error| {
+            let verified_identity = verify_join_identity(
+                &route,
+                identity,
+                state.membership.as_ref(),
+            )
+            .map_err(|error| {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
             })?;
             let announced_handle = reader
@@ -539,6 +635,11 @@ impl collab_service::Server for CapnpCollabService {
                 channel = %channel_id,
                 peer_id,
                 certified = verified_identity.is_some(),
+                role = ?verified_identity.as_ref().map(|identity| identity.role),
+                principal = verified_identity.as_ref().map(|identity| identity.principal_id.as_str()),
+                device = ?verified_identity.as_ref().map(|identity| {
+                    collab_types::Ed25519PublicKey::from_bytes(identity.verified.device_public_key)
+                }),
                 "PROBE join_channel",
             );
             state.ensure_channel(&channel_id);
@@ -548,6 +649,7 @@ impl collab_service::Server for CapnpCollabService {
                 channel_id,
                 peer_id,
                 announced_handle,
+                verified_identity,
             };
             let client: channel_handle::Client = capnp_rpc::new_client(handle);
             results.get().set_handle(client);
@@ -563,6 +665,7 @@ struct CapnpChannelHandle {
     channel_id: String,
     peer_id: u64,
     announced_handle: Option<String>,
+    verified_identity: Option<AdmittedJoinIdentity>,
 }
 
 impl CapnpChannelHandle {
@@ -583,6 +686,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         let peer_id = self.peer_id;
         let route = self.route();
         let announced_handle = self.announced_handle.clone();
+        let verified_identity = self.verified_identity.clone();
         Promise::from_future(async move {
             let op_bytes = params.get()?.get_op()?.to_vec();
             let envelope: SignedOp = postcard::from_bytes(&op_bytes).map_err(|e| {
@@ -590,11 +694,15 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "capnp send: op is not a postcard-encoded SignedOp: {e}"
                 ))
             })?;
+            state.revalidate_admission(&route, verified_identity.as_ref())?;
+            verify_session_author(verified_identity.as_ref(), envelope.author)
+                .map_err(|error| capnp::Error::failed(format!("capnp send: {error}")))?;
             handle_signed_op_send(
                 &state,
                 peer_id,
                 &route,
                 announced_handle.as_deref(),
+                verified_identity.as_ref(),
                 envelope,
             );
             Ok(())
@@ -606,6 +714,12 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::SubscribeParams,
         mut results: channel_handle::SubscribeResults,
     ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), self.verified_identity.as_ref())
+        {
+            return Promise::err(error);
+        }
         let rx = self.state.subscribe_ops(&self.channel_id, self.peer_id);
         let server = OpStreamServer {
             rx: Rc::new(AsyncMutex::new(rx)),
@@ -620,11 +734,18 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::PresenceParams,
         mut results: channel_handle::PresenceResults,
     ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), self.verified_identity.as_ref())
+        {
+            return Promise::err(error);
+        }
         let handle = CapnpPresenceHandle {
             state: self.state.clone(),
             channel_id: self.channel_id.clone(),
             peer_id: self.peer_id,
             announced_handle: self.announced_handle.clone(),
+            verified_identity: self.verified_identity.clone(),
         };
         let client: presence_handle::Client = capnp_rpc::new_client(handle);
         results.get().set_handle(client);
@@ -639,7 +760,9 @@ impl channel_handle::Server for CapnpChannelHandle {
         let state = self.state.clone();
         let peer_id = self.peer_id;
         let route = self.route();
+        let verified_identity = self.verified_identity.clone();
         Promise::from_future(async move {
+            state.revalidate_admission(&route, verified_identity.as_ref())?;
             let data = params.get()?.get_data()?.to_vec();
             state.publisher().document_snapshot(&route, data.clone());
             if let Some(t) = state.fanout.upgrade() {
@@ -657,7 +780,9 @@ impl channel_handle::Server for CapnpChannelHandle {
         let state = self.state.clone();
         let peer_id = self.peer_id;
         let route = self.route();
+        let verified_identity = self.verified_identity.clone();
         Promise::from_future(async move {
+            state.revalidate_admission(&route, verified_identity.as_ref())?;
             let data = params.get()?.get_data()?.to_vec();
             state.publisher().document_incremental(&route, data.clone());
             if let Some(t) = state.fanout.upgrade() {
@@ -672,6 +797,12 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::SubscribeContextParams,
         mut results: channel_handle::SubscribeContextResults,
     ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), self.verified_identity.as_ref())
+        {
+            return Promise::err(error);
+        }
         let rx = self.state.subscribe_context(&self.channel_id, self.peer_id);
         let server = ContextStreamServer {
             rx: Rc::new(AsyncMutex::new(rx)),
@@ -686,6 +817,12 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::FetchScrollbackForParams,
         mut results: channel_handle::FetchScrollbackForResults,
     ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), self.verified_identity.as_ref())
+        {
+            return Promise::err(error);
+        }
         let broker_channels = self.state.broker_channels.clone();
         Promise::from_future(async move {
             let p = params.get()?;
@@ -714,6 +851,7 @@ fn handle_signed_op_send(
     peer_id: u64,
     route: &CrdtRoute,
     announced_handle: Option<&str>,
+    verified_identity: Option<&AdmittedJoinIdentity>,
     envelope: SignedOp,
 ) {
     let artifact = envelope.artifact;
@@ -742,7 +880,7 @@ fn handle_signed_op_send(
             state.publisher().signed_document(route, envelope.clone());
             let event = CollabEvent::SignedCRDTIncremental {
                 envelope: Box::new(envelope),
-                from_user_id: state.participant_id(route, announced_handle),
+                from_user_id: state.participant_id(route, announced_handle, verified_identity),
             };
             if let Some(t) = state.fanout.upgrade() {
                 t.fanout_to_route(&event, peer_id, route);
@@ -852,6 +990,7 @@ struct CapnpPresenceHandle {
     channel_id: String,
     peer_id: u64,
     announced_handle: Option<String>,
+    verified_identity: Option<AdmittedJoinIdentity>,
 }
 
 impl CapnpPresenceHandle {
@@ -865,6 +1004,38 @@ impl CapnpPresenceHandle {
     fn full_route(&self) -> CrdtRoute {
         CrdtRoute::from_channel_key(&self.channel_id)
     }
+
+    fn revalidate(&self) -> Result<(), capnp::Error> {
+        self.state
+            .revalidate_admission(&self.route(), self.verified_identity.as_ref())
+    }
+
+    /// Publish one typed keyed-presence update. A malformed key is isolated
+    /// to this update rather than taking down the broker.
+    fn publish_keyed(&self, key_bytes: &[u8], payload: PresencePayload) {
+        let Ok(key) = postcard::from_bytes::<PresenceKey>(key_bytes) else {
+            tracing::debug!(
+                len = key_bytes.len(),
+                "capnp presence publish: key bytes not decodable — dropping",
+            );
+            return;
+        };
+        let route = self.route();
+        self.state
+            .publish_presence(&self.full_route(), &key, &payload);
+        let event = CollabEvent::RemotePresenceUpdate {
+            user_id: self.state.participant_id(
+                &route,
+                self.announced_handle.as_deref(),
+                self.verified_identity.as_ref(),
+            ),
+            key,
+            payload,
+        };
+        if let Some(fanout) = self.state.fanout.upgrade() {
+            fanout.fanout_to_route(&event, self.peer_id, &route);
+        }
+    }
 }
 
 impl presence_handle::Server for CapnpPresenceHandle {
@@ -873,17 +1044,25 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishCursorParams,
         _results: presence_handle::PublishCursorResults,
     ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self.revalidate() {
+            return Promise::err(error);
+        }
         let state = self.state.clone();
         let peer_id = self.peer_id;
         let route = self.route();
         let full_route = self.full_route();
         let announced_handle = self.announced_handle.clone();
+        let verified_identity = self.verified_identity.clone();
         Promise::from_future(async move {
             let r = params.get()?;
             let (x, y) = (r.get_x(), r.get_y());
             // Cursor stream is keyless; full presence uses pointer_default().
             let event = CollabEvent::RemoteCursorMoved {
-                user_id: state.participant_id(&route, announced_handle.as_deref()),
+                user_id: state.participant_id(
+                    &route,
+                    announced_handle.as_deref(),
+                    verified_identity.as_ref(),
+                ),
                 x,
                 y,
             };
@@ -904,10 +1083,9 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishCaretParams,
         _results: presence_handle::PublishCaretResults,
     ) -> Promise<(), capnp::Error> {
-        let state = self.state.clone();
-        let peer_id = self.peer_id;
-        let route = self.route();
-        let full_route = self.full_route();
+        if let Err(error) = self.revalidate() {
+            return Promise::err(error);
+        }
         Promise::from_future(async move {
             let r = params.get()?;
             let key_bytes = r.get_key_bytes()?.to_vec();
@@ -916,15 +1094,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
             let pos = usize::try_from(r.get_pos()).map_err(|_| {
                 capnp::Error::failed("publishCaret: pos overflows usize on this platform".into())
             })?;
-            publish_keyed_presence(
-                &state,
-                peer_id,
-                &route,
-                &full_route,
-                self.announced_handle.as_deref(),
-                &key_bytes,
-                PresencePayload::Caret { pos },
-            );
+            self.publish_keyed(&key_bytes, PresencePayload::Caret { pos });
             Ok(())
         })
     }
@@ -934,10 +1104,9 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishSelectionParams,
         _results: presence_handle::PublishSelectionResults,
     ) -> Promise<(), capnp::Error> {
-        let state = self.state.clone();
-        let peer_id = self.peer_id;
-        let route = self.route();
-        let full_route = self.full_route();
+        if let Err(error) = self.revalidate() {
+            return Promise::err(error);
+        }
         Promise::from_future(async move {
             let r = params.get()?;
             let key_bytes = r.get_key_bytes()?.to_vec();
@@ -953,15 +1122,7 @@ impl presence_handle::Server for CapnpPresenceHandle {
                     "publishSelection: end overflows usize on this platform".into(),
                 )
             })?;
-            publish_keyed_presence(
-                &state,
-                peer_id,
-                &route,
-                &full_route,
-                self.announced_handle.as_deref(),
-                &key_bytes,
-                PresencePayload::Selection { start, end },
-            );
+            self.publish_keyed(&key_bytes, PresencePayload::Selection { start, end });
             Ok(())
         })
     }
@@ -971,22 +1132,13 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishArrivedParams,
         _results: presence_handle::PublishArrivedResults,
     ) -> Promise<(), capnp::Error> {
-        let state = self.state.clone();
-        let peer_id = self.peer_id;
-        let route = self.route();
-        let full_route = self.full_route();
+        if let Err(error) = self.revalidate() {
+            return Promise::err(error);
+        }
         Promise::from_future(async move {
             let r = params.get()?;
             let key_bytes = r.get_key_bytes()?.to_vec();
-            publish_keyed_presence(
-                &state,
-                peer_id,
-                &route,
-                &full_route,
-                self.announced_handle.as_deref(),
-                &key_bytes,
-                PresencePayload::Arrived,
-            );
+            self.publish_keyed(&key_bytes, PresencePayload::Arrived);
             Ok(())
         })
     }
@@ -996,22 +1148,13 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishLeftParams,
         _results: presence_handle::PublishLeftResults,
     ) -> Promise<(), capnp::Error> {
-        let state = self.state.clone();
-        let peer_id = self.peer_id;
-        let route = self.route();
-        let full_route = self.full_route();
+        if let Err(error) = self.revalidate() {
+            return Promise::err(error);
+        }
         Promise::from_future(async move {
             let r = params.get()?;
             let key_bytes = r.get_key_bytes()?.to_vec();
-            publish_keyed_presence(
-                &state,
-                peer_id,
-                &route,
-                &full_route,
-                self.announced_handle.as_deref(),
-                &key_bytes,
-                PresencePayload::Left,
-            );
+            self.publish_keyed(&key_bytes, PresencePayload::Left);
             Ok(())
         })
     }
@@ -1021,6 +1164,9 @@ impl presence_handle::Server for CapnpPresenceHandle {
         _params: presence_handle::SubscribeAllParams,
         mut results: presence_handle::SubscribeAllResults,
     ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self.revalidate() {
+            return Promise::err(error);
+        }
         let rx = self
             .state
             .subscribe_presence(&self.channel_id, self.peer_id);
@@ -1030,35 +1176,6 @@ impl presence_handle::Server for CapnpPresenceHandle {
         let client: presence_stream::Client = capnp_rpc::new_client(server);
         results.get().set_stream(client);
         Promise::ok(())
-    }
-}
-
-/// Shared body of the four keyed presence publishers. Drops silently
-/// on key-decode failure — a bad blob shouldn't crash the broker.
-fn publish_keyed_presence(
-    state: &Arc<CapnpBrokerState>,
-    peer_id: u64,
-    route: &CrdtRoute,
-    full_route: &CrdtRoute,
-    announced_handle: Option<&str>,
-    key_bytes: &[u8],
-    payload: PresencePayload,
-) {
-    let Ok(key) = postcard::from_bytes::<PresenceKey>(key_bytes) else {
-        tracing::debug!(
-            len = key_bytes.len(),
-            "capnp presence publish: key bytes not decodable — dropping",
-        );
-        return;
-    };
-    state.publish_presence(full_route, &key, &payload);
-    let event = CollabEvent::RemotePresenceUpdate {
-        user_id: state.participant_id(route, announced_handle),
-        key,
-        payload,
-    };
-    if let Some(t) = state.fanout.upgrade() {
-        t.fanout_to_route(&event, peer_id, route);
     }
 }
 
@@ -1241,11 +1358,12 @@ pub fn spawn(
     broker_channels: Arc<Mutex<BrokerChannels>>,
     publisher: Arc<PeerPublisher>,
     identity: Arc<LocalIdentity>,
+    membership: Option<WorkspaceTreeHandle>,
     quit: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
     let _ = std::fs::remove_file(&socket_path);
     let wired = publisher.is_wired();
-    let state = CapnpBrokerState::new(fanout, broker_channels, publisher, identity);
+    let state = CapnpBrokerState::new(fanout, broker_channels, publisher, identity, membership);
     fanout.attach_capnp(Arc::clone(&state));
 
     // Bind on the caller's thread: from the worker thread, a bind
@@ -1565,6 +1683,118 @@ mod tests {
         );
     }
 
+    fn verified_device(root: &SigningKey) -> VerifiedJoinIdentity {
+        VerifiedJoinIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: [42; 32],
+        }
+    }
+
+    #[test]
+    fn certified_join_admission_uses_workspace_membership_and_role() {
+        let root = SigningKey::from_bytes(&[20; 32]);
+        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(1),
+            "Member room",
+        );
+        let route = CrdtRoute::cluster(workspace.room.to_string());
+        workspace.grant_capability(crate::shell::state::CapOverride::membership(
+            crate::shell::state::Subject::person(&principal),
+            workspace.room.to_string(),
+            crate::shell::state::Verb::Write,
+        ));
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+
+        let admitted = admit_verified_join(&tree, &route, verified_device(&root))
+            .expect("a certified editor is admitted");
+        assert_eq!(admitted.principal_id, principal);
+        assert_eq!(admitted.role, CapRole::Editor);
+        assert!(
+            verify_session_author(
+                Some(&admitted),
+                collab_types::Ed25519PublicKey::from_bytes([42; 32]),
+            )
+            .is_ok(),
+            "signed ops are device-authored under the certificate's device key"
+        );
+        assert!(
+            verify_session_author(
+                Some(&admitted),
+                collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+            )
+            .is_err(),
+            "the user root certifies the device but does not author this device's ops"
+        );
+        assert!(
+            verify_session_author(
+                Some(&admitted),
+                collab_types::Ed25519PublicKey::from_bytes([43; 32]),
+            )
+            .is_err(),
+            "a member cannot submit another device's envelope through this session"
+        );
+    }
+
+    #[test]
+    fn certified_join_admission_rejects_wrong_or_removed_root() {
+        let member = SigningKey::from_bytes(&[21; 32]);
+        let stranger = SigningKey::from_bytes(&[22; 32]);
+        let member_id = principal_id_for_root(member.verifying_key().to_bytes());
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(2),
+            "Revocation room",
+        );
+        let route = CrdtRoute::cluster(workspace.room.to_string());
+        let membership = workspace.grant_capability(crate::shell::state::CapOverride::membership(
+            crate::shell::state::Subject::person(&member_id),
+            workspace.room.to_string(),
+            crate::shell::state::Verb::Read,
+        ));
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+
+        assert!(admit_verified_join(&tree, &route, verified_device(&stranger)).is_err());
+        let admitted = admit_verified_join(&tree, &route, verified_device(&member))
+            .expect("member starts admitted");
+        let membership_tree = tree.shared();
+        let fanout = Arc::new(FanoutState::new());
+        let state = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            LocalIdentity::from_network(None),
+            Some(Arc::clone(&membership_tree)),
+        );
+        assert!(membership_tree.write().workspaces[0].revoke_capability(&membership));
+        assert!(
+            state.revalidate_admission(&route, Some(&admitted)).is_err(),
+            "removing membership rejects the certified session's next operation"
+        );
+    }
+
+    #[test]
+    fn certified_join_admission_rejects_cross_workspace_replay() {
+        let root = SigningKey::from_bytes(&[23; 32]);
+        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let mut member_workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(3),
+            "Member room",
+        );
+        member_workspace.set_owner(&principal);
+        let other_workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(4),
+            "Other room",
+        );
+        let replay_route = CrdtRoute::cluster(other_workspace.room.to_string());
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(member_workspace);
+        tree.workspaces.push(other_workspace);
+
+        assert!(admit_verified_join(&tree, &replay_route, verified_device(&root)).is_err());
+    }
+
     fn unique_path(label: &str) -> PathBuf {
         let pid = std::process::id();
         let nanos = SystemTime::now()
@@ -1815,7 +2045,8 @@ mod tests {
     )]
     fn capnp_signed_op_rejections_are_dropped_and_audited() {
         let capnp_path = unique_path("capnp-signed-rejections");
-        let handle = spawn_native(capnp_path.clone(), &None).expect("spawn broker");
+        let handle = spawn_native(capnp_path.clone(), &None, WorkspaceTree::default().shared())
+            .expect("spawn broker");
         let (artifact, editor_sk, editor_pk, editor_att_id) = setup_role_table(&handle);
         let valid = build_signed_op(&editor_sk, editor_pk, artifact, editor_att_id, 1, b"valid");
         let mut invalid = build_signed_op(
@@ -1917,7 +2148,12 @@ mod tests {
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
         let net = Arc::new(net);
         let net_for_arrival = Arc::clone(&net);
-        let handle = spawn_native(capnp_path.clone(), &Some(net)).expect("spawn broker");
+        let handle = spawn_native(
+            capnp_path.clone(),
+            &Some(net),
+            WorkspaceTree::default().shared(),
+        )
+        .expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4();
         let channel_id =
@@ -1984,7 +2220,12 @@ mod tests {
         let capnp_path = unique_path("capnp-outbound");
         let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
-        let handle = spawn_native(capnp_path.clone(), &Some(Arc::new(net))).expect("spawn broker");
+        let handle = spawn_native(
+            capnp_path.clone(),
+            &Some(Arc::new(net)),
+            WorkspaceTree::default().shared(),
+        )
+        .expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4();
         let channel_id =
@@ -2068,7 +2309,12 @@ mod tests {
         let capnp_path = unique_path("capnp-unaddressed");
         let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
-        let handle = spawn_native(capnp_path.clone(), &Some(Arc::new(net))).expect("spawn broker");
+        let handle = spawn_native(
+            capnp_path.clone(),
+            &Some(Arc::new(net)),
+            WorkspaceTree::default().shared(),
+        )
+        .expect("spawn broker");
 
         let channel_id = CrdtRoute::record(
             "dev.qos.words",
@@ -2113,7 +2359,8 @@ mod tests {
     #[test]
     fn an_unsigned_frame_reaches_a_subscriber_tagged_with_its_kind() {
         let capnp_path = unique_path("capnp-unsigned-kind");
-        let handle = spawn_native(capnp_path.clone(), &None).expect("spawn typed broker");
+        let handle = spawn_native(capnp_path.clone(), &None, WorkspaceTree::default().shared())
+            .expect("spawn typed broker");
         let channel_id = CrdtRoute::record(
             "dev.qos.words",
             uuid::Uuid::new_v4().to_string(),
@@ -2200,7 +2447,8 @@ mod tests {
     #[test]
     fn a_documents_delta_reaches_its_own_app_and_not_the_app_beside_it() {
         let capnp_path = unique_path("capnp-app-scoped");
-        let handle = spawn_native(capnp_path.clone(), &None).expect("spawn broker");
+        let handle = spawn_native(capnp_path.clone(), &None, WorkspaceTree::default().shared())
+            .expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4().to_string();
         let words = CrdtRoute::app("dev.qos.word-processor", cluster.clone()).channel_key();
