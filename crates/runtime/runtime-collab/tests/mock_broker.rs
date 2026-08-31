@@ -194,7 +194,7 @@ async fn round_trip_join_send_subscribe_read() {
                 server_read.compat(),
                 server_write.compat_write(),
                 rpc_twoparty_capnp::Side::Server,
-                Default::default(),
+                capnp::message::ReaderOptions::default(),
             ));
             let server_rpc = RpcSystem::new(server_network, Some(broker_client.client));
             tokio::task::spawn_local(async move {
