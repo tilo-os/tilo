@@ -70,6 +70,19 @@ impl VideoDoc {
             _ => None,
         }
     }
+    /// A boolean whose absence means `default` rather than `false` — for a
+    /// field added after documents were already being written, where the old
+    /// shape's silence has a meaning of its own.
+    fn get_bool_or(doc: &AutoCommit, obj: &ObjId, key: &str, default: bool) -> bool {
+        match doc.get(obj, key) {
+            Ok(Some((automerge::Value::Scalar(v), _))) => match v.as_ref() {
+                automerge::ScalarValue::Boolean(b) => *b,
+                _ => default,
+            },
+            _ => default,
+        }
+    }
+
     fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> bool {
         matches!(
             doc.get(obj, key),
@@ -252,6 +265,7 @@ impl VideoDoc {
             }
         }
         let _ = doc.put(&obj, "sound_split", c.sound_split);
+        let _ = doc.put(&obj, "link_follows", c.link_follows);
     }
 
     pub fn remove_clip(doc: &mut AutoCommit, id: Uuid) {
@@ -487,6 +501,10 @@ impl VideoDoc {
                     // as "this clip still carries its own" -- what that peer
                     // is already playing.
                     sound_split: Self::get_bool(doc, &obj, "sound_split"),
+                    // Absent in any document written before unlinking kept
+                    // the group. True there, because a clip that has a group
+                    // at all was linked when it was written.
+                    link_follows: Self::get_bool_or(doc, &obj, "link_follows", true),
                 });
             }
         }
@@ -1339,13 +1357,19 @@ mod tests {
         let mut cut = p.clone();
         cut.unlink_clips(&[cid]);
         VideoDoc::upsert_clip(&mut doc, cut.clip(cid).expect("the clip"));
+        // The claim is about the *peer*, not about which key carries it: a
+        // reader of this document must stop following the link. It used to be
+        // spelled "the link key is gone"; the group id now survives a break
+        // so the editor can still find the sound a shot was split from, and
+        // `link_follows` is what a peer reads instead.
+        let seen = VideoDoc::load_project(&doc);
         assert!(
-            VideoDoc::load_project(&doc)
-                .clip(cid)
-                .expect("the clip")
-                .link
-                .is_none(),
+            !seen.is_linked(cid),
             "an unlink that writes nothing is an unlink a peer never sees",
+        );
+        assert!(
+            seen.link_partners(cid).is_empty(),
+            "a peer that still moves both halves has not seen the break",
         );
     }
 

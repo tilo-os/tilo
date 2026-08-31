@@ -1108,6 +1108,35 @@ pub struct Clip {
     /// clip still carries the sound.
     #[serde(default, skip_serializing_if = "is_false")]
     pub sound_split: bool,
+    /// Whether edits made to one member of this clip's group reach the others.
+    ///
+    /// Unlinking clears **this**, not [`Self::link`], so the group survives as
+    /// a record of what came from one placement. That is what lets the editor
+    /// answer a question it otherwise could not: *is this shot's sound already
+    /// on the timeline?* Clearing the id instead made an unlinked picture clip
+    /// indistinguishable from one whose sound half had been deleted, so it was
+    /// offered "Split off audio" again and taking it made a second, duplicate
+    /// audio clip.
+    ///
+    /// With the group kept, the two cases separate exactly: a partner still
+    /// shares the id (offer to re-link) or none does (offer the split). No
+    /// pointer, so the CRDT argument for a group id still holds — deleting a
+    /// half removes a member and repairs nothing.
+    ///
+    /// Defaults true so a clip written before this, and every clip with no
+    /// group at all, behaves as it always did.
+    #[serde(default = "yes_default", skip_serializing_if = "is_true")]
+    pub link_follows: bool,
+}
+
+/// `serde(default)` for a `bool` that defaults to true.
+pub(crate) fn yes_default() -> bool {
+    true
+}
+
+/// `skip_serializing_if` for a `bool` that defaults to true.
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 /// `skip_serializing_if` for a `bool` that defaults to false.
@@ -1143,6 +1172,7 @@ impl Default for Clip {
             anim: ClipAnimation::default(),
             markers: Vec::new(),
             link: None,
+            link_follows: true,
             sound_split: false,
         }
     }
@@ -2075,10 +2105,17 @@ impl Project {
         let Some(link) = clip.link else {
             return vec![id];
         };
+        // A clip whose link no longer follows is a group of one for every
+        // purpose that moves clips about — the group id survives only so the
+        // editor can still tell "its sound is on the timeline, unlinked" from
+        // "its sound is gone". See `group_members`.
+        if !clip.link_follows {
+            return vec![id];
+        }
         let mut v: Vec<(f64, ClipId)> = self
             .clips
             .iter()
-            .filter(|c| c.link == Some(link))
+            .filter(|c| c.link == Some(link) && c.link_follows)
             .map(|c| (c.start, c.id))
             .collect();
         v.sort_by(|a, b| {
@@ -2102,6 +2139,33 @@ impl Project {
         !self.link_partners(id).is_empty()
     }
 
+    /// Everything that came from the same placement as `id`, **including
+    /// clips whose link no longer follows**, and excluding `id` itself.
+    ///
+    /// [`Self::link_partners`] answers "what moves when this moves"; this
+    /// answers "what came from here". They differ only after an unlink, and
+    /// that difference is the whole point: it is what lets the editor offer
+    /// to re-link a shot to a sound clip that is still sitting on the
+    /// timeline, instead of offering to split off a second copy of it.
+    pub fn group_members(&self, id: ClipId) -> Vec<ClipId> {
+        let Some(link) = self.clip(id).and_then(|c| c.link) else {
+            return Vec::new();
+        };
+        self.clips
+            .iter()
+            .filter(|c| c.link == Some(link) && c.id != id)
+            .map(|c| c.id)
+            .collect()
+    }
+
+    /// The sound clip this picture clip's audio was split onto, if it is
+    /// still on the timeline — linked or merely unlinked.
+    pub fn detached_sound(&self, id: ClipId) -> Option<ClipId> {
+        self.group_members(id)
+            .into_iter()
+            .find(|p| self.clip_kind(*p) == TrackKind::Audio)
+    }
+
     /// Put every clip in `ids` into one fresh link group, returning its id.
     ///
     /// Refused, changing nothing, for fewer than two clips that actually
@@ -2123,6 +2187,8 @@ impl Project {
         for id in &live {
             if let Some(c) = self.clip_mut(*id) {
                 c.link = Some(link);
+                // Linking is the act of making edits follow again.
+                c.link_follows = true;
             }
         }
         Some(link)
@@ -2134,11 +2200,34 @@ impl Project {
     /// A group left holding one member is left alone: it already reads as
     /// unlinked everywhere ([`Self::is_linked`]), and clearing it would be a
     /// second write nobody asked for.
+    /// Take `ids` out of their group entirely — id and following both.
+    ///
+    /// Different from [`Self::unlink_clips`], and the difference matters. An
+    /// unlink is a user saying "stop moving together", and the group survives
+    /// so the editor can still find the sound a shot was split from. This is
+    /// for a clip that was never part of that placement at all — the tail of
+    /// a cut, which is a new clip — and leaving it holding the group would
+    /// tell it its sound is already on the timeline when the sound it can see
+    /// belongs to the head.
+    pub fn detach_from_group(&mut self, ids: &[ClipId]) {
+        for id in ids {
+            if let Some(c) = self.clip_mut(*id) {
+                c.link = None;
+                c.link_follows = true;
+            }
+        }
+    }
+
     pub fn unlink_clips(&mut self, ids: &[ClipId]) -> Vec<ClipId> {
         let mut changed = Vec::new();
         for id in ids {
+            // The group id stays. Clearing it made an unlinked picture clip
+            // indistinguishable from one whose sound half had been deleted,
+            // so the editor offered to split the sound off again and made a
+            // duplicate audio clip.
             if let Some(c) = self.clip_mut(*id)
-                && c.link.take().is_some()
+                && c.link.is_some()
+                && std::mem::replace(&mut c.link_follows, false)
             {
                 changed.push(*id);
             }
@@ -2212,7 +2301,7 @@ impl Project {
         }
         let tails: Vec<ClipId> = pairs.iter().map(|(_, r)| *r).collect();
         if tails.len() < 2 {
-            self.unlink_clips(&tails);
+            self.detach_from_group(&tails);
         } else {
             self.link_clips(&tails);
         }
@@ -2328,11 +2417,10 @@ impl Project {
         if self.clip_kind(id) != TrackKind::Video {
             return false;
         }
-        if self
-            .link_partners(id)
-            .iter()
-            .any(|p| self.clip_kind(*p) == TrackKind::Audio)
-        {
+        // Asked of the *placement*, not the link: a shot whose sound was
+        // split off and then unlinked still has that sound on the timeline,
+        // and offering to split it again would make a second copy.
+        if self.detached_sound(id).is_some() {
             return false;
         }
         self.media(clip.media)
@@ -3988,6 +4076,51 @@ mod link_tests {
         (p, vid, aid)
     }
 
+    /// Unlinking must not offer to split the sound off a second time.
+    ///
+    /// The sound clip is still sitting on the timeline; splitting again makes
+    /// a duplicate playing the same thing twice. Answering this needs the
+    /// editor to tell "unlinked, sound still here" from "sound half deleted",
+    /// which is why an unlink keeps the group id and clears only the
+    /// following — the two cases then separate exactly, with no pointer to
+    /// repair and no heuristic over media and spans.
+    #[test]
+    fn an_unlinked_shot_is_offered_its_sound_back_rather_than_a_second_copy() {
+        let (mut p, vid, aid) = pair();
+        assert!(
+            !p.can_split_audio(vid),
+            "a linked shot has nothing to split",
+        );
+
+        p.unlink_clips(&[vid, aid]);
+        assert!(!p.is_linked(vid), "the two no longer move together");
+        assert!(
+            !p.can_split_audio(vid),
+            "its sound is on the timeline, unlinked — offering the split \
+             again makes a duplicate of a clip the user can see",
+        );
+        assert_eq!(
+            p.detached_sound(vid),
+            Some(aid),
+            "and the editor can name it, which is what it offers to re-link",
+        );
+
+        // Re-linking is the way back, and it works from the picture alone.
+        let group = p.link_clips(&[vid, aid]).expect("two clips do link");
+        assert!(p.is_linked(vid) && p.is_linked(aid));
+        assert_eq!(p.clip(vid).expect("picture").link, Some(group));
+
+        // Recovery still works: delete the sound and the split comes back,
+        // or a shot whose audio lane was removed would be silent forever.
+        p.unlink_clips(&[vid, aid]);
+        p.clips.retain(|c| c.id != aid);
+        assert_eq!(p.detached_sound(vid), None);
+        assert!(
+            p.can_split_audio(vid),
+            "with its sound gone, the shot must be offered one again",
+        );
+    }
+
     #[test]
     fn splitting_the_sound_off_makes_a_second_clip_over_the_same_frames() {
         let (p, vid, aid) = pair();
@@ -4056,9 +4189,16 @@ mod link_tests {
         );
         let changed = p.unlink_clips(&[vid, aid]);
         assert_eq!(changed.len(), 2, "both halves changed: {changed:?}");
-        assert!(p.clip(vid).expect("picture").link.is_none());
-        assert!(p.clip(aid).expect("sound").link.is_none());
+        // Two ordinary clips: nothing follows anything.
         assert!(!p.is_linked(vid) && !p.is_linked(aid));
+        assert!(p.link_partners(vid).is_empty() && p.link_partners(aid).is_empty());
+        // The group id survives the break, which is what still lets the
+        // editor find the sound this shot was split from. Asserting
+        // `link.is_none()` here used to stand in for "unlinked" — it was the
+        // representation, not the claim, and keeping the id is what stops a
+        // second copy of the sound being offered.
+        assert!(p.clip(vid).expect("picture").link.is_some());
+        assert_eq!(p.detached_sound(vid), Some(aid));
         // …and back again, on a fresh group id.
         let group = p.link_clips(&[vid, aid]).expect("two clips do link");
         assert_eq!(p.clip(vid).expect("picture").link, Some(group));
@@ -4098,9 +4238,18 @@ mod link_tests {
         // Only the picture is offered to the cut (a locked sound lane, say).
         let pairs = p.split_group(&[vid], 6.0);
         assert_eq!(pairs.len(), 1);
+        let tail = pairs[0].1;
         assert!(
-            p.clip(pairs[0].1).expect("the tail").link.is_none(),
+            !p.is_linked(tail),
             "a tail with no sibling must not stay in the group it was cut from",
+        );
+        // And it must not have inherited the head's *placement* either, or it
+        // would be told its sound is already on the timeline and never be
+        // offered one.
+        assert!(
+            p.group_members(tail).is_empty(),
+            "the tail carries the head's group: {:?}",
+            p.group_members(tail),
         );
     }
 

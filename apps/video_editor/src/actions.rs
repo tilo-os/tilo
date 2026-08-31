@@ -126,6 +126,10 @@ pub struct ClipData {
     /// peer is already playing.
     #[serde(default)]
     pub sound_split: bool,
+    /// Whether edits follow this clip's group. Travels so unlinking
+    /// replicates; absent in an older payload, where a group meant linked.
+    #[serde(default = "crate::model::yes_default")]
+    pub link_follows: bool,
 }
 
 impl ClipData {
@@ -157,6 +161,7 @@ impl ClipData {
             markers: c.markers.clone(),
             link: c.link.map(|l| l.to_string()),
             sound_split: c.sound_split,
+            link_follows: c.link_follows,
         }
     }
 
@@ -196,6 +201,7 @@ impl ClipData {
             // how to draw, instead of joining a group that does not exist.
             link: self.link.as_ref().and_then(|l| l.parse::<Uuid>().ok()),
             sound_split: self.sound_split,
+            link_follows: self.link_follows,
         })
     }
 }
@@ -3276,9 +3282,17 @@ mod tests {
         let ctx = ctx_of(split, 4.0);
 
         let cut = run(&ctx.project, &spec(&ctx, "unlink"), None);
-        assert!(cut.clip(picture).expect("picture").link.is_none());
-        assert!(cut.clip(sound).expect("sound").link.is_none());
-        assert!(!cut.is_linked(picture));
+        // Behaviour, not representation: the group id survives a break so the
+        // editor can still find the sound this shot was split from, and it is
+        // `link_follows` that stops the two moving together.
+        assert!(!cut.is_linked(picture) && !cut.is_linked(sound));
+        assert!(cut.link_partners(picture).is_empty());
+        assert_eq!(
+            cut.detached_sound(picture),
+            Some(sound),
+            "the sound is still findable, which is what stops a second copy \
+             of it being offered",
+        );
         assert_eq!(cut.clips.len(), 2, "unlinking removes nothing");
 
         // …and back, by naming the partner. The ids that exist are declared
