@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 version=$(<"$repo_root/dist/VERSION")
+revision=${QOS_DEB_REVISION:-1}
 out=${QOS_PACKAGE_OUT:-$repo_root/dist/debian/build}
 arch=${QOS_DEB_ARCH:-$(dpkg --print-architecture)}
 case "$arch" in amd64|arm64) ;; *) echo "unsupported Debian architecture: $arch" >&2; exit 1 ;; esac
@@ -55,7 +56,7 @@ shlib_line=$(
 shlib_deps=${shlib_line#shlibs:Depends=}
 cat > "$main/DEBIAN/control" <<EOF
 Package: qos-session
-Version: $version-1
+Version: $version-$revision
 Section: x11
 Priority: optional
 Architecture: $arch
@@ -69,19 +70,19 @@ Description: qOS collaborative compositor as a Wayland session
 EOF
 cat > "$dev/DEBIAN/control" <<EOF
 Package: qos-session-devel
-Version: $version-1
+Version: $version-$revision
 Section: x11
 Priority: optional
 Architecture: all
 Maintainer: qOS contributors <qos@code.podesta.ai>
 Installed-Size: $(installed_size "$dev")
-Depends: qos-session (= $version-1), coreutils, grep
+Depends: qos-session (= $version-$revision), coreutils, grep
 Description: developer session entry for qOS
  Starts the explicitly configured, locally built compositor after validating
  ownership, permissions, and its developer-build marker.
 EOF
 
 "$repo_root/dist/verify-payload.sh" "$main"
-dpkg-deb --build --root-owner-group "$main" "$out/qos-session_${version}-1_${arch}.deb"
-dpkg-deb --build --root-owner-group "$dev" "$out/qos-session-devel_${version}-1_all.deb"
+dpkg-deb --build --root-owner-group "$main" "$out/qos-session_${version}-${revision}_${arch}.deb"
+dpkg-deb --build --root-owner-group "$dev" "$out/qos-session-devel_${version}-${revision}_all.deb"
 printf '%s\n' "$out"/*.deb

@@ -5,7 +5,9 @@ name: Check affected workspace packages
 # mandatory in nightly.yml; this job is the short feedback path.
 on:
   push:
-    branches: ["main"]
+    # Temporary branch trigger while the desktop packaging matrix is being
+    # proven without making unfinished work visible on main.
+    branches: ["main", "codex/package-desktop-release"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
