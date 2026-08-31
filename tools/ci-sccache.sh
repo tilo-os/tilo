@@ -11,8 +11,21 @@ mode="${1:?usage: ci-sccache.sh <prepare|report>}"
 case "$mode" in
   prepare)
     if path="$(command -v sccache 2>/dev/null)"; then
+      # Forgejo runner-level environment variables intentionally provide the
+      # production defaults, and take precedence over workflow `env` entries.
+      # A canary needs a fresh namespace, though, so carry its request under a
+      # qOS-specific name and make it authoritative after runner injection.
+      # Restarting matters: sccache reads its backend configuration when its
+      # long-lived server starts, and `--zero-stats` below may start it.
+      if [ -n "${QOS_SCCACHE_KEY_PREFIX:-}" ]; then
+        export SCCACHE_S3_KEY_PREFIX="$QOS_SCCACHE_KEY_PREFIX"
+        sccache --stop-server >/dev/null 2>&1 || true
+      fi
       if [ -n "${GITHUB_ENV:-}" ]; then
         printf 'RUSTC_WRAPPER=%s\n' "$path" >> "$GITHUB_ENV"
+        if [ -n "${QOS_SCCACHE_KEY_PREFIX:-}" ]; then
+          printf 'SCCACHE_S3_KEY_PREFIX=%s\n' "$QOS_SCCACHE_KEY_PREFIX" >> "$GITHUB_ENV"
+        fi
       else
         export RUSTC_WRAPPER="$path"
       fi
