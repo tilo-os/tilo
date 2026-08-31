@@ -129,7 +129,7 @@ impl Compositor {
 
         let mut command = Command::new(env!("CARGO_BIN_EXE_shell"));
         if let Some(home) = home {
-            command.env("HOME", home);
+            command.env("HOME", home).env("QOS_USER_HOME", home);
         }
         let mut child = command
             .args(["--mode", "native", "--backend", "headless"])
@@ -141,6 +141,10 @@ impl Compositor {
             .env("XDG_DATA_HOME", runtime_dir.join("data"))
             .env("XDG_STATE_HOME", runtime_dir.join("state"))
             .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
+            // A CI checkout commonly lives at `/workspace`. It is not a qOS
+            // collaborative mount, and must not win over the fixture home as
+            // the hosted Files app's initial directory.
+            .env("QOS_WORKSPACE_ROOTS", "")
             .env("QOS_STATE_PATH", &state_path)
             .env("QOS_TEST_CONTROL", &control_socket)
             .env("NIRIOS_HEADLESS_SIZE", format!("{}x{}", size.0, size.1))
