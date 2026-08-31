@@ -41,8 +41,8 @@ use crate::actions::{
 use crate::doc::VideoDoc;
 use crate::export::{Container, ExportSettings, ExportStatus, FrameRate, Resolution};
 use crate::model::{
-    Clip, ClipId, EffectKind, Filters, MAX_SPEED, MIN_SPEED, MediaId, MediaItem, MediaKind,
-    Project, TextAlign, TextSource, TrackId, TrackKind, Transition,
+    Clip, ClipId, EffectKind, Filters, MAX_GAIN_DB, MAX_SPEED, MIN_GAIN_DB, MIN_SPEED, MediaId,
+    MediaItem, MediaKind, Project, TextAlign, TextSource, TrackId, TrackKind, Transition,
 };
 use crate::param::{Interp, Param};
 use crate::portal::{self, ImportChannel, ImportOutcome};
@@ -191,6 +191,11 @@ const ADD_MARKER_KEY: &str = "add marker";
 /// hit-tested whether painted or not, so for a reader -- which has no pointer
 /// -- they are the only route to a marker's note, its name, or its removal.
 const MARKER_VERBS: [&str; 3] = ["Edit note on", "Rename", "Delete"];
+
+/// The key the master mix node is addressed by, before hashing. A constant
+/// rather than a literal at each site so the node and the router cannot drift
+/// apart.
+const MIX_METER_KEY: &str = "mix meter";
 
 const INSPECTOR_EMPTY_TITLE: &str = "No clip selected";
 const INSPECTOR_EMPTY_HINT: &str = "Click a clip in the timeline to edit it";
@@ -467,6 +472,15 @@ enum Section {
     Curves,
     Transform,
     Speed,
+    /// The **lane** the selected clip sits on: its fader and its pan.
+    ///
+    /// Track-level rather than clip-level, and placed directly after Speed
+    /// because Speed is the other control that changes what a clip *sounds*
+    /// like (a varispeed pitches it), so the two read as one thought: how
+    /// fast it plays, then how loud it sits and where. Everything below is
+    /// picture detail, which is why the mixer is above it rather than at the
+    /// bottom of a panel nobody scrolls to.
+    Mix,
     Key,
     Mask,
     Title,
@@ -484,6 +498,7 @@ impl Section {
             Section::Curves => "CURVES",
             Section::Transform => "TRANSFORM",
             Section::Speed => "SPEED",
+            Section::Mix => "MIX",
             Section::Key => "CHROMA KEY",
             Section::Mask => "MASK",
             Section::Title => "TITLE",
@@ -539,6 +554,12 @@ enum NumField {
     TitleBackdrop,
     /// How much of the clip's tone curve is mixed in.
     CurveMix,
+    /// The **track's** fader, in decibels, and where the lane sits across the
+    /// stereo field. The only two knobs in the panel that edit the lane the
+    /// selected clip is on rather than the clip itself — see
+    /// [`NumField::is_track`], which is what routes the write and the commit.
+    TrackGain,
+    TrackPan,
 }
 
 impl NumField {
@@ -574,6 +595,8 @@ impl NumField {
             NumField::TitleSize => "Size",
             NumField::TitleBackdrop => "Backdrop",
             NumField::CurveMix => "Amount",
+            NumField::TrackGain => "Gain",
+            NumField::TrackPan => "Pan",
         }
     }
 
@@ -622,6 +645,9 @@ impl NumField {
             NumField::TitleSize => "media.title.size",
             NumField::TitleBackdrop => "media.title.backdrop",
             NumField::CurveMix => "clip.curves.mix",
+            // `track.` rather than `clip.`, because that is what they write.
+            NumField::TrackGain => "track.gain",
+            NumField::TrackPan => "track.pan",
         }
     }
 
@@ -666,6 +692,16 @@ impl NumField {
         matches!(self, NumField::TitleSize | NumField::TitleBackdrop)
     }
 
+    /// Whether this knob writes the **track** the selected clip sits on.
+    ///
+    /// A third destination alongside the clip and its media, and it has to be
+    /// named rather than inferred: the write, the undo boundary and the
+    /// action a drag commits are all per-track, and a lane fader dispatched
+    /// as a clip write would replicate as an edit to the wrong thing.
+    fn is_track(self) -> bool {
+        matches!(self, NumField::TrackGain | NumField::TrackPan)
+    }
+
     /// The slider's linear span. Cropping stops short of the far edge so a
     /// clip can never be dragged out of existence, and scale stops short of
     /// zero for the same reason.
@@ -705,6 +741,12 @@ impl NumField {
             NumField::TitleSize => (0.02, 0.4),
             NumField::TitleBackdrop => (0.0, 1.0),
             NumField::CurveMix => (0.0, 1.0),
+            // Decibels, not a fraction. The track runs from off to four
+            // times unity; 0 dB — where a lane starts and where most of them
+            // stay — sits five sixths of the way along, which is where a
+            // fader's unity mark belongs.
+            NumField::TrackGain => (MIN_GAIN_DB, MAX_GAIN_DB),
+            NumField::TrackPan => (-1.0, 1.0),
         }
     }
 
@@ -762,6 +804,19 @@ impl NumField {
             NumField::TitleSize => format!("{:.0}%", v * 100.0),
             NumField::TitleBackdrop => format!("{:.0}%", v * 100.0),
             NumField::CurveMix => format!("{:.0}%", v * 100.0),
+            // The bottom stop is off, not "-60 dB of something".
+            NumField::TrackGain if v <= MIN_GAIN_DB + 1e-9 => "-∞ dB".into(),
+            NumField::TrackGain => format!("{v:+.1} dB"),
+            NumField::TrackPan => {
+                let n = (v.abs() * 100.0).round();
+                if n < 0.5 {
+                    "Centre".into()
+                } else if v < 0.0 {
+                    format!("L{n:.0}")
+                } else {
+                    format!("R{n:.0}")
+                }
+            }
         }
     }
 }
@@ -1066,6 +1121,11 @@ pub enum ShotScenario {
     /// between them are all on screen, and one pair left alone, so the quiet
     /// chain a linked clip wears standing still can be judged next to it.
     LinkedAudio,
+    /// The mixer, on a mix that has been played and went over: lane faders
+    /// off unity and off centre, the meters showing it, the master strip's
+    /// standing CLIP warning, the marks on the ruler saying where, and the
+    /// inspector's MIX section open on the lane the selection sits on.
+    Mix,
 }
 
 impl ShotScenario {
@@ -1096,6 +1156,7 @@ impl ShotScenario {
                 | ShotScenario::ProjectFormat
                 | ShotScenario::FocusInspector
                 | ShotScenario::LinkedAudio
+                | ShotScenario::Mix
         )
     }
 
@@ -1139,6 +1200,7 @@ impl ShotScenario {
             "focustransport" => ShotScenario::FocusTransport,
             "shuttle" => ShotScenario::Shuttle,
             "linked" => ShotScenario::LinkedAudio,
+            "mix" => ShotScenario::Mix,
             _ => return None,
         })
     }
@@ -1234,6 +1296,28 @@ pub struct VideoEditorApp {
     /// timeline once per edit instead of once per frame.
     #[cfg(any(feature = "gst", feature = "decode"))]
     monitor_stale: bool,
+    /// The level the mix is running at, written by whatever is mixing and
+    /// read here. **Not** feature-gated: a build with no audio backend still
+    /// has a mixer, still has a meter surface, and a `--shots` capture stages
+    /// blocks through this exact door rather than through a drawing that
+    /// imitates one.
+    mix_meters: std::sync::Arc<crate::audio::MixMeters>,
+    /// One copy of that, taken in `sync`. `draw` reads plain fields: the
+    /// paint path must not take the mixing thread's lock, and it must not
+    /// allocate — the number is carried here, never recomputed there.
+    mix: crate::audio::MixSnapshot,
+    /// What the mix looked like when the meter last measured it. When this
+    /// moves, the report describes a timeline that no longer exists and is
+    /// thrown away — see [`crate::audio::mix_signature`].
+    ///
+    /// `None` until the first frame has one: a *first* signature is not a
+    /// change, and treating it as one would throw away a report staged before
+    /// the project finished loading.
+    mix_sig: Option<u64>,
+    /// The frame clock the meter's fall is driven from. Separate from
+    /// `last_tick`, which the playhead owns: a meter has to keep falling
+    /// while the transport is stopped.
+    meter_tick: Instant,
     /// The document heads the model was last loaded at — how "the document
     /// changed" is told from "the same document was reloaded".
     doc_heads: Vec<automerge::ChangeHash>,
@@ -1583,6 +1667,10 @@ impl VideoEditorApp {
             monitor_tried: false,
             #[cfg(any(feature = "gst", feature = "decode"))]
             monitor_stale: true,
+            mix_meters: std::sync::Arc::new(crate::audio::MixMeters::new()),
+            mix: crate::audio::MixSnapshot::default(),
+            mix_sig: None,
+            meter_tick: Instant::now(),
             doc_heads: Vec::new(),
             compositor: None,
             compositor_tried: false,
@@ -2135,12 +2223,59 @@ impl VideoEditorApp {
     }
 
     /// The mute pill rect on a track header (shared by draw + hit-test).
+    ///
+    /// Anchored to the top of the head rather than its middle. A channel
+    /// strip reads downward — name and switches, then what the lane is, then
+    /// its level — and the middle is now the *only* place the meter could go
+    /// on a 46px audio lane. Centring the pills also put them across the row
+    /// that now carries the fader's reading, which is why that row had no
+    /// width to state it in.
     fn mute_pill_rect(&self, header: Rect) -> Rect {
         Rect::new(
             header.x1 - 26.0,
-            header.center().y - 9.0,
+            header.y0 + 7.0,
             header.x1 - 8.0,
-            header.center().y + 9.0,
+            header.y0 + 25.0,
+        )
+    }
+
+    /// The master strip: the corner of the timeline left of the ruler, above
+    /// the column of track heads.
+    ///
+    /// The one piece of chrome that was genuinely empty, and the right place
+    /// for it: a master meter belongs at the head of the channel-strip column,
+    /// it is on screen the entire time the timeline is, and it does not have
+    /// to be squeezed into the transport, whose strip already drops its
+    /// readouts one by one as the window narrows. A warning that disappears at
+    /// 900px is not a warning.
+    fn master_strip_rect(&self, r: &Regions) -> Rect {
+        Rect::new(r.timeline.x0, r.timeline.y0, r.gutter.x1, r.ruler.y1)
+    }
+
+    /// The clip flag inside it: what is clicked to walk the overloads.
+    fn clip_flag_rect(&self, r: &Regions) -> Rect {
+        let strip = self.master_strip_rect(r);
+        Rect::new(
+            strip.x1 - 52.0,
+            strip.y0 + 4.0,
+            strip.x1 - 8.0,
+            strip.y0 + 18.0,
+        )
+    }
+
+    /// The lane's level meter, along the foot of its head.
+    ///
+    /// It lives here — beside the name, the mute and the solo — because this
+    /// column *is* the channel strip: everything else about how a lane sounds
+    /// is decided in these 128 pixels, and a level you have to open a panel to
+    /// see is a level nobody looks at. Full width, so a glance down the
+    /// gutter reads every lane at once.
+    fn track_meter_rect(&self, header: Rect) -> Rect {
+        Rect::new(
+            header.x0 + 10.0,
+            header.y1 - 8.0,
+            header.x1 - 10.0,
+            header.y1 - 2.0,
         )
     }
 
@@ -2475,6 +2610,7 @@ impl VideoEditorApp {
                     &self.project,
                     crate::audio::open_output(),
                     Box::new(crate::audio::DecodedPcm::new(&self.project)),
+                    self.mix_meters.clone(),
                 ));
                 self.monitor_stale = false;
             }
@@ -2501,6 +2637,110 @@ impl VideoEditorApp {
             if (m.position() - self.playhead).abs() > 1e-6 {
                 m.seek(self.playhead);
             }
+        }
+    }
+
+    // ---- metering --------------------------------------------------------
+
+    /// Age the meters by one frame and take the copy `draw` reads.
+    ///
+    /// Three things happen here and nothing else does: the bars fall, a
+    /// report about a mix the user has since changed is thrown away, and the
+    /// shared state is snapshotted. No decode, no analysis, one lock — the
+    /// mixer already measured the block, and the whole point is to carry that
+    /// number rather than compute a second opinion on the paint path.
+    fn pump_mix_meter(&mut self) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.meter_tick).as_secs_f64();
+        self.meter_tick = now;
+        let sig = crate::audio::mix_signature(&self.project);
+        if self.mix_sig.is_some_and(|had| had != sig) {
+            // The levels this was measured from no longer exist. Keeping the
+            // warning would be a warning about a mix nobody can hear, and one
+            // that never went away is one people learn to ignore.
+            self.mix_meters.clear();
+        }
+        self.mix_sig = Some(sig);
+        self.mix_meters.decay(dt);
+        self.mix = self.mix_meters.snapshot();
+    }
+
+    /// Take in a block the mixer measured, as the monitor does.
+    ///
+    /// The one door meter data comes through, so a `--shots` capture and a
+    /// test exercise the same recording, latching and merging the live
+    /// monitor does rather than a drawing that imitates the result. The
+    /// signature is pinned to the project the block describes: without that
+    /// the next frame would read the staged report as one about a mix that
+    /// has since changed and throw it away.
+    fn stage_mix_block(&mut self, at: f64, report: &crate::audio::MixReport) {
+        self.mix_meters.record(at, report);
+        self.mix_sig = Some(crate::audio::mix_signature(&self.project));
+        self.mix = self.mix_meters.snapshot();
+    }
+
+    /// Whether the meter still has something to say — a bar in flight, or a
+    /// clipping report standing. Keeps frames coming so a meter finishes
+    /// falling instead of freezing part-way down when the transport stops.
+    fn mix_meter_is_live(&self) -> bool {
+        self.mix.master[0] > 0.001 || self.mix.master[1] > 0.001
+    }
+
+    /// Park the playhead on the next place the mix went over, wrapping round
+    /// to the first. This is the "and find *where*" half: a warning that only
+    /// says *that* it happened leaves a person scrubbing a whole timeline.
+    fn go_to_next_clipping(&mut self) -> bool {
+        let Some(at) = self.mix.next_over_after(self.playhead) else {
+            return false;
+        };
+        self.playhead = at.clamp(0.0, self.project.duration());
+        self.chase_playhead = true;
+        true
+    }
+
+    /// What the mix's state says, in one line, wherever it has to be said in
+    /// words — the export dialog and the accessibility tree both read this,
+    /// so a reader and the paint cannot disagree about it.
+    fn mix_words(&self) -> Option<String> {
+        if !crate::audio::has_audio(&self.project) {
+            return None;
+        }
+        if self.mix.clipped() {
+            let where_words = self
+                .mix
+                .overs
+                .first()
+                .map(|t| timecode(*t, self.project.fps))
+                .unwrap_or_default();
+            let n = self.mix.overs.len();
+            let lanes: Vec<String> = self
+                .mix
+                .clipped_tracks()
+                .iter()
+                .filter_map(|id| self.project.track(*id))
+                .map(|t| t.name.clone())
+                .collect();
+            let on = if lanes.is_empty() {
+                String::new()
+            } else {
+                format!(" on {}", lanes.join(", "))
+            };
+            return Some(format!(
+                "Mix clipped{on}: {:+.1} dB over, first at {where_words}{}",
+                self.mix.worst_over_db(),
+                if n > 1 {
+                    format!(" ({n} places)")
+                } else {
+                    String::new()
+                }
+            ));
+        }
+        match self.mix.hold_db() {
+            Some(db) => Some(format!("Mix peak {db:.1} dB")),
+            // Silence and "nobody has listened" look identical on a meter,
+            // and telling someone their levels are fine when nothing has been
+            // measured would be the same silent failure in a nicer voice.
+            None => Some("Levels not measured — play the timeline to check".into()),
         }
     }
 
@@ -3267,6 +3507,53 @@ impl VideoEditorApp {
         }
     }
 
+    /// The lane the selected clip sits on — what the MIX section edits.
+    fn selected_track(&self) -> Option<&crate::model::Track> {
+        let clip = self.selected_clip()?;
+        self.project.track(clip.track)
+    }
+
+    fn selected_track_id(&self) -> Option<TrackId> {
+        self.selected_clip().map(|c| c.track)
+    }
+
+    /// Apply `edit` to that lane **in memory only** — the live half of a
+    /// fader drag, committed once on release exactly as a clip drag is.
+    ///
+    /// A locked lane refuses, matching every other edit: the hatch across it
+    /// says nothing here will take, and a fader that moved anyway would make
+    /// that a lie.
+    fn preview_track_edit(&mut self, edit: impl FnOnce(&mut crate::model::Track)) {
+        let Some(tid) = self.selected_track_id() else {
+            return;
+        };
+        if self.project.track_locked(tid) {
+            return;
+        }
+        if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+            edit(t);
+        }
+    }
+
+    /// Dispatch a whole-track write for the lane the selection sits on.
+    fn dispatch_selected_track(&mut self, doc: &mut AutoCommit) {
+        let Some(t) = self.selected_track().cloned() else {
+            return;
+        };
+        self.actions
+            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&t));
+    }
+
+    /// Put the selected clip's lane back to unity and centre, as one action
+    /// and one undo boundary.
+    fn reset_selected_track_mix(&mut self, doc: &mut AutoCommit) {
+        self.preview_track_edit(|t| {
+            t.gain_db = 0.0;
+            t.pan = 0.0;
+        });
+        self.dispatch_selected_track(doc);
+    }
+
     /// Dispatch a whole-media write for one bin source.
     fn dispatch_media(&mut self, doc: &mut AutoCommit, mid: MediaId) {
         if let Some(m) = self.project.media(mid).cloned() {
@@ -3332,6 +3619,16 @@ impl VideoEditorApp {
     }
 
     fn num_value(&self, f: NumField) -> Option<f64> {
+        // The two lane knobs read the track, not the clip, and they read it
+        // first: `param()` is `None` for both and the clip has no field to
+        // fall through to.
+        if f.is_track() {
+            let t = self.selected_track()?;
+            return Some(match f {
+                NumField::TrackPan => t.pan,
+                _ => t.gain_db,
+            });
+        }
         let clip = self.selected().and_then(|id| self.project.clip(id))?;
         if let Some(p) = f.param() {
             return Some(clip.param_at(p, self.playhead));
@@ -3374,6 +3671,19 @@ impl VideoEditorApp {
         if let Some(p) = f.param() {
             self.preview_param(p, v);
             return;
+        }
+        match f {
+            NumField::TrackGain => {
+                let db = v.clamp(MIN_GAIN_DB, MAX_GAIN_DB);
+                self.preview_track_edit(move |t| t.gain_db = db);
+                return;
+            }
+            NumField::TrackPan => {
+                let pan = v.clamp(-1.0, 1.0);
+                self.preview_track_edit(move |t| t.pan = pan);
+                return;
+            }
+            _ => {}
         }
         let at = self.playhead;
         let _ = at;
@@ -4116,6 +4426,8 @@ impl VideoEditorApp {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         };
         let id = track.id;
         self.actions
@@ -4475,6 +4787,8 @@ impl VideoEditorApp {
             muted: false,
             locked: false,
             solo: false,
+            gain_db: 0.0,
+            pan: 0.0,
         };
         let id = track.id;
         self.actions
@@ -4877,9 +5191,19 @@ impl VideoEditorApp {
 
     /// The zoom-readout chip in the timeline's gutter footer — also the
     /// fit-to-window button.
+    /// The zoom readout, at the **right end of the ruler** it scales.
+    ///
+    /// It used to sit in the corner over the track heads, which is the one
+    /// piece of chrome a master meter can have: that corner is the head of the
+    /// channel-strip column, it is the only place a mix warning is on screen
+    /// whatever the window does, and the zoom of the timeline has nothing to
+    /// do with the column of lane names underneath it. Anchored to the ruler's
+    /// far edge the chip is still in the ruler, still one click, and out of
+    /// the way of both.
     fn zoom_chip_rect(&self, r: &Regions) -> Rect {
         let y = r.ruler.y0 + 4.0;
-        Rect::new(r.gutter.x0 + 8.0, y, r.gutter.x0 + 8.0 + 84.0, y + 22.0)
+        let x1 = (r.ruler.x1 - 8.0).max(r.ruler.x0 + 84.0);
+        Rect::new(x1 - 84.0, y, x1, y + 22.0)
     }
 
     fn zoom_by(&mut self, factor: f64) {
@@ -5117,6 +5441,33 @@ impl VideoEditorApp {
             y += 32.0;
             l.reverse = Some(Rect::new(x0, y, x1, y + 26.0));
             y += 34.0;
+        }
+        // The lane's own fader and pan. Present for a picture clip as well as
+        // an audio one: a shot on a video track carries its source's sound,
+        // so that lane has a level whether or not anyone has split it off.
+        //
+        // No key control on either row. A fader is a mix decision, not an
+        // animation — a level that has to move through a shot is what the
+        // clip's own volume curve is for, and two animatable levels stacked
+        // on one signal is two places to look for why it faded.
+        if header(&mut l, &mut y, Section::Mix) {
+            l.mix_track_y = y;
+            y += 18.0;
+            l.mix_meter = Some(Rect::new(x0, y, x1, y + 12.0));
+            y += 22.0;
+            for f in [NumField::TrackGain, NumField::TrackPan] {
+                l.nums.push((f, track_at(y)));
+                y += row;
+            }
+            if self
+                .selected_track()
+                .is_some_and(crate::model::Track::mix_is_set)
+            {
+                l.mix_reset = Some(Rect::new(x0, y, x1, y + 26.0));
+                y += 34.0;
+            } else {
+                y += 4.0;
+            }
         }
         // Colour key, video only — there is nothing to key out of audio.
         // The four sliders appear only once the key is switched on, so an
@@ -5948,6 +6299,81 @@ impl VideoEditorApp {
                 self.playhead = 22.0;
                 self.zoom = 26.0;
             }
+            ShotScenario::Mix => {
+                // Real faders, written through the same action a drag
+                // commits, so the capture is of the feature rather than of a
+                // hand-arranged imitation of it: A1 pushed up for a voice
+                // under music, A2 pulled down and opened out to the left.
+                let lanes: Vec<(TrackId, f64, f64)> = self
+                    .project
+                    .display_tracks()
+                    .iter()
+                    .filter(|t| t.kind == TrackKind::Audio)
+                    .enumerate()
+                    .map(|(i, t)| {
+                        if i == 0 {
+                            (t.id, 4.5, -0.35)
+                        } else {
+                            (t.id, -6.0, 0.2)
+                        }
+                    })
+                    .collect();
+                for (tid, gain_db, pan) in lanes {
+                    if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+                        t.gain_db = gain_db;
+                        t.pan = pan;
+                    }
+                    if let Some(t) = self.project.track(tid).cloned() {
+                        self.actions.dispatch(
+                            state,
+                            VIDEO_EDITOR_ACTION_TYPE,
+                            &upsert_track_action(&t),
+                        );
+                    }
+                }
+                // What a monitor would have measured playing this: a run of
+                // ordinary blocks, and three that went over. Staged through
+                // the production recording path, so the latch, the merge and
+                // the timeline positions are the real ones — a capture with
+                // no audio device is still a capture of the real meter.
+                let audio_lanes: Vec<TrackId> = self
+                    .project
+                    .tracks
+                    .iter()
+                    .filter(|t| t.kind == TrackKind::Audio)
+                    .map(|t| t.id)
+                    .collect();
+                let block = |l: f32, r: f32, lanes: &[TrackId]| crate::audio::MixReport {
+                    master: crate::audio::BlockMeter { peak: [l, r] },
+                    tracks: lanes
+                        .iter()
+                        .enumerate()
+                        .map(|(i, id)| {
+                            let share = if i == 0 { 0.85 } else { 0.4 };
+                            (
+                                *id,
+                                crate::audio::BlockMeter {
+                                    peak: [l * share, r * share],
+                                },
+                            )
+                        })
+                        .collect(),
+                };
+                for (at, l, r) in [
+                    (2.0, 0.42, 0.31),
+                    (7.5, 1.31, 1.12),
+                    (12.0, 0.55, 0.48),
+                    (16.0, 1.18, 1.04),
+                    (21.0, 0.61, 0.72),
+                ] {
+                    self.stage_mix_block(at, &block(l, r, &audio_lanes));
+                }
+                // Last, so the bars are showing a live level rather than only
+                // the holds — the resting state of a meter is not what a
+                // capture of a meter should show.
+                self.stage_mix_block(24.0, &block(0.74, 0.66, &audio_lanes));
+                self.playhead = 24.0;
+            }
             ShotScenario::RenderRange => {
                 // A range that starts inside the timeline and ends well
                 // before its end, so both brackets and both scrims are on
@@ -6116,6 +6542,7 @@ impl VideoEditorApp {
                 | ShotScenario::Effects
                 | ShotScenario::FocusInspector
                 | ShotScenario::LinkedAudio
+                | ShotScenario::Mix
         ) {
             self.reveal_inspector();
             self.inspector_flap.snap(true);
@@ -6123,6 +6550,26 @@ impl VideoEditorApp {
         match self.shot_scenario {
             ShotScenario::Collaborators => {
                 self.seed_shot_collaborators();
+            }
+            ShotScenario::Mix => {
+                // Select a clip on the lane the fader belongs to, and scroll
+                // the panel to its MIX section — a capture of a control
+                // nobody can see is a capture of nothing.
+                if let Some(cid) = self
+                    .project
+                    .clips
+                    .iter()
+                    .find(|c| {
+                        self.project
+                            .track(c.track)
+                            .is_some_and(|t| t.kind == TrackKind::Audio)
+                    })
+                    .map(|c| c.id)
+                {
+                    self.selection.select_only(cid);
+                    self.selected_media = self.project.clip(cid).map(|c| c.media);
+                }
+                self.inspector_scroll = 150.0_f64.min(self.inspector_max_scroll(r));
             }
             ShotScenario::LinkedAudio => {
                 // Bring the link control into view. It is laid out under the
@@ -6603,6 +7050,18 @@ struct InspectorLayout {
     anchor: Vec<((f64, f64), Rect)>,
     /// Rate presets (`0.5×`, `1×`, …) as a segmented row.
     speed_presets: Vec<(f64, Rect)>,
+    // ---- the lane's mix ---------------------------------------------------
+    /// Baseline y of the line naming which lane these two knobs belong to.
+    /// The panel is otherwise entirely about one clip, so a control that
+    /// quietly edits something shared has to say what it is editing.
+    mix_track_y: f64,
+    /// The lane's level meter, at full panel width above its fader — the same
+    /// measurement the track head shows, where the number is being set.
+    mix_meter: Option<Rect>,
+    /// Back to unity and centre. Laid out only when the lane is somewhere
+    /// else, because a reset that resets nothing is a control that lies about
+    /// having something to undo.
+    mix_reset: Option<Rect>,
     /// The reverse toggle.
     reverse: Option<Rect>,
     // ---- colour key --------------------------------------------------------
@@ -6948,6 +7407,10 @@ impl Widget for VideoEditorApp {
             self.apply_shot_scenario(state);
             self.shot_applied = true;
         }
+        // Let the meters fall, and take the one copy the frame will draw
+        // from. After the scenario, so a staged capture's levels survive into
+        // the frame that captures them.
+        self.pump_mix_meter();
         // Keep the real preview decoder tracking the clip under the playhead so
         // the `--shots` warm-up (which pumps `sync`) captures a decoded frame.
         #[cfg(feature = "decode")]
@@ -6979,6 +7442,9 @@ impl Widget for VideoEditorApp {
             || self.bin_rename.is_some() // a live rename blinks its caret
             || self.export_job.is_some() // a running render moves its progress bar
             || self.export_dest_rx.is_some() // …and a picker is still an action in flight
+            // A meter that stopped mid-fall reads as a level that is still
+            // there. Frames keep coming until the bars are down.
+            || self.mix_meter_is_live()
     }
 
     fn build_layout(
@@ -8260,6 +8726,7 @@ impl VideoEditorApp {
             v.push(Section::Transform);
         }
         v.push(Section::Speed);
+        v.push(Section::Mix);
         if is_video {
             v.push(Section::Key);
             v.push(Section::Mask);
@@ -8297,6 +8764,7 @@ impl VideoEditorApp {
                 NumField::CropBottom,
             ],
             Section::Speed => vec![NumField::Speed],
+            Section::Mix => vec![NumField::TrackGain, NumField::TrackPan],
             // The key's sliders are only laid out once the key is on, and
             // the mask's only once a shape is chosen. A reader offered
             // controls a sighted user cannot see would be navigating a
@@ -8506,11 +8974,27 @@ impl VideoEditorApp {
                         }),
                 );
             }
+            // The lane's fader, its pan and whether it has been caught
+            // clipping ride on the group's value. A meter is a picture, and a
+            // picture is the one thing a reader cannot have — so everything
+            // the bar says has to be said here too, in the place a reader is
+            // already standing when they ask about a track.
+            let level = self.mix.track(track.id);
+            let mix_words = format!(
+                ", gain {}, pan {}{}",
+                track.gain_words(),
+                track.pan_words(),
+                if level.is_some_and(|l| l.clipped) {
+                    ", clipping"
+                } else {
+                    ""
+                }
+            );
             tracks.push(
                 AccessNode::new(Role::Group)
                     .with_name(track.name.clone())
                     .with_value(format!(
-                        "{} track, {} clip{}",
+                        "{} track, {} clip{}{mix_words}",
                         match track.kind {
                             TrackKind::Video => "video",
                             TrackKind::Audio => "audio",
@@ -8528,6 +9012,32 @@ impl VideoEditorApp {
                 AccessNode::new(Role::StaticText)
                     .with_name("Timeline is empty. Add media from the bin to start editing.")
                     .with_key(0),
+            );
+        }
+        // The master strip, as the first thing in the pane. A reader meets
+        // the mix's state before the lanes, which is the order the screen
+        // puts it in — and when it has clipped, the node is a *button*,
+        // because pressing it walks the playhead to the next place it did.
+        if let Some(words) = self.mix_words() {
+            let clipped = self.mix.clipped();
+            tracks.insert(
+                0,
+                AccessNode::new(if clipped {
+                    Role::Button
+                } else {
+                    Role::StaticText
+                })
+                .with_name(if clipped {
+                    "Go to the next place the mix clipped"
+                } else {
+                    "Mix level"
+                })
+                .with_value(words)
+                .with_key(ui::a11y::hash_key(&MIX_METER_KEY))
+                .with_state(AccessState {
+                    focusable: clipped,
+                    ..Default::default()
+                }),
             );
         }
         let mut node = self.a11y_pane(Pane::Timeline, tracks);
@@ -8951,6 +9461,23 @@ impl VideoEditorApp {
                 s
             }
             (Section::Speed, Some(c)) => c.speed.label(),
+            (Section::Mix, Some(c)) => match self.project.track(c.track) {
+                Some(t) => {
+                    let level = self.mix.track(t.id);
+                    format!(
+                        "{}, gain {}, pan {}{}",
+                        t.name,
+                        t.gain_words(),
+                        t.pan_words(),
+                        if level.is_some_and(|l| l.clipped) {
+                            ", clipping"
+                        } else {
+                            ""
+                        }
+                    )
+                }
+                None => "no lane".into(),
+            },
             // Worded from the same fields the visible summary reads, so a
             // reader is never told a tidier story than the screen tells.
             (Section::Key, Some(c)) => {
@@ -9778,6 +10305,16 @@ impl VideoEditorApp {
         let Some(&track_key) = rest.first() else {
             return false;
         };
+        // The master strip's node. Activating it is the same walk the red
+        // chip does under the pointer — one route, so a reader and a mouse
+        // land in the same place.
+        if track_key == hash_key(&MIX_METER_KEY) {
+            return match action {
+                Action::Focus => true,
+                Action::Activate => self.go_to_next_clipping(),
+                _ => false,
+            };
+        }
         let Some(track) = self
             .project
             .tracks
@@ -9993,6 +10530,12 @@ impl VideoEditorApp {
         self.set_num(f, next);
         if f.is_media() {
             self.dispatch_selected_media(doc);
+        } else if f.is_track() {
+            // The lane fader writes the lane, exactly as the drag commits it.
+            // Dispatching a clip write here would report success and change
+            // nothing — a keyboard and a pointer must not disagree about what
+            // they did.
+            self.dispatch_selected_track(doc);
         } else if let Some(id) = self.selected() {
             self.dispatch_clip(doc, id);
         }
@@ -10726,16 +11269,27 @@ impl VideoEditorApp {
             self.apply_scrubber(p, r);
             return;
         }
+        // The standing clipping warning, in the master strip. Pressing it
+        // walks the playhead through the places the mix went over, wrapping
+        // round — which is the difference between a warning you can act on
+        // and one you can only be annoyed by.
+        if self.mix.clipped() && self.clip_flag_rect(r).contains(p) {
+            self.go_to_next_clipping();
+            return;
+        }
+        // Zoom readout / fit-to-window. **Before** the ruler scrub, because
+        // it now sits at the ruler's right end: a chip inside a region that
+        // scrubs has to be claimed before the region is, or pressing it just
+        // moves the playhead to the far right.
+        if self.zoom_chip_rect(r).contains(p) {
+            self.zoom_to_fit(r);
+            return;
+        }
         // Ruler scrub.
         if r.ruler.contains(p) {
             self.drag = Some(Drag::Playhead);
             self.playhead = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps)
                 .clamp(0.0, self.project.duration());
-            return;
-        }
-        // Zoom readout / fit-to-window, in the gutter's ruler corner.
-        if self.zoom_chip_rect(r).contains(p) {
-            self.zoom_to_fit(r);
             return;
         }
         // Timeline gutter: add-track buttons and per-track mute pills.
@@ -11204,6 +11758,12 @@ impl VideoEditorApp {
         if let Some(rect) = l.mask_invert {
             if rect.contains(p) {
                 self.edit_selected(state, |c| c.mask.invert = !c.mask.invert);
+                return;
+            }
+        }
+        if let Some(rect) = l.mix_reset {
+            if rect.contains(p) {
+                self.reset_selected_track_mix(state);
                 return;
             }
         }
@@ -12035,6 +12595,11 @@ impl VideoEditorApp {
             // A title knob writes the *source*, so it commits a media write;
             // everything else on this path is a clip field.
             Drag::Num(f) if f.is_media() => self.dispatch_selected_media(doc),
+            // …and the two lane knobs write the *track*, which is a third
+            // destination again. Committed as one whole-track action, so the
+            // fader lands on one undo boundary and replays on a peer as the
+            // same change the palette's `set-gain` makes.
+            Drag::Num(f) if f.is_track() => self.dispatch_selected_track(doc),
             // Rate is the one field the drag applied to the whole link group,
             // so it is the one that has to commit the whole group.
             Drag::Num(NumField::Speed) => {
@@ -14279,6 +14844,46 @@ impl VideoEditorApp {
                 rect.contains(self.last_mouse),
             );
         }
+        // ---- the lane's mix ---------------------------------------------
+        // The panel is otherwise entirely about one clip, so the two knobs
+        // that reach past it have to say what they reach — including that
+        // everything else on the lane moves with them.
+        if let Some(t) = self.selected_track() {
+            let level = self.mix.track(t.id);
+            if l.mix_track_y > 0.0 {
+                let others = self.project.clips_on(t.id).len().saturating_sub(1);
+                let words = match others {
+                    0 => format!("{} — this lane", t.name),
+                    1 => format!("{} — this lane, 1 other clip", t.name),
+                    n => format!("{} — this lane, {n} other clips", t.name),
+                };
+                let words = elide_at(&words, (x1 - x0) as f32, 11.0, tr);
+                text(scene, tr, tf, &words, 11.0, c.text_dim, x0, l.mix_track_y);
+            }
+            if let Some(meter) = l.mix_meter {
+                draw_level_meter(
+                    scene,
+                    tf,
+                    theme,
+                    meter,
+                    level.map(|v| v.level).unwrap_or_default(),
+                    level.map(|v| v.hold).unwrap_or(0.0),
+                    level.is_some_and(|v| v.clipped),
+                );
+            }
+        }
+        if let Some(rect) = l.mix_reset {
+            draw_button(
+                scene,
+                tf,
+                tr,
+                theme,
+                rect,
+                "Reset to 0.0 dB, centre",
+                false,
+                rect.contains(self.last_mouse),
+            );
+        }
         // ---- tone curves ------------------------------------------------
         if !l.curve_channels.is_empty() {
             let rects: Vec<Rect> = l.curve_channels.iter().map(|(_, r)| *r).collect();
@@ -14897,6 +15502,23 @@ impl VideoEditorApp {
                 Some(parts.join(" · "))
             }
             Section::Speed => (!clip.speed.is_normal()).then(|| clip.speed.label()),
+            // The lane's fader, and whether it has been caught clipping. The
+            // second is the part that must survive a fold: hiding the warning
+            // because the panel is tidied away is exactly the silence this
+            // section exists to end.
+            Section::Mix => {
+                let t = self.project.track(clip.track)?;
+                let clipped = self
+                    .mix
+                    .track(t.id)
+                    .is_some_and(|level| level.clipped)
+                    .then_some(" · CLIP")
+                    .unwrap_or_default();
+                if !t.mix_is_set() && clipped.is_empty() {
+                    return None;
+                }
+                Some(format!("{} {}{clipped}", t.gain_words(), t.pan_words()))
+            }
             // A key that is switched on but keying nothing still has to
             // say so: "on" and "removing something" are different states,
             // and a fold that reported neither would hide both. The tolerance
@@ -14951,6 +15573,112 @@ impl VideoEditorApp {
         }
     }
 
+    /// The master meter and the standing clipping warning.
+    ///
+    /// Two states and they read completely differently, which is the point.
+    /// Resting, it is a stereo bar and the loudest the mix has been, in
+    /// decibels — the reading a person mixing wants anyway. Once the mix has
+    /// gone over, the right-hand chip turns into a red **CLIP** stating how
+    /// far over, and it stays that way: it survives the transport stopping,
+    /// the playhead moving and the panel being folded, and it is cleared only
+    /// by changing the levels it is a report about.
+    fn draw_master_strip(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
+        let c = &theme.tokens.colors;
+        let strip = self.master_strip_rect(r);
+        if strip.width() < 60.0 || strip.height() < 20.0 {
+            return;
+        }
+        fill_rect(scene, tf, c.surfaces.raised, strip);
+        // Nothing to mix, nothing to meter. A dead meter on a picture-only
+        // timeline would read as an output that is broken.
+        if !crate::audio::has_audio(&self.project) {
+            text(
+                scene,
+                tr,
+                tf,
+                "NO AUDIO",
+                9.0,
+                c.text_dim,
+                strip.x0 + 12.0,
+                strip.y0 + 10.0,
+            );
+            return;
+        }
+        text(
+            scene,
+            tr,
+            tf,
+            "MIX",
+            9.0,
+            c.text_dim,
+            strip.x0 + 12.0,
+            strip.y0 + 5.0,
+        );
+        let flag = self.clip_flag_rect(r);
+        if self.mix.clipped() {
+            let hot = flag.contains(self.last_mouse);
+            let bg = if hot {
+                lighten(c.semantic.danger, 0.15)
+            } else {
+                c.semantic.danger
+            };
+            let (bg, fg) = on_fill(theme, bg);
+            fill_rrect(scene, tf, bg, flag, 4.0);
+            let words = format!("CLIP {:+.1}", self.mix.worst_over_db());
+            let at = text_centre(flag, &words, 9.0, TextWeight::Semibold, tr);
+            text_w(
+                scene,
+                tr,
+                tf,
+                &words,
+                9.0,
+                fg,
+                at.x,
+                at.y,
+                TextWeight::Semibold,
+            );
+        } else {
+            // The peak-hold, or an honest blank. "-∞" would say the mix is
+            // silent; nothing has been measured, which is a different claim.
+            let words = self
+                .mix
+                .hold_db()
+                .map_or_else(|| "—".to_string(), |db| format!("{db:.1} dB"));
+            let (w, _) = tr.measure(&words, 9.0, None);
+            text(
+                scene,
+                tr,
+                tf,
+                &words,
+                9.0,
+                c.text_dim,
+                flag.x1 - f64::from(w),
+                strip.y0 + 5.0,
+            );
+        }
+        draw_level_meter(
+            scene,
+            tf,
+            theme,
+            Rect::new(
+                strip.x0 + 12.0,
+                strip.y1 - 12.0,
+                strip.x1 - 8.0,
+                strip.y1 - 5.0,
+            ),
+            self.mix.master,
+            self.mix.master_hold,
+            self.mix.clipped(),
+        );
+    }
+
     fn draw_timeline(
         &self,
         scene: &mut Scene,
@@ -14972,6 +15700,9 @@ impl VideoEditorApp {
             r.timeline.y0,
             1.0,
         );
+
+        // --- master strip (the corner above the track heads) ---
+        self.draw_master_strip(scene, tf, tr, theme, r);
 
         // --- ruler ticks ---
         fill_rect(scene, tf, c.surfaces.raised, r.ruler);
@@ -15016,6 +15747,24 @@ impl VideoEditorApp {
                 );
             }
             t += tick_step;
+        }
+
+        // --- where the mix went over ---
+        // The other half of the warning. Knowing the mix clipped and not
+        // knowing where is knowing you have to scrub ninety seconds; these
+        // marks put it on the ruler, in the same place a person already looks
+        // to find a moment, and they stay there until the levels change.
+        for over in &self.mix.overs {
+            let x = self.time_to_x(*over, &r.lanes);
+            if x < r.ruler.x0 || x > r.ruler.x1 {
+                continue;
+            }
+            fill_rect(
+                scene,
+                tf,
+                c.semantic.danger,
+                Rect::new(x - 1.5, r.ruler.y0 + 2.0, x + 1.5, r.ruler.y0 + 9.0),
+            );
         }
 
         // --- render range ---
@@ -15128,23 +15877,55 @@ impl VideoEditorApp {
                 13.0,
                 c.text_primary,
                 header.x0 + 12.0,
-                header.center().y - 8.0,
+                header.y0 + 8.0,
                 TextWeight::Semibold,
             );
+            // What the lane is, and — when it has been moved off unity or
+            // centre — where its fader is. The reading belongs *here*, on the
+            // lane, rather than only in a panel: a lane at +6 dB that says so
+            // nowhere is how a mix ends up loud for a reason nobody can find.
             let knd = if *kind == TrackKind::Video {
                 "VIDEO"
             } else {
                 "AUDIO"
             };
+            let mut line = knd.to_string();
+            if let Some(t) = track.filter(|t| t.mix_is_set()) {
+                if t.gain_db.abs() > 1e-9 {
+                    line.push_str(&format!(" · {}", t.gain_words()));
+                }
+                if t.pan.abs() > 1e-9 {
+                    line.push_str(&format!(" · {}", t.pan_words()));
+                }
+            }
+            let line = elide_at(
+                &line,
+                (header.x1 - 10.0 - (header.x0 + 12.0)) as f32,
+                9.0,
+                tr,
+            );
             text(
                 scene,
                 tr,
                 tf,
-                knd,
+                &line,
                 9.0,
                 c.text_dim,
                 header.x0 + 12.0,
-                header.center().y + 6.0,
+                header.y0 + 26.0,
+            );
+            // The lane's level. Fed from the mix that made the sound, so a
+            // bar moving here is the same measurement the master meter and
+            // the clip warning are reading — never a second opinion.
+            let level = self.mix.track(*tid);
+            draw_level_meter(
+                scene,
+                tf,
+                theme,
+                self.track_meter_rect(header),
+                level.map(|l| l.level).unwrap_or_default(),
+                level.map(|l| l.hold).unwrap_or(0.0),
+                level.is_some_and(|l| l.clipped),
             );
             // mute + lock pills (clickable toggles)
             let muted = track.map(|t| t.muted).unwrap_or(false);
@@ -16069,6 +16850,19 @@ impl VideoEditorApp {
             x0,
             card.y0 + 44.0,
         );
+        // What the levels did, stated **here**, before the button that
+        // renders them. A mix that clipped and only said so in the file is
+        // the fault this whole surface exists to end, and the dialog is the
+        // last place before it becomes one.
+        if let Some(words) = self.mix_words() {
+            let tint = if self.mix.clipped() {
+                c.semantic.danger
+            } else {
+                c.text_dim
+            };
+            let words = elide_w(&words, (card.width() - 48.0) as f32, tr);
+            text(scene, tr, tf, &words, 10.5, tint, x0, card.y0 + 60.0);
+        }
 
         let seg_group = |scene: &mut Scene,
                          tr: &mut TextRenderer,
@@ -16879,6 +17673,110 @@ fn curve_channel_color(theme: &Theme, ch: crate::curve::Channel) -> Color {
 /// theme change — so it is converted, not resolved.
 fn title_color(c: [f64; 4]) -> Color {
     Color::new([c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32])
+}
+
+/// The quietest level a meter shows. Below -48 dBFS a signal is under the
+/// noise of anything it is sitting with, so the bar has nothing useful to say
+/// about it; spending half the bar's length down there would cost the top of
+/// the scale, which is where every decision is made.
+const METER_FLOOR_DB: f64 = -48.0;
+
+/// Where a meter changes colour, as fractions of its length.
+///
+/// -12 dB and -3 dB, which is the convention: amber says "you are into the
+/// last twelve", red says "three left". Resolved through the toolkit's shared
+/// [`ui::widget::GaugeThresholds`], so a meter's green, amber and red are the
+/// same three tokens every other gauge in the fleet uses — including the
+/// high-contrast theme, where they are not simply green, amber and red.
+fn meter_thresholds() -> ui::widget::GaugeThresholds {
+    ui::widget::GaugeThresholds {
+        warning: meter_frac(-12.0) as f32,
+        danger: meter_frac(-3.0) as f32,
+    }
+}
+
+/// A level, in decibels, as a fraction of a meter's length. Full scale is the
+/// far end; anything over it pins there and lights the clip flag instead,
+/// which is what makes "over" a state rather than a longer bar.
+fn meter_frac(db: f64) -> f64 {
+    ((db - METER_FLOOR_DB) / -METER_FLOOR_DB).clamp(0.0, 1.0)
+}
+
+/// A linear amplitude as that fraction.
+fn meter_frac_linear(level: f32) -> f64 {
+    if level <= 0.0 {
+        return 0.0;
+    }
+    meter_frac(crate::model::linear_to_db(f64::from(level)))
+}
+
+/// A stereo level meter: two bars in `area`, left over right, with the
+/// peak-hold marked and a clip flag at the far end.
+///
+/// Everything it draws it is *given* — the mixer measured these numbers on
+/// the thread that made the sound. Nothing here reads a sample, allocates or
+/// analyses anything, because this runs on the paint path.
+///
+/// The clip flag is latched by the meter, not by this function: it stays lit
+/// after the level has fallen away, which is the whole difference between a
+/// warning and a flicker you were not looking at.
+fn draw_level_meter(
+    scene: &mut Scene,
+    tf: Affine,
+    theme: &Theme,
+    area: Rect,
+    level: [f32; 2],
+    hold: f32,
+    clipped: bool,
+) {
+    let c = &theme.tokens.colors;
+    // The flag keeps the far end of the strip whether or not it is lit, so a
+    // bar does not grow into it the moment the mix goes over.
+    let flag_w = (area.width() * 0.06).clamp(3.0, 6.0);
+    let bars = Rect::new(
+        area.x0,
+        area.y0,
+        (area.x1 - flag_w - 2.0).max(area.x0),
+        area.y1,
+    );
+    fill_rrect(scene, tf, c.neutral[3], bars, 1.5);
+    let h = ((area.height() - 2.0) / 2.0).max(1.0);
+    let thresholds = meter_thresholds();
+    for (i, l) in level.iter().enumerate() {
+        let frac = meter_frac_linear(*l);
+        if frac <= 0.0 {
+            continue;
+        }
+        let y0 = area.y0 + i as f64 * (h + 2.0);
+        let bar = Rect::new(bars.x0, y0, bars.x0 + bars.width() * frac, y0 + h);
+        fill_rrect(
+            scene,
+            tf,
+            thresholds.color(theme, frac as f32),
+            bar,
+            (h / 2.0).min(1.5),
+        );
+    }
+    // Peak-hold: the loudest this has been since the meter was cleared. It is
+    // the number a person actually wants — the bar is where you are, the hold
+    // is where you have been.
+    let hold_frac = meter_frac_linear(hold);
+    if hold_frac > 0.01 {
+        let x = bars.x0 + bars.width() * hold_frac;
+        fill_rect(
+            scene,
+            tf,
+            c.text_primary,
+            Rect::new(x - 1.0, area.y0, x, area.y1),
+        );
+    }
+    let flag = Rect::new(area.x1 - flag_w, area.y0, area.x1, area.y1);
+    let (fill, _) = if clipped {
+        on_fill(theme, c.semantic.danger)
+    } else {
+        (c.neutral[3], c.text_dim)
+    };
+    fill_rrect(scene, tf, fill, flag, 1.5);
 }
 
 fn hit_slider(track: Rect, p: Point) -> bool {

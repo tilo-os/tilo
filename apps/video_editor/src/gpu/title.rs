@@ -144,12 +144,26 @@ impl TitleRaster {
         // stays centred on the frame however many lines it has. Where the
         // block sits *on* the frame is the clip transform's job, not the
         // raster's.
-        let lines: Vec<&str> = text.content.lines().collect();
+        // Wrapped to the title-safe width, not just split on newlines. A
+        // typed newline is still a break — it is the one the author asked for
+        // — but a long sentence used to run off both edges of the frame and
+        // out of the exported file, which is not something a title can be
+        // allowed to do.
+        //
+        // The safe width matches the inset the left- and right-aligned cases
+        // already use (8% each side), so a wrapped line never sits closer to
+        // the edge than a deliberately aligned one.
+        let safe = width as f64 * 0.84;
+        let lines: Vec<String> = text
+            .content
+            .lines()
+            .flat_map(|line| wrap_to(tr, line, size, weight, text.italic, &family, safe))
+            .collect();
         let leading = size as f64 * 1.25;
         let block = leading * lines.len().max(1) as f64;
         let mut y = height as f64 * 0.5 - block * 0.5;
         for line in &lines {
-            let (w, _h) = tr.measure_font(line, size, None, weight, text.italic, &family);
+            let (w, _h) = tr.measure_font(line.as_str(), size, None, weight, text.italic, &family);
             let x = match text.align {
                 TextAlign::Left => width as f64 * 0.08,
                 TextAlign::Center => (width as f64 - w as f64) * 0.5,
@@ -157,7 +171,7 @@ impl TitleRaster {
             };
             tr.draw_text_font(
                 &mut scene,
-                line,
+                line.as_str(),
                 size,
                 color,
                 Affine::translate((x, y)),
@@ -322,5 +336,78 @@ mod tests {
             1,
             "a new frame size rebuilds the renderer"
         );
+    }
+}
+
+/// Break `line` into pieces that each fit inside `max_w`.
+///
+/// Greedy on word boundaries, which is what a reader expects and what every
+/// other text surface here does. A single word too long for the frame — a URL,
+/// a compound noun, a language that does not space its words — is broken by
+/// character rather than allowed to run off the edge: a title that leaves the
+/// frame is worse than one with an awkward break, because the part outside is
+/// simply gone from the exported file.
+///
+/// Measured through the same `measure_font` the drawing uses, so the wrap and
+/// the paint cannot disagree about what fits. Called only when a title's
+/// raster is rebuilt, never per frame.
+fn wrap_to(
+    tr: &mut ui::text_render::TextRenderer,
+    line: &str,
+    size: f32,
+    weight: ui::text_render::TextWeight,
+    italic: bool,
+    family: &ui::text_render::FontChoice,
+    max_w: f64,
+) -> Vec<String> {
+    let fits = |tr: &mut ui::text_render::TextRenderer, s: &str| -> bool {
+        f64::from(tr.measure_font(s, size, None, weight, italic, family).0) <= max_w
+    };
+
+    // An empty line is a deliberate blank line, and must survive as one.
+    if line.trim().is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in line.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if fits(tr, &candidate) {
+            current = candidate;
+            continue;
+        }
+        if !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+        }
+        // The word alone: fits on its own line, or has to be broken.
+        if fits(tr, word) {
+            current = word.to_string();
+            continue;
+        }
+        let mut piece = String::new();
+        for ch in word.chars() {
+            let mut next = piece.clone();
+            next.push(ch);
+            if piece.is_empty() || fits(tr, &next) {
+                piece = next;
+            } else {
+                out.push(std::mem::take(&mut piece));
+                piece.push(ch);
+            }
+        }
+        current = piece;
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    if out.is_empty() {
+        vec![String::new()]
+    } else {
+        out
     }
 }
